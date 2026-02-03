@@ -778,7 +778,7 @@ class HyperlendStableYieldStrategy(Strategy):
         except Exception:
             return None
 
-    async def withdraw(self, amount: float | None = None) -> StatusTuple:
+    async def withdraw(self, amount: float | None = None, **kwargs) -> StatusTuple:
         messages = []
 
         active_token = self.current_token

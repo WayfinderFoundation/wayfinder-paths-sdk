@@ -781,7 +781,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         c2 = coin2[1:] if coin2.startswith("U") and len(coin2) > 1 else coin2
         return c1 == c2
 
-    async def withdraw(self, amount: float | None = None) -> StatusTuple:
+    async def withdraw(self, amount: float | None = None, **kwargs) -> StatusTuple:
         address = self._get_strategy_wallet_address()
         usdc_token_id = "usd-coin-arbitrum"
 
