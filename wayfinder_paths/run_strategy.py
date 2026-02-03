@@ -79,7 +79,7 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
     await strategy.setup()
 
     if action == "policy":
-        policies = strategy.policies() if hasattr(strategy, "policies") else []
+        policies = await strategy.policies() if hasattr(strategy, "policies") else []
         if wallet_id := kw.get("wallet_id"):
             policies = [p.replace("FORMAT_WALLET_ID", wallet_id) for p in policies]
         result = {"policies": policies}
