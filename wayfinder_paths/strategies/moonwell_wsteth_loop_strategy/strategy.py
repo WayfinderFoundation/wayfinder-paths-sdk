@@ -3423,7 +3423,7 @@ class MoonwellWstethLoopStrategy(Strategy):
 
         return await self._repay_weth(weth_bal, remaining_debt)
 
-    async def withdraw(self, amount: float | None = None) -> StatusTuple:
+    async def withdraw(self, amount: float | None = None, **kwargs) -> StatusTuple:
         logger.info("")
         logger.info("*" * 60)
         logger.info("* MOONWELL STRATEGY WITHDRAW CALLED")

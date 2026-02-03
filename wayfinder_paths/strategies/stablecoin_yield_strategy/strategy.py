@@ -853,7 +853,7 @@ class StablecoinYieldStrategy(Strategy):
             logger.error(f"Deposit process failed: {e}")
             return (False, f"Deposit error: {e}")
 
-    async def withdraw(self, amount: float | None = None) -> StatusTuple:
+    async def withdraw(self, amount: float | None = None, **kwargs) -> StatusTuple:
         logger.info(f"Starting withdrawal process for amount: {amount}")
         start_time = time.time()
 
