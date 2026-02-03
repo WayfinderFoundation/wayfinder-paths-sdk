@@ -1,0 +1,11 @@
+{
+  "smoke": {
+    "deposit": {
+      "main_token_amount": 10.0,
+      "gas_token_amount": 0.01
+    },
+    "update": {},
+    "status": {},
+    "withdraw": {}
+  }
+}

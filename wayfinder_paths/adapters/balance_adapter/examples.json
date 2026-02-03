@@ -1,0 +1,6 @@
+{
+  "smoke": {
+    "get_balance": {"asset": "base_0x0000000000000000000000000000000000000000", "wallet_type": "strategy"}
+  }
+}
+

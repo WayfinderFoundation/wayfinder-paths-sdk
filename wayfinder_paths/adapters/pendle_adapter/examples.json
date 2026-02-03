@@ -1,0 +1,11 @@
+{
+  "list_markets": {
+    "description": "List active PT/YT markets across chains, sorted by implied APY (fixedApy proxy).",
+    "code": "from adapters.pendle_adapter.adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nrows = await adapter.list_active_pt_yt_markets(\n    chains=[\"arbitrum\", \"base\", \"hyperevm\"],\n    min_liquidity_usd=250_000,\n    min_volume_usd_24h=25_000,\n    min_days_to_expiry=7,\n    sort_by=\"fixed_apy\",\n    descending=True,\n)\n\nprint(rows[:3])"
+  },
+  "best_pt_swap": {
+    "description": "Build a Hosted-SDK swap payload (tx + approvals) for the best PT on a chain.",
+    "code": "from adapters.pendle_adapter.adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nbest = await adapter.build_best_pt_swap_tx(\n    chain=\"arbitrum\",\n    token_in=\"0xaf88d065e77c8cC2239327C5EDb3A432268e5831\",\n    amount_in=str(1000 * 10**6),\n    receiver=\"0xYourEOAHere\",\n    slippage=0.01,\n    enable_aggregator=True,\n    max_markets_to_quote=10,\n)\n\nif best[\"ok\"]:\n    print(best[\"selectedMarket\"], best[\"quote\"])\n    print(best[\"tx\"], best[\"tokenApprovals\"])"
+  }
+}
+

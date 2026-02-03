@@ -1,0 +1,6 @@
+schema_version: "0.1"
+entrypoint: "adapters.pool_adapter.adapter.PoolAdapter"
+capabilities:
+  - "pool.read"
+  - "pool.discover"
+dependencies: []

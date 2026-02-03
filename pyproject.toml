@@ -1,0 +1,116 @@
+[tool.poetry]
+name = "wayfinder-paths"
+version = "0.1.0"
+description = "Wayfinder Path: strategies and adapters"
+readme = "README.md"
+authors = ["Wayfinder <dev@wayfinder.ai>"]
+packages = [
+    { include = "wayfinder_paths", from = "." },
+]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+loguru = "^0.7.3"
+httpx = "^0.28.1"
+pyyaml = "^6.0.1"
+pydantic = "^2.11.9"
+web3 = "^7.13.0"
+eth-account = "^0.13.7"
+aiohttp = "^3.13.0"
+numpy = "^1.26.0"
+pandas = "^2.2.0"
+hyperliquid-felix = "*"
+aiocache = "^0.12.3"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.4.2"
+pytest-asyncio = "^0.21.0"
+pytest-cov = "^4.1.0"
+pytest-html = "^4.1.1"
+pytest-xdist = "^3.5.0"
+pytest-mock = "^3.12.0"
+ruff = "^0.13.2"
+bandit = "^1.7.5"
+safety = "^2.3.5"
+twine = "^6.2.0"
+mcp = "^1.10.1"
+vulture = "^2.14"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"wayfinder_paths/core/strategies/Strategy.py" = ["B027"]
+"wayfinder_paths/core/adapters/BaseAdapter.py" = ["B024", "B027"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["wayfinder_paths"]
+
+[tool.pytest.ini_options]
+testpaths = ["wayfinder_paths/"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+norecursedirs = ["templates"]
+        addopts = [
+            "-v",
+            "--tb=short",
+            "--strict-markers",
+            "--disable-warnings",
+            "--cov=wayfinder_paths",
+            "--cov-report=term-missing",
+            "--cov-report=html",
+            "--cov-report=xml",
+            "--import-mode=importlib"
+        ]
+markers = [
+    "smoke: Smoke tests for basic functionality validation",
+    "requires_wallets: Tests requiring test wallets",
+    "requires_config: Tests requiring config.json"
+]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["wayfinder_paths"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+    "*/migrations/*"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod"
+]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

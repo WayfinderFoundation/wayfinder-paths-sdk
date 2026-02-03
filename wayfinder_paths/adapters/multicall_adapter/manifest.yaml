@@ -1,0 +1,5 @@
+schema_version: "0.1"
+entrypoint: "adapters.multicall_adapter.adapter.MulticallAdapter"
+capabilities:
+  - "multicall.aggregate"
+dependencies: []

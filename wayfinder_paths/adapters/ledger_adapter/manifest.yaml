@@ -1,0 +1,7 @@
+schema_version: "0.1"
+entrypoint: "adapters.ledger_adapter.adapter.LedgerAdapter"
+capabilities:
+  - "ledger.read"
+  - "ledger.record"
+  - "ledger.snapshot"
+dependencies: []

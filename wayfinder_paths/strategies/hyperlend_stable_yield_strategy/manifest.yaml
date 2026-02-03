@@ -1,0 +1,29 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.strategies.hyperlend_stable_yield_strategy.strategy.HyperlendStableYieldStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow HyperLend supply and withdraw
+      (action.type == 'hyperlend_supply') OR
+      (action.type == 'hyperlend_withdraw') OR
+      # Allow WHYPE wrap/unwrap
+      (action.type == 'whype_deposit') OR
+      (action.type == 'whype_withdraw') OR
+      # Allow swaps via supported routers (Enso, LiFi, PRJX)
+      (action.type == 'swap' AND action.chain_id == 999) OR
+      # Allow ERC20 approvals for routers
+      (action.type == 'erc20_approve') OR
+      # Allow withdrawals to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "HYPERLEND"
+    capabilities: ["market.read", "supply", "withdraw", "rates"]
+  - name: "BRAP"
+    capabilities: ["swap.quote", "swap.execute"]

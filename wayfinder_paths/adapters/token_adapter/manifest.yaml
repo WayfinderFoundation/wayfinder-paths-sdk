@@ -1,0 +1,7 @@
+schema_version: "0.1"
+entrypoint: "adapters.token_adapter.adapter.TokenAdapter"
+capabilities:
+  - "token.read"
+  - "token.price"
+  - "token.gas"
+dependencies: []

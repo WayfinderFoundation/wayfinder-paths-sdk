@@ -1,0 +1,30 @@
+# Core dependencies
+aiohttp>=3.13.0
+python-dotenv>=1.1.1
+loguru>=0.7.3
+PyYAML>=6.0.1
+
+# Data handling
+pydantic>=2.11.9
+pydantic-settings>=2.7.0
+
+# Blockchain/Web3
+web3>=7.13.0
+eth-account>=0.13.7
+
+# HTTP client
+httpx>=0.28.1
+
+# Data processing
+numpy>=1.26.0
+pandas>=2.2.0
+
+# Testing
+pytest>=8.4.2
+pytest-asyncio>=0.21.0
+
+# Development
+ruff>=0.13.2
+
+# Optional: for specific adapters
+# ccxt>=3.0.0  # For centralized exchange adapters

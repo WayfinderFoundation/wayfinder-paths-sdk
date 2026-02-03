@@ -1,0 +1,62 @@
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+site/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Poetry (keep poetry.lock committed)
+.poetry-cache/
+
+# Testing / coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+
+# Logs / local data
+logs/
+*.log
+tmp/
+temp/
+.env
+.env.*
+!.env.example
+.cache/
+.wayfinder_runs/*
+!.wayfinder_runs/README.md
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Config (keep examples committed)
+config.json
+keystore_*.json
+abis/
+
+# Claude Code local overrides
+.claude/settings.local.json
+
+# Local runtime artifacts
+*.sqlite3
+*.db
+
+# Ledger
+.ledger/

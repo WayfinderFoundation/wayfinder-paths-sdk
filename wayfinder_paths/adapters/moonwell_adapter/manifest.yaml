@@ -1,0 +1,14 @@
+schema_version: "0.1"
+entrypoint: "adapters.moonwell_adapter.adapter.MoonwellAdapter"
+capabilities:
+  - "lending.lend"
+  - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "collateral.set"
+  - "collateral.remove"
+  - "rewards.claim"
+  - "position.read"
+  - "market.apy"
+  - "market.collateral_factor"
+dependencies: []

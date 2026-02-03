@@ -1,0 +1,59 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__wayfinder__discover",
+      "mcp__wayfinder__describe",
+      "mcp__wayfinder__wallets",
+      "mcp__wayfinder__tokens",
+      "mcp__wayfinder__balances",
+      "mcp__wayfinder__quote_swap",
+      "mcp__wayfinder__hyperliquid"
+    ],
+    "ask": [
+      "mcp__wayfinder__execute",
+      "mcp__wayfinder__run_script",
+      "mcp__wayfinder__hyperliquid_execute",
+      "mcp__wayfinder__run_strategy"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__wayfinder__execute",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_execute_review.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__wayfinder__run_script",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_run_script_review.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__wayfinder__hyperliquid_execute",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_hyperliquid_execute_review.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__wayfinder__run_strategy",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_strategy_review.py\""
+          }
+        ]
+      }
+    ]
+  }
+}

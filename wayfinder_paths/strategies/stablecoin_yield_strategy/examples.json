@@ -1,0 +1,17 @@
+{
+  "smoke": {
+    "deposit": {"main_token_amount": 60, "gas_token_amount": 0.001},
+    "update": {},
+    "status": {},
+    "withdraw": {}
+  },
+  "min_deposit_fail": {
+    "deposit": {"main_token_amount": 1, "gas_token_amount": 0.0},
+    "expect": {"success": false, "message_contains": "Minimum deposit"}
+  },
+  "tvl_filter": {
+    "deposit": {"main_token_amount": 100, "gas_token_amount": 0.001},
+    "update": {}
+  }
+}
+

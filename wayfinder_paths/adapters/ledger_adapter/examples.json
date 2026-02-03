@@ -1,0 +1,137 @@
+{
+  "get_vault_transactions": {
+    "description": "Get vault transaction history",
+    "input": {
+      "wallet_address": "0x1234567890123456789012345678901234567890",
+      "limit": 10,
+      "offset": 0
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "transactions": [
+          {
+            "id": "tx_123",
+            "operation": "DEPOSIT",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "amount": "1000000000000000000",
+            "token_address": "0xA0b86a33E6441c8C06DdD4D4c4c4c4c4c4c4c4c4c",
+            "usd_value": "1000.00",
+            "strategy_name": "StablecoinYieldStrategy"
+          }
+        ],
+        "total": 1,
+        "limit": 10,
+        "offset": 0
+      }
+    }
+  },
+  "get_vault_net_deposit": {
+    "description": "Get net deposit amount for a vault",
+    "input": {
+      "wallet_address": "0x1234567890123456789012345678901234567890"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "net_deposit": "1000.00",
+        "total_deposits": "1500.00",
+        "total_withdrawals": "500.00"
+      }
+    }
+  },
+  "record_deposit": {
+    "description": "Record a vault deposit",
+    "input": {
+      "wallet_address": "0x1234567890123456789012345678901234567890",
+      "chain_id": 8453,
+      "token_address": "0xA0b86a33E6441c8C06DdD4D4c4c4c4c4c4c4c4c4c",
+      "token_amount": "1000000000000000000",
+      "usd_value": "1000.00",
+      "strategy_name": "StablecoinYieldStrategy"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "transaction_id": "tx_456",
+        "status": "recorded",
+        "timestamp": "2024-01-15T10:30:00Z"
+      }
+    }
+  },
+  "record_withdrawal": {
+    "description": "Record a vault withdrawal",
+    "input": {
+      "wallet_address": "0x1234567890123456789012345678901234567890",
+      "chain_id": 8453,
+      "token_address": "0xA0b86a33E6441c8C06DdD4D4c4c4c4c4c4c4c4c4c",
+      "token_amount": "500000000000000000",
+      "usd_value": "500.00",
+      "strategy_name": "StablecoinYieldStrategy"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "transaction_id": "tx_789",
+        "status": "recorded",
+        "timestamp": "2024-01-15T11:00:00Z"
+      }
+    }
+  },
+  "record_operation": {
+    "description": "Record a vault operation (swap, rebalance, etc.)",
+    "note": "operation_data must be a Pydantic Operation model (currently only SWAP is implemented)",
+    "input": {
+      "wallet_address": "0x1234567890123456789012345678901234567890",
+      "operation_data": {
+        "type": "SWAP",
+        "from_token_id": "0xA0b86a33E6441c8C06DdD4D4c4c4c4c4c4c4c4c4c",
+        "to_token_id": "0xB1c97a44F7552d9Dd5e5e5e5e5e5e5e5e5e5e5e5e5e",
+        "from_amount": "1000000000000000000",
+        "to_amount": "995000000000000000",
+        "from_amount_usd": 1000.0,
+        "to_amount_usd": 995.0,
+        "transaction_hash": "0xabcdef...",
+        "transaction_status": "success",
+        "transaction_receipt": null
+      },
+      "usd_value": "1000.00",
+      "strategy_name": "StablecoinYieldStrategy"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "operation_id": "op_123",
+        "status": "recorded",
+        "timestamp": "2024-01-15T10:45:00Z"
+      }
+    }
+  },
+  "get_transaction_summary": {
+    "description": "Get a summary of recent vault transactions",
+    "input": {
+      "wallet_address": "0x1234567890123456789012345678901234567890",
+      "limit": 5
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "total_transactions": 3,
+        "recent_transactions": [
+          {
+            "id": "tx_123",
+            "operation": "DEPOSIT",
+            "timestamp": "2024-01-15T10:30:00Z",
+            "amount": "1000000000000000000",
+            "usd_value": "1000.00"
+          }
+        ],
+        "operations": {
+          "deposits": 1,
+          "withdrawals": 1,
+          "operations": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.strategies.boros_hype_strategy.strategy.BorosHypeStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow Hyperliquid EIP-712 order/transfer actions
+      (action.type == 'hyperliquid_order') OR
+      (action.type == 'hyperliquid_cancel') OR
+      (action.type == 'hyperliquid_transfer') OR
+      (action.type == 'hyperliquid_withdraw') OR
+      # Allow USDC transfers to Hyperliquid bridge
+      (action.type == 'erc20_transfer' AND action.to == '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7') OR
+      # Allow USDT transfers to Boros
+      (action.type == 'erc20_transfer' AND action.to IN boros_contracts) OR
+      # Allow Boros EIP-712 order actions
+      (action.type == 'boros_order') OR
+      (action.type == 'boros_deposit') OR
+      (action.type == 'boros_withdraw') OR
+      # Allow HyperEVM token swaps (kHYPE, lHYPE)
+      (action.type == 'swap' AND action.chain_id == 999) OR
+      # Allow withdrawals to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "HYPERLIQUID"
+    capabilities: ["market.read", "market.meta", "market.funding", "market.candles", "market.orderbook", "order.execute", "order.cancel", "position.manage", "transfer", "withdraw"]
+  - name: "BOROS"
+    capabilities: ["market.read", "market.quote", "position.open", "position.close", "collateral.deposit", "collateral.withdraw"]
+  - name: "BRAP"
+    capabilities: ["swap.quote", "swap.execute", "bridge.execute"]

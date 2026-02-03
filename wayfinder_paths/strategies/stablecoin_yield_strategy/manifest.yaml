@@ -1,0 +1,24 @@
+schema_version: "0.1"
+status: wip
+entrypoint: "wayfinder_paths.strategies.stablecoin_yield_strategy.strategy.StablecoinYieldStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow swaps via Enso router on Base
+      (action.type == 'swap' AND action.chain_id == 8453) OR
+      # Allow ERC20 approvals for routers
+      (action.type == 'erc20_approve') OR
+      # Allow withdrawals to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "POOL"
+    capabilities: ["pool.read", "pool.search"]
+  - name: "BRAP"
+    capabilities: ["swap.quote", "swap.execute"]

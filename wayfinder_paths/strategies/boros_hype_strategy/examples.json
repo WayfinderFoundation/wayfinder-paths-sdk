@@ -1,0 +1,37 @@
+{
+  "smoke": {
+    "deposit": {
+      "main_token_amount": 200.0,
+      "gas_token_amount": 0.01
+    },
+    "update": {},
+    "withdraw": {}
+  },
+  "canonical_deposit": {
+    "deposit": {
+      "main_token_amount": 500.0,
+      "gas_token_amount": 0.02
+    }
+  },
+  "canonical_update": {
+    "update": {}
+  },
+  "canonical_status": {
+    "status": {}
+  },
+  "minimum_deposit": {
+    "deposit": {
+      "main_token_amount": 150.0,
+      "gas_token_amount": 0.01
+    }
+  },
+  "error_below_minimum": {
+    "deposit": {
+      "main_token_amount": 50.0,
+      "gas_token_amount": 0.01
+    },
+    "expect": {
+      "success": false
+    }
+  }
+}

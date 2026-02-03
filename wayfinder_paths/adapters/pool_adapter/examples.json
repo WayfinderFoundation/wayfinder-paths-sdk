@@ -1,0 +1,42 @@
+{
+  "get_pools_by_ids": {
+    "description": "Get pool information by pool IDs",
+    "input": {
+      "pool_ids": ["pool-123", "pool-456"]
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "pools": [
+          {
+            "id": "pool-123",
+            "name": "USDC/USDT Pool",
+            "symbol": "USDC-USDT",
+            "apy": 0.05,
+            "tvl": 1000000,
+            "chain": "base"
+          }
+        ]
+      }
+    }
+  },
+  "get_pools": {
+    "description": "Get Llama protocol matches for pools",
+    "input": {},
+    "output": {
+      "success": true,
+      "data": {
+        "matches": [
+          {
+            "id": "pool-123",
+            "apy": 5.2,
+            "tvlUsd": 1000000,
+            "stablecoin": true,
+            "ilRisk": "no",
+            "network": "base"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+name: CI/CD Pipeline
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    - name: Security scan
+      run: bandit -r ./wayfinder-paths
+    - name: Run tests with coverage
+      run: pytest --cov=./wayfinder-paths --cov-fail-under=80

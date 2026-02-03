@@ -1,0 +1,9 @@
+schema_version: "0.1"
+entrypoint: "adapters.brap_adapter.adapter.BRAPAdapter"
+capabilities:
+  - "swap.quote"
+  - "swap.execute"
+  - "swap.compare_routes"
+  - "bridge.quote"
+  - "gas.estimate"
+dependencies: []

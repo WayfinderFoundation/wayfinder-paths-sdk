@@ -1,0 +1,18 @@
+{
+  "basic_usage": {
+    "description": "Basic usage of TokenAdapter to get token information",
+    "code": "from adapters.token_adapter.adapter import TokenAdapter\n\n# Initialize adapter (no config needed)\nadapter = TokenAdapter()\n\n# Get token by address (provide chain_id when querying by address)\nsuccess, data = await adapter.get_token(\n    \"0x1234567890abcdef1234567890abcdef12345678\",\n    chain_id=8453,\n)\nif success:\n    print(f\"Token symbol: {data.get('symbol')}\")\n    print(f\"Token name: {data.get('name')}\")\n    print(f\"Decimals: {data.get('decimals')}\")\nelse:\n    print(f\"Error: {data}\")"
+  },
+  "get_by_token_id": {
+    "description": "Get token information using token ID",
+    "code": "from adapters.token_adapter.adapter import TokenAdapter\n\n# Initialize adapter (no config needed)\nadapter = TokenAdapter()\n\n# Get token by ID\nsuccess, data = await adapter.get_token(\"token-12345\")\nif success:\n    print(f\"Token data: {data}\")\nelse:\n    print(f\"Error: {data}\")"
+  },
+  "error_handling": {
+    "description": "Proper error handling for various scenarios",
+    "code": "from adapters.token_adapter.adapter import TokenAdapter\n\n# Initialize adapter (no config needed)\nadapter = TokenAdapter()\n\n# Handle API errors\nsuccess, data = await adapter.get_token(\"invalid-address\")\nif not success:\n    print(f\"API error: {data}\")\nelse:\n    print(f\"Token found: {data}\")"
+  },
+  "batch_operations": {
+    "description": "Perform multiple token lookups efficiently",
+    "code": "from adapters.token_adapter.adapter import TokenAdapter\n\n# Initialize adapter (no config needed)\nadapter = TokenAdapter()\n\n# List of token addresses to lookup (Base chain)\ntoken_addresses = [\n    \"0x1234567890abcdef1234567890abcdef12345678\",\n    \"0xabcdef1234567890abcdef1234567890abcdef12\",\n    \"0x9876543210fedcba9876543210fedcba98765432\"\n]\n\n# Batch lookup\ntoken_data = {}\nfor address in token_addresses:\n    success, data = await adapter.get_token(address, chain_id=8453)\n    if success:\n        token_data[address] = data\n    else:\n        print(f\"Failed to get token for {address}: {data}\")\n\nprint(f\"Successfully retrieved {len(token_data)} tokens\")\nfor address, data in token_data.items():\n    print(f\"{address}: {data.get('symbol', 'Unknown')} - {data.get('name', 'Unknown')}\")"
+  }
+}

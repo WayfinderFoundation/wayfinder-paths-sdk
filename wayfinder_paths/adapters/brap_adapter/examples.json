@@ -1,0 +1,67 @@
+{
+  "best_quote": {
+    "description": "Get the best available quote for a swap operation",
+    "input": {
+      "from_token_address": "0xA0b86a33E6441c8C06DdD4D4c4c4c4c4c4c4c4c4c",
+      "to_token_address": "0xB1c97a44F7552d9Dd5e5e5e5e5e5e5e5e5e5e5e5e5e",
+      "from_chain_id": 8453,
+      "to_chain_id": 1,
+      "from_address": "0x1234567890123456789012345678901234567890",
+      "amount": "1000000000000000000"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "provider": "enso",
+        "input_amount": 1000000000000000000,
+        "output_amount": 995000000000000000,
+        "fee_estimate": {
+          "fee_total_usd": 0.08,
+          "fee_breakdown": []
+        },
+        "calldata": {
+          "data": "0x",
+          "to": "0x",
+          "value": "0",
+          "chainId": 8453
+        }
+      }
+    }
+  },
+  "swap_from_token_ids": {
+    "description": "Execute a swap using token IDs",
+    "input": {
+      "from_token_id": "usd-coin-base",
+      "to_token_id": "ethereum",
+      "from_address": "0x1234567890123456789012345678901234567890",
+      "amount": "1000000000000000000",
+      "strategy_name": "my_strategy"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "from_amount": "1000000000000000000",
+        "to_amount": "995000000000000000",
+        "tx_hash": "0xabc123..."
+      }
+    }
+  },
+  "swap_from_quote": {
+    "description": "Execute a swap from a pre-fetched quote",
+    "input": {
+      "from_token": {"address": "0x...", "chain": {"id": 8453}},
+      "to_token": {"address": "0x...", "chain": {"id": 1}},
+      "from_address": "0x1234567890123456789012345678901234567890",
+      "quote": {"calldata": {"data": "0x...", "to": "0x..."}, "input_amount": "1000000000000000000"},
+      "strategy_name": "my_strategy"
+    },
+    "output": {
+      "success": true,
+      "data": {
+        "from_amount": "1000000000000000000",
+        "to_amount": "995000000000000000",
+        "tx_hash": "0xabc123..."
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+schema_version: "0.1"
+entrypoint: "adapters.hyperliquid_adapter.adapter.HyperliquidAdapter"
+capabilities:
+  - "market.read"
+  - "market.meta"
+  - "market.funding"
+  - "market.candles"
+  - "market.orderbook"
+  - "order.execute"
+  - "order.cancel"
+  - "position.manage"
+  - "transfer"
+  - "withdraw"
+dependencies: []

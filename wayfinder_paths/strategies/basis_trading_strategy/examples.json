@@ -1,0 +1,16 @@
+{
+  "smoke": {
+    "deposit": {"main_token_amount": 100, "gas_token_amount": 0.0001},
+    "update": {},
+    "status": {},
+    "withdraw": {}
+  },
+  "min_deposit_fail": {
+    "deposit": {"main_token_amount": 10, "gas_token_amount": 0.0},
+    "expect": {"success": false, "message_contains": "Minimum deposit"}
+  },
+  "analysis_only": {
+    "deposit": {"main_token_amount": 200, "gas_token_amount": 0.0001},
+    "update": {}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "wayfinder": {
+      "command": "poetry",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "wayfinder_paths.mcp.server"
+      ],
+      "env": {
+        "WAYFINDER_CONFIG_PATH": "config.json"
+      }
+    }
+  }
+}

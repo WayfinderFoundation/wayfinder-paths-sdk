@@ -1,0 +1,33 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.strategies.moonwell_wsteth_loop_strategy.strategy.MoonwellWstethLoopStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow Moonwell lending operations
+      (action.type == 'moonwell_mint') OR
+      (action.type == 'moonwell_redeem') OR
+      (action.type == 'moonwell_borrow') OR
+      (action.type == 'moonwell_repay') OR
+      (action.type == 'moonwell_enter_markets') OR
+      (action.type == 'moonwell_claim_rewards') OR
+      # Allow WETH wrap/unwrap
+      (action.type == 'weth_deposit') OR
+      (action.type == 'weth_withdraw') OR
+      # Allow swaps via Enso router
+      (action.type == 'swap' AND action.chain_id == 8453) OR
+      # Allow ERC20 approvals
+      (action.type == 'erc20_approve') OR
+      # Allow withdrawals to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "MOONWELL"
+    capabilities: ["market.read", "supply", "withdraw", "borrow", "repay", "collateral"]
+  - name: "BRAP"
+    capabilities: ["swap.quote", "swap.execute"]

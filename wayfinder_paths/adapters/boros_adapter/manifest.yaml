@@ -1,0 +1,10 @@
+schema_version: "0.1"
+entrypoint: "adapters.boros_adapter.adapter.BorosAdapter"
+capabilities:
+  - "market.read"
+  - "market.quote"
+  - "position.open"
+  - "position.close"
+  - "collateral.deposit"
+  - "collateral.withdraw"
+dependencies: []

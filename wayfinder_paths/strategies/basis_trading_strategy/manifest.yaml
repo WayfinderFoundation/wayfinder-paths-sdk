@@ -1,0 +1,24 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.strategies.basis_trading_strategy.strategy.BasisTradingStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow Hyperliquid EIP-712 order/transfer actions
+      (action.type == 'hyperliquid_order') OR
+      (action.type == 'hyperliquid_cancel') OR
+      (action.type == 'hyperliquid_transfer') OR
+      (action.type == 'hyperliquid_withdraw') OR
+      # Allow USDC transfers to Hyperliquid bridge
+      (action.type == 'erc20_transfer' AND action.to == '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7') OR
+      # Allow withdrawals to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "HYPERLIQUID"
+    capabilities: ["market.read", "market.meta", "market.funding", "market.candles", "market.orderbook", "order.execute", "order.cancel", "position.manage", "transfer", "withdraw"]

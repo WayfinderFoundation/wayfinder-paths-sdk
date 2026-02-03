@@ -1,0 +1,3 @@
+from wayfinder_paths.core.constants.tokens import TOKEN_ID_USDC_ARBITRUM
+
+USDC_ARBITRUM_TOKEN_ID = TOKEN_ID_USDC_ARBITRUM
