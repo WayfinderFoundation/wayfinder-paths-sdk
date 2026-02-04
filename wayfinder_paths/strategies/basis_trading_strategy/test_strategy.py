@@ -10,7 +10,7 @@ from wayfinder_paths.strategies.basis_trading_strategy.strategy import (
     BasisPosition,
     BasisTradingStrategy,
 )
-from wayfinder_paths.tests.test_utils import load_strategy_examples
+from wayfinder_paths.tests.test_utils import assert_status_tuple, load_strategy_examples
 
 
 def load_examples():
@@ -230,10 +230,10 @@ class TestBasisTradingStrategy:
 
             # Deposit
             deposit_params = smoke.get("deposit", {})
-            success, msg = await strategy.deposit(**deposit_params)
+            success, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
             assert success, f"Deposit failed: {msg}"
 
-            success, msg = await strategy.update()
+            success, msg = assert_status_tuple(await strategy.update())
             assert success, f"Update failed: {msg}"
 
             # Status
@@ -241,7 +241,7 @@ class TestBasisTradingStrategy:
             assert "portfolio_value" in status
 
             # Withdraw (needs PairedFiller mock for _close_position)
-            success, msg = await strategy.withdraw()
+            success, msg = assert_status_tuple(await strategy.withdraw())
             assert success, f"Withdraw failed: {msg}"
 
     @pytest.mark.asyncio
@@ -251,7 +251,7 @@ class TestBasisTradingStrategy:
 
         if min_fail:
             deposit_params = min_fail.get("deposit", {})
-            success, msg = await strategy.deposit(**deposit_params)
+            success, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
 
             expect = min_fail.get("expect", {})
             if expect.get("success") is False:
@@ -276,13 +276,13 @@ class TestBasisTradingStrategy:
             return_value=(True, {"balances": []})
         )
 
-        success, msg = await strategy.update()
+        success, msg = assert_status_tuple(await strategy.update())
         assert success is False
         assert "No funds to manage" in msg
 
     @pytest.mark.asyncio
     async def test_withdraw_without_deposit(self, strategy):
-        success, msg = await strategy.withdraw()
+        success, msg = assert_status_tuple(await strategy.withdraw())
         assert success is False
 
     @pytest.mark.asyncio
@@ -509,7 +509,7 @@ class TestBasisTradingStrategy:
             )
             mock_filler_class.return_value = mock_filler
 
-            success, msg = await strategy.update()
+            success, msg = assert_status_tuple(await strategy.update())
 
             # Should have called fill_pair_units to scale up
             assert mock_filler.fill_pair_units.called
@@ -565,7 +565,7 @@ class TestBasisTradingStrategy:
 
         strategy._scale_up_position = AsyncMock(return_value=(True, "scaled"))
 
-        success, _ = await strategy.update()
+        success, _ = assert_status_tuple(await strategy.update())
         assert success
         strategy._scale_up_position.assert_not_awaited()
 
@@ -622,7 +622,7 @@ class TestBasisTradingStrategy:
         )
         strategy._rotation_cooldown_hint = AsyncMock(return_value="3d 4h remaining")
 
-        success, msg = await strategy.update()
+        success, msg = assert_status_tuple(await strategy.update())
         assert success
         assert "Rotation: 3d 4h remaining" in msg
 
@@ -782,7 +782,7 @@ class TestBasisTradingStrategy:
             )
         )
 
-        success, msg = await strategy.withdraw()
+        success, msg = assert_status_tuple(await strategy.withdraw())
         # Should NOT return "Nothing to withdraw" since there's USDC in spot
         assert "Nothing to withdraw" not in msg
 
@@ -804,7 +804,7 @@ class TestBasisTradingStrategy:
         )
 
         # Run update - it should detect the balance
-        await strategy.update()
+        assert_status_tuple(await strategy.update())
 
         # deposit_amount should now be set from detected balance
         assert strategy.deposit_amount == 50.0
@@ -863,7 +863,7 @@ class TestBasisTradingStrategy:
             )
             mock_filler_class.return_value = mock_filler
 
-            success, _ = await strategy.update()
+            success, _ = assert_status_tuple(await strategy.update())
             assert success
 
         # Target spot was $66.67, so we should transfer $33.33 spot->perp.
@@ -933,7 +933,7 @@ class TestBasisTradingStrategy:
         strategy._close_position = AsyncMock(return_value=(True, "closed"))
         strategy._find_and_open_position = AsyncMock(return_value=(True, "redeployed"))
 
-        success, msg = await strategy.update()
+        success, msg = assert_status_tuple(await strategy.update())
         assert success
         assert msg == "redeployed"
         strategy._close_position.assert_awaited_once()

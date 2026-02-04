@@ -16,6 +16,7 @@ from wayfinder_paths.strategies.moonwell_wsteth_loop_strategy.strategy import (
     SwapOutcomeUnknownError,
 )
 from wayfinder_paths.tests.test_utils import (
+    assert_status_tuple,
     get_canonical_examples,
     load_strategy_examples,
 )
@@ -135,22 +136,22 @@ async def test_smoke(strategy, mock_adapter_responses):
         deposit_params = smoke_data.get("deposit", {})
         with patch.object(strategy, "deposit", new_callable=AsyncMock) as mock_deposit:
             mock_deposit.return_value = (True, "success")
-            ok, msg = await strategy.deposit(**deposit_params)
-            assert isinstance(ok, bool)
-            assert isinstance(msg, str)
+            ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
 
         with patch.object(strategy, "update", new_callable=AsyncMock) as mock_update:
             mock_update.return_value = (True, "success")
-            ok, msg = await strategy.update(**smoke_data.get("update", {}))
-            assert isinstance(ok, bool)
+            ok, msg = assert_status_tuple(
+                await strategy.update(**smoke_data.get("update", {}))
+            )
 
         # Withdraw test
         with patch.object(
             strategy, "withdraw", new_callable=AsyncMock
         ) as mock_withdraw:
             mock_withdraw.return_value = (True, "success")
-            ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {}))
-            assert isinstance(ok, bool)
+            ok, msg = assert_status_tuple(
+                await strategy.withdraw(**smoke_data.get("withdraw", {}))
+            )
 
 
 @pytest.mark.asyncio
@@ -169,7 +170,9 @@ async def test_canonical_usage(strategy, mock_adapter_responses):
                     strategy, "deposit", new_callable=AsyncMock
                 ) as mock_deposit:
                     mock_deposit.return_value = (True, "success")
-                    ok, _ = await strategy.deposit(**deposit_params)
+                    ok, _ = assert_status_tuple(
+                        await strategy.deposit(**deposit_params)
+                    )
                     assert ok, f"Canonical example '{example_name}' deposit failed"
 
             if "update" in example_data:
@@ -177,7 +180,7 @@ async def test_canonical_usage(strategy, mock_adapter_responses):
                     strategy, "update", new_callable=AsyncMock
                 ) as mock_update:
                     mock_update.return_value = (True, "success")
-                    ok, msg = await strategy.update()
+                    ok, msg = assert_status_tuple(await strategy.update())
                     assert ok, (
                         f"Canonical example '{example_name}' update failed: {msg}"
                     )
@@ -755,13 +758,13 @@ async def test_sweep_token_balances_sweeps_tokens(strategy, mock_adapter_respons
 
 @pytest.mark.asyncio
 async def test_deposit_rejects_zero_amount(strategy):
-    result = await strategy.deposit(main_token_amount=0.0)
-    assert result[0] is False
-    assert "positive" in result[1].lower()
+    ok, msg = assert_status_tuple(await strategy.deposit(main_token_amount=0.0))
+    assert ok is False
+    assert "positive" in msg.lower()
 
-    result = await strategy.deposit(main_token_amount=-10.0)
-    assert result[0] is False
-    assert "positive" in result[1].lower()
+    ok, msg = assert_status_tuple(await strategy.deposit(main_token_amount=-10.0))
+    assert ok is False
+    assert "positive" in msg.lower()
 
 
 def test_slippage_capped_at_max(strategy):
@@ -792,7 +795,7 @@ async def test_update_runs_post_run_guard(strategy, mock_adapter_responses):
             mock_impl.return_value = (True, "ok")
             mock_guard.return_value = (True, "guard ok")
 
-            ok, msg = await strategy.update()
+            ok, msg = assert_status_tuple(await strategy.update())
 
             assert ok is True
             assert "finalizer:" in msg
@@ -809,7 +812,7 @@ async def test_update_fails_if_post_run_guard_fails(strategy, mock_adapter_respo
             mock_impl.return_value = (True, "ok")
             mock_guard.return_value = (False, "guard failed")
 
-            ok, msg = await strategy.update()
+            ok, msg = assert_status_tuple(await strategy.update())
 
             assert ok is False
             assert "finalizer failed" in msg.lower()
@@ -826,13 +829,13 @@ async def test_withdraw_runs_post_run_guard_only_on_failure(
             mock_impl.return_value = (True, "ok")
             mock_guard.return_value = (True, "guard ok")
 
-            ok, _ = await strategy.withdraw()
+            ok, _ = assert_status_tuple(await strategy.withdraw())
 
             assert ok is True
             mock_guard.assert_not_awaited()
 
             mock_impl.return_value = (False, "failed")
-            ok, msg = await strategy.withdraw()
+            ok, msg = assert_status_tuple(await strategy.withdraw())
             assert ok is False
             assert "finalizer:" in msg
             mock_guard.assert_awaited()

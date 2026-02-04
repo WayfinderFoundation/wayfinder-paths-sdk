@@ -7,6 +7,7 @@ from wayfinder_paths.strategies.hyperlend_stable_yield_strategy.strategy import 
     HyperlendStableYieldStrategy,
 )
 from wayfinder_paths.tests.test_utils import (
+    assert_status_tuple,
     get_canonical_examples,
     load_strategy_examples,
 )
@@ -310,15 +311,16 @@ async def test_smoke(strategy):
     assert "portfolio_value" in st or "net_deposit" in st or "strategy_status" in st
 
     deposit_params = smoke_data.get("deposit", {})
-    ok, msg = await strategy.deposit(**deposit_params)
+    ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
     assert isinstance(ok, bool)
     assert isinstance(msg, str)
 
-    result = await strategy.update(**smoke_data.get("update", {}))
-    ok = result[0]
+    ok, _ = assert_status_tuple(await strategy.update(**smoke_data.get("update", {})))
     assert isinstance(ok, bool)
 
-    ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    ok, msg = assert_status_tuple(
+        await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    )
     assert isinstance(ok, bool)
 
 
@@ -330,13 +332,11 @@ async def test_canonical_usage(strategy):
     for example_name, example_data in canonical.items():
         if "deposit" in example_data:
             deposit_params = example_data.get("deposit", {})
-            ok, msg = await strategy.deposit(**deposit_params)
+            ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
             assert ok, f"Canonical example '{example_name}' deposit failed: {msg}"
 
         if "update" in example_data:
-            result = await strategy.update()
-            ok = result[0]
-            msg = result[1] if len(result) > 1 else ""
+            ok, msg = assert_status_tuple(await strategy.update())
             assert ok, f"Canonical example '{example_name}' update failed: {msg}"
 
         if "status" in example_data:
@@ -356,7 +356,7 @@ async def test_error_cases(strategy):
 
             if "deposit" in example_data:
                 deposit_params = example_data.get("deposit", {})
-                ok, _ = await strategy.deposit(**deposit_params)
+                ok, _ = assert_status_tuple(await strategy.deposit(**deposit_params))
 
                 if expect.get("success") is False:
                     assert ok is False, (
@@ -368,7 +368,7 @@ async def test_error_cases(strategy):
                     )
 
             if "update" in example_data:
-                ok, _ = await strategy.update()
+                ok, _ = assert_status_tuple(await strategy.update())
                 if "success" in expect:
                     expected_success = expect.get("success")
                     assert ok == expected_success, (

@@ -17,12 +17,17 @@ elif sys.path.index(_wayfinder_path_str) > 0:
 import pytest  # noqa: E402
 
 try:
-    from tests.test_utils import get_canonical_examples, load_strategy_examples
+    from tests.test_utils import (
+        assert_status_tuple,
+        get_canonical_examples,
+        load_strategy_examples,
+    )
 except ImportError:
     test_utils_path = Path(_wayfinder_path_dir) / "tests" / "test_utils.py"
     spec = importlib.util.spec_from_file_location("tests.test_utils", test_utils_path)
     test_utils = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(test_utils)
+    assert_status_tuple = test_utils.assert_status_tuple
     get_canonical_examples = test_utils.get_canonical_examples
     load_strategy_examples = test_utils.load_strategy_examples
 
@@ -158,14 +163,16 @@ async def test_smoke(strategy):
     assert "portfolio_value" in st or "net_deposit" in st or "strategy_status" in st
 
     deposit_params = smoke_data.get("deposit", {})
-    ok, msg = await strategy.deposit(**deposit_params)
+    ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
     assert isinstance(ok, bool)
     assert isinstance(msg, str)
 
-    ok, _ = await strategy.update(**smoke_data.get("update", {}))
+    ok, _ = assert_status_tuple(await strategy.update(**smoke_data.get("update", {})))
     assert isinstance(ok, bool)
 
-    ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    ok, msg = assert_status_tuple(
+        await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    )
     assert isinstance(ok, bool)
 
 
@@ -181,11 +188,11 @@ async def test_canonical_usage(strategy):
     for example_name, example_data in canonical.items():
         if "deposit" in example_data:
             deposit_params = example_data.get("deposit", {})
-            ok, _ = await strategy.deposit(**deposit_params)
+            ok, _ = assert_status_tuple(await strategy.deposit(**deposit_params))
             assert ok, f"Canonical example '{example_name}' deposit failed"
 
         if "update" in example_data:
-            ok, msg = await strategy.update()
+            ok, msg = assert_status_tuple(await strategy.update())
             assert ok, f"Canonical example '{example_name}' update failed: {msg}"
 
         if "status" in example_data:
@@ -209,7 +216,7 @@ async def test_error_cases(strategy):
 
             if "deposit" in example_data:
                 deposit_params = example_data.get("deposit", {})
-                ok, _ = await strategy.deposit(**deposit_params)
+                ok, _ = assert_status_tuple(await strategy.deposit(**deposit_params))
 
                 if expect.get("success") is False:
                     assert ok is False, (
@@ -227,7 +234,9 @@ async def test_below_minimum_deposit(strategy):
     await strategy.setup()
     _mock_balance_transfers(strategy)
 
-    ok, msg = await strategy.deposit(main_token_amount=50.0, gas_token_amount=0.01)
+    ok, msg = assert_status_tuple(
+        await strategy.deposit(main_token_amount=50.0, gas_token_amount=0.01)
+    )
     assert ok is False
     assert "minimum" in msg.lower() or "150" in msg
 
