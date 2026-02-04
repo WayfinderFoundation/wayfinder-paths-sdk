@@ -35,7 +35,7 @@ Think of it as programmable DeFi infrastructure that connects your wallets to yi
 
 ```bash
 # Clone the repository
-git clone https://github.com/WayfinderFoundation/wayfinder-paths.git
+git clone https://github.com/WayfinderFoundation/wayfinder-paths-sdk.git
 cd wayfinder-paths
 
 # One-command setup (installs Poetry + deps, writes config.json, updates .mcp.json)
