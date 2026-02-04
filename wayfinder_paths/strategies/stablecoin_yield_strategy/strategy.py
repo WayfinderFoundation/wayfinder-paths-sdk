@@ -1626,7 +1626,7 @@ class StablecoinYieldStrategy(Strategy):
         }
 
     @staticmethod
-    def policies() -> list[str]:
+    async def policies() -> list[str]:
         enso_router = ENSO_ROUTER.lower()
         approve_enso = (
             "eth.tx.data[0..10] == '0x095ea7b3' && "
