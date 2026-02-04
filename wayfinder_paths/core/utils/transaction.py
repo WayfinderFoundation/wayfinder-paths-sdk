@@ -1,7 +1,7 @@
 import asyncio
 import math
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from eth_account import Account
 from loguru import logger
@@ -189,14 +189,15 @@ async def wait_for_transaction_receipt(
     poll_interval: float = 0.1,
     timeout: int = 300,
     confirmations: int = 3,
-) -> dict:
+) -> dict[str, Any]:
     if isinstance(txn_hash, str) and not txn_hash.startswith("0x"):
         txn_hash = f"0x{txn_hash}"
 
-    async def _wait_for_receipt(web3: AsyncWeb3, tx_hash: str) -> dict:
-        return await web3.eth.wait_for_transaction_receipt(
+    async def _wait_for_receipt(web3: AsyncWeb3, tx_hash: str) -> dict[str, Any]:
+        receipt = await web3.eth.wait_for_transaction_receipt(
             tx_hash, poll_latency=poll_interval, timeout=timeout
         )
+        return cast(dict[str, Any], receipt)
 
     async def _get_block_number(web3: AsyncWeb3) -> int:
         return await web3.eth.block_number

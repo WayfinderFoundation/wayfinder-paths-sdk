@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from eth_account import Account
 from eth_utils import to_checksum_address
@@ -178,11 +178,11 @@ async def _resolve_token_meta(query: str) -> tuple[str, dict[str, Any]]:
             try:
                 gas_meta = await TOKEN_CLIENT.get_gas_token(chain_code)
                 if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
-                    return q, gas_meta
+                    return q, cast(dict[str, Any], gas_meta)
             except Exception:
                 pass
     meta = await TOKEN_CLIENT.get_token_details(q)
-    return q, meta
+    return q, cast(dict[str, Any], meta)
 
 
 def _infer_chain_code_from_query(query: str, meta: dict[str, Any]) -> str | None:

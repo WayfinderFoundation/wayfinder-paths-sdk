@@ -214,7 +214,8 @@ class Util:
                 * Decimal(status["filled"]["avgPx"])
                 for status in statuses
                 if "filled" in status
-            ]
+            ],
+            Decimal(0),
         )
 
     @staticmethod

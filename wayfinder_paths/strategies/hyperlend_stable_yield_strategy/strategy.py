@@ -5,7 +5,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -429,7 +429,7 @@ class HyperlendStableYieldStrategy(Strategy):
             return str(display)
         return str(symbol).upper()
 
-    async def _hydrate_position_from_chain(self) -> None:
+    async def _hydrate_position_from_chain(self) -> bool:
         snapshot = await self._get_assets_snapshot()
         asset_map = (
             snapshot.get("_by_underlying", {}) if isinstance(snapshot, dict) else {}
@@ -503,7 +503,7 @@ class HyperlendStableYieldStrategy(Strategy):
                 user_address=self._get_strategy_wallet_address(),
             )
             if isinstance(snapshot, str):
-                return False
+                return {}
 
             assets = snapshot.get("assets", [])
             asset_map = {}
@@ -542,7 +542,7 @@ class HyperlendStableYieldStrategy(Strategy):
             self._assets_snapshot = snapshot
             self._assets_snapshot_at = time.time()
 
-            return snapshot
+            return cast(dict[str, Any], snapshot)
 
     async def _has_supply_cap_headroom(
         self, token: dict[str, Any], required_tokens: float
@@ -1024,7 +1024,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
         return actions
 
-    async def update(self) -> StatusTuple:
+    async def update(self) -> tuple[bool, str, bool]:
         await self._hydrate_position_from_chain()
 
         redeploy_tokens = await self._estimate_redeploy_tokens()
@@ -1301,8 +1301,8 @@ class HyperlendStableYieldStrategy(Strategy):
         target_apy: float,
         hype_reserve_wei: int,
         lend_operation: Literal["deposit", "update"] = "update",
-    ) -> tuple[list[dict[str, Any]], float, float, float]:
-        actions = []
+    ) -> tuple[list[str], float, float, float]:
+        actions: list[str] = []
         actions.extend(await self._unwind_other_lends(target_token))
 
         align_actions, kept_hype = await self._align_wallet_balances(
@@ -1415,7 +1415,7 @@ class HyperlendStableYieldStrategy(Strategy):
         if not balances:
             return [], 0.0
 
-        actions = []
+        actions: list[dict[str, Any]] = []
         target_checksum = self._token_checksum(target_token)
         hype_checksum = self._token_checksum(self.hype_token_info)
 
@@ -1469,7 +1469,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
     async def _unwind_other_lends(
         self, target_token: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    ) -> list[str]:
         positions = await self._get_lent_positions()
         if not positions:
             return []
@@ -1545,7 +1545,7 @@ class HyperlendStableYieldStrategy(Strategy):
         operation: Literal["deposit", "update", "quote"] = "update",
         exclude_addresses=None,
         allow_rotation_without_current=False,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any], str | None, float] | None:
         excluded = (
             {addr.lower() for addr in exclude_addresses}
             if exclude_addresses
