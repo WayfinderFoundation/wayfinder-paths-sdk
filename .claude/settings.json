@@ -17,7 +17,27 @@
     ]
   },
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_session_start.py\""
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
+      {
+        "matcher": "^(Write|Edit|MultiEdit)(Tool)?$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_write_guard.py\""
+          }
+        ]
+      },
       {
         "matcher": "mcp__wayfinder__execute",
         "hooks": [
@@ -51,6 +71,17 @@
           {
             "type": "command",
             "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_strategy_review.py\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_session_end.py\""
           }
         ]
       }
