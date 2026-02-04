@@ -211,6 +211,9 @@ just validate-manifests
 # Create new strategy with dedicated wallet
 just create-strategy "My Strategy Name"
 
+# Create new adapter
+just create-adapter "my_protocol"
+
 # Run a strategy locally
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
 
@@ -233,6 +236,41 @@ Strategy → Adapter → Client(s) → Network/API
 - `wayfinder_paths/core/` - Core engine maintained by team (clients, base classes, services)
 - `wayfinder_paths/adapters/` - Community-contributed protocol integrations
 - `wayfinder_paths/strategies/` - Community-contributed trading strategies
+
+### Creating New Strategies and Adapters
+
+**Always use the scaffolding scripts** when creating new strategies or adapters. They generate the correct directory structure, boilerplate files, and (for strategies) a dedicated wallet.
+
+**New strategy:**
+
+```bash
+just create-strategy "My Strategy Name"
+# or: poetry run python scripts/create_strategy.py "My Strategy Name"
+```
+
+Creates under `wayfinder_paths/strategies/<name>/`:
+- `strategy.py` - Strategy class with required method stubs
+- `manifest.yaml` - Strategy manifest (entrypoint, adapters, permissions)
+- `test_strategy.py` - Smoke test template
+- `examples.json` - Test data file
+- `README.md` - Documentation template
+- **Dedicated wallet** added to `config.json` with the strategy name as label
+
+**New adapter:**
+
+```bash
+just create-adapter "my_protocol"
+# or: poetry run python scripts/create_adapter.py "my_protocol"
+```
+
+Creates under `wayfinder_paths/adapters/<name>_adapter/`:
+- `adapter.py` - Adapter class extending `BaseAdapter`
+- `manifest.yaml` - Adapter manifest (entrypoint, capabilities, dependencies)
+- `test_adapter.py` - Basic test template
+- `examples.json` - Test data file
+- `README.md` - Documentation template
+
+Use `--override` flag to replace an existing strategy/adapter.
 
 ### Manifests
 
