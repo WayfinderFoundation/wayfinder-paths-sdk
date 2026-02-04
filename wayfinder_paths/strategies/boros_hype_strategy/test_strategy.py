@@ -3,6 +3,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 # Ensure wayfinder-paths is on path for tests.test_utils import
@@ -18,6 +19,8 @@ import pytest  # noqa: E402
 
 try:
     from tests.test_utils import (
+        assert_quote_result,
+        assert_status_dict,
         assert_status_tuple,
         get_canonical_examples,
         load_strategy_examples,
@@ -27,6 +30,8 @@ except ImportError:
     spec = importlib.util.spec_from_file_location("tests.test_utils", test_utils_path)
     test_utils = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(test_utils)
+    assert_quote_result = test_utils.assert_quote_result
+    assert_status_dict = test_utils.assert_status_dict
     assert_status_tuple = test_utils.assert_status_tuple
     get_canonical_examples = test_utils.get_canonical_examples
     load_strategy_examples = test_utils.load_strategy_examples
@@ -158,9 +163,10 @@ async def test_smoke(strategy):
     await strategy.setup()
     _mock_balance_transfers(strategy)
 
-    st = await strategy.status()
-    assert isinstance(st, dict)
-    assert "portfolio_value" in st or "net_deposit" in st or "strategy_status" in st
+    st = assert_status_dict(await strategy.status())
+    assert "portfolio_value" in st
+    assert "net_deposit" in st
+    assert "strategy_status" in st
 
     deposit_params = smoke_data.get("deposit", {})
     ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
@@ -196,10 +202,36 @@ async def test_canonical_usage(strategy):
             assert ok, f"Canonical example '{example_name}' update failed: {msg}"
 
         if "status" in example_data:
-            st = await strategy.status()
+            st = assert_status_dict(await strategy.status())
             assert isinstance(st, dict), (
                 f"Canonical example '{example_name}' status failed"
             )
+
+
+@pytest.mark.asyncio
+async def test_quote_returns_quote_result(strategy):
+    await strategy.setup()
+    _mock_balance_transfers(strategy)
+
+    strategy.observe = AsyncMock(return_value=SimpleNamespace())
+    strategy._get_yield_info = AsyncMock(
+        return_value=SimpleNamespace(
+            khype_apy=0.1,
+            lhype_apy=None,
+            boros_apr=0.05,
+            blended_apy=0.08,
+        )
+    )
+
+    assert_quote_result(await strategy.quote(deposit_amount=1000.0))
+
+
+@pytest.mark.asyncio
+async def test_exit_returns_status_tuple(strategy):
+    await strategy.setup()
+    _mock_balance_transfers(strategy)
+
+    assert_status_tuple(await strategy.exit())
 
 
 @pytest.mark.asyncio

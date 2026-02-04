@@ -16,6 +16,8 @@ from wayfinder_paths.strategies.moonwell_wsteth_loop_strategy.strategy import (
     SwapOutcomeUnknownError,
 )
 from wayfinder_paths.tests.test_utils import (
+    assert_quote_result,
+    assert_status_dict,
     assert_status_tuple,
     get_canonical_examples,
     load_strategy_examples,
@@ -124,13 +126,10 @@ async def test_smoke(strategy, mock_adapter_responses):
                 "gas_available": 0.1,
                 "gassed_up": True,
             }
-            st = await strategy.status()
-            assert isinstance(st, dict)
-            assert (
-                "portfolio_value" in st
-                or "net_deposit" in st
-                or "strategy_status" in st
-            )
+            st = assert_status_dict(await strategy.status())
+            assert "portfolio_value" in st
+            assert "net_deposit" in st
+            assert "strategy_status" in st
 
         # Deposit test
         deposit_params = smoke_data.get("deposit", {})
@@ -196,10 +195,36 @@ async def test_canonical_usage(strategy, mock_adapter_responses):
                         "gas_available": 0.1,
                         "gassed_up": True,
                     }
-                    st = await strategy.status()
+                    st = assert_status_dict(await strategy.status())
                     assert isinstance(st, dict), (
                         f"Canonical example '{example_name}' status failed"
                     )
+
+
+@pytest.mark.asyncio
+async def test_quote_returns_quote_result(strategy, mock_adapter_responses):
+    with patch.object(strategy, "_quote", new_callable=AsyncMock) as mock_quote:
+        mock_quote.return_value = {
+            "apy": 0.1,
+            "information": "mock quote",
+            "data": {
+                "rates": {
+                    "usdc_lend": 0.01,
+                    "wsteth_lend": 0.03,
+                    "weth_borrow": 0.02,
+                },
+                "leverage_achievable": 2.0,
+            },
+        }
+        assert_quote_result(await strategy.quote(deposit_amount=1000.0))
+
+
+@pytest.mark.asyncio
+async def test_exit_returns_status_tuple(strategy, mock_adapter_responses):
+    with patch.object(
+        strategy, "_get_balance_raw", new_callable=AsyncMock, return_value=0
+    ):
+        assert_status_tuple(await strategy.exit())
 
 
 @pytest.mark.asyncio

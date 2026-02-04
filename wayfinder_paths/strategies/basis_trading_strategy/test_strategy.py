@@ -10,7 +10,12 @@ from wayfinder_paths.strategies.basis_trading_strategy.strategy import (
     BasisPosition,
     BasisTradingStrategy,
 )
-from wayfinder_paths.tests.test_utils import assert_status_tuple, load_strategy_examples
+from wayfinder_paths.tests.test_utils import (
+    assert_quote_result,
+    assert_status_dict,
+    assert_status_tuple,
+    load_strategy_examples,
+)
 
 
 def load_examples():
@@ -237,12 +242,26 @@ class TestBasisTradingStrategy:
             assert success, f"Update failed: {msg}"
 
             # Status
-            status = await strategy.status()
+            status = assert_status_dict(await strategy.status())
             assert "portfolio_value" in status
 
             # Withdraw (needs PairedFiller mock for _close_position)
             success, msg = assert_status_tuple(await strategy.withdraw())
             assert success, f"Withdraw failed: {msg}"
+
+    @pytest.mark.asyncio
+    async def test_quote_returns_quote_result(self, strategy):
+        with patch.object(
+            strategy,
+            "find_best_trade_with_backtest",
+            new_callable=AsyncMock,
+        ) as mock_best:
+            mock_best.return_value = None
+            assert_quote_result(await strategy.quote(deposit_amount=1000.0))
+
+    @pytest.mark.asyncio
+    async def test_exit_returns_status_tuple(self, strategy):
+        assert_status_tuple(await strategy.exit())
 
     @pytest.mark.asyncio
     async def test_deposit_minimum(self, strategy):
@@ -287,7 +306,7 @@ class TestBasisTradingStrategy:
 
     @pytest.mark.asyncio
     async def test_status(self, strategy):
-        status = await strategy.status()
+        status = assert_status_dict(await strategy.status())
         assert "portfolio_value" in status
         assert "net_deposit" in status
         assert "strategy_status" in status

@@ -7,6 +7,8 @@ from wayfinder_paths.strategies.hyperlend_stable_yield_strategy.strategy import 
     HyperlendStableYieldStrategy,
 )
 from wayfinder_paths.tests.test_utils import (
+    assert_quote_result,
+    assert_status_dict,
     assert_status_tuple,
     get_canonical_examples,
     load_strategy_examples,
@@ -306,9 +308,10 @@ async def test_smoke(strategy):
 
     await strategy.setup()
 
-    st = await strategy.status()
-    assert isinstance(st, dict)
-    assert "portfolio_value" in st or "net_deposit" in st or "strategy_status" in st
+    st = assert_status_dict(await strategy.status())
+    assert "portfolio_value" in st
+    assert "net_deposit" in st
+    assert "strategy_status" in st
 
     deposit_params = smoke_data.get("deposit", {})
     ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
@@ -340,10 +343,20 @@ async def test_canonical_usage(strategy):
             assert ok, f"Canonical example '{example_name}' update failed: {msg}"
 
         if "status" in example_data:
-            st = await strategy.status()
+            st = assert_status_dict(await strategy.status())
             assert isinstance(st, dict), (
                 f"Canonical example '{example_name}' status failed"
             )
+
+
+@pytest.mark.asyncio
+async def test_quote_returns_quote_result(strategy):
+    assert_quote_result(await strategy.quote(deposit_amount=1000.0))
+
+
+@pytest.mark.asyncio
+async def test_exit_returns_status_tuple(strategy):
+    assert_status_tuple(await strategy.exit())
 
 
 @pytest.mark.asyncio
