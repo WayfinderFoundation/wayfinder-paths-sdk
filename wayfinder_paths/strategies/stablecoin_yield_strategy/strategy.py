@@ -168,7 +168,7 @@ class StablecoinYieldStrategy(Strategy):
         if strategy_wallet is not None:
             merged_config["strategy_wallet"] = strategy_wallet
 
-        self.config = merged_config
+        self.config: dict[str, Any] = merged_config
         self.deposited_amount = 0
         self.current_pool = None
         self.current_apy = 0
@@ -206,8 +206,6 @@ class StablecoinYieldStrategy(Strategy):
             raise
 
     def _get_strategy_wallet_address(self) -> str:
-        if not self.config:
-            raise ValueError("config not set")
         strategy_wallet = self.config.get("strategy_wallet")
         if not strategy_wallet or not isinstance(strategy_wallet, dict):
             raise ValueError("strategy_wallet not configured in strategy config")
@@ -217,8 +215,6 @@ class StablecoinYieldStrategy(Strategy):
         return str(address)
 
     def _get_main_wallet_address(self) -> str:
-        if not self.config:
-            raise ValueError("config not set")
         main_wallet = self.config.get("main_wallet")
         if not main_wallet or not isinstance(main_wallet, dict):
             raise ValueError("main_wallet not configured in strategy config")

@@ -209,7 +209,7 @@ class HyperlendStableYieldStrategy(Strategy):
         if strategy_wallet is not None:
             merged_config["strategy_wallet"] = strategy_wallet
 
-        self.config = merged_config
+        self.config: dict[str, Any] = merged_config
 
         try:
             main_wallet_cfg = self.config.get("main_wallet")

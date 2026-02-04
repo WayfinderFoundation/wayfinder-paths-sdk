@@ -195,7 +195,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         if strategy_wallet is not None:
             merged_config["strategy_wallet"] = strategy_wallet
 
-        self.config = merged_config
+        self.config: dict[str, Any] = merged_config
 
         self._token_info_cache: dict[str, dict] = {}
         self._token_price_cache: dict[str, float] = {}
@@ -248,14 +248,10 @@ class MoonwellWstethLoopStrategy(Strategy):
         return max(0.0, min(1.0, min(f_bound, f_feasible, 1.0)))
 
     def _get_strategy_wallet_address(self) -> str:
-        if not self.config:
-            return ""
         wallet = self.config.get("strategy_wallet", {})
         return wallet.get("address", "") if isinstance(wallet, dict) else ""
 
     def _get_main_wallet_address(self) -> str:
-        if not self.config:
-            return ""
         wallet = self.config.get("main_wallet", {})
         return wallet.get("address", "") if isinstance(wallet, dict) else ""
 

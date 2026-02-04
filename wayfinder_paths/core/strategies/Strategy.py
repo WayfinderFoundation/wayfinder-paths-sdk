@@ -67,7 +67,7 @@ class Strategy(ABC):
     ):
         self.ledger_adapter = None
         self.logger = logger.bind(strategy=self.__class__.__name__)
-        self.config = config
+        self.config: StrategyConfig | dict[str, Any] = config or {}
         self.main_wallet_signing_callback = main_wallet_signing_callback
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         self.strategy_sign_typed_data = strategy_sign_typed_data
@@ -76,8 +76,6 @@ class Strategy(ABC):
         pass
 
     def _get_strategy_wallet_address(self) -> str:
-        if not self.config:
-            raise ValueError("config not set")
         strategy_wallet = self.config.get("strategy_wallet")
         if not strategy_wallet or not isinstance(strategy_wallet, dict):
             raise ValueError("strategy_wallet not configured in strategy config")
@@ -87,8 +85,6 @@ class Strategy(ABC):
         return str(address)
 
     def _get_main_wallet_address(self) -> str:
-        if not self.config:
-            raise ValueError("config not set")
         main_wallet = self.config.get("main_wallet")
         if not main_wallet or not isinstance(main_wallet, dict):
             raise ValueError("main_wallet not configured in strategy config")
@@ -122,6 +118,8 @@ class Strategy(ABC):
 
     async def status(self) -> StatusDict:
         status = await self._status()
+        if self.ledger_adapter is None:
+            raise RuntimeError("ledger_adapter not initialized - subclass must set it")
         await self.ledger_adapter.record_strategy_snapshot(
             wallet_address=self._get_strategy_wallet_address(),
             strategy_status=status,
