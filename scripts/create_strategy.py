@@ -11,98 +11,146 @@ from wayfinder_paths.core.utils.wallets import make_random_wallet, write_wallet_
 def sanitize_name(name: str) -> str:
     name = re.sub(r"[^a-zA-Z0-9_-]", "_", name)
     name = re.sub(r"_+", "_", name)
-    name = name.strip("_")
-    return name.lower()
+    return name.strip("_").lower()
 
 
-def update_strategy_file(strategy_path: Path, class_name: str) -> None:
-    content = strategy_path.read_text()
-    content = content.replace("MyStrategy", class_name)
-    content = re.sub(
-        r"my_strategy", class_name.lower().replace("Strategy", ""), content
-    )
-    strategy_path.write_text(content)
+STRATEGY_PY = """from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+
+
+class {class_name}(Strategy):
+    name = "{class_name}"
+
+    async def deposit(self, **kwargs) -> StatusTuple:
+        return (True, "Deposit successful")
+
+    async def withdraw(self, **kwargs) -> StatusTuple:
+        return (True, "Withdraw successful")
+
+    async def update(self) -> StatusTuple:
+        return (True, "Update successful")
+
+    async def exit(self, **kwargs) -> StatusTuple:
+        return (True, "Exit successful")
+
+    async def _status(self) -> StatusDict:
+        return StatusDict(
+            portfolio_value=0.0,
+            net_deposit=0.0,
+            strategy_status={{}},
+            gas_available=0.0,
+            gassed_up=False,
+        )
+
+    @staticmethod
+    async def policies() -> list[str]:
+        return []
+"""
+
+MANIFEST_YAML = """schema_version: "0.1"
+status: wip
+entrypoint: "wayfinder_paths.strategies.{dir_name}.strategy.{class_name}"
+adapters: []
+"""
+
+TEST_PY = """from pathlib import Path
+
+import pytest
+
+from wayfinder_paths.strategies.{dir_name}.strategy import {class_name}
+from wayfinder_paths.tests.test_utils import load_strategy_examples
+
+
+@pytest.fixture
+def strategy():
+    mock_config = {{
+        "main_wallet": {{"address": "0x1234567890123456789012345678901234567890"}},
+        "strategy_wallet": {{"address": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"}},
+    }}
+    return {class_name}(config=mock_config)
+
+
+@pytest.mark.asyncio
+@pytest.mark.smoke
+async def test_smoke(strategy):
+    examples = load_strategy_examples(Path(__file__))
+    smoke_data = examples.get("smoke", {{}})
+
+    st = await strategy.status()
+    assert isinstance(st, dict)
+
+    ok, msg = await strategy.deposit(**smoke_data.get("deposit", {{}}))
+    assert isinstance(ok, bool)
+    assert isinstance(msg, str)
+
+    ok, msg = await strategy.update()
+    assert isinstance(ok, bool)
+
+    ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {{}}))
+    assert isinstance(ok, bool)
+"""
+
+README_MD = """# {class_name}
+
+TODO: Brief description of what this strategy does.
+
+- **Module**: `wayfinder_paths.strategies.{dir_name}.strategy.{class_name}`
+- **Chain**: TODO
+- **Token**: TODO
+
+## Overview
+
+TODO: Describe how the strategy works.
+
+## Adapters Used
+
+TODO: List adapters used by this strategy.
+
+## Testing
+
+```bash
+poetry run pytest wayfinder_paths/strategies/{dir_name}/ -v
+```
+"""
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create a new strategy from template with dedicated wallet"
+        description="Create a new strategy with dedicated wallet"
     )
-    parser.add_argument(
-        "name",
-        help="Strategy name (e.g., 'my_awesome_strategy' or 'My Awesome Strategy')",
-    )
-    parser.add_argument(
-        "--template-dir",
-        type=Path,
-        default=Path(__file__).parent.parent
-        / "wayfinder_paths"
-        / "templates"
-        / "strategy",
-        help="Path to strategy template directory",
-    )
+    parser.add_argument("name", help="Strategy name (e.g., 'my_awesome_strategy')")
     parser.add_argument(
         "--strategies-dir",
         type=Path,
         default=Path(__file__).parent.parent / "wayfinder_paths" / "strategies",
-        help="Path to strategies directory",
     )
     parser.add_argument(
         "--wallets-file",
         type=Path,
         default=Path(__file__).parent.parent / "config.json",
-        help="Path to config.json file",
     )
-    parser.add_argument(
-        "--override",
-        action="store_true",
-        help="Override existing strategy directory if it exists",
-    )
+    parser.add_argument("--override", action="store_true")
     args = parser.parse_args()
 
     dir_name = sanitize_name(args.name)
-    strategy_dir = args.strategies_dir / dir_name
-
-    if strategy_dir.exists() and not args.override:
-        raise SystemExit(
-            f"Strategy directory already exists: {strategy_dir}\n"
-            "Use --override to replace it"
-        )
-
-    if not args.template_dir.exists():
-        raise SystemExit(f"Template directory not found: {args.template_dir}")
-
-    if strategy_dir.exists():
-        print(f"Removing existing directory: {strategy_dir}")
-        shutil.rmtree(strategy_dir)
-    strategy_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Created strategy directory: {strategy_dir}")
-
-    template_files = [
-        "strategy.py",
-        "test_strategy.py",
-        "examples.json",
-        "README.md",
-    ]
-    for filename in template_files:
-        src = args.template_dir / filename
-        if src.exists():
-            dst = strategy_dir / filename
-            shutil.copy2(src, dst)
-            print(f"  Copied {filename}")
-
     class_name = "".join(word.capitalize() for word in dir_name.split("_"))
     if not class_name.endswith("Strategy"):
         class_name += "Strategy"
 
-    strategy_file = strategy_dir / "strategy.py"
-    if strategy_file.exists():
-        update_strategy_file(strategy_file, class_name)
-        print(f"  Updated strategy.py with class name: {class_name}")
+    strategy_dir = args.strategies_dir / dir_name
+    if strategy_dir.exists() and not args.override:
+        raise SystemExit(f"Strategy exists: {strategy_dir}\nUse --override to replace")
+    if strategy_dir.exists():
+        shutil.rmtree(strategy_dir)
+    strategy_dir.mkdir(parents=True, exist_ok=True)
 
-    # If config.json doesn't exist, create it with a main wallet first
+    fmt = {"class_name": class_name, "dir_name": dir_name}
+    (strategy_dir / "strategy.py").write_text(STRATEGY_PY.format(**fmt))
+    (strategy_dir / "manifest.yaml").write_text(MANIFEST_YAML.format(**fmt))
+    (strategy_dir / "test_strategy.py").write_text(TEST_PY.format(**fmt))
+    (strategy_dir / "examples.json").write_text("{}\n")
+    (strategy_dir / "README.md").write_text(README_MD.format(**fmt))
+
     if not args.wallets_file.exists():
-        print("  Creating new config.json with main wallet...")
         main_wallet = make_random_wallet()
         main_wallet["label"] = "main"
         write_wallet_to_json(
@@ -110,24 +158,16 @@ def main():
             out_dir=args.wallets_file.parent,
             filename=args.wallets_file.name,
         )
-        print(f"  Generated main wallet: {main_wallet['address']}")
 
     wallet = make_random_wallet()
     wallet["label"] = dir_name
     write_wallet_to_json(
         wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name
     )
-    print(f"  Generated strategy wallet: {wallet['address']} (label: {dir_name})")
 
-    print("\n✅ Strategy created successfully!")
-    print(f"   Directory: {strategy_dir}")
-    print(f"   Name: {dir_name}")
-    print(f"   Class: {class_name}")
-    print(f"   Wallet: {wallet['address']}")
-    print("\nNext steps:")
-    print(f"   1. Edit {strategy_dir / 'strategy.py'} to implement your strategy")
-    print("   2. Add required adapters in __init__")
-    print(f"   3. Test with: just test-strategy {dir_name}")
+    print(f"Created {strategy_dir}")
+    print(f"  Class: {class_name}")
+    print(f"  Wallet: {wallet['address']}")
 
 
 if __name__ == "__main__":
