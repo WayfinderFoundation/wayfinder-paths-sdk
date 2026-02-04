@@ -208,7 +208,7 @@ just format                            # or: poetry run ruff format
 # Validate all manifests
 just validate-manifests
 
-# Create new strategy from template (auto-creates wallet)
+# Create new strategy with dedicated wallet
 just create-strategy "My Strategy Name"
 
 # Run a strategy locally
@@ -233,7 +233,6 @@ Strategy → Adapter → Client(s) → Network/API
 - `wayfinder_paths/core/` - Core engine maintained by team (clients, base classes, services)
 - `wayfinder_paths/adapters/` - Community-contributed protocol integrations
 - `wayfinder_paths/strategies/` - Community-contributed trading strategies
-- `wayfinder_paths/templates/` - Templates for new adapters/strategies
 
 ### Manifests
 

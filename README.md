@@ -204,7 +204,7 @@ poetry run python -m wayfinder_paths.mcp.server
 
 - `scripts/setup.py`: bootstrap Poetry, config, wallets, and MCP
 - `scripts/make_wallets.py`: create local dev wallets (optionally keystores)
-- `scripts/create_strategy.py`: scaffold a new strategy from templates
+- `scripts/create_strategy.py`: scaffold a new strategy
 
 `justfile` shortcuts (requires `just`):
 
@@ -239,11 +239,7 @@ Implement:
 
 ### Add a New Adapter
 
-```bash
-cp -r wayfinder_paths/templates/adapter wayfinder_paths/adapters/my_adapter
-```
-
-Implement protocol-specific methods and return `(success, data)` tuples.
+Create a new directory under `wayfinder_paths/adapters/` with a `manifest.yaml` and adapter implementation. Implement protocol-specific methods and return `(success, data)` tuples.
 
 ### Tests and Style
 
