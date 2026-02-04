@@ -14,7 +14,6 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
-    CHAIN_ID_HYPEREVM,
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
@@ -117,22 +116,6 @@ async def gas_price_transaction(transaction: dict):
         historical_priority_fees = [i[0] for i in fee_history.reward]
         return sum(historical_priority_fees) // len(historical_priority_fees)
 
-    async def _get_big_block_gas_price(web3: AsyncWeb3) -> int:
-        hype = getattr(web3, "hype", None)
-        if not hype:
-            return 0
-        fn = getattr(hype, "big_block_gas_price", None)
-        if not callable(fn):
-            return 0
-        try:
-            value = await fn()
-        except Exception:
-            return 0
-        try:
-            return int(value)
-        except Exception:
-            return 0
-
     chain_id = get_transaction_chain_id(transaction)
     async with web3s_from_chain_id(chain_id) as web3s:
         if chain_id in PRE_EIP_1559_CHAIN_IDS:
@@ -142,29 +125,20 @@ async def gas_price_transaction(transaction: dict):
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
         else:
             base_fees = await asyncio.gather(*[_get_base_fee(web3) for web3 in web3s])
+            priority_fees = await asyncio.gather(
+                *[_get_priority_fee(web3) for web3 in web3s]
+            )
+
             base_fee = max(base_fees)
+            priority_fee = max(priority_fees)
 
-            if chain_id == CHAIN_ID_HYPEREVM:
-                # HyperEVM doesn't use priority fee ("tip") pricing.
-                big_block_prices = await asyncio.gather(
-                    *[_get_big_block_gas_price(web3) for web3 in web3s]
-                )
-                base_component = int(base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER)
-                transaction["maxFeePerGas"] = max([base_component, *big_block_prices])
-                transaction["maxPriorityFeePerGas"] = 0
-            else:
-                priority_fees = await asyncio.gather(
-                    *[_get_priority_fee(web3) for web3 in web3s]
-                )
-                priority_fee = max(priority_fees)
-
-                transaction["maxFeePerGas"] = int(
-                    base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                    + priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
-                )
-                transaction["maxPriorityFeePerGas"] = int(
-                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
-                )
+            transaction["maxFeePerGas"] = int(
+                base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
+                + priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+            )
+            transaction["maxPriorityFeePerGas"] = int(
+                priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+            )
 
     return transaction
 
