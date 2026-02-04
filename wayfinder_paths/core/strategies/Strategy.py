@@ -76,6 +76,8 @@ class Strategy(ABC):
         pass
 
     def _get_strategy_wallet_address(self) -> str:
+        if not self.config:
+            raise ValueError("config not set")
         strategy_wallet = self.config.get("strategy_wallet")
         if not strategy_wallet or not isinstance(strategy_wallet, dict):
             raise ValueError("strategy_wallet not configured in strategy config")
@@ -85,6 +87,8 @@ class Strategy(ABC):
         return str(address)
 
     def _get_main_wallet_address(self) -> str:
+        if not self.config:
+            raise ValueError("config not set")
         main_wallet = self.config.get("main_wallet")
         if not main_wallet or not isinstance(main_wallet, dict):
             raise ValueError("main_wallet not configured in strategy config")
@@ -127,7 +131,7 @@ class Strategy(ABC):
 
     async def partial_liquidate(
         self, usd_value: float
-    ) -> tuple[bool, LiquidationResult]:
+    ) -> StatusTuple:
         if usd_value <= 0:
             raise ValueError(f"usd_value must be positive, got {usd_value}")
         return (False, "Partial liquidation not implemented for this strategy")

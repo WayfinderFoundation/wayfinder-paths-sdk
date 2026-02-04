@@ -135,7 +135,7 @@ class LedgerAdapter(BaseAdapter):
                 wallet_address=wallet_address, limit=limit
             )
 
-            if not success:
+            if not success or isinstance(transactions_data, str):
                 return (False, transactions_data)
 
             transactions = transactions_data.get("transactions", [])
