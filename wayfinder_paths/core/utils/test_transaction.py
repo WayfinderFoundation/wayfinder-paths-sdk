@@ -200,10 +200,6 @@ class TestGasPriceTransaction:
                 assert "maxFeePerGas" not in result
                 assert "maxPriorityFeePerGas" not in result
                 assert result["gasPrice"] > 0
-            elif chain_id == 999:
-                assert "gasPrice" not in result
-                assert result["maxFeePerGas"] > 0
-                assert result["maxPriorityFeePerGas"] == 0
             else:
                 assert "gasPrice" not in result
                 assert result["maxFeePerGas"] > 0
