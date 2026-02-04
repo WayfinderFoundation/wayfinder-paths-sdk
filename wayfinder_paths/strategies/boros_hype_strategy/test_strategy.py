@@ -162,9 +162,7 @@ async def test_smoke(strategy):
     assert isinstance(ok, bool)
     assert isinstance(msg, str)
 
-    # update() returns (success, message, rotated) - 3 values
-    update_result = await strategy.update(**smoke_data.get("update", {}))
-    ok = update_result[0]
+    ok, _ = await strategy.update(**smoke_data.get("update", {}))
     assert isinstance(ok, bool)
 
     ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {}))
@@ -187,9 +185,7 @@ async def test_canonical_usage(strategy):
             assert ok, f"Canonical example '{example_name}' deposit failed"
 
         if "update" in example_data:
-            update_result = await strategy.update()
-            ok = update_result[0]
-            msg = update_result[1] if len(update_result) > 1 else ""
+            ok, msg = await strategy.update()
             assert ok, f"Canonical example '{example_name}' update failed: {msg}"
 
         if "status" in example_data:

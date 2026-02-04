@@ -1045,13 +1045,16 @@ class StablecoinYieldStrategy(Strategy):
                     continue
         return None
 
-    async def update(self):
+    async def update(self) -> StatusTuple:
         logger.info("Starting strategy update process")
         start_time = time.time()
 
         if not self.DEPOSIT_USDC:
             logger.warning("No deposits found, cannot update strategy")
-            return [False, "Nothing has been deposited in this strategy, cannot update"]
+            return (
+                False,
+                "Nothing has been deposited in this strategy, cannot update",
+            )
 
         logger.info("Getting non-gas balances")
         non_gas_balances = await self._get_non_gas_balances()
@@ -1088,18 +1091,18 @@ class StablecoinYieldStrategy(Strategy):
             return False, message
 
         if not isinstance(pool_data, dict):
-            return [False, f"Invalid pool data format: {type(pool_data).__name__}"]
+            return (False, f"Invalid pool data format: {type(pool_data).__name__}")
 
         target_pool = pool_data.get("target_pool")
         target_pool_data = pool_data.get("target_pool_data")
         brap_quote = pool_data.get("brap_quote")
 
         if not target_pool or not target_pool_data or not brap_quote:
-            return [False, "Missing required pool data for rebalancing"]
+            return (False, "Missing required pool data for rebalancing")
 
         gas_status, gas_message = await self._rebalance_gas(target_pool)
         if not gas_status:
-            return [False, gas_message]
+            return (False, gas_message)
 
         previous_pool = self.current_pool
 
@@ -1128,7 +1131,7 @@ class StablecoinYieldStrategy(Strategy):
                     ),
                     days=remaining_days_cooldown,
                 )
-                return (True, cooldown_notice, False)
+                return (True, cooldown_notice)
 
         await self.brap_adapter.swap_from_quote(
             previous_pool,
@@ -1185,7 +1188,7 @@ class StablecoinYieldStrategy(Strategy):
         logger.info(
             f"Strategy update completed successfully in {elapsed_time:.2f} seconds"
         )
-        return [True, "Updated successfully"]
+        return (True, "Updated successfully")
 
     async def _refresh_current_pool_balance(self):
         pool = self.current_pool
