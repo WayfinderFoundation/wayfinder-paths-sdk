@@ -14,7 +14,7 @@ def sanitize_name(name: str) -> str:
     return name.strip("_").lower()
 
 
-STRATEGY_PY = '''from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+STRATEGY_PY = """from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
 
 
 class {class_name}(Strategy):
@@ -44,15 +44,15 @@ class {class_name}(Strategy):
     @staticmethod
     async def policies() -> list[str]:
         return []
-'''
+"""
 
-MANIFEST_YAML = '''schema_version: "0.1"
+MANIFEST_YAML = """schema_version: "0.1"
 status: wip
 entrypoint: "wayfinder_paths.strategies.{dir_name}.strategy.{class_name}"
 adapters: []
-'''
+"""
 
-TEST_PY = '''from pathlib import Path
+TEST_PY = """from pathlib import Path
 
 import pytest
 
@@ -87,9 +87,9 @@ async def test_smoke(strategy):
 
     ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {{}}))
     assert isinstance(ok, bool)
-'''
+"""
 
-README_MD = '''# {class_name}
+README_MD = """# {class_name}
 
 TODO: Brief description of what this strategy does.
 
@@ -110,16 +110,24 @@ TODO: List adapters used by this strategy.
 ```bash
 poetry run pytest wayfinder_paths/strategies/{dir_name}/ -v
 ```
-'''
+"""
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Create a new strategy with dedicated wallet")
+    parser = argparse.ArgumentParser(
+        description="Create a new strategy with dedicated wallet"
+    )
     parser.add_argument("name", help="Strategy name (e.g., 'my_awesome_strategy')")
-    parser.add_argument("--strategies-dir", type=Path,
-                        default=Path(__file__).parent.parent / "wayfinder_paths" / "strategies")
-    parser.add_argument("--wallets-file", type=Path,
-                        default=Path(__file__).parent.parent / "config.json")
+    parser.add_argument(
+        "--strategies-dir",
+        type=Path,
+        default=Path(__file__).parent.parent / "wayfinder_paths" / "strategies",
+    )
+    parser.add_argument(
+        "--wallets-file",
+        type=Path,
+        default=Path(__file__).parent.parent / "config.json",
+    )
     parser.add_argument("--override", action="store_true")
     args = parser.parse_args()
 
@@ -145,11 +153,17 @@ def main():
     if not args.wallets_file.exists():
         main_wallet = make_random_wallet()
         main_wallet["label"] = "main"
-        write_wallet_to_json(main_wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name)
+        write_wallet_to_json(
+            main_wallet,
+            out_dir=args.wallets_file.parent,
+            filename=args.wallets_file.name,
+        )
 
     wallet = make_random_wallet()
     wallet["label"] = dir_name
-    write_wallet_to_json(wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name)
+    write_wallet_to_json(
+        wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name
+    )
 
     print(f"Created {strategy_dir}")
     print(f"  Class: {class_name}")

@@ -12,7 +12,7 @@ def sanitize_name(name: str) -> str:
     return name.strip("_").lower()
 
 
-ADAPTER_PY = '''from typing import Any
+ADAPTER_PY = """from typing import Any
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 
@@ -22,15 +22,15 @@ class {class_name}(BaseAdapter):
 
     def __init__(self, config: dict[str, Any] | None = None):
         super().__init__("{dir_name}", config)
-'''
+"""
 
-MANIFEST_YAML = '''schema_version: "0.1"
+MANIFEST_YAML = """schema_version: "0.1"
 entrypoint: "wayfinder_paths.adapters.{dir_name}.adapter.{class_name}"
 capabilities: []
 dependencies: []
-'''
+"""
 
-TEST_PY = '''import pytest
+TEST_PY = """import pytest
 
 from wayfinder_paths.adapters.{dir_name}.adapter import {class_name}
 
@@ -43,9 +43,9 @@ class Test{class_name}:
     def test_init(self, adapter):
         assert adapter.adapter_type == "{adapter_type}"
         assert adapter.name == "{dir_name}"
-'''
+"""
 
-README_MD = '''# {class_name}
+README_MD = """# {class_name}
 
 TODO: Brief description of what this adapter does.
 
@@ -77,14 +77,17 @@ TODO: List any clients or external dependencies.
 ```bash
 poetry run pytest wayfinder_paths/adapters/{dir_name}/ -v
 ```
-'''
+"""
 
 
 def main():
     parser = argparse.ArgumentParser(description="Create a new adapter")
     parser.add_argument("name", help="Adapter name (e.g., 'my_protocol')")
-    parser.add_argument("--adapters-dir", type=Path,
-                        default=Path(__file__).parent.parent / "wayfinder_paths" / "adapters")
+    parser.add_argument(
+        "--adapters-dir",
+        type=Path,
+        default=Path(__file__).parent.parent / "wayfinder_paths" / "adapters",
+    )
     parser.add_argument("--override", action="store_true")
     args = parser.parse_args()
 
