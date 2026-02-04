@@ -200,7 +200,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             merged_config["main_wallet"] = main_wallet
         if strategy_wallet:
             merged_config["strategy_wallet"] = strategy_wallet
-        self.config = merged_config
+        self.config: dict[str, Any] = merged_config
 
         self.current_position: BasisPosition | None = None
         self.deposit_amount: float = 0.0
@@ -211,32 +211,17 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         self._margin_table_cache: dict[int, list[dict[str, float]]] = {}
 
-        # Adapters (some are optional for analysis-only usage).
-        self.balance_adapter: BalanceAdapter | None = None
-        self.token_adapter: TokenAdapter | None = None
-        self.ledger_adapter: LedgerAdapter | None = None
-        self.hyperliquid_adapter: HyperliquidAdapter | None = None
-
-        adapter_config = {
-            "main_wallet": self.config.get("main_wallet"),
-            "strategy_wallet": self.config.get("strategy_wallet"),
-            "strategy": self.config,
-        }
-
-        # Hyperliquid market data adapter should be usable even when wallet/web3
-        # configuration is missing (e.g. local --action analyze).
-        # The adapter will create Exchange internally with local signer from config
-        # if no sign_callback is provided.
         try:
+            adapter_config = {
+                "main_wallet": self.config.get("main_wallet"),
+                "strategy_wallet": self.config.get("strategy_wallet"),
+                "strategy": self.config,
+            }
+
             self.hyperliquid_adapter = HyperliquidAdapter(
                 config=adapter_config,
                 sign_callback=strategy_sign_typed_data,
             )
-        except Exception as e:
-            self.logger.warning(f"Could not initialize HyperliquidAdapter: {e}")
-
-        # Other adapters require a configured wallet provider / web3 service.
-        try:
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
@@ -245,17 +230,8 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             self.token_adapter = TokenAdapter()
             self.ledger_adapter = LedgerAdapter()
         except Exception as e:
-            self.logger.warning(f"Wallet/web3 adapter initialization deferred: {e}")
-
-        adapters: list[Any] = []
-        if self.balance_adapter is not None:
-            adapters.append(self.balance_adapter)
-        if self.token_adapter is not None:
-            adapters.append(self.token_adapter)
-        if self.ledger_adapter is not None:
-            adapters.append(self.ledger_adapter)
-        if self.hyperliquid_adapter is not None:
-            adapters.append(self.hyperliquid_adapter)
+            self.logger.error(f"Failed to initialize strategy adapters: {e}")
+            raise
 
     async def setup(self) -> None:
         self.logger.info("Starting BasisTradingStrategy setup")
