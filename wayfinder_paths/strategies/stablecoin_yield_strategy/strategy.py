@@ -962,21 +962,42 @@ class StablecoinYieldStrategy(Strategy):
         if strategy_address.lower() == main_address.lower():
             return (True, "Main wallet is strategy wallet, no transfer needed")
 
+        usdc_token_id = (
+            self.usdc_token_info.get("token_id")
+            if isinstance(self.usdc_token_info, dict)
+            else "usd-coin-base"
+        )
+        usdc_decimals = (
+            self.usdc_token_info.get("decimals", 6)
+            if isinstance(self.usdc_token_info, dict)
+            else 6
+        )
+        gas_token_id = (
+            self.gas_token.get("token_id")
+            if isinstance(self.gas_token, dict)
+            else "ethereum-base"
+        )
+        gas_decimals = (
+            self.gas_token.get("decimals", 18)
+            if isinstance(self.gas_token, dict)
+            else 18
+        )
+
         transferred_items = []
 
         usdc_ok, usdc_raw = await self.balance_adapter.get_balance(
-            token_id="usd-coin-base",
+            token_id=usdc_token_id,
             wallet_address=strategy_address,
         )
-        if usdc_ok and usdc_raw:
-            usdc_balance = float(usdc_raw.get("balance", 0))
+        if usdc_ok and isinstance(usdc_raw, int) and usdc_raw > 0:
+            usdc_balance = float(usdc_raw) / (10**usdc_decimals)
             if usdc_balance > 1.0:
                 logger.info(f"Transferring {usdc_balance:.2f} USDC to main wallet")
                 (
                     success,
                     msg,
                 ) = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
-                    token_id="usd-coin-base",
+                    token_id=usdc_token_id,
                     amount=usdc_balance,
                     strategy_name=self.name,
                     skip_ledger=False,
@@ -987,11 +1008,11 @@ class StablecoinYieldStrategy(Strategy):
                     logger.warning(f"USDC transfer failed: {msg}")
 
         eth_ok, eth_raw = await self.balance_adapter.get_balance(
-            token_id="ethereum-base",
+            token_id=gas_token_id,
             wallet_address=strategy_address,
         )
-        if eth_ok and eth_raw:
-            eth_balance = float(eth_raw.get("balance", 0))
+        if eth_ok and isinstance(eth_raw, int) and eth_raw > 0:
+            eth_balance = float(eth_raw) / (10**gas_decimals)
             tx_fee_reserve = 0.0002
             transferable_eth = eth_balance - tx_fee_reserve
             if transferable_eth > 0.0001:
@@ -1000,7 +1021,7 @@ class StablecoinYieldStrategy(Strategy):
                     success,
                     msg,
                 ) = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
-                    token_id="ethereum-base",
+                    token_id=gas_token_id,
                     amount=transferable_eth,
                     strategy_name=self.name,
                     skip_ledger=False,

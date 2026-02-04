@@ -296,7 +296,9 @@ class BorosHypeStrategy(
 
         logger.info("BorosHypeStrategy setup complete")
 
-    async def analyze(self, deposit_usdc: float = 1000.0) -> dict[str, Any]:
+    async def analyze(
+        self, deposit_usdc: float = 1000.0, verbose: bool = True
+    ) -> dict[str, Any]:
         # Read-only market analysis returning Boros fixed-rate markets for HYPE
         # Client ownership: BorosAdapter owns the client; we require adapter to be set up
         if not self.boros_adapter:
