@@ -444,7 +444,9 @@ class HyperlendStableYieldStrategy(Strategy):
                 display = asset.get("symbol_display") if asset else symbol
                 if symbol and display:
                     self.symbol_display_map.setdefault(str(symbol), display)
-                self.current_avg_apy = float(asset.get("supply_apy") or 0.0) if asset else 0.0
+                self.current_avg_apy = (
+                    float(asset.get("supply_apy") or 0.0) if asset else 0.0
+                )
                 return True
             self.current_token = None
             self.current_symbol = None

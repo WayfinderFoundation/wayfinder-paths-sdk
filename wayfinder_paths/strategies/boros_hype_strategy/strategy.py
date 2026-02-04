@@ -326,7 +326,9 @@ class BorosHypeStrategy(
             _meta = m.get("metadata")
             meta: dict[str, Any] = _meta if isinstance(_meta, dict) else {}
             _platform = m.get("platform")
-            platform_obj: dict[str, Any] = _platform if isinstance(_platform, dict) else {}
+            platform_obj: dict[str, Any] = (
+                _platform if isinstance(_platform, dict) else {}
+            )
             _data = m.get("data")
             data: dict[str, Any] = _data if isinstance(_data, dict) else {}
 

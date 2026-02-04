@@ -127,9 +127,7 @@ class Strategy(ABC):
 
         return status
 
-    async def partial_liquidate(
-        self, usd_value: float
-    ) -> StatusTuple:
+    async def partial_liquidate(self, usd_value: float) -> StatusTuple:
         if usd_value <= 0:
             raise ValueError(f"usd_value must be positive, got {usd_value}")
         return (False, "Partial liquidation not implemented for this strategy")
