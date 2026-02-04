@@ -210,11 +210,6 @@ class HyperlendStableYieldStrategy(Strategy):
             merged_config["strategy_wallet"] = strategy_wallet
 
         self.config = merged_config
-        self.balance_adapter = None
-        self.token_adapter = None
-        self.pool_adapter = None
-        self.brap_adapter = None
-        self.hyperlend_adapter = None
 
         try:
             main_wallet_cfg = self.config.get("main_wallet")
@@ -231,33 +226,26 @@ class HyperlendStableYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
-            balance = BalanceAdapter(
+            self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            token_adapter = TokenAdapter()
-            ledger_adapter = LedgerAdapter()
-            brap_adapter = BRAPAdapter(
+            self.token_adapter = TokenAdapter()
+            self.ledger_adapter = LedgerAdapter()
+            self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            hyperlend_adapter = HyperlendAdapter(
+            self.hyperlend_adapter = HyperlendAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-
-            self.balance_adapter = balance
-            self.token_adapter = token_adapter
-            self.ledger_adapter = ledger_adapter
-            self.brap_adapter = brap_adapter
-            self.hyperlend_adapter = hyperlend_adapter
 
             self._assets_snapshot = None
             self._assets_snapshot_at = None
             self._assets_snapshot_lock = asyncio.Lock()
-            self.symbol_display_map = {}
-
+            self.symbol_display_map: dict[str, str] = {}
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")
             raise

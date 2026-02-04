@@ -197,12 +197,6 @@ class MoonwellWstethLoopStrategy(Strategy):
 
         self.config = merged_config
 
-        self.balance_adapter: BalanceAdapter | None = None
-        self.moonwell_adapter: MoonwellAdapter | None = None
-        self.brap_adapter: BRAPAdapter | None = None
-        self.token_adapter: TokenAdapter | None = None
-        self.ledger_adapter: LedgerAdapter | None = None
-
         self._token_info_cache: dict[str, dict] = {}
         self._token_price_cache: dict[str, float] = {}
         self._token_price_timestamps: dict[str, float] = {}
@@ -222,28 +216,21 @@ class MoonwellWstethLoopStrategy(Strategy):
                 "strategy": self.config,
             }
 
-            balance = BalanceAdapter(
+            self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            token_adapter = TokenAdapter()
-            ledger_adapter = LedgerAdapter()
-            brap_adapter = BRAPAdapter(
+            self.token_adapter = TokenAdapter()
+            self.ledger_adapter = LedgerAdapter()
+            self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            moonwell_adapter = MoonwellAdapter(
+            self.moonwell_adapter = MoonwellAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-
-            self.balance_adapter = balance
-            self.token_adapter = token_adapter
-            self.ledger_adapter = ledger_adapter
-            self.brap_adapter = brap_adapter
-            self.moonwell_adapter = moonwell_adapter
-
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")
             raise

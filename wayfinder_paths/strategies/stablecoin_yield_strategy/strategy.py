@@ -172,11 +172,6 @@ class StablecoinYieldStrategy(Strategy):
         self.deposited_amount = 0
         self.current_pool = None
         self.current_apy = 0
-        self.balance_adapter = None
-        self.token_adapter = None
-        self.ledger_adapter = None
-        self.pool_adapter = None
-        self.brap_adapter = None
 
         # State tracking for deterministic token management
         # All tokens strategy might hold
@@ -194,27 +189,21 @@ class StablecoinYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
-            balance = BalanceAdapter(
+            self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            token_adapter = TokenAdapter()
-            ledger_adapter = LedgerAdapter()
-            pool_adapter = PoolAdapter()
-            brap_adapter = BRAPAdapter(
+            self.token_adapter = TokenAdapter()
+            self.ledger_adapter = LedgerAdapter()
+            self.pool_adapter = PoolAdapter()
+            self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-
-            self.balance_adapter = balance
-            self.token_adapter = token_adapter
-            self.ledger_adapter = ledger_adapter
-            self.pool_adapter = pool_adapter
-            self.brap_adapter = brap_adapter
-
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to initialize strategy adapters: {e}")
+            raise
 
     def _get_strategy_wallet_address(self) -> str:
         strategy_wallet = self.config.get("strategy_wallet")
