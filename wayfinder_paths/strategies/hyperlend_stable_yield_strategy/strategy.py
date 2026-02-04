@@ -444,7 +444,7 @@ class HyperlendStableYieldStrategy(Strategy):
                 display = asset.get("symbol_display") if asset else symbol
                 if symbol and display:
                     self.symbol_display_map.setdefault(str(symbol), display)
-                self.current_avg_apy = float(asset.get("supply_apy") or 0.0)
+                self.current_avg_apy = float(asset.get("supply_apy") or 0.0) if asset else 0.0
                 return True
             self.current_token = None
             self.current_symbol = None
@@ -459,10 +459,11 @@ class HyperlendStableYieldStrategy(Strategy):
             return False
 
         token = top_entry.get("token")
-        if not token.get("address"):
-            token["address"] = top_entry.get("asset").get("underlying")
+        if token and not token.get("address"):
+            asset_entry = top_entry.get("asset")
+            token["address"] = asset_entry.get("underlying") if asset_entry else None
         self.current_token = token
-        symbol = token.get("symbol", None)
+        symbol = token.get("symbol", None) if token else None
         checksum = self._token_checksum(token)
         asset = asset_map.get(checksum) if checksum else None
         if not symbol and asset:
@@ -499,6 +500,8 @@ class HyperlendStableYieldStrategy(Strategy):
             _, snapshot = await self.hyperlend_adapter.get_assets_view(
                 user_address=self._get_strategy_wallet_address(),
             )
+            if isinstance(snapshot, str):
+                return False
 
             assets = snapshot.get("assets", [])
             asset_map = {}
@@ -1567,6 +1570,8 @@ class HyperlendStableYieldStrategy(Strategy):
             buffer_bps=self.SUPPLY_CAP_BUFFER_BPS,
             min_buffer_tokens=self.SUPPLY_CAP_MIN_BUFFER_TOKENS,
         )
+        if isinstance(stable_markets, str):
+            stable_markets = {"notes": [], "markets": {}}
         filtered_notes = stable_markets.get("notes", [])
         filtered_map = stable_markets.get("markets", {})
 
@@ -1666,6 +1671,8 @@ class HyperlendStableYieldStrategy(Strategy):
             if not history_status:
                 continue
             history_data = history[1]
+            if isinstance(history_data, str):
+                continue
             for row in history_data.get("history", []):
                 ts_ms = row.get("timestamp_ms")
                 if ts_ms is None:
@@ -1832,11 +1839,11 @@ class HyperlendStableYieldStrategy(Strategy):
                 )
             except Exception:
                 token = None
-            if not success:
+            if not success or isinstance(token, str):
                 token = None
         if token is None and current_token is None and symbol == current_symbol:
             token = current_token
-        if not token:
+        if not token or isinstance(token, str):
             return None
         if not address:
             address = token.get("address") if token else None
@@ -2057,6 +2064,8 @@ class HyperlendStableYieldStrategy(Strategy):
         start_weights: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
     ) -> np.ndarray:
+        if rng is None:
+            rng = np.random.default_rng()
         T = len(col)
         max_start = T - block_len
         if max_start < 0:
@@ -2276,8 +2285,10 @@ class HyperlendStableYieldStrategy(Strategy):
         total_usd = 0.0
         for entry in lent_positions.values():
             token = entry.get("token")
+            if not token:
+                continue
             amount_wei = entry.get("amount_wei", 0)
-            amount = float(amount_wei) / (10 ** token.get("decimals"))
+            amount = float(amount_wei) / (10 ** token.get("decimals", 18))
             asset = entry.get("asset")
             if not asset:
                 checksum = self._token_checksum(token)

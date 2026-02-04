@@ -248,12 +248,16 @@ class MoonwellWstethLoopStrategy(Strategy):
         return max(0.0, min(1.0, min(f_bound, f_feasible, 1.0)))
 
     def _get_strategy_wallet_address(self) -> str:
+        if not self.config:
+            return ""
         wallet = self.config.get("strategy_wallet", {})
-        return wallet.get("address", "")
+        return wallet.get("address", "") if isinstance(wallet, dict) else ""
 
     def _get_main_wallet_address(self) -> str:
+        if not self.config:
+            return ""
         wallet = self.config.get("main_wallet", {})
-        return wallet.get("address", "")
+        return wallet.get("address", "") if isinstance(wallet, dict) else ""
 
     def _gas_keep_wei(self) -> int:
         # Extra buffer for a couple txs (wrap + swap/repay).
@@ -340,17 +344,19 @@ class MoonwellWstethLoopStrategy(Strategy):
         weth_pos_ok, weth_pos = await self.moonwell_adapter.get_pos(mtoken=M_WETH)
 
         usdc_supplied = (
-            int((usdc_pos or {}).get("underlying_balance", 0) or 0)
-            if usdc_pos_ok
+            int(usdc_pos.get("underlying_balance") or 0)
+            if usdc_pos_ok and isinstance(usdc_pos, dict)
             else 0
         )
         wsteth_supplied = (
-            int((wsteth_pos or {}).get("underlying_balance", 0) or 0)
-            if wsteth_pos_ok
+            int(wsteth_pos.get("underlying_balance") or 0)
+            if wsteth_pos_ok and isinstance(wsteth_pos, dict)
             else 0
         )
         weth_debt = (
-            int((weth_pos or {}).get("borrow_balance", 0) or 0) if weth_pos_ok else 0
+            int(weth_pos.get("borrow_balance") or 0)
+            if weth_pos_ok and isinstance(weth_pos, dict)
+            else 0
         )
 
         gas_keep_wei = int(self._gas_keep_wei())
@@ -2832,7 +2838,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         weth_pos = await self.moonwell_adapter.get_pos(mtoken=M_WETH)
 
         current_borrowed_value = 0.0
-        if weth_pos[0]:
+        if weth_pos[0] and isinstance(weth_pos[1], dict):
             borrow_bal = weth_pos[1].get("borrow_balance", 0)
             current_borrowed_value = (borrow_bal / 10**18) * weth_price
 
@@ -3600,7 +3606,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         logger.info("UNLEND: Redeeming remaining Moonwell positions...")
 
         wsteth_pos = await self.moonwell_adapter.get_pos(mtoken=M_WSTETH)
-        if wsteth_pos[0]:
+        if wsteth_pos[0] and isinstance(wsteth_pos[1], dict):
             mtoken_bal = wsteth_pos[1].get("mtoken_balance", 0)
             underlying = wsteth_pos[1].get("underlying_balance", 0)
             if mtoken_bal > 0:
@@ -3624,7 +3630,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                         return (False, "Failed to swap wstETH to USDC after retries")
 
         usdc_pos = await self.moonwell_adapter.get_pos(mtoken=M_USDC)
-        if usdc_pos[0]:
+        if usdc_pos[0] and isinstance(usdc_pos[1], dict):
             mtoken_bal = usdc_pos[1].get("mtoken_balance", 0)
             underlying = usdc_pos[1].get("underlying_balance", 0)
             if mtoken_bal > 0:

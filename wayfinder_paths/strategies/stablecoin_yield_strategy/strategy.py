@@ -206,6 +206,8 @@ class StablecoinYieldStrategy(Strategy):
             raise
 
     def _get_strategy_wallet_address(self) -> str:
+        if not self.config:
+            raise ValueError("config not set")
         strategy_wallet = self.config.get("strategy_wallet")
         if not strategy_wallet or not isinstance(strategy_wallet, dict):
             raise ValueError("strategy_wallet not configured in strategy config")
@@ -215,6 +217,8 @@ class StablecoinYieldStrategy(Strategy):
         return str(address)
 
     def _get_main_wallet_address(self) -> str:
+        if not self.config:
+            raise ValueError("config not set")
         main_wallet = self.config.get("main_wallet")
         if not main_wallet or not isinstance(main_wallet, dict):
             raise ValueError("main_wallet not configured in strategy config")
@@ -957,8 +961,8 @@ class StablecoinYieldStrategy(Strategy):
             token_id="usd-coin-base",
             wallet_address=strategy_address,
         )
-        if usdc_ok and usdc_raw:
-            usdc_balance = float(usdc_raw.get("balance", 0))
+        if usdc_ok and isinstance(usdc_raw, int):
+            usdc_balance = usdc_raw / 1e6  # USDC has 6 decimals
             if usdc_balance > 1.0:
                 logger.info(f"Transferring {usdc_balance:.2f} USDC to main wallet")
                 (
@@ -979,8 +983,8 @@ class StablecoinYieldStrategy(Strategy):
             token_id="ethereum-base",
             wallet_address=strategy_address,
         )
-        if eth_ok and eth_raw:
-            eth_balance = float(eth_raw.get("balance", 0))
+        if eth_ok and isinstance(eth_raw, int):
+            eth_balance = eth_raw / 1e18  # ETH has 18 decimals
             tx_fee_reserve = 0.0002
             transferable_eth = eth_balance - tx_fee_reserve
             if transferable_eth > 0.0001:
@@ -1348,7 +1352,7 @@ class StablecoinYieldStrategy(Strategy):
 
             try:
                 success, token_info = await self.token_adapter.get_token(token_id)
-                if not success or not token_info:
+                if not success or not token_info or isinstance(token_info, str):
                     continue
 
                 results.append(
@@ -1370,7 +1374,7 @@ class StablecoinYieldStrategy(Strategy):
         if chain_id is None:
             chain_id = 8453
         success, llama_data = await self.pool_adapter.get_pools(chain_id=chain_id)
-        if not success:
+        if not success or isinstance(llama_data, str):
             return False, {"message": f"Failed to fetch Llama data: {llama_data}"}
 
         llama_pools = [
@@ -1547,11 +1551,11 @@ class StablecoinYieldStrategy(Strategy):
 
             try:
                 success, price_data = await self.token_adapter.get_token_price(token_id)
-                if not success:
+                if not success or isinstance(price_data, str):
                     continue
 
                 success, token_info = await self.token_adapter.get_token(token_id)
-                if not success:
+                if not success or isinstance(token_info, str):
                     continue
 
                 decimals = token_info.get("decimals", 18)
@@ -1651,11 +1655,11 @@ class StablecoinYieldStrategy(Strategy):
 
             try:
                 success, token_info = await self.token_adapter.get_token(token_id)
-                if not success:
+                if not success or isinstance(token_info, str):
                     continue
 
                 success, price_data = await self.token_adapter.get_token_price(token_id)
-                if not success:
+                if not success or isinstance(price_data, str):
                     continue
 
                 decimals = token_info.get("decimals", 18)
