@@ -14,7 +14,6 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
-    CHAIN_ID_HYPEREVM,
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
@@ -126,26 +125,20 @@ async def gas_price_transaction(transaction: dict):
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
         else:
             base_fees = await asyncio.gather(*[_get_base_fee(web3) for web3 in web3s])
-            base_fee = max(base_fees)
-            if chain_id == CHAIN_ID_HYPEREVM:
-                # HyperEVM does not use priority fee ("tip") pricing.
-                transaction["maxFeePerGas"] = int(
-                    base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                )
-                transaction["maxPriorityFeePerGas"] = 0
-            else:
-                priority_fees = await asyncio.gather(
-                    *[_get_priority_fee(web3) for web3 in web3s]
-                )
-                priority_fee = max(priority_fees)
+            priority_fees = await asyncio.gather(
+                *[_get_priority_fee(web3) for web3 in web3s]
+            )
 
-                transaction["maxFeePerGas"] = int(
-                    base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                    + priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
-                )
-                transaction["maxPriorityFeePerGas"] = int(
-                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
-                )
+            base_fee = max(base_fees)
+            priority_fee = max(priority_fees)
+
+            transaction["maxFeePerGas"] = int(
+                base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
+                + priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+            )
+            transaction["maxPriorityFeePerGas"] = int(
+                priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+            )
 
     return transaction
 
