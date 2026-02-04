@@ -125,6 +125,68 @@ def test_write_guard_denies_top_level_runs_writes(tmp_path: Path) -> None:
     assert "Blocked" in out["hookSpecificOutput"]["permissionDecisionReason"]
 
 
+def test_write_guard_denies_private_key_writes(tmp_path: Path) -> None:
+    hook = _hook_path("wayfinder_write_guard.py")
+
+    # Path outside runs_root so we only test the secret guard behavior.
+    target = (tmp_path / "config.json").resolve()
+
+    dummy_pk = "0x" + "11" * 32
+    content = json.dumps({"wallet": {"private_key_hex": dummy_pk}})
+
+    env = _clean_env()
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target), "content": content},
+    }
+    result = _run_hook(hook, payload, env=env)
+
+    out = json.loads(result.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "potential secret" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_write_guard_allows_removing_private_key(tmp_path: Path) -> None:
+    hook = _hook_path("wayfinder_write_guard.py")
+
+    target = (tmp_path / "config.json").resolve()
+    old_value = "0x" + "22" * 32
+
+    env = _clean_env()
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": str(target),
+            "old_string": old_value,
+            "new_string": "",
+        },
+    }
+    result = _run_hook(hook, payload, env=env)
+
+    out = json.loads(result.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_write_guard_secret_guard_can_be_disabled(tmp_path: Path) -> None:
+    hook = _hook_path("wayfinder_write_guard.py")
+
+    target = (tmp_path / "config.json").resolve()
+    dummy_pk = "0x" + "33" * 32
+    content = json.dumps({"wallet": {"private_key_hex": dummy_pk}})
+
+    env = _clean_env()
+    env["WAYFINDER_SECRET_GUARD_MODE"] = "off"
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target), "content": content},
+    }
+    result = _run_hook(hook, payload, env=env)
+
+    out = json.loads(result.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
 def test_session_end_deletes_scratch_dir(tmp_path: Path) -> None:
     hook = _hook_path("wayfinder_session_end.py")
 

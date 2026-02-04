@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,64 @@ def _is_allowed_runs_write(runs_root: Path, path: Path) -> bool:
     return False
 
 
+_PEM_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN (?:EC |OPENSSH |RSA |DSA )?PRIVATE KEY-----"
+)
+_BIP32_XPRV_RE = re.compile(r"\b(?:xprv|tprv|yprv|zprv)[1-9A-HJ-NP-Za-km-z]{20,}\b")
+_PRIVATE_KEY_VALUE_RE = re.compile(
+    r"(?i)\bprivate[_-]?key(?:_hex)?\b[^a-f0-9]{0,40}(0x[a-f0-9]{64}|[a-f0-9]{64})"
+)
+_MNEMONIC_RE = re.compile(
+    r"(?i)\b(?:mnemonic|seed phrase|seed_phrase)\b[^\"'\n]{0,40}[\"']([a-z]{3,}(?:\s+[a-z]{3,}){11,23})[\"']"
+)
+
+
+def _extract_new_content(tool_input: dict[str, Any]) -> list[str]:
+    out: list[str] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, str) and value:
+            out.append(value)
+
+    # WriteTool commonly uses `content` (or `text`) as the new file body.
+    for key in ("content", "text"):
+        add(tool_input.get(key))
+
+    # EditTool commonly uses `new_string` (or similar) for the inserted text.
+    for key in ("new_string", "newText", "replacement", "insert"):
+        add(tool_input.get(key))
+
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        for e in edits:
+            if not isinstance(e, dict):
+                continue
+            for key in ("new_string", "newText", "replacement", "content", "text"):
+                add(e.get(key))
+
+    files = tool_input.get("files")
+    if isinstance(files, list):
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            for key in ("content", "text"):
+                add(f.get(key))
+
+    return out
+
+
+def _detect_secret(content: str) -> str | None:
+    if _PEM_PRIVATE_KEY_RE.search(content):
+        return "PEM private key"
+    if _BIP32_XPRV_RE.search(content):
+        return "BIP32 xprv"
+    if _PRIVATE_KEY_VALUE_RE.search(content):
+        return "private key value"
+    if _MNEMONIC_RE.search(content):
+        return "mnemonic / seed phrase"
+    return None
+
+
 def main() -> None:
     payload = hook_utils.load_payload()
     name = hook_utils.tool_name(payload)
@@ -84,6 +143,33 @@ def main() -> None:
         return
 
     tool_input = hook_utils.tool_input(payload)
+
+    # Secret guard: block writing private keys / mnemonics into files.
+    guard_mode = os.getenv("WAYFINDER_SECRET_GUARD_MODE", "deny").strip().lower()
+    if guard_mode not in {"off", "ask", "deny"}:
+        guard_mode = "deny"
+
+    if guard_mode != "off":
+        new_content = _extract_new_content(tool_input)
+        if new_content:
+            hit = _detect_secret("\n".join(new_content))
+            if hit:
+                raw_paths = _extract_paths(tool_input)
+                path_display = raw_paths[0] if raw_paths else "(unknown path)"
+                out = {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "ask" if guard_mode == "ask" else "deny",
+                        "permissionDecisionReason": (
+                            f"Blocked writing potential secret ({hit}) to `{path_display}`. "
+                            "Do not store private keys/seed phrases in files. Prefer env vars, "
+                            "encrypted keystores, or interactive entry."
+                        ),
+                    }
+                }
+                print(json.dumps(out))
+                return
+
     raw_paths = _extract_paths(tool_input)
     if not raw_paths:
         return
