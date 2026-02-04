@@ -87,8 +87,8 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         result = await strategy.status()
     elif action == "deposit":
         result = await strategy.deposit(
-            main_token_amount=kw.get("main_token_amount", 0.0),
-            gas_token_amount=kw.get("gas_token_amount", 0.0),
+            main_token_amount=kw.get("main_token_amount") or 0.0,
+            gas_token_amount=kw.get("gas_token_amount") or 0.0,
         )
     elif action == "withdraw":
         result = await strategy.withdraw(
