@@ -5,6 +5,7 @@ import importlib
 import time
 from typing import Any, Literal
 
+from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.utils.wallets import make_random_wallet, write_wallet_to_json
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -169,6 +170,7 @@ async def wallets(
         w = make_random_wallet()
         w["label"] = want
         write_wallet_to_json(w, out_dir=root, filename="config.json")
+        load_config()  # refresh in-memory CONFIG so strategies see the new wallet
 
         refreshed = load_wallets()
         return ok(

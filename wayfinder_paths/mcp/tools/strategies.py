@@ -5,7 +5,7 @@ import importlib
 from pathlib import Path
 from typing import Any, Literal
 
-from wayfinder_paths.core.config import CONFIG
+from wayfinder_paths.core.config import CONFIG, load_config
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_address
@@ -25,10 +25,12 @@ def _load_strategy_class(strategy_name: str) -> tuple[type[Strategy], str]:
     manifest = load_strategy_manifest(str(manifest_path))
     module_path, class_name = manifest.entrypoint.rsplit(".", 1)
     module = importlib.import_module(module_path)
+    importlib.reload(module)  # pick up code changes without MCP restart
     return getattr(module, class_name), manifest.status
 
 
 def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
+    load_config()  # re-read config.json so new wallets are visible
     config = dict(CONFIG.get("strategy", {}))
     wallets = {w["label"]: w for w in CONFIG.get("wallets", [])}
 
