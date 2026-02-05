@@ -2188,8 +2188,8 @@ class MoonwellWstethLoopStrategy(Strategy):
             self.moonwell_adapter.get_collateral_factor(mtoken=M_USDC),
             self.moonwell_adapter.get_collateral_factor(mtoken=M_WSTETH),
         )
-        cf_u = cf_u_result[1] if cf_u_result[0] else 0.0
-        cf_w = cf_w_result[1] if cf_w_result[0] else 0.0
+        cf_u = float(cf_u_result[1]) if cf_u_result[0] else 0.0
+        cf_w = float(cf_w_result[1]) if cf_w_result[0] else 0.0
         return cf_u, cf_w
 
     async def _get_current_leverage(
