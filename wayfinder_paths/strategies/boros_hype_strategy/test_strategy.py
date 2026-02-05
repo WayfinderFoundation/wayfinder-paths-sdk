@@ -3,6 +3,7 @@
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 # Ensure wayfinder-paths is on path for tests.test_utils import
@@ -17,14 +18,23 @@ elif sys.path.index(_wayfinder_path_str) > 0:
 import pytest  # noqa: E402
 
 try:
-    from tests.test_utils import get_canonical_examples, load_strategy_examples
-except ImportError as err:
+    from tests.test_utils import (
+        assert_quote_result,
+        assert_status_dict,
+        assert_status_tuple,
+        get_canonical_examples,
+        load_strategy_examples,
+    )
+except ImportError:
     test_utils_path = Path(_wayfinder_path_dir) / "tests" / "test_utils.py"
     spec = importlib.util.spec_from_file_location("tests.test_utils", test_utils_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not load spec from {test_utils_path}") from err
     test_utils = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(test_utils)
+    assert_quote_result = test_utils.assert_quote_result
+    assert_status_dict = test_utils.assert_status_dict
+    assert_status_tuple = test_utils.assert_status_tuple
     get_canonical_examples = test_utils.get_canonical_examples
     load_strategy_examples = test_utils.load_strategy_examples
 
@@ -155,21 +165,22 @@ async def test_smoke(strategy):
     await strategy.setup()
     _mock_balance_transfers(strategy)
 
-    st = await strategy.status()
-    assert isinstance(st, dict)
-    assert "portfolio_value" in st or "net_deposit" in st or "strategy_status" in st
+    st = assert_status_dict(await strategy.status())
+    assert "portfolio_value" in st
+    assert "net_deposit" in st
+    assert "strategy_status" in st
 
     deposit_params = smoke_data.get("deposit", {})
-    ok, msg = await strategy.deposit(**deposit_params)
+    ok, msg = assert_status_tuple(await strategy.deposit(**deposit_params))
     assert isinstance(ok, bool)
     assert isinstance(msg, str)
 
-    # update() returns (success, message, rotated) - 3 values
-    update_result = await strategy.update(**smoke_data.get("update", {}))
-    ok = update_result[0]
+    ok, _ = assert_status_tuple(await strategy.update(**smoke_data.get("update", {})))
     assert isinstance(ok, bool)
 
-    ok, msg = await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    ok, msg = assert_status_tuple(
+        await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    )
     assert isinstance(ok, bool)
 
 
@@ -185,20 +196,44 @@ async def test_canonical_usage(strategy):
     for example_name, example_data in canonical.items():
         if "deposit" in example_data:
             deposit_params = example_data.get("deposit", {})
-            ok, _ = await strategy.deposit(**deposit_params)
+            ok, _ = assert_status_tuple(await strategy.deposit(**deposit_params))
             assert ok, f"Canonical example '{example_name}' deposit failed"
 
         if "update" in example_data:
-            update_result = await strategy.update()
-            ok = update_result[0]
-            msg = update_result[1] if len(update_result) > 1 else ""
+            ok, msg = assert_status_tuple(await strategy.update())
             assert ok, f"Canonical example '{example_name}' update failed: {msg}"
 
         if "status" in example_data:
-            st = await strategy.status()
+            st = assert_status_dict(await strategy.status())
             assert isinstance(st, dict), (
                 f"Canonical example '{example_name}' status failed"
             )
+
+
+@pytest.mark.asyncio
+async def test_quote_returns_quote_result(strategy):
+    await strategy.setup()
+    _mock_balance_transfers(strategy)
+
+    strategy.observe = AsyncMock(return_value=SimpleNamespace())
+    strategy._get_yield_info = AsyncMock(
+        return_value=SimpleNamespace(
+            khype_apy=0.1,
+            lhype_apy=None,
+            boros_apr=0.05,
+            blended_apy=0.08,
+        )
+    )
+
+    assert_quote_result(await strategy.quote(deposit_amount=1000.0))
+
+
+@pytest.mark.asyncio
+async def test_exit_returns_status_tuple(strategy):
+    await strategy.setup()
+    _mock_balance_transfers(strategy)
+
+    assert_status_tuple(await strategy.exit())
 
 
 @pytest.mark.asyncio
@@ -215,7 +250,7 @@ async def test_error_cases(strategy):
 
             if "deposit" in example_data:
                 deposit_params = example_data.get("deposit", {})
-                ok, _ = await strategy.deposit(**deposit_params)
+                ok, _ = assert_status_tuple(await strategy.deposit(**deposit_params))
 
                 if expect.get("success") is False:
                     assert ok is False, (
@@ -233,7 +268,9 @@ async def test_below_minimum_deposit(strategy):
     await strategy.setup()
     _mock_balance_transfers(strategy)
 
-    ok, msg = await strategy.deposit(main_token_amount=50.0, gas_token_amount=0.01)
+    ok, msg = assert_status_tuple(
+        await strategy.deposit(main_token_amount=50.0, gas_token_amount=0.01)
+    )
     assert ok is False
     assert "minimum" in msg.lower() or "150" in msg
 
