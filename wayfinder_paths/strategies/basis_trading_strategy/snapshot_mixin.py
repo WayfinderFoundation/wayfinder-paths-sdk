@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 
 
 class BasisSnapshotMixin:
-    def _get_hyperliquid_data_client(self: BasisTradingStrategy) -> HyperliquidDataClientProtocol:
+    def _get_hyperliquid_data_client(
+        self: BasisTradingStrategy,
+    ) -> HyperliquidDataClientProtocol:
         client = getattr(self, "_hyperliquid_data_client", None)
         if client is None:
             client = HYPERLIQUID_DATA_CLIENT
@@ -289,7 +291,9 @@ class BasisSnapshotMixin:
 
         return best
 
-    def _hour_bucket_start(self: BasisTradingStrategy, ts: datetime | None = None) -> datetime:
+    def _hour_bucket_start(
+        self: BasisTradingStrategy, ts: datetime | None = None
+    ) -> datetime:
         now = ts or datetime.now(UTC)
         return now.replace(minute=0, second=0, microsecond=0, tzinfo=UTC)
 
@@ -965,7 +969,9 @@ class BasisSnapshotMixin:
 
         return out
 
-    def load_snapshot_from_path(self: BasisTradingStrategy, snapshot_path: str) -> dict[str, Any]:
+    def load_snapshot_from_path(
+        self: BasisTradingStrategy, snapshot_path: str
+    ) -> dict[str, Any]:
         p = Path(snapshot_path)
         raw = p.read_text()
         data = json.loads(raw)

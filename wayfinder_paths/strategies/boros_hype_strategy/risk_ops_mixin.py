@@ -456,7 +456,9 @@ class BorosHypeRiskOpsMixin:
             logger.warning(f"Failed to verify hedge after redeploy: {exc}")
             return True, "Redeployed (hedge verification pending)"
 
-    async def _failsafe_liquidate_all(self: BorosHypeStrategy, reason: str) -> tuple[bool, str]:
+    async def _failsafe_liquidate_all(
+        self: BorosHypeStrategy, reason: str
+    ) -> tuple[bool, str]:
         # Called when critical operations fail; close all positions to stable assets
         logger.error(f"[FAILSAFE] Initiating full liquidation: {reason}")
         self._failsafe_triggered = True

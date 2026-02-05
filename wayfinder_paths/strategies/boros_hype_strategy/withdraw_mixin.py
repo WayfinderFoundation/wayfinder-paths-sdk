@@ -1367,7 +1367,9 @@ class BorosHypeWithdrawMixin:
             f"Fully unwound all positions. USDC balance: ${usdc_tokens:.2f}. Call exit() to transfer to main wallet.",
         )
 
-    async def _unwrap_whype(self: BorosHypeStrategy, address: str, amount_wei: int) -> tuple[bool, str]:
+    async def _unwrap_whype(
+        self: BorosHypeStrategy, address: str, amount_wei: int
+    ) -> tuple[bool, str]:
         try:
             if not self._sign_callback:
                 return False, "No signing callback configured"

@@ -3,7 +3,7 @@ import math
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Literal, cast
 
@@ -1206,7 +1206,7 @@ class HyperlendStableYieldStrategy(Strategy):
             )
             cooldown_notice = None
             if rotation_allowed and last_rotation is not None:
-                elapsed = datetime.now(timezone.utc) - last_rotation
+                elapsed = datetime.now(UTC) - last_rotation
                 if elapsed < self.ROTATION_COOLDOWN:
                     rotation_allowed = False
                     remaining_hours = max(
