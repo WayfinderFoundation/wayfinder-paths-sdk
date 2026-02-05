@@ -6,14 +6,17 @@ import time
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
 from wayfinder_paths.core.clients.protocols import HyperliquidDataClientProtocol
 
+if TYPE_CHECKING:
+    from .strategy import BasisTradingStrategy
+
 
 class BasisSnapshotMixin:
-    def _get_hyperliquid_data_client(self) -> HyperliquidDataClientProtocol:
+    def _get_hyperliquid_data_client(self: BasisTradingStrategy) -> HyperliquidDataClientProtocol:
         client = getattr(self, "_hyperliquid_data_client", None)
         if client is None:
             client = HYPERLIQUID_DATA_CLIENT
@@ -21,7 +24,7 @@ class BasisSnapshotMixin:
         return client
 
     def _build_safe_entry(
-        self,
+        self: BasisTradingStrategy,
         *,
         horizon: int,
         deposit_usdc: float,
@@ -152,7 +155,7 @@ class BasisSnapshotMixin:
         }
 
     async def find_best_trade_with_backtest(
-        self,
+        self: BasisTradingStrategy,
         *,
         deposit_usdc: float,
         stop_frac: float = 0.75,
@@ -286,12 +289,12 @@ class BasisSnapshotMixin:
 
         return best
 
-    def _hour_bucket_start(self, ts: datetime | None = None) -> datetime:
+    def _hour_bucket_start(self: BasisTradingStrategy, ts: datetime | None = None) -> datetime:
         now = ts or datetime.now(UTC)
         return now.replace(minute=0, second=0, microsecond=0, tzinfo=UTC)
 
     async def build_batch_snapshot(
-        self,
+        self: BasisTradingStrategy,
         *,
         score_deposit_usdc: float = 1000.0,
         stop_frac: float | None = None,
@@ -661,7 +664,7 @@ class BasisSnapshotMixin:
         }
 
     def opportunities_from_snapshot(
-        self,
+        self: BasisTradingStrategy,
         *,
         snapshot: dict[str, Any],
         deposit_usdc: float,
@@ -722,7 +725,7 @@ class BasisSnapshotMixin:
         return opportunities
 
     async def score_opportunity_from_snapshot(
-        self,
+        self: BasisTradingStrategy,
         *,
         opportunity: dict[str, Any],
         deposit_usdc: float,
@@ -962,7 +965,7 @@ class BasisSnapshotMixin:
 
         return out
 
-    def load_snapshot_from_path(self, snapshot_path: str) -> dict[str, Any]:
+    def load_snapshot_from_path(self: BasisTradingStrategy, snapshot_path: str) -> dict[str, Any]:
         p = Path(snapshot_path)
         raw = p.read_text()
         data = json.loads(raw)
@@ -970,7 +973,7 @@ class BasisSnapshotMixin:
             raise ValueError("Snapshot file must contain a JSON object")
         return data
 
-    def _snapshot_from_config(self) -> dict[str, Any] | None:
+    def _snapshot_from_config(self: BasisTradingStrategy) -> dict[str, Any] | None:
         val = (
             self._cfg_get("basis_snapshot")
             or self._cfg_get("precomputed_basis_snapshot")
@@ -978,7 +981,7 @@ class BasisSnapshotMixin:
         )
         return val if isinstance(val, dict) else None
 
-    def _snapshot_path_from_config(self) -> str | None:
+    def _snapshot_path_from_config(self: BasisTradingStrategy) -> str | None:
         val = (
             self._cfg_get("basis_snapshot_path")
             or self._cfg_get("precomputed_snapshot_path")

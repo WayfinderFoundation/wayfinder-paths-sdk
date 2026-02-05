@@ -7,7 +7,7 @@ Kept as a mixin so the main strategy file stays readable without changing behavi
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -28,10 +28,13 @@ from .constants import (
 )
 from .types import Inventory
 
+if TYPE_CHECKING:
+    from .strategy import BorosHypeStrategy
+
 
 class BorosHypeRiskOpsMixin:
     async def _close_and_redeploy(
-        self, params: dict[str, Any], inventory: Inventory
+        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         ok, msg = self._require_adapters(
             "balance_adapter", "hyperliquid_adapter", "brap_adapter"
@@ -453,7 +456,7 @@ class BorosHypeRiskOpsMixin:
             logger.warning(f"Failed to verify hedge after redeploy: {exc}")
             return True, "Redeployed (hedge verification pending)"
 
-    async def _failsafe_liquidate_all(self, reason: str) -> tuple[bool, str]:
+    async def _failsafe_liquidate_all(self: BorosHypeStrategy, reason: str) -> tuple[bool, str]:
         # Called when critical operations fail; close all positions to stable assets
         logger.error(f"[FAILSAFE] Initiating full liquidation: {reason}")
         self._failsafe_triggered = True
@@ -663,7 +666,7 @@ class BorosHypeRiskOpsMixin:
         return False, result_msg
 
     async def _partial_trim_spot(
-        self, params: dict[str, Any], inventory: Inventory
+        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         trim_pct = float(params.get("trim_pct") or 0.25)
 
