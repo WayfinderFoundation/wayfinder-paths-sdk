@@ -11,7 +11,6 @@ from loguru import logger
 
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.moonwell_adapter.adapter import MoonwellAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
@@ -222,7 +221,6 @@ class MoonwellWstethLoopStrategy(Strategy):
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
             self.token_adapter = TokenAdapter()
-            self.ledger_adapter = LedgerAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
