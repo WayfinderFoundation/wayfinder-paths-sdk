@@ -1383,7 +1383,9 @@ class StablecoinYieldStrategy(Strategy):
             and pool.get("network", "").lower() in self.SUPPORTED_NETWORK_CODES
         ]
         llama_pools = sorted(
-            llama_pools, key=lambda pool: pool.get("combined_apy_pct", 0.0), reverse=True
+            llama_pools,
+            key=lambda pool: pool.get("combined_apy_pct", 0.0),
+            reverse=True,
         )
         if not llama_pools:
             return False, {"message": "No suitable pools found."}

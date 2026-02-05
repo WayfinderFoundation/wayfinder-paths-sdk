@@ -1467,9 +1467,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
         return actions, kept_tokens
 
-    async def _unwind_other_lends(
-        self, target_token: dict[str, Any]
-    ) -> list[str]:
+    async def _unwind_other_lends(self, target_token: dict[str, Any]) -> list[str]:
         positions = await self._get_lent_positions()
         if not positions:
             return []

@@ -282,7 +282,9 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch L2 book for {coin}: {exc}")
             return False, str(exc)
 
-    async def get_user_state(self, address: str) -> tuple[True, dict[str, Any]] | tuple[False, str]:
+    async def get_user_state(
+        self, address: str
+    ) -> tuple[True, dict[str, Any]] | tuple[False, str]:
         try:
             data = self.info.user_state(address)
             return True, data
@@ -290,7 +292,9 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch user_state for {address}: {exc}")
             return False, str(exc)
 
-    async def get_spot_user_state(self, address: str) -> tuple[True, dict[str, Any]] | tuple[False, str]:
+    async def get_spot_user_state(
+        self, address: str
+    ) -> tuple[True, dict[str, Any]] | tuple[False, str]:
         try:
             data = self.info.spot_user_state(address)
             return True, data
@@ -352,7 +356,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         return ok_any, out
 
-    async def get_margin_table(self, margin_table_id: int) -> tuple[True, list[dict]] | tuple[False, str]:
+    async def get_margin_table(
+        self, margin_table_id: int
+    ) -> tuple[True, list[dict]] | tuple[False, str]:
         cache_key = f"hl_margin_table_{margin_table_id}"
         cached = await self._cache.get(cache_key)
         if cached:
@@ -373,7 +379,9 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch margin_table {margin_table_id}: {exc}")
             return False, str(exc)
 
-    async def get_spot_l2_book(self, spot_asset_id: int) -> tuple[True, dict[str, Any]] | tuple[False, str]:
+    async def get_spot_l2_book(
+        self, spot_asset_id: int
+    ) -> tuple[True, dict[str, Any]] | tuple[False, str]:
         try:
             # Spot L2 uses different coin names based on spot index:
             # - Index 0 (PURR): use "PURR/USDC"
@@ -430,7 +438,9 @@ class HyperliquidAdapter(BaseAdapter):
     # Utility Methods                                                      #
     # ------------------------------------------------------------------ #
 
-    async def get_all_mid_prices(self) -> tuple[True, dict[str, float]] | tuple[False, str]:
+    async def get_all_mid_prices(
+        self,
+    ) -> tuple[True, dict[str, float]] | tuple[False, str]:
         try:
             data = self.info.all_mids()
             return True, {k: float(v) for k, v in data.items()}
@@ -817,7 +827,9 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
-    async def get_user_fills(self, address: str) -> tuple[bool, list[dict[str, Any]]] | tuple[False, str]:
+    async def get_user_fills(
+        self, address: str
+    ) -> tuple[bool, list[dict[str, Any]]] | tuple[False, str]:
         try:
             data = self.info.user_fills(address)
             return True, data if isinstance(data, list) else []
@@ -879,7 +891,9 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")
             return False, str(exc)
 
-    async def get_open_orders(self, address: str) -> tuple[True, list[dict[str, Any]]] | tuple[False, str]:
+    async def get_open_orders(
+        self, address: str
+    ) -> tuple[True, list[dict[str, Any]]] | tuple[False, str]:
         try:
             data = self.info.open_orders(address)
             return True, data if isinstance(data, list) else []
