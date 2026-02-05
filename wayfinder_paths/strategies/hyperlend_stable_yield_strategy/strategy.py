@@ -2065,7 +2065,7 @@ class HyperlendStableYieldStrategy(Strategy):
         block_len: int = BLOCK_LEN,
         start_weights: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
+    ) -> float:
         if rng is None:
             rng = np.random.default_rng()
         T = len(col)
@@ -2143,7 +2143,7 @@ class HyperlendStableYieldStrategy(Strategy):
     async def _wallet_balances_from_snapshot(
         self, snapshot: dict[str, Any]
     ) -> dict[str, Any]:
-        balances = {}
+        balances: dict[str, Any] = {}
         assets = snapshot.get("assets", [])
         if assets:
             for asset in assets:

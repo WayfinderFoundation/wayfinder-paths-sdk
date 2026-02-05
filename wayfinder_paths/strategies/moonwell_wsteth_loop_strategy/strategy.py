@@ -3,7 +3,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import httpx
 from eth_utils import to_checksum_address
@@ -1542,14 +1542,14 @@ class MoonwellWstethLoopStrategy(Strategy):
             except Exception as e:
                 logger.warning(f"Failed to fetch token info for {token_id}: {e}")
 
-    async def _get_token_info(self, token_id: str) -> dict:
+    async def _get_token_info(self, token_id: str) -> dict[str, Any]:
         if token_id in self._token_info_cache:
             return self._token_info_cache[token_id]
 
         success, info = await self.token_adapter.get_token(token_id)
-        if success:
+        if success and isinstance(info, dict):
             self._token_info_cache[token_id] = info
-            return info
+            return cast(dict[str, Any], info)
         return {}
 
     async def _get_token_price(self, token_id: str) -> float:

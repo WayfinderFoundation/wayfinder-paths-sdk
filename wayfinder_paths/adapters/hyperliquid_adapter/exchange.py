@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from eth_account.messages import encode_typed_data
 from hyperliquid.api import API
@@ -39,7 +39,7 @@ class Exchange:
         self,
         info: Info,
         util: Util,
-        sign_callback: Callable[[dict], Awaitable[str]],
+        sign_callback: Callable[..., Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):
         self.info = info
@@ -293,7 +293,8 @@ class Exchange:
             return self.util._sig_hex_to_hl_signature(sig_hex)
 
         payload = encode_typed_data(full_message=payload)
-        return await self.sign_callback(action, payload, address)
+        result = await self.sign_callback(action, payload, address)
+        return cast(dict[str, Any] | None, result)
 
     def _broadcast_hypecore(self, action, nonce, signature):
         payload = {

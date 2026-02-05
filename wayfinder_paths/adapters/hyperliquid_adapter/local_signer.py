@@ -25,7 +25,9 @@ def _resolve_private_key(config: dict[str, Any]) -> str | None:
     return None
 
 
-def create_local_signer(config: dict[str, Any]) -> Callable[[dict], Awaitable[str]]:
+def create_local_signer(
+    config: dict[str, Any],
+) -> Callable[[dict[str, Any], str, str], Awaitable[dict[str, str] | None]]:
     private_key = _resolve_private_key(config)
     if not private_key:
         raise ValueError(
