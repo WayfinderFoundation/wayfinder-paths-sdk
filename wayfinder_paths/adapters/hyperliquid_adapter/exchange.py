@@ -51,8 +51,7 @@ class Exchange:
         is_spot = asset_id >= 10_000
         return (6 if not is_spot else 8) - self.get_sz_decimals(asset_id)
 
-    @staticmethod
-    def sig_hex_to_hl_signature(sig_hex: str) -> dict[str, Any]:
+    def _sig_hex_to_hl_signature(self, sig_hex: str) -> dict[str, Any]:
         """Convert a 65-byte hex signature into Hyperliquid {r,s,v}."""
         if not isinstance(sig_hex, str) or not sig_hex.startswith("0x"):
             raise ValueError("Expected hex signature string starting with 0x")
@@ -310,7 +309,7 @@ class Exchange:
             sig_hex = await self.sign_callback(payload)
             if not sig_hex:
                 return None
-            return self.sig_hex_to_hl_signature(sig_hex)
+            return self._sig_hex_to_hl_signature(sig_hex)
 
         payload = encode_typed_data(full_message=payload)
         return await self.sign_callback(action, payload, address)
