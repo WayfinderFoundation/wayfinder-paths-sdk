@@ -6,7 +6,7 @@ import time
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
 from wayfinder_paths.core.clients.protocols import HyperliquidDataClientProtocol
@@ -288,9 +288,7 @@ class BasisSnapshotMixin:
 
         return best
 
-    def _hour_bucket_start(
-        self, ts: datetime | None = None
-    ) -> datetime:
+    def _hour_bucket_start(self, ts: datetime | None = None) -> datetime:
         now = ts or datetime.now(UTC)
         return now.replace(minute=0, second=0, microsecond=0, tzinfo=UTC)
 
@@ -966,9 +964,7 @@ class BasisSnapshotMixin:
 
         return out
 
-    def load_snapshot_from_path(
-        self, snapshot_path: str
-    ) -> dict[str, Any]:
+    def load_snapshot_from_path(self, snapshot_path: str) -> dict[str, Any]:
         p = Path(snapshot_path)
         raw = p.read_text()
         data = json.loads(raw)

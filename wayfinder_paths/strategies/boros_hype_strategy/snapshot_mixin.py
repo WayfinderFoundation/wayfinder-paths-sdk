@@ -7,7 +7,7 @@ Kept as a mixin so the main strategy file stays readable without changing behavi
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import aiohttp
 from loguru import logger

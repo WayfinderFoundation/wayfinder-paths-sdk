@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from loguru import logger
 
@@ -31,7 +31,6 @@ from .constants import (
     WHYPE_ADDRESS,
 )
 from .types import Inventory
-
 
 
 class BorosHypeBorosOpsMixin:

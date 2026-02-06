@@ -7,7 +7,7 @@ Kept as a mixin so the main strategy file stays readable without changing behavi
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from loguru import logger
 
@@ -27,6 +27,7 @@ from .constants import (
     WHYPE,
 )
 from .types import Inventory
+
 
 class BorosHypeRiskOpsMixin:
     async def _close_and_redeploy(
@@ -452,9 +453,7 @@ class BorosHypeRiskOpsMixin:
             logger.warning(f"Failed to verify hedge after redeploy: {exc}")
             return True, "Redeployed (hedge verification pending)"
 
-    async def _failsafe_liquidate_all(
-        self, reason: str
-    ) -> tuple[bool, str]:
+    async def _failsafe_liquidate_all(self, reason: str) -> tuple[bool, str]:
         # Called when critical operations fail; close all positions to stable assets
         logger.error(f"[FAILSAFE] Initiating full liquidation: {reason}")
         self._failsafe_triggered = True
