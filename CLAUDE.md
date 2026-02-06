@@ -173,6 +173,63 @@ Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 When a user wants a **repeatable/automated system** (recurring jobs):
 
 - Create or modify a strategy under `wayfinder_paths/strategies/` and follow the normal manifests/tests workflow.
+- Use the project-local runner to call strategy `update` on an interval (no cron needed).
+
+Runner CLI (project-local state in `./.wayfinder/runner/`):
+
+```bash
+# Start the daemon (recommended: detached/background)
+poetry run wayfinder runner start --detach
+
+# Idempotent: start if needed, otherwise no-op
+poetry run wayfinder runner ensure
+
+# Add an interval job (every 10 minutes)
+poetry run wayfinder runner add-job \
+  --name basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --interval 600 \
+  --config ./config.json
+
+# Add an interval job for a local one-off script (must live in .wayfinder_runs/ by default)
+poetry run wayfinder runner add-job \
+  --name hourly-report \
+  --type script \
+  --script-path .wayfinder_runs/report.py \
+  --arg --verbose \
+  --interval 3600
+
+# Inspect / control
+poetry run wayfinder runner status
+poetry run wayfinder runner run-once basis-update
+poetry run wayfinder runner pause basis-update
+poetry run wayfinder runner resume basis-update
+poetry run wayfinder runner delete basis-update
+poetry run wayfinder runner stop
+```
+
+Architecture/extensibility notes live in `RUNNER_ARCHITECTURE.md`.
+
+Runner MCP tool (controls the daemon via its local Unix socket):
+
+- `mcp__wayfinder__runner(action="status")`
+- `mcp__wayfinder__runner(action="daemon_status")`
+- `mcp__wayfinder__runner(action="ensure_started")` (starts detached if needed)
+- `mcp__wayfinder__runner(action="daemon_stop")`
+- `mcp__wayfinder__runner(action="add_job", name="basis-update", interval_seconds=600, strategy="basis_trading_strategy", strategy_action="update", config="./config.json")`
+- `mcp__wayfinder__runner(action="add_job", name="hourly-report", type="script", interval_seconds=3600, script_path=".wayfinder_runs/report.py", args=["--verbose"])`
+- `mcp__wayfinder__runner(action="pause_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="resume_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="delete_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="run_once", name="basis-update")`
+- `mcp__wayfinder__runner(action="job_runs", name="basis-update", limit=20)`
+- `mcp__wayfinder__runner(action="run_report", run_id=123, tail_bytes=4000)`
+
+Safety note:
+
+- Runner executions are local automation and do **not** go through the Claude safety review prompt. Treat `update/deposit/withdraw/exit` as live fund-moving actions.
 
 Token identifiers (important for quoting/execution):
 
