@@ -1509,12 +1509,12 @@ class HyperlendStableYieldStrategy(Strategy):
         return actions
 
     async def _get_last_rotation_time(self, wallet_address: str) -> datetime | None:
-        success, data = await self.ledger_adapter.get_strategy_latest_transactions(
+        result = await self.ledger_adapter.get_strategy_latest_transactions(
             wallet_address=self._get_strategy_wallet_address(),
         )
-        if success is False:
+        if not result[0]:
             return None
-        for transaction in data.get("transactions", []):
+        for transaction in result[1].get("transactions", []):
             op_data = transaction.get("op_data", {})
             if op_data.get("type") in {"LEND", "SWAP"}:
                 created_str = transaction.get("created")

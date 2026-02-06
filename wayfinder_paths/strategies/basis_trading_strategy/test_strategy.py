@@ -169,7 +169,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
@@ -660,7 +660,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
@@ -702,7 +702,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
@@ -986,7 +986,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
