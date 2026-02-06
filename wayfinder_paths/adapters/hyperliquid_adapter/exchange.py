@@ -24,7 +24,10 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 from web3 import Web3
 
-from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
+from wayfinder_paths.adapters.hyperliquid_adapter.util import (
+    get_price_decimals_for_hypecore_asset,
+    sig_hex_to_hl_signature,
+)
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
@@ -38,12 +41,10 @@ class Exchange:
     def __init__(
         self,
         info: Info,
-        util: Util,
         sign_callback: Callable[[dict], Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):
         self.info = info
-        self.util = util
         self.api = API()
         self.sign_callback = sign_callback
         self.signing_type = signing_type
@@ -92,7 +93,7 @@ class Exchange:
         price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
         price = round(
             float(f"{price:.5g}"),
-            self.util.get_price_decimals_for_hypecore_asset(asset_id),
+            get_price_decimals_for_hypecore_asset(self.info, asset_id),
         )
         order_actions = self._create_hypecore_order_actions(
             asset_id,
@@ -290,7 +291,7 @@ class Exchange:
             sig_hex = await self.sign_callback(payload)
             if not sig_hex:
                 return None
-            return self.util._sig_hex_to_hl_signature(sig_hex)
+            return sig_hex_to_hl_signature(sig_hex)
 
         payload = encode_typed_data(full_message=payload)
         return await self.sign_callback(action, payload, address)
