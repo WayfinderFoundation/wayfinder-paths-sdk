@@ -5,7 +5,65 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.execute import execute
+from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.mcp.tools.execute import _select_token_chain, execute
+
+
+def test_select_token_chain_native_gas_token_null_address():
+    """Native gas tokens (e.g. ETH) may have address=null from the API.
+
+    _select_token_chain should normalize null -> ZERO_ADDRESS when the
+    metadata looks like a native gas token, mirroring the send path.
+    """
+    meta = {
+        "asset_id": "ethereum",
+        "symbol": "ETH",
+        "decimals": 18,
+        "address": None,
+        "chain_id": 1,
+    }
+    chain_id, addr = _select_token_chain(meta, query="ethereum-ethereum")
+    assert addr == ZERO_ADDRESS
+    assert chain_id is not None
+
+
+def test_select_token_chain_native_gas_token_missing_address():
+    """Same as above but address key is missing entirely."""
+    meta = {
+        "asset_id": "ethereum",
+        "symbol": "ETH",
+        "decimals": 18,
+        "chain_id": 8453,
+    }
+    chain_id, addr = _select_token_chain(meta, query="ethereum-base")
+    assert addr == ZERO_ADDRESS
+    assert chain_id == 8453
+
+
+def test_select_token_chain_erc20_null_address_not_normalized():
+    """Non-native tokens with null address should stay None (real error)."""
+    meta = {
+        "asset_id": "usd-coin",
+        "symbol": "USDC",
+        "decimals": 6,
+        "address": None,
+        "chain_id": 1,
+    }
+    _chain_id, addr = _select_token_chain(meta, query="usd-coin-ethereum")
+    assert addr is None
+
+
+def test_select_token_chain_normal_erc20_unchanged():
+    """Normal ERC20 tokens should pass through unchanged."""
+    meta = {
+        "asset_id": "usd-coin",
+        "symbol": "USDC",
+        "decimals": 6,
+        "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+        "chain_id": 1,
+    }
+    _chain_id, addr = _select_token_chain(meta, query="usd-coin-ethereum")
+    assert addr == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
 
 @pytest.mark.asyncio
