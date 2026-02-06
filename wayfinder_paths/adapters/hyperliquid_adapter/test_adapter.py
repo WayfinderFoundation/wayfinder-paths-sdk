@@ -1,5 +1,6 @@
+import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -91,3 +92,59 @@ class TestHyperliquidAdapter:
         assert state["perp"] is not None
         assert state["spot"] is not None
         assert state["openOrders"] == [{"oid": 1}]
+
+    @pytest.mark.asyncio
+    async def test_wait_for_deposit_confirms_via_ledger_if_already_credited(
+        self, adapter
+    ):
+        address = "0x" + "11" * 20
+        adapter.info.user_state.return_value = {
+            "marginSummary": {"accountValue": "100.0"}
+        }
+        adapter.info.post.return_value = [
+            {
+                "time": int(time.time() * 1000),
+                "hash": "0xabc",
+                "delta": {"type": "deposit", "usdc": "100.0"},
+            }
+        ]
+
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep_mock:
+            ok, final_balance = await adapter.wait_for_deposit(
+                address,
+                expected_increase=100.0,
+                timeout_s=60,
+                poll_interval_s=5,
+            )
+
+        assert ok is True
+        assert final_balance == 100.0
+        sleep_mock.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_wait_for_deposit_confirms_on_margin_increase(self, adapter):
+        address = "0x" + "22" * 20
+        adapter.info.post.return_value = []
+        adapter.info.user_state.side_effect = [
+            {"marginSummary": {"accountValue": "0.0"}},  # initial baseline
+            {"marginSummary": {"accountValue": "0.0"}},  # first check
+            {"marginSummary": {"accountValue": "100.0"}},  # credited
+        ]
+
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep_mock:
+            ok, final_balance = await adapter.wait_for_deposit(
+                address,
+                expected_increase=100.0,
+                timeout_s=60,
+                poll_interval_s=5,
+            )
+
+        assert ok is True
+        assert final_balance == 100.0
+        assert sleep_mock.await_count == 1
