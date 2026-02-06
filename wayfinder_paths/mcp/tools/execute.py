@@ -698,7 +698,6 @@ async def execute(
 
     if req.kind == "hyperliquid_deposit":
         recipient = normalize_address(HYPERLIQUID_BRIDGE_ADDRESS)
-        assert recipient is not None  # Bridge address is a valid constant
         chain_id = 42161
         token_address = ARBITRUM_USDC_ADDRESS
         decimals = 6

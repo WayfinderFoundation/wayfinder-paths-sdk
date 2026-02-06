@@ -1,5 +1,4 @@
 import asyncio
-from collections.abc import Mapping
 from typing import Any
 
 from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
