@@ -23,7 +23,10 @@ class HyperModule(Module):
 
 
 def _get_rpcs_for_chain_id(chain_id: int) -> list:
-    rpcs = get_rpc_urls().get(str(chain_id))
+    mapping = get_rpc_urls()
+    rpcs = mapping.get(str(chain_id))
+    if rpcs is None:
+        rpcs = mapping.get(chain_id)  # allow int keys
     if rpcs is None:
         raise ValueError(f"No RPCs configured for chain ID {chain_id}")
     if isinstance(rpcs, str):

@@ -3,11 +3,44 @@ import os
 from pathlib import Path
 from typing import Any
 
+_CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
+_DEFAULT_CONFIG_FILENAME = "config.json"
+
+
+def _find_project_root(start: Path) -> Path | None:
+    cur = start.resolve()
+    for parent in [cur, *cur.parents]:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return None
+
+
+def _project_root() -> Path | None:
+    return _find_project_root(Path.cwd()) or _find_project_root(Path(__file__).parent)
+
+
+def resolve_config_path(path: str | Path | None = None) -> Path:
+    if path is not None:
+        return Path(path).expanduser()
+
+    env_path = next(
+        (os.getenv(k, "").strip() for k in _CONFIG_ENV_KEYS if os.getenv(k)), ""
+    )
+    if env_path:
+        p = Path(env_path).expanduser()
+        if p.is_absolute():
+            return p
+        root = _project_root()
+        return (root / p) if root else p
+
+    root = _project_root()
+    return (root / _DEFAULT_CONFIG_FILENAME) if root else Path(_DEFAULT_CONFIG_FILENAME)
+
 
 def load_config_json(
-    path: str | Path = "config.json", *, require_exists: bool = False
+    path: str | Path | None = None, *, require_exists: bool = False
 ) -> dict[str, Any]:
-    cfg_path = Path(path)
+    cfg_path = resolve_config_path(path)
     if not cfg_path.exists():
         if require_exists:
             raise FileNotFoundError(f"Config file not found: {cfg_path}")
@@ -31,7 +64,7 @@ def set_config(config: dict[str, Any]) -> None:
 
 
 def load_config(
-    path: str | Path = "config.json", *, require_exists: bool = False
+    path: str | Path | None = None, *, require_exists: bool = False
 ) -> None:
     """Load config from disk into the global CONFIG dict."""
     set_config(load_config_json(path, require_exists=require_exists))

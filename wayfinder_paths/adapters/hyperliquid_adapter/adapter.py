@@ -8,44 +8,21 @@ from typing import Any, Literal
 
 from aiocache import Cache
 from eth_utils import to_checksum_address
+from hyperliquid.info import Info
+from hyperliquid.utils import constants
 from loguru import logger
 
+from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
+from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
+    create_local_signer,
+)
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import HYPERCORE_SENTINEL_ADDRESS
 from wayfinder_paths.core.constants.hyperliquid import (
-    ARBITRUM_USDC_ADDRESS as _ARBITRUM_USDC_ADDRESS,
-)
-from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.constants.hyperliquid import (
-    HYPERLIQUID_BRIDGE_ADDRESS as _HYPERLIQUID_BRIDGE_ADDRESS,
-)
-
-# Re-export Bridge2 constants for backwards compatibility.
-HYPERLIQUID_BRIDGE_ADDRESS = _HYPERLIQUID_BRIDGE_ADDRESS
-ARBITRUM_USDC_ADDRESS = _ARBITRUM_USDC_ADDRESS
-
-try:
-    from hyperliquid.info import Info
-    from hyperliquid.utils import constants
-
-    from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
-    from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
-        create_local_signer,
-    )
-    from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
-
-    HYPERLIQUID_AVAILABLE = True
-except ImportError:
-    HYPERLIQUID_AVAILABLE = False
-    Info = None
-    constants = None
-    Exchange = None
-    Util = None
-    create_local_signer = None
 
 
 class HyperliquidAdapter(BaseAdapter):
@@ -59,15 +36,8 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> None:
         super().__init__("hyperliquid_adapter", config)
 
-        if not HYPERLIQUID_AVAILABLE:
-            raise ImportError(
-                "hyperliquid package not installed. "
-                "Install with: poetry add hyperliquid"
-            )
-
         self._cache = Cache(Cache.MEMORY)
         self._info: Any | None = None
-        self._util: Any | None = None
 
         self._sign_callback = sign_callback
         self._exchange: Exchange | None = None
@@ -92,7 +62,6 @@ class HyperliquidAdapter(BaseAdapter):
 
             self._exchange = Exchange(
                 info=self.info,
-                util=self.util,
                 sign_callback=sign_callback,
                 signing_type=signing_type,
             )
@@ -109,19 +78,8 @@ class HyperliquidAdapter(BaseAdapter):
     @info.setter
     def info(self, value: Any) -> None:
         self._info = value
-        self._util = None
         self._asset_to_sz_decimals = None
         self._coin_to_asset = None
-
-    @property
-    def util(self) -> Any:
-        if self._util is None:
-            self._util = Util(self.info)
-        return self._util
-
-    @util.setter
-    def util(self, value: Any) -> None:
-        self._util = value
 
     # ------------------------------------------------------------------ #
     # Market Data - Read Operations                                       #
@@ -1081,7 +1039,9 @@ class HyperliquidAdapter(BaseAdapter):
         timeout_s: int = 120,
         poll_interval_s: int = 5,
     ) -> tuple[bool, float]:
-        iterations = timeout_s // poll_interval_s
+        timeout_s = max(0, int(timeout_s))
+        poll_interval_s = max(1, int(poll_interval_s))
+        iterations = int(timeout_s // poll_interval_s) + 1
 
         # Get initial balance
         success, initial_state = await self.get_user_state(address)
@@ -1096,8 +1056,21 @@ class HyperliquidAdapter(BaseAdapter):
             f"expecting +${expected_increase:.2f}"
         )
 
+        # If the deposit already credited before this method was called, the
+        # balance-delta check below won't trigger (since initial_balance already
+        # includes it). So we also check ledger updates over the same time window.
+        started_ms = int(time.time() * 1000)
+        from_timestamp_ms = started_ms - (timeout_s * 1000)
+        expected_min = float(expected_increase) * 0.95
+
+        ok_ledger, deposits = await self.get_user_deposits(address, from_timestamp_ms)
+        if ok_ledger and any(float(v or 0) >= expected_min for v in deposits.values()):
+            self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
+            return True, float(initial_balance)
+
         for i in range(iterations):
-            await asyncio.sleep(poll_interval_s)
+            if i > 0:
+                await asyncio.sleep(poll_interval_s)
 
             success, state = await self.get_user_state(address)
             if not success:
@@ -1106,12 +1079,21 @@ class HyperliquidAdapter(BaseAdapter):
             current_balance = self.get_perp_margin_amount(state)
 
             # Allow 5% tolerance for fees/slippage
-            if current_balance >= initial_balance + expected_increase * 0.95:
+            if current_balance >= initial_balance + expected_min:
                 self.logger.info(
                     f"Hyperliquid deposit confirmed: ${current_balance - initial_balance:.2f} "
                     f"(expected ${expected_increase:.2f})"
                 )
                 return True, current_balance
+
+            ok_ledger, deposits = await self.get_user_deposits(
+                address, from_timestamp_ms
+            )
+            if ok_ledger and any(
+                float(v or 0) >= expected_min for v in deposits.values()
+            ):
+                self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
+                return True, float(current_balance)
 
             remaining_s = (iterations - i - 1) * poll_interval_s
             self.logger.debug(
@@ -1129,6 +1111,50 @@ class HyperliquidAdapter(BaseAdapter):
             self.get_perp_margin_amount(state) if success else initial_balance
         )
         return False, final_balance
+
+    async def get_user_deposits(
+        self,
+        address: str,
+        from_timestamp_ms: int,
+    ) -> tuple[bool, dict[str, float]]:
+        """
+        Get user deposits from Hyperliquid ledger updates.
+
+        Returns:
+            (success, {tx_hash: usdc_amount})
+        """
+        try:
+            data = self.info.post(
+                "/info",
+                {
+                    "type": "userNonFundingLedgerUpdates",
+                    "user": to_checksum_address(address),
+                    "startTime": int(from_timestamp_ms),
+                },
+            )
+
+            result: dict[str, float] = {}
+            # Sort earliest to latest
+            for update in sorted(data or [], key=lambda x: x.get("time", 0)):
+                delta = update.get("delta") or {}
+                if delta.get("type") == "deposit":
+                    tx_hash = (
+                        update.get("hash")
+                        or update.get("txHash")
+                        or update.get("tx_hash")
+                        or update.get("transactionHash")
+                    )
+                    usdc_amount = float(delta.get("usdc", 0))
+                    if not tx_hash:
+                        ts = int(update.get("time") or 0)
+                        tx_hash = f"deposit-{ts}-{len(result)}"
+                    result[str(tx_hash)] = usdc_amount
+
+            return True, result
+
+        except Exception as exc:
+            self.logger.error(f"Failed to get user deposits: {exc}")
+            return False, {}
 
     async def get_user_withdrawals(
         self,

@@ -1,4 +1,4 @@
-"""CLI interface for Wayfinder MCP tools.
+"""CLI interface for Wayfinder tools.
 
 Auto-generates click subcommands from the FastMCP server's registered tools.
 
@@ -11,10 +11,12 @@ Usage:
 
 from wayfinder_paths.mcp.cli_builder import build_cli
 from wayfinder_paths.mcp.server import mcp
+from wayfinder_paths.runner.cli import runner_cli
 
 
 def main():
     cli = build_cli(mcp)
+    cli.add_command(runner_cli)
     cli(standalone_mode=True)
 
 

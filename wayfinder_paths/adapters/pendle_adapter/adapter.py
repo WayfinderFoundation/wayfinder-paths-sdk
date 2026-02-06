@@ -58,6 +58,7 @@ PENDLE_CHAIN_IDS: dict[str, int] = {
     "arbitrum": 42161,
     "base": 8453,
     "hyperevm": 999,
+    "plasma": 9745,
 }
 
 PENDLE_DEFAULT_DEPLOYMENTS_BASE_URL = "https://raw.githubusercontent.com/pendle-finance/pendle-core-v2-public/main/deployments"
@@ -952,7 +953,7 @@ class PendleAdapter(BaseAdapter):
         if chain is not None:
             chains = [chain]
         if chains is None:
-            chains = [42161, 8453, 999]
+            chains = [42161, 8453, 999, 9745]
 
         chain_ids = [_as_chain_id(c) for c in chains]
 
