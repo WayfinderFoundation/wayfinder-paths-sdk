@@ -8,7 +8,7 @@ Added
 2. Project-local runner scheduler.
 3. CLI support for other platforms.
 4. Strategy + Adapter creation script.
-5. Plasma HL deposit wait.
+5. Added Plasma chain support (chain ID 9745) with default RPCs.
 
 Changed
 
@@ -22,6 +22,7 @@ Fixed
 3. Withdraw failure due to unexpected kwargs.
 4. policies now async + awaited.
 5. CLI vars return None when not provided.
+6. Improved Hyperliquid deposit confirmation (ledger-based checks, avoids extra wait).
 
 Chore / Docs
 
