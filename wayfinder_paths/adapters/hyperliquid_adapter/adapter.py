@@ -1072,7 +1072,9 @@ class HyperliquidAdapter(BaseAdapter):
                 )
                 return True, current_balance
 
-            ok_ledger, deposits = await self.get_user_deposits(address, from_timestamp_ms)
+            ok_ledger, deposits = await self.get_user_deposits(
+                address, from_timestamp_ms
+            )
             if ok_ledger and any(
                 float(v or 0) >= expected_min for v in deposits.values()
             ):
