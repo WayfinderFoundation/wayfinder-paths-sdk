@@ -11,9 +11,7 @@ from typing import Any
 
 from loguru import logger
 
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
-    HYPERLIQUID_BRIDGE_ADDRESS,
-)
+from wayfinder_paths.core.constants import HYPERLIQUID_BRIDGE_ADDRESS
 from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import (
     MIN_NOTIONAL_USD,
     FillConfig,
