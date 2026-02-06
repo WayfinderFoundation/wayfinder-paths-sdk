@@ -1092,7 +1092,7 @@ class HyperliquidAdapter(BaseAdapter):
             (success, {tx_hash: usdc_amount})
         """
         try:
-            data = self.info.post(
+            data = get_info().post(
                 "/info",
                 {
                     "type": "userNonFundingLedgerUpdates",

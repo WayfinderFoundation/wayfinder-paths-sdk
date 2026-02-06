@@ -1,5 +1,4 @@
 import time
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -30,78 +29,96 @@ class TestHyperliquidAdapter:
         mock.post.return_value = []
         mock.asset_to_sz_decimals = {0: 4, 1: 3, 10000: 6}
         mock.coin_to_asset = {"BTC": 0, "ETH": 1}
+        mock.frontend_open_orders.return_value = [{"oid": 1}]
         return mock
 
     @pytest.fixture
-    def mock_constants(self):
-        return SimpleNamespace(MAINNET_API_URL="https://api.hyperliquid.xyz")
-
-    @pytest.fixture
-    def adapter(self, mock_info, mock_constants):
+    def adapter(self, mock_info):
         with patch(
-            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.Info",
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
             return_value=mock_info,
         ):
-            with patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.constants",
-                mock_constants,
-            ):
-                adapter = HyperliquidAdapter(config={})
-                adapter.info = mock_info
-                return adapter
+            adapter = HyperliquidAdapter(config={})
+            return adapter
 
     @pytest.mark.asyncio
-    async def test_get_meta_and_asset_ctxs(self, adapter):
-        success, data = await adapter.get_meta_and_asset_ctxs()
-        assert success
-        assert "universe" in data[0]
+    async def test_get_meta_and_asset_ctxs(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            success, data = await adapter.get_meta_and_asset_ctxs()
+            assert success
+            assert "universe" in data[0]
 
     @pytest.mark.asyncio
-    async def test_get_spot_meta(self, adapter):
-        success, data = await adapter.get_spot_meta()
-        assert success
+    async def test_get_spot_meta(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            success, data = await adapter.get_spot_meta()
+            assert success
 
     @pytest.mark.asyncio
-    async def test_get_l2_book(self, adapter):
-        success, data = await adapter.get_l2_book("ETH")
-        assert success
-        assert "levels" in data
+    async def test_get_l2_book(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            success, data = await adapter.get_l2_book("ETH")
+            assert success
+            assert "levels" in data
 
     @pytest.mark.asyncio
-    async def test_get_user_state(self, adapter):
-        success, data = await adapter.get_user_state("0x1234")
-        assert success
-        assert "assetPositions" in data
+    async def test_get_user_state(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            success, data = await adapter.get_user_state("0x1234")
+            assert success
+            assert "assetPositions" in data
 
-    def test_get_sz_decimals(self, adapter):
-        decimals = adapter.get_sz_decimals(0)
-        assert decimals == 4
+    def test_get_sz_decimals(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            decimals = adapter.get_sz_decimals(0)
+            assert decimals == 4
 
-    def test_get_sz_decimals_unknown_asset(self, adapter):
-        with pytest.raises(ValueError, match="Unknown asset_id"):
-            adapter.get_sz_decimals(99999)
+    def test_get_sz_decimals_unknown_asset(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            with pytest.raises(ValueError, match="Unknown asset_id"):
+                adapter.get_sz_decimals(99999)
 
     @pytest.mark.asyncio
-    async def test_get_full_user_state(self, adapter):
-        adapter.info.frontend_open_orders.return_value = [{"oid": 1}]
-
-        ok, state = await adapter.get_full_user_state(account="0x1234")
-        assert ok is True
-        assert state["protocol"] == "hyperliquid"
-        assert state["account"] == "0x1234"
-        assert state["perp"] is not None
-        assert state["spot"] is not None
-        assert state["openOrders"] == [{"oid": 1}]
+    async def test_get_full_user_state(self, adapter, mock_info):
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            ok, state = await adapter.get_full_user_state(account="0x1234")
+            assert ok is True
+            assert state["protocol"] == "hyperliquid"
+            assert state["account"] == "0x1234"
+            assert state["perp"] is not None
+            assert state["spot"] is not None
+            assert state["openOrders"] == [{"oid": 1}]
 
     @pytest.mark.asyncio
     async def test_wait_for_deposit_confirms_via_ledger_if_already_credited(
-        self, adapter
+        self, adapter, mock_info
     ):
         address = "0x" + "11" * 20
-        adapter.info.user_state.return_value = {
+        mock_info.user_state.return_value = {
             "marginSummary": {"accountValue": "100.0"}
         }
-        adapter.info.post.return_value = [
+        mock_info.post.return_value = [
             {
                 "time": int(time.time() * 1000),
                 "delta": {"type": "deposit", "usdc": "100.0"},
@@ -109,41 +126,49 @@ class TestHyperliquidAdapter:
         ]
 
         with patch(
-            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
-            new=AsyncMock(),
-        ) as sleep_mock:
-            ok, final_balance = await adapter.wait_for_deposit(
-                address,
-                expected_increase=100.0,
-                timeout_s=60,
-                poll_interval_s=5,
-            )
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            with patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+                new=AsyncMock(),
+            ) as sleep_mock:
+                ok, final_balance = await adapter.wait_for_deposit(
+                    address,
+                    expected_increase=100.0,
+                    timeout_s=60,
+                    poll_interval_s=5,
+                )
 
-        assert ok is True
-        assert final_balance == 100.0
-        sleep_mock.assert_not_called()
+            assert ok is True
+            assert final_balance == 100.0
+            sleep_mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_wait_for_deposit_confirms_on_margin_increase(self, adapter):
+    async def test_wait_for_deposit_confirms_on_margin_increase(self, adapter, mock_info):
         address = "0x" + "22" * 20
-        adapter.info.post.return_value = []
-        adapter.info.user_state.side_effect = [
+        mock_info.post.return_value = []
+        mock_info.user_state.side_effect = [
             {"marginSummary": {"accountValue": "0.0"}},  # initial baseline
             {"marginSummary": {"accountValue": "0.0"}},  # first check
             {"marginSummary": {"accountValue": "100.0"}},  # credited
         ]
 
         with patch(
-            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
-            new=AsyncMock(),
-        ) as sleep_mock:
-            ok, final_balance = await adapter.wait_for_deposit(
-                address,
-                expected_increase=100.0,
-                timeout_s=60,
-                poll_interval_s=5,
-            )
+            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+            return_value=mock_info,
+        ):
+            with patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+                new=AsyncMock(),
+            ) as sleep_mock:
+                ok, final_balance = await adapter.wait_for_deposit(
+                    address,
+                    expected_increase=100.0,
+                    timeout_s=60,
+                    poll_interval_s=5,
+                )
 
-        assert ok is True
-        assert final_balance == 100.0
-        assert sleep_mock.await_count == 1
+            assert ok is True
+            assert final_balance == 100.0
+            assert sleep_mock.await_count == 1

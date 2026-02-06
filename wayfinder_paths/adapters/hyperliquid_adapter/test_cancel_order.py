@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -10,21 +10,24 @@ from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
 class TestHyperliquidCancelOrder:
     @pytest.mark.asyncio
     async def test_exchange_cancel_order_uses_int_oid(self):
-        ex = Exchange(
-            info=SimpleNamespace(),
-            sign_callback=AsyncMock(return_value="0x"),
-            signing_type="eip712",
-        )
-        ex.sign_and_broadcast_hypecore = AsyncMock(return_value={"status": "ok"})
+        with patch(
+            "wayfinder_paths.adapters.hyperliquid_adapter.exchange.get_info",
+            return_value=SimpleNamespace(),
+        ):
+            ex = Exchange(
+                sign_callback=AsyncMock(return_value="0x"),
+                signing_type="eip712",
+            )
+            ex.sign_and_broadcast_hypecore = AsyncMock(return_value={"status": "ok"})
 
-        await ex.cancel_order(asset_id=10210, order_id=306356655993, address="0xabc")
+            await ex.cancel_order(asset_id=10210, order_id=306356655993, address="0xabc")
 
-        args, _ = ex.sign_and_broadcast_hypecore.await_args
-        action = args[0]
-        assert action["type"] == "cancel"
-        assert action["cancels"][0]["a"] == 10210
-        assert isinstance(action["cancels"][0]["o"], int)
-        assert action["cancels"][0]["o"] == 306356655993
+            args, _ = ex.sign_and_broadcast_hypecore.await_args
+            action = args[0]
+            assert action["type"] == "cancel"
+            assert action["cancels"][0]["a"] == 10210
+            assert isinstance(action["cancels"][0]["o"], int)
+            assert action["cancels"][0]["o"] == 306356655993
 
     @pytest.mark.asyncio
     async def test_adapter_cancel_order_parses_string_oid(self):
