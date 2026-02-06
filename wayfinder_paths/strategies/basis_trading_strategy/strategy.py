@@ -34,7 +34,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
     usd_depth_in_band as hl_usd_depth_in_band,
 )
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.analytics import (
     block_bootstrap_paths as analytics_block_bootstrap_paths,
@@ -228,7 +227,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
             self.token_adapter = TokenAdapter()
-            self.ledger_adapter = LedgerAdapter()
         except Exception as e:
             self.logger.error(f"Failed to initialize strategy adapters: {e}")
             raise

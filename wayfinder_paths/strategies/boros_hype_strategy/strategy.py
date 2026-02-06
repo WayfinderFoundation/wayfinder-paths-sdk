@@ -14,7 +14,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     HyperliquidAdapter,
 )
 from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import MIN_NOTIONAL_USD
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
@@ -291,8 +290,6 @@ class BorosHypeStrategy(
             config=self._config,
             strategy_wallet_signing_callback=self._sign_callback,
         )
-
-        self.ledger_adapter = LedgerAdapter()
 
         logger.info("BorosHypeStrategy setup complete")
 

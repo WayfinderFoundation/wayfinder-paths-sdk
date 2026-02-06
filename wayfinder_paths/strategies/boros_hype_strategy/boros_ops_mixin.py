@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -32,10 +32,13 @@ from .constants import (
 )
 from .types import Inventory
 
+if TYPE_CHECKING:
+    from .strategy import BorosHypeStrategy
+
 
 class BorosHypeBorosOpsMixin:
     async def _fund_boros(
-        self, params: dict[str, Any], inventory: Inventory
+        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         """Fund Boros using native HYPE collateral.
 
@@ -290,7 +293,7 @@ class BorosHypeBorosOpsMixin:
         )
 
     async def _ensure_boros_position(
-        self, params: dict[str, Any], inventory: Inventory
+        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # If Boros operations fail unexpectedly, triggers fail-safe liquidation.
         market_id = int(
@@ -331,7 +334,7 @@ class BorosHypeBorosOpsMixin:
             )
 
     async def _ensure_boros_position_impl(
-        self,
+        self: BorosHypeStrategy,
         *,
         market_id: int,
         token_id: int,
@@ -439,7 +442,7 @@ class BorosHypeBorosOpsMixin:
         )
 
     async def _complete_pending_withdrawal(
-        self, params: dict[str, Any], inventory: Inventory
+        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # Legacy helper used by some withdrawal flows: swap USDT->USDC on Arbitrum
         usdt_idle = float(params.get("usdt_idle") or 0.0)

@@ -3,7 +3,7 @@ import math
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Literal, cast
 
@@ -15,7 +15,6 @@ from web3 import Web3
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.adapters.hyperlend_adapter.adapter import HyperlendAdapter
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.base import DEFAULT_SLIPPAGE
 from wayfinder_paths.core.constants.contracts import HYPEREVM_WHYPE
@@ -232,7 +231,6 @@ class HyperlendStableYieldStrategy(Strategy):
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
             self.token_adapter = TokenAdapter()
-            self.ledger_adapter = LedgerAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
@@ -1208,7 +1206,7 @@ class HyperlendStableYieldStrategy(Strategy):
             )
             cooldown_notice = None
             if rotation_allowed and last_rotation is not None:
-                elapsed = timezone.now() - last_rotation
+                elapsed = datetime.now(UTC) - last_rotation
                 if elapsed < self.ROTATION_COOLDOWN:
                     rotation_allowed = False
                     remaining_hours = max(
@@ -2189,8 +2187,10 @@ class HyperlendStableYieldStrategy(Strategy):
                     balance_decimal_input = Decimal(
                         str(asset.get("underlying_wallet_balance") or 0.0)
                     )
-                    balance_wei = int(balance_decimal_input * scale).to_integral_value(
-                        rounding=ROUND_DOWN
+                    balance_wei = int(
+                        (balance_decimal_input * scale).to_integral_value(
+                            rounding=ROUND_DOWN
+                        )
                     )
                 if balance_wei < 0:
                     balance_wei = 0

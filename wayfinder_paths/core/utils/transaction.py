@@ -105,7 +105,7 @@ async def gas_price_transaction(transaction: dict):
 
     async def _get_base_fee(web3: AsyncWeb3) -> int:
         latest_block = await web3.eth.get_block("latest")
-        return latest_block.baseFeePerGas
+        return latest_block["baseFeePerGas"]
 
     async def _get_priority_fee(web3: AsyncWeb3) -> int:
         lookback_blocks = 10
@@ -113,7 +113,7 @@ async def gas_price_transaction(transaction: dict):
         fee_history = await web3.eth.fee_history(
             lookback_blocks, "latest", [percentile]
         )
-        historical_priority_fees = [i[0] for i in fee_history.reward]
+        historical_priority_fees = [i[0] for i in fee_history["reward"]]
         return sum(historical_priority_fees) // len(historical_priority_fees)
 
     chain_id = get_transaction_chain_id(transaction)

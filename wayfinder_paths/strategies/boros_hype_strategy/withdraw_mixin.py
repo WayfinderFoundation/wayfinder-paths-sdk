@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
@@ -19,6 +20,9 @@ from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import (
 )
 from wayfinder_paths.core.strategies import StatusTuple
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+
+if TYPE_CHECKING:
+    from .strategy import BorosHypeStrategy
 
 from .constants import (
     ARBITRUM_CHAIN_ID,
@@ -39,7 +43,7 @@ from .constants import (
 
 
 class BorosHypeWithdrawMixin:
-    async def withdraw(self, **kwargs) -> StatusTuple:
+    async def withdraw(self: BorosHypeStrategy, **kwargs) -> StatusTuple:
         # Liquidates to USDC on Arb but does NOT transfer to main wallet (call exit() after)
         max_wait_s = int(
             kwargs.get("max_wait_s") or kwargs.get("max_wait_seconds") or 20 * 60
@@ -1363,7 +1367,9 @@ class BorosHypeWithdrawMixin:
             f"Fully unwound all positions. USDC balance: ${usdc_tokens:.2f}. Call exit() to transfer to main wallet.",
         )
 
-    async def _unwrap_whype(self, address: str, amount_wei: int) -> tuple[bool, str]:
+    async def _unwrap_whype(
+        self: BorosHypeStrategy, address: str, amount_wei: int
+    ) -> tuple[bool, str]:
         try:
             if not self._sign_callback:
                 return False, "No signing callback configured"

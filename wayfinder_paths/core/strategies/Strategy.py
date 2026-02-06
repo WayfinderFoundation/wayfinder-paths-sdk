@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 
 from loguru import logger
 
+from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.core.clients.TokenClient import TokenDetails
 from wayfinder_paths.core.strategies.descriptors import StratDescriptor
 
@@ -65,7 +66,7 @@ class Strategy(ABC):
         strategy_sign_typed_data: Callable[[dict], Awaitable[str]] | None = None,
         **kwargs: Any,
     ):
-        self.ledger_adapter = None
+        self.ledger_adapter = LedgerAdapter()
         self.logger = logger.bind(strategy=self.__class__.__name__)
         self.config: StrategyConfig | dict[str, Any] = config or {}
         self.main_wallet_signing_callback = main_wallet_signing_callback
@@ -118,8 +119,6 @@ class Strategy(ABC):
 
     async def status(self) -> StatusDict:
         status = await self._status()
-        if self.ledger_adapter is None:
-            raise RuntimeError("ledger_adapter not initialized - subclass must set it")
         await self.ledger_adapter.record_strategy_snapshot(
             wallet_address=self._get_strategy_wallet_address(),
             strategy_status=status,
