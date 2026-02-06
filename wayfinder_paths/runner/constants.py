@@ -21,3 +21,6 @@ class RunStatus(StrEnum):
 # Supported job types
 JOB_TYPE_STRATEGY: Final[str] = "strategy"
 JOB_TYPE_SCRIPT: Final[str] = "script"
+
+# Control protocol limits
+MAX_LINE_BYTES: Final[int] = 1024 * 1024

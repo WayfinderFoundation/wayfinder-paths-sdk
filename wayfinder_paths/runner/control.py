@@ -8,8 +8,8 @@ from pathlib import Path
 from loguru import logger
 
 from wayfinder_paths.runner.api import dispatch
+from wayfinder_paths.runner.constants import MAX_LINE_BYTES
 from wayfinder_paths.runner.protocol import (
-    MAX_LINE_BYTES,
     ProtocolError,
     decode_request_line,
     encode_response,

@@ -4,8 +4,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-MAX_LINE_BYTES = 1024 * 1024
-
 
 @dataclass(frozen=True)
 class ProtocolError(Exception):
