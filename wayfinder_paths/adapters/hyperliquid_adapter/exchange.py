@@ -5,7 +5,6 @@ from typing import Any, Literal
 from eth_account.messages import encode_typed_data
 from hyperliquid.api import API
 from hyperliquid.exchange import get_timestamp_ms
-from hyperliquid.info import Info
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
@@ -24,6 +23,7 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 from web3 import Web3
 
+from wayfinder_paths.adapters.hyperliquid_adapter.info import INFO
 from wayfinder_paths.adapters.hyperliquid_adapter.util import (
     get_price_decimals_for_hypecore_asset,
     sig_hex_to_hl_signature,
@@ -40,11 +40,9 @@ USER_DECLINED_ERROR = {
 class Exchange:
     def __init__(
         self,
-        info: Info,
         sign_callback: Callable[[dict], Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):
-        self.info = info
         self.api = API()
         self.sign_callback = sign_callback
         self.signing_type = signing_type
@@ -83,8 +81,8 @@ class Exchange:
         builder: BuilderInfo | None = None,
         cloid: str | None = None,
     ):
-        asset_name = self.info.asset_to_coin[asset_id]
-        mids = self.info.all_mids()
+        asset_name = INFO.asset_to_coin[asset_id]
+        mids = INFO.all_mids()
         midprice = float(mids[asset_name])
 
         if slippage >= 1 or slippage < 0:
@@ -93,7 +91,7 @@ class Exchange:
         price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
         price = round(
             float(f"{price:.5g}"),
-            get_price_decimals_for_hypecore_asset(self.info, asset_id),
+            get_price_decimals_for_hypecore_asset(INFO, asset_id),
         )
         order_actions = self._create_hypecore_order_actions(
             asset_id,
