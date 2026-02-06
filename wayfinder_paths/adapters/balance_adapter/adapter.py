@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Mapping
 from typing import Any
 
 from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
@@ -42,6 +43,8 @@ class BalanceAdapter(BaseAdapter):
                 token_info = await TOKEN_CLIENT.get_token_details(token_id)
                 token_address = token_info["address"]
                 chain_id = chain_id or resolve_chain_id(token_info)
+            if not token_address or chain_id is None:
+                return False, "token_address and chain_id are required"
             balance = await get_token_balance(token_address, chain_id, wallet_address)
             return True, balance
         except Exception as e:
@@ -101,6 +104,8 @@ class BalanceAdapter(BaseAdapter):
     ) -> tuple[bool, str]:
         token_info = await TOKEN_CLIENT.get_token_details(token_id)
         chain_id = resolve_chain_id(token_info)
+        if chain_id is None:
+            return False, "Could not resolve chain_id from token"
         tx = await build_send_transaction(
             from_address=from_wallet["address"],
             to_address=to_address,
@@ -124,6 +129,8 @@ class BalanceAdapter(BaseAdapter):
     ) -> tuple[bool, str]:
         token_info = await TOKEN_CLIENT.get_token_details(token_id)
         chain_id = resolve_chain_id(token_info)
+        if chain_id is None:
+            return False, "Could not resolve chain_id from token"
         decimals = token_info.get("decimals", 18)
         raw_amount = int(amount * (10**decimals))
 
