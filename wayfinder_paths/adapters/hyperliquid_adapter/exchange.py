@@ -36,7 +36,6 @@ class Exchange:
     def __init__(
         self,
         info: Info,
-        util: Util,
         sign_callback: Callable[..., Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):
