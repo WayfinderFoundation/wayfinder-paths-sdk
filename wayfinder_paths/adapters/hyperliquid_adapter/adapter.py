@@ -8,44 +8,22 @@ from typing import Any
 
 from aiocache import Cache
 from eth_utils import to_checksum_address
+from hyperliquid.info import Info
+from hyperliquid.utils import constants
 from loguru import logger
 
+from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
+from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
+    create_local_signer,
+)
+from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import HYPERCORE_SENTINEL_ADDRESS
 from wayfinder_paths.core.constants.hyperliquid import (
-    ARBITRUM_USDC_ADDRESS as _ARBITRUM_USDC_ADDRESS,
-)
-from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.constants.hyperliquid import (
-    HYPERLIQUID_BRIDGE_ADDRESS as _HYPERLIQUID_BRIDGE_ADDRESS,
-)
-
-# Re-export Bridge2 constants for backwards compatibility.
-HYPERLIQUID_BRIDGE_ADDRESS = _HYPERLIQUID_BRIDGE_ADDRESS
-ARBITRUM_USDC_ADDRESS = _ARBITRUM_USDC_ADDRESS
-
-try:
-    from hyperliquid.info import Info
-    from hyperliquid.utils import constants
-
-    from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
-    from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
-        create_local_signer,
-    )
-    from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
-
-    HYPERLIQUID_AVAILABLE = True
-except ImportError:
-    HYPERLIQUID_AVAILABLE = False
-    Info = None
-    constants = None
-    Exchange = None
-    Util = None
-    create_local_signer = None
 
 
 class HyperliquidAdapter(BaseAdapter):
@@ -58,12 +36,6 @@ class HyperliquidAdapter(BaseAdapter):
         sign_callback: Callable[[dict], Awaitable[str]] | None = None,
     ) -> None:
         super().__init__("hyperliquid_adapter", config)
-
-        if not HYPERLIQUID_AVAILABLE:
-            raise ImportError(
-                "hyperliquid package not installed. "
-                "Install with: poetry add hyperliquid"
-            )
 
         self._cache = Cache(Cache.MEMORY)
         self._info: Any | None = None
