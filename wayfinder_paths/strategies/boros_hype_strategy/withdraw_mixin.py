@@ -879,11 +879,7 @@ class BorosHypeWithdrawMixin:
         # ─────────────────────────────────────────────────────────────────
         # STEP 7: Move all USDC from spot to perp margin (poll until cleared)
         # ─────────────────────────────────────────────────────────────────
-        usdc_sz_decimals = await self.hyperliquid_adapter.get_spot_token_sz_decimals(
-            "USDC"
-        )
-        if usdc_sz_decimals is None:
-            usdc_sz_decimals = 2
+        usdc_sz_decimals = 8
 
         spot_transfer_succeeded = False
         did_transfer_spot_usdc_to_perp = False
