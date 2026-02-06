@@ -23,7 +23,7 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 from web3 import Web3
 
-from wayfinder_paths.adapters.hyperliquid_adapter.info import INFO
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
@@ -44,7 +44,7 @@ class Exchange:
         self.signing_type = signing_type
 
     def get_sz_decimals(self, asset_id: int) -> int:
-        return INFO.asset_to_sz_decimals[asset_id]
+        return get_info().asset_to_sz_decimals[asset_id]
 
     def get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
@@ -100,8 +100,8 @@ class Exchange:
         builder: BuilderInfo | None = None,
         cloid: str | None = None,
     ):
-        asset_name = INFO.asset_to_coin[asset_id]
-        mids = INFO.all_mids()
+        asset_name = get_info().asset_to_coin[asset_id]
+        mids = get_info().all_mids()
         midprice = float(mids[asset_name])
 
         if slippage >= 1 or slippage < 0:
