@@ -136,7 +136,7 @@ When a user wants **immediate, one-off execution**:
 
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send).
 - **Hyperliquid perps:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel).
-- **Multi-step flows:** write a short Python script under `.wayfinder_runs/` and execute it with `mcp__wayfinder__run_script`.
+- **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 Hyperliquid minimums:
 
@@ -167,6 +167,8 @@ await adapter.set_collateral(mtoken=USDC_MTOKEN)
 ```
 
 This auto-loads `config.json`, looks up the wallet by label, creates a signing callback, and wires everything together. For read-only adapters (e.g., PendleAdapter), omit the wallet label.
+
+For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `wayfinder_paths.core.utils.web3.web3_from_chain_id(chain_id)` which reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`).
 
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 
