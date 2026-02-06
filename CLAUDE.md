@@ -135,7 +135,7 @@ When a user asks to run, check, or interact with a strategy:
 When a user wants **immediate, one-off execution**:
 
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send).
-- **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Always set `is_spot`** — see below.
+- **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 Hyperliquid minimums:
@@ -148,22 +148,6 @@ Hyperliquid deposits (Bridge2):
 - Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
 - Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address). If you need to retry an identical request, pass `force=true`.
 - Withdraw flow: `mcp__wayfinder__hyperliquid_execute(action="withdraw", amount_usdc=...)` → `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal")`.
-
-Spot vs perp orders (`is_spot` — **required for `place_order`**):
-
-- **Always set `is_spot` explicitly** when calling `place_order`. Omitting it returns an error.
-- `is_spot=False` → perp order (requires `usd_amount_kind="notional"|"margin"` when using `usd_amount`)
-- `is_spot=True` → spot order (no leverage; `usd_amount` is always notional)
-- Examples:
-  ```
-  # Perp long: $5 margin at 3× leverage
-  hyperliquid_execute(action="place_order", wallet_label="main", coin="BTC",
-      is_buy=True, is_spot=False, usd_amount=5, usd_amount_kind="margin")
-
-  # Spot buy: $20 of HYPE
-  hyperliquid_execute(action="place_order", wallet_label="main", coin="HYPE",
-      is_buy=True, is_spot=True, usd_amount=20)
-  ```
 
 Sizing note (avoid ambiguity):
 
