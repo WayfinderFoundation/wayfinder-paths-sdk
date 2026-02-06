@@ -3725,7 +3725,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         # Note: snap.net_equity_usd represents net equity (wallet + supplies - debt),
         # so wallet_value is added here only for this aggregate display metric.
         net_equity_value = float(snap.net_equity_usd)
-        gas_usd = (snap.wallet_eth / 10 ** snap.eth_dec) * snap.eth_price
+        gas_usd = (snap.wallet_eth / 10**snap.eth_dec) * snap.eth_price
         wallet_value = sum(wb["usd"] for wb in wallet_balances.values())
         portfolio_value = net_equity_value + wallet_value - gas_usd
 
