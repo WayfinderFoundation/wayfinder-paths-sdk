@@ -28,13 +28,9 @@ from .constants import (
 )
 from .types import Inventory
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
-
 class BorosHypeRiskOpsMixin:
     async def _close_and_redeploy(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         ok, msg = self._require_adapters(
             "balance_adapter", "hyperliquid_adapter", "brap_adapter"
@@ -457,7 +453,7 @@ class BorosHypeRiskOpsMixin:
             return True, "Redeployed (hedge verification pending)"
 
     async def _failsafe_liquidate_all(
-        self: BorosHypeStrategy, reason: str
+        self, reason: str
     ) -> tuple[bool, str]:
         # Called when critical operations fail; close all positions to stable assets
         logger.error(f"[FAILSAFE] Initiating full liquidation: {reason}")
@@ -668,7 +664,7 @@ class BorosHypeRiskOpsMixin:
         return False, result_msg
 
     async def _partial_trim_spot(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         trim_pct = float(params.get("trim_pct") or 0.25)
 

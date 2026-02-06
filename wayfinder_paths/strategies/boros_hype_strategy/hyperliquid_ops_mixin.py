@@ -21,19 +21,16 @@ from wayfinder_paths.core.constants import HYPERLIQUID_BRIDGE_ADDRESS
 from .constants import MAX_HL_LEVERAGE, USDC_ARB
 from .types import Inventory
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
 
 class BorosHypeHyperliquidOpsMixin:
-    def _paired_fill_cfg(self: BorosHypeStrategy, coin: str) -> FillConfig:
+    def _paired_fill_cfg(self, coin: str) -> FillConfig:
         # HYPE can be volatile; slightly higher slippage improves paired-fill reliability.
         if coin.upper() == "HYPE":
             return FillConfig(max_slip_bps=100)
         return FillConfig()
 
     async def _repair_paired_mismatch(
-        self: BorosHypeStrategy,
+        self,
         *,
         coin: str,
         spot_asset_id: int,
@@ -120,7 +117,7 @@ class BorosHypeHyperliquidOpsMixin:
 
         return True, float(filled_spot), float(filled_perp), "repaired"
 
-    async def _get_hype_asset_ids(self: BorosHypeStrategy) -> tuple[int, int]:
+    async def _get_hype_asset_ids(self) -> tuple[int, int]:
         if not self.hyperliquid_adapter:
             raise RuntimeError("Hyperliquid adapter not configured")
 
@@ -140,7 +137,7 @@ class BorosHypeHyperliquidOpsMixin:
         return int(spot_asset_id), int(perp_asset_id)
 
     async def _ensure_hl_hype_leverage_set(
-        self: BorosHypeStrategy, address: str
+        self, address: str
     ) -> tuple[bool, str]:
         if not self.hyperliquid_adapter:
             return False, "Hyperliquid adapter not configured"
@@ -181,7 +178,7 @@ class BorosHypeHyperliquidOpsMixin:
         return True, f"Set Hyperliquid HYPE leverage to {int(MAX_HL_LEVERAGE)}x (cross)"
 
     async def _cancel_lingering_orders(
-        self: BorosHypeStrategy, pointers: list[dict[str, Any]], address: str
+        self, pointers: list[dict[str, Any]], address: str
     ) -> None:
         if not self.hyperliquid_adapter:
             return
@@ -204,7 +201,7 @@ class BorosHypeHyperliquidOpsMixin:
                 )
 
     async def _cancel_hl_open_orders_for_hype(
-        self: BorosHypeStrategy, address: str
+        self, address: str
     ) -> None:
         if not self.hyperliquid_adapter:
             return
@@ -257,7 +254,7 @@ class BorosHypeHyperliquidOpsMixin:
             logger.info(f"Canceled {canceled} Hyperliquid HYPE order(s)")
 
     async def _sweep_hl_spot_usdc_to_perp(
-        self: BorosHypeStrategy,
+        self,
         *,
         address: str,
         min_usdc: float = 0.5,
@@ -319,7 +316,7 @@ class BorosHypeHyperliquidOpsMixin:
             return False, f"Failed to sweep HL spot USDC → perp: {exc}"
 
     async def _deploy_excess_hl_margin(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # Flow: Transfer USDC perp→spot, buy HYPE on spot, bridge to HyperEVM
         excess_margin = float(params.get("excess_margin_usd") or 0.0)
@@ -497,7 +494,7 @@ class BorosHypeHyperliquidOpsMixin:
             return False, f"Bridge failed: {exc}"
 
     async def _transfer_hl_spot_to_hyperevm(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # HL spot HYPE withdrawal goes directly to HyperEVM (native chain) via L1 withdrawal
         hype_amount = params.get("hype_amount", 0)
@@ -550,7 +547,7 @@ class BorosHypeHyperliquidOpsMixin:
             return False, f"HL spot transfer failed: {exc}"
 
     async def _ensure_hl_short(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # Safety: 2x leverage, venue-valid rounding, check free margin before increasing
         target_size = float(params.get("target_size") or 0.0)
@@ -674,7 +671,7 @@ class BorosHypeHyperliquidOpsMixin:
         return True, f"Reduced HYPE short by {rounded_size:.4f}"
 
     async def _send_usdc_to_hl(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         amount_usd = params.get("amount_usd", 0.0)
 
@@ -720,7 +717,7 @@ class BorosHypeHyperliquidOpsMixin:
         )
 
     async def _bridge_to_hyperevm(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # Assumes Arb→HL deposit handled by SEND_USDC_TO_HL. We: 1) xfer perp→spot,
         # 2) paired fill (long spot / short perp), 3) bridge spot HYPE to HyperEVM.

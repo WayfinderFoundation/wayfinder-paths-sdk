@@ -36,9 +36,6 @@ from .constants import (
 )
 from .types import Inventory
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
 
 async def fetch_lhype_apy() -> float | None:
     try:
@@ -70,7 +67,7 @@ async def fetch_khype_apy() -> float | None:
 
 
 class BorosHypeSnapshotMixin:
-    async def observe(self: BorosHypeStrategy) -> Inventory:
+    async def observe(self) -> Inventory:
         self._planner_runtime.reset_virtual_ledger()
 
         ok_addr, user_address = self._require_strategy_wallet_address()
@@ -420,7 +417,7 @@ class BorosHypeSnapshotMixin:
         return inv
 
     def _hyperliquid_liquidation_progress(
-        self: BorosHypeStrategy,
+        self,
         perp_pos: dict[str, Any] | None,
         mid_prices: dict[str, float] | None = None,
     ) -> float:
@@ -466,7 +463,7 @@ class BorosHypeSnapshotMixin:
         except (ValueError, ZeroDivisionError):
             return 0.0
 
-    async def _get_khype_to_hype_ratio(self: BorosHypeStrategy) -> float:
+    async def _get_khype_to_hype_ratio(self) -> float:
         # Query Kinetiq StakingAccountant kHYPEToHYPE(1e18) for HYPE per 1 kHYPE
         try:
             async with web3_from_chain_id(HYPEREVM_CHAIN_ID) as w3:
@@ -485,7 +482,7 @@ class BorosHypeSnapshotMixin:
             logger.warning(f"Failed to get kHYPE exchange rate: {e}")
             return 1.0  # Default to 1:1
 
-    async def _get_looped_hype_to_hype_ratio(self: BorosHypeStrategy) -> float:
+    async def _get_looped_hype_to_hype_ratio(self) -> float:
         # Query Looping Accountant getRateInQuote(WHYPE) for HYPE per 1 LHYPE
         try:
             async with web3_from_chain_id(HYPEREVM_CHAIN_ID) as w3:
