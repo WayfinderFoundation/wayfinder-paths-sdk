@@ -16,7 +16,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
 from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
     create_local_signer,
 )
-from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import HYPERCORE_SENTINEL_ADDRESS
@@ -39,7 +38,6 @@ class HyperliquidAdapter(BaseAdapter):
 
         self._cache = Cache(Cache.MEMORY)
         self._info: Any | None = None
-        self._util: Any | None = None
 
         self._sign_callback = sign_callback
         self._exchange: Exchange | None = None
@@ -64,7 +62,6 @@ class HyperliquidAdapter(BaseAdapter):
 
             self._exchange = Exchange(
                 info=self.info,
-                util=self.util,
                 sign_callback=sign_callback,
                 signing_type=signing_type,
             )
@@ -81,19 +78,8 @@ class HyperliquidAdapter(BaseAdapter):
     @info.setter
     def info(self, value: Any) -> None:
         self._info = value
-        self._util = None
         self._asset_to_sz_decimals = None
         self._coin_to_asset = None
-
-    @property
-    def util(self) -> Any:
-        if self._util is None:
-            self._util = Util(self.info)
-        return self._util
-
-    @util.setter
-    def util(self, value: Any) -> None:
-        self._util = value
 
     # ------------------------------------------------------------------ #
     # Market Data - Read Operations                                       #

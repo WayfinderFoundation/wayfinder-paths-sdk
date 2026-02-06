@@ -12,7 +12,6 @@ class TestHyperliquidCancelOrder:
     async def test_exchange_cancel_order_uses_int_oid(self):
         ex = Exchange(
             info=SimpleNamespace(),
-            util=SimpleNamespace(),
             sign_callback=AsyncMock(return_value="0x"),
             signing_type="eip712",
         )
