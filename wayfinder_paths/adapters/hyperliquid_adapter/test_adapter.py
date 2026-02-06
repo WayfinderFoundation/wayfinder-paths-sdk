@@ -104,7 +104,6 @@ class TestHyperliquidAdapter:
         adapter.info.post.return_value = [
             {
                 "time": int(time.time() * 1000),
-                "hash": "0xabc",
                 "delta": {"type": "deposit", "usdc": "100.0"},
             }
         ]

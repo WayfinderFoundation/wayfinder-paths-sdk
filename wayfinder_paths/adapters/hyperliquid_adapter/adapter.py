@@ -1129,8 +1129,10 @@ class HyperliquidAdapter(BaseAdapter):
                         or update.get("transactionHash")
                     )
                     usdc_amount = float(delta.get("usdc", 0))
-                    if tx_hash:
-                        result[str(tx_hash)] = usdc_amount
+                    if not tx_hash:
+                        ts = int(update.get("time") or 0)
+                        tx_hash = f"deposit-{ts}-{len(result)}"
+                    result[str(tx_hash)] = usdc_amount
 
             return True, result
 
