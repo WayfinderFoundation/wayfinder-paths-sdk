@@ -7,7 +7,6 @@ from wayfinder_paths.core.clients.LedgerClient import (
     StrategyTransactionList,
     TransactionRecord,
 )
-from wayfinder_paths.core.strategies.Strategy import StatusDict
 
 
 class LedgerAdapter(BaseAdapter):
@@ -166,7 +165,7 @@ class LedgerAdapter(BaseAdapter):
             return (False, str(e))
 
     async def record_strategy_snapshot(
-        self, wallet_address: str, strategy_status: StatusDict
+        self, wallet_address: str, strategy_status: dict[str, Any]
     ) -> tuple[bool, None | str]:
         try:
             await self.ledger_client.strategy_snapshot(
