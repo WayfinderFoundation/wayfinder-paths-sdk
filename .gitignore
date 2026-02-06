@@ -42,6 +42,7 @@ temp/
 .cache/
 .wayfinder_runs/*
 !.wayfinder_runs/README.md
+.wayfinder/
 
 # Jupyter
 .ipynb_checkpoints/
