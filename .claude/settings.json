@@ -30,7 +30,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^(Write|Edit|MultiEdit)(Tool)?$",
+        "matcher": "^(Write|Edit|MultiEdit|write|edit|multiedit)(Tool|tool)?$",
         "hooks": [
           {
             "type": "command",

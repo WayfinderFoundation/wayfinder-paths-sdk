@@ -90,7 +90,10 @@ def test_session_start_creates_scratch_and_exports_env(tmp_path: Path) -> None:
         "README.md",
     ],
 )
-def test_write_guard_allows_runs_subdirs(tmp_path: Path, relative_path: str) -> None:
+@pytest.mark.parametrize("tool_name", ["Write", "write", "WriteTool", "writetool"])
+def test_write_guard_allows_runs_subdirs(
+    tmp_path: Path, relative_path: str, tool_name: str
+) -> None:
     hook = _hook_path("wayfinder_write_guard.py")
 
     runs_root = (tmp_path / "runs").resolve()
@@ -100,7 +103,7 @@ def test_write_guard_allows_runs_subdirs(tmp_path: Path, relative_path: str) -> 
     env = _clean_env()
     env["WAYFINDER_RUNS_DIR"] = str(runs_root)
 
-    payload = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    payload = {"tool_name": tool_name, "tool_input": {"file_path": str(target)}}
     result = _run_hook(hook, payload, env=env)
 
     out = json.loads(result.stdout)

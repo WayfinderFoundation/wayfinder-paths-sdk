@@ -132,13 +132,17 @@ def _detect_secret(content: str) -> str | None:
 def main() -> None:
     payload = hook_utils.load_payload()
     name = hook_utils.tool_name(payload)
-    if name not in {
-        "Write",
-        "Edit",
-        "MultiEdit",
-        "WriteTool",
-        "EditTool",
-        "MultiEditTool",
+    if not name:
+        return
+
+    name_norm = name.lower()
+    if name_norm not in {
+        "write",
+        "edit",
+        "multiedit",
+        "writetool",
+        "edittool",
+        "multiedittool",
     }:
         return
 
