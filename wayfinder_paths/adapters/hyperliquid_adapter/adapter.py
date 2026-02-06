@@ -41,7 +41,9 @@ def _cached_info(cache_key: str, ttl: int = 60):
             sig = inspect.signature(func)
             bound = sig.bind(self, *args, **kwargs)
             bound.apply_defaults()
-            key = cache_key.format(**{k: v for k, v in bound.arguments.items() if k != "self"})
+            key = cache_key.format(
+                **{k: v for k, v in bound.arguments.items() if k != "self"}
+            )
 
             cached = await self._cache.get(key)
             if cached:
@@ -615,7 +617,7 @@ class HyperliquidAdapter(BaseAdapter):
                 "response": {"type": "error", "data": "Token metadata missing index"},
             }
 
-        destination = self._hypercore_index_to_system_address(index)
+        destination = self.hypercore_index_to_system_address(index)
         name = token_data.get("name")
         token_id = token_data.get("tokenId")
         if not isinstance(name, str) or not name:
@@ -767,7 +769,7 @@ class HyperliquidAdapter(BaseAdapter):
         return {"b": expected_builder, "f": fee_i}
 
     @staticmethod
-    def _hypercore_index_to_system_address(index: int) -> str:
+    def hypercore_index_to_system_address(index: int) -> str:
         if index == 150:
             return HYPERCORE_SENTINEL_ADDRESS
 
