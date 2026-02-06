@@ -1,11 +1,44 @@
 # Hyperliquid gotchas
 
+## Minimum amounts
+
+| Type | Minimum | Notes |
+|------|---------|-------|
+| Deposit | $5 USD | Deposits below this threshold are **lost** |
+| Order (perp) | $10 USD notional | Applies to all perp markets |
+| Order (spot) | $10 USD notional | Applies to all spot markets |
+
+Constants available in `wayfinder_paths.core.constants.hyperliquid`:
+- `MIN_DEPOSIT_USD = 5.0`
+- `MIN_ORDER_USD_NOTIONAL = 10.0`
+
 ## Asset ID conventions
 
 - Perp assets: `asset_id < 10000`
 - Spot assets: `asset_id >= 10000`
 
-Spot “index” is usually: `spot_index = spot_asset_id - 10000`.
+Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
+
+## Spot trading gotchas
+
+**Available spot pairs are limited.** Common assets like BTC and ETH are NOT directly available. Instead:
+- Use `UBTC/USDC` for wrapped BTC
+- Use `UETH/USDC` for wrapped ETH
+- `HYPE/USDC` is native and available
+- `PURR/USDC` is the OG spot pair (index 0)
+
+**Coin name resolution:** The MCP tool resolves `coin="HYPE"` to `HYPE/USDC`. If you need a different quote (e.g., `HYPE/USDH`), use `asset_id` directly.
+
+**`is_spot` must be explicit:** When using `hyperliquid_execute(action="place_order", ...)`:
+- `is_spot=True` for spot orders
+- `is_spot=False` for perp orders
+- Omitting `is_spot` returns an error
+
+**Spot orders don't use leverage:**
+- `usd_amount` is always treated as notional (no `usd_amount_kind` required)
+- `leverage` and `reduce_only` are ignored for spot
+
+**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin. Use `spot_to_perp_transfer` / `perp_to_spot_transfer` to move USDC between them.
 
 ## Spot L2 naming quirks
 

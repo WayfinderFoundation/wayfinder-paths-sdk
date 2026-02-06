@@ -134,6 +134,31 @@ async def _wait_for_withdrawal(
     )
 
 
+async def _resolve_spot_asset_id(
+    adapter: HyperliquidAdapter, *, coin: str | None
+) -> tuple[bool, int | dict[str, Any]]:
+    c = _PERP_SUFFIX_RE.sub("", (coin or "").strip()).strip().upper()
+    if not c:
+        return False, {
+            "code": "invalid_request",
+            "message": "coin is required for spot orders",
+        }
+
+    # get_spot_assets populates cache, then we look up
+    ok, assets = await adapter.get_spot_assets()
+    if not ok:
+        return False, {"code": "error", "message": "Failed to fetch spot assets"}
+
+    pair_name = f"{c}/USDC"
+    spot_aid = assets.get(pair_name)
+    if spot_aid is None:
+        return False, {
+            "code": "not_found",
+            "message": f"Unknown spot pair: {pair_name}",
+        }
+    return True, spot_aid
+
+
 async def hyperliquid(
     action: Literal["wait_for_deposit", "wait_for_withdrawal"],
     *,
