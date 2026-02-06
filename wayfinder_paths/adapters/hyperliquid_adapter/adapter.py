@@ -339,10 +339,6 @@ class HyperliquidAdapter(BaseAdapter):
         ) * step
         return float(quantized)
 
-    # ------------------------------------------------------------------ #
-    # Execution Methods (require signing callback)                         #
-    # ------------------------------------------------------------------ #
-
     def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
         # Builder attribution is mandatory; always uses HYPE_FEE_WALLET
         expected_builder = HYPE_FEE_WALLET.lower()
@@ -733,10 +729,6 @@ class HyperliquidAdapter(BaseAdapter):
         )
         success = result.get("status") == "ok"
         return success, result
-
-    # ------------------------------------------------------------------ #
-    # Deposit/Withdrawal Helpers                                          #
-    # ------------------------------------------------------------------ #
 
     def get_perp_margin_amount(self, user_state: dict[str, Any]) -> float:
         try:
