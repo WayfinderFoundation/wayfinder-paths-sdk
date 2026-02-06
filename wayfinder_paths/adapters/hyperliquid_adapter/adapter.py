@@ -379,6 +379,10 @@ class HyperliquidAdapter(BaseAdapter):
                 f"Unknown asset_id {asset_id}: missing szDecimals"
             ) from None
 
+    def get_price_decimals(self, asset_id: int) -> int:
+        is_spot = asset_id >= 10_000
+        return (6 if not is_spot else 8) - self.get_sz_decimals(asset_id)
+
     async def refresh_mappings(self) -> None:
         self._asset_to_sz_decimals = None
         self._coin_to_asset = None
