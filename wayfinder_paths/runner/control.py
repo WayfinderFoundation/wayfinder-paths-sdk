@@ -60,20 +60,32 @@ class RunnerControlServer:
         try:
             if self._sock_path.exists():
                 self._sock_path.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning(
+                f"Failed to remove existing control socket at {self._sock_path}: {exc}"
+            )
 
         class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             daemon_threads = True
             allow_reuse_address = True
 
-        self._server = _Server(str(self._sock_path), _Handler)
+        try:
+            self._server = _Server(str(self._sock_path), _Handler)
+        except OSError as exc:
+            logger.error(
+                f"Failed to bind runner control socket at {self._sock_path}: {exc}"
+            )
+            logger.error(
+                "Hint: this can happen if the repo path is too long for AF_UNIX sockets or permissions prevent creating the socket. "
+                "Try setting WAYFINDER_RUNNER_DIR to a shorter path (e.g. /tmp/wayfinder-runner)."
+            )
+            raise
         self._server.daemon = self._daemon  # type: ignore[attr-defined]
 
         try:
             os.chmod(self._sock_path, 0o600)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug(f"Failed to chmod control socket {self._sock_path}: {exc}")
 
         def _serve() -> None:
             assert self._server is not None
@@ -103,5 +115,5 @@ class RunnerControlServer:
         try:
             if self._sock_path.exists():
                 self._sock_path.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.debug(f"Failed to remove control socket {self._sock_path}: {exc}")
