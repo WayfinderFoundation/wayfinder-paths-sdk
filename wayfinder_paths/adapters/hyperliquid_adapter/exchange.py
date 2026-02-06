@@ -5,7 +5,6 @@ from typing import Any, Literal
 from eth_account.messages import encode_typed_data
 from hyperliquid.api import API
 from hyperliquid.exchange import get_timestamp_ms
-from hyperliquid.info import Info
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
@@ -24,6 +23,8 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 from web3 import Web3
 
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
+
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
 USER_DECLINED_ERROR = {
@@ -35,17 +36,15 @@ USER_DECLINED_ERROR = {
 class Exchange:
     def __init__(
         self,
-        info: Info,
         sign_callback: Callable[[dict], Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):
-        self.info = info
         self.api = API()
         self.sign_callback = sign_callback
         self.signing_type = signing_type
 
     def get_sz_decimals(self, asset_id: int) -> int:
-        return self.info.asset_to_sz_decimals[asset_id]
+        return get_info().asset_to_sz_decimals[asset_id]
 
     def get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
@@ -101,8 +100,8 @@ class Exchange:
         builder: BuilderInfo | None = None,
         cloid: str | None = None,
     ):
-        asset_name = self.info.asset_to_coin[asset_id]
-        mids = self.info.all_mids()
+        asset_name = get_info().asset_to_coin[asset_id]
+        mids = get_info().all_mids()
         midprice = float(mids[asset_name])
 
         if slippage >= 1 or slippage < 0:

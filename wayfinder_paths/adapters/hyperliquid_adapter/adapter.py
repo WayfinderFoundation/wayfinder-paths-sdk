@@ -8,11 +8,10 @@ from typing import Any
 
 from aiocache import Cache
 from eth_utils import to_checksum_address
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
 from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
     create_local_signer,
 )
@@ -37,8 +36,6 @@ class HyperliquidAdapter(BaseAdapter):
         super().__init__("hyperliquid_adapter", config)
 
         self._cache = Cache(Cache.MEMORY)
-        self._info: Any | None = None
-
         self._sign_callback = sign_callback
         self._exchange: Exchange | None = None
 
@@ -61,25 +58,10 @@ class HyperliquidAdapter(BaseAdapter):
                 signing_type = "eip712"
 
             self._exchange = Exchange(
-                info=self.info,
                 sign_callback=sign_callback,
                 signing_type=signing_type,
             )
         return self._exchange
-
-    @property
-    def info(self) -> Any:
-        # Lazily initialize the Hyperliquid SDK so read-only paths can work
-        # without full signing configuration.
-        if self._info is None:
-            self._info = Info(constants.MAINNET_API_URL, skip_ws=True)
-        return self._info
-
-    @info.setter
-    def info(self, value: Any) -> None:
-        self._info = value
-        self._asset_to_sz_decimals = None
-        self._coin_to_asset = None
 
     # ------------------------------------------------------------------ #
     # Market Data - Read Operations                                       #
@@ -92,7 +74,7 @@ class HyperliquidAdapter(BaseAdapter):
             return True, cached
 
         try:
-            data = self.info.meta_and_asset_ctxs()
+            data = get_info().meta_and_asset_ctxs()
             # Cache for 1 minute
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
@@ -108,7 +90,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             # Handle both callable and property access patterns
-            spot_meta = self.info.spot_meta
+            spot_meta = get_info().spot_meta
             if callable(spot_meta):
                 data = spot_meta()
             else:
@@ -234,7 +216,7 @@ class HyperliquidAdapter(BaseAdapter):
         n_levels: int = 20,
     ) -> tuple[bool, dict[str, Any]]:
         try:
-            data = self.info.l2_snapshot(coin)
+            data = get_info().l2_snapshot(coin)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch L2 book for {coin}: {exc}")
@@ -242,7 +224,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_user_state(self, address: str) -> tuple[bool, dict[str, Any]]:
         try:
-            data = self.info.user_state(address)
+            data = get_info().user_state(address)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch user_state for {address}: {exc}")
@@ -250,7 +232,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_spot_user_state(self, address: str) -> tuple[bool, dict[str, Any]]:
         try:
-            data = self.info.spot_user_state(address)
+            data = get_info().spot_user_state(address)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch spot_user_state for {address}: {exc}")
@@ -321,10 +303,10 @@ class HyperliquidAdapter(BaseAdapter):
             # Keep a fallback to `marginTableId` for compatibility with older SDKs.
             body = {"type": "marginTable", "id": int(margin_table_id)}
             try:
-                data = self.info.post("/info", body)
+                data = get_info().post("/info", body)
             except Exception:  # noqa: BLE001 - try alternate payload key
                 body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
-                data = self.info.post("/info", body)
+                data = get_info().post("/info", body)
             await self._cache.set(cache_key, data, ttl=86400)  # Cache for 24h
             return True, data
         except Exception as exc:
@@ -346,7 +328,7 @@ class HyperliquidAdapter(BaseAdapter):
                 coin = f"@{spot_index}"
 
             body = {"type": "l2Book", "coin": coin}
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             return True, data
         except Exception as exc:
             self.logger.error(
@@ -361,14 +343,14 @@ class HyperliquidAdapter(BaseAdapter):
     @property
     def asset_to_sz_decimals(self) -> dict[int, int]:
         if self._asset_to_sz_decimals is None:
-            self._asset_to_sz_decimals = dict(self.info.asset_to_sz_decimals)
+            self._asset_to_sz_decimals = dict(get_info().asset_to_sz_decimals)
         return self._asset_to_sz_decimals
 
     @property
     def coin_to_asset(self) -> dict[str, int]:
         """Get coin name to asset ID mapping (perps only)."""
         if self._coin_to_asset is None:
-            self._coin_to_asset = dict(self.info.coin_to_asset)
+            self._coin_to_asset = dict(get_info().coin_to_asset)
         return self._coin_to_asset
 
     def get_sz_decimals(self, asset_id: int) -> int:
@@ -390,7 +372,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_all_mid_prices(self) -> tuple[bool, dict[str, float]]:
         try:
-            data = self.info.all_mids()
+            data = get_info().all_mids()
             return True, {k: float(v) for k, v in data.items()}
         except Exception as exc:
             self.logger.error(f"Failed to fetch mid prices: {exc}")
@@ -777,7 +759,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_user_fills(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
         try:
-            data = self.info.user_fills(address)
+            data = get_info().user_fills(address)
             return True, data if isinstance(data, list) else []
         except Exception as exc:
             self.logger.error(f"Failed to fetch user_fills for {address}: {exc}")
@@ -809,7 +791,7 @@ class HyperliquidAdapter(BaseAdapter):
                 "startTime": since_ms,
                 "endTime": now_ms,
             }
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             fills = data if isinstance(data, list) else []
 
             # Filter for liquidation fills where we were the liquidated user
@@ -831,7 +813,7 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any]]:
         try:
             body = {"type": "orderStatus", "user": address, "oid": order_id}
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")
@@ -839,7 +821,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_open_orders(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
         try:
-            data = self.info.open_orders(address)
+            data = get_info().open_orders(address)
             return True, data if isinstance(data, list) else []
         except Exception as exc:
             self.logger.error(f"Failed to fetch open_orders for {address}: {exc}")
@@ -861,7 +843,7 @@ class HyperliquidAdapter(BaseAdapter):
             List of open order records including trigger orders
         """
         try:
-            data = self.info.frontend_open_orders(address)
+            data = get_info().frontend_open_orders(address)
             return True, data if isinstance(data, list) else []
         except Exception as exc:
             self.logger.error(
@@ -910,7 +892,7 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> tuple[bool, int]:
         try:
             body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             # Response is just an integer (tenths of basis points)
             return True, int(data) if data is not None else 0
         except Exception as exc:
@@ -1110,7 +1092,7 @@ class HyperliquidAdapter(BaseAdapter):
             (success, {tx_hash: usdc_amount})
         """
         try:
-            data = self.info.post(
+            data = get_info().post(
                 "/info",
                 {
                     "type": "userNonFundingLedgerUpdates",
@@ -1150,7 +1132,7 @@ class HyperliquidAdapter(BaseAdapter):
         try:
             from eth_utils import to_checksum_address
 
-            data = self.info.post(
+            data = get_info().post(
                 "/info",
                 {
                     "type": "userNonFundingLedgerUpdates",
