@@ -973,8 +973,8 @@ class PairedFiller:
         return max(float(step), quantized)
 
     def _common_step(self, spot_asset_id: int, perp_asset_id: int) -> Decimal:
-        spot_decimals = self.adapter.get_sz_decimals(spot_asset_id)
-        perp_decimals = self.adapter.get_sz_decimals(perp_asset_id)
+        spot_decimals = self.adapter.asset_to_sz_decimals[spot_asset_id]
+        perp_decimals = self.adapter.asset_to_sz_decimals[perp_asset_id]
         return Decimal(10) ** -min(spot_decimals, perp_decimals)
 
     @staticmethod

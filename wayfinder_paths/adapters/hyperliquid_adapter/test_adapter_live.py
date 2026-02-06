@@ -73,17 +73,14 @@ class TestSpotAssetIDs:
             assert asset_id >= 10000, f"{name} has invalid asset_id {asset_id}"
 
     @pytest.mark.asyncio
-    async def test_get_spot_asset_id_helper(self, live_adapter):
-        success, _ = await live_adapter.get_spot_assets()
-        assert success
-
-        purr_id = await live_adapter.get_spot_asset_id("PURR", "USDC")
+    async def test_get_asset_id_spot(self, live_adapter):
+        purr_id = await live_adapter.get_asset_id("PURR", is_perp=False)
         assert purr_id == 10000
 
-        hype_id = await live_adapter.get_spot_asset_id("HYPE", "USDC")
+        hype_id = await live_adapter.get_asset_id("HYPE", is_perp=False)
         assert hype_id == 10107
 
-        fake_id = await live_adapter.get_spot_asset_id("FAKECOIN", "USDC")
+        fake_id = await live_adapter.get_asset_id("FAKECOIN", is_perp=False)
         assert fake_id is None
 
 
@@ -167,18 +164,18 @@ class TestSzDecimals:
     @pytest.mark.asyncio
     async def test_spot_sz_decimals(self, live_adapter):
         # HYPE spot = 10107
-        decimals = live_adapter.get_sz_decimals(10107)
+        decimals = live_adapter.asset_to_sz_decimals[10107]
         assert isinstance(decimals, int)
         assert decimals >= 0
 
     @pytest.mark.asyncio
     async def test_perp_sz_decimals(self, live_adapter):
         # BTC perp = 0
-        decimals = live_adapter.get_sz_decimals(0)
+        decimals = live_adapter.asset_to_sz_decimals[0]
         assert isinstance(decimals, int)
         assert decimals >= 0
 
         # ETH perp = 1
-        decimals = live_adapter.get_sz_decimals(1)
+        decimals = live_adapter.asset_to_sz_decimals[1]
         assert isinstance(decimals, int)
         assert decimals >= 0

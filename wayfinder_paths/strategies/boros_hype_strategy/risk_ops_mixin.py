@@ -204,11 +204,7 @@ class BorosHypeRiskOpsMixin:
             logger.warning(f"Failed to sell spot HYPE: {exc}")
 
         try:
-            usdc_sz_decimals = (
-                await self.hyperliquid_adapter.get_spot_token_sz_decimals("USDC")
-            )
-            if usdc_sz_decimals is None:
-                usdc_sz_decimals = 2
+            usdc_sz_decimals = 2  # USDC szDecimals on Hyperliquid spot
 
             ok_spot, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
                 address
@@ -880,11 +876,7 @@ class BorosHypeRiskOpsMixin:
             logger.warning(f"Failed to sell spot HYPE: {exc}")
 
         try:
-            usdc_sz_decimals = (
-                await self.hyperliquid_adapter.get_spot_token_sz_decimals("USDC")
-            )
-            if usdc_sz_decimals is None:
-                usdc_sz_decimals = 2
+            usdc_sz_decimals = 2  # USDC szDecimals on Hyperliquid spot
 
             ok_spot, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
                 address

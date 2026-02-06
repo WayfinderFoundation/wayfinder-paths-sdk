@@ -72,13 +72,9 @@ class TestHyperliquidAdapter:
         assert success
         assert "assetPositions" in data
 
-    def test_get_sz_decimals(self, adapter):
-        decimals = adapter.get_sz_decimals(0)
+    def test_asset_to_sz_decimals(self, adapter):
+        decimals = adapter.asset_to_sz_decimals[0]
         assert decimals == 4
-
-    def test_get_sz_decimals_unknown_asset(self, adapter):
-        with pytest.raises(ValueError, match="Unknown asset_id"):
-            adapter.get_sz_decimals(99999)
 
     @pytest.mark.asyncio
     async def test_get_full_user_state(self, adapter):

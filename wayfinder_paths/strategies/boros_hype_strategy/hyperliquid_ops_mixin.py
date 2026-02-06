@@ -125,12 +125,7 @@ class BorosHypeHyperliquidOpsMixin:
         if perp_asset_id is None:
             raise RuntimeError("HYPE perp asset ID not found")
 
-        spot_asset_id = await self.hyperliquid_adapter.get_spot_asset_id("HYPE", "USDC")
-        if spot_asset_id is None:
-            success, spot_assets = await self.hyperliquid_adapter.get_spot_assets()
-            if success and isinstance(spot_assets, dict):
-                spot_asset_id = spot_assets.get("HYPE/USDC")
-
+        spot_asset_id = await self.hyperliquid_adapter.get_asset_id("HYPE", is_perp=False)
         if spot_asset_id is None:
             raise RuntimeError("HYPE/USDC spot asset ID not found")
 
