@@ -97,12 +97,14 @@ class RunnerDaemon:
         max_workers: int = 4,
         max_failures: int = 5,
         default_timeout_seconds: int = 20 * 60,
+        log_level: str = "INFO",
     ) -> None:
         self._paths = paths
         self._tick_seconds = float(tick_seconds)
         self._max_workers = int(max_workers)
         self._max_failures = int(max_failures)
         self._default_timeout_seconds = int(default_timeout_seconds)
+        self._log_level = str(log_level).upper()
 
         self._db = RunnerDB(paths.db_path)
         self._started_at = _utc_epoch_s()
@@ -114,6 +116,7 @@ class RunnerDaemon:
         self._running_by_job: dict[int, int] = {}
 
         self._control = None
+        self._daemon_log_sink_id: int | None = None
 
     @property
     def paths(self) -> RunnerPaths:
@@ -122,6 +125,19 @@ class RunnerDaemon:
     def start(self) -> None:
         self._paths.runner_dir.mkdir(parents=True, exist_ok=True)
         self._paths.logs_dir.mkdir(parents=True, exist_ok=True)
+
+        daemon_log_path = self._paths.logs_dir / "wayfinder-daemon.log"
+        try:
+            self._daemon_log_sink_id = logger.add(
+                str(daemon_log_path),
+                level=self._log_level,
+                rotation="10 MB",
+                retention="7 days",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                f"Failed to configure daemon log file {daemon_log_path}: {exc}"
+            )
 
         aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
@@ -145,6 +161,11 @@ class RunnerDaemon:
             self._stop_control()
             self._shutdown_running_processes()
             self._db.close()
+            if self._daemon_log_sink_id is not None:
+                try:
+                    logger.remove(self._daemon_log_sink_id)
+                except Exception:  # noqa: BLE001
+                    pass
 
     def stop(self) -> None:
         self._shutdown.set()

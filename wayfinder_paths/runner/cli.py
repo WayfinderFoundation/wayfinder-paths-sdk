@@ -90,6 +90,7 @@ def start_cmd(
         max_workers=max_workers,
         max_failures=max_failures,
         default_timeout_seconds=default_timeout_seconds,
+        log_level=log_level,
     )
     daemon.start()
 
