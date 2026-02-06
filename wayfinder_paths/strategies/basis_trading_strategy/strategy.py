@@ -34,7 +34,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
     usd_depth_in_band as hl_usd_depth_in_band,
 )
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.analytics import (
     block_bootstrap_paths as analytics_block_bootstrap_paths,
@@ -200,7 +199,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             merged_config["main_wallet"] = main_wallet
         if strategy_wallet:
             merged_config["strategy_wallet"] = strategy_wallet
-        self.config = merged_config
+        self.config: dict[str, Any] = merged_config
 
         self.current_position: BasisPosition | None = None
         self.deposit_amount: float = 0.0
@@ -211,51 +210,26 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         self._margin_table_cache: dict[int, list[dict[str, float]]] = {}
 
-        # Adapters (some are optional for analysis-only usage).
-        self.balance_adapter: BalanceAdapter | None = None
-        self.token_adapter: TokenAdapter | None = None
-        self.ledger_adapter: LedgerAdapter | None = None
-        self.hyperliquid_adapter: HyperliquidAdapter | None = None
-
-        adapter_config = {
-            "main_wallet": self.config.get("main_wallet"),
-            "strategy_wallet": self.config.get("strategy_wallet"),
-            "strategy": self.config,
-        }
-
-        # Hyperliquid market data adapter should be usable even when wallet/web3
-        # configuration is missing (e.g. local --action analyze).
-        # The adapter will create Exchange internally with local signer from config
-        # if no sign_callback is provided.
         try:
+            adapter_config = {
+                "main_wallet": self.config.get("main_wallet"),
+                "strategy_wallet": self.config.get("strategy_wallet"),
+                "strategy": self.config,
+            }
+
             self.hyperliquid_adapter = HyperliquidAdapter(
                 config=adapter_config,
                 sign_callback=strategy_sign_typed_data,
             )
-        except Exception as e:
-            self.logger.warning(f"Could not initialize HyperliquidAdapter: {e}")
-
-        # Other adapters require a configured wallet provider / web3 service.
-        try:
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
             self.token_adapter = TokenAdapter()
-            self.ledger_adapter = LedgerAdapter()
         except Exception as e:
-            self.logger.warning(f"Wallet/web3 adapter initialization deferred: {e}")
-
-        adapters: list[Any] = []
-        if self.balance_adapter is not None:
-            adapters.append(self.balance_adapter)
-        if self.token_adapter is not None:
-            adapters.append(self.token_adapter)
-        if self.ledger_adapter is not None:
-            adapters.append(self.ledger_adapter)
-        if self.hyperliquid_adapter is not None:
-            adapters.append(self.hyperliquid_adapter)
+            self.logger.error(f"Failed to initialize strategy adapters: {e}")
+            raise
 
     async def setup(self) -> None:
         self.logger.info("Starting BasisTradingStrategy setup")
@@ -284,12 +258,12 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
     async def _discover_existing_position(self) -> None:
         address = self._get_strategy_wallet_address()
 
-        success, user_state = await self.hyperliquid_adapter.get_user_state(address)
-        if not success:
+        user_state_result = await self.hyperliquid_adapter.get_user_state(address)
+        if not user_state_result[0]:
             self.logger.warning("Could not fetch user state for position discovery")
             return
 
-        asset_positions = user_state.get("assetPositions", [])
+        asset_positions = user_state_result[1].get("assetPositions", [])
         if not asset_positions:
             self.logger.info("No existing perp positions found")
             return
@@ -311,17 +285,15 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         perp_size = abs(float(perp_position.get("szi", 0)))
         entry_px = float(perp_position.get("entryPx", 0))
 
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
-        if not success:
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
+        if not spot_state_result[0]:
             self.logger.warning(
                 f"Found perp position on {coin} but could not fetch spot state"
             )
             return
 
         spot_position = None
-        spot_balances = spot_state.get("balances", [])
+        spot_balances = spot_state_result[1].get("balances", [])
         for bal in spot_balances:
             bal_coin = bal.get("coin", "")
             # Match coin name (spot might have different naming)
@@ -382,7 +354,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         )
 
         if self.deposit_amount <= 0:
-            margin_summary = user_state.get("marginSummary", {})
+            margin_summary = user_state_result[1].get("marginSummary", {})
             self.deposit_amount = float(margin_summary.get("accountValue", 0))
 
         self.logger.info(
@@ -798,16 +770,14 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         hl_perp_value = 0.0
         hl_spot_usdc = 0.0
-        success, user_state = await self.hyperliquid_adapter.get_user_state(address)
-        if success:
-            margin_summary = user_state.get("marginSummary", {})
+        user_state_result = await self.hyperliquid_adapter.get_user_state(address)
+        if user_state_result[0]:
+            margin_summary = user_state_result[1].get("marginSummary", {})
             hl_perp_value = float(margin_summary.get("accountValue", 0))
 
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
-        if success:
-            for bal in spot_state.get("balances", []):
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
+        if spot_state_result[0]:
+            for bal in spot_state_result[1].get("balances", []):
                 if bal.get("coin") == "USDC":
                     hl_spot_usdc = float(bal.get("total", 0))
                     break
@@ -835,13 +805,13 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         await asyncio.sleep(5)
 
         for _transfer_attempt in range(3):
-            success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
+            spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(
                 address
             )
-            if not success:
+            if not spot_state_result[0]:
                 continue
 
-            spot_balances = spot_state.get("balances", [])
+            spot_balances = spot_state_result[1].get("balances", [])
             for bal in spot_balances:
                 if bal.get("coin") == "USDC":
                     # Use available balance (total - hold), not total
@@ -881,12 +851,12 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         withdrawable = 0.0
         for attempt in range(3):
-            success, user_state = await self.hyperliquid_adapter.get_user_state(address)
-            if not success:
+            user_state_result = await self.hyperliquid_adapter.get_user_state(address)
+            if not user_state_result[0]:
                 continue
 
             # withdrawable is at top level of user_state, not in marginSummary
-            withdrawable = float(user_state.get("withdrawable", 0))
+            withdrawable = float(user_state_result[1].get("withdrawable", 0))
 
             if withdrawable > 1.0:
                 break
@@ -1281,13 +1251,15 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 f"notional=${spot_notional:.2f}/${perp_notional:.2f}"
             )
 
-            success, mids = await self.hyperliquid_adapter.get_all_mid_prices()
-            entry_price = self._resolve_mid_price(coin, mids) if success else 0.0
+            mids_result = await self.hyperliquid_adapter.get_all_mid_prices()
+            entry_price = (
+                self._resolve_mid_price(coin, mids_result[1]) if mids_result[0] else 0.0
+            )
 
-            success, user_state = await self.hyperliquid_adapter.get_user_state(address)
+            user_state_result = await self.hyperliquid_adapter.get_user_state(address)
             liquidation_price = None
-            if success:
-                for pos_wrapper in user_state.get("assetPositions", []):
+            if user_state_result[0]:
+                for pos_wrapper in user_state_result[1].get("assetPositions", []):
                     pos = pos_wrapper.get("position", {})
                     if pos.get("coin") == coin:
                         liquidation_price = float(pos.get("liquidationPx", 0))
@@ -1385,11 +1357,9 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         address = self._get_strategy_wallet_address()
         spot_units = 0.0
         spot_usdc = 0.0
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
-        if success:
-            for bal in spot_state.get("balances", []):
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
+        if spot_state_result[0]:
+            for bal in spot_state_result[1].get("balances", []):
                 bal_coin = str(bal.get("coin", ""))
                 try:
                     total = float(bal.get("total", 0) or 0.0)
@@ -1470,26 +1440,24 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
     async def _get_undeployed_capital(self) -> tuple[float, float]:
         address = self._get_strategy_wallet_address()
 
-        success, user_state = await self.hyperliquid_adapter.get_user_state(address)
-        if not success:
+        user_state_result = await self.hyperliquid_adapter.get_user_state(address)
+        if not user_state_result[0]:
             return 0.0, 0.0
 
         # Hyperliquid userState commonly nests withdrawable under marginSummary, but keep
         # compatibility with any top-level "withdrawable" shape.
-        withdrawable_val = user_state.get("withdrawable")
+        withdrawable_val = user_state_result[1].get("withdrawable")
         if withdrawable_val is None:
-            margin_summary = user_state.get("marginSummary") or {}
+            margin_summary = user_state_result[1].get("marginSummary") or {}
             if isinstance(margin_summary, dict):
                 withdrawable_val = margin_summary.get("withdrawable")
 
         withdrawable = float(withdrawable_val or 0.0)
 
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
         spot_usdc = 0.0
-        if success:
-            for bal in spot_state.get("balances", []):
+        if spot_state_result[0]:
+            for bal in spot_state_result[1].get("balances", []):
                 if bal.get("coin") == "USDC":
                     spot_usdc = float(bal.get("total", 0))
                     break
@@ -1842,12 +1810,10 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 break
 
         address = self._get_strategy_wallet_address()
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
         spot_size = 0.0
-        if success:
-            for bal in spot_state.get("balances", []):
+        if spot_state_result[0]:
+            for bal in spot_state_result[1].get("balances", []):
                 if self._coins_match(bal.get("coin", ""), coin):
                     spot_size = float(bal.get("total", 0))
                     break
@@ -1893,12 +1859,10 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 perp_size = abs(float(position.get("szi", 0)))
                 break
 
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
         spot_size = 0.0
-        if success:
-            for bal in spot_state.get("balances", []):
+        if spot_state_result[0]:
+            for bal in spot_state_result[1].get("balances", []):
                 if self._coins_match(bal.get("coin", ""), coin):
                     spot_size = float(bal.get("total", 0))
                     break
@@ -1907,10 +1871,10 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         if diff < 0.001:
             return True, "Legs already balanced"
 
-        success, mids = await self.hyperliquid_adapter.get_all_mid_prices()
-        if not success:
+        mids_result = await self.hyperliquid_adapter.get_all_mid_prices()
+        if not mids_result[0]:
             return False, "Failed to get mid prices"
-        price = self._resolve_mid_price(coin, mids)
+        price = self._resolve_mid_price(coin, mids_result[1])
         if price <= 0:
             return False, f"Invalid price for {coin}"
 
@@ -2010,14 +1974,14 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             f"@{pos.spot_asset_id - 10000}" if pos.spot_asset_id >= 10000 else None
         )
 
-        success, open_orders = await self.hyperliquid_adapter.get_frontend_open_orders(
+        open_orders_result = await self.hyperliquid_adapter.get_frontend_open_orders(
             address
         )
-        if not success:
+        if not open_orders_result[0]:
             self.logger.warning("Could not fetch open orders to cancel")
             return
 
-        for order in open_orders:
+        for order in open_orders_result[1]:
             order_coin = order.get("coin", "")
             order_id = order.get("oid")
 
@@ -2152,13 +2116,11 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             return None
 
         address = self._get_strategy_wallet_address()
-        success, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-            address
-        )
-        if not success:
+        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
+        if not spot_state_result[0]:
             return None
 
-        balances = spot_state.get("balances", [])
+        balances = spot_state_result[1].get("balances", [])
         for bal in balances:
             coin = bal.get("coin", "")
             if self._coins_match(coin, self.current_position.coin):
@@ -2207,7 +2169,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         # Round to 5 significant figures to avoid SDK float_to_wire precision errors
         stop_loss_price = float(f"{stop_loss_price:.5g}")
 
-        success, open_orders = await self.hyperliquid_adapter.get_frontend_open_orders(
+        open_orders_result = await self.hyperliquid_adapter.get_frontend_open_orders(
             address
         )
 
@@ -2222,8 +2184,8 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             else None
         )
 
-        if success:
-            for order in open_orders:
+        if open_orders_result[0]:
+            for order in open_orders_result[1]:
                 order_coin = order.get("coin", "")
                 order_id = order.get("oid")
                 is_trigger = order.get("isTrigger", False)
@@ -2471,25 +2433,21 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         address = self._get_strategy_wallet_address()
 
         hl_value = 0.0
-        success, user_state = await self.hyperliquid_adapter.get_user_state(address)
-        if success:
-            margin_summary = user_state.get("marginSummary", {})
+        user_state_result = await self.hyperliquid_adapter.get_user_state(address)
+        if user_state_result[0]:
+            margin_summary = user_state_result[1].get("marginSummary", {})
             hl_value = float(margin_summary.get("accountValue", 0))
 
-            (
-                success_spot,
-                spot_state,
-            ) = await self.hyperliquid_adapter.get_spot_user_state(address)
-            if success_spot:
-                spot_balances = spot_state.get("balances", [])
+            spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(
+                address
+            )
+            if spot_state_result[0]:
+                spot_balances = spot_state_result[1].get("balances", [])
                 mid_prices: dict[str, float] = {}
                 if any(bal.get("coin") != "USDC" for bal in spot_balances):
-                    (
-                        success_mids,
-                        mids,
-                    ) = await self.hyperliquid_adapter.get_all_mid_prices()
-                    if success_mids:
-                        mid_prices = mids
+                    mids_result = await self.hyperliquid_adapter.get_all_mid_prices()
+                    if mids_result[0]:
+                        mid_prices = mids_result[1]
 
                 for bal in spot_balances:
                     coin = bal.get("coin", "")

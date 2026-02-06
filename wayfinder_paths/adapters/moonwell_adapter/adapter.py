@@ -832,7 +832,7 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         mtoken: str,
-    ) -> tuple[bool, float | str]:
+    ) -> tuple[True, float] | tuple[False, str]:
         mtoken = to_checksum_address(mtoken)
 
         cache_key = f"cf_{mtoken}"

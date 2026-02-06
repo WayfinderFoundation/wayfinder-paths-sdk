@@ -25,9 +25,11 @@ try:
         get_canonical_examples,
         load_strategy_examples,
     )
-except ImportError:
+except ImportError as err:
     test_utils_path = Path(_wayfinder_path_dir) / "tests" / "test_utils.py"
     spec = importlib.util.spec_from_file_location("tests.test_utils", test_utils_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load spec from {test_utils_path}") from err
     test_utils = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(test_utils)
     assert_quote_result = test_utils.assert_quote_result

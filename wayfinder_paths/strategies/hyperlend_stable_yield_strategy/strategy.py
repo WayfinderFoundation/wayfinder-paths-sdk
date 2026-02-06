@@ -3,9 +3,9 @@ import math
 import time
 import unicodedata
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import numpy as np
 import pandas as pd
@@ -15,7 +15,6 @@ from web3 import Web3
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.adapters.hyperlend_adapter.adapter import HyperlendAdapter
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.base import DEFAULT_SLIPPAGE
 from wayfinder_paths.core.constants.contracts import HYPEREVM_WHYPE
@@ -209,12 +208,7 @@ class HyperlendStableYieldStrategy(Strategy):
         if strategy_wallet is not None:
             merged_config["strategy_wallet"] = strategy_wallet
 
-        self.config = merged_config
-        self.balance_adapter = None
-        self.token_adapter = None
-        self.pool_adapter = None
-        self.brap_adapter = None
-        self.hyperlend_adapter = None
+        self.config: dict[str, Any] = merged_config
 
         try:
             main_wallet_cfg = self.config.get("main_wallet")
@@ -231,33 +225,25 @@ class HyperlendStableYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
-            balance = BalanceAdapter(
+            self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            token_adapter = TokenAdapter()
-            ledger_adapter = LedgerAdapter()
-            brap_adapter = BRAPAdapter(
+            self.token_adapter = TokenAdapter()
+            self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            hyperlend_adapter = HyperlendAdapter(
+            self.hyperlend_adapter = HyperlendAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-
-            self.balance_adapter = balance
-            self.token_adapter = token_adapter
-            self.ledger_adapter = ledger_adapter
-            self.brap_adapter = brap_adapter
-            self.hyperlend_adapter = hyperlend_adapter
 
             self._assets_snapshot = None
             self._assets_snapshot_at = None
             self._assets_snapshot_lock = asyncio.Lock()
-            self.symbol_display_map = {}
-
+            self.symbol_display_map: dict[str, str] = {}
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")
             raise
@@ -441,7 +427,7 @@ class HyperlendStableYieldStrategy(Strategy):
             return str(display)
         return str(symbol).upper()
 
-    async def _hydrate_position_from_chain(self) -> None:
+    async def _hydrate_position_from_chain(self) -> bool:
         snapshot = await self._get_assets_snapshot()
         asset_map = (
             snapshot.get("_by_underlying", {}) if isinstance(snapshot, dict) else {}
@@ -456,7 +442,9 @@ class HyperlendStableYieldStrategy(Strategy):
                 display = asset.get("symbol_display") if asset else symbol
                 if symbol and display:
                     self.symbol_display_map.setdefault(str(symbol), display)
-                self.current_avg_apy = float(asset.get("supply_apy") or 0.0)
+                self.current_avg_apy = (
+                    float(asset.get("supply_apy") or 0.0) if asset else 0.0
+                )
                 return True
             self.current_token = None
             self.current_symbol = None
@@ -471,10 +459,11 @@ class HyperlendStableYieldStrategy(Strategy):
             return False
 
         token = top_entry.get("token")
-        if not token.get("address"):
-            token["address"] = top_entry.get("asset").get("underlying")
+        if token and not token.get("address"):
+            asset_entry = top_entry.get("asset")
+            token["address"] = asset_entry.get("underlying") if asset_entry else None
         self.current_token = token
-        symbol = token.get("symbol", None)
+        symbol = token.get("symbol", None) if token else None
         checksum = self._token_checksum(token)
         asset = asset_map.get(checksum) if checksum else None
         if not symbol and asset:
@@ -511,6 +500,8 @@ class HyperlendStableYieldStrategy(Strategy):
             _, snapshot = await self.hyperlend_adapter.get_assets_view(
                 user_address=self._get_strategy_wallet_address(),
             )
+            if isinstance(snapshot, str):
+                return {}
 
             assets = snapshot.get("assets", [])
             asset_map = {}
@@ -549,7 +540,7 @@ class HyperlendStableYieldStrategy(Strategy):
             self._assets_snapshot = snapshot
             self._assets_snapshot_at = time.time()
 
-            return snapshot
+            return cast(dict[str, Any], snapshot)
 
     async def _has_supply_cap_headroom(
         self, token: dict[str, Any], required_tokens: float
@@ -1031,7 +1022,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
         return actions
 
-    async def update(self) -> StatusTuple:
+    async def update(self) -> tuple[bool, str, bool]:
         await self._hydrate_position_from_chain()
 
         redeploy_tokens = await self._estimate_redeploy_tokens()
@@ -1215,7 +1206,7 @@ class HyperlendStableYieldStrategy(Strategy):
             )
             cooldown_notice = None
             if rotation_allowed and last_rotation is not None:
-                elapsed = timezone.now() - last_rotation
+                elapsed = datetime.now(UTC) - last_rotation
                 if elapsed < self.ROTATION_COOLDOWN:
                     rotation_allowed = False
                     remaining_hours = max(
@@ -1304,8 +1295,8 @@ class HyperlendStableYieldStrategy(Strategy):
         target_apy: float,
         hype_reserve_wei: int,
         lend_operation: Literal["deposit", "update"] = "update",
-    ) -> tuple[list[dict[str, Any]], float, float, float]:
-        actions = []
+    ) -> tuple[list[str], float, float, float]:
+        actions: list[str] = []
         actions.extend(await self._unwind_other_lends(target_token))
 
         align_actions, kept_hype = await self._align_wallet_balances(
@@ -1418,7 +1409,7 @@ class HyperlendStableYieldStrategy(Strategy):
         if not balances:
             return [], 0.0
 
-        actions = []
+        actions: list[dict[str, Any]] = []
         target_checksum = self._token_checksum(target_token)
         hype_checksum = self._token_checksum(self.hype_token_info)
 
@@ -1470,9 +1461,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
         return actions, kept_tokens
 
-    async def _unwind_other_lends(
-        self, target_token: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    async def _unwind_other_lends(self, target_token: dict[str, Any]) -> list[str]:
         positions = await self._get_lent_positions()
         if not positions:
             return []
@@ -1520,12 +1509,12 @@ class HyperlendStableYieldStrategy(Strategy):
         return actions
 
     async def _get_last_rotation_time(self, wallet_address: str) -> datetime | None:
-        success, data = await self.ledger_adapter.get_strategy_latest_transactions(
+        result = await self.ledger_adapter.get_strategy_latest_transactions(
             wallet_address=self._get_strategy_wallet_address(),
         )
-        if success is False:
+        if not result[0]:
             return None
-        for transaction in data.get("transactions", []):
+        for transaction in result[1].get("transactions", []):
             op_data = transaction.get("op_data", {})
             if op_data.get("type") in {"LEND", "SWAP"}:
                 created_str = transaction.get("created")
@@ -1548,7 +1537,7 @@ class HyperlendStableYieldStrategy(Strategy):
         operation: Literal["deposit", "update", "quote"] = "update",
         exclude_addresses=None,
         allow_rotation_without_current=False,
-    ) -> dict[str, Any] | None:
+    ) -> tuple[dict[str, Any], str | None, float] | None:
         excluded = (
             {addr.lower() for addr in exclude_addresses}
             if exclude_addresses
@@ -1575,6 +1564,8 @@ class HyperlendStableYieldStrategy(Strategy):
             buffer_bps=self.SUPPLY_CAP_BUFFER_BPS,
             min_buffer_tokens=self.SUPPLY_CAP_MIN_BUFFER_TOKENS,
         )
+        if isinstance(stable_markets, str):
+            stable_markets = {"notes": [], "markets": {}}
         filtered_notes = stable_markets.get("notes", [])
         filtered_map = stable_markets.get("markets", {})
 
@@ -1674,6 +1665,8 @@ class HyperlendStableYieldStrategy(Strategy):
             if not history_status:
                 continue
             history_data = history[1]
+            if isinstance(history_data, str):
+                continue
             for row in history_data.get("history", []):
                 ts_ms = row.get("timestamp_ms")
                 if ts_ms is None:
@@ -1840,11 +1833,11 @@ class HyperlendStableYieldStrategy(Strategy):
                 )
             except Exception:
                 token = None
-            if not success:
+            if not success or isinstance(token, str):
                 token = None
         if token is None and current_token is None and symbol == current_symbol:
             token = current_token
-        if not token:
+        if not token or isinstance(token, str):
             return None
         if not address:
             address = token.get("address") if token else None
@@ -2064,7 +2057,9 @@ class HyperlendStableYieldStrategy(Strategy):
         block_len: int = BLOCK_LEN,
         start_weights: np.ndarray | None = None,
         rng: np.random.Generator | None = None,
-    ) -> np.ndarray:
+    ) -> float:
+        if rng is None:
+            rng = np.random.default_rng()
         T = len(col)
         max_start = T - block_len
         if max_start < 0:
@@ -2140,7 +2135,7 @@ class HyperlendStableYieldStrategy(Strategy):
     async def _wallet_balances_from_snapshot(
         self, snapshot: dict[str, Any]
     ) -> dict[str, Any]:
-        balances = {}
+        balances: dict[str, Any] = {}
         assets = snapshot.get("assets", [])
         if assets:
             for asset in assets:
@@ -2192,8 +2187,10 @@ class HyperlendStableYieldStrategy(Strategy):
                     balance_decimal_input = Decimal(
                         str(asset.get("underlying_wallet_balance") or 0.0)
                     )
-                    balance_wei = int(balance_decimal_input * scale).to_integral_value(
-                        rounding=ROUND_DOWN
+                    balance_wei = int(
+                        (balance_decimal_input * scale).to_integral_value(
+                            rounding=ROUND_DOWN
+                        )
                     )
                 if balance_wei < 0:
                     balance_wei = 0
@@ -2284,8 +2281,10 @@ class HyperlendStableYieldStrategy(Strategy):
         total_usd = 0.0
         for entry in lent_positions.values():
             token = entry.get("token")
+            if not token:
+                continue
             amount_wei = entry.get("amount_wei", 0)
-            amount = float(amount_wei) / (10 ** token.get("decimals"))
+            amount = float(amount_wei) / (10 ** token.get("decimals", 18))
             asset = entry.get("asset")
             if not asset:
                 checksum = self._token_checksum(token)

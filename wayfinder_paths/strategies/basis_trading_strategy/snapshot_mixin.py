@@ -13,7 +13,9 @@ from wayfinder_paths.core.clients.protocols import HyperliquidDataClientProtocol
 
 
 class BasisSnapshotMixin:
-    def _get_hyperliquid_data_client(self) -> HyperliquidDataClientProtocol:
+    def _get_hyperliquid_data_client(
+        self,
+    ) -> HyperliquidDataClientProtocol:
         client = getattr(self, "_hyperliquid_data_client", None)
         if client is None:
             client = HYPERLIQUID_DATA_CLIENT

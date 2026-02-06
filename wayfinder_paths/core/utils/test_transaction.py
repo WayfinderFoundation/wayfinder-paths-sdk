@@ -170,10 +170,8 @@ class TestNonceTransaction:
 class TestGasPriceTransaction:
     @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
     async def test_pricing_on_all_chains(self, mock_web3s_context):
-        mock_block = MagicMock()
-        mock_block.baseFeePerGas = 10_000_000_000
-        mock_fee_history = MagicMock()
-        mock_fee_history.reward = [[1_000_000_000] for _ in range(10)]
+        mock_block = {"baseFeePerGas": 10_000_000_000}
+        mock_fee_history = {"reward": [[1_000_000_000] for _ in range(10)]}
 
         mock_web3 = MagicMock()
         mock_web3.eth = MagicMock()
@@ -208,30 +206,25 @@ class TestGasPriceTransaction:
     @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
     async def test_eip1559_max_aggregation(self, mock_web3s_context):
         # Mock multiple web3 instances with different base fees and priority fees
-        mock_block_1 = MagicMock()
-        mock_block_1.baseFeePerGas = 30_000_000_000
-        mock_fee_history_1 = MagicMock()
-        mock_fee_history_1.reward = [[2_000_000_000] for _ in range(10)]
+        mock_block_1 = {"baseFeePerGas": 30_000_000_000}
+        mock_fee_history_1 = {"reward": [[2_000_000_000] for _ in range(10)]}
+
         mock_web3_1 = MagicMock()
         mock_web3_1.eth = MagicMock()
         mock_web3_1.eth.get_block = AsyncMock(return_value=mock_block_1)
         mock_web3_1.eth.fee_history = AsyncMock(return_value=mock_fee_history_1)
         mock_web3_1.provider.disconnect = AsyncMock()
 
-        mock_block_2 = MagicMock()
-        mock_block_2.baseFeePerGas = 35_000_000_000
-        mock_fee_history_2 = MagicMock()
-        mock_fee_history_2.reward = [[3_000_000_000] for _ in range(10)]
+        mock_block_2 = {"baseFeePerGas": 35_000_000_000}
+        mock_fee_history_2 = {"reward": [[3_000_000_000] for _ in range(10)]}
         mock_web3_2 = MagicMock()
         mock_web3_2.eth = MagicMock()
         mock_web3_2.eth.get_block = AsyncMock(return_value=mock_block_2)
         mock_web3_2.eth.fee_history = AsyncMock(return_value=mock_fee_history_2)
         mock_web3_2.provider.disconnect = AsyncMock()
 
-        mock_block_3 = MagicMock()
-        mock_block_3.baseFeePerGas = 32_000_000_000
-        mock_fee_history_3 = MagicMock()
-        mock_fee_history_3.reward = [[2_500_000_000] for _ in range(10)]
+        mock_block_3 = {"baseFeePerGas": 32_000_000_000}
+        mock_fee_history_3 = {"reward": [[2_500_000_000] for _ in range(10)]}
         mock_web3_3 = MagicMock()
         mock_web3_3.eth = MagicMock()
         mock_web3_3.eth.get_block = AsyncMock(return_value=mock_block_3)

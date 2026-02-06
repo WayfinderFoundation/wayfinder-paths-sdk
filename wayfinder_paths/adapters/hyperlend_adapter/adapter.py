@@ -348,4 +348,4 @@ class HyperlendAdapter(BaseAdapter):
             )
             return None
 
-        return current_price * float(amount) / 10 ** int(decimals)
+        return float(current_price) * float(amount) / 10 ** int(decimals)

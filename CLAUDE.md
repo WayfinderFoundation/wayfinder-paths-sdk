@@ -130,6 +130,8 @@ When a user asks to run, check, or interact with a strategy:
 
 6. **Safety review** - Fund-moving actions (deposit, update, withdraw, exit) are gated by a safety review hook that shows a preview and asks for confirmation.
 
+7. **Mypy typing** - When adding or modifying Python code, ensure all *new/changed* code is fully type-annotated and does not introduce new mypy errors (existing legacy errors may remain).
+
 ## Execution modes (one-off vs recurring)
 
 When a user wants **immediate, one-off execution**:

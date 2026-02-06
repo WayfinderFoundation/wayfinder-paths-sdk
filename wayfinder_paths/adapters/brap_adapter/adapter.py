@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from web3 import Web3
 
@@ -52,7 +52,7 @@ class BRAPAdapter(BaseAdapter):
         quote: dict[str, Any],
         tx_hash: str,
         strategy_name: str | None = None,
-    ) -> TransactionRecord | dict[str, Any]:
+    ) -> TransactionRecord | dict[str, Any] | str:
         from_amount_usd = quote.get("from_amount_usd", 0)
         to_amount_usd = quote.get("to_amount_usd", 0)
         if from_amount_usd is None:
@@ -135,7 +135,7 @@ class BRAPAdapter(BaseAdapter):
                         return (True, selected)
 
                 if quote:
-                    return (True, quote)
+                    return (True, cast(dict[str, Any], quote))
 
                 last_error = "No quotes available"
             except Exception as e:
