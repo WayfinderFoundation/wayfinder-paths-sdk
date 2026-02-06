@@ -7,6 +7,12 @@
 
 If no executor is provided, execution methods raise `NotImplementedError`.
 
+## Minimum order size
+
+**All orders (perp and spot) require a minimum of $10 USD notional.**
+
+Orders below this threshold will be rejected by Hyperliquid.
+
 ## High-value execution calls
 
 Orders:
@@ -45,7 +51,12 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 
 For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid` (user state, mids, meta, `wait_for_deposit`, `wait_for_withdrawal`)
-- Writes: `mcp__wayfinder__hyperliquid_execute` (place order, update leverage, cancel, withdraw)
+- Writes: `mcp__wayfinder__hyperliquid_execute`:
+  - `place_order` (perp and spot, with `is_spot` flag)
+  - `cancel_order`
+  - `update_leverage`
+  - `withdraw`
+  - `spot_to_perp_transfer` / `perp_to_spot_transfer` (move USDC between wallets)
 
 ### Builder fee (“builder code”)
 
@@ -61,13 +72,48 @@ Set it in `config.json`:
 - attach the builder config to orders
 - auto-approve the builder fee (via `approve_builder_fee`) if needed
 
+### Spot vs perp orders (`is_spot`)
+
+For `action="place_order"`, you **must** set `is_spot` explicitly:
+
+**Perp order:**
+```
+hyperliquid_execute(
+    action="place_order",
+    wallet_label="main",
+    coin="HYPE",
+    is_spot=False,
+    is_buy=True,
+    usd_amount=20,
+    usd_amount_kind="notional"
+)
+```
+
+**Spot order:**
+```
+hyperliquid_execute(
+    action="place_order",
+    wallet_label="main",
+    coin="HYPE",
+    is_spot=True,
+    is_buy=True,
+    usd_amount=11
+)
+```
+
+Note: Spot orders don't require `usd_amount_kind` (no leverage concept).
+
 ### USD sizing (avoid ambiguity)
 
-For `action="place_order"`:
+For perp `action="place_order"`:
 - Use `size` for **coin units** (e.g. ETH, HYPE).
 - Or use `usd_amount` + `usd_amount_kind`:
-  - `usd_amount_kind="notional"` means “position size in USD”
-  - `usd_amount_kind="margin"` means “collateral in USD” (requires `leverage`; notional = margin * leverage)
+  - `usd_amount_kind="notional"` means "position size in USD"
+  - `usd_amount_kind="margin"` means "collateral in USD" (requires `leverage`; notional = margin * leverage)
+
+For spot `action="place_order"`:
+- Use `size` for **coin units**, or
+- Use `usd_amount` directly (always treated as notional)
 
 ## Claude Code "execution mode" (one-off scripts)
 
