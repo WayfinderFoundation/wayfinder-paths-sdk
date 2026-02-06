@@ -14,7 +14,6 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
-    CHAIN_ID_HYPEREVM,
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
@@ -104,11 +103,6 @@ async def gas_price_transaction(transaction: dict):
     async def _get_gas_price(web3: AsyncWeb3) -> int:
         return await web3.eth.gas_price
 
-    async def _get_hyperevm_big_block_gas_price(web3: AsyncWeb3) -> int:
-        # Hyperevm exposes a chain-specific RPC for a recommended max fee and does not
-        # use EIP-1559 priority fees in the normal way.
-        return await web3.hype.big_block_gas_price()
-
     async def _get_base_fee(web3: AsyncWeb3) -> int:
         latest_block = await web3.eth.get_block("latest")
         return latest_block.baseFeePerGas
@@ -129,13 +123,6 @@ async def gas_price_transaction(transaction: dict):
             gas_price = max(gas_prices)
 
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
-        elif chain_id == CHAIN_ID_HYPEREVM:
-            big_block_prices = await asyncio.gather(
-                *[_get_hyperevm_big_block_gas_price(web3) for web3 in web3s]
-            )
-            max_fee = max(big_block_prices)
-            transaction["maxFeePerGas"] = int(max_fee * SUGGESTED_GAS_PRICE_MULTIPLIER)
-            transaction["maxPriorityFeePerGas"] = 0
         else:
             base_fees = await asyncio.gather(*[_get_base_fee(web3) for web3 in web3s])
             priority_fees = await asyncio.gather(
