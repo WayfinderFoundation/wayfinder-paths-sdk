@@ -1053,7 +1053,6 @@ class HyperlendStableYieldStrategy(Strategy):
                 return (
                     True,
                     f"Idle balance ({idle_tokens:.4f} {token_symbol}) remains; no HyperLend market has sufficient capacity.",
-                    False,
                 )
             best_token, best_symbol, best_hourly = best_candidate
             target_apy = self._hourly_to_apy(best_hourly)
@@ -1081,7 +1080,7 @@ class HyperlendStableYieldStrategy(Strategy):
             if actions:
                 message = f"{message} Actions: {'; '.join(actions)}."
             message = f"{message} HYPE buffer at {self.kept_hype_tokens:.2f} tokens."
-            return (True, message, True)
+            return (True, message)
 
         required_tokens = (
             redeploy_tokens if redeploy_tokens and redeploy_tokens > 0 else None
@@ -1093,7 +1092,7 @@ class HyperlendStableYieldStrategy(Strategy):
             allow_rotation_without_current=True,
         )
         if best_candidate is None:
-            return (True, "No optimal HyperLend market identified.", False)
+            return (True, "No optimal HyperLend market identified.")
 
         best_token, best_symbol, best_hourly = best_candidate
         target_apy = self._hourly_to_apy(best_hourly)
@@ -1110,7 +1109,7 @@ class HyperlendStableYieldStrategy(Strategy):
                 message = (
                     f"{message} Existing position remains optimal versus alternatives."
                 )
-            return (True, message, False)
+            return (True, message)
 
         reserve_wei = self.GAS_MAXIMUM * (10 ** self.hype_token_info.get("decimals"))
         previous_apy = float(self.current_avg_apy or 0.0)
@@ -1266,7 +1265,6 @@ class HyperlendStableYieldStrategy(Strategy):
             return (
                 True,
                 " ".join(part for part in message_parts if part).strip(),
-                False,
             )
 
         actions, total_target, _, kept_hype = await self._allocate_to_target(
@@ -1287,10 +1285,8 @@ class HyperlendStableYieldStrategy(Strategy):
         elif policy_mode == "hysteresis":
             base_message = f"{base_message} Hysteresis rotation with dwell={hys_hours}h, z={hys_z:.2f}."
 
-        should_notify_user = False
         if actions:
             base_message = f"{base_message} Actions: {'; '.join(actions)}."
-            should_notify_user = True
         else:
             base_message = f"{base_message} No rebalancing required."
 
@@ -1298,7 +1294,7 @@ class HyperlendStableYieldStrategy(Strategy):
             f"{base_message} HYPE buffer at {self.kept_hype_tokens:.2f} tokens."
         )
 
-        return (True, base_message, should_notify_user)
+        return (True, base_message)
 
     async def _allocate_to_target(
         self,
