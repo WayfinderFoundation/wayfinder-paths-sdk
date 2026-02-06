@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.adapters.models import Operation
@@ -47,7 +47,7 @@ class LedgerAdapter(BaseAdapter):
 
     async def get_strategy_latest_transactions(
         self, wallet_address: str
-    ) -> tuple[bool, StrategyTransactionList | str]:
+    ) -> tuple[Literal[True], StrategyTransactionList] | tuple[Literal[False], str]:
         try:
             data = await self.ledger_client.get_strategy_latest_transactions(
                 wallet_address=wallet_address

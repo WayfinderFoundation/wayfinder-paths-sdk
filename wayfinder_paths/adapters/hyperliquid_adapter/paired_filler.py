@@ -170,10 +170,10 @@ class LegConfirmer:
                 except (TypeError, ValueError):
                     pass
                 try:
-                    success, status = await self.adapter.get_order_status(
+                    status_result = await self.adapter.get_order_status(
                         address, numeric_or_cloid
                     )
-                    if success and status.get("status") in {
+                    if status_result[0] and status_result[1].get("status") in {
                         "filled",
                         "canceled",
                         "triggered",
@@ -194,14 +194,14 @@ class LegConfirmer:
 
     async def _oid_from_cloid(self, cloid: str, address: str) -> int | None:
         try:
-            success, status = await self.adapter.get_order_status(address, cloid)
-            if not success:
+            status_result = await self.adapter.get_order_status(address, cloid)
+            if not status_result[0]:
                 return None
         except Exception as exc:
             logger.warning(f"orderStatus by cloid failed for {cloid}: {exc}")
             return None
 
-        order = status.get("order")
+        order = status_result[1].get("order")
         if not isinstance(order, dict):
             return None
         oid = order.get("oid")
@@ -428,10 +428,10 @@ class PairedFiller:
         slip_bps = self.cfg.max_slip_bps
         slip_fraction = slip_bps / 10_000
 
-        success, mids = await self.adapter.get_all_mid_prices()
-        if not success:
+        mids_result = await self.adapter.get_all_mid_prices()
+        if not mids_result[0]:
             raise ValueError("Cannot fetch mid prices")
-        mid_price = float(mids.get(coin, 0.0))
+        mid_price = float(mids_result[1].get(coin, 0.0))
         if mid_price <= 0:
             raise ValueError(f"Cannot determine mid price for {coin}")
 
@@ -923,8 +923,8 @@ class PairedFiller:
 
     async def _spot_usdc_available(self) -> float:
         try:
-            success, state = await self.adapter.get_spot_user_state(self.address)
-            if not success:
+            state_result = await self.adapter.get_spot_user_state(self.address)
+            if not state_result[0]:
                 return 0.0
         except Exception as exc:
             logger.info(
@@ -932,7 +932,7 @@ class PairedFiller:
             )
             return 0.0
 
-        balances = state.get("balances", [])
+        balances = state_result[1].get("balances", [])
         for balance in balances:
             if balance.get("coin") == "USDC":
                 try:
