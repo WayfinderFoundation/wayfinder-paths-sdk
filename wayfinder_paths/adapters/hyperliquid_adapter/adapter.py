@@ -128,14 +128,6 @@ class HyperliquidAdapter(BaseAdapter):
     def util(self, value: Any) -> None:
         self._util = value
 
-    @property
-    def asset_to_sz_decimals(self) -> dict[int, int]:
-        return self.info.asset_to_sz_decimals
-
-    @property
-    def coin_to_asset(self) -> dict[str, int]:
-        return self.info.coin_to_asset
-
     @_cached_info("hl_meta_and_asset_ctxs", ttl=60)
     def get_meta_and_asset_ctxs(self) -> tuple[bool, Any]:
         return self.info.meta_and_asset_ctxs()
@@ -144,6 +136,36 @@ class HyperliquidAdapter(BaseAdapter):
     def get_spot_meta(self) -> tuple[bool, Any]:
         spot_meta = self.info.spot_meta
         return spot_meta() if callable(spot_meta) else spot_meta
+
+    @staticmethod
+    def max_transferable_amount(
+        total: str,
+        hold: str,
+        *,
+        sz_decimals: int,
+        leave_one_tick: bool = True,
+    ) -> float:
+        getcontext().prec = 50
+
+        if sz_decimals < 0:
+            sz_decimals = 0
+
+        step = Decimal(10) ** (-int(sz_decimals))
+
+        total_d = Decimal(str(total or "0"))
+        hold_d = Decimal(str(hold or "0"))
+        available = total_d - hold_d
+        if available <= 0:
+            return 0.0
+
+        safe = available - step if leave_one_tick else available
+        if safe <= 0:
+            return 0.0
+
+        quantized = (safe / step).to_integral_value(rounding=ROUND_DOWN) * step
+        if quantized <= 0:
+            return 0.0
+        return float(quantized)
 
     @_cached_info("hl_spot_assets", ttl=300)
     async def get_spot_assets(self) -> tuple[bool, dict[str, int]]:
@@ -173,14 +195,6 @@ class HyperliquidAdapter(BaseAdapter):
 
         return response
 
-    async def get_all_mid_prices(self) -> tuple[bool, dict[str, float]]:
-        try:
-            data = self.info.all_mids()
-            return True, {k: float(v) for k, v in data.items()}
-        except Exception as exc:
-            self.logger.error(f"Failed to fetch mid prices: {exc}")
-            return False, str(exc)
-
     async def get_asset_id(self, coin: str, is_perp: bool) -> int | None:
         if is_perp:
             return (self.coin_to_asset or {}).get(coin.upper())
@@ -201,39 +215,6 @@ class HyperliquidAdapter(BaseAdapter):
         except Exception as exc:
             self.logger.error(f"Failed to fetch L2 book for {coin}: {exc}")
             return False, str(exc)
-
-    async def get_spot_l2_book(self, spot_asset_id: int) -> tuple[bool, dict[str, Any]]:
-        try:
-            # Spot L2 uses different coin names based on spot index:
-            # - Index 0 (PURR): use "PURR/USDC"
-            # - All other indices: use "@{index}"
-            spot_index = (
-                spot_asset_id - 10000 if spot_asset_id >= 10000 else spot_asset_id
-            )
-
-            if spot_index == 0:
-                coin = "PURR/USDC"
-            else:
-                coin = f"@{spot_index}"
-
-            body = {"type": "l2Book", "coin": coin}
-            data = self.info.post("/info", body)
-            return True, data
-        except Exception as exc:
-            self.logger.error(
-                f"Failed to fetch spot L2 book for {spot_asset_id}: {exc}"
-            )
-            return False, str(exc)
-
-    @_cached_info("hl_margin_table_{margin_table_id}", ttl=86400)
-    def get_margin_table(self, margin_table_id: int) -> tuple[bool, list[dict]]:
-        # Try `id` first, fall back to `marginTableId` for older SDK compatibility
-        body = {"type": "marginTable", "id": int(margin_table_id)}
-        try:
-            return self.info.post("/info", body)
-        except Exception:  # noqa: BLE001
-            body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
-            return self.info.post("/info", body)
 
     async def get_user_state(self, address: str) -> tuple[bool, dict[str, Any]]:
         try:
@@ -299,114 +280,106 @@ class HyperliquidAdapter(BaseAdapter):
 
         return ok_any, out
 
-    async def get_user_fills(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
+    @_cached_info("hl_margin_table_{margin_table_id}", ttl=86400)
+    def get_margin_table(self, margin_table_id: int) -> tuple[bool, list[dict]]:
+        # Try `id` first, fall back to `marginTableId` for older SDK compatibility
+        body = {"type": "marginTable", "id": int(margin_table_id)}
         try:
-            data = self.info.user_fills(address)
-            return True, data if isinstance(data, list) else []
-        except Exception as exc:
-            self.logger.error(f"Failed to fetch user_fills for {address}: {exc}")
-            return False, str(exc)
+            return self.info.post("/info", body)
+        except Exception:  # noqa: BLE001
+            body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
+            return self.info.post("/info", body)
 
-    async def check_recent_liquidations(
-        self, address: str, since_ms: int
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    async def get_spot_l2_book(self, spot_asset_id: int) -> tuple[bool, dict[str, Any]]:
         try:
-            now_ms = int(time.time() * 1000)
-            body = {
-                "type": "userFillsByTime",
-                "user": address,
-                "startTime": since_ms,
-                "endTime": now_ms,
-            }
-            data = self.info.post("/info", body)
-            fills = data if isinstance(data, list) else []
+            # Spot L2 uses different coin names based on spot index:
+            # - Index 0 (PURR): use "PURR/USDC"
+            # - All other indices: use "@{index}"
+            spot_index = (
+                spot_asset_id - 10000 if spot_asset_id >= 10000 else spot_asset_id
+            )
 
-            liquidation_fills = [
-                f
-                for f in fills
-                if f.get("liquidation")
-                and f["liquidation"].get("liquidatedUser", "").lower()
-                == address.lower()
-            ]
+            if spot_index == 0:
+                coin = "PURR/USDC"
+            else:
+                coin = f"@{spot_index}"
 
-            return True, liquidation_fills
-        except Exception as exc:
-            self.logger.error(f"Failed to check liquidations for {address}: {exc}")
-            return False, []
-
-    async def get_order_status(
-        self, address: str, order_id: int | str
-    ) -> tuple[bool, dict[str, Any]]:
-        try:
-            body = {"type": "orderStatus", "user": address, "oid": order_id}
+            body = {"type": "l2Book", "coin": coin}
             data = self.info.post("/info", body)
             return True, data
         except Exception as exc:
-            self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")
-            return False, str(exc)
-
-    async def get_open_orders(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
-        try:
-            data = self.info.open_orders(address)
-            return True, data if isinstance(data, list) else []
-        except Exception as exc:
-            self.logger.error(f"Failed to fetch open_orders for {address}: {exc}")
-            return False, str(exc)
-
-    async def get_frontend_open_orders(
-        self, address: str
-    ) -> tuple[bool, list[dict[str, Any]]]:
-        try:
-            data = self.info.frontend_open_orders(address)
-            return True, data if isinstance(data, list) else []
-        except Exception as exc:
             self.logger.error(
-                f"Failed to fetch frontend_open_orders for {address}: {exc}"
+                f"Failed to fetch spot L2 book for {spot_asset_id}: {exc}"
             )
             return False, str(exc)
 
-    async def get_max_builder_fee(
-        self,
-        user: str,
-        builder: str,
-    ) -> tuple[bool, int]:
+    @property
+    def asset_to_sz_decimals(self) -> dict[int, int]:
+        return self.info.asset_to_sz_decimals
+
+    @property
+    def coin_to_asset(self) -> dict[str, int]:
+        return self.info.coin_to_asset
+
+    async def get_all_mid_prices(self) -> tuple[bool, dict[str, float]]:
         try:
-            body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = self.info.post("/info", body)
-            return True, int(data) if data is not None else 0
+            data = self.info.all_mids()
+            return True, {k: float(v) for k, v in data.items()}
         except Exception as exc:
-            self.logger.error(f"Failed to fetch max_builder_fee for {user}: {exc}")
-            return False, 0
+            self.logger.error(f"Failed to fetch mid prices: {exc}")
+            return False, str(exc)
 
-    async def get_user_withdrawals(
-        self,
-        address: str,
-        from_timestamp_ms: int,
-    ) -> tuple[bool, dict[str, float]]:
+    def get_valid_order_size(self, asset_id: int, size: float) -> float:
+        decimals = self.asset_to_sz_decimals[asset_id]
+        step = Decimal(10) ** (-decimals)
+        if size <= 0:
+            return 0.0
+        quantized = (Decimal(str(size)) / step).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * step
+        return float(quantized)
+
+    # ------------------------------------------------------------------ #
+    # Execution Methods (require signing callback)                         #
+    # ------------------------------------------------------------------ #
+
+    def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
+        # Builder attribution is mandatory; always uses HYPE_FEE_WALLET
+        expected_builder = HYPE_FEE_WALLET.lower()
+
+        if isinstance(builder, dict) and builder.get("b") is not None:
+            provided_builder = str(builder.get("b") or "").strip()
+            if provided_builder and provided_builder.lower() != expected_builder:
+                raise ValueError(
+                    f"builder wallet must be {expected_builder} (got {provided_builder})"
+                )
+
+        fee = None
+        if isinstance(builder, dict) and builder.get("f") is not None:
+            fee = builder.get("f")
+
+        if fee is None and isinstance(self.config, dict):
+            cfg = self.config.get("builder_fee")
+            if isinstance(cfg, dict):
+                cfg_builder = str(cfg.get("b") or "").strip()
+                if cfg_builder and cfg_builder.lower() != expected_builder:
+                    raise ValueError(
+                        f"config builder_fee.b must be {expected_builder} (got {cfg_builder})"
+                    )
+                if cfg.get("f") is not None:
+                    fee = cfg.get("f")
+
+        if fee is None:
+            fee = DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP
+
         try:
-            data = self.info.post(
-                "/info",
-                {
-                    "type": "userNonFundingLedgerUpdates",
-                    "user": to_checksum_address(address),
-                    "startTime": int(from_timestamp_ms),
-                },
-            )
+            fee_i = int(fee)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("builder fee f must be an int (tenths of bp)") from exc
+        if fee_i <= 0:
+            raise ValueError("builder fee f must be > 0 (tenths of bp)")
 
-            result = {}
-            for update in sorted(data or [], key=lambda x: x.get("time", 0)):
-                delta = update.get("delta") or {}
-                if delta.get("type") == "withdraw":
-                    tx_hash = update.get("hash")
-                    usdc_amount = float(delta.get("usdc", 0))
-                    if tx_hash:
-                        result[tx_hash] = usdc_amount
-
-            return True, result
-
-        except Exception as exc:
-            self.logger.error(f"Failed to get user withdrawals: {exc}")
-            return False, {}
+        return {"b": expected_builder, "f": fee_i}
 
     async def place_market_order(
         self,
@@ -442,53 +415,6 @@ class HyperliquidAdapter(BaseAdapter):
                 if isinstance(status, dict) and status.get("error"):
                     success = False
                     break
-        return success, result
-
-    async def place_limit_order(
-        self,
-        asset_id: int,
-        is_buy: bool,
-        price: float,
-        size: float,
-        address: str,
-        *,
-        reduce_only: bool = False,
-        builder: dict[str, Any] | None = None,
-    ) -> tuple[bool, dict[str, Any]]:
-        builder = self._mandatory_builder_fee(builder)
-        builder_info = BuilderInfo(b=builder.get("b"), f=builder.get("f"))
-
-        result = await self.exchange.place_limit_order(
-            asset_id=asset_id,
-            is_buy=is_buy,
-            price=price,
-            size=size,
-            address=address,
-            builder=builder_info,
-        )
-
-        success = result.get("status") == "ok"
-        return success, result
-
-    async def place_stop_loss(
-        self,
-        asset_id: int,
-        is_buy: bool,
-        trigger_price: float,
-        size: float,
-        address: str,
-    ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.place_trigger_order(
-            asset_id=asset_id,
-            is_buy=is_buy,
-            trigger_price=trigger_price,
-            size=size,
-            address=address,
-            tpsl="sl",
-            is_market=True,
-        )
-
-        success = result.get("status") == "ok"
         return success, result
 
     async def cancel_order(
@@ -559,23 +485,6 @@ class HyperliquidAdapter(BaseAdapter):
             asset_id=asset_id, order_id=order_id, address=address
         )
 
-    async def update_leverage(
-        self,
-        asset_id: int,
-        leverage: int,
-        is_cross: bool,
-        address: str,
-    ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.update_leverage(
-            asset=asset_id,
-            leverage=leverage,
-            is_cross=is_cross,
-            address=address,
-        )
-
-        success = result.get("status") == "ok"
-        return success, result
-
     async def spot_transfer(
         self,
         *,
@@ -594,6 +503,47 @@ class HyperliquidAdapter(BaseAdapter):
 
         success = result.get("status") == "ok"
         return success, result
+
+    @staticmethod
+    def hypercore_index_to_system_address(index: int) -> str:
+        if index == 150:
+            return HYPERCORE_SENTINEL_ADDRESS
+
+        hex_index = f"{index:x}"
+        padding_length = 42 - len("0x20") - len(hex_index)
+        result = "0x20" + "0" * padding_length + hex_index
+        return to_checksum_address(result)
+
+    async def _hypercore_get_token_metadata(
+        self, token_address: str | None
+    ) -> dict[str, Any] | None:
+        # Native HYPE uses 0-address and maps to tokens[150]
+        token_addr = (token_address or ZERO_ADDRESS).strip()
+        token_addr_lower = token_addr.lower()
+
+        success, spot_meta = await self.get_spot_meta()
+        if not success or not isinstance(spot_meta, dict):
+            return None
+
+        tokens = spot_meta.get("tokens", [])
+        if not isinstance(tokens, list) or not tokens:
+            return None
+
+        if token_addr_lower == ZERO_ADDRESS.lower():
+            token = tokens[150] if len(tokens) > 150 else None
+            return token if isinstance(token, dict) else None
+
+        for token_data in tokens:
+            if not isinstance(token_data, dict):
+                continue
+            evm_contract = token_data.get("evmContract")
+            if not isinstance(evm_contract, dict):
+                continue
+            address = evm_contract.get("address")
+            if isinstance(address, str) and address.lower() == token_addr_lower:
+                return token_data
+
+        return None
 
     async def hypercore_to_hyperevm(
         self,
@@ -639,6 +589,23 @@ class HyperliquidAdapter(BaseAdapter):
             address=address,
         )
 
+    async def update_leverage(
+        self,
+        asset_id: int,
+        leverage: int,
+        is_cross: bool,
+        address: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        result = await self.exchange.update_leverage(
+            asset=asset_id,
+            leverage=leverage,
+            is_cross=is_cross,
+            address=address,
+        )
+
+        success = result.get("status") == "ok"
+        return success, result
+
     async def transfer_spot_to_perp(
         self,
         amount: float,
@@ -667,6 +634,93 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
+    async def place_stop_loss(
+        self,
+        asset_id: int,
+        is_buy: bool,
+        trigger_price: float,
+        size: float,
+        address: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        result = await self.exchange.place_trigger_order(
+            asset_id=asset_id,
+            is_buy=is_buy,
+            trigger_price=trigger_price,
+            size=size,
+            address=address,
+            tpsl="sl",
+            is_market=True,
+        )
+
+        success = result.get("status") == "ok"
+        return success, result
+
+    async def get_user_fills(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
+        try:
+            data = self.info.user_fills(address)
+            return True, data if isinstance(data, list) else []
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch user_fills for {address}: {exc}")
+            return False, str(exc)
+
+    async def check_recent_liquidations(
+        self, address: str, since_ms: int
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        try:
+            now_ms = int(time.time() * 1000)
+            body = {
+                "type": "userFillsByTime",
+                "user": address,
+                "startTime": since_ms,
+                "endTime": now_ms,
+            }
+            data = self.info.post("/info", body)
+            fills = data if isinstance(data, list) else []
+
+            liquidation_fills = [
+                f
+                for f in fills
+                if f.get("liquidation")
+                and f["liquidation"].get("liquidatedUser", "").lower()
+                == address.lower()
+            ]
+
+            return True, liquidation_fills
+        except Exception as exc:
+            self.logger.error(f"Failed to check liquidations for {address}: {exc}")
+            return False, []
+
+    async def get_order_status(
+        self, address: str, order_id: int | str
+    ) -> tuple[bool, dict[str, Any]]:
+        try:
+            body = {"type": "orderStatus", "user": address, "oid": order_id}
+            data = self.info.post("/info", body)
+            return True, data
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")
+            return False, str(exc)
+
+    async def get_open_orders(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
+        try:
+            data = self.info.open_orders(address)
+            return True, data if isinstance(data, list) else []
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch open_orders for {address}: {exc}")
+            return False, str(exc)
+
+    async def get_frontend_open_orders(
+        self, address: str
+    ) -> tuple[bool, list[dict[str, Any]]]:
+        try:
+            data = self.info.frontend_open_orders(address)
+            return True, data if isinstance(data, list) else []
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to fetch frontend_open_orders for {address}: {exc}"
+            )
+            return False, str(exc)
+
     async def withdraw(
         self,
         *,
@@ -679,6 +733,34 @@ class HyperliquidAdapter(BaseAdapter):
         )
         success = result.get("status") == "ok"
         return success, result
+
+    # ------------------------------------------------------------------ #
+    # Deposit/Withdrawal Helpers                                          #
+    # ------------------------------------------------------------------ #
+
+    def get_perp_margin_amount(self, user_state: dict[str, Any]) -> float:
+        try:
+            margin_summary = user_state.get("marginSummary", {})
+            account_value = margin_summary.get("accountValue")
+            if account_value is not None:
+                return float(account_value)
+            cross_summary = user_state.get("crossMarginSummary", {})
+            return float(cross_summary.get("accountValue", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def get_max_builder_fee(
+        self,
+        user: str,
+        builder: str,
+    ) -> tuple[bool, int]:
+        try:
+            body = {"type": "maxBuilderFee", "user": user, "builder": builder}
+            data = self.info.post("/info", body)
+            return True, int(data) if data is not None else 0
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch max_builder_fee for {user}: {exc}")
+            return False, 0
 
     async def approve_builder_fee(
         self,
@@ -730,135 +812,31 @@ class HyperliquidAdapter(BaseAdapter):
             return True, f"Builder fee approved: {max_fee_rate}"
         return False, f"Builder fee approval failed: {result}"
 
-    def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
-        # Builder attribution is mandatory; always uses HYPE_FEE_WALLET
-        expected_builder = HYPE_FEE_WALLET.lower()
-
-        if isinstance(builder, dict) and builder.get("b") is not None:
-            provided_builder = str(builder.get("b") or "").strip()
-            if provided_builder and provided_builder.lower() != expected_builder:
-                raise ValueError(
-                    f"builder wallet must be {expected_builder} (got {provided_builder})"
-                )
-
-        fee = None
-        if isinstance(builder, dict) and builder.get("f") is not None:
-            fee = builder.get("f")
-
-        if fee is None and isinstance(self.config, dict):
-            cfg = self.config.get("builder_fee")
-            if isinstance(cfg, dict):
-                cfg_builder = str(cfg.get("b") or "").strip()
-                if cfg_builder and cfg_builder.lower() != expected_builder:
-                    raise ValueError(
-                        f"config builder_fee.b must be {expected_builder} (got {cfg_builder})"
-                    )
-                if cfg.get("f") is not None:
-                    fee = cfg.get("f")
-
-        if fee is None:
-            fee = DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP
-
-        try:
-            fee_i = int(fee)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("builder fee f must be an int (tenths of bp)") from exc
-        if fee_i <= 0:
-            raise ValueError("builder fee f must be > 0 (tenths of bp)")
-
-        return {"b": expected_builder, "f": fee_i}
-
-    @staticmethod
-    def hypercore_index_to_system_address(index: int) -> str:
-        if index == 150:
-            return HYPERCORE_SENTINEL_ADDRESS
-
-        hex_index = f"{index:x}"
-        padding_length = 42 - len("0x20") - len(hex_index)
-        result = "0x20" + "0" * padding_length + hex_index
-        return to_checksum_address(result)
-
-    async def _hypercore_get_token_metadata(
-        self, token_address: str | None
-    ) -> dict[str, Any] | None:
-        # Native HYPE uses 0-address and maps to tokens[150]
-        token_addr = (token_address or ZERO_ADDRESS).strip()
-        token_addr_lower = token_addr.lower()
-
-        success, spot_meta = await self.get_spot_meta()
-        if not success or not isinstance(spot_meta, dict):
-            return None
-
-        tokens = spot_meta.get("tokens", [])
-        if not isinstance(tokens, list) or not tokens:
-            return None
-
-        if token_addr_lower == ZERO_ADDRESS.lower():
-            token = tokens[150] if len(tokens) > 150 else None
-            return token if isinstance(token, dict) else None
-
-        for token_data in tokens:
-            if not isinstance(token_data, dict):
-                continue
-            evm_contract = token_data.get("evmContract")
-            if not isinstance(evm_contract, dict):
-                continue
-            address = evm_contract.get("address")
-            if isinstance(address, str) and address.lower() == token_addr_lower:
-                return token_data
-
-        return None
-
-    @staticmethod
-    def max_transferable_amount(
-        total: str,
-        hold: str,
+    async def place_limit_order(
+        self,
+        asset_id: int,
+        is_buy: bool,
+        price: float,
+        size: float,
+        address: str,
         *,
-        sz_decimals: int,
-        leave_one_tick: bool = True,
-    ) -> float:
-        getcontext().prec = 50
+        reduce_only: bool = False,
+        builder: dict[str, Any] | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        builder = self._mandatory_builder_fee(builder)
+        builder_info = BuilderInfo(b=builder.get("b"), f=builder.get("f"))
 
-        if sz_decimals < 0:
-            sz_decimals = 0
+        result = await self.exchange.place_limit_order(
+            asset_id=asset_id,
+            is_buy=is_buy,
+            price=price,
+            size=size,
+            address=address,
+            builder=builder_info,
+        )
 
-        step = Decimal(10) ** (-int(sz_decimals))
-
-        total_d = Decimal(str(total or "0"))
-        hold_d = Decimal(str(hold or "0"))
-        available = total_d - hold_d
-        if available <= 0:
-            return 0.0
-
-        safe = available - step if leave_one_tick else available
-        if safe <= 0:
-            return 0.0
-
-        quantized = (safe / step).to_integral_value(rounding=ROUND_DOWN) * step
-        if quantized <= 0:
-            return 0.0
-        return float(quantized)
-
-    def get_valid_order_size(self, asset_id: int, size: float) -> float:
-        decimals = self.asset_to_sz_decimals[asset_id]
-        step = Decimal(10) ** (-decimals)
-        if size <= 0:
-            return 0.0
-        quantized = (Decimal(str(size)) / step).to_integral_value(
-            rounding=ROUND_DOWN
-        ) * step
-        return float(quantized)
-
-    def get_perp_margin_amount(self, user_state: dict[str, Any]) -> float:
-        try:
-            margin_summary = user_state.get("marginSummary", {})
-            account_value = margin_summary.get("accountValue")
-            if account_value is not None:
-                return float(account_value)
-            cross_summary = user_state.get("crossMarginSummary", {})
-            return float(cross_summary.get("accountValue", 0.0))
-        except (TypeError, ValueError):
-            return 0.0
+        success = result.get("status") == "ok"
+        return success, result
 
     async def wait_for_deposit(
         self,
@@ -914,6 +892,36 @@ class HyperliquidAdapter(BaseAdapter):
             self.get_perp_margin_amount(state) if success else initial_balance
         )
         return False, final_balance
+
+    async def get_user_withdrawals(
+        self,
+        address: str,
+        from_timestamp_ms: int,
+    ) -> tuple[bool, dict[str, float]]:
+        try:
+            data = self.info.post(
+                "/info",
+                {
+                    "type": "userNonFundingLedgerUpdates",
+                    "user": to_checksum_address(address),
+                    "startTime": int(from_timestamp_ms),
+                },
+            )
+
+            result = {}
+            for update in sorted(data or [], key=lambda x: x.get("time", 0)):
+                delta = update.get("delta") or {}
+                if delta.get("type") == "withdraw":
+                    tx_hash = update.get("hash")
+                    usdc_amount = float(delta.get("usdc", 0))
+                    if tx_hash:
+                        result[tx_hash] = usdc_amount
+
+            return True, result
+
+        except Exception as exc:
+            self.logger.error(f"Failed to get user withdrawals: {exc}")
+            return False, {}
 
     async def wait_for_withdrawal(
         self,
