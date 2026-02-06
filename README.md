@@ -106,6 +106,8 @@ The SDK includes built-in support for these chain IDs:
 | Arbitrum | 42161 | `arbitrum` |
 | Polygon  | 137   | `polygon`  |
 | BSC      | 56    | `bsc`      |
+| Avalanche | 43114 | `avalanche` |
+| Plasma   | 9745  | `plasma`   |
 | HyperEVM | 999   | `hyperevm` |
 
 ## Strategies

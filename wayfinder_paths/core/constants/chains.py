@@ -4,6 +4,7 @@ CHAIN_ID_ARBITRUM = 42161
 CHAIN_ID_BSC = 56
 CHAIN_ID_POLYGON = 137
 CHAIN_ID_AVALANCHE = 43114
+CHAIN_ID_PLASMA = 9745
 CHAIN_ID_HYPEREVM = 999
 
 CHAIN_CODE_TO_ID = {
@@ -12,6 +13,8 @@ CHAIN_CODE_TO_ID = {
     "arbitrum-one": CHAIN_ID_ARBITRUM,
     "ethereum": CHAIN_ID_ETHEREUM,
     "mainnet": CHAIN_ID_ETHEREUM,
+    "avalanche": CHAIN_ID_AVALANCHE,
+    "plasma": CHAIN_ID_PLASMA,
     "hyperevm": CHAIN_ID_HYPEREVM,
 }
 
@@ -21,6 +24,8 @@ SUPPORTED_CHAINS = [
     CHAIN_ID_BSC,
     CHAIN_ID_ARBITRUM,
     CHAIN_ID_POLYGON,
+    CHAIN_ID_AVALANCHE,
+    CHAIN_ID_PLASMA,
     CHAIN_ID_HYPEREVM,
 ]
 
@@ -40,5 +45,7 @@ CHAIN_EXPLORER_URLS: dict[int, str] = {
     CHAIN_ID_ARBITRUM: "https://arbiscan.io/",
     CHAIN_ID_BASE: "https://basescan.org/",
     CHAIN_ID_BSC: "https://bscscan.com/",
+    CHAIN_ID_AVALANCHE: "https://snowtrace.io/",
+    CHAIN_ID_PLASMA: "https://plasmascan.to/",
     CHAIN_ID_HYPEREVM: "https://hyperevmscan.io/",
 }
