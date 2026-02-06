@@ -135,7 +135,7 @@ When a user asks to run, check, or interact with a strategy:
 When a user wants **immediate, one-off execution**:
 
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send).
-- **Hyperliquid perps:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel).
+- **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 Hyperliquid minimums:
@@ -151,7 +151,7 @@ Hyperliquid deposits (Bridge2):
 
 Sizing note (avoid ambiguity):
 
-- If a user says “$X at Y× leverage”, confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.
+- If a user says "$X at Y× leverage", confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.
 - `mcp__wayfinder__hyperliquid_execute` supports `usd_amount` with `usd_amount_kind="notional"|"margin"` so this is explicit.
 
 **Scripting helper for adapters:**
