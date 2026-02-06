@@ -228,6 +228,13 @@ def _select_token_chain(
             chain_id = CHAIN_CODE_TO_ID[desired_chain]
 
     token_address_out = str(token_address).strip() if token_address else None
+
+    # Native gas tokens (e.g. ETH) may come back from the API with a null
+    # address.  Normalize to ZERO_ADDRESS so swap/quote paths treat them the
+    # same as the send path (which already does this explicitly).
+    if not token_address_out and _is_eth_like_token(meta):
+        token_address_out = ZERO_ADDRESS
+
     return chain_id, token_address_out
 
 
