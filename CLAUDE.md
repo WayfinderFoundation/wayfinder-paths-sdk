@@ -138,6 +138,11 @@ When a user wants **immediate, one-off execution**:
 - **Hyperliquid perps:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
+Hyperliquid minimums:
+
+- **Minimum deposit: $5 USD** (deposits below this are **lost**)
+- **Minimum order: $10 USD notional** (applies to both perp and spot)
+
 Hyperliquid deposits (Bridge2):
 
 - Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
@@ -170,6 +175,63 @@ Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 When a user wants a **repeatable/automated system** (recurring jobs):
 
 - Create or modify a strategy under `wayfinder_paths/strategies/` and follow the normal manifests/tests workflow.
+- Use the project-local runner to call strategy `update` on an interval (no cron needed).
+
+Runner CLI (project-local state in `./.wayfinder/runner/`):
+
+```bash
+# Start the daemon (recommended: detached/background)
+poetry run wayfinder runner start --detach
+
+# Idempotent: start if needed, otherwise no-op
+poetry run wayfinder runner ensure
+
+# Add an interval job (every 10 minutes)
+poetry run wayfinder runner add-job \
+  --name basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --interval 600 \
+  --config ./config.json
+
+# Add an interval job for a local one-off script (must live in .wayfinder_runs/ by default)
+poetry run wayfinder runner add-job \
+  --name hourly-report \
+  --type script \
+  --script-path .wayfinder_runs/report.py \
+  --arg --verbose \
+  --interval 3600
+
+# Inspect / control
+poetry run wayfinder runner status
+poetry run wayfinder runner run-once basis-update
+poetry run wayfinder runner pause basis-update
+poetry run wayfinder runner resume basis-update
+poetry run wayfinder runner delete basis-update
+poetry run wayfinder runner stop
+```
+
+Architecture/extensibility notes live in `RUNNER_ARCHITECTURE.md`.
+
+Runner MCP tool (controls the daemon via its local Unix socket):
+
+- `mcp__wayfinder__runner(action="status")`
+- `mcp__wayfinder__runner(action="daemon_status")`
+- `mcp__wayfinder__runner(action="ensure_started")` (starts detached if needed)
+- `mcp__wayfinder__runner(action="daemon_stop")`
+- `mcp__wayfinder__runner(action="add_job", name="basis-update", interval_seconds=600, strategy="basis_trading_strategy", strategy_action="update", config="./config.json")`
+- `mcp__wayfinder__runner(action="add_job", name="hourly-report", type="script", interval_seconds=3600, script_path=".wayfinder_runs/report.py", args=["--verbose"])`
+- `mcp__wayfinder__runner(action="pause_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="resume_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="delete_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="run_once", name="basis-update")`
+- `mcp__wayfinder__runner(action="job_runs", name="basis-update", limit=20)`
+- `mcp__wayfinder__runner(action="run_report", run_id=123, tail_bytes=4000)`
+
+Safety note:
+
+- Runner executions are local automation and do **not** go through the Claude safety review prompt. Treat `update/deposit/withdraw/exit` as live fund-moving actions.
 
 Token identifiers (important for quoting/execution):
 
@@ -210,8 +272,11 @@ just format                            # or: poetry run ruff format
 # Validate all manifests
 just validate-manifests
 
-# Create new strategy from template (auto-creates wallet)
+# Create new strategy with dedicated wallet
 just create-strategy "My Strategy Name"
+
+# Create new adapter
+just create-adapter "my_protocol"
 
 # Run a strategy locally
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
@@ -235,7 +300,41 @@ Strategy → Adapter → Client(s) → Network/API
 - `wayfinder_paths/core/` - Core engine maintained by team (clients, base classes, services)
 - `wayfinder_paths/adapters/` - Community-contributed protocol integrations
 - `wayfinder_paths/strategies/` - Community-contributed trading strategies
-- `wayfinder_paths/templates/` - Templates for new adapters/strategies
+
+### Creating New Strategies and Adapters
+
+**Always use the scaffolding scripts** when creating new strategies or adapters. They generate the correct directory structure, boilerplate files, and (for strategies) a dedicated wallet.
+
+**New strategy:**
+
+```bash
+just create-strategy "My Strategy Name"
+# or: poetry run python scripts/create_strategy.py "My Strategy Name"
+```
+
+Creates under `wayfinder_paths/strategies/<name>/`:
+- `strategy.py` - Strategy class with required method stubs
+- `manifest.yaml` - Strategy manifest (entrypoint, adapters, permissions)
+- `test_strategy.py` - Smoke test template
+- `examples.json` - Test data file
+- `README.md` - Documentation template
+- **Dedicated wallet** added to `config.json` with the strategy name as label
+
+**New adapter:**
+
+```bash
+just create-adapter "my_protocol"
+# or: poetry run python scripts/create_adapter.py "my_protocol"
+```
+
+Creates under `wayfinder_paths/adapters/<name>_adapter/`:
+- `adapter.py` - Adapter class extending `BaseAdapter`
+- `manifest.yaml` - Adapter manifest (entrypoint, capabilities, dependencies)
+- `test_adapter.py` - Basic test template
+- `examples.json` - Test data file
+- `README.md` - Documentation template
+
+Use `--override` flag to replace an existing strategy/adapter.
 
 ### Manifests
 

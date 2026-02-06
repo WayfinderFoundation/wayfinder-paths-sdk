@@ -296,7 +296,9 @@ class BorosHypeStrategy(
 
         logger.info("BorosHypeStrategy setup complete")
 
-    async def analyze(self, deposit_usdc: float = 1000.0) -> dict[str, Any]:
+    async def analyze(
+        self, deposit_usdc: float = 1000.0, verbose: bool = True
+    ) -> dict[str, Any]:
         # Read-only market analysis returning Boros fixed-rate markets for HYPE
         # Client ownership: BorosAdapter owns the client; we require adapter to be set up
         if not self.boros_adapter:
@@ -805,23 +807,22 @@ class BorosHypeStrategy(
             "Run update() to deploy."
         )
 
-    async def update(self) -> tuple[bool, str, bool]:
+    async def update(self) -> StatusTuple:
         # Run OPA loop, then enforce invariants: LST allocation, delta-neutrality, Boros coverage
-        result = await self.run_opa_loop()
-        success, message, rotated = result
+        success, message, _ = await self.run_opa_loop()
 
         # If a failsafe liquidation was triggered inside the loop, treat update as failed.
         if self._failsafe_triggered:
-            return False, self._failsafe_message or message, rotated
+            return (False, self._failsafe_message or message)
 
         # If OPA loop failed, return immediately
         if not success:
-            return result
+            return (success, message)
 
         # If a withdrawal is pending, do nothing else this tick.
         # We intentionally avoid the safety pass and any redeployment/hedging.
         if self._opa_pending_withdrawal:
-            return result
+            return (success, message)
 
         # FINAL SAFETY PASS - Enforce invariants after OPA loop
         # Even with good planning, we can end a tick offside because:
@@ -930,7 +931,7 @@ class BorosHypeStrategy(
                         if trim_attempted:
                             reason += f" | trim={trim_result}"
                         ok_fs, msg_fs = await self._failsafe_liquidate_all(reason)
-                        return ok_fs, msg_fs, rotated
+                        return (ok_fs, msg_fs)
 
                 # Recheck after hedge
                 inv = await self.observe()
@@ -939,7 +940,7 @@ class BorosHypeStrategy(
                     ok_fs, msg_fs = await self._failsafe_liquidate_all(
                         f"Delta neutrality still broken after hedge: {delta_msg}"
                     )
-                    return ok_fs, msg_fs, rotated
+                    return (ok_fs, msg_fs)
                 safety_messages.append("Delta-neutral hedge fixed")
 
             # 3) Boros coverage should be ~85% (best effort, don't hard-fail)
@@ -1005,7 +1006,7 @@ class BorosHypeStrategy(
             # Don't fail the whole update if safety pass has an exception
             # The main OPA loop already succeeded
 
-        return success, message, rotated
+        return (success, message)
 
     async def _get_yield_info(self, inv: Inventory) -> YieldInfo:
         yield_info = YieldInfo()

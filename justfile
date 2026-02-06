@@ -39,14 +39,23 @@ test-cov:
     @poetry run pytest --cov=wayfinder-paths --cov-report=html -v
 
 
-# Create a new strategy from template with dedicated wallet
+# Create a new strategy with dedicated wallet
 # Usage: just create-strategy "My Strategy Name"
 create-strategy NAME:
     @poetry run python scripts/create_strategy.py "{{NAME}}"
 
-# Create a new strategy from template with dedicated wallet (override existing)
+# Create a new strategy with dedicated wallet (override existing)
 create-strategy-force NAME:
     @poetry run python scripts/create_strategy.py "{{NAME}}" --override
+
+# Create a new adapter
+# Usage: just create-adapter "my_protocol"
+create-adapter NAME:
+    @poetry run python scripts/create_adapter.py "{{NAME}}"
+
+# Create a new adapter (override existing)
+create-adapter-force NAME:
+    @poetry run python scripts/create_adapter.py "{{NAME}}" --override
 
 # Create a wallet with a strategy name label
 # Usage: just create-wallet "hyperlend_stable_yield_strategy"

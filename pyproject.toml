@@ -21,6 +21,7 @@ numpy = "^1.26.0"
 pandas = "^2.2.0"
 hyperliquid-felix = "*"
 aiocache = "^0.12.3"
+click = "^8.1.7"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
@@ -35,6 +36,9 @@ safety = "^2.3.5"
 twine = "^6.2.0"
 mcp = "^1.10.1"
 vulture = "^2.14"
+
+[tool.poetry.scripts]
+wayfinder = "wayfinder_paths.mcp.cli:main"
 
 [tool.ruff]
 target-version = "py312"
@@ -69,8 +73,7 @@ testpaths = ["wayfinder_paths/"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-norecursedirs = ["templates"]
-        addopts = [
+addopts = [
             "-v",
             "--tb=short",
             "--strict-markers",

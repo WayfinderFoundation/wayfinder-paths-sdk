@@ -23,14 +23,22 @@ from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_
 from wayfinder_paths.core.utils.web3 import get_transaction_chain_id, web3_from_chain_id
 
 
-def get_strategy_config(strategy_name: str) -> dict[str, Any]:
+def get_strategy_config(
+    strategy_name: str,
+    *,
+    wallet_label: str | None = None,
+    main_wallet_label: str | None = None,
+) -> dict[str, Any]:
     config = dict(CONFIG.get("strategy", {}))
     wallets = {w["label"]: w for w in CONFIG.get("wallets", [])}
 
-    if "main_wallet" not in config and "main" in wallets:
-        config["main_wallet"] = {"address": wallets["main"]["address"]}
-    if "strategy_wallet" not in config and strategy_name in wallets:
-        config["strategy_wallet"] = {"address": wallets[strategy_name]["address"]}
+    main_label = str(main_wallet_label).strip() if main_wallet_label else "main"
+    strat_label = str(wallet_label).strip() if wallet_label else strategy_name
+
+    if "main_wallet" not in config and main_label in wallets:
+        config["main_wallet"] = {"address": wallets[main_label]["address"]}
+    if "strategy_wallet" not in config and strat_label in wallets:
+        config["strategy_wallet"] = {"address": wallets[strat_label]["address"]}
 
     by_addr = {w["address"].lower(): w for w in CONFIG.get("wallets", [])}
     for key in ("main_wallet", "strategy_wallet"):
@@ -60,7 +68,13 @@ def find_strategy_class(module) -> type[Strategy]:
 
 
 async def run_strategy(strategy_name: str, action: str = "status", **kw):
-    config = get_strategy_config(strategy_name)
+    wallet_label = kw.pop("wallet_label", None)
+    main_wallet_label = kw.pop("main_wallet_label", None)
+    config = get_strategy_config(
+        strategy_name,
+        wallet_label=wallet_label,
+        main_wallet_label=main_wallet_label,
+    )
 
     def signing_cb(key: str):
         if addr := config.get(key, {}).get("address"):
@@ -87,8 +101,8 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         result = await strategy.status()
     elif action == "deposit":
         result = await strategy.deposit(
-            main_token_amount=kw.get("main_token_amount", 0.0),
-            gas_token_amount=kw.get("gas_token_amount", 0.0),
+            main_token_amount=kw.get("main_token_amount") or 0.0,
+            gas_token_amount=kw.get("gas_token_amount") or 0.0,
         )
     elif action == "withdraw":
         result = await strategy.withdraw(
@@ -134,7 +148,17 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("strategy")
+    p.add_argument(
+        "strategy_pos",
+        nargs="?",
+        help="Strategy name (positional; or use --strategy)",
+    )
+    p.add_argument(
+        "--strategy",
+        dest="strategy",
+        default=None,
+        help="Strategy name (preferred over positional)",
+    )
     p.add_argument(
         "--action",
         default="status",
@@ -176,8 +200,24 @@ def main():
         help="Polling interval seconds for withdraw waits (withdraw action only)",
     )
     p.add_argument("--wallet-id", dest="wallet_id")
+    p.add_argument(
+        "--wallet-label",
+        dest="wallet_label",
+        default=None,
+        help="Wallet label to use as the strategy wallet (overrides strategy name lookup)",
+    )
+    p.add_argument(
+        "--main-wallet-label",
+        dest="main_wallet_label",
+        default=None,
+        help="Wallet label to use as the main wallet (default: main)",
+    )
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
+
+    strategy_name = args.strategy or args.strategy_pos
+    if not strategy_name:
+        raise SystemExit("strategy is required (positional or via --strategy)")
 
     logger.remove()
     logger.add(sys.stderr, level="DEBUG" if args.debug else "INFO")
@@ -190,7 +230,7 @@ def main():
 
     asyncio.run(
         run_strategy(
-            args.strategy,
+            str(strategy_name),
             args.action,
             amount=args.amount,
             main_token_amount=args.main_token_amount,
@@ -199,6 +239,8 @@ def main():
             max_wait_s=args.max_wait_s,
             poll_interval_s=args.poll_interval_s,
             wallet_id=args.wallet_id,
+            wallet_label=args.wallet_label,
+            main_wallet_label=args.main_wallet_label,
         )
     )
 
