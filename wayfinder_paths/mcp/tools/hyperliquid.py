@@ -209,7 +209,7 @@ def _annotate_hl_profile(
 
 
 async def hyperliquid_execute(
-    action: Literal["place_order", "cancel_order", "update_leverage", "withdraw"],
+    action: Literal["place_order", "cancel_order", "update_leverage", "withdraw", "spot_to_perp_transfer", "perp_to_spot_transfer"],
     *,
     wallet_label: str,
     coin: str | None = None,
@@ -323,6 +323,45 @@ async def hyperliquid_execute(
             action="withdraw",
             status=status,
             details={"amount_usdc": amt},
+        )
+
+        return response
+
+    if action in ("spot_to_perp_transfer", "perp_to_spot_transfer"):
+        if usd_amount is None:
+            return err("invalid_request", f"usd_amount is required for {action}")
+        try:
+            amt = float(usd_amount)
+        except (TypeError, ValueError):
+            return err("invalid_request", "usd_amount must be a number")
+        if amt <= 0:
+            return err("invalid_request", "usd_amount must be positive")
+
+        to_perp = action == "spot_to_perp_transfer"
+        if to_perp:
+            ok_transfer, res = await adapter.transfer_spot_to_perp(amount=amt, address=sender)
+        else:
+            ok_transfer, res = await adapter.transfer_perp_to_spot(amount=amt, address=sender)
+        effects.append({"type": "hl", "label": action, "ok": ok_transfer, "result": res})
+        status = "confirmed" if ok_transfer else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": sender,
+                "usd_amount": amt,
+                "to_perp": to_perp,
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action=action,
+            status=status,
+            details={"usd_amount": amt, "to_perp": to_perp},
         )
 
         return response
