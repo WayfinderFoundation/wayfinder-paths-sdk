@@ -31,7 +31,7 @@ from .types import Inventory
 
 class BorosHypeRiskOpsMixin:
     async def _close_and_redeploy(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         ok, msg = self._require_adapters(
             "balance_adapter", "hyperliquid_adapter", "brap_adapter"
@@ -663,7 +663,7 @@ class BorosHypeRiskOpsMixin:
         return False, result_msg
 
     async def _partial_trim_spot(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         trim_pct = float(params.get("trim_pct") or 0.25)
 

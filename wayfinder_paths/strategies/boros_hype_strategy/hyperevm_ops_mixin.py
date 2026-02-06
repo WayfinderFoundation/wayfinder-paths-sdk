@@ -24,13 +24,10 @@ from .constants import (
 )
 from .types import Inventory
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
 
 class BorosHypeHyperEvmOpsMixin:
     async def _ensure_gas_on_hyperevm(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         min_hype = float(params.get("min_hype") or MIN_HYPE_GAS)
         need = max(0.0, min_hype - inventory.hype_hyperevm_balance)
@@ -77,13 +74,13 @@ class BorosHypeHyperEvmOpsMixin:
         return True, "HyperEVM gas will be provisioned during routing"
 
     async def _ensure_gas_on_arbitrum(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # TODO: Implement - bridge ETH or use gas station
         return True, "Arbitrum gas routing not yet implemented"
 
     async def _swap_hype_to_lst(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         hype_amount = params.get("hype_amount", 0.0)
 

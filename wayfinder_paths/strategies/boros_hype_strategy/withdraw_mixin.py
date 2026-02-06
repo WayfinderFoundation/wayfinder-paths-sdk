@@ -20,9 +20,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import (
 from wayfinder_paths.core.strategies import StatusTuple
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
 from .constants import (
     ARBITRUM_CHAIN_ID,
     BOROS_HYPE_MARKET_ID,
@@ -42,7 +39,7 @@ from .constants import (
 
 
 class BorosHypeWithdrawMixin:
-    async def withdraw(self: BorosHypeStrategy, **kwargs) -> StatusTuple:
+    async def withdraw(self, **kwargs) -> StatusTuple:
         # Liquidates to USDC on Arb but does NOT transfer to main wallet (call exit() after)
         max_wait_s = int(
             kwargs.get("max_wait_s") or kwargs.get("max_wait_seconds") or 20 * 60

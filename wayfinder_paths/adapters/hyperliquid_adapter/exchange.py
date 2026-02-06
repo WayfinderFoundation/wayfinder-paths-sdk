@@ -36,7 +36,6 @@ USER_DECLINED_ERROR = {
 class Exchange:
     def __init__(
         self,
-        info: Info,
         sign_callback: Callable[..., Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):

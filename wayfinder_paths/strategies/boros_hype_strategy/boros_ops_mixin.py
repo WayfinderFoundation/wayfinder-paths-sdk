@@ -32,13 +32,10 @@ from .constants import (
 )
 from .types import Inventory
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
 
 class BorosHypeBorosOpsMixin:
     async def _fund_boros(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         """Fund Boros using native HYPE collateral.
 
@@ -293,7 +290,7 @@ class BorosHypeBorosOpsMixin:
         )
 
     async def _ensure_boros_position(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # If Boros operations fail unexpectedly, triggers fail-safe liquidation.
         market_id = int(
@@ -334,7 +331,7 @@ class BorosHypeBorosOpsMixin:
             )
 
     async def _ensure_boros_position_impl(
-        self: BorosHypeStrategy,
+        self,
         *,
         market_id: int,
         token_id: int,
@@ -442,7 +439,7 @@ class BorosHypeBorosOpsMixin:
         )
 
     async def _complete_pending_withdrawal(
-        self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
+        self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
         # Legacy helper used by some withdrawal flows: swap USDT->USDC on Arbitrum
         usdt_idle = float(params.get("usdt_idle") or 0.0)
