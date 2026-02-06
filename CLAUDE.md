@@ -138,6 +138,11 @@ When a user wants **immediate, one-off execution**:
 - **Hyperliquid perps:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/` and execute it with `mcp__wayfinder__run_script`.
 
+Hyperliquid minimums:
+
+- **Minimum deposit: $5 USD** (deposits below this are **lost**)
+- **Minimum order: $10 USD notional** (applies to both perp and spot)
+
 Hyperliquid deposits (Bridge2):
 
 - Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
