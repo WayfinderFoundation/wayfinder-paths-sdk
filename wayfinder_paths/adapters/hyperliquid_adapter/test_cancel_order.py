@@ -20,7 +20,9 @@ class TestHyperliquidCancelOrder:
             )
             ex.sign_and_broadcast_hypecore = AsyncMock(return_value={"status": "ok"})
 
-            await ex.cancel_order(asset_id=10210, order_id=306356655993, address="0xabc")
+            await ex.cancel_order(
+                asset_id=10210, order_id=306356655993, address="0xabc"
+            )
 
             args, _ = ex.sign_and_broadcast_hypecore.await_args
             action = args[0]

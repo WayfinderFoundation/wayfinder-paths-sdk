@@ -115,9 +115,7 @@ class TestHyperliquidAdapter:
         self, adapter, mock_info
     ):
         address = "0x" + "11" * 20
-        mock_info.user_state.return_value = {
-            "marginSummary": {"accountValue": "100.0"}
-        }
+        mock_info.user_state.return_value = {"marginSummary": {"accountValue": "100.0"}}
         mock_info.post.return_value = [
             {
                 "time": int(time.time() * 1000),
@@ -145,7 +143,9 @@ class TestHyperliquidAdapter:
             sleep_mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_wait_for_deposit_confirms_on_margin_increase(self, adapter, mock_info):
+    async def test_wait_for_deposit_confirms_on_margin_increase(
+        self, adapter, mock_info
+    ):
         address = "0x" + "22" * 20
         mock_info.post.return_value = []
         mock_info.user_state.side_effect = [
