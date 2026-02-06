@@ -313,9 +313,8 @@ async def hyperliquid_execute(
         return response
 
     cfg_json = load_config_json()
-    strategy_cfg = (
-        cfg_json.get("strategy") if isinstance(cfg_json.get("strategy"), dict) else {}
-    )
+    strategy_raw = cfg_json.get("strategy")
+    strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
     config: dict[str, Any] = dict(strategy_cfg)
     config["main_wallet"] = {"address": sender, "private_key_hex": pk}
     config["strategy_wallet"] = {"address": sender, "private_key_hex": pk}

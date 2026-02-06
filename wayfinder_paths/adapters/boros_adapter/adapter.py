@@ -2160,9 +2160,9 @@ class BorosAdapter(BaseAdapter):
                 return False, {"error": f"Failed to get positions: {positions}"}
             market_ids = sorted(
                 {
-                    int(p.get("marketId"))
+                    int(market_id)
                     for p in positions
-                    if p.get("marketId") is not None
+                    if (market_id := p.get("marketId")) is not None
                 }
             )
 
