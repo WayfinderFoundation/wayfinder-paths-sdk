@@ -8,13 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.runner.constants import (
-    JOB_STATUS_ACTIVE,
-    JOB_STATUS_ERROR,
-    JOB_STATUS_PAUSED,
-    RUN_STATUS_ABORTED,
-    RUN_STATUS_RUNNING,
-)
+from wayfinder_paths.runner.constants import JobStatus, RunStatus
 
 
 def _utc_epoch_s() -> int:
@@ -145,10 +139,10 @@ class RunnerDB:
                 WHERE status = ?
                 """,
                 (
-                    RUN_STATUS_ABORTED,
+                    RunStatus.ABORTED,
                     now,
                     _json_dumps({"note": note}),
-                    RUN_STATUS_RUNNING,
+                    RunStatus.RUNNING,
                 ),
             )
             return int(cur.rowcount or 0)
@@ -160,11 +154,13 @@ class RunnerDB:
         job_type: str,
         payload: dict[str, Any],
         interval_seconds: int,
-        status: str = JOB_STATUS_ACTIVE,
+        status: str = JobStatus.ACTIVE,
         next_run_at: int | None = None,
     ) -> int:
-        if status not in {JOB_STATUS_ACTIVE, JOB_STATUS_PAUSED, JOB_STATUS_ERROR}:
-            raise ValueError(f"Invalid job status: {status}")
+        try:
+            status = str(JobStatus(status))
+        except ValueError as exc:
+            raise ValueError(f"Invalid job status: {status}") from exc
         now = _utc_epoch_s()
         nra = int(next_run_at if next_run_at is not None else now)
         with self._lock:
@@ -306,8 +302,10 @@ class RunnerDB:
         return out
 
     def set_job_status(self, *, name: str, status: str) -> None:
-        if status not in {JOB_STATUS_ACTIVE, JOB_STATUS_PAUSED, JOB_STATUS_ERROR}:
-            raise ValueError(f"Invalid job status: {status}")
+        try:
+            status = str(JobStatus(status))
+        except ValueError as exc:
+            raise ValueError(f"Invalid job status: {status}") from exc
         with self._lock:
             cur = self._conn.cursor()
             cur.execute(
@@ -373,14 +371,14 @@ class RunnerDB:
             )
             row = cur.fetchone()
             failures = int(row["consecutive_failures"] if row else 0)
-            status = JOB_STATUS_ACTIVE
+            status = JobStatus.ACTIVE
             if failures >= int(max_failures):
-                status = JOB_STATUS_ERROR
+                status = JobStatus.ERROR
                 cur.execute(
                     "UPDATE job_state SET status = ? WHERE job_id = ?",
-                    (JOB_STATUS_ERROR, int(job_id)),
+                    (str(JobStatus.ERROR), int(job_id)),
                 )
-            return failures, status
+            return failures, str(status)
 
     def due_jobs(self, *, now: int) -> list[dict[str, Any]]:
         with self._lock:
@@ -395,7 +393,7 @@ class RunnerDB:
                 WHERE s.status = ? AND s.next_run_at <= ?
                 ORDER BY s.next_run_at ASC, d.id ASC
                 """,
-                (JOB_STATUS_ACTIVE, int(now)),
+                (JobStatus.ACTIVE, int(now)),
             )
             rows = cur.fetchall()
         out: list[dict[str, Any]] = []
@@ -430,7 +428,7 @@ class RunnerDB:
         *,
         job_id: int,
         started_at: int,
-        status: str = RUN_STATUS_RUNNING,
+        status: str = RunStatus.RUNNING,
         log_path: str | None = None,
         pid: int | None = None,
     ) -> int:

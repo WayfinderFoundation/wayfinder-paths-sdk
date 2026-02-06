@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from wayfinder_paths.runner.client import RunnerControlClient
-from wayfinder_paths.runner.constants import JOB_STATUS_ACTIVE, JOB_TYPE_SCRIPT
+from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JobStatus, RunStatus
 from wayfinder_paths.runner.daemon import RunnerDaemon
 from wayfinder_paths.runner.db import RunnerDB
 from wayfinder_paths.runner.paths import RunnerPaths, find_repo_root
@@ -107,7 +107,7 @@ def test_runner_daemon_runs_script_job_end_to_end(tmp_path: Path) -> None:
 
         run_id = _wait_for_job_run_id(client, name="hello", timeout_s=5.0)
         report = _wait_for_run_finished(client, run_id=run_id, timeout_s=10.0)
-        assert report["result"]["run"]["status"] == "OK"
+        assert report["result"]["run"]["status"] == RunStatus.OK
         tail = report["result"]["log_tail"]
         assert isinstance(tail, str) and "HELLO_FROM_SCRIPT" in tail
     finally:
@@ -155,7 +155,7 @@ def test_runner_daemon_run_once_executes_job_when_not_due(tmp_path: Path) -> Non
             job_type=JOB_TYPE_SCRIPT,
             payload={"script_path": ".wayfinder_runs/hello.py", "args": []},
             interval_seconds=3600,
-            status=JOB_STATUS_ACTIVE,
+            status=JobStatus.ACTIVE,
             next_run_at=int(time.time()) + 3600,
         )
         db.close()
@@ -165,7 +165,7 @@ def test_runner_daemon_run_once_executes_job_when_not_due(tmp_path: Path) -> Non
         run_id = int(once["result"]["run_id"])
 
         report = _wait_for_run_finished(client, run_id=run_id, timeout_s=10.0)
-        assert report["result"]["run"]["status"] == "OK"
+        assert report["result"]["run"]["status"] == RunStatus.OK
         tail = report["result"]["log_tail"]
         assert isinstance(tail, str) and "HELLO_FROM_RUN_ONCE" in tail
     finally:

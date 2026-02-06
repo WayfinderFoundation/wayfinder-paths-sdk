@@ -14,13 +14,10 @@ from loguru import logger
 
 from wayfinder_paths import __version__
 from wayfinder_paths.runner.constants import (
-    JOB_STATUS_ACTIVE,
-    JOB_STATUS_PAUSED,
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_OK,
-    RUN_STATUS_TIMEOUT,
+    JobStatus,
+    RunStatus,
 )
 from wayfinder_paths.runner.db import RunnerDB
 from wayfinder_paths.runner.paths import RunnerPaths
@@ -230,15 +227,15 @@ class RunnerDaemon:
                     self._finish_run(
                         rp,
                         finished_at=now,
-                        status=RUN_STATUS_TIMEOUT,
+                        status=RunStatus.TIMEOUT,
                         exit_code=proc.returncode,
                         error_text=f"timeout after {rp.timeout_seconds}s",
                     )
                 continue
 
-            status = RUN_STATUS_OK if int(exit_code) == 0 else RUN_STATUS_FAILED
+            status = RunStatus.OK if int(exit_code) == 0 else RunStatus.FAILED
             error_text = None
-            if status != RUN_STATUS_OK:
+            if status != RunStatus.OK:
                 error_text = _tail_text(rp.log_path) or f"exit_code={exit_code}"
             self._finish_run(
                 rp,
@@ -265,7 +262,7 @@ class RunnerDaemon:
             summary={"error": error_text} if error_text else None,
         )
 
-        if status == RUN_STATUS_OK:
+        if status == RunStatus.OK:
             self._db.record_job_success(job_id=rp.job_id, ok_at=finished_at)
         else:
             msg = error_text or status
@@ -274,7 +271,7 @@ class RunnerDaemon:
                 error_text=msg,
                 max_failures=self._max_failures,
             )
-            if job_status != JOB_STATUS_ACTIVE:
+            if job_status != JobStatus.ACTIVE:
                 logger.error(
                     f"Job {rp.job_name} entered {job_status} after {failures} failures"
                 )
@@ -357,7 +354,7 @@ class RunnerDaemon:
             self._db.finish_run(
                 run_id=run_id,
                 finished_at=now,
-                status=RUN_STATUS_FAILED,
+                status=RunStatus.FAILED,
                 exit_code=None,
                 summary={"error": err_text},
             )
@@ -389,7 +386,7 @@ class RunnerDaemon:
             self._db.finish_run(
                 run_id=run_id,
                 finished_at=now,
-                status=RUN_STATUS_FAILED,
+                status=RunStatus.FAILED,
                 exit_code=None,
                 summary={"error": err_text},
             )
@@ -613,7 +610,7 @@ class RunnerDaemon:
                 job_type=job_type,
                 payload=payload_norm,
                 interval_seconds=interval_i,
-                status=JOB_STATUS_ACTIVE,
+                status=JobStatus.ACTIVE,
                 next_run_at=_utc_epoch_s(),
             )
         except Exception as exc:  # noqa: BLE001
@@ -635,17 +632,17 @@ class RunnerDaemon:
 
     def ctl_pause_job(self, *, name: str) -> dict[str, Any]:
         try:
-            self._db.set_job_status(name=name, status=JOB_STATUS_PAUSED)
-            return {"ok": True, "result": {"name": name, "status": JOB_STATUS_PAUSED}}
+            self._db.set_job_status(name=name, status=JobStatus.PAUSED)
+            return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
 
     def ctl_resume_job(self, *, name: str) -> dict[str, Any]:
         try:
             job, _ = self._db.get_job(name=name)
-            self._db.set_job_status(name=name, status=JOB_STATUS_ACTIVE)
+            self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
             self._db.set_next_run_at(job_id=job.id, next_run_at=_utc_epoch_s())
-            return {"ok": True, "result": {"name": name, "status": JOB_STATUS_ACTIVE}}
+            return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -655,7 +652,7 @@ class RunnerDaemon:
             job, state = self._db.get_job(name=name)
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
-        if state.status != JOB_STATUS_ACTIVE:
+        if state.status != JobStatus.ACTIVE:
             return {"ok": False, "error": f"job is not ACTIVE (status={state.status})"}
 
         job_dict: dict[str, Any] = {
