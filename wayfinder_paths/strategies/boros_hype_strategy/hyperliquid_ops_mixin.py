@@ -7,7 +7,7 @@ Kept as a mixin so the main strategy file stays readable without changing behavi
 from __future__ import annotations
 
 from decimal import ROUND_DOWN, Decimal
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from loguru import logger
 
@@ -139,9 +139,7 @@ class BorosHypeHyperliquidOpsMixin:
 
         return int(spot_asset_id), int(perp_asset_id)
 
-    async def _ensure_hl_hype_leverage_set(
-        self, address: str
-    ) -> tuple[bool, str]:
+    async def _ensure_hl_hype_leverage_set(self, address: str) -> tuple[bool, str]:
         if not self.hyperliquid_adapter:
             return False, "Hyperliquid adapter not configured"
         if not self._sign_callback:
@@ -203,9 +201,7 @@ class BorosHypeHyperliquidOpsMixin:
                     f"Failed to cancel lingering order: asset_id={asset_id}, cloid={cloid}, err={exc}"
                 )
 
-    async def _cancel_hl_open_orders_for_hype(
-        self, address: str
-    ) -> None:
+    async def _cancel_hl_open_orders_for_hype(self, address: str) -> None:
         if not self.hyperliquid_adapter:
             return
 

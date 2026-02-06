@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from loguru import logger
 
@@ -34,7 +34,6 @@ from .types import Inventory
 
 if TYPE_CHECKING:
     from .strategy import BorosHypeStrategy
-
 
 
 class BorosHypeBorosOpsMixin:
