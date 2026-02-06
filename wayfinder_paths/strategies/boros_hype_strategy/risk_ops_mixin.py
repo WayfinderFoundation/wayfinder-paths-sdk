@@ -28,10 +28,6 @@ from .constants import (
 )
 from .types import Inventory
 
-if TYPE_CHECKING:
-    from .strategy import BorosHypeStrategy
-
-
 class BorosHypeRiskOpsMixin:
     async def _close_and_redeploy(
         self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
@@ -457,7 +453,7 @@ class BorosHypeRiskOpsMixin:
             return True, "Redeployed (hedge verification pending)"
 
     async def _failsafe_liquidate_all(
-        self: BorosHypeStrategy, reason: str
+        self, reason: str
     ) -> tuple[bool, str]:
         # Called when critical operations fail; close all positions to stable assets
         logger.error(f"[FAILSAFE] Initiating full liquidation: {reason}")

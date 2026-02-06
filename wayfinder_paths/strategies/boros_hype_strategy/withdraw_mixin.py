@@ -1368,7 +1368,7 @@ class BorosHypeWithdrawMixin:
         )
 
     async def _unwrap_whype(
-        self: BorosHypeStrategy, address: str, amount_wei: int
+        self, address: str, amount_wei: int
     ) -> tuple[bool, str]:
         try:
             if not self._sign_callback:

@@ -140,7 +140,7 @@ class BorosHypeHyperliquidOpsMixin:
         return int(spot_asset_id), int(perp_asset_id)
 
     async def _ensure_hl_hype_leverage_set(
-        self: BorosHypeStrategy, address: str
+        self, address: str
     ) -> tuple[bool, str]:
         if not self.hyperliquid_adapter:
             return False, "Hyperliquid adapter not configured"
@@ -204,7 +204,7 @@ class BorosHypeHyperliquidOpsMixin:
                 )
 
     async def _cancel_hl_open_orders_for_hype(
-        self: BorosHypeStrategy, address: str
+        self, address: str
     ) -> None:
         if not self.hyperliquid_adapter:
             return

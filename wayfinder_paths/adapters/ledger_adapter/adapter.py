@@ -10,9 +10,6 @@ from wayfinder_paths.core.clients.LedgerClient import (
     TransactionRecord,
 )
 
-if TYPE_CHECKING:
-    from wayfinder_paths.core.strategies.Strategy import StatusDict
-
 
 class LedgerAdapter(BaseAdapter):
     adapter_type: str = "LEDGER"
@@ -170,7 +167,7 @@ class LedgerAdapter(BaseAdapter):
             return (False, str(e))
 
     async def record_strategy_snapshot(
-        self, wallet_address: str, strategy_status: StatusDict
+        self, wallet_address: str, strategy_status: dict[str, Any]
     ) -> tuple[bool, None | str]:
         try:
             await self.ledger_client.strategy_snapshot(

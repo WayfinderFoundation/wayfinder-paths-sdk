@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from .strategy import BorosHypeStrategy
 
 
+
 class BorosHypeBorosOpsMixin:
     async def _fund_boros(
         self: BorosHypeStrategy, params: dict[str, Any], inventory: Inventory
