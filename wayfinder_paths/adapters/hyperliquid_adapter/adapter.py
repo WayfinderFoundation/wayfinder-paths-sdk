@@ -398,6 +398,15 @@ class HyperliquidAdapter(BaseAdapter):
         self._coin_to_asset = None
         await self._cache.clear()
 
+    async def get_asset_id(self, coin: str, is_perp: bool) -> int | None:
+        if is_perp:
+            return (self.coin_to_asset or {}).get(coin.upper())
+        else:
+            ok, assets = await self.get_spot_assets()
+            if not ok:
+                return None
+            return assets.get(f"{coin.upper()}/USDC")
+
     # ------------------------------------------------------------------ #
     # Utility Methods                                                      #
     # ------------------------------------------------------------------ #
