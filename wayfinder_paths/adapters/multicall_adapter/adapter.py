@@ -118,6 +118,12 @@ class MulticallAdapter(BaseAdapter):
         calldata = erc20.encode_abi("balanceOf", args=[account])
         return self.build_call(addr, calldata)
 
+    def encode_erc20_decimals(self, token: str) -> MulticallCall:
+        addr = self.web3.to_checksum_address(token)
+        erc20 = self.web3.eth.contract(address=addr, abi=ERC20_ABI)
+        calldata = erc20.encode_abi("decimals")
+        return self.build_call(addr, calldata)
+
     @staticmethod
     def decode_uint256(data: bytes | str) -> int:
         raw = MulticallAdapter._normalize_call_data(data)

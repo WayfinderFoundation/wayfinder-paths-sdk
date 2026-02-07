@@ -69,7 +69,6 @@ Use `wayfinder_paths.core.utils.gorlami.gorlami_fork()` to create a fork, seed b
 
 - Context manager: `wayfinder_paths/core/utils/gorlami.py`
 - Example scripts:
-  - `scripts/brap_swap.py` (supports `--gorlami`, and requires `--confirm-live` for real broadcast)
   - `scripts/moonwell_dry_run.py` (Moonwell `deposit -> update` on a Base fork)
 
 For new scripts, prefer this safety pattern:

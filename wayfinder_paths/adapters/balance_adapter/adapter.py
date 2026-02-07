@@ -7,7 +7,6 @@ from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
 from wayfinder_paths.core.utils.tokens import build_send_transaction, get_token_balance
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -307,10 +306,8 @@ class BalanceAdapter(BaseAdapter):
                     calls: list[Any] = []
                     decimals_call_index: dict[str, int] = {}
                     for token in sorted_tokens:
-                        erc20 = w3.eth.contract(address=token, abi=ERC20_ABI)
-                        calldata = erc20.encode_abi("decimals")
                         decimals_call_index[token] = len(calls)
-                        calls.append(multicall.build_call(token, calldata))
+                        calls.append(multicall.encode_erc20_decimals(token))
 
                     balance_call_index: dict[int, int] = {}
                     for entry in entries:

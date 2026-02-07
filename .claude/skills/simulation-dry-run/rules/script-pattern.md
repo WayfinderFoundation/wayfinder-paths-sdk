@@ -28,9 +28,4 @@ After each fund-moving call:
 
 ## Live gating example
 
-This repo’s `scripts/brap_swap.py` uses:
-- `--gorlami` to dry-run
-- `--confirm-live` to allow real broadcast
-
-Follow that pattern for new scripts.
-
+If you add a live broadcast mode to a script, keep the default safe and gate live sends behind an explicit `--confirm-live` flag (while preserving `--gorlami` for dry-runs).

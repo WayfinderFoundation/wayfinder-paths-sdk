@@ -64,6 +64,13 @@ class TestMulticallAdapter:
         assert isinstance(erc20_call.call_data, (bytes, bytearray))
         assert len(erc20_call.call_data) > 0
 
+        decimals_call = adapter.encode_erc20_decimals(
+            "0x0000000000000000000000000000000000000001"
+        )
+        assert isinstance(decimals_call, MulticallCall)
+        assert isinstance(decimals_call.call_data, (bytes, bytearray))
+        assert len(decimals_call.call_data) > 0
+
     @pytest.mark.asyncio
     async def test_aggregate_coerces_calls_and_returns_bytes(self):
         w3 = AsyncWeb3(AsyncHTTPProvider("http://localhost:8545"))

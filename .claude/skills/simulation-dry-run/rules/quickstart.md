@@ -53,7 +53,6 @@ Fork funding controls (optional):
 ## 3) Run a script on a fork
 
 Examples in this repo:
-- `scripts/brap_swap.py --gorlami` (requires `--confirm-live` for real broadcast)
 - `scripts/moonwell_dry_run.py` (Moonwell `deposit -> update` on a Base fork)
 
 See `SIMULATION.md` for details.
