@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+pytest_plugins = ["wayfinder_paths.testing.gorlami"]
+
 # Add repo root to path so tests.test_utils can be imported
 _repo_root = Path(__file__).parent.parent
 _repo_root_str = str(_repo_root)
