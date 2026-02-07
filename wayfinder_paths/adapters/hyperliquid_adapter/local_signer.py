@@ -2,6 +2,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from eth_account import Account
+from eth_account.signers.local import LocalAccount
 
 
 def _resolve_private_key(config: dict[str, Any]) -> str | None:
@@ -25,7 +26,9 @@ def _resolve_private_key(config: dict[str, Any]) -> str | None:
     return None
 
 
-def create_local_signer(config: dict[str, Any]) -> Callable[[dict], Awaitable[str]]:
+def create_local_signer(
+    config: dict[str, Any],
+) -> Callable[[dict[str, Any], str, str], Awaitable[dict[str, str] | None]]:
     private_key = _resolve_private_key(config)
     if not private_key:
         raise ValueError(
@@ -35,7 +38,7 @@ def create_local_signer(config: dict[str, Any]) -> Callable[[dict], Awaitable[st
 
     # Create account
     pk = private_key if private_key.startswith("0x") else "0x" + private_key
-    account: Account = Account.from_key(pk)
+    account: LocalAccount = Account.from_key(pk)
 
     async def sign(
         action: dict[str, Any], payload: str, address: str

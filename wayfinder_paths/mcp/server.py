@@ -40,6 +40,7 @@ from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
 from wayfinder_paths.mcp.tools.quotes import quote_swap
 from wayfinder_paths.mcp.tools.run_script import run_script
+from wayfinder_paths.mcp.tools.runner import runner
 from wayfinder_paths.mcp.tools.strategies import run_strategy
 from wayfinder_paths.mcp.tools.wallets import wallets
 
@@ -73,6 +74,7 @@ mcp.tool()(run_strategy)
 mcp.tool()(run_script)
 mcp.tool()(execute)
 mcp.tool()(wallets)
+mcp.tool()(runner)
 
 
 def main() -> None:

@@ -4,48 +4,24 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any
+from typing import Any, Literal
 
 from aiocache import Cache
 from eth_utils import to_checksum_address
 from loguru import logger
 
+from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
+from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
+    create_local_signer,
+)
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import HYPERCORE_SENTINEL_ADDRESS
 from wayfinder_paths.core.constants.hyperliquid import (
-    ARBITRUM_USDC_ADDRESS as _ARBITRUM_USDC_ADDRESS,
-)
-from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.constants.hyperliquid import (
-    HYPERLIQUID_BRIDGE_ADDRESS as _HYPERLIQUID_BRIDGE_ADDRESS,
-)
-
-# Re-export Bridge2 constants for backwards compatibility.
-HYPERLIQUID_BRIDGE_ADDRESS = _HYPERLIQUID_BRIDGE_ADDRESS
-ARBITRUM_USDC_ADDRESS = _ARBITRUM_USDC_ADDRESS
-
-try:
-    from hyperliquid.info import Info
-    from hyperliquid.utils import constants
-
-    from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
-    from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
-        create_local_signer,
-    )
-    from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
-
-    HYPERLIQUID_AVAILABLE = True
-except ImportError:
-    HYPERLIQUID_AVAILABLE = False
-    Info = None
-    constants = None
-    Exchange = None
-    Util = None
-    create_local_signer = None
 
 
 class HyperliquidAdapter(BaseAdapter):
@@ -59,16 +35,7 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> None:
         super().__init__("hyperliquid_adapter", config)
 
-        if not HYPERLIQUID_AVAILABLE:
-            raise ImportError(
-                "hyperliquid package not installed. "
-                "Install with: poetry add hyperliquid"
-            )
-
         self._cache = Cache(Cache.MEMORY)
-        self._info: Any | None = None
-        self._util: Any | None = None
-
         self._sign_callback = sign_callback
         self._exchange: Exchange | None = None
 
@@ -91,37 +58,10 @@ class HyperliquidAdapter(BaseAdapter):
                 signing_type = "eip712"
 
             self._exchange = Exchange(
-                info=self.info,
-                util=self.util,
                 sign_callback=sign_callback,
                 signing_type=signing_type,
             )
         return self._exchange
-
-    @property
-    def info(self) -> Any:
-        # Lazily initialize the Hyperliquid SDK so read-only paths can work
-        # without full signing configuration.
-        if self._info is None:
-            self._info = Info(constants.MAINNET_API_URL, skip_ws=True)
-        return self._info
-
-    @info.setter
-    def info(self, value: Any) -> None:
-        self._info = value
-        self._util = None
-        self._asset_to_sz_decimals = None
-        self._coin_to_asset = None
-
-    @property
-    def util(self) -> Any:
-        if self._util is None:
-            self._util = Util(self.info)
-        return self._util
-
-    @util.setter
-    def util(self, value: Any) -> None:
-        self._util = value
 
     # ------------------------------------------------------------------ #
     # Market Data - Read Operations                                       #
@@ -134,7 +74,7 @@ class HyperliquidAdapter(BaseAdapter):
             return True, cached
 
         try:
-            data = self.info.meta_and_asset_ctxs()
+            data = get_info().meta_and_asset_ctxs()
             # Cache for 1 minute
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
@@ -150,7 +90,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             # Handle both callable and property access patterns
-            spot_meta = self.info.spot_meta
+            spot_meta = get_info().spot_meta
             if callable(spot_meta):
                 data = spot_meta()
             else:
@@ -274,25 +214,29 @@ class HyperliquidAdapter(BaseAdapter):
         self,
         coin: str,
         n_levels: int = 20,
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = self.info.l2_snapshot(coin)
+            data = get_info().l2_snapshot(coin)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch L2 book for {coin}: {exc}")
             return False, str(exc)
 
-    async def get_user_state(self, address: str) -> tuple[bool, dict[str, Any]]:
+    async def get_user_state(
+        self, address: str
+    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = self.info.user_state(address)
+            data = get_info().user_state(address)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch user_state for {address}: {exc}")
             return False, str(exc)
 
-    async def get_spot_user_state(self, address: str) -> tuple[bool, dict[str, Any]]:
+    async def get_spot_user_state(
+        self, address: str
+    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = self.info.spot_user_state(address)
+            data = get_info().spot_user_state(address)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch spot_user_state for {address}: {exc}")
@@ -305,7 +249,7 @@ class HyperliquidAdapter(BaseAdapter):
         include_spot: bool = True,
         include_open_orders: bool = True,
         include_frontend_open_orders: bool = True,
-    ) -> tuple[bool, dict[str, Any] | str]:
+    ) -> tuple[bool, dict[str, Any]]:
         """
         Full Hyperliquid user state snapshot.
 
@@ -323,36 +267,38 @@ class HyperliquidAdapter(BaseAdapter):
 
         ok_any = False
 
-        ok_perp, perp = await self.get_user_state(account)
-        if ok_perp:
+        perp_result = await self.get_user_state(account)
+        if perp_result[0]:
             ok_any = True
-            out["perp"] = perp
-            out["positions"] = perp.get("assetPositions", [])
+            out["perp"] = perp_result[1]
+            out["positions"] = perp_result[1].get("assetPositions", [])
         else:
-            out["errors"]["perp"] = perp
+            out["errors"]["perp"] = perp_result[1]
 
         if include_spot:
-            ok_spot, spot = await self.get_spot_user_state(account)
-            if ok_spot:
+            spot_result = await self.get_spot_user_state(account)
+            if spot_result[0]:
                 ok_any = True
-                out["spot"] = spot
+                out["spot"] = spot_result[1]
             else:
-                out["errors"]["spot"] = spot
+                out["errors"]["spot"] = spot_result[1]
 
         if include_open_orders:
             if include_frontend_open_orders:
-                ok_orders, orders = await self.get_frontend_open_orders(account)
+                orders_result = await self.get_frontend_open_orders(account)
             else:
-                ok_orders, orders = await self.get_open_orders(account)
-            if ok_orders:
+                orders_result = await self.get_open_orders(account)
+            if orders_result[0]:
                 ok_any = True
-                out["openOrders"] = orders
+                out["openOrders"] = orders_result[1]
             else:
-                out["errors"]["openOrders"] = orders
+                out["errors"]["openOrders"] = orders_result[1]
 
         return ok_any, out
 
-    async def get_margin_table(self, margin_table_id: int) -> tuple[bool, list[dict]]:
+    async def get_margin_table(
+        self, margin_table_id: int
+    ) -> tuple[Literal[True], list[dict]] | tuple[Literal[False], str]:
         cache_key = f"hl_margin_table_{margin_table_id}"
         cached = await self._cache.get(cache_key)
         if cached:
@@ -363,17 +309,19 @@ class HyperliquidAdapter(BaseAdapter):
             # Keep a fallback to `marginTableId` for compatibility with older SDKs.
             body = {"type": "marginTable", "id": int(margin_table_id)}
             try:
-                data = self.info.post("/info", body)
+                data = get_info().post("/info", body)
             except Exception:  # noqa: BLE001 - try alternate payload key
                 body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
-                data = self.info.post("/info", body)
+                data = get_info().post("/info", body)
             await self._cache.set(cache_key, data, ttl=86400)  # Cache for 24h
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch margin_table {margin_table_id}: {exc}")
             return False, str(exc)
 
-    async def get_spot_l2_book(self, spot_asset_id: int) -> tuple[bool, dict[str, Any]]:
+    async def get_spot_l2_book(
+        self, spot_asset_id: int
+    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
             # Spot L2 uses different coin names based on spot index:
             # - Index 0 (PURR): use "PURR/USDC"
@@ -388,7 +336,7 @@ class HyperliquidAdapter(BaseAdapter):
                 coin = f"@{spot_index}"
 
             body = {"type": "l2Book", "coin": coin}
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             return True, data
         except Exception as exc:
             self.logger.error(
@@ -403,14 +351,14 @@ class HyperliquidAdapter(BaseAdapter):
     @property
     def asset_to_sz_decimals(self) -> dict[int, int]:
         if self._asset_to_sz_decimals is None:
-            self._asset_to_sz_decimals = dict(self.info.asset_to_sz_decimals)
+            self._asset_to_sz_decimals = dict(get_info().asset_to_sz_decimals)
         return self._asset_to_sz_decimals
 
     @property
     def coin_to_asset(self) -> dict[str, int]:
         """Get coin name to asset ID mapping (perps only)."""
         if self._coin_to_asset is None:
-            self._coin_to_asset = dict(self.info.coin_to_asset)
+            self._coin_to_asset = dict(get_info().coin_to_asset)
         return self._coin_to_asset
 
     def get_sz_decimals(self, asset_id: int) -> int:
@@ -430,9 +378,11 @@ class HyperliquidAdapter(BaseAdapter):
     # Utility Methods                                                      #
     # ------------------------------------------------------------------ #
 
-    async def get_all_mid_prices(self) -> tuple[bool, dict[str, float]]:
+    async def get_all_mid_prices(
+        self,
+    ) -> tuple[Literal[True], dict[str, float]] | tuple[Literal[False], str]:
         try:
-            data = self.info.all_mids()
+            data = get_info().all_mids()
             return True, {k: float(v) for k, v in data.items()}
         except Exception as exc:
             self.logger.error(f"Failed to fetch mid prices: {exc}")
@@ -594,16 +544,16 @@ class HyperliquidAdapter(BaseAdapter):
         For cloid-based cancellation, we'd need to first fetch the order_id from open orders.
         """
         # Find order_id from open orders
-        success, orders = await self.get_frontend_open_orders(address)
-        if not success:
+        orders_result = await self.get_frontend_open_orders(address)
+        if not orders_result[0]:
             return False, {
                 "status": "err",
                 "response": {"type": "error", "data": "Could not fetch open orders"},
             }
 
         # Find matching order by cloid
-        matching_order = None
-        for order in orders:
+        matching_order: dict[str, Any] | None = None
+        for order in orders_result[1]:
             if order.get("cloid") == cloid:
                 matching_order = order
                 break
@@ -817,9 +767,11 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
-    async def get_user_fills(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
+    async def get_user_fills(
+        self, address: str
+    ) -> tuple[bool, list[dict[str, Any]]] | tuple[Literal[False], str]:
         try:
-            data = self.info.user_fills(address)
+            data = get_info().user_fills(address)
             return True, data if isinstance(data, list) else []
         except Exception as exc:
             self.logger.error(f"Failed to fetch user_fills for {address}: {exc}")
@@ -851,7 +803,7 @@ class HyperliquidAdapter(BaseAdapter):
                 "startTime": since_ms,
                 "endTime": now_ms,
             }
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             fills = data if isinstance(data, list) else []
 
             # Filter for liquidation fills where we were the liquidated user
@@ -870,18 +822,20 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_order_status(
         self, address: str, order_id: int | str
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
             body = {"type": "orderStatus", "user": address, "oid": order_id}
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")
             return False, str(exc)
 
-    async def get_open_orders(self, address: str) -> tuple[bool, list[dict[str, Any]]]:
+    async def get_open_orders(
+        self, address: str
+    ) -> tuple[Literal[True], list[dict[str, Any]]] | tuple[Literal[False], str]:
         try:
-            data = self.info.open_orders(address)
+            data = get_info().open_orders(address)
             return True, data if isinstance(data, list) else []
         except Exception as exc:
             self.logger.error(f"Failed to fetch open_orders for {address}: {exc}")
@@ -889,7 +843,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_frontend_open_orders(
         self, address: str
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[Literal[True], list[dict[str, Any]]] | tuple[Literal[False], str]:
         """
         Get all open orders including trigger orders (stop-loss, take-profit).
 
@@ -903,7 +857,7 @@ class HyperliquidAdapter(BaseAdapter):
             List of open order records including trigger orders
         """
         try:
-            data = self.info.frontend_open_orders(address)
+            data = get_info().frontend_open_orders(address)
             return True, data if isinstance(data, list) else []
         except Exception as exc:
             self.logger.error(
@@ -952,7 +906,7 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> tuple[bool, int]:
         try:
             body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = self.info.post("/info", body)
+            data = get_info().post("/info", body)
             # Response is just an integer (tenths of basis points)
             return True, int(data) if data is not None else 0
         except Exception as exc:
@@ -1067,7 +1021,9 @@ class HyperliquidAdapter(BaseAdapter):
         timeout_s: int = 120,
         poll_interval_s: int = 5,
     ) -> tuple[bool, float]:
-        iterations = timeout_s // poll_interval_s
+        timeout_s = max(0, int(timeout_s))
+        poll_interval_s = max(1, int(poll_interval_s))
+        iterations = int(timeout_s // poll_interval_s) + 1
 
         # Get initial balance
         success, initial_state = await self.get_user_state(address)
@@ -1082,8 +1038,21 @@ class HyperliquidAdapter(BaseAdapter):
             f"expecting +${expected_increase:.2f}"
         )
 
+        # If the deposit already credited before this method was called, the
+        # balance-delta check below won't trigger (since initial_balance already
+        # includes it). So we also check ledger updates over the same time window.
+        started_ms = int(time.time() * 1000)
+        from_timestamp_ms = started_ms - (timeout_s * 1000)
+        expected_min = float(expected_increase) * 0.95
+
+        ok_ledger, deposits = await self.get_user_deposits(address, from_timestamp_ms)
+        if ok_ledger and any(float(v or 0) >= expected_min for v in deposits.values()):
+            self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
+            return True, float(initial_balance)
+
         for i in range(iterations):
-            await asyncio.sleep(poll_interval_s)
+            if i > 0:
+                await asyncio.sleep(poll_interval_s)
 
             success, state = await self.get_user_state(address)
             if not success:
@@ -1092,12 +1061,21 @@ class HyperliquidAdapter(BaseAdapter):
             current_balance = self.get_perp_margin_amount(state)
 
             # Allow 5% tolerance for fees/slippage
-            if current_balance >= initial_balance + expected_increase * 0.95:
+            if current_balance >= initial_balance + expected_min:
                 self.logger.info(
                     f"Hyperliquid deposit confirmed: ${current_balance - initial_balance:.2f} "
                     f"(expected ${expected_increase:.2f})"
                 )
                 return True, current_balance
+
+            ok_ledger, deposits = await self.get_user_deposits(
+                address, from_timestamp_ms
+            )
+            if ok_ledger and any(
+                float(v or 0) >= expected_min for v in deposits.values()
+            ):
+                self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
+                return True, float(current_balance)
 
             remaining_s = (iterations - i - 1) * poll_interval_s
             self.logger.debug(
@@ -1116,6 +1094,50 @@ class HyperliquidAdapter(BaseAdapter):
         )
         return False, final_balance
 
+    async def get_user_deposits(
+        self,
+        address: str,
+        from_timestamp_ms: int,
+    ) -> tuple[bool, dict[str, float]]:
+        """
+        Get user deposits from Hyperliquid ledger updates.
+
+        Returns:
+            (success, {tx_hash: usdc_amount})
+        """
+        try:
+            data = get_info().post(
+                "/info",
+                {
+                    "type": "userNonFundingLedgerUpdates",
+                    "user": to_checksum_address(address),
+                    "startTime": int(from_timestamp_ms),
+                },
+            )
+
+            result: dict[str, float] = {}
+            # Sort earliest to latest
+            for update in sorted(data or [], key=lambda x: x.get("time", 0)):
+                delta = update.get("delta") or {}
+                if delta.get("type") == "deposit":
+                    tx_hash = (
+                        update.get("hash")
+                        or update.get("txHash")
+                        or update.get("tx_hash")
+                        or update.get("transactionHash")
+                    )
+                    usdc_amount = float(delta.get("usdc", 0))
+                    if not tx_hash:
+                        ts = int(update.get("time") or 0)
+                        tx_hash = f"deposit-{ts}-{len(result)}"
+                    result[str(tx_hash)] = usdc_amount
+
+            return True, result
+
+        except Exception as exc:
+            self.logger.error(f"Failed to get user deposits: {exc}")
+            return False, {}
+
     async def get_user_withdrawals(
         self,
         address: str,
@@ -1124,7 +1146,7 @@ class HyperliquidAdapter(BaseAdapter):
         try:
             from eth_utils import to_checksum_address
 
-            data = self.info.post(
+            data = get_info().post(
                 "/info",
                 {
                     "type": "userNonFundingLedgerUpdates",

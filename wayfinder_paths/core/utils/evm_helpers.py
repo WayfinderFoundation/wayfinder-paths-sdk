@@ -12,7 +12,10 @@ def resolve_chain_id(token_info: dict[str, Any]) -> int | None:
     chain_id = chain_meta.get("id")
     if chain_id is not None:
         return int(chain_id)
-    return CHAIN_CODE_TO_ID.get(chain_meta.get("code").lower())
+    code = chain_meta.get("code")
+    if code is None:
+        return None
+    return CHAIN_CODE_TO_ID.get(code.lower())
 
 
 def resolve_rpc_url(

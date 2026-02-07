@@ -71,7 +71,7 @@ async def test_get_yield_info_boros_hype_collateral_converts_yu_to_usd(monkeypat
         AsyncMock(return_value=0.20),
     )
 
-    strat = BorosHypeStrategy(config={}, simulation=True)
+    strat = BorosHypeStrategy(config={})
     strat._planner_runtime.current_boros_token_id = BOROS_HYPE_TOKEN_ID
     strat.boros_adapter = type(
         "FakeBorosAdapter",
@@ -105,7 +105,7 @@ async def test_get_yield_info_boros_usdt_collateral_treats_yu_as_usd(monkeypatch
         AsyncMock(return_value=0.0),
     )
 
-    strat = BorosHypeStrategy(config={}, simulation=True)
+    strat = BorosHypeStrategy(config={})
     strat._planner_runtime.current_boros_token_id = 3  # e.g., USDT
     strat.boros_adapter = type(
         "FakeBorosAdapter",

@@ -1,11 +1,10 @@
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from eth_account.messages import encode_typed_data
 from hyperliquid.api import API
 from hyperliquid.exchange import get_timestamp_ms
-from hyperliquid.info import Info
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
@@ -24,7 +23,7 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 from web3 import Web3
 
-from wayfinder_paths.adapters.hyperliquid_adapter.util import Util
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
@@ -37,16 +36,35 @@ USER_DECLINED_ERROR = {
 class Exchange:
     def __init__(
         self,
-        info: Info,
-        util: Util,
-        sign_callback: Callable[[dict], Awaitable[str]],
+        sign_callback: Callable[..., Awaitable[str]],
         signing_type: Literal["eip712", "local"],
     ):
-        self.info = info
-        self.util = util
         self.api = API()
         self.sign_callback = sign_callback
         self.signing_type = signing_type
+
+    def get_sz_decimals(self, asset_id: int) -> int:
+        return get_info().asset_to_sz_decimals[asset_id]
+
+    def get_price_decimals(self, asset_id: int) -> int:
+        is_spot = asset_id >= 10_000
+        return (6 if not is_spot else 8) - self.get_sz_decimals(asset_id)
+
+    def _sig_hex_to_hl_signature(self, sig_hex: str) -> dict[str, Any]:
+        """Convert a 65-byte hex signature into Hyperliquid {r,s,v}."""
+        if not isinstance(sig_hex, str) or not sig_hex.startswith("0x"):
+            raise ValueError("Expected hex signature string starting with 0x")
+        raw = bytes.fromhex(sig_hex[2:])
+        if len(raw) != 65:
+            raise ValueError(f"Expected 65-byte signature, got {len(raw)} bytes")
+
+        r = raw[0:32]
+        s = raw[32:64]
+        v = raw[64]
+        if v < 27:
+            v += 27
+
+        return {"r": f"0x{r.hex()}", "s": f"0x{s.hex()}", "v": int(v)}
 
     def _create_hypecore_order_actions(
         self,
@@ -82,8 +100,8 @@ class Exchange:
         builder: BuilderInfo | None = None,
         cloid: str | None = None,
     ):
-        asset_name = self.info.asset_to_coin[asset_id]
-        mids = self.info.all_mids()
+        asset_name = get_info().asset_to_coin[asset_id]
+        mids = get_info().all_mids()
         midprice = float(mids[asset_name])
 
         if slippage >= 1 or slippage < 0:
@@ -92,7 +110,7 @@ class Exchange:
         price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
         price = round(
             float(f"{price:.5g}"),
-            self.util.get_price_decimals_for_hypecore_asset(asset_id),
+            self.get_price_decimals(asset_id),
         )
         order_actions = self._create_hypecore_order_actions(
             asset_id,
@@ -290,10 +308,11 @@ class Exchange:
             sig_hex = await self.sign_callback(payload)
             if not sig_hex:
                 return None
-            return self.util._sig_hex_to_hl_signature(sig_hex)
+            return self._sig_hex_to_hl_signature(sig_hex)
 
         payload = encode_typed_data(full_message=payload)
-        return await self.sign_callback(action, payload, address)
+        result = await self.sign_callback(action, payload, address)
+        return cast(dict[str, Any] | None, result)
 
     def _broadcast_hypecore(self, action, nonce, signature):
         payload = {

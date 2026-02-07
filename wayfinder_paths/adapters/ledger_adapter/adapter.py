@@ -1,4 +1,6 @@
-from typing import Any
+from __future__ import annotations
+
+from typing import Any, Literal
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.adapters.models import Operation
@@ -7,7 +9,6 @@ from wayfinder_paths.core.clients.LedgerClient import (
     StrategyTransactionList,
     TransactionRecord,
 )
-from wayfinder_paths.core.strategies.Strategy import StatusDict
 
 
 class LedgerAdapter(BaseAdapter):
@@ -47,7 +48,7 @@ class LedgerAdapter(BaseAdapter):
 
     async def get_strategy_latest_transactions(
         self, wallet_address: str
-    ) -> tuple[bool, StrategyTransactionList | str]:
+    ) -> tuple[Literal[True], StrategyTransactionList] | tuple[Literal[False], str]:
         try:
             data = await self.ledger_client.get_strategy_latest_transactions(
                 wallet_address=wallet_address
@@ -135,7 +136,7 @@ class LedgerAdapter(BaseAdapter):
                 wallet_address=wallet_address, limit=limit
             )
 
-            if not success:
+            if not success or isinstance(transactions_data, str):
                 return (False, transactions_data)
 
             transactions = transactions_data.get("transactions", [])
@@ -166,7 +167,7 @@ class LedgerAdapter(BaseAdapter):
             return (False, str(e))
 
     async def record_strategy_snapshot(
-        self, wallet_address: str, strategy_status: StatusDict
+        self, wallet_address: str, strategy_status: dict[str, Any]
     ) -> tuple[bool, None | str]:
         try:
             await self.ledger_client.strategy_snapshot(
