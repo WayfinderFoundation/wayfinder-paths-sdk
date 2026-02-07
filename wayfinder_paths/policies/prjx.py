@@ -22,7 +22,10 @@ async def prjx_npm():
         abi_chain_id=999,
         address=PRJX_NPM,
         function_names=[
+            "mint",
             "increaseLiquidity",
             "decreaseLiquidity",
+            "collect",
+            "burn",
         ],
     )
