@@ -1,12 +1,13 @@
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from unittest.mock import patch
 
 import pytest
 from loguru import logger
-from web3 import AsyncHTTPProvider, AsyncWeb3
 
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
-from wayfinder_paths.core.config import get_gorlami_api_key
+from wayfinder_paths.core.config import get_rpc_urls, set_rpc_urls
+from wayfinder_paths.core.utils import web3 as web3_utils
 
 
 @pytest.fixture
@@ -15,52 +16,55 @@ async def gorlami():
     client = GorlamiTestnetClient()
     client.forks = forks  # Expose forks dict for tests
 
+    old_rpc_urls = deepcopy(get_rpc_urls())
+    _real_web3_from_chain_id = web3_utils.web3_from_chain_id
+    _real_web3s_from_chain_id = web3_utils.web3s_from_chain_id
+
+    def _apply_rpc_overrides() -> None:
+        new_rpc_urls = deepcopy(old_rpc_urls)
+        for chain_key, fork in forks.items():
+            new_rpc_urls[str(chain_key)] = fork["rpc_url"]
+        set_rpc_urls(new_rpc_urls)
+
+    async def _ensure_fork(chain_id: int) -> None:
+        key = str(chain_id)
+        if key in forks:
+            return
+        fork = await client.create_fork(chain_id)
+        forks[key] = fork
+        logger.info(f"[gorlami] Created fork {fork['fork_id']} for chain {chain_id}")
+        _apply_rpc_overrides()
+
     @asynccontextmanager
     async def patched_web3_from_chain_id(chain_id: int):
-        api_key = (get_gorlami_api_key() or "").strip()
-        key = str(chain_id)
-        if key not in forks:
-            fork = await client.create_fork(chain_id)
-            forks[key] = fork
-            logger.info(f"[gorlami] Created fork {fork['fork_id']} for chain {chain_id}")
+        await _ensure_fork(chain_id)
 
-        class _GorlamiProvider(AsyncHTTPProvider):
-            async def make_request(self, method, params):  # type: ignore[override]
-                req = self.form_request(method, params)
-                request_data = self.encode_rpc_dict(req)
-                raw_response = await self._make_request(method, request_data)
-                resp = self.decode_rpc_response(raw_response)
-                if isinstance(resp, dict) and "id" not in resp:
-                    resp["id"] = req.get("id")
-                return resp
-
-        headers = AsyncHTTPProvider.get_request_headers()
-        if api_key:
-            headers["Authorization"] = api_key
-        provider = _GorlamiProvider(
-            forks[key]["rpc_url"], request_kwargs={"headers": headers}
-        )
-        web3 = AsyncWeb3(provider)
-        try:
+        async with _real_web3_from_chain_id(chain_id) as web3:
             yield web3
-        finally:
-            await web3.provider.disconnect()
 
     @asynccontextmanager
     async def patched_web3s_from_chain_id(chain_id: int):
-        async with patched_web3_from_chain_id(chain_id) as web3:
-            yield [web3]
+        await _ensure_fork(chain_id)
 
-    with (
-        patch("wayfinder_paths.core.utils.web3.web3_from_chain_id", patched_web3_from_chain_id),
-        patch("wayfinder_paths.core.utils.web3.web3s_from_chain_id", patched_web3s_from_chain_id),
-    ):
-        yield client
+        async with _real_web3s_from_chain_id(chain_id) as web3s:
+            yield web3s
 
-    for fork in forks.values():
+    try:
+        with (
+            patch("wayfinder_paths.core.utils.web3.web3_from_chain_id", patched_web3_from_chain_id),
+            patch("wayfinder_paths.core.utils.web3.web3s_from_chain_id", patched_web3s_from_chain_id),
+        ):
+            yield client
+    finally:
         try:
-            await client.delete_fork(fork["fork_id"])
-            logger.info(f"[gorlami] Deleted fork {fork['fork_id']}")
-        except Exception as e:
-            logger.warning(f"[gorlami] Failed to delete fork: {e}")
-    await client.close()
+            set_rpc_urls(old_rpc_urls)
+        except Exception:
+            pass
+
+        for fork in forks.values():
+            try:
+                await client.delete_fork(fork["fork_id"])
+                logger.info(f"[gorlami] Deleted fork {fork['fork_id']}")
+            except Exception as e:
+                logger.warning(f"[gorlami] Failed to delete fork: {e}")
+        await client.close()

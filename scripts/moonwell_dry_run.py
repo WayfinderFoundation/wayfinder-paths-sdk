@@ -5,7 +5,6 @@ import asyncio
 import importlib
 import json
 import sys
-from decimal import Decimal, InvalidOperation
 
 from loguru import logger
 
@@ -13,33 +12,12 @@ from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
+from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
 from wayfinder_paths.run_strategy import (
     create_signing_callback,
     find_strategy_class,
     get_strategy_config,
 )
-
-
-def _to_wei_eth(amount_eth: str) -> int:
-    try:
-        amt = Decimal(amount_eth)
-    except InvalidOperation as exc:
-        raise ValueError(f"Invalid ETH amount: {amount_eth}") from exc
-    if amt < 0:
-        raise ValueError("Amount must be non-negative")
-    return int((amt * Decimal(10**18)).to_integral_value())
-
-
-def _to_erc20_raw(amount_tokens: str, decimals: int) -> int:
-    try:
-        amt = Decimal(amount_tokens)
-    except InvalidOperation as exc:
-        raise ValueError(f"Invalid token amount: {amount_tokens}") from exc
-    if amt < 0:
-        raise ValueError("Amount must be non-negative")
-    scale = Decimal(10) ** int(decimals)
-    return int((amt * scale).to_integral_value())
-
 
 async def _run(args: argparse.Namespace) -> None:
     load_config(args.config, require_exists=bool(args.config))
@@ -58,10 +36,10 @@ async def _run(args: argparse.Namespace) -> None:
             "main_wallet + strategy_wallet must be configured (address + private key) in config.json"
         )
 
-    usdc_raw = _to_erc20_raw(str(args.amount_usdc), decimals=6)
+    usdc_raw = to_erc20_raw(str(args.amount_usdc), decimals=6)
     native_balances = {
-        str(main_addr): _to_wei_eth(str(args.fund_main_eth)),
-        str(strat_addr): _to_wei_eth(str(args.fund_strategy_eth)),
+        str(main_addr): to_wei_eth(str(args.fund_main_eth)),
+        str(strat_addr): to_wei_eth(str(args.fund_strategy_eth)),
     }
     erc20_balances = [(BASE_USDC, str(main_addr), int(usdc_raw))]
 

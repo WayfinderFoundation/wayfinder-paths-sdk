@@ -13,7 +13,6 @@ import importlib
 import inspect
 import json
 import sys
-from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from loguru import logger
@@ -23,6 +22,7 @@ from wayfinder_paths.core.config import CONFIG, load_config
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_address
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
+from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
 from wayfinder_paths.core.utils.web3 import get_transaction_chain_id, web3_from_chain_id
 
 
@@ -70,27 +70,6 @@ def find_strategy_class(module) -> type[Strategy]:
     raise ValueError(f"No Strategy subclass found in {module.__name__}")
 
 
-def _to_wei_eth(amount_eth: str) -> int:
-    try:
-        amt = Decimal(amount_eth)
-    except InvalidOperation as exc:
-        raise ValueError(f"Invalid ETH amount: {amount_eth}") from exc
-    if amt < 0:
-        raise ValueError("Amount must be non-negative")
-    return int((amt * Decimal(10**18)).to_integral_value())
-
-
-def _to_erc20_raw(amount_tokens: str, decimals: int) -> int:
-    try:
-        amt = Decimal(amount_tokens)
-    except InvalidOperation as exc:
-        raise ValueError(f"Invalid token amount: {amount_tokens}") from exc
-    if amt < 0:
-        raise ValueError("Amount must be non-negative")
-    scale = Decimal(10) ** int(decimals)
-    return int((amt * scale).to_integral_value())
-
-
 def _parse_native_funds(specs: list[str]) -> dict[str, int]:
     balances: dict[str, int] = {}
     for spec in specs:
@@ -98,7 +77,10 @@ def _parse_native_funds(specs: list[str]) -> dict[str, int]:
         if len(parts) != 2:
             raise ValueError(f"Invalid --gorlami-fund-native-eth: {spec}")
         addr, eth_amount = parts
-        balances[addr] = _to_wei_eth(eth_amount)
+        try:
+            balances[addr] = to_wei_eth(eth_amount)
+        except ValueError as exc:
+            raise ValueError(f"Invalid --gorlami-fund-native-eth: {spec}") from exc
     return balances
 
 
@@ -109,7 +91,10 @@ def _parse_erc20_funds(specs: list[str]) -> list[tuple[str, str, int]]:
         if len(parts) != 4:
             raise ValueError(f"Invalid --gorlami-fund-erc20: {spec}")
         token, wallet, amount, decimals = parts
-        balances.append((token, wallet, _to_erc20_raw(amount, int(decimals))))
+        try:
+            balances.append((token, wallet, to_erc20_raw(amount, int(decimals))))
+        except ValueError as exc:
+            raise ValueError(f"Invalid --gorlami-fund-erc20: {spec}") from exc
     return balances
 
 
@@ -215,7 +200,7 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
 
         native_balances = _parse_native_funds(list(gorlami_fund_native_eth))
         if not gorlami_no_default_gas:
-            default_gas = int(Decimal("0.1") * Decimal(10**18))
+            default_gas = to_wei_eth("0.1")
             for key in ("main_wallet", "strategy_wallet"):
                 addr = config.get(key, {}).get("address")
                 if addr and addr not in native_balances:
@@ -235,7 +220,7 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
                     decimals = int(details.get("decimals", 18) or 18)
                     if token_address:
                         erc20_balances.append(
-                            (str(token_address), str(main_addr), _to_erc20_raw(str(amount), decimals))
+                            (str(token_address), str(main_addr), to_erc20_raw(str(amount), decimals))
                         )
                 except Exception:
                     # best-effort auto-funding only
