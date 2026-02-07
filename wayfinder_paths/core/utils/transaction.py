@@ -7,6 +7,7 @@ from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
 
+from wayfinder_paths.core.config import get_gorlami_base_url, get_rpc_urls
 from wayfinder_paths.core.constants.base import (
     GAS_BUFFER_MULTIPLIER,
     MAX_BASE_FEE_GROWTH_MULTIPLIER,
@@ -21,6 +22,25 @@ from wayfinder_paths.core.utils.web3 import (
     web3_from_chain_id,
     web3s_from_chain_id,
 )
+
+_DEFAULT_CONFIRMATIONS = 3
+
+
+def _is_gorlami_fork_chain(chain_id: int) -> bool:
+    try:
+        base = get_gorlami_base_url().rstrip("/")
+    except Exception:
+        return False
+
+    rpcs = get_rpc_urls().get(str(chain_id))
+    if rpcs is None:
+        rpcs = get_rpc_urls().get(chain_id)
+    if isinstance(rpcs, list):
+        rpc = rpcs[0] if rpcs else ""
+    else:
+        rpc = rpcs or ""
+
+    return isinstance(rpc, str) and rpc.startswith(f"{base}/fork/")
 
 
 class TransactionRevertedError(RuntimeError):
@@ -165,6 +185,18 @@ async def gas_limit_transaction(transaction: dict):
 
         gas_limit = max(gas_limits)
         if gas_limit == 0:
+            chain_id = get_transaction_chain_id(transaction)
+            if _is_gorlami_fork_chain(chain_id):
+                # Gorlami forks sometimes fail `eth_estimateGas` for complex multicalls.
+                # For dry-runs, fall back to a generous gas limit so we can still
+                # execute and observe success/revert on-chain.
+                fallback_gas = 5_000_000
+                logger.warning(
+                    f"Gas estimation failed on Gorlami fork; using fallback gas={fallback_gas}"
+                )
+                transaction["gas"] = fallback_gas
+                return transaction
+
             logger.error("Gas estimation failed on all RPCs")
             raise Exception("Gas estimation failed on all RPCs")
 
@@ -224,13 +256,18 @@ async def wait_for_transaction_receipt(
 
 
 async def send_transaction(
-    transaction: dict, sign_callback: Callable, wait_for_receipt=True
+    transaction: dict,
+    sign_callback: Callable,
+    wait_for_receipt: bool = True,
+    confirmations: int | None = None,
 ) -> str:
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
     logger.info(f"Broadcasting transaction {transaction}...")
     chain_id = get_transaction_chain_id(transaction)
+    if confirmations is None:
+        confirmations = 0 if _is_gorlami_fork_chain(chain_id) else _DEFAULT_CONFIRMATIONS
     transaction = await gas_limit_transaction(transaction)
     transaction = await nonce_transaction(transaction)
     transaction = await gas_price_transaction(transaction)
@@ -241,7 +278,9 @@ async def send_transaction(
     logger.info(f"Transaction broadcasted: {txn_hash}")
     if wait_for_receipt:
         try:
-            receipt = await wait_for_transaction_receipt(chain_id, txn_hash)
+            receipt = await wait_for_transaction_receipt(
+                chain_id, txn_hash, confirmations=int(confirmations)
+            )
         except TransactionRevertedError as exc:
             receipt = (
                 exc.receipt if isinstance(getattr(exc, "receipt", None), dict) else {}
@@ -261,7 +300,10 @@ async def send_transaction(
 
 
 async def sign_and_send_transaction(
-    transaction: dict, private_key: str, wait_for_receipt: bool = True
+    transaction: dict,
+    private_key: str,
+    wait_for_receipt: bool = True,
+    confirmations: int | None = None,
 ) -> str:
     account = Account.from_key(private_key)
 
@@ -269,7 +311,12 @@ async def sign_and_send_transaction(
         signed = account.sign_transaction(tx)
         return signed.raw_transaction
 
-    return await send_transaction(transaction, sign_callback, wait_for_receipt)
+    return await send_transaction(
+        transaction,
+        sign_callback,
+        wait_for_receipt=wait_for_receipt,
+        confirmations=confirmations,
+    )
 
 
 async def encode_call(

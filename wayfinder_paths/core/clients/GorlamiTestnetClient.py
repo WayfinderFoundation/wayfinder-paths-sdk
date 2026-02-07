@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any
 
 import httpx
@@ -11,7 +13,7 @@ class GorlamiTestnetClient:
     def __init__(self):
         self.base_url = get_gorlami_base_url().rstrip("/")
         api_key = get_gorlami_api_key()
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        headers = {"Authorization": api_key} if api_key else {}
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
             headers=headers,
@@ -25,9 +27,14 @@ class GorlamiTestnetClient:
         resp.raise_for_status()
 
         data = resp.json()
+        fork_id = data.get("fork_id") or data.get("forkId")
+        if not fork_id:
+            raise ValueError(f"Unexpected gorlami response: {data}")
+
         fork_info = {
-            "fork_id": data["fork_id"],
-            "rpc_url": data["rpc_url"],
+            "fork_id": fork_id,
+            # gorlami exposes JSON-RPC at POST /fork/{forkId}
+            "rpc_url": f"{self.base_url}/fork/{fork_id}",
             "chain_id": chain_id,
         }
         logger.info(f"Created fork {fork_info['fork_id']} for chain {chain_id}")
@@ -47,10 +54,8 @@ class GorlamiTestnetClient:
         return True
 
     async def send_rpc(self, fork_id: str, method: str, params: list) -> Any:
-        url = f"{self.base_url}/rpc/{fork_id}"
+        url = f"{self.base_url}/fork/{fork_id}"
         payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
             "method": method,
             "params": params,
         }
@@ -64,12 +69,11 @@ class GorlamiTestnetClient:
         return data.get("result")
 
     async def set_native_balance(self, fork_id: str, wallet: str, amount: int) -> bool:
-        url = f"{self.base_url}/fork/{fork_id}/balance"
+        url = f"{self.base_url}/fork/{fork_id}/balance/native"
         payload = {
-            "wallet": wallet,
-            "amount": hex(amount),
+            "address": wallet,
+            "balance": amount,
         }
-
         resp = await self.client.post(url, json=payload)
         resp.raise_for_status()
         logger.debug(
@@ -80,11 +84,11 @@ class GorlamiTestnetClient:
     async def set_erc20_balance(
         self, fork_id: str, token: str, wallet: str, amount: int
     ) -> bool:
-        url = f"{self.base_url}/fork/{fork_id}/erc20"
+        url = f"{self.base_url}/fork/{fork_id}/balance/erc20"
         payload = {
-            "token": token,
-            "wallet": wallet,
-            "amount": hex(amount),
+            "address": wallet,
+            "tokenAddress": token,
+            "amount": amount,
         }
 
         resp = await self.client.post(url, json=payload)

@@ -2,7 +2,8 @@
   "system": {
     "api_base_url": "https://strategies.wayfinder.ai/api/v1",
     "api_key": "wk_your_key_here",
-    "gorlami_base_url": "https://app.wayfinder.ai/gorlami/api/v1/gornet"
+    "gorlami_base_url": "https://app.wayfinder.ai/gorlami/api/v1/gornet",
+    "gorlami_api_key": "gorlami_your_key_here"
   },
   "strategy": {
     "rpc_urls": {

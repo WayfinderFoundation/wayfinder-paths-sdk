@@ -1,10 +1,15 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
-from wayfinder_paths.core.config import get_rpc_urls
+from wayfinder_paths.core.config import (
+    get_gorlami_api_key,
+    get_gorlami_base_url,
+    get_rpc_urls,
+)
 from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_HYPEREVM,
     POA_MIDDLEWARE_CHAIN_IDS,
@@ -22,6 +27,44 @@ class HyperModule(Module):
         return int(big_block_gas_price, 16)
 
 
+class _GorlamiProvider(AsyncHTTPProvider):
+    async def make_request(self, method, params):  # type: ignore[override]
+        # Gorlami's JSON-RPC responses omit `id`, which breaks web3.py.
+        # It can also intermittently return 502/503/504, so retry a bit.
+        req = self.form_request(method, params)
+        request_data = self.encode_rpc_dict(req)
+
+        max_retries = 3
+        delay_s = 0.25
+        for attempt in range(max_retries):
+            try:
+                raw_response = await self._make_request(method, request_data)
+                resp = self.decode_rpc_response(raw_response)
+                if isinstance(resp, dict) and "id" not in resp:
+                    resp["id"] = req.get("id")
+                return resp
+            except Exception as exc:
+                status = getattr(exc, "status", None)
+                if status in (502, 503, 504) and attempt < (max_retries - 1):
+                    await asyncio.sleep(delay_s * (2**attempt))
+                    continue
+                raise
+
+
+def _get_gorlami_base_url_safe() -> str | None:
+    try:
+        return get_gorlami_base_url().rstrip("/")
+    except Exception:
+        return None
+
+
+def _is_gorlami_fork_rpc(rpc: str) -> bool:
+    base = _get_gorlami_base_url_safe()
+    if not base:
+        return False
+    return rpc.startswith(f"{base}/fork/")
+
+
 def _get_rpcs_for_chain_id(chain_id: int) -> list:
     mapping = get_rpc_urls()
     rpcs = mapping.get(str(chain_id))
@@ -35,7 +78,15 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
-    web3 = AsyncWeb3(AsyncHTTPProvider(rpc))
+    if _is_gorlami_fork_rpc(rpc):
+        headers = AsyncHTTPProvider.get_request_headers()
+        api_key = (get_gorlami_api_key() or "").strip()
+        if api_key:
+            headers["Authorization"] = api_key
+        provider = _GorlamiProvider(rpc, request_kwargs={"headers": headers})
+        web3 = AsyncWeb3(provider)
+    else:
+        web3 = AsyncWeb3(AsyncHTTPProvider(rpc))
     if chain_id in POA_MIDDLEWARE_CHAIN_IDS:
         web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     if chain_id == CHAIN_ID_HYPEREVM:

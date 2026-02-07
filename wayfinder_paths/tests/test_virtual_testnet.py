@@ -1,17 +1,18 @@
 import pytest
 
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
-from wayfinder_paths.core.config import CONFIG
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.config import CONFIG, get_gorlami_api_key
+from wayfinder_paths.core.utils import web3 as web3_utils
 
 
 def gorlami_configured() -> bool:
     system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
-    return bool(system.get("gorlami_base_url"))
+    return bool(system.get("gorlami_base_url")) and bool(get_gorlami_api_key())
 
 
 pytestmark = pytest.mark.skipif(
-    not gorlami_configured(), reason="gorlami_base_url not configured"
+    not gorlami_configured(),
+    reason="gorlami_base_url/gorlami_api_key not configured",
 )
 
 
@@ -72,7 +73,7 @@ class TestGorlamiFixture:
         test_wallet = "0x1234567890123456789012345678901234567890"
         test_amount = 5 * 10**18
 
-        async with web3_from_chain_id(8453) as web3:
+        async with web3_utils.web3_from_chain_id(8453) as web3:
             block_num = await web3.eth.block_number
             assert block_num >= 0
 

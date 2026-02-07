@@ -42,6 +42,10 @@ MCP server entrypoint:
 
 - `poetry run python -m wayfinder_paths.mcp.server`
 
+Simulation / scenario testing:
+
+- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). Use `/simulation-dry-run` and see `SIMULATION.md`.
+
 Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
@@ -67,6 +71,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Boros                 | `/using-boros-adapter`           |
 | BRAP (swaps)          | `/using-brap-adapter`            |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
+| Simulation / Dry-run  | `/simulation-dry-run`            |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 

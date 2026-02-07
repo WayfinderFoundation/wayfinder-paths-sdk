@@ -16,6 +16,12 @@ just create-wallets
 poetry run pytest -k smoke -v
 ```
 
+## Scenario Testing (Simulation / Forks)
+
+Unit tests catch regressions, but complex fund-moving flows (multi-step swaps, lending loops, approvals) should also be validated with at least one **dry-run scenario** on a fork before running live.
+
+This repo supports fork-based dry-runs via Gorlami. See `SIMULATION.md` for setup and examples.
+
 ## Testing Strategies
 
 ### Required: Smoke Test with examples.json
