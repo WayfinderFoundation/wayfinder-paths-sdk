@@ -44,7 +44,7 @@ MCP server entrypoint:
 
 Simulation / scenario testing:
 
-- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). Use `/simulation-dry-run` and see `SIMULATION.md`.
+- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). These are virtual testnets that simulate **sequential operations** with real EVM state changes. Use `/simulation-dry-run` and see `SIMULATION.md`.
 
 Safety defaults:
 

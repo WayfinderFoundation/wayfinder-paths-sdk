@@ -21,6 +21,8 @@ Notes:
 
 Preferred entrypoint: `wayfinder_paths/run_strategy.py` with `--gorlami`.
 
+This runs against a **virtual testnet fork** where each transaction updates state for the next step (sequential operations).
+
 ```bash
 poetry run python wayfinder_paths/run_strategy.py moonwell_wsteth_loop_strategy \
   --action status \
@@ -55,4 +57,3 @@ Examples in this repo:
 - `scripts/moonwell_dry_run.py` (Moonwell `deposit -> update` on a Base fork)
 
 See `SIMULATION.md` for details.
-

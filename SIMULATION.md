@@ -2,6 +2,8 @@
 
 When writing or changing **fund-moving** scripts/strategies, run at least one **scenario** on a fork first (dry run) before broadcasting to a real RPC. This catches unit issues, allowance bugs, calldata shape changes, and multi-step sequencing problems without risking real funds.
 
+Think of these dry-runs as **virtual testnets**: a forked chain state where you can execute **sequential operations** (approve → swap → lend → borrow → repay, etc.) and each step updates on-chain state for the next step—without touching real funds.
+
 This repo supports dry-runs via **Gorlami** (Wayfinder’s virtual testnet service) by forking a chain and temporarily routing RPC traffic to the fork.
 
 ## Configure Gorlami
@@ -88,4 +90,3 @@ For a complex strategy or multi-step script:
 - Fork RPCs can intermittently return 502/503/504; the SDK retries some RPC calls.
 - `eth_estimateGas` can fail for complex multicalls on forks; the SDK falls back to a generous gas limit in fork mode.
 - Fork runs default to **0 confirmations** (don’t wait for extra blocks that may never arrive on a fork).
-
