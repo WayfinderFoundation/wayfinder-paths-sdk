@@ -1,0 +1,748 @@
+from __future__ import annotations
+
+import statistics
+import time
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from decimal import ROUND_HALF_UP, Decimal
+from typing import Any
+
+from loguru import logger
+
+from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
+from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
+from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
+from wayfinder_paths.core.constants.chains import CHAIN_EXPLORER_URLS, CHAIN_ID_HYPEREVM
+from wayfinder_paths.core.constants.projectx import THBILL_USDC_METADATA
+from wayfinder_paths.core.strategies.descriptors import (
+    DEFAULT_TOKEN_REWARDS,
+    Complexity,
+    Directionality,
+    Frequency,
+    StratDescriptor,
+    TokenExposure,
+    Volatility,
+)
+from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    amounts_for_liq_inrange,
+    round_tick_to_spacing,
+    sqrt_price_x96_from_tick,
+)
+from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
+from wayfinder_paths.policies.prjx import prjx_npm, prjx_swap
+
+USDC_TOKEN_ID = "usd-coin-hyperevm"
+THBILL_TOKEN_ID = "theo-short-duration-us-treasury-fund-hyperevm"
+GAS_TOKEN_ID = "hype-hyperevm"
+
+IDLE_REDEPLOY_THRESHOLD_USD = 0.25
+MIN_AUTOCOLLECT_USD = 0.20
+MIN_AUTOCOLLECT_PCT = 0.1  # 0.1% of position value
+
+
+class ProjectXThbillUsdcStrategy(Strategy):
+    name = "ProjectX THBILL/USDC Concentrated LP"
+
+    GAS_THRESHOLD = 0.05
+    GAS_MAXIMUM = 0.25
+
+    # Lowered vs legacy (was 20) to enable small end-to-end runs.
+    MINIMUM_NET_DEPOSIT = 5.0
+
+    # Optional tick anchoring from swap history (requires subgraph URL)
+    HISTORIC_CENTER_WINDOW_SEC = 4 * 60 * 60  # 4 hours
+    HISTORIC_CENTER_MIN_SWAPS = 20
+
+    RECENTER_WINDOW_SEC = 60 * 60  # 1 hour
+    RECENTER_MIN_SWAPS = 10
+    RECENTER_OUTSIDE_FRACTION = 0.8
+
+    INFO = StratDescriptor(
+        description=(
+            "Concentrated-liquidity market making on ProjectX (HyperEVM) for the THBILL/USDC stable pair.\n\n"
+            "Pulls HyperEVM USDC from the main wallet into the strategy wallet, swaps into the optimal split "
+            "between USDC and THBILL, and provides concentrated liquidity in a tight tick band. On updates it compounds fees "
+            "and recenters the band if price exits the range.\n\n"
+            "Gas is paid in native HYPE on HyperEVM."
+        ),
+        summary="THBILL/USDC concentrated LP on ProjectX (HyperEVM) with fee compounding and band recenters.",
+        risk_description=(
+            "Protocol + smart contract risk (ProjectX periphery/pool, tokens), potential depeg risk, "
+            "and execution risk (slippage, congestion)."
+        ),
+        gas_token_symbol="HYPE",
+        gas_token_id=GAS_TOKEN_ID,
+        deposit_token_id=USDC_TOKEN_ID,
+        minimum_net_deposit=MINIMUM_NET_DEPOSIT,
+        gas_maximum=GAS_MAXIMUM,
+        gas_threshold=GAS_THRESHOLD,
+        volatility=Volatility.LOW,
+        volatility_description="Stable/stable pair; NAV near $1 unless THBILL depegs.",
+        directionality=Directionality.MARKET_NEUTRAL,
+        directionality_description="Concentrated liquidity on both sides of the stable pair.",
+        complexity=Complexity.MEDIUM,
+        complexity_description="Requires swaps + Uniswap v3 math + periodic rebalances.",
+        token_exposure=TokenExposure.STABLECOINS,
+        token_exposure_description="Exposure split between USDC and THBILL (USD-like).",
+        frequency=Frequency.MEDIUM,
+        frequency_description="Call update periodically to compound fees and recenter if out of range.",
+        return_drivers=["pool fees"],
+        available_rewards={
+            "token_rewards": DEFAULT_TOKEN_REWARDS,
+            "point_rewards": (
+                [
+                    {
+                        "program": str(THBILL_USDC_METADATA.get("points_program")),
+                        "description": "Theo points accrued via THBILL volume",
+                    }
+                ]
+                if THBILL_USDC_METADATA.get("points_program")
+                else None
+            ),
+        },
+        config={
+            "deposit": {
+                "parameters": {
+                    "main_token_amount": {
+                        "type": "float",
+                        "description": "USDC amount (usd-coin-hyperevm) to deposit from main wallet",
+                    },
+                    "gas_token_amount": {
+                        "type": "float",
+                        "description": "HYPE amount (hype-hyperevm) to deposit for gas",
+                        "minimum": 0,
+                        "maximum": GAS_MAXIMUM,
+                    },
+                }
+            }
+        },
+    )
+
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        main_wallet: dict[str, Any] | None = None,
+        strategy_wallet: dict[str, Any] | None = None,
+        main_wallet_signing_callback: Callable[[dict], Awaitable[str]] | None = None,
+        strategy_wallet_signing_callback: Callable[[dict], Awaitable[str]]
+        | None = None,
+        strategy_sign_typed_data: Callable[[dict], Awaitable[str]] | None = None,
+    ) -> None:
+        super().__init__(
+            main_wallet_signing_callback=main_wallet_signing_callback,
+            strategy_wallet_signing_callback=strategy_wallet_signing_callback,
+            strategy_sign_typed_data=strategy_sign_typed_data,
+        )
+
+        merged_config: dict[str, Any] = dict(config or {})
+        if main_wallet is not None:
+            merged_config["main_wallet"] = main_wallet
+        if strategy_wallet is not None:
+            merged_config["strategy_wallet"] = strategy_wallet
+        self.config: dict[str, Any] = merged_config
+
+        adapter_config = {
+            "main_wallet": self.config.get("main_wallet") or None,
+            "strategy_wallet": self.config.get("strategy_wallet") or None,
+            "strategy": self.config,
+        }
+        self.balance_adapter = BalanceAdapter(
+            adapter_config,
+            main_wallet_signing_callback=self.main_wallet_signing_callback,
+            strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+        )
+        self.token_adapter = TokenAdapter()
+        self.projectx = ProjectXLiquidityAdapter(
+            adapter_config,
+            strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+        )
+
+        self.usdc_token_info: dict[str, Any] = {}
+        self.thbill_token_info: dict[str, Any] = {}
+        self.hype_token_info: dict[str, Any] = {}
+
+    async def setup(self) -> None:
+        self.usdc_token_info = await self._safe_get_token(USDC_TOKEN_ID)
+        self.thbill_token_info = await self._safe_get_token(THBILL_TOKEN_ID)
+        self.hype_token_info = await self._safe_get_token(GAS_TOKEN_ID)
+
+    async def _safe_get_token(self, token_id: str) -> dict[str, Any]:
+        try:
+            ok, info = await self.token_adapter.get_token(token_id, chain_id=999)
+            return info if ok and isinstance(info, dict) else {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _band_ticks(current_tick: int, tick_spacing: int) -> tuple[int, int]:
+        span = max(tick_spacing * 2, int(float(THBILL_USDC_METADATA["band_bps"])))
+        half = (span // tick_spacing) * tick_spacing // 2
+        tick_lower = round_tick_to_spacing(current_tick - half, tick_spacing)
+        tick_upper = round_tick_to_spacing(current_tick + half, tick_spacing)
+        if tick_lower >= tick_upper:
+            tick_upper = tick_lower + tick_spacing
+        return int(tick_lower), int(tick_upper)
+
+    async def _recent_ticks(
+        self, *, window_sec: int, min_swaps: int, max_swaps: int = 500
+    ) -> list[int]:
+        now = int(time.time())
+        swaps = await self.projectx.fetch_swaps(
+            limit=max_swaps,
+            start_timestamp=now - int(window_sec),
+            end_timestamp=now,
+        )
+        ticks = [int(s["tick"]) for s in swaps if s.get("tick") is not None]
+        if len(ticks) < int(min_swaps):
+            return []
+        return ticks
+
+    async def _anchored_center_tick(self, fallback_tick: int, tick_spacing: int) -> int:
+        ticks = await self._recent_ticks(
+            window_sec=self.HISTORIC_CENTER_WINDOW_SEC,
+            min_swaps=self.HISTORIC_CENTER_MIN_SWAPS,
+        )
+        if not ticks:
+            return int(fallback_tick)
+
+        ticks.sort()
+        n = len(ticks)
+        trim = max(0, int(n * 0.2))
+        core = ticks[trim : n - trim] if n - 2 * trim > 0 else ticks
+
+        center_raw = int(statistics.median(core))
+        center = int(round_tick_to_spacing(center_raw, tick_spacing))
+
+        max_jump = 5 * int(tick_spacing)
+        if abs(center - int(fallback_tick)) > max_jump:
+            center = int(fallback_tick) + max_jump * (
+                1 if center > fallback_tick else -1
+            )
+        return int(center)
+
+    async def _should_recentre(self, pos, *, spacing: int, current_tick: int) -> bool:
+        ticks = await self._recent_ticks(
+            window_sec=self.RECENTER_WINDOW_SEC,
+            min_swaps=self.RECENTER_MIN_SWAPS,
+        )
+        if not ticks:
+            return (
+                current_tick <= pos.tick_lower - spacing
+                or current_tick >= pos.tick_upper + spacing
+            )
+
+        outside = [t for t in ticks if t <= pos.tick_lower or t >= pos.tick_upper]
+        frac_outside = len(outside) / len(ticks)
+        if frac_outside < self.RECENTER_OUTSIDE_FRACTION:
+            return False
+
+        anchored_center = await self._anchored_center_tick(current_tick, spacing)
+        new_lower, new_upper = self._band_ticks(anchored_center, spacing)
+        if new_lower == pos.tick_lower and new_upper == pos.tick_upper:
+            return False
+        return True
+
+    @staticmethod
+    def _tx_link(tx_hash: str) -> str:
+        base = CHAIN_EXPLORER_URLS.get(CHAIN_ID_HYPEREVM, "https://hyperevmscan.io/")
+        if not base.endswith("/"):
+            base += "/"
+        return f"{base}tx/{tx_hash}"
+
+    @staticmethod
+    def _format_spent_summary(
+        spend_meta: dict[str, int] | None,
+        token0_meta: dict[str, Any],
+        token1_meta: dict[str, Any],
+    ) -> str:
+        if not spend_meta:
+            return ""
+
+        def _fmt(amount_wei: int, meta: dict[str, Any]) -> str | None:
+            if not amount_wei or amount_wei <= 0:
+                return None
+            decimals = int(meta.get("decimals", 18))
+            symbol = meta.get("symbol") or meta.get("token_id") or "token"
+            scale = Decimal(10) ** decimals
+            amount = (Decimal(amount_wei) / scale).quantize(
+                Decimal("0.0001"), rounding=ROUND_HALF_UP
+            )
+            if amount <= 0:
+                return None
+            return f"{amount} {symbol}"
+
+        parts = list(
+            filter(
+                None,
+                [
+                    _fmt(int(spend_meta.get("token0_spent", 0) or 0), token0_meta),
+                    _fmt(int(spend_meta.get("token1_spent", 0) or 0), token1_meta),
+                ],
+            )
+        )
+        if not parts:
+            return ""
+        return "Used " + " + ".join(parts)
+
+    async def _token_price_usd(self, token_id: str) -> float:
+        try:
+            ok, price_data = await self.token_adapter.get_token_price(
+                token_id, chain_id=999
+            )
+            if not ok or not isinstance(price_data, dict):
+                return 1.0
+            price = price_data.get("current_price")
+            return float(price) if price is not None else 1.0
+        except Exception:
+            return 1.0
+
+    async def _position_value_usd(self, pos, overview: dict[str, Any]) -> float:
+        sqrt_p = int(overview.get("sqrt_price_x96") or 0)
+        token0_meta = overview["token0"]
+        token1_meta = overview["token1"]
+
+        sqrt_pl = sqrt_price_x96_from_tick(int(pos.tick_lower))
+        sqrt_pu = sqrt_price_x96_from_tick(int(pos.tick_upper))
+        amt0, amt1 = amounts_for_liq_inrange(
+            sqrt_p, sqrt_pl, sqrt_pu, int(pos.liquidity)
+        )
+
+        dec0 = int(token0_meta.get("decimals", 18))
+        dec1 = int(token1_meta.get("decimals", 18))
+        amt0_tokens = float(amt0) / (10**dec0)
+        amt1_tokens = float(amt1) / (10**dec1)
+
+        price0 = await self._token_price_usd(
+            token0_meta.get("token_id") or USDC_TOKEN_ID
+        )
+        price1 = await self._token_price_usd(
+            token1_meta.get("token_id") or THBILL_TOKEN_ID
+        )
+        return amt0_tokens * price0 + amt1_tokens * price1
+
+    async def _idle_liquidity_snapshot(
+        self, balances: dict[str, int], overview: dict[str, Any]
+    ) -> tuple[float, float, float]:
+        token0_meta = overview["token0"]
+        token1_meta = overview["token1"]
+        addr0 = token0_meta["address"]
+        addr1 = token1_meta["address"]
+        raw0 = int(balances.get(addr0, 0) or 0)
+        raw1 = int(balances.get(addr1, 0) or 0)
+
+        amount0 = raw0 / (10 ** int(token0_meta["decimals"]))
+        amount1 = raw1 / (10 ** int(token1_meta["decimals"]))
+
+        price0 = await self._token_price_usd(
+            token0_meta.get("token_id") or USDC_TOKEN_ID
+        )
+        price1 = await self._token_price_usd(
+            token1_meta.get("token_id") or THBILL_TOKEN_ID
+        )
+        total_value = amount0 * price0 + amount1 * price1
+        return float(total_value), float(amount0), float(amount1)
+
+    async def quote(self, deposit_amount: float | None = None) -> dict[str, Any]:
+        overview = await self.projectx.pool_overview()
+        tick_spacing = int(overview["tick_spacing"])
+        center_tick = await self._anchored_center_tick(
+            int(overview["tick"]), tick_spacing
+        )
+        lower, upper = self._band_ticks(center_tick, tick_spacing)
+        summary = f"Target band centered at tick {center_tick} spanning {upper - lower} ticks."
+        return {
+            "expected_apy": 0.0,
+            "apy_type": "gross",
+            "confidence": "low",
+            "methodology": "Band target derived from recent swap ticks (if available).",
+            "components": {
+                "tick": center_tick,
+                "tick_lower": lower,
+                "tick_upper": upper,
+            },
+            "deposit_amount": deposit_amount,
+            "as_of": datetime.now(UTC).isoformat(),
+            "summary": summary,
+        }
+
+    async def deposit(
+        self, main_token_amount: float = 0.0, gas_token_amount: float = 0.0
+    ) -> StatusTuple:
+        if main_token_amount == 0.0 and gas_token_amount == 0.0:
+            return (
+                False,
+                "Either main_token_amount or gas_token_amount must be provided",
+            )
+
+        if main_token_amount > 0 and main_token_amount < self.MINIMUM_NET_DEPOSIT:
+            return (
+                False,
+                f"Minimum deposit is {self.MINIMUM_NET_DEPOSIT} USDC on HyperEVM.",
+            )
+
+        if gas_token_amount and gas_token_amount > self.GAS_MAXIMUM:
+            return False, f"Gas token amount exceeds maximum: {self.GAS_MAXIMUM} HYPE"
+
+        if not self.usdc_token_info:
+            await self.setup()
+
+        ok, main_usdc_raw = await self.balance_adapter.get_balance(
+            token_id=USDC_TOKEN_ID, wallet_address=self._get_main_wallet_address()
+        )
+        if not ok or not isinstance(main_usdc_raw, int):
+            return False, f"Failed to get main wallet USDC balance: {main_usdc_raw}"
+
+        usdc_decimals = int(self.usdc_token_info.get("decimals", 6))
+        available_usdc = float(main_usdc_raw) / (10**usdc_decimals)
+        if main_token_amount > 0:
+            main_token_amount = min(float(main_token_amount), available_usdc)
+            if main_token_amount < self.MINIMUM_NET_DEPOSIT:
+                return (
+                    False,
+                    f"Insufficient USDC on HyperEVM main wallet: {available_usdc:.4f}",
+                )
+
+        ok, main_hype_raw = await self.balance_adapter.get_balance(
+            token_id=GAS_TOKEN_ID, wallet_address=self._get_main_wallet_address()
+        )
+        if not ok or not isinstance(main_hype_raw, int):
+            return False, f"Failed to get main wallet HYPE balance: {main_hype_raw}"
+
+        ok, strat_hype_raw = await self.balance_adapter.get_balance(
+            token_id=GAS_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
+        )
+        hype_decimals = int(self.hype_token_info.get("decimals", 18))
+        strat_hype = (
+            float(strat_hype_raw) / (10**hype_decimals)
+            if ok and isinstance(strat_hype_raw, int)
+            else 0.0
+        )
+        main_hype = float(main_hype_raw) / (10**hype_decimals)
+
+        if gas_token_amount > 0:
+            if main_hype < gas_token_amount:
+                return (
+                    False,
+                    f"Main wallet HYPE balance {main_hype:.4f} < {gas_token_amount}",
+                )
+            (
+                ok,
+                msg,
+            ) = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
+                GAS_TOKEN_ID, float(gas_token_amount), strategy_name=self.name
+            )
+            if not ok:
+                return False, f"Failed to move HYPE to strategy wallet: {msg}"
+            strat_hype += float(gas_token_amount)
+        elif main_token_amount > 0 and strat_hype < self.GAS_THRESHOLD:
+            top_up = min(self.GAS_THRESHOLD, self.GAS_MAXIMUM) - strat_hype
+            top_up = max(0.0, top_up)
+            if top_up > 0:
+                if main_hype < top_up:
+                    return (
+                        False,
+                        f"Main wallet HYPE balance {main_hype:.4f} < required gas top-up {top_up:.4f}",
+                    )
+                (
+                    ok,
+                    msg,
+                ) = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
+                    GAS_TOKEN_ID, float(top_up), strategy_name=self.name
+                )
+                if not ok:
+                    return False, f"Failed to top up HYPE gas: {msg}"
+
+        if main_token_amount > 0:
+            (
+                ok,
+                msg,
+            ) = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
+                USDC_TOKEN_ID, float(main_token_amount), strategy_name=self.name
+            )
+            if not ok:
+                return False, f"Failed to move USDC to strategy wallet: {msg}"
+
+        overview = await self.projectx.pool_overview()
+        positions = await self.projectx.list_positions()
+        slippage_bps = max(
+            5, int(float(THBILL_USDC_METADATA.get("band_bps", 20)) // 2) or 10
+        )
+
+        if positions:
+            pos = positions[0]
+            tx_hash, spend_meta = await self.projectx.increase_liquidity(
+                pos.token_id,
+                pos.tick_lower,
+                pos.tick_upper,
+                slippage_bps=slippage_bps,
+            )
+            message = f"Added {main_token_amount:.2f} USDC into existing ProjectX position {pos.token_id}."
+            spend_note = self._format_spent_summary(
+                spend_meta, overview["token0"], overview["token1"]
+            )
+            if spend_note:
+                message += f" {spend_note}."
+            if tx_hash:
+                message += f" Tx: {self._tx_link(tx_hash)}"
+            return True, message
+
+        center_tick = await self._anchored_center_tick(
+            int(overview["tick"]), int(overview["tick_spacing"])
+        )
+        tick_lower, tick_upper = self._band_ticks(
+            center_tick, int(overview["tick_spacing"])
+        )
+        token_id, tx_hash, spend_meta = await self.projectx.mint_from_balances(
+            tick_lower,
+            tick_upper,
+            slippage_bps=slippage_bps,
+        )
+        if not token_id:
+            return False, "Mint failed; unable to detect new liquidity position."
+
+        notes = [f"Opened ProjectX position #{token_id} @ [{tick_lower}, {tick_upper}]"]
+        spend_note = self._format_spent_summary(
+            spend_meta, overview["token0"], overview["token1"]
+        )
+        if spend_note:
+            notes.append(f"{spend_note}.")
+        if tx_hash:
+            notes.append(f"Mint tx: {self._tx_link(tx_hash)}")
+        return True, "\n".join(notes)
+
+    async def update(self) -> StatusTuple:
+        overview = await self.projectx.pool_overview()
+        tick = int(overview["tick"])
+        spacing = int(overview["tick_spacing"])
+        slippage_bps = max(
+            5, int(float(THBILL_USDC_METADATA.get("band_bps", 20)) // 2) or 10
+        )
+
+        positions = await self.projectx.list_positions()
+        if not positions:
+            balances = await self.projectx.current_balances()
+            idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
+            if idle_value < IDLE_REDEPLOY_THRESHOLD_USD:
+                return False, "No active ProjectX positions; deposit first."
+            center_tick = await self._anchored_center_tick(tick, spacing)
+            tick_lower, tick_upper = self._band_ticks(center_tick, spacing)
+            token_id, tx_hash, spend_meta = await self.projectx.mint_from_balances(
+                tick_lower, tick_upper, slippage_bps=slippage_bps
+            )
+            if not token_id:
+                return False, "Unable to deploy idle balances into ProjectX pool."
+            note = f"Initialized ProjectX position #{token_id} using idle balances."
+            spend_note = self._format_spent_summary(
+                spend_meta, overview["token0"], overview["token1"]
+            )
+            if spend_note:
+                note += f" {spend_note}."
+            if tx_hash:
+                note += f" Tx: {self._tx_link(tx_hash)}"
+            return True, note
+
+        pos = positions[0]
+        position_value_usd = await self._position_value_usd(pos, overview)
+        out_of_band = await self._should_recentre(
+            pos, spacing=spacing, current_tick=tick
+        )
+
+        if out_of_band:
+            await self.projectx.burn_position(pos.token_id)
+
+            center_tick = await self._anchored_center_tick(tick, spacing)
+            tick_lower, tick_upper = self._band_ticks(center_tick, spacing)
+            token_id, tx_hash, spend_meta = await self.projectx.mint_from_balances(
+                tick_lower, tick_upper, slippage_bps=slippage_bps
+            )
+            message = f"Recentred liquidity into ticks {tick_lower}-{tick_upper} (token {token_id})."
+            spend_note = self._format_spent_summary(
+                spend_meta, overview["token0"], overview["token1"]
+            )
+            if spend_note:
+                message += f" {spend_note}."
+            if tx_hash:
+                message += f" Tx: {self._tx_link(tx_hash)}"
+            return True, message
+
+        # Collect fees if meaningful (best-effort)
+        try:
+            fee_snapshot = await self.projectx.live_fee_snapshot(pos.token_id)
+            total_usd = float(fee_snapshot.get("usd") or 0.0)
+            threshold = max(
+                MIN_AUTOCOLLECT_USD,
+                float(position_value_usd) * (MIN_AUTOCOLLECT_PCT / 100),
+            )
+            if total_usd >= threshold:
+                await self.projectx.collect_fees(pos.token_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"Fee snapshot/collect failed: {exc}")
+
+        balances = await self.projectx.current_balances()
+        idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
+        redeploy_threshold = max(
+            IDLE_REDEPLOY_THRESHOLD_USD,
+            float(position_value_usd) * (MIN_AUTOCOLLECT_PCT / 100),
+        )
+        if idle_value >= redeploy_threshold:
+            tx_hash, spend_meta = await self.projectx.increase_liquidity(
+                pos.token_id,
+                pos.tick_lower,
+                pos.tick_upper,
+                slippage_bps=slippage_bps,
+            )
+            message = "Compounded fees and redeployed idle balances."
+            spend_note = self._format_spent_summary(
+                spend_meta, overview["token0"], overview["token1"]
+            )
+            if spend_note:
+                message += f" {spend_note}."
+            if tx_hash:
+                message += f" Tx: {self._tx_link(tx_hash)}"
+            return True, message
+
+        return True, "Compounded fees; no idle balances to deploy."
+
+    async def exit(self, **kwargs: Any) -> StatusTuple:
+        positions = await self.projectx.list_positions()
+        for pos in positions:
+            await self.projectx.burn_position(pos.token_id)
+
+        overview = await self.projectx.pool_overview()
+        balances = await self.projectx.current_balances()
+        token0_addr = str(overview["token0"]["address"])
+        token1_addr = str(overview["token1"]["address"])
+
+        token1_balance = int(balances.get(token1_addr, 0) or 0)
+        if token1_balance > 0:
+            await self.projectx.swap_exact_in(
+                token1_addr,
+                token0_addr,
+                token1_balance,
+                slippage_bps=40,
+            )
+
+        ok, strat_usdc_raw = await self.balance_adapter.get_balance(
+            token_id=USDC_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
+        )
+        if ok and isinstance(strat_usdc_raw, int) and strat_usdc_raw > 0:
+            usdc_decimals = int(self.usdc_token_info.get("decimals", 6))
+            usdc_tokens = float(strat_usdc_raw) / (10**usdc_decimals)
+            await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
+                USDC_TOKEN_ID, usdc_tokens, strategy_name=self.name
+            )
+
+        return True, "Exited ProjectX position and returned funds to main wallet."
+
+    async def withdraw(self, **kwargs: Any) -> StatusTuple:
+        return await self.exit(**kwargs)
+
+    async def _status(self) -> StatusDict:
+        positions = await self.projectx.list_positions()
+        overview = await self.projectx.pool_overview()
+
+        sqrt_p = int(overview["sqrt_price_x96"])
+        token0_meta = overview["token0"]
+        token1_meta = overview["token1"]
+
+        price_token0 = await self._token_price_usd(
+            token0_meta.get("token_id") or USDC_TOKEN_ID
+        )
+        price_token1 = await self._token_price_usd(
+            token1_meta.get("token_id") or THBILL_TOKEN_ID
+        )
+
+        portfolio_value = 0.0
+        liquidity_summary: list[str] = []
+        total_live_fees = 0.0
+
+        recent_swaps = await self.projectx.fetch_swaps(limit=25)
+        recent_ticks = [
+            int(s.get("tick", 0)) for s in recent_swaps if s.get("tick") is not None
+        ]
+        tick_now = int(overview.get("tick") or 0)
+        ticks_for_state = recent_ticks or [tick_now]
+        tick_sample_count = len(recent_ticks)
+        swap_window_desc = (
+            f"last {tick_sample_count} swaps" if tick_sample_count else "latest tick"
+        )
+
+        for pos in positions:
+            sqrt_pl = sqrt_price_x96_from_tick(int(pos.tick_lower))
+            sqrt_pu = sqrt_price_x96_from_tick(int(pos.tick_upper))
+            amount0, amount1 = amounts_for_liq_inrange(
+                sqrt_p, sqrt_pl, sqrt_pu, int(pos.liquidity)
+            )
+            amount0_tokens = float(amount0) / (10 ** int(token0_meta["decimals"]))
+            amount1_tokens = float(amount1) / (10 ** int(token1_meta["decimals"]))
+            contribution = amount0_tokens * price_token0 + amount1_tokens * price_token1
+
+            fee_usd = 0.0
+            try:
+                fee_snapshot = await self.projectx.live_fee_snapshot(pos.token_id)
+                fee_usd = float(fee_snapshot.get("usd") or 0.0)
+                total_live_fees += fee_usd
+            except Exception:  # noqa: BLE001
+                fee_usd = 0.0
+
+            position_contribution = contribution + fee_usd
+            portfolio_value += position_contribution
+
+            range_state = self.projectx.classify_range_state(
+                ticks_for_state, pos.tick_lower, pos.tick_upper, fallback_tick=tick_now
+            )
+            state_label = {
+                "in_range": f"In range ({swap_window_desc})",
+                "entering_out_of_range": f"Entering out of range ({swap_window_desc})",
+                "out_of_range": f"Out of range ({swap_window_desc})",
+                "unknown": "Range unknown",
+            }.get(range_state, "Range unknown")
+
+            liquidity_summary.append(
+                f"NFT {pos.token_id}: [{pos.tick_lower},{pos.tick_upper}] "
+                f"≈ {position_contribution:.2f} USDC | State: {state_label} | Owed≈${fee_usd:.4f}"
+            )
+
+        balances = await self.projectx.current_balances()
+        idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
+        portfolio_value += float(idle_value)
+
+        ok, gas_raw = await self.balance_adapter.get_balance(
+            token_id=GAS_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
+        )
+        gas_amount = (
+            float(gas_raw) / (10 ** int(self.hype_token_info.get("decimals", 18)))
+            if ok and isinstance(gas_raw, int)
+            else 0.0
+        )
+
+        _, net_deposit = await self.ledger_adapter.get_strategy_net_deposit(
+            wallet_address=self._get_strategy_wallet_address()
+        )
+
+        prjx_points = await self.projectx.fetch_prjx_points(
+            self._get_strategy_wallet_address()
+        )
+
+        return StatusDict(
+            portfolio_value=float(portfolio_value),
+            net_deposit=float(net_deposit or 0.0),
+            strategy_status="\n".join(liquidity_summary) or "No active NFT positions",
+            gas_available=float(gas_amount),
+            gassed_up=float(gas_amount) >= float(self.GAS_THRESHOLD),
+            projectx_points=prjx_points,
+            fees_live_usd=float(total_live_fees),
+        )
+
+    @staticmethod
+    async def policies() -> list[str]:
+        router = str(THBILL_USDC_METADATA["router"])
+        npm = str(THBILL_USDC_METADATA["npm"])
+        return [
+            erc20_spender_for_any_token(router),
+            await prjx_swap(),
+            erc20_spender_for_any_token(npm),
+            await prjx_npm(),
+        ]
