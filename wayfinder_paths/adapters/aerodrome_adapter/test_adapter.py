@@ -35,11 +35,15 @@ class _FakeFactoryFunctions:
 
 
 class _FakeVoterFunctions:
-    def __init__(self, last_voted: int):
+    def __init__(self, last_voted: int, gauges: dict[str, str] | None = None):
         self._last_voted = int(last_voted)
+        self._gauges = {k.lower(): v for k, v in (gauges or {}).items()}
 
     def lastVoted(self, _token_id: int):
         return _FakeCall(self._last_voted)
+
+    def gauges(self, pool: str):
+        return _FakeCall(self._gauges.get(str(pool).lower(), "0x0"))
 
 
 class _FakeContract:
@@ -718,3 +722,474 @@ class TestAerodromeAdapter:
         block_numbers = sorted(int(lg["blockNumber"]) for lg in logs)
         assert block_numbers == [5, 6, 7, 8, 9]
         assert len(web3.eth.calls) >= 2
+
+    @pytest.mark.asyncio
+    async def test_read_helpers_use_web3(self, adapter: AerodromeAdapter, monkeypatch):
+        token_a = "0x" + "aa" * 20
+        token_b = "0x" + "bb" * 20
+        factory_addr = "0x" + "99" * 20
+        pool_addr = "0x" + "88" * 20
+        gauge_addr = "0x" + "77" * 20
+
+        amount_in = 123
+        route = Route(token_a, token_b, stable=False)
+        expected_routes = [route.as_tuple()]
+
+        class _RouterFunctions:
+            def defaultFactory(self):
+                return _FakeCall(factory_addr)
+
+            def getAmountsOut(self, amount: int, routes):  # noqa: ANN001
+                assert int(amount) == amount_in
+                assert routes == expected_routes
+                return _FakeCall([0, 1000])
+
+        class _PoolFactoryFunctions:
+            def getPool(self, _a: str, _b: str, stable: bool):
+                assert stable is True
+                return _FakeCall(pool_addr)
+
+        voter_functions = _FakeVoterFunctions(
+            last_voted=0,
+            gauges={pool_addr: gauge_addr},
+        )
+
+        contracts = {
+            str(adapter.router).lower(): _FakeContract(_RouterFunctions()),
+            str(factory_addr).lower(): _FakeContract(_PoolFactoryFunctions()),
+            str(adapter.voter).lower(): _FakeContract(voter_functions),
+        }
+
+        class _FakeEthRead:
+            def contract(self, *, address: str, abi):  # noqa: ARG002
+                addr = str(address).lower()
+                if addr not in contracts:
+                    raise AssertionError(f"Unexpected contract address: {address}")
+                return contracts[addr]
+
+        monkeypatch.setattr(
+            aerodrome,
+            "web3_from_chain_id",
+            lambda _chain_id: _FakeWeb3Context(_FakeWeb3(_FakeEthRead())),
+        )
+
+        factory = await adapter.default_factory()
+        assert factory.lower() == factory_addr.lower()
+
+        pool = await adapter.get_pool(token_a, token_b, stable=True)
+        assert pool.lower() == pool_addr.lower()
+
+        gauge = await adapter.gauge_for_pool(pool_addr)
+        assert gauge.lower() == gauge_addr.lower()
+
+        amounts = await adapter.get_amounts_out(amount_in, [route])
+        assert amounts == [0, 1000]
+
+    @pytest.mark.asyncio
+    async def test_token_decimals_and_symbol_cache(
+        self, adapter: AerodromeAdapter, monkeypatch
+    ):
+        token = "0x" + "11" * 20
+
+        class _TokenFunctions:
+            def decimals(self):
+                return _FakeCall(6)
+
+            def symbol(self):
+                return _FakeCall("TKN")
+
+        contracts = {str(token).lower(): _FakeContract(_TokenFunctions())}
+
+        class _FakeEthToken:
+            def contract(self, *, address: str, abi):  # noqa: ARG002
+                addr = str(address).lower()
+                if addr not in contracts:
+                    raise AssertionError(f"Unexpected contract address: {address}")
+                return contracts[addr]
+
+        monkeypatch.setattr(
+            aerodrome,
+            "web3_from_chain_id",
+            lambda _chain_id: _FakeWeb3Context(_FakeWeb3(_FakeEthToken())),
+        )
+        d1 = await adapter.token_decimals(token)
+        assert d1 == 6
+
+        monkeypatch.setattr(
+            aerodrome,
+            "web3_from_chain_id",
+            lambda _chain_id: (_ for _ in ()).throw(AssertionError("cache miss")),
+        )
+        d2 = await adapter.token_decimals(token)
+        assert d2 == 6
+
+        # Re-enable for symbol first call.
+        monkeypatch.setattr(
+            aerodrome,
+            "web3_from_chain_id",
+            lambda _chain_id: _FakeWeb3Context(_FakeWeb3(_FakeEthToken())),
+        )
+        s1 = await adapter.token_symbol(token)
+        assert s1 == "TKN"
+
+        monkeypatch.setattr(
+            aerodrome,
+            "web3_from_chain_id",
+            lambda _chain_id: (_ for _ in ()).throw(AssertionError("cache miss")),
+        )
+        s2 = await adapter.token_symbol(token)
+        assert s2 == "TKN"
+
+    def test_liquidity_math_branches(self):
+        q96 = 2**96
+        a = 1 * q96
+        b = 2 * q96
+        amount0 = 1_000
+        amount1 = 2_000
+
+        l_x_le_a = AerodromeAdapter._liquidity_for_amounts(
+            sqrt_ratio_x96=a - 1,
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            amount0=amount0,
+            amount1=amount1,
+        )
+        assert l_x_le_a == AerodromeAdapter._liquidity_for_amount0(
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            amount0=amount0,
+        )
+
+        l_x_ge_b = AerodromeAdapter._liquidity_for_amounts(
+            sqrt_ratio_x96=b + 1,
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            amount0=amount0,
+            amount1=amount1,
+        )
+        assert l_x_ge_b == AerodromeAdapter._liquidity_for_amount1(
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            amount1=amount1,
+        )
+
+        l_between = AerodromeAdapter._liquidity_for_amounts(
+            sqrt_ratio_x96=(a + b) // 2,
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            amount0=amount0,
+            amount1=amount1,
+        )
+        l0 = AerodromeAdapter._liquidity_for_amount0(
+            sqrt_ratio_a_x96=(a + b) // 2,
+            sqrt_ratio_b_x96=b,
+            amount0=amount0,
+        )
+        l1 = AerodromeAdapter._liquidity_for_amount1(
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=(a + b) // 2,
+            amount1=amount1,
+        )
+        assert l_between == min(l0, l1)
+
+        amt0, amt1 = AerodromeAdapter._amounts_for_liquidity(
+            sqrt_ratio_x96=a - 1,
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            liquidity=1_000,
+        )
+        assert amt0 > 0
+        assert amt1 == 0
+
+        amt0, amt1 = AerodromeAdapter._amounts_for_liquidity(
+            sqrt_ratio_x96=b + 1,
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            liquidity=1_000,
+        )
+        assert amt0 == 0
+        assert amt1 > 0
+
+        amt0, amt1 = AerodromeAdapter._amounts_for_liquidity(
+            sqrt_ratio_x96=(a + b) // 2,
+            sqrt_ratio_a_x96=a,
+            sqrt_ratio_b_x96=b,
+            liquidity=1_000,
+        )
+        assert amt0 > 0
+        assert amt1 > 0
+
+        with pytest.raises(ZeroDivisionError, match="denominator is zero"):
+            AerodromeAdapter._mul_div(1, 2, 0)
+
+    @pytest.mark.asyncio
+    async def test_tx_helpers_build_expected_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        async def _sign(_tx: dict) -> bytes:
+            return b""
+
+        wallet = "0x" + "11" * 20
+        adapter = AerodromeAdapter(
+            config={"strategy_wallet": {"address": wallet}},
+            strategy_wallet_signing_callback=_sign,
+        )
+
+        calls: dict[str, list[object]] = {"allowances": [], "encode": [], "send": []}
+
+        async def _fake_ensure_allowance(**kwargs):  # noqa: ANN001
+            calls["allowances"].append(kwargs)
+            return True, {}
+
+        async def _fake_encode_call(**kwargs):  # noqa: ANN001
+            calls["encode"].append(kwargs)
+            return {"tx": True, **kwargs}
+
+        async def _fake_send_transaction(tx: dict, cb, wait_for_receipt: bool = True):  # noqa: ARG002
+            calls["send"].append((tx, wait_for_receipt))
+            return "0x" + "aa" * 32
+
+        async def _fake_wait_for_receipt(_chain_id: int, _tx_hash: str) -> dict:
+            return {"status": 1, "logs": []}
+
+        monkeypatch.setattr(aerodrome, "ensure_allowance", _fake_ensure_allowance)
+        monkeypatch.setattr(aerodrome, "encode_call", _fake_encode_call)
+        monkeypatch.setattr(aerodrome, "send_transaction", _fake_send_transaction)
+        monkeypatch.setattr(
+            aerodrome, "wait_for_transaction_receipt", _fake_wait_for_receipt
+        )
+
+        token_in = "0x" + "22" * 20
+        token_out = "0x" + "33" * 20
+        pool = "0x" + "44" * 20
+        gauge = "0x" + "55" * 20
+
+        route = Route(token_in, token_out, stable=True)
+
+        async def _fake_choose_best(*_args, **_kwargs):  # noqa: ANN001
+            return route
+
+        async def _fake_amounts_out(_amount_in: int, _routes: list[Route]) -> list[int]:
+            return [0, 1000]
+
+        monkeypatch.setattr(adapter, "choose_best_single_hop_route", _fake_choose_best)
+        monkeypatch.setattr(adapter, "get_amounts_out", _fake_amounts_out)
+
+        tx_hash, used_route, out_min = await adapter.swap_exact_tokens_for_tokens(
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=10,
+            slippage_bps=100,
+            deadline=123,
+        )
+        assert tx_hash
+        assert used_route == route
+        assert out_min == 990
+
+        assert calls["allowances"]
+        assert calls["encode"]
+        assert calls["send"]
+
+        calls = {"allowances": [], "encode": [], "send": []}
+
+        async def _fake_quote_best(**_kwargs):  # noqa: ANN001
+            return ([route], 2000)
+
+        monkeypatch.setattr(adapter, "quote_best_route", _fake_quote_best)
+
+        (
+            tx_hash,
+            routes,
+            out_min,
+        ) = await adapter.swap_exact_tokens_for_tokens_best_route(
+            token_in=token_in,
+            token_out=token_out,
+            amount_in=10,
+            slippage_bps=100,
+            deadline=123,
+        )
+        assert tx_hash
+        assert routes == [route]
+        assert out_min == 1980
+
+        tx_hash = await adapter.add_liquidity(
+            token_a=token_in,
+            token_b=token_out,
+            stable=False,
+            amount_a_desired=1,
+            amount_b_desired=2,
+            deadline=123,
+        )
+        assert tx_hash
+
+        tx_hash, receipt = await adapter.create_lock(
+            aero_token=token_in,
+            amount=1,
+            lock_duration_s=60,
+            wait_for_receipt=True,
+        )
+        assert tx_hash
+        assert receipt == {"status": 1, "logs": []}
+
+        tx_hash, receipt = await adapter.create_lock(
+            aero_token=token_in,
+            amount=1,
+            lock_duration_s=60,
+            wait_for_receipt=False,
+        )
+        assert tx_hash
+        assert receipt is None
+
+        vote_tx = await adapter.vote(token_id=1, pools=[pool], weights=[10_000])
+        assert vote_tx
+
+        dep_tx = await adapter.deposit_gauge(gauge=gauge, lp_token=pool, amount=1)
+        assert dep_tx
+
+        async def _fake_get_token_balance(**kwargs):  # noqa: ANN001
+            assert kwargs["wallet_address"].lower() == wallet.lower()
+            return 123
+
+        monkeypatch.setattr(aerodrome, "get_token_balance", _fake_get_token_balance)
+        assert await adapter.lp_balance(pool) == 123
+
+    @pytest.mark.asyncio
+    async def test_slipstream_tx_helpers(self, monkeypatch: pytest.MonkeyPatch):
+        async def _sign(_tx: dict) -> bytes:
+            return b""
+
+        wallet = "0x" + "11" * 20
+        adapter = AerodromeAdapter(
+            config={"strategy_wallet": {"address": wallet}},
+            strategy_wallet_signing_callback=_sign,
+        )
+
+        token0 = "0x" + "22" * 20
+        token1 = "0x" + "33" * 20
+        pool = "0x" + "44" * 20
+        gauge = "0x" + "55" * 20
+        recipient = "0x" + "66" * 20
+
+        async def _fake_pool_state(*, pool: str):  # noqa: ARG001
+            return SimpleNamespace(token0=token0, token1=token1, tick_spacing=60)
+
+        async def _fake_ensure_allowance(**_kwargs):  # noqa: ANN001
+            return True, {}
+
+        async def _fake_encode_call(**_kwargs):  # noqa: ANN001
+            return {"tx": True}
+
+        async def _fake_send_transaction(_tx: dict, _cb, wait_for_receipt: bool = True):  # noqa: ARG002
+            return "0x" + "aa" * 32
+
+        token_id = 7
+        receipt = {
+            "logs": [
+                {
+                    "address": aerodrome.AERODROME_SLIPSTREAM_NFPM,
+                    "topics": [
+                        keccak(text="Transfer(address,address,uint256)"),
+                        bytes(32),
+                        bytes.fromhex(("00" * 12) + recipient[2:]),
+                        int(token_id).to_bytes(32, "big"),
+                    ],
+                }
+            ]
+        }
+
+        async def _fake_wait_for_receipt(_chain_id: int, _tx_hash: str) -> dict:
+            return receipt
+
+        monkeypatch.setattr(adapter, "slipstream_pool_state", _fake_pool_state)
+        monkeypatch.setattr(aerodrome, "ensure_allowance", _fake_ensure_allowance)
+        monkeypatch.setattr(aerodrome, "encode_call", _fake_encode_call)
+        monkeypatch.setattr(aerodrome, "send_transaction", _fake_send_transaction)
+        monkeypatch.setattr(
+            aerodrome, "wait_for_transaction_receipt", _fake_wait_for_receipt
+        )
+
+        tx_hash, minted_id, minted_receipt = await adapter.slipstream_mint_position(
+            pool=pool,
+            tick_lower=-120,
+            tick_upper=120,
+            amount0_desired=1,
+            amount1_desired=2,
+            recipient=recipient,
+            deadline=123,
+            wait_for_receipt=True,
+        )
+        assert tx_hash
+        assert minted_id == token_id
+        assert minted_receipt == receipt
+
+        tx_hash, minted_id, minted_receipt = await adapter.slipstream_mint_position(
+            pool=pool,
+            tick_lower=-120,
+            tick_upper=120,
+            amount0_desired=1,
+            amount1_desired=2,
+            recipient=recipient,
+            deadline=123,
+            wait_for_receipt=False,
+        )
+        assert tx_hash
+        assert minted_id is None
+        assert minted_receipt is None
+
+        approve_tx = await adapter.slipstream_approve_position(
+            spender=gauge, token_id=token_id
+        )
+        assert approve_tx
+
+        seen: list[tuple[str, int]] = []
+
+        async def _fake_approve(*, spender: str, token_id: int) -> str:
+            seen.append((spender, token_id))
+            return "0x" + "bb" * 32
+
+        monkeypatch.setattr(adapter, "slipstream_approve_position", _fake_approve)
+        dep_tx = await adapter.slipstream_gauge_deposit(
+            gauge=gauge, token_id=token_id, approve=True
+        )
+        assert dep_tx
+        assert seen == [(aerodrome.to_checksum_address(gauge), token_id)]
+
+        seen.clear()
+        dep_tx = await adapter.slipstream_gauge_deposit(
+            gauge=gauge, token_id=token_id, approve=False
+        )
+        assert dep_tx
+        assert seen == []
+
+    def test_require_wallet_errors(self):
+        a1 = AerodromeAdapter(config={})
+        with pytest.raises(ValueError, match="strategy_wallet.address"):
+            a1._require_wallet()
+
+        a2 = AerodromeAdapter(config={"strategy_wallet": {"address": "0x" + "11" * 20}})
+        with pytest.raises(ValueError, match="strategy_wallet_signing_callback"):
+            a2._require_wallet()
+
+    @pytest.mark.asyncio
+    async def test_slipstream_volume_and_prob_validation(
+        self, adapter: AerodromeAdapter
+    ):
+        with pytest.raises(ValueError, match="lookback_blocks must be > 0"):
+            await adapter.slipstream_volume_usdc_per_day(
+                pool="0x" + "11" * 20, lookback_blocks=0
+            )
+
+        with pytest.raises(ValueError, match="max_logs must be > 0"):
+            await adapter.slipstream_volume_usdc_per_day(
+                pool="0x" + "11" * 20, max_logs=0
+            )
+
+        assert (
+            await adapter.slipstream_prob_in_range_week(
+                pool="0x" + "11" * 20,
+                tick_lower=-10,
+                tick_upper=10,
+                sigma_annual=0.0,
+            )
+            is None
+        )
