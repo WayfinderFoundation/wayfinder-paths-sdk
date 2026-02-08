@@ -4,84 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-from pathlib import Path
 
-from eth_account import Account
 from eth_utils import to_checksum_address
-from web3 import Web3
 
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import AerodromeAdapter
 from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.aerodrome import BASE_AERO
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC, ZERO_ADDRESS
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.tokens import get_token_balance
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-TRANSFER_TOPIC0 = Web3.keccak(text="Transfer(address,address,uint256)").hex()
-
-
-def _load_config(path: Path) -> dict:
-    return json.loads(path.read_text())
-
-
-def _wallet_from_label(cfg: dict, wallet_label: str) -> tuple[str, str]:
-    wallets = cfg.get("wallets") or []
-    for wallet in wallets:
-        if wallet.get("label") != wallet_label:
-            continue
-        addr = wallet.get("address")
-        pk = wallet.get("private_key") or wallet.get("private_key_hex")
-        if not addr or not pk:
-            raise SystemExit(f"Wallet '{wallet_label}' missing address/private_key")
-        return to_checksum_address(addr), str(pk)
-    raise SystemExit(f"Wallet label '{wallet_label}' not found in config.json")
-
-
-def _parse_token_id_from_create_lock_receipt(
-    receipt: dict,
-    *,
-    ve_address: str,
-    to_addr: str,
-) -> int:
-    ve_address = ve_address.lower()
-    to_addr = to_addr.lower()
-
-    logs = receipt.get("logs") or []
-    for log in logs:
-        try:
-            if str(log.get("address", "")).lower() != ve_address:
-                continue
-            topics = log.get("topics") or []
-            if len(topics) < 4:
-                continue
-
-            topic0 = topics[0].hex() if hasattr(topics[0], "hex") else str(topics[0])
-            if topic0.lower() != TRANSFER_TOPIC0.lower():
-                continue
-
-            from_topic = (
-                topics[1].hex() if hasattr(topics[1], "hex") else str(topics[1])
-            )
-            to_topic = topics[2].hex() if hasattr(topics[2], "hex") else str(topics[2])
-            token_id_topic = (
-                topics[3].hex() if hasattr(topics[3], "hex") else str(topics[3])
-            )
-
-            # ERC721 indexed topics are 32-byte values.
-            from_addr = "0x" + from_topic[-40:]
-            to_addr_log = "0x" + to_topic[-40:]
-            if int(from_addr, 16) != 0:
-                continue
-            if to_addr_log.lower() != to_addr:
-                continue
-            return int(token_id_topic, 16)
-        except Exception:
-            continue
-    raise RuntimeError("Unable to parse veNFT tokenId from createLock receipt")
+from wayfinder_paths.mcp.scripting import get_adapter
 
 
 async def _erc20_balance(token: str, wallet: str) -> int:
@@ -90,12 +23,6 @@ async def _erc20_balance(token: str, wallet: str) -> int:
         chain_id=CHAIN_ID_BASE,
         wallet_address=to_checksum_address(wallet),
     )
-
-
-async def _erc20_decimals(token: str) -> int:
-    async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
-        c = web3.eth.contract(address=to_checksum_address(token), abi=ERC20_ABI)
-        return int(await c.functions.decimals().call())
 
 
 def _fmt(amount_raw: int, decimals: int) -> str:
@@ -139,23 +66,13 @@ async def main() -> int:
 
     # Ensure global CONFIG (rpc_urls, etc.) matches the config file used by this run.
     load_config(args.config, require_exists=True)
+    adapter = get_adapter(AerodromeAdapter, args.wallet_label, config_path=args.config)
+    wallet_addr = adapter.strategy_wallet_address
+    if not wallet_addr:
+        raise SystemExit(f"Wallet '{args.wallet_label}' missing address in config")
 
-    cfg = _load_config(Path(args.config))
-    wallet_addr, pk = _wallet_from_label(cfg, args.wallet_label)
-
-    account = Account.from_key(pk)
-
-    async def sign_callback(tx: dict) -> bytes:
-        signed = account.sign_transaction(tx)
-        return signed.raw_transaction
-
-    adapter = AerodromeAdapter(
-        config={"strategy_wallet": {"address": wallet_addr}},
-        strategy_wallet_signing_callback=sign_callback,
-    )
-
-    usdc_dec = await _erc20_decimals(BASE_USDC)
-    aero_dec = await _erc20_decimals(BASE_AERO)
+    usdc_dec = await adapter.token_decimals(BASE_USDC)
+    aero_dec = await adapter.token_decimals(BASE_AERO)
 
     usdc_before = await _erc20_balance(BASE_USDC, wallet_addr)
     aero_before = await _erc20_balance(BASE_AERO, wallet_addr)
@@ -213,10 +130,8 @@ async def main() -> int:
         lock_tx,
         get_etherscan_transaction_link(CHAIN_ID_BASE, lock_tx),
     )
-    token_id = _parse_token_id_from_create_lock_receipt(
-        lock_receipt or {},
-        ve_address=adapter.ve,
-        to_addr=wallet_addr,
+    token_id = adapter.parse_ve_nft_token_id_from_create_lock_receipt(
+        lock_receipt or {}, to_address=wallet_addr
     )
     print("veNFT tokenId", token_id)
 

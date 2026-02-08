@@ -53,6 +53,7 @@ from wayfinder_paths.core.utils.transaction import (
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 VE_MAXTIME_S = 4 * 365 * 24 * 60 * 60  # 4 years
+WEEK_S = 7 * 24 * 60 * 60
 SLIPSTREAM_SWAP_TOPIC0 = (
     "0x"
     + keccak(text="Swap(address,address,int256,int256,uint160,uint128,int24)").hex()
@@ -409,6 +410,47 @@ class AerodromeAdapter(BaseAdapter):
         self._slipstream_tick_spacings_by_pair_cache[key] = tick_spacings
         return tick_spacings
 
+    async def slipstream_best_pool_for_pair(self, *, token_a: str, token_b: str) -> str:
+        """Return the Slipstream CL pool (for any tickSpacing) with highest liquidity."""
+        token_a = to_checksum_address(token_a)
+        token_b = to_checksum_address(token_b)
+
+        tick_spacings = await self._slipstream_tick_spacings_for_pair(
+            token_a=token_a, token_b=token_b
+        )
+        if not tick_spacings:
+            raise ValueError("No Slipstream pool found for pair (no tick spacings)")
+
+        best_pool: str | None = None
+        best_liquidity = -1
+
+        async with web3_from_chain_id(self.chain_id) as web3:
+            factory = web3.eth.contract(
+                address=AERODROME_SLIPSTREAM_FACTORY, abi=SLIPSTREAM_FACTORY_ABI
+            )
+            for ts in tick_spacings:
+                try:
+                    pool = await factory.functions.getPool(
+                        token_a, token_b, int(ts)
+                    ).call()
+                except Exception:
+                    continue
+                if not pool or int(pool, 16) == 0:
+                    continue
+                pool_cs = to_checksum_address(pool)
+                try:
+                    st = await self.slipstream_pool_state(pool=pool_cs)
+                except Exception:
+                    continue
+                liq = int(st.liquidity)
+                if liq > best_liquidity:
+                    best_liquidity = liq
+                    best_pool = pool_cs
+
+        if best_pool is None or best_liquidity <= 0:
+            raise ValueError("Slipstream pools exist but none have liquidity > 0")
+        return best_pool
+
     async def _slipstream_quote_exact_input_single(
         self,
         *,
@@ -674,12 +716,32 @@ class AerodromeAdapter(BaseAdapter):
     # -----------------------------
 
     @staticmethod
-    def _q96_to_price_token1_per_token0(
+    def q96_to_price_token1_per_token0(
         *, sqrt_price_x96: int, decimals0: int, decimals1: int
     ) -> float:
         sp = float(int(sqrt_price_x96)) / float(2**96)
         p_raw = sp * sp
         return float(p_raw * (10 ** (int(decimals0) - int(decimals1))))
+
+    @staticmethod
+    def _q96_to_price_token1_per_token0(
+        *, sqrt_price_x96: int, decimals0: int, decimals1: int
+    ) -> float:
+        # Backwards-compatible alias.
+        return AerodromeAdapter.q96_to_price_token1_per_token0(
+            sqrt_price_x96=sqrt_price_x96,
+            decimals0=decimals0,
+            decimals1=decimals1,
+        )
+
+    @staticmethod
+    def floor_tick_to_spacing(tick: int, spacing: int) -> int:
+        return (int(tick) // int(spacing)) * int(spacing)
+
+    @staticmethod
+    def ceil_tick_to_spacing(tick: int, spacing: int) -> int:
+        spacing = int(spacing)
+        return int((-(-int(tick) // spacing)) * spacing)
 
     async def slipstream_pool_state(self, *, pool: str) -> SlipstreamPoolState:
         pool = to_checksum_address(pool)
@@ -2253,6 +2315,22 @@ class AerodromeAdapter(BaseAdapter):
         )
         return await send_transaction(tx, self.strategy_wallet_signing_callback)
 
+    async def can_vote_now(self, *, token_id: int) -> tuple[bool, int, int, int]:
+        """Check whether `token_id` can vote in the current weekly epoch.
+
+        Returns: (can_vote, last_voted_ts, epoch_start_ts, next_epoch_start_ts).
+        """
+        async with web3_from_chain_id(self.chain_id) as web3:
+            latest = await web3.eth.get_block("latest")
+            now = int(latest["timestamp"])
+            epoch_start = (now // WEEK_S) * WEEK_S
+            next_epoch_start = epoch_start + WEEK_S
+
+            c = web3.eth.contract(address=self.voter, abi=VOTER_ABI)
+            last_voted = int(await c.functions.lastVoted(int(token_id)).call())
+
+        return (last_voted < epoch_start, last_voted, epoch_start, next_epoch_start)
+
     async def deposit_gauge(self, *, gauge: str, lp_token: str, amount: int) -> str:
         strategy = self._require_wallet()
         gauge = to_checksum_address(gauge)
@@ -2289,11 +2367,11 @@ class AerodromeAdapter(BaseAdapter):
         )
 
     # -----------------------------
-    # Slipstream CL tx helpers
+    # ERC721 receipt helpers
     # -----------------------------
 
     @staticmethod
-    def _parse_erc721_mint_token_id_from_receipt(
+    def parse_erc721_mint_token_id_from_receipt(
         receipt: dict[str, Any],
         *,
         nft_address: str,
@@ -2338,6 +2416,29 @@ class AerodromeAdapter(BaseAdapter):
             except Exception:
                 continue
         raise RuntimeError("Unable to parse ERC721 tokenId from receipt logs")
+
+    @staticmethod
+    def _parse_erc721_mint_token_id_from_receipt(
+        receipt: dict[str, Any],
+        *,
+        nft_address: str,
+        to_address: str,
+    ) -> int:
+        # Backwards-compatible alias.
+        return AerodromeAdapter.parse_erc721_mint_token_id_from_receipt(
+            receipt, nft_address=nft_address, to_address=to_address
+        )
+
+    def parse_ve_nft_token_id_from_create_lock_receipt(
+        self, receipt: dict[str, Any], *, to_address: str
+    ) -> int:
+        return self.parse_erc721_mint_token_id_from_receipt(
+            receipt, nft_address=self.ve, to_address=to_address
+        )
+
+    # -----------------------------
+    # Slipstream CL tx helpers
+    # -----------------------------
 
     async def slipstream_mint_position(
         self,

@@ -4,10 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
-from pathlib import Path
 
-from eth_account import Account
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
@@ -20,23 +17,7 @@ from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-
-def _load_config(path: Path) -> dict:
-    return json.loads(path.read_text())
-
-
-def _wallet_from_label(cfg: dict, wallet_label: str) -> tuple[str, str]:
-    wallets = cfg.get("wallets") or []
-    for wallet in wallets:
-        if wallet.get("label") != wallet_label:
-            continue
-        addr = wallet.get("address")
-        pk = wallet.get("private_key") or wallet.get("private_key_hex")
-        if not addr or not pk:
-            raise SystemExit(f"Wallet '{wallet_label}' missing address/private_key")
-        return to_checksum_address(addr), str(pk)
-    raise SystemExit(f"Wallet label '{wallet_label}' not found in config.json")
+from wayfinder_paths.mcp.scripting import get_adapter
 
 
 async def _native_balance(wallet: str) -> int:
@@ -110,19 +91,10 @@ async def main() -> int:
     args = p.parse_args()
 
     load_config(args.config, require_exists=True)
-    cfg = _load_config(Path(args.config))
-    wallet_addr, pk = _wallet_from_label(cfg, args.wallet_label)
-
-    account = Account.from_key(pk)
-
-    async def sign_callback(tx: dict) -> bytes:
-        signed = account.sign_transaction(tx)
-        return signed.raw_transaction
-
-    adapter = AerodromeAdapter(
-        config={"strategy_wallet": {"address": wallet_addr}},
-        strategy_wallet_signing_callback=sign_callback,
-    )
+    adapter = get_adapter(AerodromeAdapter, args.wallet_label, config_path=args.config)
+    wallet_addr = adapter.strategy_wallet_address
+    if not wallet_addr:
+        raise SystemExit(f"Wallet '{args.wallet_label}' missing address in config")
 
     usdc_dec = await adapter.token_decimals(BASE_USDC)
 

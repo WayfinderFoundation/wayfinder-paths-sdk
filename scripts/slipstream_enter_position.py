@@ -4,21 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import math
-from pathlib import Path
 
-from eth_account import Account
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import AerodromeAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.core.config import load_config
-from wayfinder_paths.core.constants.aerodrome import (
-    AERODROME_SLIPSTREAM_FACTORY,
-    BASE_AERO,
-)
-from wayfinder_paths.core.constants.aerodrome_abi import SLIPSTREAM_FACTORY_ABI
+from wayfinder_paths.core.constants.aerodrome import BASE_AERO
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM, CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import (
     ARBITRUM_USDC,
@@ -34,27 +27,11 @@ from wayfinder_paths.core.constants.tokens import (
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.mcp.scripting import get_adapter
 
 # Base cbBTC / uBTC (Universal BTC) — resolved via TokenClient fuzzy search.
 BASE_CBBTC = to_checksum_address("0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf")
 BASE_UBTC = to_checksum_address("0xf1143f3a8d76f1ca740d29d5671d365f66c44ed1")
-
-
-def _load_config(path: Path) -> dict:
-    return json.loads(path.read_text())
-
-
-def _wallet_from_label(cfg: dict, wallet_label: str) -> tuple[str, str]:
-    wallets = cfg.get("wallets") or []
-    for wallet in wallets:
-        if wallet.get("label") != wallet_label:
-            continue
-        addr = wallet.get("address")
-        pk = wallet.get("private_key") or wallet.get("private_key_hex")
-        if not addr or not pk:
-            raise SystemExit(f"Wallet '{wallet_label}' missing address/private_key")
-        return to_checksum_address(addr), str(pk)
-    raise SystemExit(f"Wallet label '{wallet_label}' not found in config.json")
 
 
 async def _erc20_balance(chain_id: int, token: str, wallet: str) -> int:
@@ -73,57 +50,10 @@ async def _erc20_decimals(chain_id: int, token: str) -> int:
         return int(await c.functions.decimals().call())
 
 
-def _floor_to_spacing(tick: int, spacing: int) -> int:
-    return (int(tick) // int(spacing)) * int(spacing)
-
-
-def _ceil_to_spacing(tick: int, spacing: int) -> int:
-    spacing = int(spacing)
-    return int((-(-int(tick) // spacing)) * spacing)
-
-
-async def _best_slipstream_pool_for_pair(
-    adapter: AerodromeAdapter, token_a: str, token_b: str
-) -> str:
-    token_a = to_checksum_address(token_a)
-    token_b = to_checksum_address(token_b)
-    tick_spacings = await adapter._slipstream_tick_spacings_for_pair(
-        token_a=token_a, token_b=token_b
-    )
-    if not tick_spacings:
-        raise RuntimeError("No Slipstream pool found for pair (no tick spacings)")
-
-    best_pool = None
-    best_liq = 0
-
-    async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
-        factory = web3.eth.contract(
-            address=AERODROME_SLIPSTREAM_FACTORY, abi=SLIPSTREAM_FACTORY_ABI
-        )
-        for ts in tick_spacings:
-            pool = await factory.functions.getPool(token_a, token_b, int(ts)).call()
-            pool = to_checksum_address(pool)
-            if int(pool, 16) == 0:
-                continue
-            try:
-                st = await adapter.slipstream_pool_state(pool=pool)
-            except Exception:
-                continue
-            if int(st.liquidity) <= 0:
-                continue
-            if int(st.liquidity) > best_liq:
-                best_liq = int(st.liquidity)
-                best_pool = pool
-
-    if best_pool is None:
-        raise RuntimeError("Slipstream pools exist but none have liquidity > 0")
-    return to_checksum_address(best_pool)
-
-
 async def _maybe_bridge_arb_usdc_to_base(
     *,
+    brap: BRAPAdapter,
     wallet: str,
-    pk: str,
     amount_usdc: float,
     timeout_s: int = 900,
 ) -> None:
@@ -143,14 +73,6 @@ async def _maybe_bridge_arb_usdc_to_base(
         )
 
     base_before = await _erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
-
-    account = Account.from_key(pk)
-
-    async def sign_callback(tx: dict) -> bytes:
-        signed = account.sign_transaction(tx)
-        return signed.raw_transaction
-
-    brap = BRAPAdapter(strategy_wallet_signing_callback=sign_callback)
 
     ok, res = await brap.swap_from_token_ids(
         from_token_id=TOKEN_ID_USDC_ARBITRUM,
@@ -204,35 +126,27 @@ async def main() -> int:
     args = p.parse_args()
 
     load_config(args.config, require_exists=True)
-    cfg = _load_config(Path(args.config))
-    wallet_addr, pk = _wallet_from_label(cfg, args.wallet_label)
+    adapter = get_adapter(AerodromeAdapter, args.wallet_label, config_path=args.config)
+    brap = get_adapter(BRAPAdapter, args.wallet_label, config_path=args.config)
+    wallet_addr = adapter.strategy_wallet_address
+    if not wallet_addr:
+        raise SystemExit(f"Wallet '{args.wallet_label}' missing address in config")
 
     # Optional funding (Arbitrum -> Base)
     if float(args.bridge_arb_usdc) > 0:
         await _maybe_bridge_arb_usdc_to_base(
+            brap=brap,
             wallet=wallet_addr,
-            pk=pk,
             amount_usdc=float(args.bridge_arb_usdc),
             timeout_s=int(args.bridge_timeout_s),
         )
-
-    account = Account.from_key(pk)
-
-    async def sign_callback(tx: dict) -> bytes:
-        signed = account.sign_transaction(tx)
-        return signed.raw_transaction
-
-    adapter = AerodromeAdapter(
-        config={"strategy_wallet": {"address": wallet_addr}},
-        strategy_wallet_signing_callback=sign_callback,
-    )
 
     if args.pair == "eth":
         token_a, token_b = BASE_WETH, BASE_WSTETH
     else:
         token_a, token_b = BASE_CBBTC, BASE_UBTC
 
-    pool = await _best_slipstream_pool_for_pair(adapter, token_a, token_b)
+    pool = await adapter.slipstream_best_pool_for_pair(token_a=token_a, token_b=token_b)
     state = await adapter.slipstream_pool_state(pool=pool)
     s0 = await adapter.token_symbol(state.token0)
     s1 = await adapter.token_symbol(state.token1)
@@ -241,7 +155,7 @@ async def main() -> int:
         f"fee={state.fee_pips}  unstakedFee={state.unstaked_fee_pips}  activeL={state.liquidity}"
     )
 
-    usdc_dec = await _erc20_decimals(CHAIN_ID_BASE, BASE_USDC)
+    usdc_dec = await adapter.token_decimals(BASE_USDC)
     usdc_raw = await _erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet_addr)
     deposit_usdc = min(float(args.deposit_usdc), usdc_raw / (10**usdc_dec))
     if deposit_usdc <= 0:
@@ -299,8 +213,8 @@ async def main() -> int:
 
     bal0 = await _erc20_balance(CHAIN_ID_BASE, state.token0, wallet_addr)
     bal1 = await _erc20_balance(CHAIN_ID_BASE, state.token1, wallet_addr)
-    d0 = await _erc20_decimals(CHAIN_ID_BASE, state.token0)
-    d1 = await _erc20_decimals(CHAIN_ID_BASE, state.token1)
+    d0 = await adapter.token_decimals(state.token0)
+    d1 = await adapter.token_decimals(state.token1)
     print(f"balances after swaps: {s0}={bal0 / 10**d0:.8f}  {s1}={bal1 / 10**d1:.8f}")
 
     # Choose a symmetric tick range around the current tick (approx +/- range_pct in price).
@@ -309,8 +223,8 @@ async def main() -> int:
         raise SystemExit("--range-pct must be in (0, 100)")
     tick_lower = int(state.tick + math.floor(math.log(1.0 - pct) / math.log(1.0001)))
     tick_upper = int(state.tick + math.ceil(math.log(1.0 + pct) / math.log(1.0001)))
-    tick_lower = _floor_to_spacing(tick_lower, state.tick_spacing)
-    tick_upper = _ceil_to_spacing(tick_upper, state.tick_spacing)
+    tick_lower = adapter.floor_tick_to_spacing(tick_lower, state.tick_spacing)
+    tick_upper = adapter.ceil_tick_to_spacing(tick_upper, state.tick_spacing)
     if tick_lower >= tick_upper:
         raise SystemExit("Computed invalid tick bounds")
 

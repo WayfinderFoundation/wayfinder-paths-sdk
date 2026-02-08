@@ -20,15 +20,6 @@ def _fmt(amount_raw: int, decimals: int) -> str:
     return f"{amount_raw / (10**decimals):,.6f}"
 
 
-def _floor_to_spacing(tick: int, spacing: int) -> int:
-    return (int(tick) // int(spacing)) * int(spacing)
-
-
-def _ceil_to_spacing(tick: int, spacing: int) -> int:
-    spacing = int(spacing)
-    return int((-(-int(tick) // spacing)) * spacing)
-
-
 async def main() -> int:
     p = argparse.ArgumentParser(
         description="Analyze an Aerodrome Slipstream CL pool range (onchain-only).",
@@ -89,7 +80,7 @@ async def main() -> int:
     d0 = await adapter.token_decimals(state.token0)
     d1 = await adapter.token_decimals(state.token1)
 
-    price = adapter._q96_to_price_token1_per_token0(
+    price = adapter.q96_to_price_token1_per_token0(
         sqrt_price_x96=state.sqrt_price_x96,
         decimals0=d0,
         decimals1=d1,
@@ -118,8 +109,8 @@ async def main() -> int:
         )
         tick_upper = int(state.tick + math.ceil(math.log(1.0 + pct) / math.log(1.0001)))
 
-    tick_lower = _floor_to_spacing(tick_lower, state.tick_spacing)
-    tick_upper = _ceil_to_spacing(tick_upper, state.tick_spacing)
+    tick_lower = adapter.floor_tick_to_spacing(tick_lower, state.tick_spacing)
+    tick_upper = adapter.ceil_tick_to_spacing(tick_upper, state.tick_spacing)
     if tick_lower >= tick_upper:
         raise SystemExit("Computed invalid tick bounds")
 
