@@ -31,12 +31,12 @@
 
 ## Write operations are real
 
-Scripts like `aerodrome_smoke.py`, `aerodrome_best_emissions_deploy.py` (without `--dry-run`),
-and `slipstream_enter_position.py` broadcast transactions.
+Scripts like `scripts/protocols/aerodrome/aerodrome_smoke.py`,
+`scripts/protocols/aerodrome/aerodrome_best_emissions_deploy.py` (without `--dry-run`),
+and `scripts/protocols/aerodrome/slipstream_enter_position.py` broadcast transactions.
 
 Double-check:
 - wallet label
 - chain IDs
 - slippage
 - pool addresses
-
