@@ -1,14 +1,20 @@
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
-from wayfinder_paths.core.config import get_rpc_urls
+from wayfinder_paths.core.config import get_api_key, get_rpc_urls
 from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_HYPEREVM,
     POA_MIDDLEWARE_CHAIN_IDS,
 )
+
+
+def is_wayfinder_rpc(rpc: str) -> bool:
+    parsed = urlparse(rpc)
+    return parsed.netloc == "strategies.wayfinder.ai"
 
 
 class HyperModule(Module):
@@ -35,7 +41,16 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
-    web3 = AsyncWeb3(AsyncHTTPProvider(rpc))
+    request_kwargs = {}
+
+    if is_wayfinder_rpc(rpc):
+        api_key = get_api_key()
+        if api_key:
+            request_kwargs.update(
+                {"X-API-Key": api_key, "Content-Type": "application/json"}
+            )
+
+    web3 = AsyncWeb3(AsyncHTTPProvider(rpc, request_kwargs=request_kwargs))
     if chain_id in POA_MIDDLEWARE_CHAIN_IDS:
         web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
     if chain_id == CHAIN_ID_HYPEREVM:
