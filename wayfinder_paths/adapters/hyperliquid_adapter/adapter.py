@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from aiocache import Cache
 from eth_utils import to_checksum_address
+from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
@@ -39,9 +40,6 @@ class HyperliquidAdapter(BaseAdapter):
         self._sign_callback = sign_callback
         self._exchange: Exchange | None = None
 
-        self._asset_to_sz_decimals: dict[int, int] | None = None
-        self._coin_to_asset: dict[str, int] | None = None
-
     @property
     def exchange(self) -> Exchange:
         """Lazily initialize the Exchange for write operations."""
@@ -63,10 +61,6 @@ class HyperliquidAdapter(BaseAdapter):
             )
         return self._exchange
 
-    # ------------------------------------------------------------------ #
-    # Market Data - Read Operations                                       #
-    # ------------------------------------------------------------------ #
-
     async def get_meta_and_asset_ctxs(self) -> tuple[bool, Any]:
         cache_key = "hl_meta_and_asset_ctxs"
         cached = await self._cache.get(cache_key)
@@ -75,7 +69,6 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = get_info().meta_and_asset_ctxs()
-            # Cache for 1 minute
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
         except Exception as exc:
@@ -101,26 +94,6 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch spot_meta: {exc}")
             return False, str(exc)
 
-    async def get_spot_token_sz_decimals(self, coin: str) -> int | None:
-        try:
-            success, spot_meta = await self.get_spot_meta()
-            if not success or not isinstance(spot_meta, dict):
-                return None
-
-            for token in spot_meta.get("tokens", []):
-                name = token.get("name") or token.get("coin") or token.get("symbol")
-                if not name:
-                    continue
-                if str(name).upper() != str(coin).upper():
-                    continue
-                sz_decimals = token.get("szDecimals") or token.get("sz_decimals")
-                if sz_decimals is None:
-                    return None
-                return int(sz_decimals)
-        except Exception:  # noqa: BLE001
-            return None
-        return None
-
     @staticmethod
     def max_transferable_amount(
         total: str,
@@ -129,15 +102,7 @@ class HyperliquidAdapter(BaseAdapter):
         sz_decimals: int,
         leave_one_tick: bool = True,
     ) -> float:
-        """Compute a safe transferable amount (Decimal math, round down, leave 1 tick).
-
-        Hyperliquid requires amounts to respect szDecimals. This helper avoids
-        float rounding edge cases by:
-        - parsing balances as Decimal
-        - computing available = total - hold
-        - rounding down to sz_decimals
-        - optionally leaving 1 tick so we don't request the full balance
-        """
+        """Compute max transferable: (total - hold) rounded down, leaving 1 tick margin."""
         getcontext().prec = 50
 
         if sz_decimals < 0:
@@ -192,7 +157,6 @@ class HyperliquidAdapter(BaseAdapter):
                 spot_asset_id = pair.get("index", 0) + 10000
                 response[name] = spot_asset_id
 
-            # Cache for 5 min
             await self._cache.set(cache_key, response, ttl=300)
             return True, response
 
@@ -249,13 +213,7 @@ class HyperliquidAdapter(BaseAdapter):
         include_spot: bool = True,
         include_open_orders: bool = True,
         include_frontend_open_orders: bool = True,
-    ) -> tuple[bool, dict[str, Any]]:
-        """
-        Full Hyperliquid user state snapshot.
-
-        Includes perp positions (user_state), optional spot balances, and optional open
-        orders (frontendOpenOrders by default, since it includes trigger orders).
-        """
+    ) -> tuple[bool, dict[str, Any] | str]:
         out: dict[str, Any] = {
             "protocol": "hyperliquid",
             "account": account,
@@ -305,15 +263,14 @@ class HyperliquidAdapter(BaseAdapter):
             return True, cached
 
         try:
-            # Hyperliquid expects `id` for margin tables in the /info API.
-            # Keep a fallback to `marginTableId` for compatibility with older SDKs.
+            # Hyperliquid expects `id` but older SDKs may use `marginTableId`
             body = {"type": "marginTable", "id": int(margin_table_id)}
             try:
                 data = get_info().post("/info", body)
-            except Exception:  # noqa: BLE001 - try alternate payload key
+            except Exception:  # noqa: BLE001
                 body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
                 data = get_info().post("/info", body)
-            await self._cache.set(cache_key, data, ttl=86400)  # Cache for 24h
+            await self._cache.set(cache_key, data, ttl=86400)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch margin_table {margin_table_id}: {exc}")
@@ -323,20 +280,12 @@ class HyperliquidAdapter(BaseAdapter):
         self, spot_asset_id: int
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            # Spot L2 uses different coin names based on spot index:
-            # - Index 0 (PURR): use "PURR/USDC"
-            # - All other indices: use "@{index}"
             spot_index = (
                 spot_asset_id - 10000 if spot_asset_id >= 10000 else spot_asset_id
             )
-
-            if spot_index == 0:
-                coin = "PURR/USDC"
-            else:
-                coin = f"@{spot_index}"
-
-            body = {"type": "l2Book", "coin": coin}
-            data = get_info().post("/info", body)
+            # Index 0 (PURR) uses pair name; others use @{index}
+            coin = "PURR/USDC" if spot_index == 0 else f"@{spot_index}"
+            data = get_info().l2_snapshot(coin)
             return True, data
         except Exception as exc:
             self.logger.error(
@@ -344,22 +293,13 @@ class HyperliquidAdapter(BaseAdapter):
             )
             return False, str(exc)
 
-    # ------------------------------------------------------------------ #
-    # Asset Mappings                                                      #
-    # ------------------------------------------------------------------ #
-
     @property
     def asset_to_sz_decimals(self) -> dict[int, int]:
-        if self._asset_to_sz_decimals is None:
-            self._asset_to_sz_decimals = dict(get_info().asset_to_sz_decimals)
-        return self._asset_to_sz_decimals
+        return get_info().asset_to_sz_decimals
 
     @property
     def coin_to_asset(self) -> dict[str, int]:
-        """Get coin name to asset ID mapping (perps only)."""
-        if self._coin_to_asset is None:
-            self._coin_to_asset = dict(get_info().coin_to_asset)
-        return self._coin_to_asset
+        return get_info().coin_to_asset
 
     def get_sz_decimals(self, asset_id: int) -> int:
         try:
@@ -369,18 +309,7 @@ class HyperliquidAdapter(BaseAdapter):
                 f"Unknown asset_id {asset_id}: missing szDecimals"
             ) from None
 
-    async def refresh_mappings(self) -> None:
-        self._asset_to_sz_decimals = None
-        self._coin_to_asset = None
-        await self._cache.clear()
-
-    # ------------------------------------------------------------------ #
-    # Utility Methods                                                      #
-    # ------------------------------------------------------------------ #
-
-    async def get_all_mid_prices(
-        self,
-    ) -> tuple[Literal[True], dict[str, float]] | tuple[Literal[False], str]:
+    async def get_all_mid_prices(self) -> tuple[bool, dict[str, float]]:
         try:
             data = get_info().all_mids()
             return True, {k: float(v) for k, v in data.items()}
@@ -398,17 +327,7 @@ class HyperliquidAdapter(BaseAdapter):
         ) * step
         return float(quantized)
 
-    # ------------------------------------------------------------------ #
-    # Execution Methods (require signing callback)                         #
-    # ------------------------------------------------------------------ #
-
     def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
-        """
-        Resolve the builder fee config to attach to orders.
-
-        Builder attribution is mandatory in this repo and is always directed to
-        the Wayfinder builder wallet (`HYPE_FEE_WALLET`).
-        """
         expected_builder = HYPE_FEE_WALLET.lower()
 
         if isinstance(builder, dict) and builder.get("b") is not None:
@@ -457,27 +376,7 @@ class HyperliquidAdapter(BaseAdapter):
         cloid: str | None = None,
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        """
-        Place a market order (IOC with slippage).
-
-        Args:
-            asset_id: Asset ID (perp < 10000, spot >= 10000)
-            is_buy: True for buy, False for sell
-            slippage: Slippage tolerance (0.0 to 1.0)
-            size: Order size in base units
-            address: Wallet address
-            reduce_only: If True, only reduce existing position
-            cloid: Client order ID (optional)
-            builder: Builder fee config; if omitted, a mandatory default is applied.
-
-        Returns:
-            (success, response_data or error_message)
-        """
         builder = self._mandatory_builder_fee(builder)
-
-        from hyperliquid.utils.types import BuilderInfo
-
-        builder_info = BuilderInfo(b=builder.get("b"), f=builder.get("f"))
         result = await self.exchange.place_market_order(
             asset_id=asset_id,
             is_buy=is_buy,
@@ -486,20 +385,13 @@ class HyperliquidAdapter(BaseAdapter):
             address=address,
             reduce_only=reduce_only,
             cloid=cloid,
-            builder=builder_info,
+            builder=BuilderInfo(b=builder.get("b"), f=builder.get("f")),
         )
 
-        # Check both the API status and the order statuses for errors
         success = result.get("status") == "ok"
         if success:
-            # Check if the order itself has errors in statuses
-            response = result.get("response", {})
-            data = response.get("data", {})
-            statuses = data.get("statuses", [])
-            for status in statuses:
-                if isinstance(status, dict) and status.get("error"):
-                    success = False
-                    break
+            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+            success = not any(isinstance(s, dict) and s.get("error") for s in statuses)
         return success, result
 
     async def cancel_order(
@@ -537,26 +429,15 @@ class HyperliquidAdapter(BaseAdapter):
         cloid: str,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        """
-        Cancel order by client order ID (CLOID).
-
-        Note: The Exchange class uses cancel_order with order_id.
-        For cloid-based cancellation, we'd need to first fetch the order_id from open orders.
-        """
-        # Find order_id from open orders
-        orders_result = await self.get_frontend_open_orders(address)
-        if not orders_result[0]:
+        """Cancel order by client order ID (looks up oid from open orders first)."""
+        success, orders = await self.get_frontend_open_orders(address)
+        if not success:
             return False, {
                 "status": "err",
                 "response": {"type": "error", "data": "Could not fetch open orders"},
             }
 
-        # Find matching order by cloid
-        matching_order: dict[str, Any] | None = None
-        for order in orders_result[1]:
-            if order.get("cloid") == cloid:
-                matching_order = order
-                break
+        matching_order = next((o for o in orders if o.get("cloid") == cloid), None)
 
         if not matching_order:
             return False, {
@@ -586,16 +467,8 @@ class HyperliquidAdapter(BaseAdapter):
         token: str,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        """
-        Transfer a spot token to a destination address (signed spotSend action).
-
-        This is used for:
-        - user-to-user spot transfers
-        - HyperCore → HyperEVM routing (destination = system address)
-        """
-        # Arbitrum chain ID
         result = await self.exchange.spot_transfer(
-            signature_chain_id=42161,
+            signature_chain_id=42161,  # Arbitrum
             destination=str(destination),
             token=str(token),
             amount=str(amount),
@@ -618,11 +491,7 @@ class HyperliquidAdapter(BaseAdapter):
     async def hypercore_get_token_metadata(
         self, token_address: str | None
     ) -> dict[str, Any] | None:
-        """
-        Resolve spot token metadata from Hyperliquid spot meta by EVM contract address.
-
-        Special-case: native HYPE uses the 0-address and maps to tokens[150].
-        """
+        """Resolve spot token metadata by EVM address (0-address → HYPE at index 150)."""
         token_addr = (token_address or ZERO_ADDRESS).strip()
         token_addr_lower = token_addr.lower()
 
@@ -635,8 +504,7 @@ class HyperliquidAdapter(BaseAdapter):
             return None
 
         if token_addr_lower == ZERO_ADDRESS.lower():
-            token = tokens[150] if len(tokens) > 150 else None
-            return token if isinstance(token, dict) else None
+            return tokens[150] if len(tokens) > 150 else None
 
         for token_data in tokens:
             if not isinstance(token_data, dict):
@@ -657,13 +525,7 @@ class HyperliquidAdapter(BaseAdapter):
         address: str,
         token_address: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        """
-        Transfer a spot token from HyperCore (Hyperliquid spot) to HyperEVM.
-
-        Notes:
-        - destination is the token's HyperEVM system address (NOT the user's wallet)
-        - token is formatted as "name:tokenId" from spot meta
-        """
+        """Transfer spot token from HyperCore to HyperEVM (destination is system address, not wallet)."""
         token_data = await self.hypercore_get_token_metadata(token_address)
         if not token_data:
             return False, {
@@ -780,30 +642,9 @@ class HyperliquidAdapter(BaseAdapter):
     async def check_recent_liquidations(
         self, address: str, since_ms: int
     ) -> tuple[bool, list[dict[str, Any]]]:
-        """
-        Check if user was liquidated since a given timestamp.
-
-        Fills have an optional 'liquidation' field with:
-        - liquidatedUser: who got liquidated
-        - markPx: price at liquidation
-        - method: "market" or "backstop"
-
-        Args:
-            address: Wallet address
-            since_ms: Epoch milliseconds to check from
-
-        Returns:
-            (success, list of liquidation fills where user was liquidated)
-        """
         try:
             now_ms = int(time.time() * 1000)
-            body = {
-                "type": "userFillsByTime",
-                "user": address,
-                "startTime": since_ms,
-                "endTime": now_ms,
-            }
-            data = get_info().post("/info", body)
+            data = get_info().user_fills_by_time(address, since_ms, now_ms)
             fills = data if isinstance(data, list) else []
 
             # Filter for liquidation fills where we were the liquidated user
@@ -824,8 +665,7 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str, order_id: int | str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            body = {"type": "orderStatus", "user": address, "oid": order_id}
-            data = get_info().post("/info", body)
+            data = get_info().query_order_by_oid(address, int(order_id))
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")
@@ -843,19 +683,7 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_frontend_open_orders(
         self, address: str
-    ) -> tuple[Literal[True], list[dict[str, Any]]] | tuple[Literal[False], str]:
-        """
-        Get all open orders including trigger orders (stop-loss, take-profit).
-
-        Uses frontendOpenOrders endpoint which returns both limit and trigger orders
-        with full order details including orderType and triggerPx.
-
-        Args:
-            address: Wallet address
-
-        Returns:
-            List of open order records including trigger orders
-        """
+    ) -> tuple[bool, list[dict[str, Any]]]:
         try:
             data = get_info().frontend_open_orders(address)
             return True, data if isinstance(data, list) else []
@@ -871,11 +699,6 @@ class HyperliquidAdapter(BaseAdapter):
         amount: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        """
-        Withdraw USDC from Hyperliquid to Arbitrum.
-
-        Note: This is an L1 withdrawal handled by the Hyperliquid executor (signing required).
-        """
         result = await self.exchange.withdraw(
             amount=amount,
             address=address,
@@ -883,17 +706,12 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
-    # ------------------------------------------------------------------ #
-    # Deposit/Withdrawal Helpers                                          #
-    # ------------------------------------------------------------------ #
-
     def get_perp_margin_amount(self, user_state: dict[str, Any]) -> float:
         try:
             margin_summary = user_state.get("marginSummary", {})
             account_value = margin_summary.get("accountValue")
             if account_value is not None:
                 return float(account_value)
-            # Fallback to crossMarginSummary
             cross_summary = user_state.get("crossMarginSummary", {})
             return float(cross_summary.get("accountValue", 0.0))
         except (TypeError, ValueError):
@@ -977,37 +795,14 @@ class HyperliquidAdapter(BaseAdapter):
         reduce_only: bool = False,
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        """
-        Place a limit order (GTC - Good Till Cancelled).
-
-        Used for spot stop-loss orders in basis trading.
-
-        Args:
-            asset_id: Asset ID (perp < 10000, spot >= 10000)
-            is_buy: True for buy, False for sell
-            price: Limit price
-            size: Order size
-            address: Wallet address
-            reduce_only: If True, only reduces existing position
-            builder: Builder fee config; if omitted, a mandatory default is applied.
-
-        Returns:
-            (success, response_data or error_message)
-        """
         builder = self._mandatory_builder_fee(builder)
-
-        # Convert builder to BuilderInfo
-        from hyperliquid.utils.types import BuilderInfo
-
-        builder_info = BuilderInfo(b=builder.get("b"), f=builder.get("f"))
-
         result = await self.exchange.place_limit_order(
             asset_id=asset_id,
             is_buy=is_buy,
             price=price,
             size=size,
             address=address,
-            builder=builder_info,
+            builder=BuilderInfo(b=builder.get("b"), f=builder.get("f")),
         )
 
         success = result.get("status") == "ok"
@@ -1025,7 +820,6 @@ class HyperliquidAdapter(BaseAdapter):
         poll_interval_s = max(1, int(poll_interval_s))
         iterations = int(timeout_s // poll_interval_s) + 1
 
-        # Get initial balance
         success, initial_state = await self.get_user_state(address)
         if not success:
             self.logger.warning(f"Could not fetch initial state: {initial_state}")
@@ -1038,9 +832,7 @@ class HyperliquidAdapter(BaseAdapter):
             f"expecting +${expected_increase:.2f}"
         )
 
-        # If the deposit already credited before this method was called, the
-        # balance-delta check below won't trigger (since initial_balance already
-        # includes it). So we also check ledger updates over the same time window.
+        # Also check ledger in case deposit already credited before this call
         started_ms = int(time.time() * 1000)
         from_timestamp_ms = started_ms - (timeout_s * 1000)
         expected_min = float(expected_increase) * 0.95
@@ -1087,7 +879,6 @@ class HyperliquidAdapter(BaseAdapter):
             f"Hyperliquid deposit not confirmed after {timeout_s}s. "
             "Deposits typically credit in < 1 minute (but can take longer)."
         )
-        # Return current balance even if not confirmed
         success, state = await self.get_user_state(address)
         final_balance = (
             self.get_perp_margin_amount(state) if success else initial_balance
@@ -1099,24 +890,11 @@ class HyperliquidAdapter(BaseAdapter):
         address: str,
         from_timestamp_ms: int,
     ) -> tuple[bool, dict[str, float]]:
-        """
-        Get user deposits from Hyperliquid ledger updates.
-
-        Returns:
-            (success, {tx_hash: usdc_amount})
-        """
         try:
-            data = get_info().post(
-                "/info",
-                {
-                    "type": "userNonFundingLedgerUpdates",
-                    "user": to_checksum_address(address),
-                    "startTime": int(from_timestamp_ms),
-                },
+            data = get_info().user_non_funding_ledger_updates(
+                to_checksum_address(address), int(from_timestamp_ms)
             )
-
             result: dict[str, float] = {}
-            # Sort earliest to latest
             for update in sorted(data or [], key=lambda x: x.get("time", 0)):
                 delta = update.get("delta") or {}
                 if delta.get("type") == "deposit":
@@ -1144,19 +922,10 @@ class HyperliquidAdapter(BaseAdapter):
         from_timestamp_ms: int,
     ) -> tuple[bool, dict[str, float]]:
         try:
-            from eth_utils import to_checksum_address
-
-            data = get_info().post(
-                "/info",
-                {
-                    "type": "userNonFundingLedgerUpdates",
-                    "user": to_checksum_address(address),
-                    "startTime": int(from_timestamp_ms),
-                },
+            data = get_info().user_non_funding_ledger_updates(
+                to_checksum_address(address), int(from_timestamp_ms)
             )
-
             result = {}
-            # Sort earliest to latest
             for update in sorted(data or [], key=lambda x: x.get("time", 0)):
                 delta = update.get("delta") or {}
                 if delta.get("type") == "withdraw":
@@ -1179,28 +948,10 @@ class HyperliquidAdapter(BaseAdapter):
         max_poll_time_s: int = 30 * 60,
         poll_interval_s: int = 5,
     ) -> tuple[bool, dict[str, float]]:
-        """
-        Wait for a withdrawal to appear on-chain.
-
-        Polls Hyperliquid's ledger updates until a withdrawal is detected.
-        Withdrawals typically take ~3-4 minutes to process (but can take longer).
-
-        Args:
-            address: Wallet address
-            lookback_s: How far back to look for withdrawals (small buffer for latency)
-            max_poll_time_s: Maximum time to wait (default 30 minutes)
-            poll_interval_s: Time between polls
-
-        Returns:
-            (success, {tx_hash: usdc_amount}) - withdrawals found
-        """
-        import time
-
         start_time_ms = time.time() * 1000
         iterations = int(max_poll_time_s / poll_interval_s) + 1
 
         for i in range(iterations, 0, -1):
-            # Check for withdrawals since just before we started
             check_from_ms = start_time_ms - (lookback_s * 1000)
             success, withdrawals = await self.get_user_withdrawals(
                 address, int(check_from_ms)
