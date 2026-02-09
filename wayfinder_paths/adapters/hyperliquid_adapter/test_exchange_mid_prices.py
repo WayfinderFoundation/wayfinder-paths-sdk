@@ -10,6 +10,18 @@ class _InfoStub(SimpleNamespace):
     def all_mids(self):
         return {"HYPE": "1.0"}
 
+    def post(self, url_path, payload=None):
+        if isinstance(payload, dict):
+            req_type = payload.get("type", "")
+            if req_type == "allMids":
+                return {"HYPE": "1.0"}
+            if req_type == "maxBuilderFee":
+                return 0
+        return {"status": "ok"}
+
+    def query_user_dex_abstraction_state(self, user):
+        return True
+
     @property
     def asset_to_sz_decimals(self):
         return {7: 0}
@@ -23,9 +35,15 @@ class TestAdapterMidPriceFetch:
     @pytest.mark.asyncio
     async def test_place_market_order_uses_all_mids(self):
         info_stub = _InfoStub()
-        with patch(
-            "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
-            return_value=info_stub,
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+                return_value=info_stub,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
+                return_value=[""],
+            ),
         ):
             adapter = HyperliquidAdapter(
                 config={},

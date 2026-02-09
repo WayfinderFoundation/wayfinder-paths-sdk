@@ -27,7 +27,7 @@ from hyperliquid.utils.signing import (
 from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 
-from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
 from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
     create_local_signer,
 )
@@ -69,6 +69,31 @@ class HyperliquidAdapter(BaseAdapter):
         else:
             self._sign_callback = None
             self._signing_type = "local"
+
+    async def _post_across_dexes(
+        self,
+        payload: dict[str, Any],
+        aggregator: Callable[[list[Any]], Any],
+        *,
+        max_retries: int = 3,
+    ) -> Any:
+        async def _post_one(dex: str) -> Any:
+            body = {**payload, "dex": dex}
+            last_exc: Exception | None = None
+            for attempt in range(max_retries):
+                try:
+                    return get_info().post("/info", body)
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (2**attempt))
+            self.logger.warning(
+                f"All {max_retries} retries failed for dex={dex!r}: {last_exc}"
+            )
+            return None
+
+        results = await asyncio.gather(*[_post_one(dex) for dex in get_perp_dexes()])
+        return aggregator([r for r in results if r is not None])
 
     def _get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
@@ -196,8 +221,22 @@ class HyperliquidAdapter(BaseAdapter):
         if cached:
             return True, cached
 
+        def _aggregate(results: list[list[Any]]) -> list[Any]:
+            if not results:
+                return [{}, []]
+            merged_universe: list[dict[str, Any]] = []
+            merged_ctxs: list[dict[str, Any]] = []
+            for pair in results:
+                meta_part = pair[0] if len(pair) > 0 else {}
+                ctxs_part = pair[1] if len(pair) > 1 else []
+                merged_universe.extend(meta_part.get("universe", []))
+                merged_ctxs.extend(ctxs_part)
+            return [{"universe": merged_universe}, merged_ctxs]
+
         try:
-            data = get_info().meta_and_asset_ctxs()
+            data = await self._post_across_dexes(
+                {"type": "metaAndAssetCtxs"}, _aggregate
+            )
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
         except Exception as exc:
@@ -318,8 +357,34 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_user_state(
         self, address: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
+        def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
+            if not results:
+                return {}
+            base = results[0]
+            for other in results[1:]:
+                base_positions = base.get("assetPositions", [])
+                other_positions = other.get("assetPositions", [])
+                base["assetPositions"] = base_positions + other_positions
+
+                for summary_key in ("marginSummary", "crossMarginSummary"):
+                    base_summary = base.get(summary_key, {})
+                    other_summary = other.get(summary_key, {})
+                    for field in (
+                        "accountValue",
+                        "totalNtlPos",
+                        "totalRawUsd",
+                        "totalMarginUsed",
+                    ):
+                        base_val = float(base_summary.get(field, 0))
+                        other_val = float(other_summary.get(field, 0))
+                        base_summary[field] = str(base_val + other_val)
+                    base[summary_key] = base_summary
+            return base
+
         try:
-            data = get_info().user_state(address)
+            data = await self._post_across_dexes(
+                {"type": "clearinghouseState", "user": address}, _aggregate
+            )
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch user_state for {address}: {exc}")
@@ -439,8 +504,14 @@ class HyperliquidAdapter(BaseAdapter):
             ) from None
 
     async def get_all_mid_prices(self) -> tuple[bool, dict[str, float]]:
+        def _aggregate(results: list[dict[str, str]]) -> dict[str, str]:
+            merged: dict[str, str] = {}
+            for mids in results:
+                merged.update(mids)
+            return merged
+
         try:
-            data = get_info().all_mids()
+            data = await self._post_across_dexes({"type": "allMids"}, _aggregate)
             return True, {k: float(v) for k, v in data.items()}
         except Exception as exc:
             self.logger.error(f"Failed to fetch mid prices: {exc}")
@@ -506,10 +577,17 @@ class HyperliquidAdapter(BaseAdapter):
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
+        await self.ensure_dex_abstraction(address)
+        await self.ensure_builder_fee_approved(address, builder_fee)
 
         asset_name = get_info().asset_to_coin[asset_id]
-        mids = get_info().all_mids()
-        midprice = float(mids[asset_name])
+        ok, mids = await self.get_all_mid_prices()
+        if not ok or asset_name not in mids:
+            return False, {
+                "status": "err",
+                "error": f"Could not fetch mid price for {asset_name}",
+            }
+        midprice = mids[asset_name]
 
         if slippage >= 1 or slippage < 0:
             return False, {
@@ -813,10 +891,10 @@ class HyperliquidAdapter(BaseAdapter):
         limit_price: float | None = None,
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        builder_info: BuilderInfo | None = None
-        if builder:
-            builder_fee = self._mandatory_builder_fee(builder)
-            builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
+        builder_fee = self._mandatory_builder_fee(builder)
+        await self.ensure_dex_abstraction(address)
+        await self.ensure_builder_fee_approved(address, builder_fee)
+        builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
 
         order_type: OrderType = {
             "trigger": {"triggerPx": trigger_price, "isMarket": is_market, "tpsl": tpsl}
@@ -893,9 +971,18 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_open_orders(
         self, address: str
     ) -> tuple[Literal[True], list[dict[str, Any]]] | tuple[Literal[False], str]:
+        def _aggregate(results: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+            merged: list[dict[str, Any]] = []
+            for orders in results:
+                if isinstance(orders, list):
+                    merged.extend(orders)
+            return merged
+
         try:
-            data = get_info().open_orders(address)
-            return True, data if isinstance(data, list) else []
+            data = await self._post_across_dexes(
+                {"type": "openOrders", "user": address}, _aggregate
+            )
+            return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch open_orders for {address}: {exc}")
             return False, str(exc)
@@ -903,9 +990,18 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_frontend_open_orders(
         self, address: str
     ) -> tuple[bool, list[dict[str, Any]]]:
+        def _aggregate(results: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+            merged: list[dict[str, Any]] = []
+            for orders in results:
+                if isinstance(orders, list):
+                    merged.extend(orders)
+            return merged
+
         try:
-            data = get_info().frontend_open_orders(address)
-            return True, data if isinstance(data, list) else []
+            data = await self._post_across_dexes(
+                {"type": "frontendOpenOrders", "user": address}, _aggregate
+            )
+            return True, data
         except Exception as exc:
             self.logger.error(
                 f"Failed to fetch frontend_open_orders for {address}: {exc}"
@@ -1010,12 +1106,26 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
+    async def ensure_dex_abstraction(self, address: str) -> tuple[bool, str]:
+        try:
+            state = get_info().query_user_dex_abstraction_state(address)
+            if state:
+                return True, "Dex abstraction already enabled"
+        except Exception as exc:
+            logger.warning(
+                f"Failed to query dex abstraction state: {exc}, proceeding with enable"
+            )
+
+        ok, result = await self.set_dex_abstraction(address, enabled=True)
+        if ok:
+            return True, "Dex abstraction enabled"
+        return False, f"Failed to enable dex abstraction: {result}"
+
     async def ensure_builder_fee_approved(
         self,
         address: str,
         builder_fee: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
-        # Resolve fee config from parameter or config
         fee_config = builder_fee
         if not fee_config and isinstance(self.config, dict):
             fee_config = self.config.get("builder_fee")
@@ -1028,7 +1138,6 @@ class HyperliquidAdapter(BaseAdapter):
         if not builder or not required_fee:
             return True, "Builder fee not configured"
 
-        # Check current approval
         try:
             ok, current_fee = await self.get_max_builder_fee(address, builder)
             if ok and int(current_fee) >= int(required_fee):
@@ -1041,7 +1150,6 @@ class HyperliquidAdapter(BaseAdapter):
                 f"Failed to check builder fee: {e}, proceeding with approval"
             )
 
-        # Approve
         max_fee_rate = f"{int(required_fee) / 1000:.3f}%"
         ok, result = await self.approve_builder_fee(builder, max_fee_rate, address)
         if ok:
@@ -1061,6 +1169,8 @@ class HyperliquidAdapter(BaseAdapter):
         cloid: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
+        await self.ensure_dex_abstraction(address)
+        await self.ensure_builder_fee_approved(address, builder_fee)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
             is_buy,
