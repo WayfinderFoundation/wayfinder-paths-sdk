@@ -237,13 +237,16 @@ Safety note:
 
 Token identifiers (important for quoting/execution):
 
-- **Format:** `<coingecko_id>-<chain_code>` — the first part is the coingecko_id, NOT the symbol.
+- **Format:**
+- If you know a specific ERC20 contract, use chain-scoped address ids: `<chain_code>_<address>` (e.g., `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
+- If the token is a native token, use zero address instead (e.g. mainnet ethereum is ethereum_0x0000000000000000000000000000000000000000)
+
+- If you don't know the address use `<coingecko_id>-<chain_code>` — the first part is the coingecko_id, NOT the symbol.
   - `usd-coin-base` (USDC on Base — coingecko_id is `usd-coin`, NOT `usdc`)
   - `ethereum-arbitrum` (ETH on Arbitrum)
   - `usdt0-arbitrum` (USDT on Arbitrum)
   - `hyperliquid-hyperevm` (HYPE on HyperEVM)
 - **Do NOT use symbol-chain** like `usdc-base` — this will fail.
-- If you know a specific ERC20 contract, use chain-scoped address ids: `<chain_code>_<address>` (e.g., `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
 - See `.claude/skills/using-pool-token-balance-data/rules/tokens.md` for full details.
 
 ## Common Commands

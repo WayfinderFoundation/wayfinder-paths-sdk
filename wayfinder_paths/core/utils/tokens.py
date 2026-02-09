@@ -18,7 +18,9 @@ NATIVE_TOKEN_ADDRESSES: set = {
 }
 
 
-def is_native_token(token_address: str) -> bool:
+def is_native_token(token_address: str | None) -> bool:
+    if not token_address:
+        return False
     return token_address.lower() in NATIVE_TOKEN_ADDRESSES
 
 
