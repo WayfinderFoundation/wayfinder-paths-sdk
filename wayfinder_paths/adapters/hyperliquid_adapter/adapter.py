@@ -61,10 +61,13 @@ class HyperliquidAdapter(BaseAdapter):
         self._cache = Cache(Cache.MEMORY)
 
         if sign_callback is not None:
-            self._sign_callback = sign_callback
+            self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
             self._signing_type: Literal["eip712", "local"] = "eip712"
-        else:
+        elif config:
             self._sign_callback = create_local_signer(config)
+            self._signing_type = "local"
+        else:
+            self._sign_callback = None
             self._signing_type = "local"
 
     def _get_price_decimals(self, asset_id: int) -> int:
