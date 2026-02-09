@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
-from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
 
 if os.getenv("RUN_HYPERLIQUID_LIVE_TESTS", "").lower() not in ("1", "true", "yes"):
     pytest.skip(
@@ -18,23 +17,22 @@ def live_adapter():
     return HyperliquidAdapter(config={})
 
 
-class TestExchangeUsesLiveMids:
+class TestAdapterUsesLiveMids:
     @pytest.mark.asyncio
     async def test_place_market_order_builds_ioc_limit(self, live_adapter):
         asset_id = live_adapter.coin_to_asset["HYPE"]
 
-        ex = Exchange(
-            info=live_adapter.info,
-            sign_callback=AsyncMock(return_value="0x"),
-            signing_type="eip712",
+        adapter = HyperliquidAdapter(
+            config={},
+            sign_callback=AsyncMock(return_value="0x" + "00" * 65),
         )
 
         async def _no_broadcast(action, address):
-            return action
+            return {"status": "ok", "action": action}
 
-        ex.sign_and_broadcast_hypecore = _no_broadcast
+        adapter._sign_and_broadcast_hypecore = _no_broadcast
 
-        action = await ex.place_market_order(
+        success, result = await adapter.place_market_order(
             asset_id=asset_id,
             is_buy=True,
             slippage=0.01,
@@ -42,10 +40,13 @@ class TestExchangeUsesLiveMids:
             address="0x0000000000000000000000000000000000000000",
         )
 
+        action = result["action"]
         assert action["type"] == "order"
         assert action["orders"][0]["a"] == asset_id
         assert action["orders"][0]["b"] is True
 
-        mid = float(live_adapter.info.all_mids()["HYPE"])
+        ok, mids = await live_adapter.get_all_mid_prices()
+        assert ok
+        mid = mids["HYPE"]
         px = float(action["orders"][0]["p"])
         assert px >= mid * 0.999

@@ -4,14 +4,30 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from aiocache import Cache
+from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
+from hyperliquid.api import API
+from hyperliquid.exchange import get_timestamp_ms
+from hyperliquid.utils.signing import (
+    BUILDER_FEE_SIGN_TYPES,
+    SPOT_TRANSFER_SIGN_TYPES,
+    USD_CLASS_TRANSFER_SIGN_TYPES,
+    USER_DEX_ABSTRACTION_SIGN_TYPES,
+    WITHDRAW_SIGN_TYPES,
+    OrderType,
+    OrderWire,
+    float_to_wire,
+    get_l1_action_payload,
+    order_type_to_wire,
+    order_wires_to_order_action,
+    user_signed_payload,
+)
 from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 
-from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
 from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
     create_local_signer,
@@ -23,6 +39,13 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
+
+ARBITRUM_CHAIN_ID = "0xa4b1"
+MAINNET = "Mainnet"
+USER_DECLINED_ERROR = {
+    "status": "err",
+    "error": "User declined transaction. Please try again..",
+}
 
 
 class HyperliquidAdapter(BaseAdapter):
@@ -38,28 +61,148 @@ class HyperliquidAdapter(BaseAdapter):
 
         self._cache = Cache(Cache.MEMORY)
         self._sign_callback = sign_callback
-        self._exchange: Exchange | None = None
+        self._signing_type: Literal["eip712", "local"] | None = None
+        self._api: API | None = None
 
-    @property
-    def exchange(self) -> Exchange:
-        """Lazily initialize the Exchange for write operations."""
-        if self._exchange is None:
-            if self._sign_callback is None:
-                if not self.config:
-                    raise ValueError(
-                        "Config required for local signing (no sign_callback provided)"
-                    )
-                sign_callback = create_local_signer(self.config)
-                signing_type = "local"
-            else:
-                sign_callback = self._sign_callback
-                signing_type = "eip712"
+    def _ensure_signing_initialized(self) -> None:
+        """Lazily initialize signing for write operations."""
+        if self._signing_type is not None:
+            return
 
-            self._exchange = Exchange(
-                sign_callback=sign_callback,
-                signing_type=signing_type,
-            )
-        return self._exchange
+        if self._sign_callback is None:
+            if not self.config:
+                raise ValueError(
+                    "Config required for local signing (no sign_callback provided)"
+                )
+            self._sign_callback = create_local_signer(self.config)
+            self._signing_type = "local"
+        else:
+            self._signing_type = "eip712"
+
+        self._api = API()
+
+    def _get_price_decimals(self, asset_id: int) -> int:
+        is_spot = asset_id >= 10_000
+        return (6 if not is_spot else 8) - self.get_sz_decimals(asset_id)
+
+    def _sig_hex_to_hl_signature(self, sig_hex: str) -> dict[str, Any]:
+        """Convert a 65-byte hex signature into Hyperliquid {r,s,v}."""
+        if not isinstance(sig_hex, str) or not sig_hex.startswith("0x"):
+            raise ValueError("Expected hex signature string starting with 0x")
+        raw = bytes.fromhex(sig_hex[2:])
+        if len(raw) != 65:
+            raise ValueError(f"Expected 65-byte signature, got {len(raw)} bytes")
+
+        r = raw[0:32]
+        s = raw[32:64]
+        v = raw[64]
+        if v < 27:
+            v += 27
+
+        return {"r": f"0x{r.hex()}", "s": f"0x{s.hex()}", "v": int(v)}
+
+    def _create_hypecore_order_actions(
+        self,
+        asset_id: int,
+        is_buy: bool,
+        price: float,
+        size: float,
+        reduce_only: bool,
+        order_type: OrderType,
+        builder: BuilderInfo | None = None,
+        cloid: str | None = None,
+    ) -> dict[str, Any]:
+        order: OrderWire = {
+            "a": asset_id,
+            "b": is_buy,
+            "p": float_to_wire(price),
+            "s": float_to_wire(size),
+            "r": reduce_only,
+            "t": order_type_to_wire(order_type),
+        }
+        if cloid is not None:
+            order["c"] = cloid
+        return order_wires_to_order_action([order], builder)
+
+    def _broadcast_hypecore(
+        self, action: dict[str, Any], nonce: int, signature: dict[str, Any]
+    ) -> dict[str, Any]:
+        payload = {
+            "action": action,
+            "nonce": nonce,
+            "signature": signature,
+        }
+        logger.info(f"Broadcasting Hypecore payload: {payload}")
+        if self._api is None:
+            self._api = API()
+        return self._api.post("/exchange", payload)
+
+    async def _sign(
+        self, payload: str, action: dict[str, Any], address: str
+    ) -> dict[str, Any] | None:
+        self._ensure_signing_initialized()
+        if self._sign_callback is None:
+            raise ValueError("No sign_callback configured")
+
+        if self._signing_type == "eip712":
+            sig_hex = await self._sign_callback(payload)
+            if not sig_hex:
+                return None
+            return self._sig_hex_to_hl_signature(sig_hex)
+
+        encoded_payload = encode_typed_data(full_message=payload)
+        result = await self._sign_callback(action, encoded_payload, address)
+        return cast(dict[str, Any] | None, result)
+
+    async def _sign_and_broadcast_hypecore(
+        self, action: dict[str, Any], address: str
+    ) -> dict[str, Any]:
+        nonce = get_timestamp_ms()
+        payload = get_l1_action_payload(action, None, nonce, None, True)
+        if not (sig := await self._sign(payload, action, address)):
+            return USER_DECLINED_ERROR
+        return self._broadcast_hypecore(action, nonce, sig)
+
+    def _hypecore_get_user_transfers(
+        self,
+        user_address: str,
+        from_timestamp_ms: int,
+        transfer_type: Literal["deposit", "withdraw"],
+    ) -> dict[str, Decimal]:
+        if self._api is None:
+            self._api = API()
+        data = self._api.post(
+            "/info",
+            {
+                "type": "userNonFundingLedgerUpdates",
+                "user": to_checksum_address(user_address),
+                "startTime": int(from_timestamp_ms),
+            },
+        )
+        res: dict[str, Decimal] = {}
+        for u in sorted(data, key=lambda x: x.get("time", 0)):
+            delta = u.get("delta")
+            if delta and delta.get("type") == transfer_type:
+                res[u["hash"]] = Decimal(str(delta["usdc"]))
+        return res
+
+    def hypecore_get_user_deposits(
+        self, user_address: str, from_timestamp_ms: int
+    ) -> dict[str, Decimal]:
+        return self._hypecore_get_user_transfers(
+            user_address=user_address,
+            from_timestamp_ms=from_timestamp_ms,
+            transfer_type="deposit",
+        )
+
+    def hypecore_get_user_withdrawals(
+        self, user_address: str, from_timestamp_ms: int
+    ) -> dict[str, Decimal]:
+        return self._hypecore_get_user_transfers(
+            user_address=user_address,
+            from_timestamp_ms=from_timestamp_ms,
+            transfer_type="withdraw",
+        )
 
     async def get_meta_and_asset_ctxs(self) -> tuple[bool, Any]:
         cache_key = "hl_meta_and_asset_ctxs"
@@ -376,17 +519,34 @@ class HyperliquidAdapter(BaseAdapter):
         cloid: str | None = None,
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        builder = self._mandatory_builder_fee(builder)
-        result = await self.exchange.place_market_order(
-            asset_id=asset_id,
-            is_buy=is_buy,
-            slippage=slippage,
-            size=size,
-            address=address,
-            reduce_only=reduce_only,
-            cloid=cloid,
-            builder=BuilderInfo(b=builder.get("b"), f=builder.get("f")),
+        builder_fee = self._mandatory_builder_fee(builder)
+
+        asset_name = get_info().asset_to_coin[asset_id]
+        mids = get_info().all_mids()
+        midprice = float(mids[asset_name])
+
+        if slippage >= 1 or slippage < 0:
+            return False, {
+                "status": "err",
+                "error": f"slippage must be in [0, 1), got {slippage}",
+            }
+
+        price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
+        price = round(
+            float(f"{price:.5g}"),
+            self._get_price_decimals(asset_id),
         )
+        order_actions = self._create_hypecore_order_actions(
+            asset_id,
+            is_buy,
+            price,
+            size,
+            reduce_only,
+            {"limit": {"tif": "Ioc"}},
+            BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f")),
+            cloid,
+        )
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
         success = result.get("status") == "ok"
         if success:
@@ -414,11 +574,16 @@ class HyperliquidAdapter(BaseAdapter):
                 },
             )
 
-        result = await self.exchange.cancel_order(
-            asset_id=asset_id,
-            order_id=order_id_int,
-            address=address,
-        )
+        order_actions = {
+            "type": "cancel",
+            "cancels": [
+                {
+                    "a": asset_id,
+                    "o": order_id_int,
+                }
+            ],
+        }
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
         success = result.get("status") == "ok"
         return success, result
@@ -467,13 +632,22 @@ class HyperliquidAdapter(BaseAdapter):
         token: str,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.spot_transfer(
-            signature_chain_id=42161,  # Arbitrum
-            destination=str(destination),
-            token=str(token),
-            amount=str(amount),
-            address=address,
+        nonce = get_timestamp_ms()
+        action = {
+            "type": "spotSend",
+            "hyperliquidChain": MAINNET,
+            "signatureChainId": hex(42161),  # Arbitrum
+            "destination": str(destination),
+            "token": str(token),
+            "amount": str(amount),
+            "time": nonce,
+        }
+        payload = user_signed_payload(
+            "HyperliquidTransaction:SpotSend", SPOT_TRANSFER_SIGN_TYPES, action
         )
+        if not (sig := await self._sign(payload, action, address)):
+            return False, USER_DECLINED_ERROR
+        result = self._broadcast_hypecore(action, nonce, sig)
 
         success = result.get("status") == "ok"
         return success, result
@@ -570,12 +744,55 @@ class HyperliquidAdapter(BaseAdapter):
         is_cross: bool,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.update_leverage(
-            asset=asset_id,
-            leverage=leverage,
-            is_cross=is_cross,
-            address=address,
+        order_actions = {
+            "type": "updateLeverage",
+            "asset": asset_id,
+            "isCross": is_cross,
+            "leverage": leverage,
+        }
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
+
+        success = result.get("status") == "ok"
+        return success, result
+
+    async def update_isolated_margin(
+        self, asset_id: int, delta_usdc: float, address: str
+    ) -> tuple[bool, dict[str, Any]]:
+        """Add/remove USDC margin on an existing ISOLATED position.
+        Works for both longs & shorts. Positive = add, negative = remove.
+        """
+        ntli = int(round(delta_usdc * 1_000_000))
+        order_actions = {
+            "type": "updateIsolatedMargin",
+            "asset": asset_id,
+            "isBuy": delta_usdc >= 0,
+            "ntli": ntli,
+        }
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
+
+        success = result.get("status") == "ok"
+        return success, result
+
+    async def _usd_class_transfer(
+        self, amount: float, address: str, to_perp: bool
+    ) -> tuple[bool, dict[str, Any]]:
+        nonce = get_timestamp_ms()
+        action = {
+            "hyperliquidChain": MAINNET,
+            "signatureChainId": ARBITRUM_CHAIN_ID,
+            "amount": str(amount),
+            "toPerp": to_perp,
+            "nonce": nonce,
+            "type": "usdClassTransfer",
+        }
+        payload = user_signed_payload(
+            "HyperliquidTransaction:UsdClassTransfer",
+            USD_CLASS_TRANSFER_SIGN_TYPES,
+            action,
         )
+        if not (sig := await self._sign(payload, action, address)):
+            return False, USER_DECLINED_ERROR
+        result = self._broadcast_hypecore(action, nonce, sig)
 
         success = result.get("status") == "ok"
         return success, result
@@ -585,25 +802,44 @@ class HyperliquidAdapter(BaseAdapter):
         amount: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.usd_class_transfer(
-            amount=amount,
-            address=address,
-            to_perp=True,
+        return await self._usd_class_transfer(
+            amount=amount, address=address, to_perp=True
         )
-
-        success = result.get("status") == "ok"
-        return success, result
 
     async def transfer_perp_to_spot(
         self,
         amount: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.usd_class_transfer(
-            amount=amount,
-            address=address,
-            to_perp=False,
+        return await self._usd_class_transfer(
+            amount=amount, address=address, to_perp=False
         )
+
+    async def place_trigger_order(
+        self,
+        asset_id: int,
+        is_buy: bool,
+        trigger_price: float,
+        size: float,
+        address: str,
+        tpsl: Literal["tp", "sl"],
+        is_market: bool = True,
+        limit_price: float | None = None,
+        builder: dict[str, Any] | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        builder_info: BuilderInfo | None = None
+        if builder:
+            builder_fee = self._mandatory_builder_fee(builder)
+            builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
+
+        order_type: OrderType = {
+            "trigger": {"triggerPx": trigger_price, "isMarket": is_market, "tpsl": tpsl}
+        }
+        price = trigger_price if is_market else (limit_price or trigger_price)
+        order_actions = self._create_hypecore_order_actions(
+            asset_id, is_buy, price, size, True, order_type, builder_info
+        )
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
         success = result.get("status") == "ok"
         return success, result
@@ -616,7 +852,7 @@ class HyperliquidAdapter(BaseAdapter):
         size: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.place_trigger_order(
+        return await self.place_trigger_order(
             asset_id=asset_id,
             is_buy=is_buy,
             trigger_price=trigger_price,
@@ -625,9 +861,6 @@ class HyperliquidAdapter(BaseAdapter):
             tpsl="sl",
             is_market=True,
         )
-
-        success = result.get("status") == "ok"
-        return success, result
 
     async def get_user_fills(
         self, address: str
@@ -699,10 +932,21 @@ class HyperliquidAdapter(BaseAdapter):
         amount: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.withdraw(
-            amount=amount,
-            address=address,
+        nonce = get_timestamp_ms()
+        action = {
+            "hyperliquidChain": MAINNET,
+            "signatureChainId": ARBITRUM_CHAIN_ID,
+            "destination": address,
+            "amount": str(amount),
+            "time": nonce,
+            "type": "withdraw3",
+        }
+        payload = user_signed_payload(
+            "HyperliquidTransaction:Withdraw", WITHDRAW_SIGN_TYPES, action
         )
+        if not (sig := await self._sign(payload, action, address)):
+            return False, USER_DECLINED_ERROR
+        result = self._broadcast_hypecore(action, nonce, sig)
         success = result.get("status") == "ok"
         return success, result
 
@@ -737,11 +981,45 @@ class HyperliquidAdapter(BaseAdapter):
         max_fee_rate: str,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        result = await self.exchange.approve_builder_fee(
-            builder=builder,
-            max_fee_rate=max_fee_rate,
-            address=address,
+        nonce = get_timestamp_ms()
+        action = {
+            "hyperliquidChain": MAINNET,
+            "signatureChainId": ARBITRUM_CHAIN_ID,
+            "maxFeeRate": max_fee_rate,
+            "builder": builder,
+            "nonce": nonce,
+            "type": "approveBuilderFee",
+        }
+        payload = user_signed_payload(
+            "HyperliquidTransaction:ApproveBuilderFee", BUILDER_FEE_SIGN_TYPES, action
         )
+        if not (sig := await self._sign(payload, action, address)):
+            return False, USER_DECLINED_ERROR
+        result = self._broadcast_hypecore(action, nonce, sig)
+
+        success = result.get("status") == "ok"
+        return success, result
+
+    async def set_dex_abstraction(
+        self, address: str, enabled: bool
+    ) -> tuple[bool, dict[str, Any]]:
+        nonce = get_timestamp_ms()
+        action = {
+            "hyperliquidChain": MAINNET,
+            "signatureChainId": ARBITRUM_CHAIN_ID,
+            "user": address.lower(),
+            "enabled": enabled,
+            "nonce": nonce,
+            "type": "userDexAbstraction",
+        }
+        payload = user_signed_payload(
+            "HyperliquidTransaction:UserDexAbstraction",
+            USER_DEX_ABSTRACTION_SIGN_TYPES,
+            action,
+        )
+        if not (sig := await self._sign(payload, action, address)):
+            return False, USER_DECLINED_ERROR
+        result = self._broadcast_hypecore(action, nonce, sig)
 
         success = result.get("status") == "ok"
         return success, result
@@ -794,16 +1072,20 @@ class HyperliquidAdapter(BaseAdapter):
         *,
         reduce_only: bool = False,
         builder: dict[str, Any] | None = None,
+        cloid: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
-        builder = self._mandatory_builder_fee(builder)
-        result = await self.exchange.place_limit_order(
-            asset_id=asset_id,
-            is_buy=is_buy,
-            price=price,
-            size=size,
-            address=address,
-            builder=BuilderInfo(b=builder.get("b"), f=builder.get("f")),
+        builder_fee = self._mandatory_builder_fee(builder)
+        order_actions = self._create_hypecore_order_actions(
+            asset_id,
+            is_buy,
+            price,
+            size,
+            reduce_only,
+            {"limit": {"tif": "Gtc"}},
+            BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f")),
+            cloid,
         )
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
         success = result.get("status") == "ok"
         return success, result
