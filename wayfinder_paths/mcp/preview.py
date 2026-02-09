@@ -187,3 +187,96 @@ def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, A
         return {"summary": header + base + details}
 
     return {"summary": header + base}
+
+
+def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+    req = tool_input if isinstance(tool_input, dict) else {}
+    if not req:
+        return {"summary": "POLYMARKET_EXECUTE missing parameters.", "recipient_mismatch": False}
+
+    action = str(req.get("action") or "").strip()
+    wallet_label = str(req.get("wallet_label") or "").strip()
+    w = find_wallet_by_label(wallet_label) if wallet_label else None
+    sender = normalize_address((w or {}).get("address")) if w else None
+
+    recipient = None
+    if action == "bridge_deposit":
+        recipient = normalize_address(req.get("recipient_address"))
+    if action == "bridge_withdraw":
+        recipient = normalize_address(req.get("recipient_addr"))
+
+    mismatch = bool(sender and recipient and sender.lower() != recipient.lower())
+
+    header = "POLYMARKET_EXECUTE\n"
+    base = (
+        f"action: {action or '(missing)'}\n"
+        f"wallet_label: {wallet_label or '(missing)'}\n"
+        f"address: {sender or '(unknown)'}"
+    )
+
+    if action == "bridge_deposit":
+        details = (
+            "\n\nCONVERT (USDC → USDC.e)\n"
+            "route: BRAP swap preferred; Polymarket Bridge fallback\n"
+            f"from_chain_id: {req.get('from_chain_id')}\n"
+            f"from_token_address: {req.get('from_token_address')}\n"
+            f"amount: {req.get('amount')}\n"
+            f"recipient_address: {req.get('recipient_address')}"
+        )
+        return {"summary": header + base + details, "recipient_mismatch": mismatch}
+
+    if action == "bridge_withdraw":
+        details = (
+            "\n\nCONVERT (USDC.e → USDC)\n"
+            "route: BRAP swap preferred; Polymarket Bridge fallback\n"
+            f"amount_usdce: {req.get('amount_usdce')}\n"
+            f"to_chain_id: {req.get('to_chain_id')}\n"
+            f"to_token_address: {req.get('to_token_address')}\n"
+            f"recipient_addr: {req.get('recipient_addr')}"
+        )
+        return {"summary": header + base + details, "recipient_mismatch": mismatch}
+
+    if action in {"buy", "sell", "close_position"}:
+        details = (
+            "\n\nTRADE\n"
+            f"market_slug: {req.get('market_slug')}\n"
+            f"outcome: {req.get('outcome')}\n"
+            f"token_id: {req.get('token_id')}\n"
+            f"amount_usdc: {req.get('amount_usdc')}\n"
+            f"shares: {req.get('shares')}\n"
+            f"ensure_approvals: {req.get('ensure_approvals')}"
+        )
+        return {"summary": header + base + details, "recipient_mismatch": False}
+
+    if action == "place_limit_order":
+        details = (
+            "\n\nLIMIT ORDER\n"
+            f"token_id: {req.get('token_id')}\n"
+            f"side: {req.get('side')}\n"
+            f"price: {req.get('price')}\n"
+            f"size: {req.get('size')}\n"
+            f"post_only: {req.get('post_only')}\n"
+            f"ensure_approvals: {req.get('ensure_approvals')}"
+        )
+        return {"summary": header + base + details, "recipient_mismatch": False}
+
+    if action == "cancel_order":
+        details = f"\n\nCANCEL ORDER\norder_id: {req.get('order_id')}"
+        return {"summary": header + base + details, "recipient_mismatch": False}
+
+    if action == "redeem_positions":
+        details = (
+            "\n\nREDEEM\n"
+            f"condition_id: {req.get('condition_id')}\n"
+            f"simulation: {req.get('simulation')}"
+        )
+        return {"summary": header + base + details, "recipient_mismatch": False}
+
+    if action == "ensure_approvals":
+        details = (
+            "\n\nAPPROVALS\n"
+            f"also_approve_conditional_tokens_spender: {req.get('also_approve_conditional_tokens_spender')}"
+        )
+        return {"summary": header + base + details, "recipient_mismatch": False}
+
+    return {"summary": header + base, "recipient_mismatch": mismatch}
