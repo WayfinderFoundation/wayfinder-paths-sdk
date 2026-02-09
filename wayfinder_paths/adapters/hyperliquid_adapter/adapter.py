@@ -9,7 +9,6 @@ from typing import Any, Literal, cast
 from aiocache import Cache
 from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
-from hyperliquid.api import API
 from hyperliquid.exchange import get_timestamp_ms
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
@@ -60,26 +59,13 @@ class HyperliquidAdapter(BaseAdapter):
         super().__init__("hyperliquid_adapter", config)
 
         self._cache = Cache(Cache.MEMORY)
-        self._sign_callback = sign_callback
-        self._signing_type: Literal["eip712", "local"] | None = None
-        self._api: API | None = None
 
-    def _ensure_signing_initialized(self) -> None:
-        """Lazily initialize signing for write operations."""
-        if self._signing_type is not None:
-            return
-
-        if self._sign_callback is None:
-            if not self.config:
-                raise ValueError(
-                    "Config required for local signing (no sign_callback provided)"
-                )
-            self._sign_callback = create_local_signer(self.config)
-            self._signing_type = "local"
+        if sign_callback is not None:
+            self._sign_callback = sign_callback
+            self._signing_type: Literal["eip712", "local"] = "eip712"
         else:
-            self._signing_type = "eip712"
-
-        self._api = API()
+            self._sign_callback = create_local_signer(config)
+            self._signing_type = "local"
 
     def _get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
@@ -133,16 +119,15 @@ class HyperliquidAdapter(BaseAdapter):
             "signature": signature,
         }
         logger.info(f"Broadcasting Hypecore payload: {payload}")
-        if self._api is None:
-            self._api = API()
-        return self._api.post("/exchange", payload)
+        return get_info().post("/exchange", payload)
 
     async def _sign(
         self, payload: str, action: dict[str, Any], address: str
     ) -> dict[str, Any] | None:
-        self._ensure_signing_initialized()
         if self._sign_callback is None:
-            raise ValueError("No sign_callback configured")
+            raise ValueError(
+                "Config required for local signing (no sign_callback provided)"
+            )
 
         if self._signing_type == "eip712":
             sig_hex = await self._sign_callback(payload)
@@ -169,9 +154,7 @@ class HyperliquidAdapter(BaseAdapter):
         from_timestamp_ms: int,
         transfer_type: Literal["deposit", "withdraw"],
     ) -> dict[str, Decimal]:
-        if self._api is None:
-            self._api = API()
-        data = self._api.post(
+        data = get_info().post(
             "/info",
             {
                 "type": "userNonFundingLedgerUpdates",
