@@ -6,6 +6,7 @@ from typing import Any, TypedDict
 
 from loguru import logger
 
+from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.core.clients.TokenClient import TokenDetails
 from wayfinder_paths.core.strategies.descriptors import StratDescriptor
 
@@ -65,9 +66,9 @@ class Strategy(ABC):
         strategy_sign_typed_data: Callable[[dict], Awaitable[str]] | None = None,
         **kwargs: Any,
     ):
-        self.ledger_adapter = None
+        self.ledger_adapter = LedgerAdapter()
         self.logger = logger.bind(strategy=self.__class__.__name__)
-        self.config = config
+        self.config: StrategyConfig | dict[str, Any] = config or {}
         self.main_wallet_signing_callback = main_wallet_signing_callback
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         self.strategy_sign_typed_data = strategy_sign_typed_data
@@ -125,9 +126,7 @@ class Strategy(ABC):
 
         return status
 
-    async def partial_liquidate(
-        self, usd_value: float
-    ) -> tuple[bool, LiquidationResult]:
+    async def partial_liquidate(self, usd_value: float) -> StatusTuple:
         if usd_value <= 0:
             raise ValueError(f"usd_value must be positive, got {usd_value}")
         return (False, "Partial liquidation not implemented for this strategy")

@@ -3,7 +3,7 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import httpx
 from eth_utils import to_checksum_address
@@ -11,7 +11,6 @@ from loguru import logger
 
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.moonwell_adapter.adapter import MoonwellAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
@@ -195,13 +194,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         if strategy_wallet is not None:
             merged_config["strategy_wallet"] = strategy_wallet
 
-        self.config = merged_config
-
-        self.balance_adapter: BalanceAdapter | None = None
-        self.moonwell_adapter: MoonwellAdapter | None = None
-        self.brap_adapter: BRAPAdapter | None = None
-        self.token_adapter: TokenAdapter | None = None
-        self.ledger_adapter: LedgerAdapter | None = None
+        self.config: dict[str, Any] = merged_config
 
         self._token_info_cache: dict[str, dict] = {}
         self._token_price_cache: dict[str, float] = {}
@@ -222,28 +215,20 @@ class MoonwellWstethLoopStrategy(Strategy):
                 "strategy": self.config,
             }
 
-            balance = BalanceAdapter(
+            self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            token_adapter = TokenAdapter()
-            ledger_adapter = LedgerAdapter()
-            brap_adapter = BRAPAdapter(
+            self.token_adapter = TokenAdapter()
+            self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            moonwell_adapter = MoonwellAdapter(
+            self.moonwell_adapter = MoonwellAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-
-            self.balance_adapter = balance
-            self.token_adapter = token_adapter
-            self.ledger_adapter = ledger_adapter
-            self.brap_adapter = brap_adapter
-            self.moonwell_adapter = moonwell_adapter
-
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")
             raise
@@ -262,11 +247,11 @@ class MoonwellWstethLoopStrategy(Strategy):
 
     def _get_strategy_wallet_address(self) -> str:
         wallet = self.config.get("strategy_wallet", {})
-        return wallet.get("address", "")
+        return wallet.get("address", "") if isinstance(wallet, dict) else ""
 
     def _get_main_wallet_address(self) -> str:
         wallet = self.config.get("main_wallet", {})
-        return wallet.get("address", "")
+        return wallet.get("address", "") if isinstance(wallet, dict) else ""
 
     def _gas_keep_wei(self) -> int:
         # Extra buffer for a couple txs (wrap + swap/repay).
@@ -353,17 +338,19 @@ class MoonwellWstethLoopStrategy(Strategy):
         weth_pos_ok, weth_pos = await self.moonwell_adapter.get_pos(mtoken=M_WETH)
 
         usdc_supplied = (
-            int((usdc_pos or {}).get("underlying_balance", 0) or 0)
-            if usdc_pos_ok
+            int(usdc_pos.get("underlying_balance") or 0)
+            if usdc_pos_ok and isinstance(usdc_pos, dict)
             else 0
         )
         wsteth_supplied = (
-            int((wsteth_pos or {}).get("underlying_balance", 0) or 0)
-            if wsteth_pos_ok
+            int(wsteth_pos.get("underlying_balance") or 0)
+            if wsteth_pos_ok and isinstance(wsteth_pos, dict)
             else 0
         )
         weth_debt = (
-            int((weth_pos or {}).get("borrow_balance", 0) or 0) if weth_pos_ok else 0
+            int(weth_pos.get("borrow_balance") or 0)
+            if weth_pos_ok and isinstance(weth_pos, dict)
+            else 0
         )
 
         gas_keep_wei = int(self._gas_keep_wei())
@@ -1553,14 +1540,14 @@ class MoonwellWstethLoopStrategy(Strategy):
             except Exception as e:
                 logger.warning(f"Failed to fetch token info for {token_id}: {e}")
 
-    async def _get_token_info(self, token_id: str) -> dict:
+    async def _get_token_info(self, token_id: str) -> dict[str, Any]:
         if token_id in self._token_info_cache:
             return self._token_info_cache[token_id]
 
         success, info = await self.token_adapter.get_token(token_id)
-        if success:
+        if success and isinstance(info, dict):
             self._token_info_cache[token_id] = info
-            return info
+            return cast(dict[str, Any], info)
         return {}
 
     async def _get_token_price(self, token_id: str) -> float:
@@ -2199,8 +2186,8 @@ class MoonwellWstethLoopStrategy(Strategy):
             self.moonwell_adapter.get_collateral_factor(mtoken=M_USDC),
             self.moonwell_adapter.get_collateral_factor(mtoken=M_WSTETH),
         )
-        cf_u = cf_u_result[1] if cf_u_result[0] else 0.0
-        cf_w = cf_w_result[1] if cf_w_result[0] else 0.0
+        cf_u = float(cf_u_result[1]) if cf_u_result[0] else 0.0
+        cf_w = float(cf_w_result[1]) if cf_w_result[0] else 0.0
         return cf_u, cf_w
 
     async def _get_current_leverage(
@@ -2845,7 +2832,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         weth_pos = await self.moonwell_adapter.get_pos(mtoken=M_WETH)
 
         current_borrowed_value = 0.0
-        if weth_pos[0]:
+        if weth_pos[0] and isinstance(weth_pos[1], dict):
             borrow_bal = weth_pos[1].get("borrow_balance", 0)
             current_borrowed_value = (borrow_bal / 10**18) * weth_price
 
@@ -3613,7 +3600,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         logger.info("UNLEND: Redeeming remaining Moonwell positions...")
 
         wsteth_pos = await self.moonwell_adapter.get_pos(mtoken=M_WSTETH)
-        if wsteth_pos[0]:
+        if wsteth_pos[0] and isinstance(wsteth_pos[1], dict):
             mtoken_bal = wsteth_pos[1].get("mtoken_balance", 0)
             underlying = wsteth_pos[1].get("underlying_balance", 0)
             if mtoken_bal > 0:
@@ -3637,7 +3624,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                         return (False, "Failed to swap wstETH to USDC after retries")
 
         usdc_pos = await self.moonwell_adapter.get_pos(mtoken=M_USDC)
-        if usdc_pos[0]:
+        if usdc_pos[0] and isinstance(usdc_pos[1], dict):
             mtoken_bal = usdc_pos[1].get("mtoken_balance", 0)
             underlying = usdc_pos[1].get("underlying_balance", 0)
             if mtoken_bal > 0:

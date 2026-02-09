@@ -14,7 +14,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     HyperliquidAdapter,
 )
 from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import MIN_NOTIONAL_USD
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
@@ -292,8 +291,6 @@ class BorosHypeStrategy(
             strategy_wallet_signing_callback=self._sign_callback,
         )
 
-        self.ledger_adapter = LedgerAdapter()
-
         logger.info("BorosHypeStrategy setup complete")
 
     async def analyze(
@@ -323,12 +320,16 @@ class BorosHypeStrategy(
         for m in markets:
             if not isinstance(m, dict):
                 continue
-            im = m.get("imData") if isinstance(m.get("imData"), dict) else {}
-            meta = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
-            platform_obj = (
-                m.get("platform") if isinstance(m.get("platform"), dict) else {}
+            _im = m.get("imData")
+            im: dict[str, Any] = _im if isinstance(_im, dict) else {}
+            _meta = m.get("metadata")
+            meta: dict[str, Any] = _meta if isinstance(_meta, dict) else {}
+            _platform = m.get("platform")
+            platform_obj: dict[str, Any] = (
+                _platform if isinstance(_platform, dict) else {}
             )
-            data = m.get("data") if isinstance(m.get("data"), dict) else {}
+            _data = m.get("data")
+            data: dict[str, Any] = _data if isinstance(_data, dict) else {}
 
             name = str(im.get("name") or meta.get("marketName") or "").strip()
             symbol = str(im.get("symbol") or "").strip()
@@ -766,7 +767,7 @@ class BorosHypeStrategy(
             usdc_to_move = 0.0
         else:
             ok, usdc_raw = await self.balance_adapter.get_vault_wallet_balance(USDC_ARB)
-            existing_usdc = (usdc_raw / 1e6) if ok else 0.0
+            existing_usdc = (int(usdc_raw) / 1e6) if ok else 0.0
             usdc_to_move = max(0.0, float(main_token_amount) - existing_usdc)
 
         if usdc_to_move > 0.01:
@@ -787,7 +788,7 @@ class BorosHypeStrategy(
             eth_to_move = 0.0
         else:
             ok, eth_raw = await self.balance_adapter.get_vault_wallet_balance(ETH_ARB)
-            existing_eth = (eth_raw / 1e18) if ok else 0.0
+            existing_eth = (int(eth_raw) / 1e18) if ok else 0.0
             eth_to_move = max(0.0, float(gas_token_amount) - existing_eth)
 
         if eth_to_move > 0.00001:
