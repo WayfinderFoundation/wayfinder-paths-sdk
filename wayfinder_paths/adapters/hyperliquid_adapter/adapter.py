@@ -77,8 +77,6 @@ class HyperliquidAdapter(BaseAdapter):
         *,
         max_retries: int = 3,
     ) -> Any:
-        """Post a payload to all perp dexes concurrently and aggregate results."""
-
         async def _post_one(dex: str) -> Any:
             body = {**payload, "dex": dex}
             last_exc: Exception | None = None
@@ -364,12 +362,10 @@ class HyperliquidAdapter(BaseAdapter):
                 return {}
             base = results[0]
             for other in results[1:]:
-                # Concatenate positions from all dexes
                 base_positions = base.get("assetPositions", [])
                 other_positions = other.get("assetPositions", [])
                 base["assetPositions"] = base_positions + other_positions
 
-                # Sum numeric margin fields
                 for summary_key in ("marginSummary", "crossMarginSummary"):
                     base_summary = base.get(summary_key, {})
                     other_summary = other.get(summary_key, {})
@@ -1111,7 +1107,6 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def ensure_dex_abstraction(self, address: str) -> tuple[bool, str]:
-        """Enable dex abstraction if not already enabled (required for HIP-3 dex trading)."""
         try:
             state = get_info().query_user_dex_abstraction_state(address)
             if state:
@@ -1131,7 +1126,6 @@ class HyperliquidAdapter(BaseAdapter):
         address: str,
         builder_fee: dict[str, Any] | None = None,
     ) -> tuple[bool, str]:
-        # Resolve fee config from parameter or config
         fee_config = builder_fee
         if not fee_config and isinstance(self.config, dict):
             fee_config = self.config.get("builder_fee")
@@ -1144,7 +1138,6 @@ class HyperliquidAdapter(BaseAdapter):
         if not builder or not required_fee:
             return True, "Builder fee not configured"
 
-        # Check current approval
         try:
             ok, current_fee = await self.get_max_builder_fee(address, builder)
             if ok and int(current_fee) >= int(required_fee):
@@ -1157,7 +1150,6 @@ class HyperliquidAdapter(BaseAdapter):
                 f"Failed to check builder fee: {e}, proceeding with approval"
             )
 
-        # Approve
         max_fee_rate = f"{int(required_fee) / 1000:.3f}%"
         ok, result = await self.approve_builder_fee(builder, max_fee_rate, address)
         if ok:
