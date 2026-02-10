@@ -107,6 +107,7 @@ def _addr_lower(addr: str | None) -> str | None:
     a = str(addr).strip()
     return a.lower() if a else None
 
+
 def _sanitize_for_json(obj: Any) -> Any:
     if hasattr(obj, "hex") and callable(obj.hex):
         return obj.hex()
