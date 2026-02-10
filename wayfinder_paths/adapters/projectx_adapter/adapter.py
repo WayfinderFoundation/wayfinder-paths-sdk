@@ -102,26 +102,6 @@ query PositionsByOwner($owner: String!, $first: Int!, $lastId: String!) {
 }
 """
 
-SWAPS_QUERY_SIMPLE_TICK = """
-query Swaps(
-  $pool: String!
-  $first: Int!
-) {
-  swaps(
-    first: $first
-    orderBy: timestamp
-    orderDirection: desc
-    where: { pool: $pool }
-  ) {
-    id
-    timestamp
-    tick
-    sqrtPriceX96
-    pool { id }
-  }
-}
-"""
-
 SWAPS_QUERY_VOLUME_TICK = """
 query Swaps(
   $pool: String!
@@ -163,29 +143,6 @@ query Swaps(
   }
 }
 """
-
-SWAPS_QUERY_VOLUME = """
-query Swaps(
-  $pool: String!
-  $first: Int!
-) {
-  swaps(
-    first: $first
-    orderBy: timestamp
-    orderDirection: desc
-    where: { pool: $pool }
-  ) {
-    id
-    timestamp
-    sqrtPriceX96
-    amount0
-    amount1
-    amountUSD
-    pool { id }
-  }
-}
-"""
-
 
 class ProjectXLiquidityAdapter(BaseAdapter):
     adapter_type = "PROJECTX"
@@ -255,18 +212,26 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             if count <= 0:
                 return []
 
-            token_ids: list[int] = []
-            for i in range(count):
-                token_id = await npm.functions.tokenOfOwnerByIndex(
-                    self.owner, int(i)
-                ).call(block_identifier="latest")
-                token_ids.append(int(token_id))
+            token_ids = await asyncio.gather(
+                *(
+                    npm.functions.tokenOfOwnerByIndex(self.owner, i).call(
+                        block_identifier="latest"
+                    )
+                    for i in range(count)
+                )
+            )
+
+            raw_positions = await asyncio.gather(
+                *(
+                    npm.functions.positions(int(tid)).call(
+                        block_identifier="latest"
+                    )
+                    for tid in token_ids
+                )
+            )
 
             snapshots: list[PositionSnapshot] = []
-            for token_id in token_ids:
-                pos = await npm.functions.positions(int(token_id)).call(
-                    block_identifier="latest"
-                )
+            for token_id, pos in zip(token_ids, raw_positions, strict=True):
                 token0 = to_checksum_address(pos[2])
                 token1 = to_checksum_address(pos[3])
                 fee = int(pos[4])
@@ -321,12 +286,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
         data: dict[str, Any] = {}
         last_err: Exception | None = None
-        for query_str in (
-            SWAPS_QUERY_VOLUME_TICK,
-            SWAPS_QUERY_VOLUME,
-            SWAPS_QUERY_SIMPLE_TICK,
-            SWAPS_QUERY_SIMPLE,
-        ):
+        for query_str in (SWAPS_QUERY_VOLUME_TICK, SWAPS_QUERY_SIMPLE):
             try:
                 data = await _query(query_str)
                 if data.get("swaps") is not None:
