@@ -25,6 +25,11 @@ Best practice:
 Swap history reads can fail due to subgraph downtime or missing config.
 Always check `(ok, swaps)` and fall back to on-chain `slot0().tick` if needed.
 
+## Points are updated daily (eventual consistency)
+
+`fetch_prjx_points()` reads a points endpoint that updates daily. If points don’t show up
+immediately after activity, treat it as normal (not a strategy/adaptor bug).
+
 ## `swap_exact_in()` is ERC20-only
 
 `swap_exact_in()` rejects “native” token inputs/outputs. Use wrapped HYPE (WHYPE) for native-like swaps.
@@ -50,4 +55,3 @@ All amounts are raw base units (wei). Convert human → raw using token decimals
 If `web3_from_chain_id(999)` raises, add HyperEVM RPC URLs under `config.json`:
 
 - `rpcs["999"] = ["https://..."]`
-

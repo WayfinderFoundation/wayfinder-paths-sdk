@@ -25,3 +25,7 @@ Notable helpers:
 - `burn_position(token_id)` (convenience wrapper over `remove_liquidity(..., collect=True, burn=True)`)
 - `swap_exact_in(from_token, to_token, amount_in, slippage_bps=...)`
 - `find_pool_for_pair(token_a, token_b, prefer_fees=...)`
+
+Notes:
+
+- ProjectX points are updated daily; missing/unchanged points immediately after activity is expected.
