@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -12,7 +11,6 @@ from web3 import AsyncWeb3
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
-from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.projectx import (
     ADDRESS_TO_TOKEN_ID,
@@ -24,9 +22,11 @@ from wayfinder_paths.core.constants.projectx import (
 )
 from wayfinder_paths.core.constants.projectx_abi import (
     PROJECTX_FACTORY_ABI,
-    PROJECTX_NPM_ABI,
     PROJECTX_POOL_ABI,
     PROJECTX_ROUTER_ABI,
+)
+from wayfinder_paths.core.constants.uniswap_v3_abi import (
+    NONFUNGIBLE_POSITION_MANAGER_ABI,
 )
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
@@ -38,17 +38,22 @@ from wayfinder_paths.core.utils.transaction import (
     wait_for_transaction_receipt,
 )
 from wayfinder_paths.core.utils.uniswap_v3_math import (
+    MASK_256,
+    Q128,
     amounts_for_liq_inrange,
+    collect_params,
+    deadline,
+    filter_positions,
     liq_for_amounts,
+    read_all_positions,
+    read_position,
     round_tick_to_spacing,
+    slippage_min,
     sqrt_price_x96_from_tick,
     sqrt_price_x96_to_price,
     tick_from_sqrt_price_x96,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-Q128 = 2**128
-_MASK_256 = (1 << 256) - 1
 
 MINT_POLL_ATTEMPTS = 6
 INITIAL_MINT_DELAY_SECONDS = 2
@@ -144,6 +149,7 @@ query Swaps(
 }
 """
 
+
 class ProjectXLiquidityAdapter(BaseAdapter):
     adapter_type = "PROJECTX"
 
@@ -192,74 +198,34 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         return {meta["token0"]: bal0, meta["token1"]: bal1}
 
     async def list_positions(self) -> list[PositionSnapshot]:
-        """List positions owned by the strategy wallet (on-chain via NPM enumeration).
-
-        Filters to the configured pool (token0/token1 + fee tier).
-        """
         meta = await self._pool_meta()
-        pool_fee = int(meta["fee"])
-        pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
-            balance = await npm.functions.balanceOf(self.owner).call(
-                block_identifier="latest"
+            all_positions = await read_all_positions(npm, self.owner)
+
+        filtered = filter_positions(
+            all_positions,
+            token0=meta["token0"],
+            token1=meta["token1"],
+            fee=int(meta["fee"]),
+            active_only=True,
+        )
+        return [
+            PositionSnapshot(
+                token_id=tid,
+                liquidity=pos["liquidity"],
+                tick_lower=pos["tick_lower"],
+                tick_upper=pos["tick_upper"],
+                fee=pos["fee"],
+                token0=pos["token0"],
+                token1=pos["token1"],
             )
-            count = int(balance or 0)
-            if count <= 0:
-                return []
-
-            token_ids = await asyncio.gather(
-                *(
-                    npm.functions.tokenOfOwnerByIndex(self.owner, i).call(
-                        block_identifier="latest"
-                    )
-                    for i in range(count)
-                )
-            )
-
-            raw_positions = await asyncio.gather(
-                *(
-                    npm.functions.positions(int(tid)).call(
-                        block_identifier="latest"
-                    )
-                    for tid in token_ids
-                )
-            )
-
-            snapshots: list[PositionSnapshot] = []
-            for token_id, pos in zip(token_ids, raw_positions, strict=True):
-                token0 = to_checksum_address(pos[2])
-                token1 = to_checksum_address(pos[3])
-                fee = int(pos[4])
-                tick_lower = int(pos[5])
-                tick_upper = int(pos[6])
-                liquidity = int(pos[7])
-                owed0 = int(pos[10])
-                owed1 = int(pos[11])
-
-                if fee != pool_fee:
-                    continue
-                if {token0.lower(), token1.lower()} != pool_tokens:
-                    continue
-                if liquidity <= 0 and owed0 <= 0 and owed1 <= 0:
-                    continue
-
-                snapshots.append(
-                    PositionSnapshot(
-                        token_id=int(token_id),
-                        liquidity=liquidity,
-                        tick_lower=tick_lower,
-                        tick_upper=tick_upper,
-                        fee=fee,
-                        token0=token0,
-                        token1=token1,
-                    )
-                )
-            return snapshots
+            for tid, pos in filtered
+        ]
 
     async def fetch_swaps(
         self,
@@ -433,12 +399,28 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         if amt0_des <= 0 and amt1_des <= 0:
             return None, None, empty_meta
 
-        await self._ensure_allowance(token0, str(THBILL_USDC_METADATA["npm"]), amt0_des)
-        await self._ensure_allowance(token1, str(THBILL_USDC_METADATA["npm"]), amt1_des)
+        npm_addr = to_checksum_address(str(THBILL_USDC_METADATA["npm"]))
+        await ensure_allowance(
+            token_address=to_checksum_address(token0),
+            owner=self.owner,
+            spender=npm_addr,
+            amount=int(amt0_des),
+            chain_id=PROJECTX_CHAIN_ID,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amt0_des * 2),
+        )
+        await ensure_allowance(
+            token_address=to_checksum_address(token1),
+            owner=self.owner,
+            spender=npm_addr,
+            amount=int(amt1_des),
+            chain_id=PROJECTX_CHAIN_ID,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amt1_des * 2),
+        )
 
-        slip = max(0, min(10_000, int(slippage_bps)))
-        amt0_min = max(0, (int(amt0_des) * (10_000 - slip)) // 10_000)
-        amt1_min = max(0, (int(amt1_des) * (10_000 - slip)) // 10_000)
+        amt0_min = slippage_min(amt0_des, slippage_bps)
+        amt1_min = slippage_min(amt1_des, slippage_bps)
 
         params = (
             token0,
@@ -451,13 +433,13 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             int(amt0_min),
             int(amt1_min),
             self.owner,
-            int(time.time()) + 1200,
+            deadline(1200),
         )
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
             data = npm.encode_abi("mint", args=[params])
         tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
@@ -487,18 +469,15 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
-            raw = await npm.functions.positions(int(token_id)).call(
-                block_identifier="latest"
-            )
-            current_liq = int(raw[7])
+            pos = await read_position(npm, int(token_id))
+            current_liq = pos["liquidity"]
             if current_liq == 0:
                 return None
-            target = int(liquidity or current_liq)
-            target = min(target, current_liq)
+            target = min(int(liquidity or current_liq), current_liq)
 
-            params = (int(token_id), int(target), 0, 0, int(time.time()) + 600)
+            params = (int(token_id), int(target), 0, 0, deadline(600))
             data = npm.encode_abi("decreaseLiquidity", args=[params])
 
         tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
@@ -509,22 +488,16 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
-            raw = await npm.functions.positions(int(token_id)).call(
-                block_identifier="latest"
-            )
-            token0 = to_checksum_address(raw[2])
-            token1 = to_checksum_address(raw[3])
+            pos = await read_position(npm, int(token_id))
+            token0 = pos["token0"]
+            token1 = pos["token1"]
             before0, before1 = await self._balances_for_tokens(web3, [token0, token1])
 
-            params = (
-                int(token_id),
-                self.owner,
-                2**128 - 1,
-                2**128 - 1,
+            data = npm.encode_abi(
+                "collect", args=[collect_params(int(token_id), self.owner)]
             )
-            data = npm.encode_abi("collect", args=[params])
 
         tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
@@ -543,9 +516,9 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
     async def burn_position(self, token_id: int) -> str:
         position = await self._read_position_struct(int(token_id))
-        liq = int(position["liquidity"])
-        owed0 = int(position["tokensOwed0"])
-        owed1 = int(position["tokensOwed1"])
+        liq = position["liquidity"]
+        owed0 = position["tokens_owed0"]
+        owed1 = position["tokens_owed1"]
 
         if liq > 0:
             await self.decrease_liquidity(token_id, liquidity=liq)
@@ -556,7 +529,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
             data = npm.encode_abi("burn", args=[int(token_id)])
 
@@ -602,18 +575,30 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         if amt0_des <= 0 and amt1_des <= 0:
             return None, empty_spend
 
+        npm_addr = to_checksum_address(str(THBILL_USDC_METADATA["npm"]))
         if amt0_des > 0:
-            await self._ensure_allowance(
-                token0, str(THBILL_USDC_METADATA["npm"]), int(amt0_des)
+            await ensure_allowance(
+                token_address=to_checksum_address(token0),
+                owner=self.owner,
+                spender=npm_addr,
+                amount=int(amt0_des),
+                chain_id=PROJECTX_CHAIN_ID,
+                signing_callback=self.strategy_wallet_signing_callback,
+                approval_amount=int(amt0_des * 2),
             )
         if amt1_des > 0:
-            await self._ensure_allowance(
-                token1, str(THBILL_USDC_METADATA["npm"]), int(amt1_des)
+            await ensure_allowance(
+                token_address=to_checksum_address(token1),
+                owner=self.owner,
+                spender=npm_addr,
+                amount=int(amt1_des),
+                chain_id=PROJECTX_CHAIN_ID,
+                signing_callback=self.strategy_wallet_signing_callback,
+                approval_amount=int(amt1_des * 2),
             )
 
-        slip = max(0, min(10_000, int(slippage_bps)))
-        amt0_min = max(0, (int(amt0_des) * (10_000 - slip)) // 10_000)
-        amt1_min = max(0, (int(amt1_des) * (10_000 - slip)) // 10_000)
+        amt0_min = slippage_min(amt0_des, slippage_bps)
+        amt1_min = slippage_min(amt1_des, slippage_bps)
 
         params = (
             int(token_id),
@@ -621,13 +606,13 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             int(amt1_des),
             int(amt0_min),
             int(amt1_min),
-            int(time.time()) + 900,
+            deadline(900),
         )
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
             data = npm.encode_abi("increaseLiquidity", args=[params])
 
@@ -671,8 +656,14 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 token_in, token_out, prefer_fees=prefer_fees
             )
 
-        await self._ensure_allowance(
-            token_in, str(THBILL_USDC_METADATA["router"]), int(amount_in)
+        await ensure_allowance(
+            token_address=to_checksum_address(token_in),
+            owner=self.owner,
+            spender=to_checksum_address(str(THBILL_USDC_METADATA["router"])),
+            amount=int(amount_in),
+            chain_id=PROJECTX_CHAIN_ID,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amount_in * 2),
         )
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
@@ -736,7 +727,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 token_out,
                 int(selected_fee),
                 self.owner,
-                int(time.time()) + 900,
+                deadline(900),
                 int(amount_in),
                 int(amount_out_min),
                 0,
@@ -878,8 +869,6 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return {"error": str(exc)}
 
-    # ---------------------------- internals
-
     async def _pool_meta(self) -> dict[str, Any]:
         if self._pool_meta_cache:
             return self._pool_meta_cache
@@ -965,21 +954,6 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 web3=web3,
                 block_identifier="pending",
             )
-        )
-
-    async def _ensure_allowance(
-        self, token_address: str, spender: str, needed: int
-    ) -> None:
-        if needed <= 0:
-            return
-        await ensure_allowance(
-            token_address=to_checksum_address(token_address),
-            owner=self.owner,
-            spender=to_checksum_address(spender),
-            amount=int(needed),
-            chain_id=PROJECTX_CHAIN_ID,
-            signing_callback=self.strategy_wallet_signing_callback,
-            approval_amount=int(needed * 2),
         )
 
     def _build_tx(self, to_address: str, data: str, value: int = 0) -> dict[str, Any]:
@@ -1141,23 +1115,9 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=PROJECTX_NPM_ABI,
+                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
-            raw = await npm.functions.positions(int(token_id)).call(
-                block_identifier="latest"
-            )
-        return {
-            "token0": to_checksum_address(raw[2]),
-            "token1": to_checksum_address(raw[3]),
-            "fee": int(raw[4]),
-            "tickLower": int(raw[5]),
-            "tickUpper": int(raw[6]),
-            "liquidity": int(raw[7]),
-            "feeGrowthInside0LastX128": int(raw[8]),
-            "feeGrowthInside1LastX128": int(raw[9]),
-            "tokensOwed0": int(raw[10]),
-            "tokensOwed1": int(raw[11]),
-        }
+            return dict(await read_position(npm, int(token_id)))
 
     async def _fee_growth_inside_now(
         self,
@@ -1186,27 +1146,27 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         f0_below = (
             int(tl[2])
             if tick_current >= tick_lower
-            else (f0_global - int(tl[2])) & _MASK_256
+            else (f0_global - int(tl[2])) & MASK_256
         )
         f1_below = (
             int(tl[3])
             if tick_current >= tick_lower
-            else (f1_global - int(tl[3])) & _MASK_256
+            else (f1_global - int(tl[3])) & MASK_256
         )
 
         f0_above = (
             int(tu[2])
             if tick_current < tick_upper
-            else (f0_global - int(tu[2])) & _MASK_256
+            else (f0_global - int(tu[2])) & MASK_256
         )
         f1_above = (
             int(tu[3])
             if tick_current < tick_upper
-            else (f1_global - int(tu[3])) & _MASK_256
+            else (f1_global - int(tu[3])) & MASK_256
         )
 
-        f0_inside = (f0_global - f0_below - f0_above) & _MASK_256
-        f1_inside = (f1_global - f1_below - f1_above) & _MASK_256
+        f0_inside = (f0_global - f0_below - f0_above) & MASK_256
+        f1_inside = (f1_global - f1_below - f1_above) & MASK_256
         return f0_inside, f1_inside
 
     async def _read_live_claimable_fees(self, token_id: int) -> tuple[int, int]:
@@ -1222,16 +1182,16 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             f0_inside, f1_inside = await self._fee_growth_inside_now(
                 pool_contract,
                 tick_current,
-                int(position["tickLower"]),
-                int(position["tickUpper"]),
+                position["tick_lower"],
+                position["tick_upper"],
             )
-        delta0 = (f0_inside - int(position["feeGrowthInside0LastX128"])) & _MASK_256
-        delta1 = (f1_inside - int(position["feeGrowthInside1LastX128"])) & _MASK_256
-        extra0 = (int(position["liquidity"]) * delta0) // Q128
-        extra1 = (int(position["liquidity"]) * delta1) // Q128
-        claim0 = int(position["tokensOwed0"]) + int(extra0)
-        claim1 = int(position["tokensOwed1"]) + int(extra1)
-        return int(claim0), int(claim1)
+        delta0 = (f0_inside - position["fee_growth_inside0_last_x128"]) & MASK_256
+        delta1 = (f1_inside - position["fee_growth_inside1_last_x128"]) & MASK_256
+        extra0 = (position["liquidity"] * delta0) // Q128
+        extra1 = (position["liquidity"] * delta1) // Q128
+        claim0 = position["tokens_owed0"] + extra0
+        claim1 = position["tokens_owed1"] + extra1
+        return claim0, claim1
 
     @staticmethod
     def _estimate_fees_usd_from_pool(
@@ -1258,26 +1218,20 @@ class ProjectXLiquidityAdapter(BaseAdapter):
     async def _find_pool_for_pair(
         self, token_a: str, token_b: str, *, prefer_fees: Sequence[int] | None = None
     ) -> tuple[int, str]:
+        from wayfinder_paths.core.utils.uniswap_v3_math import find_pool
+
         fees = list(prefer_fees or [100, 500, 1000, 3000, 10000])
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             factory = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["factory"])),
                 abi=PROJECTX_FACTORY_ABI,
             )
-            pool_addrs = await asyncio.gather(
-                *[
-                    factory.functions.getPool(
-                        to_checksum_address(token_a),
-                        to_checksum_address(token_b),
-                        int(fee),
-                    ).call(block_identifier="latest")
-                    for fee in fees
-                ]
+            results = await asyncio.gather(
+                *(find_pool(factory, token_a, token_b, fee) for fee in fees)
             )
-            for fee, pool_addr in zip(fees, pool_addrs, strict=False):
-                if not pool_addr or str(pool_addr).lower() == ZERO_ADDRESS.lower():
-                    continue
-                return int(fee), to_checksum_address(pool_addr)
+            for fee, pool_addr in zip(fees, results, strict=True):
+                if pool_addr:
+                    return fee, pool_addr
         raise RuntimeError(
             f"No PRJX route for pair {token_a}->{token_b} (fees tried: {fees})"
         )

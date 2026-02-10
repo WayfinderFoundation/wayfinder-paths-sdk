@@ -126,7 +126,6 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter._balance_for_band = AsyncMock(return_value=None)
-    adapter._ensure_allowance = AsyncMock(return_value=None)
     adapter._extract_token_id_from_receipt = AsyncMock(return_value=123)
     adapter._token_meta = AsyncMock(return_value={"decimals": 6, "symbol": "TKN"})
 
@@ -166,6 +165,11 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
     )
     monkeypatch.setattr(
         projectx_adapter_module,
+        "ensure_allowance",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        projectx_adapter_module,
         "send_transaction",
         AsyncMock(return_value="0xtxhash"),
     )
@@ -202,7 +206,7 @@ async def test_burn_position_decreases_collects_then_burns(monkeypatch):
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter._read_position_struct = AsyncMock(
-        return_value={"liquidity": 42, "tokensOwed0": 0, "tokensOwed1": 0}
+        return_value={"liquidity": 42, "tokens_owed0": 0, "tokens_owed1": 0}
     )
     adapter.decrease_liquidity = AsyncMock(return_value="0xtx_decrease")
     adapter.collect_fees = AsyncMock(return_value=("0xtx_collect", {}))

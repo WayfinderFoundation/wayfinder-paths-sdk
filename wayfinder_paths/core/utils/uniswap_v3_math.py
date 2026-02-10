@@ -1,19 +1,41 @@
-"""Uniswap v3 math helpers (ported from Wayfinder Django ProjectX implementation).
+"""Uniswap v3 math helpers and shared on-chain read utilities.
 
-These utilities are used by the ProjectX (Uniswap v3 fork on HyperEVM) adapter + strategy,
-but are chain/protocol-agnostic.
+Pure math (tick/price/liquidity conversions) and common NPM contract interactions
+used by any Uniswap V3 fork adapter (Uniswap, ProjectX, etc.).
 """
 
 from __future__ import annotations
 
 import math
+import time
 from decimal import Decimal, getcontext
+from typing import TypedDict
+
+from eth_utils import to_checksum_address
 
 getcontext().prec = 64
 
+Q128 = 2**128
 Q96 = Decimal(2) ** 96
 Q32 = 1 << 32
 TICK_BASE = 1.0001
+MAX_UINT128 = 2**128 - 1
+MASK_256 = (1 << 256) - 1
+
+
+class PositionData(TypedDict):
+    nonce: int
+    operator: str
+    token0: str
+    token1: str
+    fee: int
+    tick_lower: int
+    tick_upper: int
+    liquidity: int
+    fee_growth_inside0_last_x128: int
+    fee_growth_inside1_last_x128: int
+    tokens_owed0: int
+    tokens_owed1: int
 
 
 def price_to_sqrt_price_x96(price: float, decimals0: int, decimals1: int) -> int:
@@ -180,3 +202,141 @@ def tick_from_sqrt_price_x96(sqrt_price_x96: float) -> int:
 def _sorted_bounds(sqrt_a: int, sqrt_b: int) -> tuple[Decimal, Decimal]:
     a, b = sorted((Decimal(sqrt_a), Decimal(sqrt_b)))
     return a, b
+
+
+def parse_position_struct(raw: tuple) -> PositionData:
+    return PositionData(
+        nonce=int(raw[0]),
+        operator=to_checksum_address(raw[1]),
+        token0=to_checksum_address(raw[2]),
+        token1=to_checksum_address(raw[3]),
+        fee=int(raw[4]),
+        tick_lower=int(raw[5]),
+        tick_upper=int(raw[6]),
+        liquidity=int(raw[7]),
+        fee_growth_inside0_last_x128=int(raw[8]),
+        fee_growth_inside1_last_x128=int(raw[9]),
+        tokens_owed0=int(raw[10]),
+        tokens_owed1=int(raw[11]),
+    )
+
+
+async def read_position(npm_contract, token_id: int) -> PositionData:
+    raw = await npm_contract.functions.positions(int(token_id)).call(
+        block_identifier="latest"
+    )
+    return parse_position_struct(raw)
+
+
+async def enumerate_token_ids(npm_contract, owner: str) -> list[int]:
+    balance = await npm_contract.functions.balanceOf(owner).call(
+        block_identifier="latest"
+    )
+    count = int(balance or 0)
+    if count <= 0:
+        return []
+    import asyncio
+
+    ids = await asyncio.gather(
+        *(
+            npm_contract.functions.tokenOfOwnerByIndex(owner, i).call(
+                block_identifier="latest"
+            )
+            for i in range(count)
+        )
+    )
+    return [int(tid) for tid in ids]
+
+
+async def read_all_positions(
+    npm_contract, owner: str
+) -> list[tuple[int, PositionData]]:
+    token_ids = await enumerate_token_ids(npm_contract, owner)
+    if not token_ids:
+        return []
+    import asyncio
+
+    raws = await asyncio.gather(
+        *(
+            npm_contract.functions.positions(tid).call(block_identifier="latest")
+            for tid in token_ids
+        )
+    )
+    return [
+        (tid, parse_position_struct(raw))
+        for tid, raw in zip(token_ids, raws, strict=True)
+    ]
+
+
+def filter_positions(
+    positions: list[tuple[int, PositionData]],
+    *,
+    token0: str | None = None,
+    token1: str | None = None,
+    fee: int | None = None,
+    active_only: bool = False,
+) -> list[tuple[int, PositionData]]:
+    result = []
+    pool_tokens: set[str] | None = None
+    if token0 is not None and token1 is not None:
+        pool_tokens = {token0.lower(), token1.lower()}
+
+    for tid, pos in positions:
+        if fee is not None and pos["fee"] != fee:
+            continue
+        if pool_tokens is not None:
+            pos_tokens = {pos["token0"].lower(), pos["token1"].lower()}
+            if pos_tokens != pool_tokens:
+                continue
+        if active_only and (
+            pos["liquidity"] <= 0
+            and pos["tokens_owed0"] <= 0
+            and pos["tokens_owed1"] <= 0
+        ):
+            continue
+        result.append((tid, pos))
+    return result
+
+
+async def find_pool(
+    factory_contract, token_a: str, token_b: str, fee: int
+) -> str | None:
+    from wayfinder_paths.core.constants import ZERO_ADDRESS
+
+    addr = await factory_contract.functions.getPool(
+        to_checksum_address(token_a),
+        to_checksum_address(token_b),
+        int(fee),
+    ).call(block_identifier="latest")
+    if not addr or str(addr).lower() == ZERO_ADDRESS.lower():
+        return None
+    return to_checksum_address(addr)
+
+
+def collect_params(token_id: int, recipient: str) -> tuple:
+    return (int(token_id), recipient, MAX_UINT128, MAX_UINT128)
+
+
+def slippage_min(amount: int, slippage_bps: int) -> int:
+    bps = max(0, min(10_000, int(slippage_bps)))
+    return max(0, (int(amount) * (10_000 - bps)) // 10_000)
+
+
+def deadline(seconds: int = 300) -> int:
+    return int(time.time()) + seconds
+
+
+def price_to_tick_decimal(
+    price: float, token0_decimals: int, token1_decimals: int
+) -> int:
+    adjusted = price * (10 ** (token0_decimals - token1_decimals))
+    if adjusted <= 0:
+        raise ValueError("adjusted price must be positive")
+    return math.floor(math.log(adjusted, TICK_BASE))
+
+
+def tick_to_price_decimal(
+    tick: int, token0_decimals: int, token1_decimals: int
+) -> float:
+    raw = TICK_BASE**tick
+    return raw / (10 ** (token0_decimals - token1_decimals))

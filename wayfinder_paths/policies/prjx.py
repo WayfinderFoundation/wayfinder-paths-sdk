@@ -1,7 +1,7 @@
 from wayfinder_paths.core.constants.contracts import PRJX_NPM, PRJX_ROUTER
-from wayfinder_paths.core.constants.projectx_abi import (
-    PROJECTX_NPM_ABI,
-    PROJECTX_ROUTER_ABI,
+from wayfinder_paths.core.constants.projectx_abi import PROJECTX_ROUTER_ABI
+from wayfinder_paths.core.constants.uniswap_v3_abi import (
+    NONFUNGIBLE_POSITION_MANAGER_ABI,
 )
 from wayfinder_paths.policies.util import allow_functions
 
@@ -33,5 +33,5 @@ async def prjx_npm():
             "collect",
             "burn",
         ],
-        manual_abi=PROJECTX_NPM_ABI,
+        manual_abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
     )
