@@ -11,11 +11,17 @@ CHAIN_CODE_TO_ID = {
     "base": CHAIN_ID_BASE,
     "arbitrum": CHAIN_ID_ARBITRUM,
     "arbitrum-one": CHAIN_ID_ARBITRUM,
+    "bsc": CHAIN_ID_BSC,
     "ethereum": CHAIN_ID_ETHEREUM,
     "mainnet": CHAIN_ID_ETHEREUM,
+    "polygon": CHAIN_ID_POLYGON,
     "avalanche": CHAIN_ID_AVALANCHE,
     "plasma": CHAIN_ID_PLASMA,
     "hyperevm": CHAIN_ID_HYPEREVM,
+}
+
+CHAIN_ID_TO_CODE: dict[int, str] = {
+    v: k for k, v in CHAIN_CODE_TO_ID.items() if k not in ("arbitrum-one", "mainnet")
 }
 
 SUPPORTED_CHAINS = [

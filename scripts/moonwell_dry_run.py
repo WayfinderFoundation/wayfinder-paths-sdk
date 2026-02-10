@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import json
 import sys
 
@@ -13,10 +12,9 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
 from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
-from wayfinder_paths.run_strategy import (
-    create_signing_callback,
-    find_strategy_class,
-    get_strategy_config,
+from wayfinder_paths.run_strategy import create_signing_callback, get_strategy_config
+from wayfinder_paths.strategies.moonwell_wsteth_loop_strategy.strategy import (
+    MoonwellWstethLoopStrategy,
 )
 
 
@@ -44,11 +42,6 @@ async def _run(args: argparse.Namespace) -> None:
     }
     erc20_balances = [(BASE_USDC, str(main_addr), int(usdc_raw))]
 
-    module = importlib.import_module(
-        f"wayfinder_paths.strategies.{strategy_name}.strategy"
-    )
-    strategy_cls = find_strategy_class(module)
-
     def signing_cb(address: str):
         return create_signing_callback(address, config)
 
@@ -59,7 +52,7 @@ async def _run(args: argparse.Namespace) -> None:
     ) as (_, fork_info):
         print("gorlami fork:", fork_info["fork_id"], "rpc:", fork_info["rpc_url"])
 
-        strategy = strategy_cls(
+        strategy = MoonwellWstethLoopStrategy(
             config,
             main_wallet_signing_callback=signing_cb(str(main_addr)),
             strategy_wallet_signing_callback=signing_cb(str(strat_addr)),

@@ -7,7 +7,7 @@ from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
 
-from wayfinder_paths.core.config import get_gorlami_base_url, get_rpc_urls
+from wayfinder_paths.core.config import get_rpc_urls
 from wayfinder_paths.core.constants.base import (
     GAS_BUFFER_MULTIPLIER,
     MAX_BASE_FEE_GROWTH_MULTIPLIER,
@@ -18,6 +18,7 @@ from wayfinder_paths.core.constants.chains import (
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
+    _is_gorlami_fork_rpc,
     get_transaction_chain_id,
     web3_from_chain_id,
     web3s_from_chain_id,
@@ -27,20 +28,8 @@ _DEFAULT_CONFIRMATIONS = 3
 
 
 def _is_gorlami_fork_chain(chain_id: int) -> bool:
-    try:
-        base = get_gorlami_base_url().rstrip("/")
-    except Exception:
-        return False
-
-    rpcs = get_rpc_urls().get(str(chain_id))
-    if rpcs is None:
-        rpcs = get_rpc_urls().get(chain_id)
-    if isinstance(rpcs, list):
-        rpc = rpcs[0] if rpcs else ""
-    else:
-        rpc = rpcs or ""
-
-    return isinstance(rpc, str) and rpc.startswith(f"{base}/fork/")
+    rpcs = get_rpc_urls().get(str(chain_id)) or get_rpc_urls().get(chain_id) or []
+    return any(_is_gorlami_fork_rpc(rpc) for rpc in rpcs)
 
 
 class TransactionRevertedError(RuntimeError):
@@ -281,7 +270,7 @@ async def send_transaction(
     if wait_for_receipt:
         try:
             receipt = await wait_for_transaction_receipt(
-                chain_id, txn_hash, confirmations=int(confirmations)
+                chain_id, txn_hash, confirmations=confirmations
             )
         except TransactionRevertedError as exc:
             receipt = (
