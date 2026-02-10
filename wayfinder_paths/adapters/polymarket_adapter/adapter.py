@@ -218,9 +218,7 @@ class PolymarketAdapter(BaseAdapter):
             data = res.json()
             if not isinstance(data, list):
                 return False, f"Unexpected /markets response: {type(data).__name__}"
-            normalized = [
-                self._normalize_market(m) for m in data if isinstance(m, dict)
-            ]
+            normalized = [self._normalize_market(m) for m in data]
             return True, normalized
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -275,12 +273,10 @@ class PolymarketAdapter(BaseAdapter):
             data = res.json()
             if not isinstance(data, dict):
                 return False, f"Unexpected /events/slug response: {type(data).__name__}"
-            if isinstance(data.get("markets"), list):
+            if "markets" in data:
                 data = dict(data)
                 data["markets"] = [
-                    self._normalize_market(m)
-                    for m in data["markets"]
-                    if isinstance(m, dict)
+                    self._normalize_market(m) for m in data["markets"]
                 ]
             return True, data
         except Exception as exc:  # noqa: BLE001
@@ -333,20 +329,10 @@ class PolymarketAdapter(BaseAdapter):
         )
         if not ok:
             return False, str(data)
-        if not isinstance(data, dict):
-            return False, "Unexpected public-search payload"
-
-        events = data.get("events") or []
-        if not isinstance(events, list):
-            return False, "Unexpected public-search payload: events is not a list"
 
         markets: list[dict[str, Any]] = []
-        for event in events:
-            if not isinstance(event, dict):
-                continue
+        for event in data.get("events") or []:
             for market in event.get("markets") or []:
-                if not isinstance(market, dict):
-                    continue
                 markets.append(
                     {
                         **self._normalize_market(market),
@@ -439,8 +425,6 @@ class PolymarketAdapter(BaseAdapter):
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
             return False, market
-        if not isinstance(market, dict):
-            return False, "Unexpected market payload"
 
         ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
         if not ok_tid:
@@ -463,8 +447,6 @@ class PolymarketAdapter(BaseAdapter):
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
             return False, market
-        if not isinstance(market, dict):
-            return False, "Unexpected market payload"
 
         ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
         if not ok_tid:
@@ -489,8 +471,6 @@ class PolymarketAdapter(BaseAdapter):
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
             return False, market
-        if not isinstance(market, dict):
-            return False, "Unexpected market payload"
 
         ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
         if not ok_tid:
@@ -783,10 +763,8 @@ class PolymarketAdapter(BaseAdapter):
         )
         if not ok_addr:
             return False, addr_data
-        if not isinstance(addr_data, dict):
-            return False, "Unexpected bridge deposit payload"
 
-        deposit_evm = ((addr_data or {}).get("address") or {}).get("evm")
+        deposit_evm = (addr_data.get("address") or {}).get("evm")
         if not deposit_evm:
             return False, "Bridge did not return an EVM deposit address"
 
@@ -851,10 +829,8 @@ class PolymarketAdapter(BaseAdapter):
         )
         if not ok_addr:
             return False, addr_data
-        if not isinstance(addr_data, dict):
-            return False, "Unexpected bridge withdraw payload"
 
-        withdraw_evm = ((addr_data or {}).get("address") or {}).get("evm")
+        withdraw_evm = (addr_data.get("address") or {}).get("evm")
         if not withdraw_evm:
             return False, "Bridge did not return an EVM withdraw address"
 
@@ -1185,11 +1161,9 @@ class PolymarketAdapter(BaseAdapter):
                 )
                 if not ok_page:
                     return False, page
-                if not isinstance(page, list):
-                    return False, "Unexpected positions payload"
                 if not page:
                     break
-                rows.extend([p for p in page if isinstance(p, dict)])
+                rows.extend(page)
                 if len(page) < int(positions_limit):
                     break
                 offset += int(positions_limit)
@@ -1242,7 +1216,7 @@ class PolymarketAdapter(BaseAdapter):
             out["errors"]["positions"] = str(pos_result)
         else:
             pos_ok, positions = pos_result
-            if pos_ok and isinstance(positions, list):
+            if pos_ok:
                 ok_any = True
                 out["positions"] = positions
 
@@ -1302,7 +1276,7 @@ class PolymarketAdapter(BaseAdapter):
             out["errors"]["balances"] = str(bal_result)
         else:
             bal_ok, bal_data = bal_result
-            if bal_ok and isinstance(bal_data, dict):
+            if bal_ok:
                 ok_any = True
                 out["balances"] = bal_data
                 out["usdc_e_balance"] = bal_data["usdc_e"]["amount"]
@@ -1403,9 +1377,9 @@ class PolymarketAdapter(BaseAdapter):
             )
             res.raise_for_status()
             data = res.json()
-            if isinstance(data, list) and data and isinstance(data[0], dict):
+            if data:
                 outcomes = json.loads(data[0].get("outcomes", "[]"))
-                if isinstance(outcomes, list) and len(outcomes) >= 2:
+                if len(outcomes) >= 2:
                     return [1 << i for i in range(len(outcomes))]
         except Exception:
             pass
@@ -1530,8 +1504,6 @@ class PolymarketAdapter(BaseAdapter):
         )
         if not ok:
             return False, path
-        if not isinstance(path, dict):
-            return False, "Unexpected preflight payload"
 
         collateral = str(path["collateral"])
         parent = str(path["parentCollectionId"])
