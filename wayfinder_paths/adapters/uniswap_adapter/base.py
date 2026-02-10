@@ -295,6 +295,28 @@ class UniswapV3BaseAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def get_full_user_state(
+        self,
+        *,
+        account: str | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Return a best-effort snapshot of a user's Uniswap V3 positions."""
+        ok, positions = await self.get_positions(owner=account)
+        if not ok:
+            return False, str(positions)
+
+        protocol = (self.adapter_type or self.name).lower()
+        acct = to_checksum_address(account) if account else self.owner
+        return (
+            True,
+            {
+                "protocol": protocol,
+                "chainId": int(self.chain_id),
+                "account": acct,
+                "positions": positions,
+            },
+        )
+
     async def get_uncollected_fees(
         self, token_id: int
     ) -> tuple[bool, dict[str, int] | str]:

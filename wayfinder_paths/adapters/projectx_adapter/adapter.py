@@ -200,27 +200,33 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def current_balances(self) -> tuple[bool, dict[str, int] | str]:
+    async def current_balances(
+        self, *, owner: str | None = None
+    ) -> tuple[bool, dict[str, int] | str]:
         try:
             meta = await self._pool_meta()
+            target_owner = to_checksum_address(owner) if owner else self.owner
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
                 bal0, bal1 = await self._balances_for_tokens(
-                    web3, [meta["token0"], meta["token1"]]
+                    web3, [meta["token0"], meta["token1"]], owner=target_owner
                 )
             return True, {meta["token0"]: int(bal0), meta["token1"]: int(bal1)}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def list_positions(self) -> tuple[bool, list[PositionSnapshot] | str]:
+    async def list_positions(
+        self, *, owner: str | None = None
+    ) -> tuple[bool, list[PositionSnapshot] | str]:
         try:
             meta = await self._pool_meta()
+            target_owner = to_checksum_address(owner) if owner else self.owner
 
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
                 npm = web3.eth.contract(
                     address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                     abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
                 )
-                all_positions = await read_all_positions(npm, self.owner)
+                all_positions = await read_all_positions(npm, target_owner)
 
             filtered = filter_positions(
                 all_positions,
@@ -244,6 +250,76 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
+
+    async def get_full_user_state(
+        self,
+        *,
+        account: str | None = None,
+        include_overview: bool = True,
+        include_balances: bool = True,
+        include_positions: bool = True,
+        include_points: bool = True,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        acct = to_checksum_address(account) if account else self.owner
+
+        out: dict[str, Any] = {
+            "protocol": (self.adapter_type or self.name).lower(),
+            "chainId": int(PROJECTX_CHAIN_ID),
+            "account": acct,
+            "pool": THBILL_USDC_POOL,
+            "poolOverview": None,
+            "balances": None,
+            "positions": None,
+            "points": None,
+            "errors": {},
+        }
+
+        ok_any = False
+
+        if include_overview:
+            ok_over, overview = await self.pool_overview()
+            if ok_over:
+                ok_any = True
+                out["poolOverview"] = overview
+            else:
+                out["errors"]["poolOverview"] = overview
+
+        if include_balances:
+            ok_bal, balances = await self.current_balances(owner=acct)
+            if ok_bal:
+                ok_any = True
+                out["balances"] = balances
+            else:
+                out["errors"]["balances"] = balances
+
+        if include_positions:
+            ok_pos, positions = await self.list_positions(owner=acct)
+            if ok_pos and isinstance(positions, list):
+                ok_any = True
+                out["positions"] = [
+                    {
+                        "token_id": int(p.token_id),
+                        "liquidity": int(p.liquidity),
+                        "tick_lower": int(p.tick_lower),
+                        "tick_upper": int(p.tick_upper),
+                        "fee": int(p.fee),
+                        "token0": str(p.token0),
+                        "token1": str(p.token1),
+                    }
+                    for p in positions
+                ]
+            else:
+                out["errors"]["positions"] = positions
+
+        if include_points:
+            ok_pts, pts = await self.fetch_prjx_points(acct)
+            if ok_pts:
+                ok_any = True
+                out["points"] = pts
+            else:
+                out["errors"]["points"] = pts
+
+        return ok_any, out
 
     async def fetch_swaps(
         self,
@@ -845,32 +921,40 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         web3: AsyncWeb3,
         token_addresses: Sequence[str],
         *,
+        owner: str | None = None,
         block_identifier: str = "pending",
     ) -> list[int]:
         if not token_addresses:
             return []
 
         checksummed = [to_checksum_address(a) for a in token_addresses]
+        target_owner = to_checksum_address(owner) if owner else self.owner
         try:
             multicall = MulticallAdapter(web3=web3, chain_id=PROJECTX_CHAIN_ID)
             calls = [
-                multicall.encode_erc20_balance(token, self.owner)
+                multicall.encode_erc20_balance(token, target_owner)
                 for token in checksummed
             ]
             res = await multicall.aggregate(calls, block_identifier=block_identifier)
             return [int(multicall.decode_uint256(d)) for d in res.return_data]
         except Exception:
             balances = await asyncio.gather(
-                *(self._balance(web3, token) for token in checksummed)
+                *(
+                    self._balance(web3, token, owner=target_owner)
+                    for token in checksummed
+                )
             )
             return [int(b) for b in balances]
 
-    async def _balance(self, web3: AsyncWeb3, token_address: str) -> int:
+    async def _balance(
+        self, web3: AsyncWeb3, token_address: str, *, owner: str | None = None
+    ) -> int:
+        target_owner = to_checksum_address(owner) if owner else self.owner
         return int(
             await get_token_balance(
                 token_address,
                 PROJECTX_CHAIN_ID,
-                self.owner,
+                target_owner,
                 web3=web3,
                 block_identifier="pending",
             )

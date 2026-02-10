@@ -215,6 +215,67 @@ async def test_burn_position_calls_remove_liquidity():
 
 
 @pytest.mark.asyncio
+async def test_get_full_user_state_serializes_positions():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    adapter.pool_overview = AsyncMock(return_value=(True, {"pool": "ok"}))
+    adapter.current_balances = AsyncMock(return_value=(True, {"token": 123}))
+    adapter.list_positions = AsyncMock(
+        return_value=(
+            True,
+            [
+                projectx_adapter_module.PositionSnapshot(
+                    token_id=321,
+                    liquidity=1,
+                    tick_lower=0,
+                    tick_upper=0,
+                    fee=100,
+                    token0="0x1111111111111111111111111111111111111111",
+                    token1="0x3333333333333333333333333333333333333333",
+                )
+            ],
+        )
+    )
+    adapter.fetch_prjx_points = AsyncMock(return_value=(True, {"points": 42}))
+
+    ok, state = await adapter.get_full_user_state(
+        account="0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
+    assert ok is True
+    assert state["protocol"] == "projectx"
+    assert state["account"].lower() == "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    assert state["pool"] == projectx_adapter_module.THBILL_USDC_POOL
+    assert state["points"] == {"points": 42}
+    assert state["poolOverview"] == {"pool": "ok"}
+    assert state["balances"] == {"token": 123}
+
+    assert isinstance(state["positions"], list)
+    assert state["positions"][0]["token_id"] == 321
+    assert isinstance(state["positions"][0], dict)
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_state_returns_false_when_everything_fails():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    adapter.pool_overview = AsyncMock(return_value=(False, "no overview"))
+    adapter.current_balances = AsyncMock(return_value=(False, "no balances"))
+    adapter.list_positions = AsyncMock(return_value=(False, "no positions"))
+    adapter.fetch_prjx_points = AsyncMock(return_value=(False, "no points"))
+
+    ok, state = await adapter.get_full_user_state()
+    assert ok is False
+    assert state["errors"] == {
+        "poolOverview": "no overview",
+        "balances": "no balances",
+        "positions": "no positions",
+        "points": "no points",
+    }
+
+
+@pytest.mark.asyncio
 async def test_poll_for_any_position_id_destructures_list_positions_tuple(monkeypatch):
     monkeypatch.setattr(projectx_adapter_module, "MINT_POLL_ATTEMPTS", 1)
     monkeypatch.setattr(
