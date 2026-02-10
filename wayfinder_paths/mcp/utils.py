@@ -73,6 +73,25 @@ def normalize_address(addr: str | None) -> str | None:
     return a if a else None
 
 
+def resolve_wallet_address(
+    *, wallet_label: str | None = None, wallet_address: str | None = None
+) -> tuple[str | None, str | None]:
+    """Return ``(normalized_address, label_used)`` from a label or raw address."""
+    waddr = normalize_address(wallet_address)
+    if waddr:
+        return waddr, None
+
+    want = (wallet_label or "").strip()
+    if not want:
+        return None, None
+
+    w = find_wallet_by_label(want)
+    if not w:
+        return None, None
+
+    return normalize_address(w.get("address")), want
+
+
 def parse_amount_to_raw(amount: str, decimals: int) -> int:
     try:
         d = Decimal(str(amount).strip())

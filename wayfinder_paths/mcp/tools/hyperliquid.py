@@ -16,24 +16,10 @@ from wayfinder_paths.mcp.utils import (
     load_config_json,
     normalize_address,
     ok,
+    resolve_wallet_address,
 )
 
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
-
-
-def _resolve_wallet_address(
-    *, wallet_label: str | None, wallet_address: str | None
-) -> str | None:
-    waddr = normalize_address(wallet_address)
-    if waddr:
-        return waddr
-    want = (wallet_label or "").strip()
-    if not want:
-        return None
-    w = find_wallet_by_label(want)
-    if not w:
-        return None
-    return normalize_address(w.get("address"))
 
 
 def _resolve_builder_fee(
@@ -148,7 +134,7 @@ async def hyperliquid(
 ) -> dict[str, Any]:
     adapter = HyperliquidAdapter()
 
-    addr = _resolve_wallet_address(
+    addr, _ = resolve_wallet_address(
         wallet_label=wallet_label, wallet_address=wallet_address
     )
     if not addr:
