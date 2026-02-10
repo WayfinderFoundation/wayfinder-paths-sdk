@@ -32,22 +32,6 @@ def _coerce_bytes32_str(value: Any) -> str:
     return str(value)
 
 
-async def erc20_balance_of(
-    web3: AsyncWeb3,
-    token_address: str,
-    wallet_address: str,
-    *,
-    block_identifier: str = "pending",
-) -> int:
-    checksum_wallet = web3.to_checksum_address(wallet_address)
-    checksum_token = web3.to_checksum_address(token_address)
-    contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-    balance = await contract.functions.balanceOf(checksum_wallet).call(
-        block_identifier=block_identifier
-    )
-    return int(balance)
-
-
 async def _erc20_string(
     web3: AsyncWeb3,
     token_address: str,
@@ -78,50 +62,42 @@ async def _erc20_string(
         return _coerce_bytes32_str(value)
 
 
-async def erc20_metadata(
-    web3: AsyncWeb3,
-    token_address: str,
-    *,
-    block_identifier: str = "latest",
-) -> tuple[str, str, int]:
-    checksum_token = web3.to_checksum_address(token_address)
-    contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-
-    symbol, name, decimals = await asyncio.gather(
-        _erc20_string(web3, checksum_token, "symbol", block_identifier=block_identifier),
-        _erc20_string(web3, checksum_token, "name", block_identifier=block_identifier),
-        contract.functions.decimals().call(block_identifier=block_identifier),
-    )
-    return str(symbol), str(name), int(decimals)
-
-
 async def get_erc20_metadata(
     token_address: str, chain_id: int, *, block_identifier: str = "latest"
 ) -> tuple[str, str, int]:
     async with web3_from_chain_id(chain_id) as web3:
-        return await erc20_metadata(
-            web3, token_address, block_identifier=block_identifier
+        checksum_token = web3.to_checksum_address(token_address)
+        contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+
+        symbol, name, decimals = await asyncio.gather(
+            _erc20_string(
+                web3, checksum_token, "symbol", block_identifier=block_identifier
+            ),
+            _erc20_string(
+                web3, checksum_token, "name", block_identifier=block_identifier
+            ),
+            contract.functions.decimals().call(block_identifier=block_identifier),
         )
+        return str(symbol), str(name), int(decimals)
 
 
 async def get_token_balance(
     token_address: str, chain_id: int, wallet_address: str
 ) -> int:
     async with web3_from_chain_id(chain_id) as web3:
-        checksum_wallet = AsyncWeb3.to_checksum_address(wallet_address)
-
+        checksum_wallet = web3.to_checksum_address(wallet_address)
         if is_native_token(token_address):
             balance = await web3.eth.get_balance(
-                checksum_wallet, block_identifier="pending"
+                checksum_wallet,
+                block_identifier="pending",
             )
             return int(balance)
-        else:
-            checksum_token = AsyncWeb3.to_checksum_address(token_address)
-            contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-            balance = await contract.functions.balanceOf(checksum_wallet).call(
-                block_identifier="pending"
-            )
-            return int(balance)
+        checksum_token = web3.to_checksum_address(token_address)
+        contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+        balance = await contract.functions.balanceOf(checksum_wallet).call(
+            block_identifier="pending"
+        )
+        return int(balance)
 
 
 async def get_token_allowance(

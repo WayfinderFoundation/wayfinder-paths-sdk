@@ -12,17 +12,6 @@ from wayfinder_paths.core.clients.TokenClient import (
 from wayfinder_paths.core.utils.tokens import get_erc20_metadata
 
 
-def _looks_like_evm_address(value: str) -> bool:
-    s = str(value).strip()
-    if len(s) != 42 or not s.startswith("0x"):
-        return False
-    try:
-        int(s[2:], 16)
-    except ValueError:
-        return False
-    return True
-
-
 class TokenAdapter(BaseAdapter):
     adapter_type: str = "TOKEN"
 
@@ -36,17 +25,13 @@ class TokenAdapter(BaseAdapter):
         self, token_address: str, *, chain_id: int
     ) -> tuple[bool, TokenDetails | str]:
         try:
-            if chain_id is None:
-                return False, "chain_id is required for onchain token lookup"
-            if not _looks_like_evm_address(token_address):
-                return False, f"Invalid token address: {token_address}"
-
-            checksum = to_checksum_address(token_address)
-            symbol, name, decimals = await get_erc20_metadata(checksum, int(chain_id))
+            symbol, name, decimals = await get_erc20_metadata(
+                token_address, int(chain_id)
+            )
 
             data: dict[str, Any] = {
-                "token_id": f"onchain:{int(chain_id)}:{checksum}",
-                "address": checksum,
+                "token_id": f"onchain:{int(chain_id)}:{token_address}",
+                "address": token_address,
                 "symbol": symbol,
                 "name": name,
                 "decimals": int(decimals),
@@ -63,8 +48,10 @@ class TokenAdapter(BaseAdapter):
         try:
             data = await TOKEN_CLIENT.get_token_details(query, chain_id=chain_id)
             if not data:
-                if chain_id is not None and _looks_like_evm_address(query):
-                    return await self.get_token_onchain(query, chain_id=int(chain_id))
+                if chain_id is not None and query.startswith("0x"):
+                    return await self.get_token_onchain(
+                        to_checksum_address(query), chain_id=int(chain_id)
+                    )
                 return (False, f"No token found for: {query}")
             return (True, data)
         except httpx.HTTPStatusError as e:
@@ -72,8 +59,10 @@ class TokenAdapter(BaseAdapter):
                 self.logger.warning(
                     f"Could not find token token with query {query}: {e}"
                 )
-                if chain_id is not None and _looks_like_evm_address(query):
-                    return await self.get_token_onchain(query, chain_id=int(chain_id))
+                if chain_id is not None and query.startswith("0x"):
+                    return await self.get_token_onchain(
+                        to_checksum_address(query), chain_id=int(chain_id)
+                    )
             else:
                 self.logger.error(f"Error getting token by query {query}: {e}")
             return (False, str(e))
