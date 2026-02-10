@@ -63,14 +63,10 @@ jobs:
             2. **Inline Imports:** Identify and consolidate inline imports into top-level imports unless there is a specific performance reason to keep them.
             3. **Defensive Over-engineering:** Remove unnecessary guards, redundant type casts, or excessively defensive code that clutters logic without adding safety (you may check with curl or search to find http responses).
 
-            After making changes, you MUST verify lint and format pass before committing:
-            - Run `poetry run ruff check --fix` and fix any remaining lint errors.
-            - Run `poetry run ruff format` to ensure formatting is correct.
-            - If either produces changes, include those in your commit.
-
             If changes are made:
             - Create a branch named 'maintenance/daily-cleanup-${{ github.run_id }}'
-            - Commit all changes (cleanup + lint/format fixes).
+            - Make sure lint and format pass by running `poetry run ruff check --fix` and `poetry run ruff format`. Fix any remaining errors.
+            - Commit all changes.
             - Push the branch and open a PR to main.
             - Summarize your changes in the PR description.
           claude_args: |
