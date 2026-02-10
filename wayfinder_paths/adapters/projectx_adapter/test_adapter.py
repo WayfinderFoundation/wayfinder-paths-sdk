@@ -126,7 +126,6 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter._balance_for_band = AsyncMock(return_value=None)
-    adapter._ensure_allowance = AsyncMock(return_value=None)
     adapter._extract_token_id_from_receipt = AsyncMock(return_value=123)
     adapter._token_meta = AsyncMock(return_value={"decimals": 6, "symbol": "TKN"})
 
@@ -157,12 +156,22 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
         lambda *a, **k: (500_000, 700_000),
     )
 
-    fake_npm = _FakeNpmContract()
-    fake_web3 = _FakeWeb3(fake_npm)
+    fake_web3 = _FakeWeb3(_FakeNpmContract())
     monkeypatch.setattr(
         projectx_adapter_module,
         "web3_from_chain_id",
         lambda _cid: _DummyAsyncContext(fake_web3),
+    )
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "ensure_allowance",
+        AsyncMock(return_value=None),
+    )
+    mock_encode_call = AsyncMock(return_value={"chainId": 8453, "data": "0x"})
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "encode_call",
+        mock_encode_call,
     )
     monkeypatch.setattr(
         projectx_adapter_module,
@@ -185,8 +194,10 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
     adapter._balance_for_band.assert_awaited_once_with(-180, -130, slippage_bps=30)
     assert adapter._sync_pool_meta.await_count == 2
 
-    assert fake_npm.calls and fake_npm.calls[0][0] == "mint"
-    (params,) = fake_npm.calls[0][1]
+    mock_encode_call.assert_awaited_once()
+    call_kwargs = mock_encode_call.call_args.kwargs
+    assert call_kwargs["fn_name"] == "mint"
+    (params,) = call_kwargs["args"]
     assert params[3] == -180
     assert params[4] == -130
     assert params[5] == 500_000
@@ -202,17 +213,16 @@ async def test_burn_position_decreases_collects_then_burns(monkeypatch):
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter._read_position_struct = AsyncMock(
-        return_value={"liquidity": 42, "tokensOwed0": 0, "tokensOwed1": 0}
+        return_value={"liquidity": 42, "tokens_owed0": 0, "tokens_owed1": 0}
     )
     adapter.decrease_liquidity = AsyncMock(return_value="0xtx_decrease")
     adapter.collect_fees = AsyncMock(return_value=("0xtx_collect", {}))
 
-    fake_npm = _FakeNpmContract()
-    fake_web3 = _FakeWeb3(fake_npm)
+    mock_encode_call = AsyncMock(return_value={"chainId": 8453, "data": "0x"})
     monkeypatch.setattr(
         projectx_adapter_module,
-        "web3_from_chain_id",
-        lambda _cid: _DummyAsyncContext(fake_web3),
+        "encode_call",
+        mock_encode_call,
     )
     monkeypatch.setattr(
         projectx_adapter_module,
@@ -224,5 +234,7 @@ async def test_burn_position_decreases_collects_then_burns(monkeypatch):
     assert tx_hash == "0xtx_burn"
     adapter.decrease_liquidity.assert_awaited_once_with(123, liquidity=42)
     adapter.collect_fees.assert_awaited_once_with(123)
-    assert fake_npm.calls and fake_npm.calls[0][0] == "burn"
-    assert fake_npm.calls[0][1] == [123]
+    mock_encode_call.assert_awaited_once()
+    call_kwargs = mock_encode_call.call_args.kwargs
+    assert call_kwargs["fn_name"] == "burn"
+    assert call_kwargs["args"] == [123]
