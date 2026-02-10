@@ -115,7 +115,6 @@ class TestBasisTradingStrategy:
         mock.place_stop_loss = AsyncMock(return_value=(True, {"status": "ok"}))
         mock.cancel_order = AsyncMock(return_value=(True, {"status": "ok"}))
         mock.withdraw = AsyncMock(return_value=(True, {"status": "ok"}))
-        mock.get_open_orders = AsyncMock(return_value=(True, []))
         mock.get_frontend_open_orders = AsyncMock(return_value=(True, []))
         mock.get_valid_order_size = MagicMock(side_effect=lambda _asset, size: size)
         mock.wait_for_deposit = AsyncMock(return_value=(True, 100.0))
@@ -169,7 +168,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
@@ -503,7 +502,7 @@ class TestBasisTradingStrategy:
         mock_hyperliquid_adapter.transfer_perp_to_spot = AsyncMock(
             return_value=(True, "ok")
         )
-        mock_hyperliquid_adapter.get_open_orders = AsyncMock(
+        mock_hyperliquid_adapter.get_frontend_open_orders = AsyncMock(
             return_value=(
                 True,
                 [
@@ -660,7 +659,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
@@ -702,7 +701,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(
@@ -986,7 +985,7 @@ class TestBasisTradingStrategy:
                     "wayfinder_paths.strategies.basis_trading_strategy.strategy.TokenAdapter"
                 ):
                     with patch(
-                        "wayfinder_paths.strategies.basis_trading_strategy.strategy.LedgerAdapter",
+                        "wayfinder_paths.core.strategies.Strategy.LedgerAdapter",
                         return_value=ledger_adapter,
                     ):
                         s = BasisTradingStrategy(

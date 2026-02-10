@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "wayfinder-paths"
-version = "0.1.0"
+version = "0.2.0"
 description = "Wayfinder Path: strategies and adapters"
 readme = "README.md"
 authors = ["Wayfinder <dev@wayfinder.ai>"]
@@ -21,6 +21,7 @@ numpy = "^1.26.0"
 pandas = "^2.2.0"
 hyperliquid-felix = "*"
 aiocache = "^0.12.3"
+click = "^8.1.7"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
@@ -35,6 +36,7 @@ safety = "^2.3.5"
 twine = "^6.2.0"
 mcp = "^1.10.1"
 vulture = "^2.14"
+mypy = "^1.19.1"
 
 [tool.poetry.scripts]
 wayfinder = "wayfinder_paths.mcp.cli:main"

@@ -1,52 +1,70 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 
 
 class _InfoStub(SimpleNamespace):
     def all_mids(self):
         return {"HYPE": "1.0"}
 
-    async def all_dex_mid_prices(self):  # pragma: no cover
-        raise AssertionError(
-            "Exchange must use Info.all_mids(), not all_dex_mid_prices"
-        )
+    def post(self, url_path, payload=None):
+        if isinstance(payload, dict):
+            req_type = payload.get("type", "")
+            if req_type == "allMids":
+                return {"HYPE": "1.0"}
+            if req_type == "maxBuilderFee":
+                return 0
+        return {"status": "ok"}
+
+    def query_user_dex_abstraction_state(self, user):
+        return True
+
+    @property
+    def asset_to_sz_decimals(self):
+        return {7: 0}
+
+    @property
+    def asset_to_coin(self):
+        return {7: "HYPE"}
 
 
-class _UtilStub(SimpleNamespace):
-    def get_price_decimals_for_hypecore_asset(self, asset_id: int) -> int:
-        return 6
-
-
-class TestExchangeMidPriceFetch:
+class TestAdapterMidPriceFetch:
     @pytest.mark.asyncio
     async def test_place_market_order_uses_all_mids(self):
-        info = _InfoStub(asset_to_coin={7: "HYPE"})
-        util = _UtilStub()
-        ex = Exchange(
-            info=info,
-            util=util,
-            sign_callback=AsyncMock(return_value="0x"),
-            signing_type="eip712",
-        )
+        info_stub = _InfoStub()
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+                return_value=info_stub,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
+                return_value=[""],
+            ),
+        ):
+            adapter = HyperliquidAdapter(
+                config={},
+                sign_callback=AsyncMock(return_value="0x" + "00" * 65),
+            )
 
-        async def _no_broadcast(action, address):
-            return action
+            async def _no_broadcast(action, address):
+                return {"status": "ok", "action": action}
 
-        ex.sign_and_broadcast_hypecore = _no_broadcast
+            adapter._sign_and_broadcast_hypecore = _no_broadcast
 
-        action = await ex.place_market_order(
-            asset_id=7,
-            is_buy=True,
-            slippage=0.01,
-            size=1.0,
-            address="0xabc",
-        )
+            success, result = await adapter.place_market_order(
+                asset_id=7,
+                is_buy=True,
+                slippage=0.01,
+                size=1.0,
+                address="0xabc",
+            )
 
-        assert action["type"] == "order"
-        assert action["orders"][0]["a"] == 7
-        assert action["orders"][0]["b"] is True
-        assert action["orders"][0]["p"] == "1.01"
+            action = result["action"]
+            assert action["type"] == "order"
+            assert action["orders"][0]["a"] == 7
+            assert action["orders"][0]["b"] is True
+            assert action["orders"][0]["p"] == "1.01"

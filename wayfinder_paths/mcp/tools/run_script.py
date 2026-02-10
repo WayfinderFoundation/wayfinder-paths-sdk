@@ -167,6 +167,7 @@ async def run_script(
             payload.get("message") or "Invalid script_path",
             payload.get("details"),
         )
+    assert isinstance(resolved_or_error, Path)
     script = resolved_or_error
 
     root = repo_root()

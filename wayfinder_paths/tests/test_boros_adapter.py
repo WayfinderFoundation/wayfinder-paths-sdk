@@ -16,7 +16,6 @@ def _make_adapter() -> BorosAdapter:
                 "account_id": 0,
             }
         },
-        simulation=True,
         user_address="0x0000000000000000000000000000000000000000",
     )
 

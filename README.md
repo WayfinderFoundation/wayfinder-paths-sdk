@@ -106,6 +106,8 @@ The SDK includes built-in support for these chain IDs:
 | Arbitrum | 42161 | `arbitrum` |
 | Polygon  | 137   | `polygon`  |
 | BSC      | 56    | `bsc`      |
+| Avalanche | 43114 | `avalanche` |
+| Plasma   | 9745  | `plasma`   |
 | HyperEVM | 999   | `hyperevm` |
 
 ## Strategies
@@ -163,6 +165,49 @@ poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action q
 poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action run --interval 300
 ```
 
+## Runner (local scheduler)
+
+Run strategies on an interval without cron:
+
+```bash
+# Start the daemon (recommended: detached/background)
+poetry run wayfinder runner start --detach
+
+# Idempotent: start if needed, otherwise no-op
+poetry run wayfinder runner ensure
+
+# Add a job (run update every 10 minutes)
+poetry run wayfinder runner add-job \
+  --name basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --interval 600 \
+  --config ./config.json
+
+# Schedule a local one-off script (must live in .wayfinder_runs/ by default)
+poetry run wayfinder runner add-job \
+  --name hourly-report \
+  --type script \
+  --script-path .wayfinder_runs/report.py \
+  --arg --verbose \
+  --interval 3600
+
+# Observe / control
+poetry run wayfinder runner status
+poetry run wayfinder runner run-once basis-update
+poetry run wayfinder runner pause basis-update
+poetry run wayfinder runner resume basis-update
+poetry run wayfinder runner delete basis-update
+poetry run wayfinder runner runs basis-update --limit 20
+poetry run wayfinder runner run-report 1 --tail-bytes 4000
+poetry run wayfinder runner stop
+```
+
+Runner state (SQLite + per-run logs) is stored in `./.wayfinder/runner/`.
+
+For architecture/extensibility notes (e.g. future Docker/VM runner), see `RUNNER_ARCHITECTURE.md`.
+
 ## Claude MCP Integration
 
 The repo includes an MCP server for Claude Code (see `.mcp.json`).
@@ -183,6 +228,7 @@ poetry run python -m wayfinder_paths.mcp.server
 | `run_strategy` | Status, policy, and strategy actions |
 | `run_script` | Execute a local Python script inside `.wayfinder_runs/` |
 | `wallets` | Create or list local wallets |
+| `runner` | Control the local runner daemon (status/add jobs/pause/resume) |
 
 ### MCP Resources (read-only)
 

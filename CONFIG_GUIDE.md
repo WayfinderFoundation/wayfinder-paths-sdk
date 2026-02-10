@@ -67,6 +67,8 @@ Default RPC endpoints are provided for common chains:
 - Ethereum (chain ID: `1`)
 - Base (chain ID: `8453`)
 - Arbitrum (chain ID: `42161`)
+- Avalanche (chain ID: `43114`)
+- Plasma (chain ID: `9745`)
 
 Override them in config.json if needed:
 

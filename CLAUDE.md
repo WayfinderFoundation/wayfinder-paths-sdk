@@ -130,18 +130,26 @@ When a user asks to run, check, or interact with a strategy:
 
 6. **Safety review** - Fund-moving actions (deposit, update, withdraw, exit) are gated by a safety review hook that shows a preview and asks for confirmation.
 
+7. **Mypy typing** - When adding or modifying Python code, ensure all *new/changed* code is fully type-annotated and does not introduce new mypy errors (existing legacy errors may remain).
+
 ## Execution modes (one-off vs recurring)
 
 When a user wants **immediate, one-off execution**:
 
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send).
-- **Hyperliquid perps:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel).
-- **Multi-step flows:** write a short Python script under `.wayfinder_runs/` and execute it with `mcp__wayfinder__run_script`.
+- **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
+- **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 Hyperliquid minimums:
 
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
+
+HIP-3 dex abstraction (required for multi-dex trading):
+
+- Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **dex abstraction** to be enabled on the user's account.
+- The adapter calls `ensure_dex_abstraction(address)` automatically before `place_market_order`, `place_limit_order`, and `place_trigger_order`. It queries the current state via `Info.query_user_dex_abstraction_state(user)` and enables it if needed — this is a one-time on-chain action per account.
+- If you're writing a custom script that places orders directly, call `await adapter.ensure_dex_abstraction(address)` before your first order.
 
 Hyperliquid deposits (Bridge2):
 
@@ -151,7 +159,7 @@ Hyperliquid deposits (Bridge2):
 
 Sizing note (avoid ambiguity):
 
-- If a user says “$X at Y× leverage”, confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.
+- If a user says "$X at Y× leverage", confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.
 - `mcp__wayfinder__hyperliquid_execute` supports `usd_amount` with `usd_amount_kind="notional"|"margin"` so this is explicit.
 
 **Scripting helper for adapters:**
@@ -168,11 +176,70 @@ await adapter.set_collateral(mtoken=USDC_MTOKEN)
 
 This auto-loads `config.json`, looks up the wallet by label, creates a signing callback, and wires everything together. For read-only adapters (e.g., PendleAdapter), omit the wallet label.
 
+For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `wayfinder_paths.core.utils.web3.web3_from_chain_id(chain_id)` which reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`).
+
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
 - Create or modify a strategy under `wayfinder_paths/strategies/` and follow the normal manifests/tests workflow.
+- Use the project-local runner to call strategy `update` on an interval (no cron needed).
+
+Runner CLI (project-local state in `./.wayfinder/runner/`):
+
+```bash
+# Start the daemon (recommended: detached/background)
+poetry run wayfinder runner start --detach
+
+# Idempotent: start if needed, otherwise no-op
+poetry run wayfinder runner ensure
+
+# Add an interval job (every 10 minutes)
+poetry run wayfinder runner add-job \
+  --name basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --interval 600 \
+  --config ./config.json
+
+# Add an interval job for a local one-off script (must live in .wayfinder_runs/ by default)
+poetry run wayfinder runner add-job \
+  --name hourly-report \
+  --type script \
+  --script-path .wayfinder_runs/report.py \
+  --arg --verbose \
+  --interval 3600
+
+# Inspect / control
+poetry run wayfinder runner status
+poetry run wayfinder runner run-once basis-update
+poetry run wayfinder runner pause basis-update
+poetry run wayfinder runner resume basis-update
+poetry run wayfinder runner delete basis-update
+poetry run wayfinder runner stop
+```
+
+Architecture/extensibility notes live in `RUNNER_ARCHITECTURE.md`.
+
+Runner MCP tool (controls the daemon via its local Unix socket):
+
+- `mcp__wayfinder__runner(action="status")`
+- `mcp__wayfinder__runner(action="daemon_status")`
+- `mcp__wayfinder__runner(action="ensure_started")` (starts detached if needed)
+- `mcp__wayfinder__runner(action="daemon_stop")`
+- `mcp__wayfinder__runner(action="add_job", name="basis-update", interval_seconds=600, strategy="basis_trading_strategy", strategy_action="update", config="./config.json")`
+- `mcp__wayfinder__runner(action="add_job", name="hourly-report", type="script", interval_seconds=3600, script_path=".wayfinder_runs/report.py", args=["--verbose"])`
+- `mcp__wayfinder__runner(action="pause_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="resume_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="delete_job", name="basis-update")`
+- `mcp__wayfinder__runner(action="run_once", name="basis-update")`
+- `mcp__wayfinder__runner(action="job_runs", name="basis-update", limit=20)`
+- `mcp__wayfinder__runner(action="run_report", run_id=123, tail_bytes=4000)`
+
+Safety note:
+
+- Runner executions are local automation and do **not** go through the Claude safety review prompt. Treat `update/deposit/withdraw/exit` as live fund-moving actions.
 
 Token identifiers (important for quoting/execution):
 

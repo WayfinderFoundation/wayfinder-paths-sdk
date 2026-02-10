@@ -9,7 +9,6 @@ from loguru import logger
 
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
-from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.pool_adapter.adapter import PoolAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.contracts import ENSO_ROUTER
@@ -168,15 +167,10 @@ class StablecoinYieldStrategy(Strategy):
         if strategy_wallet is not None:
             merged_config["strategy_wallet"] = strategy_wallet
 
-        self.config = merged_config
+        self.config: dict[str, Any] = merged_config
         self.deposited_amount = 0
         self.current_pool = None
         self.current_apy = 0
-        self.balance_adapter = None
-        self.token_adapter = None
-        self.ledger_adapter = None
-        self.pool_adapter = None
-        self.brap_adapter = None
 
         # State tracking for deterministic token management
         # All tokens strategy might hold
@@ -194,27 +188,20 @@ class StablecoinYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
-            balance = BalanceAdapter(
+            self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-            token_adapter = TokenAdapter()
-            ledger_adapter = LedgerAdapter()
-            pool_adapter = PoolAdapter()
-            brap_adapter = BRAPAdapter(
+            self.token_adapter = TokenAdapter()
+            self.pool_adapter = PoolAdapter()
+            self.brap_adapter = BRAPAdapter(
                 adapter_config,
                 strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
             )
-
-            self.balance_adapter = balance
-            self.token_adapter = token_adapter
-            self.ledger_adapter = ledger_adapter
-            self.pool_adapter = pool_adapter
-            self.brap_adapter = brap_adapter
-
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Failed to initialize strategy adapters: {e}")
+            raise
 
     def _get_strategy_wallet_address(self) -> str:
         strategy_wallet = self.config.get("strategy_wallet")
@@ -614,6 +601,7 @@ class StablecoinYieldStrategy(Strategy):
     def _is_gas_balance_entry(self, balance: dict[str, Any]) -> bool:
         if not self.gas_token:
             return False
+        assert self.current_pool is not None
 
         token_id = balance.get("token_id")
         if (
@@ -653,7 +641,7 @@ class StablecoinYieldStrategy(Strategy):
 
         try:
             token_info = self.usdc_token_info
-            self.current_pool = {
+            current_pool = {
                 "token_id": token_info.get("token_id"),
                 "name": token_info.get("name"),
                 "symbol": token_info.get("symbol"),
@@ -661,6 +649,7 @@ class StablecoinYieldStrategy(Strategy):
                 "address": token_info.get("address"),
                 "chain": token_info.get("chain"),
             }
+            self.current_pool = current_pool
             gas_token_id = self.gas_token.get("token_id")
             logger.info(
                 f"Current pool set to: {token_info.get('symbol')} on {token_info.get('chain', {}).get('name')}"
@@ -678,7 +667,7 @@ class StablecoinYieldStrategy(Strategy):
                 if main_usdc_status and main_usdc_balance is not None:
                     try:
                         available_main_usdc = float(main_usdc_balance) / (
-                            10 ** self.current_pool.get("decimals")
+                            10 ** current_pool.get("decimals")
                         )
                         logger.info(f"Main wallet USDC balance: {available_main_usdc}")
                         if available_main_usdc >= 0:
@@ -782,7 +771,7 @@ class StablecoinYieldStrategy(Strategy):
 
             if main_token_amount > 0:
                 self.current_pool_balance = int(
-                    main_token_amount * (10 ** self.current_pool.get("decimals"))
+                    main_token_amount * (10 ** current_pool.get("decimals"))
                 )
                 self.DEPOSIT_USDC = main_token_amount
                 logger.info(f"Set deposit amount to {main_token_amount} USDC")
@@ -804,7 +793,7 @@ class StablecoinYieldStrategy(Strategy):
                 self._track_token(self.usdc_token_info.get("token_id"))
                 self._update_balance(
                     self.usdc_token_info.get("token_id"),
-                    int(main_token_amount * (10 ** self.current_pool.get("decimals"))),
+                    int(main_token_amount * (10 ** current_pool.get("decimals"))),
                 )
 
             # Transfer gas if provided or if strategy needs top-up
@@ -863,6 +852,7 @@ class StablecoinYieldStrategy(Strategy):
                 False,
                 "Nothing to withdraw from strategy, wallet should be empty already. If not, an error has happened please manually remove funds",
             )
+        assert self.current_pool is not None
         logger.info("Fetching current pool balance")
         try:
             (
@@ -1037,12 +1027,12 @@ class StablecoinYieldStrategy(Strategy):
         return (True, f"Transferred to main wallet: {', '.join(transferred_items)}")
 
     async def _get_last_rotation_time(self, wallet_address: str) -> datetime | None:
-        success, data = await self.ledger_adapter.get_strategy_latest_transactions(
+        result = await self.ledger_adapter.get_strategy_latest_transactions(
             wallet_address=self._get_strategy_wallet_address(),
         )
-        if success is False:
+        if not result[0]:
             return None
-        for transaction in data.get("transactions", []):
+        for transaction in result[1].get("transactions", []):
             op_data = transaction.get("op_data", {})
             to_token = op_data.get("to_token_id")
             if (
@@ -1383,7 +1373,7 @@ class StablecoinYieldStrategy(Strategy):
 
             try:
                 success, token_info = await self.token_adapter.get_token(token_id)
-                if not success or not token_info:
+                if not success or not token_info or isinstance(token_info, str):
                     continue
 
                 results.append(
@@ -1405,7 +1395,7 @@ class StablecoinYieldStrategy(Strategy):
         if chain_id is None:
             chain_id = 8453
         success, llama_data = await self.pool_adapter.get_pools(chain_id=chain_id)
-        if not success:
+        if not success or isinstance(llama_data, str):
             return False, {"message": f"Failed to fetch Llama data: {llama_data}"}
 
         llama_pools = [
@@ -1418,11 +1408,14 @@ class StablecoinYieldStrategy(Strategy):
             and pool.get("network", "").lower() in self.SUPPORTED_NETWORK_CODES
         ]
         llama_pools = sorted(
-            llama_pools, key=lambda pool: pool.get("combined_apy_pct"), reverse=True
+            llama_pools,
+            key=lambda pool: pool.get("combined_apy_pct", 0.0),
+            reverse=True,
         )
         if not llama_pools:
             return False, {"message": "No suitable pools found."}
 
+        assert self.current_pool is not None
         for candidate in llama_pools[: self.SEARCH_DEPTH]:
             if candidate.get("address") == self.current_pool.get("address"):
                 return False, {"message": "Already in the best pool, no action needed."}
@@ -1582,11 +1575,11 @@ class StablecoinYieldStrategy(Strategy):
 
             try:
                 success, price_data = await self.token_adapter.get_token_price(token_id)
-                if not success:
+                if not success or isinstance(price_data, str):
                     continue
 
                 success, token_info = await self.token_adapter.get_token(token_id)
-                if not success:
+                if not success or isinstance(token_info, str):
                     continue
 
                 decimals = token_info.get("decimals", 18)
@@ -1686,11 +1679,11 @@ class StablecoinYieldStrategy(Strategy):
 
             try:
                 success, token_info = await self.token_adapter.get_token(token_id)
-                if not success:
+                if not success or isinstance(token_info, str):
                     continue
 
                 success, price_data = await self.token_adapter.get_token_price(token_id)
-                if not success:
+                if not success or isinstance(price_data, str):
                     continue
 
                 decimals = token_info.get("decimals", 18)

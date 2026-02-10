@@ -70,12 +70,9 @@ class BorosAdapter(BaseAdapter):
         sign_callback: Callable | None = None,
         user_address: str | None = None,
         account_id: int = 0,
-        simulation: bool = False,
         **kwargs: Any,
     ) -> None:
         super().__init__("boros_adapter", config)
-
-        self.simulation = simulation
         self.sign_callback = sign_callback
         self._scaling_factor_cache: dict[int, int] = {}
 
@@ -1228,7 +1225,7 @@ class BorosAdapter(BaseAdapter):
     async def get_account_balances(
         self, token_id: int = 3, *, account_id: int | None = None
     ) -> tuple[bool, dict[str, Any]]:
-        result = {
+        result: dict[str, Any] = {
             "isolated": 0.0,
             "cross": 0.0,
             "total": 0.0,
