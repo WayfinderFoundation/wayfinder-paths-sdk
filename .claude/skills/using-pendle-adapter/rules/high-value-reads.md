@@ -17,9 +17,12 @@
 
 ## Chain IDs
 
+- `ethereum` → `1`
+- `bsc` → `56`
 - `arbitrum` → `42161`
 - `base` → `8453`
 - `hyperevm` → `999`
+- `plasma` → `9745`
 
 ## Ad-hoc read scripts
 

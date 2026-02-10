@@ -51,6 +51,34 @@ class TestTokenAdapter:
             assert "No token found for" in data
 
     @pytest.mark.asyncio
+    async def test_get_token_falls_back_to_onchain(self, adapter, mock_token_client):
+        token_address = "0x" + ("1" * 40)
+        mock_token_client.get_token_details = AsyncMock(return_value=None)
+
+        onchain_data = {
+            "address": token_address,
+            "symbol": "TEST",
+            "name": "Test Token",
+            "decimals": 6,
+        }
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.token_adapter.adapter.TOKEN_CLIENT",
+                mock_token_client,
+            ),
+            patch.object(
+                adapter,
+                "get_token_onchain",
+                AsyncMock(return_value=(True, onchain_data)),
+            ),
+        ):
+            success, data = await adapter.get_token(token_address, chain_id=8453)
+
+            assert success
+            assert data == onchain_data
+
+    @pytest.mark.asyncio
     async def test_get_token_by_token_id(self, adapter, mock_token_client):
         mock_token_data = {"address": "0x1234...", "symbol": "TEST"}
         mock_token_client.get_token_details = AsyncMock(return_value=mock_token_data)

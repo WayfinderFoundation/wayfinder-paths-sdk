@@ -42,6 +42,12 @@ MCP server entrypoint:
 
 - `poetry run python -m wayfinder_paths.mcp.server`
 
+Simulation / scenario testing (vnet only):
+
+- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). These are EVM virtual testnets (vnets) that simulate **sequential on-chain operations** with real EVM state changes. Use `/simulation-dry-run` for full details.
+- **Cross-chain:** For flows spanning multiple EVM chains, spin up a fork per chain. Execute the source tx on the source fork, seed the expected tokens on the destination fork (simulating bridge delivery), then continue on the destination fork. See `/simulation-dry-run` for the pattern.
+- **Scope:** Vnets only cover EVM chains (Base, Arbitrum, etc.). Off-chain or non-EVM protocols like Hyperliquid **cannot** be simulated — dry-runs only apply to on-chain EVM transactions.
+
 Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
@@ -67,6 +73,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Boros                 | `/using-boros-adapter`           |
 | BRAP (swaps)          | `/using-brap-adapter`            |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
+| Simulation / Dry-run  | `/simulation-dry-run`            |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
@@ -136,9 +143,20 @@ When a user asks to run, check, or interact with a strategy:
 
 When a user wants **immediate, one-off execution**:
 
+- **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send).
 - **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
+
+### Complex transaction flow (multi-step or fund-moving)
+
+For anything beyond a simple single swap, follow this checklist:
+
+1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
+2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
+3. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
+4. **Offer simulation** — Before executing, ask the user if they'd like to dry-run it first. Simulation (Gorlami forks) is also valuable for **iterating on complex scripts** — use it to verify logic, catch reverts, and debug multi-step flows without spending real funds. Available for **EVM on-chain transactions only** (Base, Arbitrum, Ethereum, etc.). **Hyperliquid L1, CEXes, and other off-chain protocols cannot be simulated.** If the flow mixes both (e.g. swap on Base then deposit to Hyperliquid), simulate the on-chain portion and flag the off-chain steps as live-only.
+5. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
 
 Hyperliquid minimums:
 
@@ -164,6 +182,8 @@ Sizing note (avoid ambiguity):
 
 **Scripting helper for adapters:**
 
+**Before writing any adapter script**, invoke the matching protocol skill (e.g. `/using-pendle-adapter`, `/using-hyperliquid-adapter`). Skills document method signatures, return shapes, and field names — guessing wastes iterations. See the protocol skills table above.
+
 When writing scripts under `.wayfinder_runs/`, use `get_adapter()` to simplify setup:
 
 ```python
@@ -176,9 +196,132 @@ await adapter.set_collateral(mtoken=USDC_MTOKEN)
 
 This auto-loads `config.json`, looks up the wallet by label, creates a signing callback, and wires everything together. For read-only adapters (e.g., PendleAdapter), omit the wallet label.
 
-For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `wayfinder_paths.core.utils.web3.web3_from_chain_id(chain_id)` which reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`).
+For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_chain_id(chain_id)` from `wayfinder_paths.core.utils.web3` — it's an **async context manager** (see gotchas below):
+
+```python
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+async with web3_from_chain_id(8453) as w3:
+    balance = await w3.eth.get_balance(addr)
+```
+
+It reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`). For sync access, use `get_web3s_from_chain_id(chain_id)` instead.
 
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
+
+### Scripting gotchas (`.wayfinder_runs/` scripts)
+
+Common mistakes when writing run scripts. **Read before writing any script.**
+
+**1. `get_adapter()` already loads config — don't call `load_config()` first**
+
+```python
+# WRONG — redundant, and load_config() returns None anyway
+config = load_config("config.json")
+adapter = MoonwellAdapter(config=config, ...)
+
+# RIGHT — get_adapter() handles config + wallet + signing internally
+from wayfinder_paths.mcp.scripting import get_adapter
+adapter = get_adapter(MoonwellAdapter, "main")
+
+# For read-only adapters, omit the wallet label:
+adapter = get_adapter(HyperliquidAdapter)
+```
+
+**2. `load_config()` returns `None` — it mutates a global**
+
+```python
+# WRONG — config will be None
+config = load_config("config.json")
+api_key = config["system"]["api_key"]  # TypeError!
+
+# RIGHT — use the CONFIG global, or use load_config_json() for a dict
+from wayfinder_paths.core.config import load_config, CONFIG
+load_config("config.json")
+api_key = CONFIG["system"]["api_key"]
+
+# OR — if you need a plain dict:
+from wayfinder_paths.core.config import load_config_json
+config = load_config_json("config.json")
+```
+
+**3. `web3_from_chain_id()` is an async context manager, not a function call**
+
+```python
+# WRONG — returns an async generator object, not a Web3 instance
+w3 = web3_from_chain_id(8453)
+
+# RIGHT
+async with web3_from_chain_id(8453) as w3:
+    ...
+```
+
+**4. All Web3 calls are async — always `await`**
+
+```python
+# WRONG — returns a coroutine, not the result
+balance = w3.eth.get_balance(addr)
+result = contract.functions.balanceOf(addr).call()
+
+# RIGHT
+balance = await w3.eth.get_balance(addr)
+result = await contract.functions.balanceOf(addr).call()
+```
+
+**5. Use existing ERC20 helpers — don't inline ABIs**
+
+```python
+# WRONG — verbose, error-prone
+abi = [{"inputs": [{"name": "account", ...}], ...}]
+contract = w3.eth.contract(address=token, abi=abi)
+balance = await contract.functions.balanceOf(addr).call()
+
+# RIGHT — one-liner
+from wayfinder_paths.core.utils.tokens import get_token_balance
+balance = await get_token_balance(token_address, chain_id=8453, wallet_address=addr)
+
+# OR if you need the contract object:
+from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+contract = w3.eth.contract(address=token, abi=ERC20_ABI)
+```
+
+**6. BRAP swap amounts are wei strings, not human-readable**
+
+```python
+# WRONG — "10.0" is not a valid wei amount
+quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", amount="10.0", ...)
+
+# RIGHT — convert to wei first
+from wayfinder_paths.core.utils.units import to_erc20_raw
+amount_wei = str(to_erc20_raw(10.0, decimals=6))  # USDC has 6 decimals
+quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", amount=amount_wei, ...)
+```
+
+**7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
+
+**8. Adapter read methods return `(ok, data)` tuples — always destructure**
+
+```python
+# WRONG — treats the tuple as the data itself
+data = await adapter.get_meta_and_asset_ctxs()
+meta = data[0]  # This is the bool, not the meta!
+
+# RIGHT — destructure the ok/data tuple, check ok
+ok, data = await adapter.get_meta_and_asset_ctxs()
+if not ok:
+    raise RuntimeError(f"API call failed: {data}")
+meta, ctxs = data[0], data[1]
+```
+
+This applies to virtually all adapter read methods (`get_meta_and_asset_ctxs`, `get_spot_meta`, `get_markets`, `get_user_state`, etc.). The pattern is universal across Hyperliquid, Moonwell, Pendle, and all other adapters.
+
+**9. Load the protocol skill before writing adapter scripts**
+
+Before writing *any* script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
+
+**10. Write the script file before calling `run_script`**
+
+`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
@@ -241,15 +384,41 @@ Safety note:
 
 - Runner executions are local automation and do **not** go through the Claude safety review prompt. Treat `update/deposit/withdraw/exit` as live fund-moving actions.
 
-Token identifiers (important for quoting/execution):
+Supported chains:
 
-- **Format:** `<coingecko_id>-<chain_code>` — the first part is the coingecko_id, NOT the symbol.
+| Chain     | ID    | Code         | Symbol | Native token ID        |
+| --------- | ----- | ------------ | ------ | ---------------------- |
+| Ethereum  | 1     | `ethereum`   | ETH    | `ethereum-ethereum`    |
+| Base      | 8453  | `base`       | ETH    | `ethereum-base`        |
+| Arbitrum  | 42161 | `arbitrum`   | ETH    | `ethereum-arbitrum`    |
+| Polygon   | 137   | `polygon`    | POL    | `matic-network-polygon`|
+| BSC       | 56    | `bsc`        | BNB    | `binancecoin-bsc`      |
+| Avalanche | 43114 | `avalanche`  | AVAX   | `avalanche-avalanche`|
+| Plasma    | 9745  | `plasma`     | PLASMA | `plasma-plasma`        |
+| HyperEVM  | 999   | `hyperevm`   | HYPE   | `hyperliquid-hyperevm` |
+
+- **Plasma**: EVM chain where Pendle deploys PT/YT markets. Not Pendle-specific — it's its own chain.
+- **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
+
+Gas requirements (critical — assets get stuck without gas):
+
+- **Every on-chain action requires the destination chain's native gas token in the wallet.** Without gas, the wallet cannot transact and assets are effectively stuck until gas is provided.
+- **Before any operation on a chain**, check the wallet has sufficient native gas on that chain using `wayfinder://balances/{label}`.
+- **Bridging to a new chain for the first time:** The wallet needs native gas before it can do anything. Bridge the native gas token (e.g. ETH) to the destination chain first, then bridge or swap for the target token. Use the native token IDs from the chain table (e.g. `ethereum-base` for ETH on Base).
+- Use the native token IDs from the chain table above when bridging gas (e.g. `ethereum-base` for ETH on Base, `plasma-plasma` for PLASMA on Plasma).
+
+Token identifiers (important for quoting/execution/lookups):
+
+All token functions (`get_token_details`, `quote_swap`, `execute`, etc.) expect **token IDs**, not free-text search queries.
+
+- **Token ID format:** `<coingecko_id>-<chain_code>` — the first part is the coingecko_id, NOT the symbol.
   - `usd-coin-base` (USDC on Base — coingecko_id is `usd-coin`, NOT `usdc`)
   - `ethereum-arbitrum` (ETH on Arbitrum)
   - `usdt0-arbitrum` (USDT on Arbitrum)
   - `hyperliquid-hyperevm` (HYPE on HyperEVM)
-- **Do NOT use symbol-chain** like `usdc-base` — this will fail.
-- If you know a specific ERC20 contract, use chain-scoped address ids: `<chain_code>_<address>` (e.g., `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
+- **Address ID format:** `<chain_code>_<address>` when you know the ERC20 contract (e.g., `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
+- **Do NOT pass symbol-chain** (`usdc-base`) or free-text queries (`USDC plasma`) — these will fail. Always use one of the two ID formats above.
+- If you don't know a token's coingecko_id, use the MCP resource `wayfinder://tokens/search/{chain_code}/{query}` to find it first, then use the returned token ID.
 - See `.claude/skills/using-pool-token-balance-data/rules/tokens.md` for full details.
 
 ## Common Commands
