@@ -10,6 +10,7 @@ import httpx
 from eth_utils import to_checksum_address
 from web3 import AsyncWeb3
 
+from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
@@ -18,6 +19,7 @@ from wayfinder_paths.core.constants.projectx import (
     PRJX_POINTS_API_URL,
     PROJECTX_CHAIN_ID,
     THBILL_USDC_METADATA,
+    THBILL_USDC_POOL,
     get_prjx_subgraph_url,
 )
 from wayfinder_paths.core.constants.projectx_abi import (
@@ -36,12 +38,12 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     liq_for_amounts,
     round_tick_to_spacing,
     sqrt_price_x96_from_tick,
+    sqrt_price_x96_to_price,
     tick_from_sqrt_price_x96,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 Q128 = 2**128
-Q96_INT = 2**96
 _MASK_256 = (1 << 256) - 1
 
 MINT_POLL_ATTEMPTS = 6
@@ -53,15 +55,6 @@ BALANCE_SWAP_HAIRCUT = 0.02  # 2% buffer to avoid overshooting the solve trade
 MINT_RETRY_SLIPPAGE_BPS = 25  # upper cap when bumping slippage after a revert
 BALANCE_MIN_SWAP_TOKEN0 = 0.01  # in token0 units
 BALANCE_MIN_SWAP_TOKEN1 = 0.01  # in token1 units
-
-
-def _price_token1_per_token0_from_sqrt(
-    sqrt_price_x96: int, decimals0: int, decimals1: int
-) -> float:
-    if sqrt_price_x96 <= 0:
-        return 0.0
-    price = (sqrt_price_x96 / Q96_INT) ** 2
-    return price * (10 ** (decimals0 - decimals1))
 
 
 def _target_ratio_need0_over_need1(sqrt_p: int, sqrt_pl: int, sqrt_pu: int) -> float:
@@ -152,14 +145,9 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         self,
         config: dict[str, Any],
         *,
-        pool_address: str | None = None,
         strategy_wallet_signing_callback=None,
     ) -> None:
         super().__init__("projectx_adapter", config)
-        self.chain_id = int(PROJECTX_CHAIN_ID)
-        self.pool_address = to_checksum_address(
-            pool_address or str(THBILL_USDC_METADATA["pool"])
-        )
 
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         wallet = (config or {}).get("strategy_wallet") or {}
@@ -174,9 +162,11 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
     async def pool_overview(self) -> dict[str, Any]:
         meta = await self._pool_meta()
-        async with web3_from_chain_id(self.chain_id) as web3:
-            token0_meta = await self._token_meta(web3, meta["token0"])
-            token1_meta = await self._token_meta(web3, meta["token1"])
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            token0_meta, token1_meta = await asyncio.gather(
+                self._token_meta(web3, meta["token0"]),
+                self._token_meta(web3, meta["token1"]),
+            )
         return {
             "sqrt_price_x96": meta["sqrt_price_x96"],
             "tick": meta["tick"],
@@ -188,9 +178,10 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
     async def current_balances(self) -> dict[str, int]:
         meta = await self._pool_meta()
-        async with web3_from_chain_id(self.chain_id) as web3:
-            bal0 = await self._balance(web3, meta["token0"])
-            bal1 = await self._balance(web3, meta["token1"])
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            bal0, bal1 = await self._balances_for_tokens(
+                web3, [meta["token0"], meta["token1"]]
+            )
         return {meta["token0"]: bal0, meta["token1"]: bal1}
 
     async def list_positions(self) -> list[PositionSnapshot]:
@@ -202,7 +193,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         pool_fee = int(meta["fee"])
         pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
 
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -267,7 +258,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             return []
 
         variables = {
-            "pool": self.pool_address.lower(),
+            "pool": THBILL_USDC_POOL.lower(),
             "first": max(1, int(limit or 1)),
         }
 
@@ -384,12 +375,15 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         # Re-sync after any balance swaps to avoid minting against a stale price.
         meta = await self._sync_pool_meta()
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            await self._token_meta(web3, token0)
-            await self._token_meta(web3, token1)
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            await asyncio.gather(
+                self._token_meta(web3, token0),
+                self._token_meta(web3, token1),
+            )
 
-            before_bal0 = await self._balance(web3, token0)
-            before_bal1 = await self._balance(web3, token1)
+            before_bal0, before_bal1 = await self._balances_for_tokens(
+                web3, [token0, token1]
+            )
 
         sqrt_p = int(meta["sqrt_price_x96"])
         sqrt_pl = sqrt_price_x96_from_tick(int(tick_lower_adj))
@@ -429,7 +423,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             int(time.time()) + 1200,
         )
 
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -443,9 +437,10 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             # Fallback for providers that don't return logs: poll on-chain enumeration.
             token_id = await self._poll_for_any_position_id()
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            post_bal0 = await self._balance(web3, token0)
-            post_bal1 = await self._balance(web3, token1)
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            post_bal0, post_bal1 = await self._balances_for_tokens(
+                web3, [token0, token1]
+            )
 
         spent0 = max(0, int(before_bal0) - int(post_bal0))
         spent1 = max(0, int(before_bal1) - int(post_bal1))
@@ -458,7 +453,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         liquidity: int | None = None,
         slippage_bps: int = 30,
     ) -> str | None:
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -480,7 +475,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         return tx_hash
 
     async def collect_fees(self, token_id: int) -> tuple[str, dict[str, Any]]:
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -490,8 +485,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             )
             token0 = to_checksum_address(raw[2])
             token1 = to_checksum_address(raw[3])
-            before0 = await self._balance(web3, token0)
-            before1 = await self._balance(web3, token1)
+            before0, before1 = await self._balances_for_tokens(web3, [token0, token1])
 
             params = (
                 int(token_id),
@@ -504,9 +498,8 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            after0 = await self._balance(web3, token0)
-            after1 = await self._balance(web3, token1)
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            after0, after1 = await self._balances_for_tokens(web3, [token0, token1])
 
         received0 = max(0, int(after0) - int(before0))
         received1 = max(0, int(after1) - int(before1))
@@ -529,7 +522,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         elif owed0 > 0 or owed1 > 0:
             await self.collect_fees(token_id)
 
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -556,9 +549,8 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         token0 = meta["token0"]
         token1 = meta["token1"]
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            bal0 = await self._balance(web3, token0)
-            bal1 = await self._balance(web3, token1)
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            bal0, bal1 = await self._balances_for_tokens(web3, [token0, token1])
             before0 = bal0
             before1 = bal1
 
@@ -601,7 +593,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             int(time.time()) + 900,
         )
 
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -611,9 +603,8 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            after0 = await self._balance(web3, token0)
-            after1 = await self._balance(web3, token1)
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            after0, after1 = await self._balances_for_tokens(web3, [token0, token1])
 
         spent0 = max(0, int(before0) - int(after0))
         spent1 = max(0, int(before1) - int(after1))
@@ -643,7 +634,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
         if {token_in.lower(), token_out.lower()} == pool_tokens:
             selected_fee = int(meta["fee"])
-            pool_address = self.pool_address
+            pool_address = THBILL_USDC_POOL
         else:
             selected_fee, pool_address = await self._find_pool_for_pair(
                 token_in, token_out, prefer_fees=prefer_fees
@@ -653,24 +644,32 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             token_in, str(THBILL_USDC_METADATA["router"]), int(amount_in)
         )
 
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool = web3.eth.contract(address=pool_address, abi=PROJECTX_POOL_ABI)
-            slot0 = await pool.functions.slot0().call(block_identifier="latest")
+            slot0, token0_raw, token1_raw = await asyncio.gather(
+                pool.functions.slot0().call(block_identifier="latest"),
+                pool.functions.token0().call(block_identifier="latest"),
+                pool.functions.token1().call(block_identifier="latest"),
+            )
             sqrt_price_x96 = int(slot0[0])
-            token0 = to_checksum_address(await pool.functions.token0().call())
-            token1 = to_checksum_address(await pool.functions.token1().call())
+            token0 = to_checksum_address(token0_raw)
+            token1 = to_checksum_address(token1_raw)
 
-            meta_in = await self._token_meta(web3, token_in)
-            meta_out = await self._token_meta(web3, token_out)
+            meta_in, meta_out, token0_meta, token1_meta = await asyncio.gather(
+                self._token_meta(web3, token_in),
+                self._token_meta(web3, token_out),
+                self._token_meta(web3, token0),
+                self._token_meta(web3, token1),
+            )
 
             dec_in = int(meta_in.get("decimals", 18))
             dec_out = int(meta_out.get("decimals", 18))
 
             # Compute a conservative minOut from current mid price.
-            price_token1_per_token0 = _price_token1_per_token0_from_sqrt(
+            price_token1_per_token0 = sqrt_price_x96_to_price(
                 sqrt_price_x96,
-                int((await self._token_meta(web3, token0)).get("decimals", 18)),
-                int((await self._token_meta(web3, token1)).get("decimals", 18)),
+                int(token0_meta.get("decimals", 18)),
+                int(token1_meta.get("decimals", 18)),
             )
             fee_frac = max(0.0, min(0.5, float(selected_fee) / 1_000_000.0))
             slippage = max(1, int(slippage_bps)) / 10_000.0
@@ -752,13 +751,15 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         sqrt_lo = sqrt_price_x96_from_tick(lo_tick)
         sqrt_hi = sqrt_price_x96_from_tick(hi_tick)
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            token0_meta = await self._token_meta(web3, token0)
-            token1_meta = await self._token_meta(web3, token1)
-            price_lo = _price_token1_per_token0_from_sqrt(
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            token0_meta, token1_meta = await asyncio.gather(
+                self._token_meta(web3, token0),
+                self._token_meta(web3, token1),
+            )
+            price_lo = sqrt_price_x96_to_price(
                 sqrt_lo, int(token0_meta["decimals"]), int(token1_meta["decimals"])
             )
-            price_hi = _price_token1_per_token0_from_sqrt(
+            price_hi = sqrt_price_x96_to_price(
                 sqrt_hi, int(token0_meta["decimals"]), int(token1_meta["decimals"])
             )
 
@@ -805,11 +806,13 @@ class ProjectXLiquidityAdapter(BaseAdapter):
     async def live_fee_snapshot(self, token_id: int) -> dict[str, float]:
         owed0, owed1 = await self._read_live_claimable_fees(int(token_id))
         position = await self._read_position_struct(int(token_id))
-        async with web3_from_chain_id(self.chain_id) as web3:
-            token0_meta = await self._token_meta(web3, position["token0"])
-            token1_meta = await self._token_meta(web3, position["token1"])
-            pool = web3.eth.contract(address=self.pool_address, abi=PROJECTX_POOL_ABI)
-            slot0 = await pool.functions.slot0().call(block_identifier="latest")
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            pool = web3.eth.contract(address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI)
+            token0_meta, token1_meta, slot0 = await asyncio.gather(
+                self._token_meta(web3, position["token0"]),
+                self._token_meta(web3, position["token1"]),
+                pool.functions.slot0().call(block_identifier="latest"),
+            )
             sqrt_price = int(slot0[0])
 
         usd_value = self._estimate_fees_usd_from_pool(
@@ -850,16 +853,16 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         if self._pool_meta_cache:
             return self._pool_meta_cache
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            pool = web3.eth.contract(address=self.pool_address, abi=PROJECTX_POOL_ABI)
-            slot0 = await pool.functions.slot0().call(block_identifier="latest")
-            tick_spacing = await pool.functions.tickSpacing().call(
-                block_identifier="latest"
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            pool = web3.eth.contract(address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI)
+            slot0, tick_spacing, fee, liquidity, token0, token1 = await asyncio.gather(
+                pool.functions.slot0().call(block_identifier="latest"),
+                pool.functions.tickSpacing().call(block_identifier="latest"),
+                pool.functions.fee().call(block_identifier="latest"),
+                pool.functions.liquidity().call(block_identifier="latest"),
+                pool.functions.token0().call(block_identifier="latest"),
+                pool.functions.token1().call(block_identifier="latest"),
             )
-            fee = await pool.functions.fee().call(block_identifier="latest")
-            liquidity = await pool.functions.liquidity().call(block_identifier="latest")
-            token0 = await pool.functions.token0().call(block_identifier="latest")
-            token1 = await pool.functions.token1().call(block_identifier="latest")
 
         meta = {
             "sqrt_price_x96": int(slot0[0]),
@@ -883,8 +886,10 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         if cached:
             return cached
         contract = web3.eth.contract(address=checksum, abi=ERC20_ABI)
-        decimals = await contract.functions.decimals().call(block_identifier="latest")
-        symbol = await contract.functions.symbol().call(block_identifier="latest")
+        decimals, symbol = await asyncio.gather(
+            contract.functions.decimals().call(block_identifier="latest"),
+            contract.functions.symbol().call(block_identifier="latest"),
+        )
         token_id = ADDRESS_TO_TOKEN_ID.get(checksum)
         meta = {
             "address": checksum,
@@ -894,6 +899,30 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         }
         self._token_cache[checksum.lower()] = meta
         return meta
+
+    async def _balances_for_tokens(
+        self,
+        web3: AsyncWeb3,
+        token_addresses: Sequence[str],
+        *,
+        block_identifier: str = "pending",
+    ) -> list[int]:
+        if not token_addresses:
+            return []
+
+        checksummed = [to_checksum_address(a) for a in token_addresses]
+        try:
+            multicall = MulticallAdapter(web3=web3, chain_id=PROJECTX_CHAIN_ID)
+            calls = [
+                multicall.encode_erc20_balance(token, self.owner) for token in checksummed
+            ]
+            res = await multicall.aggregate(calls, block_identifier=block_identifier)
+            return [int(multicall.decode_uint256(d)) for d in res.return_data]
+        except Exception:
+            balances = await asyncio.gather(
+                *(self._balance(web3, token) for token in checksummed)
+            )
+            return [int(b) for b in balances]
 
     async def _balance(self, web3: AsyncWeb3, token_address: str) -> int:
         checksum = to_checksum_address(token_address)
@@ -913,14 +942,14 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             owner=self.owner,
             spender=to_checksum_address(spender),
             amount=int(needed),
-            chain_id=self.chain_id,
+            chain_id=PROJECTX_CHAIN_ID,
             signing_callback=self.strategy_wallet_signing_callback,
             approval_amount=int(needed * 2),
         )
 
     def _build_tx(self, to_address: str, data: str, value: int = 0) -> dict[str, Any]:
         return {
-            "chainId": int(self.chain_id),
+            "chainId": int(PROJECTX_CHAIN_ID),
             "from": self.owner,
             "to": to_checksum_address(to_address),
             "data": data,
@@ -929,7 +958,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
     async def _extract_token_id_from_receipt(self, tx_hash: str) -> int | None:
         try:
-            receipt = await wait_for_transaction_receipt(self.chain_id, tx_hash)
+            receipt = await wait_for_transaction_receipt(PROJECTX_CHAIN_ID, tx_hash)
         except Exception:
             return None
 
@@ -1003,16 +1032,19 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         token0 = meta["token0"]
         token1 = meta["token1"]
 
-        async with web3_from_chain_id(self.chain_id) as web3:
-            b0 = await self._balance(web3, token0)
-            b1 = await self._balance(web3, token1)
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+            b0, b1 = await self._balances_for_tokens(web3, [token0, token1])
             if b0 <= 0 and b1 <= 0:
                 return False
-            dec0 = int((await self._token_meta(web3, token0))["decimals"])
-            dec1 = int((await self._token_meta(web3, token1))["decimals"])
+            token0_meta, token1_meta = await asyncio.gather(
+                self._token_meta(web3, token0),
+                self._token_meta(web3, token1),
+            )
+            dec0 = int(token0_meta["decimals"])
+            dec1 = int(token1_meta["decimals"])
 
         target_ratio = _target_ratio_need0_over_need1(sqrt_p, sqrt_pl, sqrt_pu)
-        price_mid = _price_token1_per_token0_from_sqrt(sqrt_p, dec0, dec1)
+        price_mid = sqrt_price_x96_to_price(sqrt_p, dec0, dec1)
         if price_mid <= 0:
             return False
 
@@ -1071,7 +1103,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         return False
 
     async def _read_position_struct(self, token_id: int) -> dict[str, Any]:
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
                 abi=PROJECTX_NPM_ABI,
@@ -1099,23 +1131,22 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         tick_lower: int,
         tick_upper: int,
     ) -> tuple[int, int]:
-        f0_global = int(
-            await pool_contract.functions.feeGrowthGlobal0X128().call(
+        (f0_global, f1_global, tl, tu) = await asyncio.gather(
+            pool_contract.functions.feeGrowthGlobal0X128().call(
                 block_identifier="latest"
-            )
-        )
-        f1_global = int(
-            await pool_contract.functions.feeGrowthGlobal1X128().call(
+            ),
+            pool_contract.functions.feeGrowthGlobal1X128().call(
                 block_identifier="latest"
-            )
+            ),
+            pool_contract.functions.ticks(int(tick_lower)).call(
+                block_identifier="latest"
+            ),
+            pool_contract.functions.ticks(int(tick_upper)).call(
+                block_identifier="latest"
+            ),
         )
-
-        tl = await pool_contract.functions.ticks(int(tick_lower)).call(
-            block_identifier="latest"
-        )
-        tu = await pool_contract.functions.ticks(int(tick_upper)).call(
-            block_identifier="latest"
-        )
+        f0_global = int(f0_global)
+        f1_global = int(f1_global)
 
         f0_below = (
             int(tl[2])
@@ -1145,9 +1176,9 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
     async def _read_live_claimable_fees(self, token_id: int) -> tuple[int, int]:
         position = await self._read_position_struct(int(token_id))
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool_contract = web3.eth.contract(
-                address=self.pool_address, abi=PROJECTX_POOL_ABI
+                address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI
             )
             slot0 = await pool_contract.functions.slot0().call(
                 block_identifier="latest"
@@ -1178,8 +1209,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
     ) -> float:
         if sqrt_price_x96 <= 0:
             return 0.0
-        price_token1_per_token0 = (sqrt_price_x96 / Q96_INT) ** 2
-        price_adjusted = price_token1_per_token0 * (10 ** (decimals0 - decimals1))
+        price_adjusted = sqrt_price_x96_to_price(sqrt_price_x96, decimals0, decimals1)
         f0 = owed0 / (10**decimals0)
         f1 = owed1 / (10**decimals1)
         if token1_is_usd_like:
@@ -1194,17 +1224,22 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         self, token_a: str, token_b: str, *, prefer_fees: Sequence[int] | None = None
     ) -> tuple[int, str]:
         fees = list(prefer_fees or [100, 500, 1000, 3000, 10000])
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             factory = web3.eth.contract(
                 address=to_checksum_address(str(THBILL_USDC_METADATA["factory"])),
                 abi=PROJECTX_FACTORY_ABI,
             )
-            for fee in fees:
-                pool_addr = await factory.functions.getPool(
-                    to_checksum_address(token_a),
-                    to_checksum_address(token_b),
-                    int(fee),
-                ).call(block_identifier="latest")
+            pool_addrs = await asyncio.gather(
+                *[
+                    factory.functions.getPool(
+                        to_checksum_address(token_a),
+                        to_checksum_address(token_b),
+                        int(fee),
+                    ).call(block_identifier="latest")
+                    for fee in fees
+                ]
+            )
+            for fee, pool_addr in zip(fees, pool_addrs, strict=False):
                 if not pool_addr or str(pool_addr).lower() == ZERO_ADDRESS.lower():
                     continue
                 return int(fee), to_checksum_address(pool_addr)

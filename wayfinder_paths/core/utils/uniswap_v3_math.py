@@ -24,6 +24,8 @@ def price_to_sqrt_price_x96(price: float, decimals0: int, decimals1: int) -> int
 
 
 def sqrt_price_x96_to_price(sqrtpx96: int, decimals0: int, decimals1: int) -> float:
+    if sqrtpx96 <= 0:
+        return 0.0
     p = (sqrtpx96 / (1 << 96)) ** 2
     scale = 10 ** (decimals1 - decimals0)
     return p / scale

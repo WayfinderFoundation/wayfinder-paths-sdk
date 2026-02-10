@@ -14,6 +14,8 @@ async def prjx_swap():
         function_names=[
             "exactInput",
             "exactInputSingle",
+            "exactOutput",
+            "exactOutputSingle",
         ],
         manual_abi=PROJECTX_ROUTER_ABI,
     )
