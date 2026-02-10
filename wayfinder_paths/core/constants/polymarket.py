@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
+
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com"
@@ -32,29 +34,6 @@ POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = "0x3A3BD7bb9528E159577F7C2e685CC81A76500
 
 MAX_UINT256 = (1 << 256) - 1
 ZERO32_STR = "0x" + "00" * 32
-
-ERC1155_APPROVAL_ABI: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "stateMutability": "view",
-        "name": "isApprovedForAll",
-        "inputs": [
-            {"name": "account", "type": "address"},
-            {"name": "operator", "type": "address"},
-        ],
-        "outputs": [{"name": "", "type": "bool"}],
-    },
-    {
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "name": "setApprovalForAll",
-        "inputs": [
-            {"name": "operator", "type": "address"},
-            {"name": "approved", "type": "bool"},
-        ],
-        "outputs": [],
-    },
-]
 
 CONDITIONAL_TOKENS_ABI: list[dict[str, Any]] = [
     *ERC1155_APPROVAL_ABI,
