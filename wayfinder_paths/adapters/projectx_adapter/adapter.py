@@ -306,7 +306,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         """Return recent swaps for the configured pool via subgraph."""
         variables = {
             "pool": THBILL_USDC_POOL.lower(),
-            "first": max(1, int(limit or 1)),
+            "first": max(1, limit),
         }
 
         async def _query(query_str: str) -> dict[str, Any]:
