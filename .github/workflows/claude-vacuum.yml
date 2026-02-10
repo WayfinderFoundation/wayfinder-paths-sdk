@@ -42,4 +42,4 @@ jobs:
             - Push the branch and open a PR to main.
             - Summarize your changes in the PR description.
           claude_args: |
-            --allowedTools "Read,Write,Edit,Bash(*)"
+            --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
