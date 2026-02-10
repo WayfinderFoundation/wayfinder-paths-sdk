@@ -7,6 +7,7 @@ from wayfinder_paths.core.constants.base import (
     ADAPTER_MOONWELL,
     ADAPTER_POOL,
     ADAPTER_TOKEN,
+    ADAPTER_UNISWAP,
     DEFAULT_HTTP_TIMEOUT,
     DEFAULT_NATIVE_GAS_UNITS,
     DEFAULT_PAGINATION_LIMIT,
@@ -47,6 +48,8 @@ from wayfinder_paths.core.constants.contracts import (
     LOOPED_HYPE_ADDRESS,
     MULTICALL3_ADDRESS,
     NATIVE_TOKEN_SENTINEL,
+    UNISWAP_V3_FACTORY,
+    UNISWAP_V3_NPM,
     ZERO_ADDRESS,
 )
 
@@ -81,6 +84,7 @@ __all__ = [
     "ADAPTER_TOKEN",
     "ADAPTER_LEDGER",
     "ADAPTER_HYPERLEND",
+    "ADAPTER_UNISWAP",
     "CHAIN_ID_ETHEREUM",
     "CHAIN_ID_BASE",
     "CHAIN_ID_ARBITRUM",
@@ -109,4 +113,6 @@ __all__ = [
     "LIFI_ROUTER_HYPEREVM",
     "LOOPED_HYPE_ADDRESS",
     "MULTICALL3_ADDRESS",
+    "UNISWAP_V3_NPM",
+    "UNISWAP_V3_FACTORY",
 ]

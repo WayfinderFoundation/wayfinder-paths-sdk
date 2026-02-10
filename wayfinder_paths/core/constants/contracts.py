@@ -65,6 +65,32 @@ MULTICALL3_ADDRESS = to_checksum_address("0xcA11bde05977b3631167028862bE2a173976
 LIFI_ROUTER_HYPEREVM = to_checksum_address("0x0a0758d937d1059c356D4714e57F5df0239bce1A")
 LIFI_GENERIC = to_checksum_address("0x31a9b1835864706Af10103b31Ea2b79bdb995F5F")
 
+UNISWAP_V3_NPM: dict[int, str] = {
+    1: to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88"),  # Ethereum
+    42161: to_checksum_address(
+        "0xC36442b4a4522E871399CD717aBDD847Ab11FE88"
+    ),  # Arbitrum
+    137: to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88"),  # Polygon
+    8453: to_checksum_address("0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),  # Base
+    56: to_checksum_address("0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),  # BSC
+    43114: to_checksum_address(
+        "0x655C406EBFa14EE2006250925e54ec43AD184f8B"
+    ),  # Avalanche
+}
+
+UNISWAP_V3_FACTORY: dict[int, str] = {
+    1: to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984"),  # Ethereum
+    42161: to_checksum_address(
+        "0x1F98431c8aD98523631AE4a59f267346ea31F984"
+    ),  # Arbitrum
+    137: to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984"),  # Polygon
+    8453: to_checksum_address("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),  # Base
+    56: to_checksum_address("0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),  # BSC
+    43114: to_checksum_address(
+        "0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"
+    ),  # Avalanche
+}
+
 TOKENS_REQUIRING_APPROVAL_RESET: set[tuple[int, str]] = {
     (1, USDT_ETHEREUM),
     (137, USDT_POLYGON),
