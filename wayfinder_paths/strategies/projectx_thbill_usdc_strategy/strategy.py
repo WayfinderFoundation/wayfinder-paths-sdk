@@ -440,7 +440,9 @@ class ProjectXThbillUsdcStrategy(Strategy):
             amount1_raw = int(deposit_usd * price_token1_per_token0 * (10**dec1))
 
         liq_est = int(
-            liq_for_amounts(sqrt_p, sqrt_pl, sqrt_pu, int(amount0_raw), int(amount1_raw))
+            liq_for_amounts(
+                sqrt_p, sqrt_pl, sqrt_pu, int(amount0_raw), int(amount1_raw)
+            )
         )
         if liq_est <= 0:
             return out
@@ -483,7 +485,9 @@ class ProjectXThbillUsdcStrategy(Strategy):
             except Exception:
                 ts = 0
             if ts:
-                oldest_swap_ts = ts if oldest_swap_ts is None else min(oldest_swap_ts, ts)
+                oldest_swap_ts = (
+                    ts if oldest_swap_ts is None else min(oldest_swap_ts, ts)
+                )
 
             tick_val = swap.get("tick")
             amount_usd_raw = swap.get("amount_usd")

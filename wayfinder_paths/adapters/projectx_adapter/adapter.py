@@ -985,7 +985,8 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         try:
             multicall = MulticallAdapter(web3=web3, chain_id=PROJECTX_CHAIN_ID)
             calls = [
-                multicall.encode_erc20_balance(token, self.owner) for token in checksummed
+                multicall.encode_erc20_balance(token, self.owner)
+                for token in checksummed
             ]
             res = await multicall.aggregate(calls, block_identifier=block_identifier)
             return [int(multicall.decode_uint256(d)) for d in res.return_data]
