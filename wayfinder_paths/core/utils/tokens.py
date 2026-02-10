@@ -1,8 +1,10 @@
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
 from eth_utils import to_checksum_address
 from web3 import AsyncWeb3
+from web3.exceptions import BadFunctionCallOutput
 
 from wayfinder_paths.core.constants.contracts import TOKENS_REQUIRING_APPROVAL_RESET
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
@@ -22,24 +24,80 @@ def is_native_token(token_address: str) -> bool:
     return token_address.lower() in NATIVE_TOKEN_ADDRESSES
 
 
+def _coerce_bytes32_str(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).rstrip(b"\x00").decode("utf-8", errors="ignore")
+    return str(value)
+
+
+async def _erc20_string(
+    web3: AsyncWeb3,
+    token_address: str,
+    field: str,
+    *,
+    block_identifier: str = "latest",
+) -> str:
+    checksum_token = web3.to_checksum_address(token_address)
+    contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+    fn = getattr(contract.functions, field)
+    try:
+        value = await fn().call(block_identifier=block_identifier)
+        return _coerce_bytes32_str(value)
+    except (BadFunctionCallOutput, ValueError):
+        # Some ERC20s use bytes32 for name/symbol (non-standard).
+        bytes32_abi = [
+            {
+                "constant": True,
+                "inputs": [],
+                "name": field,
+                "outputs": [{"name": "", "type": "bytes32"}],
+                "type": "function",
+            }
+        ]
+        contract32 = web3.eth.contract(address=checksum_token, abi=bytes32_abi)
+        fn32 = getattr(contract32.functions, field)
+        value = await fn32().call(block_identifier=block_identifier)
+        return _coerce_bytes32_str(value)
+
+
+async def get_erc20_metadata(
+    token_address: str, chain_id: int, *, block_identifier: str = "latest"
+) -> tuple[str, str, int]:
+    async with web3_from_chain_id(chain_id) as web3:
+        checksum_token = web3.to_checksum_address(token_address)
+        contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+
+        symbol, name, decimals = await asyncio.gather(
+            _erc20_string(
+                web3, checksum_token, "symbol", block_identifier=block_identifier
+            ),
+            _erc20_string(
+                web3, checksum_token, "name", block_identifier=block_identifier
+            ),
+            contract.functions.decimals().call(block_identifier=block_identifier),
+        )
+        return str(symbol), str(name), int(decimals)
+
+
 async def get_token_balance(
     token_address: str, chain_id: int, wallet_address: str
 ) -> int:
     async with web3_from_chain_id(chain_id) as web3:
-        checksum_wallet = AsyncWeb3.to_checksum_address(wallet_address)
-
+        checksum_wallet = web3.to_checksum_address(wallet_address)
         if is_native_token(token_address):
             balance = await web3.eth.get_balance(
-                checksum_wallet, block_identifier="pending"
+                checksum_wallet,
+                block_identifier="pending",
             )
             return int(balance)
-        else:
-            checksum_token = AsyncWeb3.to_checksum_address(token_address)
-            contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-            balance = await contract.functions.balanceOf(checksum_wallet).call(
-                block_identifier="pending"
-            )
-            return int(balance)
+        checksum_token = web3.to_checksum_address(token_address)
+        contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+        balance = await contract.functions.balanceOf(checksum_wallet).call(
+            block_identifier="pending"
+        )
+        return int(balance)
 
 
 async def get_token_allowance(

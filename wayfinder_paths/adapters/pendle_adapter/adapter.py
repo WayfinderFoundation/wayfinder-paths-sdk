@@ -50,11 +50,12 @@ DEFAULT_HISTORY_FIELDS = (
     "ptPrice,ytPrice,impliedApy,underlyingApy,tvl,totalTvl,lpPrice,syPrice"
 )
 
-# Convenience mapping for target chains.
-# - Arbitrum One: 42161
-# - Base: 8453
-# - HyperEVM (Hyperliquid EVM mainnet): 999
+# Convenience mapping for Pendle-supported chains in the Wayfinder SDK.
+# Pendle also supports Optimism (10), Sonic (146), Mantle (5000), Berachain (80094)
+# but those are not yet in the SDK's supported-chains table.
 PENDLE_CHAIN_IDS: dict[str, int] = {
+    "ethereum": 1,
+    "bsc": 56,
     "arbitrum": 42161,
     "base": 8453,
     "hyperevm": 999,
