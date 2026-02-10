@@ -176,45 +176,6 @@ class HyperliquidAdapter(BaseAdapter):
             return USER_DECLINED_ERROR
         return self._broadcast_hypecore(action, nonce, sig)
 
-    def _hypecore_get_user_transfers(
-        self,
-        user_address: str,
-        from_timestamp_ms: int,
-        transfer_type: Literal["deposit", "withdraw"],
-    ) -> dict[str, Decimal]:
-        data = get_info().post(
-            "/info",
-            {
-                "type": "userNonFundingLedgerUpdates",
-                "user": to_checksum_address(user_address),
-                "startTime": int(from_timestamp_ms),
-            },
-        )
-        res: dict[str, Decimal] = {}
-        for u in sorted(data, key=lambda x: x.get("time", 0)):
-            delta = u.get("delta")
-            if delta and delta.get("type") == transfer_type:
-                res[u["hash"]] = Decimal(str(delta["usdc"]))
-        return res
-
-    def hypecore_get_user_deposits(
-        self, user_address: str, from_timestamp_ms: int
-    ) -> dict[str, Decimal]:
-        return self._hypecore_get_user_transfers(
-            user_address=user_address,
-            from_timestamp_ms=from_timestamp_ms,
-            transfer_type="deposit",
-        )
-
-    def hypecore_get_user_withdrawals(
-        self, user_address: str, from_timestamp_ms: int
-    ) -> dict[str, Decimal]:
-        return self._hypecore_get_user_transfers(
-            user_address=user_address,
-            from_timestamp_ms=from_timestamp_ms,
-            transfer_type="withdraw",
-        )
-
     async def get_meta_and_asset_ctxs(self) -> tuple[bool, Any]:
         cache_key = "hl_meta_and_asset_ctxs"
         cached = await self._cache.get(cache_key)
@@ -406,7 +367,6 @@ class HyperliquidAdapter(BaseAdapter):
         account: str,
         include_spot: bool = True,
         include_open_orders: bool = True,
-        include_frontend_open_orders: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
         out: dict[str, Any] = {
             "protocol": "hyperliquid",
@@ -436,10 +396,7 @@ class HyperliquidAdapter(BaseAdapter):
                 out["errors"]["spot"] = spot_result[1]
 
         if include_open_orders:
-            if include_frontend_open_orders:
-                orders_result = await self.get_frontend_open_orders(account)
-            else:
-                orders_result = await self.get_open_orders(account)
+            orders_result = await self.get_frontend_open_orders(account)
             if orders_result[0]:
                 ok_any = True
                 out["openOrders"] = orders_result[1]
@@ -971,21 +928,11 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_open_orders(
         self, address: str
     ) -> tuple[Literal[True], list[dict[str, Any]]] | tuple[Literal[False], str]:
-        def _aggregate(results: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
-            merged: list[dict[str, Any]] = []
-            for orders in results:
-                if isinstance(orders, list):
-                    merged.extend(orders)
-            return merged
-
-        try:
-            data = await self._post_across_dexes(
-                {"type": "openOrders", "user": address}, _aggregate
-            )
+        """Delegates to get_frontend_open_orders (superset of openOrders)."""
+        ok, data = await self.get_frontend_open_orders(address)
+        if ok:
             return True, data
-        except Exception as exc:
-            self.logger.error(f"Failed to fetch open_orders for {address}: {exc}")
-            return False, str(exc)
+        return False, str(data)
 
     async def get_frontend_open_orders(
         self, address: str
