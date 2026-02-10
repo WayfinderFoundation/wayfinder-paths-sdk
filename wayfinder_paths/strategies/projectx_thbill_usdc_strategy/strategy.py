@@ -152,6 +152,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             "main_wallet": self.config.get("main_wallet") or None,
             "strategy_wallet": self.config.get("strategy_wallet") or None,
             "strategy": self.config,
+            "pool_address": str(THBILL_USDC_METADATA["pool"]),
         }
         self.balance_adapter = BalanceAdapter(
             adapter_config,

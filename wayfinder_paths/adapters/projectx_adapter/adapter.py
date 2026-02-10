@@ -11,13 +11,13 @@ from web3 import AsyncWeb3
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.adapters.uniswap_adapter.base import UniswapV3BaseAdapter
+from wayfinder_paths.core.constants.contracts import PRJX_NPM, PRJX_ROUTER
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.projectx import (
     ADDRESS_TO_TOKEN_ID,
+    PRJX_FACTORY,
     PRJX_POINTS_API_URL,
     PROJECTX_CHAIN_ID,
-    THBILL_USDC_METADATA,
-    THBILL_USDC_POOL,
     get_prjx_subgraph_url,
 )
 from wayfinder_paths.core.constants.projectx_abi import (
@@ -64,6 +64,35 @@ BALANCE_SWAP_HAIRCUT = 0.02  # 2% buffer to avoid overshooting the solve trade
 MINT_RETRY_SLIPPAGE_BPS = 25  # upper cap when bumping slippage after a revert
 BALANCE_MIN_SWAP_TOKEN0 = 0.01  # in token0 units
 BALANCE_MIN_SWAP_TOKEN1 = 0.01  # in token1 units
+
+
+def _resolve_pool_address(config: dict[str, Any] | None) -> str | None:
+    if not config or not isinstance(config, dict):
+        return None
+
+    for key in (
+        "pool_address",
+        "pool",
+        "projectx_pool_address",
+        "projectx_pool",
+    ):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    strategy_cfg = config.get("strategy")
+    if isinstance(strategy_cfg, dict):
+        for key in (
+            "pool_address",
+            "pool",
+            "projectx_pool_address",
+            "projectx_pool",
+        ):
+            value = strategy_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
 
 
 def _target_ratio_need0_over_need1(sqrt_p: int, sqrt_pl: int, sqrt_pu: int) -> float:
@@ -165,12 +194,17 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             raise ValueError("strategy_wallet.address is required for ProjectX adapter")
         owner = to_checksum_address(str(addr))
 
+        pool_address = _resolve_pool_address(config)
+        if not pool_address:
+            raise ValueError("pool_address is required for ProjectX adapter")
+        self.pool_address = to_checksum_address(str(pool_address))
+
         super().__init__(
             "projectx_adapter",
             config,
             chain_id=PROJECTX_CHAIN_ID,
-            npm_address=str(THBILL_USDC_METADATA["npm"]),
-            factory_address=str(THBILL_USDC_METADATA["factory"]),
+            npm_address=PRJX_NPM,
+            factory_address=PRJX_FACTORY,
             owner=owner,
             strategy_wallet_signing_callback=strategy_wallet_signing_callback,
             factory_abi=PROJECTX_FACTORY_ABI,
@@ -223,7 +257,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
 
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
                 npm = web3.eth.contract(
-                    address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
+                    address=self.npm_address,
                     abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
                 )
                 all_positions = await read_all_positions(npm, target_owner)
@@ -266,7 +300,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             "protocol": (self.adapter_type or self.name).lower(),
             "chainId": int(PROJECTX_CHAIN_ID),
             "account": acct,
-            "pool": THBILL_USDC_POOL,
+            "pool": self.pool_address,
             "poolOverview": None,
             "balances": None,
             "positions": None,
@@ -331,7 +365,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         """Return recent swaps for the configured pool via subgraph."""
         try:
             variables = {
-                "pool": THBILL_USDC_POOL.lower(),
+                "pool": self.pool_address.lower(),
                 "first": max(1, limit),
             }
 
@@ -626,7 +660,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
             if {token_in.lower(), token_out.lower()} == pool_tokens:
                 selected_fee = int(meta["fee"])
-                pool_address = THBILL_USDC_POOL
+                pool_address = self.pool_address
             else:
                 selected_fee, pool_address = await self._find_pool_for_pair(
                     token_in, token_out, prefer_fees=prefer_fees
@@ -635,7 +669,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             await ensure_allowance(
                 token_address=to_checksum_address(token_in),
                 owner=self.owner,
-                spender=to_checksum_address(str(THBILL_USDC_METADATA["router"])),
+                spender=PRJX_ROUTER,
                 amount=int(amount_in),
                 chain_id=PROJECTX_CHAIN_ID,
                 signing_callback=self.strategy_wallet_signing_callback,
@@ -695,7 +729,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             amount_out_min = int(max(0, expected_out_raw) * max(0.0, 1.0 - slippage))
 
             tx = await encode_call(
-                target=str(THBILL_USDC_METADATA["router"]),
+                target=PRJX_ROUTER,
                 abi=PROJECTX_ROUTER_ABI,
                 fn_name="exactInputSingle",
                 args=[
@@ -820,7 +854,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             position = await self._read_position_struct(int(token_id))
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
                 pool = web3.eth.contract(
-                    address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI
+                    address=self.pool_address, abi=PROJECTX_POOL_ABI
                 )
                 token0_meta, token1_meta, slot0 = await asyncio.gather(
                     self._token_meta(web3, position["token0"]),
@@ -870,7 +904,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             return self._pool_meta_cache
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            pool = web3.eth.contract(address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI)
+            pool = web3.eth.contract(address=self.pool_address, abi=PROJECTX_POOL_ABI)
             slot0, tick_spacing, fee, liquidity, token0, token1 = await asyncio.gather(
                 pool.functions.slot0().call(block_identifier="latest"),
                 pool.functions.tickSpacing().call(block_identifier="latest"),
@@ -969,7 +1003,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         transfer_topic = (
             "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
         )
-        npm_addr = to_checksum_address(str(THBILL_USDC_METADATA["npm"])).lower()
+        npm_addr = str(self.npm_address).lower()
         owner_topic = "0x" + self.owner.lower()[2:].rjust(64, "0")
         for log in receipt.get("logs", []) or []:
             try:
@@ -1107,7 +1141,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
     async def _read_position_struct(self, token_id: int) -> dict[str, Any]:
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
+                address=self.npm_address,
                 abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
             return dict(await read_position(npm, int(token_id)))
@@ -1166,7 +1200,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         position = await self._read_position_struct(int(token_id))
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool_contract = web3.eth.contract(
-                address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI
+                address=self.pool_address, abi=PROJECTX_POOL_ABI
             )
             slot0 = await pool_contract.functions.slot0().call(
                 block_identifier="latest"
@@ -1214,7 +1248,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         fees = list(prefer_fees or [100, 500, 1000, 3000, 10000])
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             factory = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["factory"])),
+                address=self.factory_address,
                 abi=PROJECTX_FACTORY_ABI,
             )
             results = await asyncio.gather(

@@ -8,6 +8,7 @@ import wayfinder_paths.adapters.projectx_adapter.adapter as projectx_adapter_mod
 import wayfinder_paths.adapters.uniswap_adapter.base as uniswap_base_module
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
 
 
 def test_init_requires_strategy_wallet():
@@ -98,7 +99,12 @@ async def test_find_pool_for_pair_picks_first_nonzero_fee(monkeypatch):
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
     )
     ok, out = await adapter.find_pool_for_pair(
         "0x1111111111111111111111111111111111111111",
@@ -124,7 +130,12 @@ class _FakeNpmContract:
 @pytest.mark.asyncio
 async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeypatch):
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        },
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter._balance_for_band = AsyncMock(return_value=None)
@@ -203,7 +214,12 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
 @pytest.mark.asyncio
 async def test_burn_position_calls_remove_liquidity():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        },
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter.remove_liquidity = AsyncMock(return_value=(True, "0xtx_burn"))
@@ -217,7 +233,12 @@ async def test_burn_position_calls_remove_liquidity():
 @pytest.mark.asyncio
 async def test_get_full_user_state_serializes_positions():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
     )
     adapter.pool_overview = AsyncMock(return_value=(True, {"pool": "ok"}))
     adapter.current_balances = AsyncMock(return_value=(True, {"token": 123}))
@@ -245,7 +266,7 @@ async def test_get_full_user_state_serializes_positions():
     assert ok is True
     assert state["protocol"] == "projectx"
     assert state["account"].lower() == "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    assert state["pool"] == projectx_adapter_module.THBILL_USDC_POOL
+    assert state["pool"] == THBILL_USDC_POOL
     assert state["points"] == {"points": 42}
     assert state["poolOverview"] == {"pool": "ok"}
     assert state["balances"] == {"token": 123}
@@ -258,7 +279,12 @@ async def test_get_full_user_state_serializes_positions():
 @pytest.mark.asyncio
 async def test_get_full_user_state_returns_false_when_everything_fails():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
     )
     adapter.pool_overview = AsyncMock(return_value=(False, "no overview"))
     adapter.current_balances = AsyncMock(return_value=(False, "no balances"))
@@ -283,7 +309,12 @@ async def test_poll_for_any_position_id_destructures_list_positions_tuple(monkey
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
     )
     position = projectx_adapter_module.PositionSnapshot(
         token_id=321,
@@ -316,7 +347,12 @@ async def test_swap_once_to_band_ratio_returns_false_on_no_prjx_route(monkeypatc
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
     )
     adapter._pool_meta = AsyncMock(
         return_value={
@@ -347,7 +383,12 @@ async def test_swap_once_to_band_ratio_raises_on_swap_failure(monkeypatch):
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
     )
     adapter._pool_meta = AsyncMock(
         return_value={

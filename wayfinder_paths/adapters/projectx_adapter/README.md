@@ -10,6 +10,11 @@ Adapter for interacting with ProjectX (HyperEVM Uniswap v3 fork) concentrated li
 
 Public methods follow the repo convention: `async def ... -> tuple[bool, data | str]`.
 
+Configuration:
+
+- `strategy_wallet.address` (required)
+- `pool_address` (required; also accepts `pool`, `projectx_pool_address`, `projectx_pool`, and checks nested `strategy` config)
+
 Notable helpers:
 
 - `pool_overview()`
