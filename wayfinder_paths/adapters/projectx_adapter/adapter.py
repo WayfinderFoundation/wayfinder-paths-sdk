@@ -10,14 +10,14 @@ from eth_utils import to_checksum_address
 from web3 import AsyncWeb3
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
-from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.adapters.uniswap_adapter.base import UniswapV3BaseAdapter
+from wayfinder_paths.core.constants.contracts import PRJX_NPM, PRJX_ROUTER
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.projectx import (
     ADDRESS_TO_TOKEN_ID,
+    PRJX_FACTORY,
     PRJX_POINTS_API_URL,
     PROJECTX_CHAIN_ID,
-    THBILL_USDC_METADATA,
-    THBILL_USDC_POOL,
     get_prjx_subgraph_url,
 )
 from wayfinder_paths.core.constants.projectx_abi import (
@@ -42,7 +42,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     MASK_256,
     Q128,
     amounts_for_liq_inrange,
-    collect_params,
     deadline,
     filter_positions,
     find_pool,
@@ -50,7 +49,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     read_all_positions,
     read_position,
     round_tick_to_spacing,
-    slippage_min,
     sqrt_price_x96_from_tick,
     sqrt_price_x96_to_price,
     tick_from_sqrt_price_x96,
@@ -66,6 +64,35 @@ BALANCE_SWAP_HAIRCUT = 0.02  # 2% buffer to avoid overshooting the solve trade
 MINT_RETRY_SLIPPAGE_BPS = 25  # upper cap when bumping slippage after a revert
 BALANCE_MIN_SWAP_TOKEN0 = 0.01  # in token0 units
 BALANCE_MIN_SWAP_TOKEN1 = 0.01  # in token1 units
+
+
+def _resolve_pool_address(config: dict[str, Any] | None) -> str | None:
+    if not config or not isinstance(config, dict):
+        return None
+
+    for key in (
+        "pool_address",
+        "pool",
+        "projectx_pool_address",
+        "projectx_pool",
+    ):
+        value = config.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    strategy_cfg = config.get("strategy")
+    if isinstance(strategy_cfg, dict):
+        for key in (
+            "pool_address",
+            "pool",
+            "projectx_pool_address",
+            "projectx_pool",
+        ):
+            value = strategy_cfg.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
 
 
 def _target_ratio_need0_over_need1(sqrt_p: int, sqrt_pl: int, sqrt_pu: int) -> float:
@@ -152,7 +179,7 @@ query Swaps(
 """
 
 
-class ProjectXLiquidityAdapter(BaseAdapter):
+class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
     adapter_type = "PROJECTX"
 
     def __init__(
@@ -161,73 +188,172 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         *,
         strategy_wallet_signing_callback=None,
     ) -> None:
-        super().__init__("projectx_adapter", config)
-
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         wallet = (config or {}).get("strategy_wallet") or {}
         addr = wallet.get("address")
         if not addr:
             raise ValueError("strategy_wallet.address is required for ProjectX adapter")
-        self.owner = to_checksum_address(str(addr))
+        owner = to_checksum_address(str(addr))
+
+        pool_address = _resolve_pool_address(config)
+        if not pool_address:
+            raise ValueError("pool_address is required for ProjectX adapter")
+        self.pool_address = to_checksum_address(str(pool_address))
+
+        super().__init__(
+            "projectx_adapter",
+            config,
+            chain_id=PROJECTX_CHAIN_ID,
+            npm_address=PRJX_NPM,
+            factory_address=PRJX_FACTORY,
+            owner=owner,
+            strategy_wallet_signing_callback=strategy_wallet_signing_callback,
+            factory_abi=PROJECTX_FACTORY_ABI,
+        )
 
         self._token_cache: dict[str, dict[str, Any]] = {}
         self._pool_meta_cache: dict[str, Any] | None = None
         self._subgraph_url: str = get_prjx_subgraph_url(config)
 
-    async def pool_overview(self) -> dict[str, Any]:
-        meta = await self._pool_meta()
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            token0_meta, token1_meta = await asyncio.gather(
-                self._token_meta(web3, meta["token0"]),
-                self._token_meta(web3, meta["token1"]),
+    async def pool_overview(self) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            meta = await self._pool_meta()
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                token0_meta, token1_meta = await asyncio.gather(
+                    self._token_meta(web3, meta["token0"]),
+                    self._token_meta(web3, meta["token1"]),
+                )
+            return True, {
+                "sqrt_price_x96": meta["sqrt_price_x96"],
+                "tick": meta["tick"],
+                "tick_spacing": meta["tick_spacing"],
+                "fee": meta["fee"],
+                "liquidity": meta["liquidity"],
+                "token0": token0_meta,
+                "token1": token1_meta,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def current_balances(
+        self, *, owner: str | None = None
+    ) -> tuple[bool, dict[str, int] | str]:
+        try:
+            meta = await self._pool_meta()
+            target_owner = to_checksum_address(owner) if owner else self.owner
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                bal0, bal1 = await self._balances_for_tokens(
+                    web3, [meta["token0"], meta["token1"]], owner=target_owner
+                )
+            return True, {meta["token0"]: int(bal0), meta["token1"]: int(bal1)}
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def list_positions(
+        self, *, owner: str | None = None
+    ) -> tuple[bool, list[PositionSnapshot] | str]:
+        try:
+            meta = await self._pool_meta()
+            target_owner = to_checksum_address(owner) if owner else self.owner
+
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                npm = web3.eth.contract(
+                    address=self.npm_address,
+                    abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+                )
+                all_positions = await read_all_positions(npm, target_owner)
+
+            filtered = filter_positions(
+                all_positions,
+                token0=meta["token0"],
+                token1=meta["token1"],
+                fee=int(meta["fee"]),
+                active_only=True,
             )
-        return {
-            "sqrt_price_x96": meta["sqrt_price_x96"],
-            "tick": meta["tick"],
-            "tick_spacing": meta["tick_spacing"],
-            "fee": meta["fee"],
-            "liquidity": meta["liquidity"],
-            "token0": token0_meta,
-            "token1": token1_meta,
+            out = [
+                PositionSnapshot(
+                    token_id=tid,
+                    liquidity=pos["liquidity"],
+                    tick_lower=pos["tick_lower"],
+                    tick_upper=pos["tick_upper"],
+                    fee=pos["fee"],
+                    token0=pos["token0"],
+                    token1=pos["token1"],
+                )
+                for tid, pos in filtered
+            ]
+            return True, out
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_full_user_state(
+        self,
+        *,
+        account: str | None = None,
+        include_overview: bool = True,
+        include_balances: bool = True,
+        include_positions: bool = True,
+        include_points: bool = True,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        acct = to_checksum_address(account) if account else self.owner
+
+        out: dict[str, Any] = {
+            "protocol": (self.adapter_type or self.name).lower(),
+            "chainId": int(PROJECTX_CHAIN_ID),
+            "account": acct,
+            "pool": self.pool_address,
+            "poolOverview": None,
+            "balances": None,
+            "positions": None,
+            "points": None,
+            "errors": {},
         }
 
-    async def current_balances(self) -> dict[str, int]:
-        meta = await self._pool_meta()
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            bal0, bal1 = await self._balances_for_tokens(
-                web3, [meta["token0"], meta["token1"]]
-            )
-        return {meta["token0"]: bal0, meta["token1"]: bal1}
+        ok_any = False
 
-    async def list_positions(self) -> list[PositionSnapshot]:
-        meta = await self._pool_meta()
+        if include_overview:
+            ok_over, overview = await self.pool_overview()
+            if ok_over:
+                ok_any = True
+                out["poolOverview"] = overview
+            else:
+                out["errors"]["poolOverview"] = overview
 
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            )
-            all_positions = await read_all_positions(npm, self.owner)
+        if include_balances:
+            ok_bal, balances = await self.current_balances(owner=acct)
+            if ok_bal:
+                ok_any = True
+                out["balances"] = balances
+            else:
+                out["errors"]["balances"] = balances
 
-        filtered = filter_positions(
-            all_positions,
-            token0=meta["token0"],
-            token1=meta["token1"],
-            fee=int(meta["fee"]),
-            active_only=True,
-        )
-        return [
-            PositionSnapshot(
-                token_id=tid,
-                liquidity=pos["liquidity"],
-                tick_lower=pos["tick_lower"],
-                tick_upper=pos["tick_upper"],
-                fee=pos["fee"],
-                token0=pos["token0"],
-                token1=pos["token1"],
-            )
-            for tid, pos in filtered
-        ]
+        if include_positions:
+            ok_pos, positions = await self.list_positions(owner=acct)
+            if ok_pos and isinstance(positions, list):
+                ok_any = True
+                out["positions"] = [
+                    {
+                        "token_id": int(p.token_id),
+                        "liquidity": int(p.liquidity),
+                        "tick_lower": int(p.tick_lower),
+                        "tick_upper": int(p.tick_upper),
+                        "fee": int(p.fee),
+                        "token0": str(p.token0),
+                        "token1": str(p.token1),
+                    }
+                    for p in positions
+                ]
+            else:
+                out["errors"]["positions"] = positions
+
+        if include_points:
+            ok_pts, pts = await self.fetch_prjx_points(acct)
+            if ok_pts:
+                ok_any = True
+                out["points"] = pts
+            else:
+                out["errors"]["points"] = pts
+
+        return ok_any, out
 
     async def fetch_swaps(
         self,
@@ -235,90 +361,97 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         limit: int = 10,
         start_timestamp: int | None = None,
         end_timestamp: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         """Return recent swaps for the configured pool via subgraph."""
-        variables = {
-            "pool": THBILL_USDC_POOL.lower(),
-            "first": max(1, limit),
-        }
+        try:
+            variables = {
+                "pool": self.pool_address.lower(),
+                "first": max(1, limit),
+            }
 
-        async def _query(query_str: str) -> dict[str, Any]:
-            payload = {"query": query_str, "variables": variables}
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(self._subgraph_url, json=payload)
-                resp.raise_for_status()
-                body = resp.json()
-                if body.get("errors"):
-                    raise RuntimeError(str(body.get("errors")))
-                return body.get("data", {}) or {}
+            async def _query(query_str: str) -> dict[str, Any]:
+                payload = {"query": query_str, "variables": variables}
+                async with httpx.AsyncClient(timeout=30) as client:
+                    resp = await client.post(self._subgraph_url, json=payload)
+                    resp.raise_for_status()
+                    body = resp.json()
+                    if body.get("errors"):
+                        raise RuntimeError(str(body.get("errors")))
+                    return body.get("data", {}) or {}
 
-        data: dict[str, Any] = {}
-        last_err: Exception | None = None
-        for query_str in (SWAPS_QUERY_VOLUME_TICK, SWAPS_QUERY_SIMPLE):
-            try:
-                data = await _query(query_str)
-                if data.get("swaps") is not None:
-                    break
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                continue
-
-        if not data and last_err:
-            raise last_err
-
-        swaps = data.get("swaps", []) or []
-        parsed: list[dict[str, Any]] = []
-        for swap in swaps:
-            try:
-                ts_raw = swap.get("timestamp")
-                sqrt_raw = swap.get("sqrtPriceX96") or swap.get("sqrt_price_x96")
-                tick_raw = swap.get("tick")
-                amount0_raw = swap.get("amount0")
-                amount1_raw = swap.get("amount1")
-                amount_usd_raw = swap.get("amountUSD") or swap.get("amount_usd")
-                tick_val: int | None = None
-                if tick_raw is not None:
-                    tick_val = int(tick_raw)
-                elif sqrt_raw is not None:
-                    tick_val = int(tick_from_sqrt_price_x96(int(sqrt_raw)))
-                if tick_val is None:
+            data: dict[str, Any] = {}
+            last_err: Exception | None = None
+            for query_str in (SWAPS_QUERY_VOLUME_TICK, SWAPS_QUERY_SIMPLE):
+                try:
+                    data = await _query(query_str)
+                    if data.get("swaps") is not None:
+                        break
+                except Exception as exc:  # noqa: BLE001
+                    last_err = exc
                     continue
 
-                amount0: float | None = None
-                amount1: float | None = None
-                amount_usd: float | None = None
+            if not data and last_err:
+                return False, str(last_err)
+
+            swaps = data.get("swaps", []) or []
+            parsed: list[dict[str, Any]] = []
+            for swap in swaps:
                 try:
-                    if amount0_raw is not None:
-                        amount0 = float(amount0_raw)
-                    if amount1_raw is not None:
-                        amount1 = float(amount1_raw)
-                    if amount_usd_raw is not None:
-                        amount_usd = float(amount_usd_raw)
-                except (TypeError, ValueError):
-                    amount0 = amount1 = amount_usd = None
-                parsed.append(
-                    {
-                        "id": swap.get("id"),
-                        "timestamp": int(ts_raw or 0),
-                        "tick": tick_val,
-                        "sqrt_price_x96": int(sqrt_raw or 0),
-                        "amount0": amount0,
-                        "amount1": amount1,
-                        "amount_usd": amount_usd,
-                    }
-                )
-            except (TypeError, ValueError):  # pragma: no cover - defensive
-                continue
+                    ts_raw = swap.get("timestamp")
+                    sqrt_raw = swap.get("sqrtPriceX96") or swap.get("sqrt_price_x96")
+                    tick_raw = swap.get("tick")
+                    amount0_raw = swap.get("amount0")
+                    amount1_raw = swap.get("amount1")
+                    amount_usd_raw = swap.get("amountUSD") or swap.get("amount_usd")
+                    tick_val: int | None = None
+                    if tick_raw is not None:
+                        tick_val = int(tick_raw)
+                    elif sqrt_raw is not None:
+                        tick_val = int(tick_from_sqrt_price_x96(int(sqrt_raw)))
+                    if tick_val is None:
+                        continue
 
-        if start_timestamp is not None:
-            parsed = [
-                s for s in parsed if int(s.get("timestamp", 0)) >= start_timestamp
-            ]
-        if end_timestamp is not None:
-            parsed = [s for s in parsed if int(s.get("timestamp", 0)) <= end_timestamp]
-        return parsed
+                    amount0: float | None = None
+                    amount1: float | None = None
+                    amount_usd: float | None = None
+                    try:
+                        if amount0_raw is not None:
+                            amount0 = float(amount0_raw)
+                        if amount1_raw is not None:
+                            amount1 = float(amount1_raw)
+                        if amount_usd_raw is not None:
+                            amount_usd = float(amount_usd_raw)
+                    except (TypeError, ValueError):
+                        amount0 = amount1 = amount_usd = None
+                    parsed.append(
+                        {
+                            "id": swap.get("id"),
+                            "timestamp": int(ts_raw or 0),
+                            "tick": tick_val,
+                            "sqrt_price_x96": int(sqrt_raw or 0),
+                            "amount0": amount0,
+                            "amount1": amount1,
+                            "amount_usd": amount_usd,
+                        }
+                    )
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    continue
 
-    async def recent_swaps(self, limit: int = 10) -> list[dict[str, Any]]:
+            if start_timestamp is not None:
+                parsed = [
+                    s for s in parsed if int(s.get("timestamp", 0)) >= start_timestamp
+                ]
+            if end_timestamp is not None:
+                parsed = [
+                    s for s in parsed if int(s.get("timestamp", 0)) <= end_timestamp
+                ]
+            return True, parsed
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def recent_swaps(
+        self, limit: int = 10
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         return await self.fetch_swaps(limit=limit)
 
     async def mint_from_balances(
@@ -327,12 +460,13 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         tick_upper: int,
         *,
         slippage_bps: int = 30,
-    ) -> tuple[int | None, str | None, dict[str, int]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         """Mint a new position, retrying once with higher slippage if price slips."""
         try:
-            return await self._mint_from_balances_once(
+            token_id, tx_hash, spent = await self._mint_from_balances_once(
                 tick_lower, tick_upper, slippage_bps=slippage_bps
             )
+            return True, {"token_id": token_id, "tx_hash": tx_hash, "spent": spent}
         except Exception as exc:
             msg = str(exc)
             if "Price slippage" in msg or "slippage" in msg:
@@ -344,10 +478,18 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                         bumped,
                         slippage_bps,
                     )
-                    return await self._mint_from_balances_once(
-                        tick_lower, tick_upper, slippage_bps=bumped
-                    )
-            raise
+                    try:
+                        token_id, tx_hash, spent = await self._mint_from_balances_once(
+                            tick_lower, tick_upper, slippage_bps=bumped
+                        )
+                        return True, {
+                            "token_id": token_id,
+                            "tx_hash": tx_hash,
+                            "spent": spent,
+                        }
+                    except Exception as exc2:  # noqa: BLE001
+                        return False, str(exc2)
+            return False, str(exc)
 
     async def _mint_from_balances_once(
         self,
@@ -401,30 +543,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         if amt0_des <= 0 and amt1_des <= 0:
             return None, None, empty_meta
 
-        npm_addr = to_checksum_address(str(THBILL_USDC_METADATA["npm"]))
-        await ensure_allowance(
-            token_address=to_checksum_address(token0),
-            owner=self.owner,
-            spender=npm_addr,
-            amount=int(amt0_des),
-            chain_id=PROJECTX_CHAIN_ID,
-            signing_callback=self.strategy_wallet_signing_callback,
-            approval_amount=int(amt0_des * 2),
-        )
-        await ensure_allowance(
-            token_address=to_checksum_address(token1),
-            owner=self.owner,
-            spender=npm_addr,
-            amount=int(amt1_des),
-            chain_id=PROJECTX_CHAIN_ID,
-            signing_callback=self.strategy_wallet_signing_callback,
-            approval_amount=int(amt1_des * 2),
-        )
-
-        amt0_min = slippage_min(amt0_des, slippage_bps)
-        amt1_min = slippage_min(amt1_des, slippage_bps)
-
-        params = (
+        ok, tx_hash = await super().add_liquidity(
             token0,
             token1,
             int(meta["fee"]),
@@ -432,21 +551,11 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             tick_upper_adj,
             int(amt0_des),
             int(amt1_des),
-            int(amt0_min),
-            int(amt1_min),
-            self.owner,
-            deadline(1200),
+            slippage_bps=slippage_bps,
+            tick_spacing=tick_spacing,
         )
-
-        tx = await encode_call(
-            target=str(THBILL_USDC_METADATA["npm"]),
-            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            fn_name="mint",
-            args=[params],
-            from_address=self.owner,
-            chain_id=PROJECTX_CHAIN_ID,
-        )
-        tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+        if not ok:
+            raise RuntimeError(str(tx_hash))
 
         token_id = await self._extract_token_id_from_receipt(tx_hash)
         if token_id is None:
@@ -462,180 +571,69 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         spent1 = max(0, int(before_bal1) - int(post_bal1))
         return token_id, tx_hash, {"token0_spent": spent0, "token1_spent": spent1}
 
-    async def decrease_liquidity(
-        self,
-        token_id: int,
-        *,
-        liquidity: int | None = None,
-        slippage_bps: int = 30,
-    ) -> str | None:
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            )
-            pos = await read_position(npm, int(token_id))
-            current_liq = pos["liquidity"]
-            if current_liq == 0:
-                return None
-            target = min(int(liquidity or current_liq), current_liq)
+    async def burn_position(self, token_id: int) -> tuple[bool, Any]:
+        return await self.remove_liquidity(int(token_id), collect=True, burn=True)
 
-        params = (int(token_id), int(target), 0, 0, deadline(600))
-        tx = await encode_call(
-            target=str(THBILL_USDC_METADATA["npm"]),
-            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            fn_name="decreaseLiquidity",
-            args=[params],
-            from_address=self.owner,
-            chain_id=PROJECTX_CHAIN_ID,
-        )
-        tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
-        return tx_hash
-
-    async def collect_fees(self, token_id: int) -> tuple[str, dict[str, Any]]:
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            )
-            pos = await read_position(npm, int(token_id))
-            token0 = pos["token0"]
-            token1 = pos["token1"]
-            before0, before1 = await self._balances_for_tokens(web3, [token0, token1])
-
-        tx = await encode_call(
-            target=str(THBILL_USDC_METADATA["npm"]),
-            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            fn_name="collect",
-            args=[collect_params(int(token_id), self.owner)],
-            from_address=self.owner,
-            chain_id=PROJECTX_CHAIN_ID,
-        )
-        tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
-
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            after0, after1 = await self._balances_for_tokens(web3, [token0, token1])
-
-        received0 = max(0, int(after0) - int(before0))
-        received1 = max(0, int(after1) - int(before1))
-        return tx_hash, {
-            "token0": token0,
-            "token1": token1,
-            "amount0": received0,
-            "amount1": received1,
-        }
-
-    async def burn_position(self, token_id: int) -> str:
-        position = await self._read_position_struct(int(token_id))
-        liq = position["liquidity"]
-        owed0 = position["tokens_owed0"]
-        owed1 = position["tokens_owed1"]
-
-        if liq > 0:
-            await self.decrease_liquidity(token_id, liquidity=liq)
-            await self.collect_fees(token_id)
-        elif owed0 > 0 or owed1 > 0:
-            await self.collect_fees(token_id)
-
-        tx = await encode_call(
-            target=str(THBILL_USDC_METADATA["npm"]),
-            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            fn_name="burn",
-            args=[int(token_id)],
-            from_address=self.owner,
-            chain_id=PROJECTX_CHAIN_ID,
-        )
-        return await send_transaction(tx, self.strategy_wallet_signing_callback)
-
-    async def increase_liquidity(
+    async def increase_liquidity_balanced(
         self,
         token_id: int,
         tick_lower: int,
         tick_upper: int,
         *,
         slippage_bps: int = 20,
-    ) -> tuple[str | None, dict[str, int]]:
-        await self._balance_for_band(
-            tick_lower=tick_lower,
-            tick_upper=tick_upper,
-            slippage_bps=slippage_bps,
-        )
-        meta = await self._pool_meta()
-        token0 = meta["token0"]
-        token1 = meta["token1"]
-
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            bal0, bal1 = await self._balances_for_tokens(web3, [token0, token1])
-            before0 = bal0
-            before1 = bal1
-
-        empty_spend = {"token0_spent": 0, "token1_spent": 0}
-        if bal0 <= 0 and bal1 <= 0:
-            return None, empty_spend
-
-        sqrt_p = meta["sqrt_price_x96"]
-        sqrt_pl = sqrt_price_x96_from_tick(tick_lower)
-        sqrt_pu = sqrt_price_x96_from_tick(tick_upper)
-
-        liq_all = liq_for_amounts(sqrt_p, sqrt_pl, sqrt_pu, bal0, bal1)
-        if liq_all <= 0:
-            return None, empty_spend
-        need0, need1 = amounts_for_liq_inrange(sqrt_p, sqrt_pl, sqrt_pu, liq_all)
-        amt0_des = min(bal0, int(need0))
-        amt1_des = min(bal1, int(need1))
-        if amt0_des <= 0 and amt1_des <= 0:
-            return None, empty_spend
-
-        npm_addr = to_checksum_address(str(THBILL_USDC_METADATA["npm"]))
-        if amt0_des > 0:
-            await ensure_allowance(
-                token_address=to_checksum_address(token0),
-                owner=self.owner,
-                spender=npm_addr,
-                amount=int(amt0_des),
-                chain_id=PROJECTX_CHAIN_ID,
-                signing_callback=self.strategy_wallet_signing_callback,
-                approval_amount=int(amt0_des * 2),
+    ) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            await self._balance_for_band(
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                slippage_bps=slippage_bps,
             )
-        if amt1_des > 0:
-            await ensure_allowance(
-                token_address=to_checksum_address(token1),
-                owner=self.owner,
-                spender=npm_addr,
-                amount=int(amt1_des),
-                chain_id=PROJECTX_CHAIN_ID,
-                signing_callback=self.strategy_wallet_signing_callback,
-                approval_amount=int(amt1_des * 2),
+            meta = await self._pool_meta()
+            token0 = meta["token0"]
+            token1 = meta["token1"]
+
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                bal0, bal1 = await self._balances_for_tokens(web3, [token0, token1])
+                before0 = int(bal0)
+                before1 = int(bal1)
+
+            empty_spend = {"token0_spent": 0, "token1_spent": 0}
+            if before0 <= 0 and before1 <= 0:
+                return True, {"tx_hash": None, "spent": empty_spend}
+
+            sqrt_p = meta["sqrt_price_x96"]
+            sqrt_pl = sqrt_price_x96_from_tick(tick_lower)
+            sqrt_pu = sqrt_price_x96_from_tick(tick_upper)
+
+            liq_all = liq_for_amounts(sqrt_p, sqrt_pl, sqrt_pu, before0, before1)
+            if liq_all <= 0:
+                return True, {"tx_hash": None, "spent": empty_spend}
+            need0, need1 = amounts_for_liq_inrange(sqrt_p, sqrt_pl, sqrt_pu, liq_all)
+            amt0_des = min(before0, int(need0))
+            amt1_des = min(before1, int(need1))
+            if amt0_des <= 0 and amt1_des <= 0:
+                return True, {"tx_hash": None, "spent": empty_spend}
+
+            ok, tx_hash = await super().increase_liquidity(
+                int(token_id),
+                int(amt0_des),
+                int(amt1_des),
+                slippage_bps=slippage_bps,
             )
+            if not ok:
+                return False, str(tx_hash)
 
-        amt0_min = slippage_min(amt0_des, slippage_bps)
-        amt1_min = slippage_min(amt1_des, slippage_bps)
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                after0, after1 = await self._balances_for_tokens(web3, [token0, token1])
 
-        params = (
-            int(token_id),
-            int(amt0_des),
-            int(amt1_des),
-            int(amt0_min),
-            int(amt1_min),
-            deadline(900),
-        )
-
-        tx = await encode_call(
-            target=str(THBILL_USDC_METADATA["npm"]),
-            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            fn_name="increaseLiquidity",
-            args=[params],
-            from_address=self.owner,
-            chain_id=PROJECTX_CHAIN_ID,
-        )
-        tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
-
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            after0, after1 = await self._balances_for_tokens(web3, [token0, token1])
-
-        spent0 = max(0, int(before0) - int(after0))
-        spent1 = max(0, int(before1) - int(after1))
-        return tx_hash, {"token0_spent": spent0, "token1_spent": spent1}
+            spent0 = max(0, int(before0) - int(after0))
+            spent1 = max(0, int(before1) - int(after1))
+            return True, {
+                "tx_hash": str(tx_hash),
+                "spent": {"token0_spent": spent0, "token1_spent": spent1},
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     async def swap_exact_in(
         self,
@@ -645,104 +643,114 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         *,
         slippage_bps: int = 30,
         prefer_fees: Sequence[int] | None = None,
-    ) -> str:
-        if amount_in <= 0:
-            raise ValueError("amount_in must be positive")
+    ) -> tuple[bool, str]:
+        try:
+            if amount_in <= 0:
+                raise ValueError("amount_in must be positive")
 
-        token_in = to_checksum_address(from_token)
-        token_out = to_checksum_address(to_token)
+            token_in = to_checksum_address(from_token)
+            token_out = to_checksum_address(to_token)
 
-        if is_native_token(token_in) or is_native_token(token_out):
-            raise ValueError(
-                "ProjectX swap adapter currently supports ERC20 tokens only"
-            )
-
-        meta = await self._pool_meta()
-        pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
-        if {token_in.lower(), token_out.lower()} == pool_tokens:
-            selected_fee = int(meta["fee"])
-            pool_address = THBILL_USDC_POOL
-        else:
-            selected_fee, pool_address = await self._find_pool_for_pair(
-                token_in, token_out, prefer_fees=prefer_fees
-            )
-
-        await ensure_allowance(
-            token_address=to_checksum_address(token_in),
-            owner=self.owner,
-            spender=to_checksum_address(str(THBILL_USDC_METADATA["router"])),
-            amount=int(amount_in),
-            chain_id=PROJECTX_CHAIN_ID,
-            signing_callback=self.strategy_wallet_signing_callback,
-            approval_amount=int(amount_in * 2),
-        )
-
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            pool = web3.eth.contract(address=pool_address, abi=PROJECTX_POOL_ABI)
-            slot0, token0_raw, token1_raw = await asyncio.gather(
-                pool.functions.slot0().call(block_identifier="latest"),
-                pool.functions.token0().call(block_identifier="latest"),
-                pool.functions.token1().call(block_identifier="latest"),
-            )
-            sqrt_price_x96 = int(slot0[0])
-            token0 = to_checksum_address(token0_raw)
-            token1 = to_checksum_address(token1_raw)
-
-            meta_in, meta_out, token0_meta, token1_meta = await asyncio.gather(
-                self._token_meta(web3, token_in),
-                self._token_meta(web3, token_out),
-                self._token_meta(web3, token0),
-                self._token_meta(web3, token1),
-            )
-
-            dec_in = int(meta_in.get("decimals", 18))
-            dec_out = int(meta_out.get("decimals", 18))
-
-        # Compute a conservative minOut from current mid price.
-        price_token1_per_token0 = sqrt_price_x96_to_price(
-            sqrt_price_x96,
-            int(token0_meta.get("decimals", 18)),
-            int(token1_meta.get("decimals", 18)),
-        )
-        fee_frac = max(0.0, min(0.5, float(selected_fee) / 1_000_000.0))
-        slippage = max(1, int(slippage_bps)) / 10_000.0
-
-        amount_in_tokens = float(amount_in) / (10**dec_in)
-        if token_in.lower() == token0.lower() and token_out.lower() == token1.lower():
-            expected_out_tokens = amount_in_tokens * price_token1_per_token0
-        elif token_in.lower() == token1.lower() and token_out.lower() == token0.lower():
-            expected_out_tokens = (
-                amount_in_tokens / price_token1_per_token0
-                if price_token1_per_token0 > 0
-                else 0.0
-            )
-        else:
-            raise RuntimeError("Selected pool does not match swap token pair")
-
-        expected_out_tokens *= max(0.0, 1.0 - fee_frac)
-        expected_out_raw = int(expected_out_tokens * (10**dec_out))
-        amount_out_min = int(max(0, expected_out_raw) * max(0.0, 1.0 - slippage))
-
-        tx = await encode_call(
-            target=str(THBILL_USDC_METADATA["router"]),
-            abi=PROJECTX_ROUTER_ABI,
-            fn_name="exactInputSingle",
-            args=[
-                (
-                    token_in,
-                    token_out,
-                    int(selected_fee),
-                    self.owner,
-                    deadline(900),
-                    int(amount_in),
-                    int(amount_out_min),
-                    0,
+            if is_native_token(token_in) or is_native_token(token_out):
+                raise ValueError(
+                    "ProjectX swap adapter currently supports ERC20 tokens only"
                 )
-            ],
-            from_address=self.owner,
-            chain_id=PROJECTX_CHAIN_ID,
-        )
-        return await send_transaction(tx, self.strategy_wallet_signing_callback)
+
+            meta = await self._pool_meta()
+            pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
+            if {token_in.lower(), token_out.lower()} == pool_tokens:
+                selected_fee = int(meta["fee"])
+                pool_address = self.pool_address
+            else:
+                selected_fee, pool_address = await self._find_pool_for_pair(
+                    token_in, token_out, prefer_fees=prefer_fees
+                )
+
+            await ensure_allowance(
+                token_address=to_checksum_address(token_in),
+                owner=self.owner,
+                spender=PRJX_ROUTER,
+                amount=int(amount_in),
+                chain_id=PROJECTX_CHAIN_ID,
+                signing_callback=self.strategy_wallet_signing_callback,
+                approval_amount=int(amount_in * 2),
+            )
+
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                pool = web3.eth.contract(address=pool_address, abi=PROJECTX_POOL_ABI)
+                slot0, token0_raw, token1_raw = await asyncio.gather(
+                    pool.functions.slot0().call(block_identifier="latest"),
+                    pool.functions.token0().call(block_identifier="latest"),
+                    pool.functions.token1().call(block_identifier="latest"),
+                )
+                sqrt_price_x96 = int(slot0[0])
+                token0 = to_checksum_address(token0_raw)
+                token1 = to_checksum_address(token1_raw)
+
+                meta_in, meta_out, token0_meta, token1_meta = await asyncio.gather(
+                    self._token_meta(web3, token_in),
+                    self._token_meta(web3, token_out),
+                    self._token_meta(web3, token0),
+                    self._token_meta(web3, token1),
+                )
+
+                dec_in = int(meta_in.get("decimals", 18))
+                dec_out = int(meta_out.get("decimals", 18))
+
+            # Compute a conservative minOut from current mid price.
+            price_token1_per_token0 = sqrt_price_x96_to_price(
+                sqrt_price_x96,
+                int(token0_meta.get("decimals", 18)),
+                int(token1_meta.get("decimals", 18)),
+            )
+            fee_frac = max(0.0, min(0.5, float(selected_fee) / 1_000_000.0))
+            slippage = max(1, int(slippage_bps)) / 10_000.0
+
+            amount_in_tokens = float(amount_in) / (10**dec_in)
+            if (
+                token_in.lower() == token0.lower()
+                and token_out.lower() == token1.lower()
+            ):
+                expected_out_tokens = amount_in_tokens * price_token1_per_token0
+            elif (
+                token_in.lower() == token1.lower()
+                and token_out.lower() == token0.lower()
+            ):
+                expected_out_tokens = (
+                    amount_in_tokens / price_token1_per_token0
+                    if price_token1_per_token0 > 0
+                    else 0.0
+                )
+            else:
+                raise RuntimeError("Selected pool does not match swap token pair")
+
+            expected_out_tokens *= max(0.0, 1.0 - fee_frac)
+            expected_out_raw = int(expected_out_tokens * (10**dec_out))
+            amount_out_min = int(max(0, expected_out_raw) * max(0.0, 1.0 - slippage))
+
+            tx = await encode_call(
+                target=PRJX_ROUTER,
+                abi=PROJECTX_ROUTER_ABI,
+                fn_name="exactInputSingle",
+                args=[
+                    (
+                        token_in,
+                        token_out,
+                        int(selected_fee),
+                        self.owner,
+                        deadline(900),
+                        int(amount_in),
+                        int(amount_out_min),
+                        0,
+                    )
+                ],
+                from_address=self.owner,
+                chain_id=PROJECTX_CHAIN_ID,
+            )
+            tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            return True, str(tx_hash)
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     @staticmethod
     def classify_range_state(
@@ -767,57 +775,60 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
     async def price_band_for_ticks(
         self, tick_lower: int, tick_upper: int
-    ) -> dict[str, Any] | None:
-        meta = await self._pool_meta()
-        token0 = meta["token0"]
-        token1 = meta["token1"]
+    ) -> tuple[bool, dict[str, Any] | None | str]:
+        try:
+            meta = await self._pool_meta()
+            token0 = meta["token0"]
+            token1 = meta["token1"]
 
-        lo_tick = min(int(tick_lower), int(tick_upper))
-        hi_tick = max(int(tick_lower), int(tick_upper))
-        if lo_tick == hi_tick:
-            return None
+            lo_tick = min(int(tick_lower), int(tick_upper))
+            hi_tick = max(int(tick_lower), int(tick_upper))
+            if lo_tick == hi_tick:
+                return True, None
 
-        sqrt_lo = sqrt_price_x96_from_tick(lo_tick)
-        sqrt_hi = sqrt_price_x96_from_tick(hi_tick)
+            sqrt_lo = sqrt_price_x96_from_tick(lo_tick)
+            sqrt_hi = sqrt_price_x96_from_tick(hi_tick)
 
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            token0_meta, token1_meta = await asyncio.gather(
-                self._token_meta(web3, token0),
-                self._token_meta(web3, token1),
-            )
-            price_lo = sqrt_price_x96_to_price(
-                sqrt_lo, int(token0_meta["decimals"]), int(token1_meta["decimals"])
-            )
-            price_hi = sqrt_price_x96_to_price(
-                sqrt_hi, int(token0_meta["decimals"]), int(token1_meta["decimals"])
-            )
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                token0_meta, token1_meta = await asyncio.gather(
+                    self._token_meta(web3, token0),
+                    self._token_meta(web3, token1),
+                )
+                price_lo = sqrt_price_x96_to_price(
+                    sqrt_lo, int(token0_meta["decimals"]), int(token1_meta["decimals"])
+                )
+                price_hi = sqrt_price_x96_to_price(
+                    sqrt_hi, int(token0_meta["decimals"]), int(token1_meta["decimals"])
+                )
 
-        prices = [p for p in (price_lo, price_hi) if p > 0]
-        if len(prices) < 2:
-            return None
-        token1_per_token0_min, token1_per_token0_max = sorted(prices)
+            prices = [p for p in (price_lo, price_hi) if p > 0]
+            if len(prices) < 2:
+                return True, None
+            token1_per_token0_min, token1_per_token0_max = sorted(prices)
 
-        token0_per_token1_min = 0.0
-        token0_per_token1_max = 0.0
-        if token1_per_token0_max > 0:
-            token0_per_token1_min = 1.0 / token1_per_token0_max
-        if token1_per_token0_min > 0:
-            token0_per_token1_max = 1.0 / token1_per_token0_min
-        if token0_per_token1_min <= 0 or token0_per_token1_max <= 0:
-            token0_per_token1_min = token0_per_token1_max = 0.0
+            token0_per_token1_min = 0.0
+            token0_per_token1_max = 0.0
+            if token1_per_token0_max > 0:
+                token0_per_token1_min = 1.0 / token1_per_token0_max
+            if token1_per_token0_min > 0:
+                token0_per_token1_max = 1.0 / token1_per_token0_min
+            if token0_per_token1_min <= 0 or token0_per_token1_max <= 0:
+                token0_per_token1_min = token0_per_token1_max = 0.0
 
-        return {
-            "token0": token0_meta,
-            "token1": token1_meta,
-            "token1_per_token0": {
-                "min": token1_per_token0_min,
-                "max": token1_per_token0_max,
-            },
-            "token0_per_token1": {
-                "min": token0_per_token1_min,
-                "max": token0_per_token1_max,
-            },
-        }
+            return True, {
+                "token0": token0_meta,
+                "token1": token1_meta,
+                "token1_per_token0": {
+                    "min": token1_per_token0_min,
+                    "max": token1_per_token0_max,
+                },
+                "token0_per_token1": {
+                    "min": token0_per_token1_min,
+                    "max": token0_per_token1_max,
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     async def find_pool_for_pair(
         self,
@@ -825,63 +836,75 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         token_b: str,
         *,
         prefer_fees: Sequence[int] | None = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         """Resolve the ProjectX pool address for a token pair (read-only)."""
-        fee, pool = await self._find_pool_for_pair(
-            token_a, token_b, prefer_fees=prefer_fees
-        )
-        return {"fee": int(fee), "pool": str(pool)}
-
-    async def live_fee_snapshot(self, token_id: int) -> dict[str, float]:
-        owed0, owed1 = await self._read_live_claimable_fees(int(token_id))
-        position = await self._read_position_struct(int(token_id))
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            pool = web3.eth.contract(address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI)
-            token0_meta, token1_meta, slot0 = await asyncio.gather(
-                self._token_meta(web3, position["token0"]),
-                self._token_meta(web3, position["token1"]),
-                pool.functions.slot0().call(block_identifier="latest"),
+        try:
+            fee, pool = await self._find_pool_for_pair(
+                token_a, token_b, prefer_fees=prefer_fees
             )
-            sqrt_price = int(slot0[0])
+            return True, {"fee": int(fee), "pool": str(pool)}
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
-        usd_value = self._estimate_fees_usd_from_pool(
-            owed0,
-            owed1,
-            int(token0_meta["decimals"]),
-            int(token1_meta["decimals"]),
-            sqrt_price,
-        )
-        return {
-            "owed0": owed0 / (10 ** int(token0_meta["decimals"])),
-            "owed1": owed1 / (10 ** int(token1_meta["decimals"])),
-            "usd": float(usd_value),
-        }
+    async def live_fee_snapshot(
+        self, token_id: int
+    ) -> tuple[bool, dict[str, float] | str]:
+        try:
+            owed0, owed1 = await self._read_live_claimable_fees(int(token_id))
+            position = await self._read_position_struct(int(token_id))
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                pool = web3.eth.contract(
+                    address=self.pool_address, abi=PROJECTX_POOL_ABI
+                )
+                token0_meta, token1_meta, slot0 = await asyncio.gather(
+                    self._token_meta(web3, position["token0"]),
+                    self._token_meta(web3, position["token1"]),
+                    pool.functions.slot0().call(block_identifier="latest"),
+                )
+                sqrt_price = int(slot0[0])
+
+            usd_value = self._estimate_fees_usd_from_pool(
+                owed0,
+                owed1,
+                int(token0_meta["decimals"]),
+                int(token1_meta["decimals"]),
+                sqrt_price,
+            )
+            return True, {
+                "owed0": owed0 / (10 ** int(token0_meta["decimals"])),
+                "owed1": owed1 / (10 ** int(token1_meta["decimals"])),
+                "usd": float(usd_value),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     @staticmethod
-    async def fetch_prjx_points(wallet_address: str | None) -> dict[str, Any]:
+    async def fetch_prjx_points(
+        wallet_address: str | None,
+    ) -> tuple[bool, dict[str, Any] | str]:
         if not wallet_address:
-            return {}
+            return True, {}
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
                     PRJX_POINTS_API_URL, params={"walletAddress": wallet_address}
                 )
                 if resp.status_code == 404:
-                    return {"points": 0}
+                    return True, {"points": 0}
                 resp.raise_for_status()
                 data = resp.json() or {}
                 if data.get("error") == "User not found":
-                    return {"points": 0}
-                return data
+                    return True, {"points": 0}
+                return True, data
         except Exception as exc:  # noqa: BLE001
-            return {"error": str(exc)}
+            return False, str(exc)
 
     async def _pool_meta(self) -> dict[str, Any]:
         if self._pool_meta_cache:
             return self._pool_meta_cache
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            pool = web3.eth.contract(address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI)
+            pool = web3.eth.contract(address=self.pool_address, abi=PROJECTX_POOL_ABI)
             slot0, tick_spacing, fee, liquidity, token0, token1 = await asyncio.gather(
                 pool.functions.slot0().call(block_identifier="latest"),
                 pool.functions.tickSpacing().call(block_identifier="latest"),
@@ -932,32 +955,40 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         web3: AsyncWeb3,
         token_addresses: Sequence[str],
         *,
+        owner: str | None = None,
         block_identifier: str = "pending",
     ) -> list[int]:
         if not token_addresses:
             return []
 
         checksummed = [to_checksum_address(a) for a in token_addresses]
+        target_owner = to_checksum_address(owner) if owner else self.owner
         try:
             multicall = MulticallAdapter(web3=web3, chain_id=PROJECTX_CHAIN_ID)
             calls = [
-                multicall.encode_erc20_balance(token, self.owner)
+                multicall.encode_erc20_balance(token, target_owner)
                 for token in checksummed
             ]
             res = await multicall.aggregate(calls, block_identifier=block_identifier)
             return [int(multicall.decode_uint256(d)) for d in res.return_data]
         except Exception:
             balances = await asyncio.gather(
-                *(self._balance(web3, token) for token in checksummed)
+                *(
+                    self._balance(web3, token, owner=target_owner)
+                    for token in checksummed
+                )
             )
             return [int(b) for b in balances]
 
-    async def _balance(self, web3: AsyncWeb3, token_address: str) -> int:
+    async def _balance(
+        self, web3: AsyncWeb3, token_address: str, *, owner: str | None = None
+    ) -> int:
+        target_owner = to_checksum_address(owner) if owner else self.owner
         return int(
             await get_token_balance(
                 token_address,
                 PROJECTX_CHAIN_ID,
-                self.owner,
+                target_owner,
                 web3=web3,
                 block_identifier="pending",
             )
@@ -972,7 +1003,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         transfer_topic = (
             "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
         )
-        npm_addr = to_checksum_address(str(THBILL_USDC_METADATA["npm"])).lower()
+        npm_addr = str(self.npm_address).lower()
         owner_topic = "0x" + self.owner.lower()[2:].rjust(64, "0")
         for log in receipt.get("logs", []) or []:
             try:
@@ -1004,8 +1035,8 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 if attempt == 0
                 else MINT_POLL_INTERVAL_SECONDS
             )
-            positions = await self.list_positions()
-            if positions:
+            ok, positions = await self.list_positions()
+            if ok and isinstance(positions, list) and positions:
                 return int(positions[0].token_id)
         return None
 
@@ -1070,18 +1101,17 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 min0 = int(BALANCE_MIN_SWAP_TOKEN0 * (10**dec0))
                 if amount0_in < min0:
                     return False
-                try:
-                    await self.swap_exact_in(
-                        token0,
-                        token1,
-                        amount0_in,
-                        slippage_bps=slippage_bps,
-                    )
-                except RuntimeError as exc:
-                    if "No PRJX route" in str(exc):
-                        self.logger.warning("Skipping balance swap: %s", exc)
+                ok, tx = await self.swap_exact_in(
+                    token0,
+                    token1,
+                    amount0_in,
+                    slippage_bps=slippage_bps,
+                )
+                if not ok:
+                    if "No PRJX route" in str(tx):
+                        self.logger.warning("Skipping balance swap: %s", tx)
                         return False
-                    raise
+                    raise RuntimeError(str(tx))
                 return True
         else:
             denom = target_ratio + (1.0 / price_net)
@@ -1094,25 +1124,24 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 min1 = int(BALANCE_MIN_SWAP_TOKEN1 * (10**dec1))
                 if amount1_in < min1:
                     return False
-                try:
-                    await self.swap_exact_in(
-                        token1,
-                        token0,
-                        amount1_in,
-                        slippage_bps=slippage_bps,
-                    )
-                except RuntimeError as exc:
-                    if "No PRJX route" in str(exc):
-                        self.logger.warning("Skipping balance swap: %s", exc)
+                ok, tx = await self.swap_exact_in(
+                    token1,
+                    token0,
+                    amount1_in,
+                    slippage_bps=slippage_bps,
+                )
+                if not ok:
+                    if "No PRJX route" in str(tx):
+                        self.logger.warning("Skipping balance swap: %s", tx)
                         return False
-                    raise
+                    raise RuntimeError(str(tx))
                 return True
         return False
 
     async def _read_position_struct(self, token_id: int) -> dict[str, Any]:
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
+                address=self.npm_address,
                 abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
             )
             return dict(await read_position(npm, int(token_id)))
@@ -1171,7 +1200,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         position = await self._read_position_struct(int(token_id))
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool_contract = web3.eth.contract(
-                address=THBILL_USDC_POOL, abi=PROJECTX_POOL_ABI
+                address=self.pool_address, abi=PROJECTX_POOL_ABI
             )
             slot0 = await pool_contract.functions.slot0().call(
                 block_identifier="latest"
@@ -1219,7 +1248,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         fees = list(prefer_fees or [100, 500, 1000, 3000, 10000])
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             factory = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["factory"])),
+                address=self.factory_address,
                 abi=PROJECTX_FACTORY_ABI,
             )
             results = await asyncio.gather(

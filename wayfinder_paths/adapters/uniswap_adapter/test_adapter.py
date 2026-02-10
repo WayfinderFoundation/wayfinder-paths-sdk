@@ -9,7 +9,7 @@ from wayfinder_paths.adapters.uniswap_adapter.adapter import UniswapAdapter
 OWNER = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
 TOKEN_A = "0x1111111111111111111111111111111111111111"
 TOKEN_B = "0x3333333333333333333333333333333333333333"
-MODULE = "wayfinder_paths.adapters.uniswap_adapter.adapter"
+BASE_MODULE = "wayfinder_paths.adapters.uniswap_adapter.base"
 
 FAKE_POS_RAW = (0, OWNER, TOKEN_A, TOKEN_B, 3000, -120, 120, 5000, 0, 0, 10, 20)
 
@@ -119,14 +119,16 @@ class TestAddLiquidity:
     async def test_success(self):
         adapter = _make_adapter()
         with (
-            patch(f"{MODULE}.ensure_allowance", new_callable=AsyncMock) as mock_allow,
             patch(
-                f"{MODULE}.encode_call",
+                f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock
+            ) as mock_allow,
+            patch(
+                f"{BASE_MODULE}.encode_call",
                 new_callable=AsyncMock,
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtxhash",
             ) as mock_send,
@@ -144,14 +146,14 @@ class TestAddLiquidity:
     async def test_auto_orders_tokens(self):
         adapter = _make_adapter()
         with (
-            patch(f"{MODULE}.ensure_allowance", new_callable=AsyncMock),
+            patch(f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock),
             patch(
-                f"{MODULE}.encode_call",
+                f"{BASE_MODULE}.encode_call",
                 new_callable=AsyncMock,
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx",
             ),
@@ -165,14 +167,14 @@ class TestAddLiquidity:
     async def test_tick_rounding(self):
         adapter = _make_adapter()
         with (
-            patch(f"{MODULE}.ensure_allowance", new_callable=AsyncMock),
+            patch(f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock),
             patch(
-                f"{MODULE}.encode_call",
+                f"{BASE_MODULE}.encode_call",
                 new_callable=AsyncMock,
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx",
             ),
@@ -192,17 +194,19 @@ class TestIncreaseLiquidity:
 
         with (
             patch(
-                f"{MODULE}.web3_from_chain_id",
+                f"{BASE_MODULE}.web3_from_chain_id",
                 return_value=_Web3Ctx(npm),
             ),
-            patch(f"{MODULE}.ensure_allowance", new_callable=AsyncMock) as mock_allow,
             patch(
-                f"{MODULE}.encode_call",
+                f"{BASE_MODULE}.ensure_allowance", new_callable=AsyncMock
+            ) as mock_allow,
+            patch(
+                f"{BASE_MODULE}.encode_call",
                 new_callable=AsyncMock,
                 return_value={"data": "0x"},
             ),
             patch(
-                f"{MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx_inc",
             ),
@@ -221,16 +225,16 @@ class TestRemoveLiquidity:
 
         with (
             patch(
-                f"{MODULE}.web3_from_chain_id",
+                f"{BASE_MODULE}.web3_from_chain_id",
                 return_value=_Web3Ctx(npm),
             ),
             patch(
-                f"{MODULE}.encode_call",
+                f"{BASE_MODULE}.encode_call",
                 new_callable=AsyncMock,
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx_rm",
             ),
@@ -249,12 +253,12 @@ class TestCollectFees:
         adapter = _make_adapter()
         with (
             patch(
-                f"{MODULE}.encode_call",
+                f"{BASE_MODULE}.encode_call",
                 new_callable=AsyncMock,
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx_col",
             ),
@@ -271,7 +275,7 @@ class TestGetPosition:
         adapter = _make_adapter()
         npm = _FakeNpm()
 
-        with patch(f"{MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
+        with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
             ok, pos = await adapter.get_position(42)
             assert ok is True
             assert pos["token_id"] == 42
@@ -285,7 +289,7 @@ class TestGetPositions:
         adapter = _make_adapter()
         npm = _FakeNpm(balance=1, token_ids=[99])
 
-        with patch(f"{MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
+        with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
             ok, positions = await adapter.get_positions()
             assert ok is True
             assert len(positions) == 1
@@ -298,7 +302,7 @@ class TestGetUncollectedFees:
         adapter = _make_adapter()
         npm = _FakeNpm()
 
-        with patch(f"{MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
+        with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(npm)):
             ok, fees = await adapter.get_uncollected_fees(42)
             assert ok is True
             assert fees["amount0"] == 1000
@@ -312,7 +316,7 @@ class TestGetPool:
         pool_addr = "0x4444444444444444444444444444444444444444"
         factory = _FakeFactory(pool_addr)
 
-        with patch(f"{MODULE}.web3_from_chain_id", return_value=_Web3Ctx(factory)):
+        with patch(f"{BASE_MODULE}.web3_from_chain_id", return_value=_Web3Ctx(factory)):
             ok, result = await adapter.get_pool(TOKEN_A, TOKEN_B, 3000)
             assert ok is True
             assert result.lower() == pool_addr.lower()

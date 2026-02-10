@@ -152,6 +152,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             "main_wallet": self.config.get("main_wallet") or None,
             "strategy_wallet": self.config.get("strategy_wallet") or None,
             "strategy": self.config,
+            "pool_address": str(THBILL_USDC_METADATA["pool"]),
         }
         self.balance_adapter = BalanceAdapter(
             adapter_config,
@@ -194,11 +195,13 @@ class ProjectXThbillUsdcStrategy(Strategy):
         self, *, window_sec: int, min_swaps: int, max_swaps: int = 500
     ) -> list[int]:
         now = int(time.time())
-        swaps = await self.projectx.fetch_swaps(
+        ok, swaps = await self.projectx.fetch_swaps(
             limit=max_swaps,
             start_timestamp=now - int(window_sec),
             end_timestamp=now,
         )
+        if not ok or not isinstance(swaps, list):
+            return []
         ticks = [int(s["tick"]) for s in swaps if s.get("tick") is not None]
         if len(ticks) < int(min_swaps):
             return []
@@ -350,7 +353,18 @@ class ProjectXThbillUsdcStrategy(Strategy):
         return float(total_value), float(amount0), float(amount1)
 
     async def quote(self, deposit_amount: float | None = None) -> dict[str, Any]:
-        overview = await self.projectx.pool_overview()
+        ok, overview = await self.projectx.pool_overview()
+        if not ok or not isinstance(overview, dict):
+            return {
+                "expected_apy": 0.0,
+                "apy_type": "gross",
+                "confidence": "low",
+                "methodology": "Unable to fetch pool overview.",
+                "components": {},
+                "deposit_amount": deposit_amount,
+                "as_of": datetime.now(UTC).isoformat(),
+                "summary": f"Pool overview error: {overview}",
+            }
         tick_spacing = int(overview["tick_spacing"])
         center_tick = await self._anchored_center_tick(
             int(overview["tick"]), tick_spacing
@@ -464,13 +478,12 @@ class ProjectXThbillUsdcStrategy(Strategy):
 
         end_ts = int(time.time())
         start_ts = end_ts - int(self.QUOTE_FEE_WINDOW_SEC)
-        try:
-            swaps = await self.projectx.fetch_swaps(
-                limit=int(self.QUOTE_FEE_MAX_SWAPS),
-                start_timestamp=start_ts,
-                end_timestamp=end_ts,
-            )
-        except Exception:  # noqa: BLE001
+        swaps_ok, swaps = await self.projectx.fetch_swaps(
+            limit=int(self.QUOTE_FEE_MAX_SWAPS),
+            start_timestamp=start_ts,
+            end_timestamp=end_ts,
+        )
+        if not swaps_ok or not isinstance(swaps, list):
             swaps = []
 
         volume_usd_total = 0.0
@@ -641,20 +654,29 @@ class ProjectXThbillUsdcStrategy(Strategy):
             if not ok:
                 return False, f"Failed to move USDC to strategy wallet: {msg}"
 
-        overview = await self.projectx.pool_overview()
-        positions = await self.projectx.list_positions()
+        overview_ok, overview = await self.projectx.pool_overview()
+        if not overview_ok or not isinstance(overview, dict):
+            return False, f"Failed to fetch ProjectX pool overview: {overview}"
+
+        positions_ok, positions = await self.projectx.list_positions()
+        if not positions_ok or not isinstance(positions, list):
+            return False, f"Failed to list ProjectX positions: {positions}"
         slippage_bps = max(
             5, int(float(THBILL_USDC_METADATA.get("band_bps", 20)) // 2) or 10
         )
 
         if positions:
             pos = positions[0]
-            tx_hash, spend_meta = await self.projectx.increase_liquidity(
+            inc_ok, inc = await self.projectx.increase_liquidity_balanced(
                 pos.token_id,
                 pos.tick_lower,
                 pos.tick_upper,
                 slippage_bps=slippage_bps,
             )
+            if not inc_ok or not isinstance(inc, dict):
+                return False, f"Failed to increase liquidity: {inc}"
+            tx_hash = inc.get("tx_hash")
+            spend_meta = inc.get("spent") if isinstance(inc.get("spent"), dict) else {}
             message = f"Added {main_token_amount:.2f} USDC into existing ProjectX position {pos.token_id}."
             spend_note = self._format_spent_summary(
                 spend_meta, overview["token0"], overview["token1"]
@@ -662,7 +684,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             if spend_note:
                 message += f" {spend_note}."
             if tx_hash:
-                message += f" Tx: {self._tx_link(tx_hash)}"
+                message += f" Tx: {self._tx_link(str(tx_hash))}"
             return True, message
 
         center_tick = await self._anchored_center_tick(
@@ -671,11 +693,16 @@ class ProjectXThbillUsdcStrategy(Strategy):
         tick_lower, tick_upper = self._band_ticks(
             center_tick, int(overview["tick_spacing"])
         )
-        token_id, tx_hash, spend_meta = await self.projectx.mint_from_balances(
+        mint_ok, mint = await self.projectx.mint_from_balances(
             tick_lower,
             tick_upper,
             slippage_bps=slippage_bps,
         )
+        if not mint_ok or not isinstance(mint, dict):
+            return False, f"Mint failed: {mint}"
+        token_id = mint.get("token_id")
+        tx_hash = mint.get("tx_hash")
+        spend_meta = mint.get("spent") if isinstance(mint.get("spent"), dict) else {}
         if not token_id:
             return False, "Mint failed; unable to detect new liquidity position."
 
@@ -686,27 +713,40 @@ class ProjectXThbillUsdcStrategy(Strategy):
         if spend_note:
             notes.append(f"{spend_note}.")
         if tx_hash:
-            notes.append(f"Mint tx: {self._tx_link(tx_hash)}")
+            notes.append(f"Mint tx: {self._tx_link(str(tx_hash))}")
         return True, "\n".join(notes)
 
     async def update(self) -> StatusTuple:
-        overview = await self.projectx.pool_overview()
+        overview_ok, overview = await self.projectx.pool_overview()
+        if not overview_ok or not isinstance(overview, dict):
+            return False, f"Failed to fetch ProjectX pool overview: {overview}"
         tick = int(overview["tick"])
         spacing = int(overview["tick_spacing"])
         slippage_bps = max(
             5, int(float(THBILL_USDC_METADATA.get("band_bps", 20)) // 2) or 10
         )
 
-        positions = await self.projectx.list_positions()
+        positions_ok, positions = await self.projectx.list_positions()
+        if not positions_ok or not isinstance(positions, list):
+            return False, f"Failed to list ProjectX positions: {positions}"
         if not positions:
-            balances = await self.projectx.current_balances()
+            balances_ok, balances = await self.projectx.current_balances()
+            if not balances_ok or not isinstance(balances, dict):
+                return False, f"Failed to fetch ProjectX balances: {balances}"
             idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
             if idle_value < IDLE_REDEPLOY_THRESHOLD_USD:
                 return False, "No active ProjectX positions; deposit first."
             center_tick = await self._anchored_center_tick(tick, spacing)
             tick_lower, tick_upper = self._band_ticks(center_tick, spacing)
-            token_id, tx_hash, spend_meta = await self.projectx.mint_from_balances(
+            mint_ok, mint = await self.projectx.mint_from_balances(
                 tick_lower, tick_upper, slippage_bps=slippage_bps
+            )
+            if not mint_ok or not isinstance(mint, dict):
+                return False, f"Mint failed: {mint}"
+            token_id = mint.get("token_id")
+            tx_hash = mint.get("tx_hash")
+            spend_meta = (
+                mint.get("spent") if isinstance(mint.get("spent"), dict) else {}
             )
             if not token_id:
                 return False, "Unable to deploy idle balances into ProjectX pool."
@@ -717,7 +757,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             if spend_note:
                 note += f" {spend_note}."
             if tx_hash:
-                note += f" Tx: {self._tx_link(tx_hash)}"
+                note += f" Tx: {self._tx_link(str(tx_hash))}"
             return True, note
 
         pos = positions[0]
@@ -727,12 +767,21 @@ class ProjectXThbillUsdcStrategy(Strategy):
         )
 
         if out_of_band:
-            await self.projectx.burn_position(pos.token_id)
+            burn_ok, burn_tx = await self.projectx.burn_position(pos.token_id)
+            if not burn_ok:
+                return False, f"Failed to burn position {pos.token_id}: {burn_tx}"
 
             center_tick = await self._anchored_center_tick(tick, spacing)
             tick_lower, tick_upper = self._band_ticks(center_tick, spacing)
-            token_id, tx_hash, spend_meta = await self.projectx.mint_from_balances(
+            mint_ok, mint = await self.projectx.mint_from_balances(
                 tick_lower, tick_upper, slippage_bps=slippage_bps
+            )
+            if not mint_ok or not isinstance(mint, dict):
+                return False, f"Mint failed: {mint}"
+            token_id = mint.get("token_id")
+            tx_hash = mint.get("tx_hash")
+            spend_meta = (
+                mint.get("spent") if isinstance(mint.get("spent"), dict) else {}
             )
             message = f"Recentred liquidity into ticks {tick_lower}-{tick_upper} (token {token_id})."
             spend_note = self._format_spent_summary(
@@ -741,12 +790,14 @@ class ProjectXThbillUsdcStrategy(Strategy):
             if spend_note:
                 message += f" {spend_note}."
             if tx_hash:
-                message += f" Tx: {self._tx_link(tx_hash)}"
+                message += f" Tx: {self._tx_link(str(tx_hash))}"
             return True, message
 
         # Collect fees if meaningful (best-effort)
         try:
-            fee_snapshot = await self.projectx.live_fee_snapshot(pos.token_id)
+            fee_ok, fee_snapshot = await self.projectx.live_fee_snapshot(pos.token_id)
+            if not fee_ok or not isinstance(fee_snapshot, dict):
+                raise RuntimeError(str(fee_snapshot))
             total_usd = float(fee_snapshot.get("usd") or 0.0)
             threshold = max(
                 MIN_AUTOCOLLECT_USD,
@@ -757,19 +808,25 @@ class ProjectXThbillUsdcStrategy(Strategy):
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"Fee snapshot/collect failed: {exc}")
 
-        balances = await self.projectx.current_balances()
+        balances_ok, balances = await self.projectx.current_balances()
+        if not balances_ok or not isinstance(balances, dict):
+            return False, f"Failed to fetch ProjectX balances: {balances}"
         idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
         redeploy_threshold = max(
             IDLE_REDEPLOY_THRESHOLD_USD,
             float(position_value_usd) * (MIN_AUTOCOLLECT_PCT / 100),
         )
         if idle_value >= redeploy_threshold:
-            tx_hash, spend_meta = await self.projectx.increase_liquidity(
+            inc_ok, inc = await self.projectx.increase_liquidity_balanced(
                 pos.token_id,
                 pos.tick_lower,
                 pos.tick_upper,
                 slippage_bps=slippage_bps,
             )
+            if not inc_ok or not isinstance(inc, dict):
+                return False, f"Failed to increase liquidity: {inc}"
+            tx_hash = inc.get("tx_hash")
+            spend_meta = inc.get("spent") if isinstance(inc.get("spent"), dict) else {}
             message = "Compounded fees and redeployed idle balances."
             spend_note = self._format_spent_summary(
                 spend_meta, overview["token0"], overview["token1"]
@@ -777,48 +834,100 @@ class ProjectXThbillUsdcStrategy(Strategy):
             if spend_note:
                 message += f" {spend_note}."
             if tx_hash:
-                message += f" Tx: {self._tx_link(tx_hash)}"
+                message += f" Tx: {self._tx_link(str(tx_hash))}"
             return True, message
 
         return True, "Compounded fees; no idle balances to deploy."
 
-    async def exit(self, **kwargs: Any) -> StatusTuple:
-        positions = await self.projectx.list_positions()
+    async def withdraw(self, **kwargs: Any) -> StatusTuple:
+        positions_ok, positions = await self.projectx.list_positions()
+        if not positions_ok or not isinstance(positions, list):
+            return False, f"Failed to list ProjectX positions: {positions}"
         for pos in positions:
-            await self.projectx.burn_position(pos.token_id)
+            burn_ok, burn_tx = await self.projectx.burn_position(pos.token_id)
+            if not burn_ok:
+                return False, f"Failed to burn position {pos.token_id}: {burn_tx}"
 
-        overview = await self.projectx.pool_overview()
-        balances = await self.projectx.current_balances()
+        overview_ok, overview = await self.projectx.pool_overview()
+        if not overview_ok or not isinstance(overview, dict):
+            return False, f"Failed to fetch ProjectX pool overview: {overview}"
+
+        balances_ok, balances = await self.projectx.current_balances()
+        if not balances_ok or not isinstance(balances, dict):
+            return False, f"Failed to fetch ProjectX balances: {balances}"
         token0_addr = str(overview["token0"]["address"])
         token1_addr = str(overview["token1"]["address"])
 
         token1_balance = int(balances.get(token1_addr, 0) or 0)
         if token1_balance > 0:
-            await self.projectx.swap_exact_in(
+            swap_ok, swap_tx = await self.projectx.swap_exact_in(
                 token1_addr,
                 token0_addr,
                 token1_balance,
                 slippage_bps=40,
             )
+            if not swap_ok:
+                return False, f"Swap failed: {swap_tx}"
 
+        return (
+            True,
+            "Closed all ProjectX positions and converted to USDC. Funds remain in strategy wallet.",
+        )
+
+    async def exit(self, **kwargs: Any) -> StatusTuple:
         ok, strat_usdc_raw = await self.balance_adapter.get_balance(
             token_id=USDC_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
         )
-        if ok and isinstance(strat_usdc_raw, int) and strat_usdc_raw > 0:
-            usdc_decimals = int(self.usdc_token_info.get("decimals", 6))
-            usdc_tokens = float(strat_usdc_raw) / (10**usdc_decimals)
-            await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
-                USDC_TOKEN_ID, usdc_tokens, strategy_name=self.name
-            )
-
-        return True, "Exited ProjectX position and returned funds to main wallet."
-
-    async def withdraw(self, **kwargs: Any) -> StatusTuple:
-        return await self.exit(**kwargs)
+        if not ok or not isinstance(strat_usdc_raw, int) or strat_usdc_raw <= 0:
+            return False, "No USDC in strategy wallet to transfer."
+        usdc_decimals = int(self.usdc_token_info.get("decimals", 6))
+        usdc_tokens = float(strat_usdc_raw) / (10**usdc_decimals)
+        ok, msg = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
+            USDC_TOKEN_ID, usdc_tokens, strategy_name=self.name
+        )
+        if not ok:
+            return False, f"Failed to transfer USDC to main wallet: {msg}"
+        return (
+            True,
+            f"Transferred {usdc_tokens:.4f} USDC from strategy wallet to main wallet.",
+        )
 
     async def _status(self) -> StatusDict:
-        positions = await self.projectx.list_positions()
-        overview = await self.projectx.pool_overview()
+        positions_ok, positions = await self.projectx.list_positions()
+        overview_ok, overview = await self.projectx.pool_overview()
+
+        ok, gas_raw = await self.balance_adapter.get_balance(
+            token_id=GAS_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
+        )
+        gas_amount = (
+            float(gas_raw) / (10 ** int(self.hype_token_info.get("decimals", 18)))
+            if ok and isinstance(gas_raw, int)
+            else 0.0
+        )
+
+        _, net_deposit = await self.ledger_adapter.get_strategy_net_deposit(
+            wallet_address=self._get_strategy_wallet_address()
+        )
+
+        points_ok, prjx_points = await self.projectx.fetch_prjx_points(
+            self._get_strategy_wallet_address()
+        )
+        if not points_ok or not isinstance(prjx_points, dict):
+            prjx_points = {"error": str(prjx_points)}
+
+        if not positions_ok or not isinstance(positions, list):
+            positions = []
+        if not overview_ok or not isinstance(overview, dict):
+            status_err = f"ProjectX status unavailable (overview: {overview})"
+            return StatusDict(
+                portfolio_value=0.0,
+                net_deposit=float(net_deposit or 0.0),
+                strategy_status=status_err,
+                gas_available=float(gas_amount),
+                gassed_up=float(gas_amount) >= float(self.GAS_THRESHOLD),
+                projectx_points=prjx_points,
+                fees_live_usd=0.0,
+            )
 
         sqrt_p = int(overview["sqrt_price_x96"])
         token0_meta = overview["token0"]
@@ -835,7 +944,9 @@ class ProjectXThbillUsdcStrategy(Strategy):
         liquidity_summary: list[str] = []
         total_live_fees = 0.0
 
-        recent_swaps = await self.projectx.fetch_swaps(limit=25)
+        swaps_ok, recent_swaps = await self.projectx.fetch_swaps(limit=25)
+        if not swaps_ok or not isinstance(recent_swaps, list):
+            recent_swaps = []
         recent_ticks = [
             int(s.get("tick", 0)) for s in recent_swaps if s.get("tick") is not None
         ]
@@ -857,12 +968,10 @@ class ProjectXThbillUsdcStrategy(Strategy):
             contribution = amount0_tokens * price_token0 + amount1_tokens * price_token1
 
             fee_usd = 0.0
-            try:
-                fee_snapshot = await self.projectx.live_fee_snapshot(pos.token_id)
+            fee_ok, fee_snapshot = await self.projectx.live_fee_snapshot(pos.token_id)
+            if fee_ok and isinstance(fee_snapshot, dict):
                 fee_usd = float(fee_snapshot.get("usd") or 0.0)
                 total_live_fees += fee_usd
-            except Exception:  # noqa: BLE001
-                fee_usd = 0.0
 
             position_contribution = contribution + fee_usd
             portfolio_value += position_contribution
@@ -882,26 +991,12 @@ class ProjectXThbillUsdcStrategy(Strategy):
                 f"≈ {position_contribution:.2f} USDC | State: {state_label} | Owed≈${fee_usd:.4f}"
             )
 
-        balances = await self.projectx.current_balances()
-        idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
+        balances_ok, balances = await self.projectx.current_balances()
+        if balances_ok and isinstance(balances, dict):
+            idle_value, *_ = await self._idle_liquidity_snapshot(balances, overview)
+        else:
+            idle_value = 0.0
         portfolio_value += float(idle_value)
-
-        ok, gas_raw = await self.balance_adapter.get_balance(
-            token_id=GAS_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
-        )
-        gas_amount = (
-            float(gas_raw) / (10 ** int(self.hype_token_info.get("decimals", 18)))
-            if ok and isinstance(gas_raw, int)
-            else 0.0
-        )
-
-        _, net_deposit = await self.ledger_adapter.get_strategy_net_deposit(
-            wallet_address=self._get_strategy_wallet_address()
-        )
-
-        prjx_points = await self.projectx.fetch_prjx_points(
-            self._get_strategy_wallet_address()
-        )
 
         return StatusDict(
             portfolio_value=float(portfolio_value),
