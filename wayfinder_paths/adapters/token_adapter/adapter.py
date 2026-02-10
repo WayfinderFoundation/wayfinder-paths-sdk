@@ -1,6 +1,7 @@
 from typing import Any
 
 import httpx
+from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import (
@@ -8,6 +9,8 @@ from wayfinder_paths.core.clients.TokenClient import (
     GasToken,
     TokenDetails,
 )
+from wayfinder_paths.core.constants.chains import CHAIN_ID_TO_CODE
+from wayfinder_paths.core.utils.tokens import get_erc20_metadata
 
 
 class TokenAdapter(BaseAdapter):
@@ -19,26 +22,49 @@ class TokenAdapter(BaseAdapter):
     ):
         super().__init__("token_adapter", config)
 
+    async def get_token_onchain(
+        self, token_address: str, *, chain_id: int
+    ) -> tuple[bool, TokenDetails | str]:
+        try:
+            symbol, name, decimals = await get_erc20_metadata(
+                token_address, int(chain_id)
+            )
+            chain_code = CHAIN_ID_TO_CODE.get(int(chain_id), str(chain_id))
+            data: dict[str, Any] = {
+                "token_id": f"{chain_code}_{token_address}",
+                "address": token_address,
+                "symbol": symbol,
+                "name": name,
+                "decimals": int(decimals),
+                "chain": {"id": int(chain_id)},
+                "metadata": {"source": "onchain"},
+            }
+            return True, data  # type: ignore[return-value]
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     async def get_token(
         self, query: str, *, chain_id: int | None = None
     ) -> tuple[bool, TokenDetails | str]:
         try:
             data = await TOKEN_CLIENT.get_token_details(query, chain_id=chain_id)
-            if not data:
-                return (False, f"No token found for: {query}")
-            return (True, data)
+            if data:
+                return (True, data)
         except httpx.HTTPStatusError as e:
-            if e.response.status_code == 404:
-                self.logger.warning(
-                    f"Could not find token token with query {query}: {e}"
-                )
-            else:
+            if e.response.status_code != 404:
                 self.logger.error(f"Error getting token by query {query}: {e}")
-            return (False, str(e))
-
+                return (False, str(e))
+            self.logger.warning(f"Could not find token with query {query}: {e}")
         except Exception as e:
             self.logger.error(f"Error getting token by query {query}: {e}")
             return (False, str(e))
+
+        # API miss — try on-chain as last resort
+        if chain_id is not None and query.startswith("0x"):
+            return await self.get_token_onchain(
+                to_checksum_address(query), chain_id=int(chain_id)
+            )
+        return (False, f"No token found for: {query}")
 
     async def get_token_price(
         self, token_id: str, *, chain_id: int | None = None

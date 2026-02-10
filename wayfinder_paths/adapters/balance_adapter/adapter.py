@@ -313,10 +313,11 @@ class BalanceAdapter(BaseAdapter):
                     calls: list[Any] = []
                     decimals_call_index: dict[str, int] = {}
                     for token in sorted_tokens:
-                        erc20 = w3.eth.contract(address=token, abi=ERC20_ABI)
-                        calldata = erc20.encode_abi("decimals")
                         decimals_call_index[token] = len(calls)
-                        calls.append(multicall.build_call(token, calldata))
+                        erc20 = w3.eth.contract(address=token, abi=ERC20_ABI)
+                        calls.append(
+                            multicall.build_call(token, erc20.encode_abi("decimals"))
+                        )
 
                     balance_call_index: dict[int, int] = {}
                     for entry in entries:
