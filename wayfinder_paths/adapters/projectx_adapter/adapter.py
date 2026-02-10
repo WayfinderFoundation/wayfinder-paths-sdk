@@ -45,6 +45,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     collect_params,
     deadline,
     filter_positions,
+    find_pool,
     liq_for_amounts,
     read_all_positions,
     read_position,
@@ -1215,8 +1216,6 @@ class ProjectXLiquidityAdapter(BaseAdapter):
     async def _find_pool_for_pair(
         self, token_a: str, token_b: str, *, prefer_fees: Sequence[int] | None = None
     ) -> tuple[int, str]:
-        from wayfinder_paths.core.utils.uniswap_v3_math import find_pool
-
         fees = list(prefer_fees or [100, 500, 1000, 3000, 10000])
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             factory = web3.eth.contract(

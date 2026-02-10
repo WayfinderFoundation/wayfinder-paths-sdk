@@ -6,12 +6,15 @@ used by any Uniswap V3 fork adapter (Uniswap, ProjectX, etc.).
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from decimal import Decimal, getcontext
 from typing import TypedDict
 
 from eth_utils import to_checksum_address
+
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 
 getcontext().prec = 64
 
@@ -235,8 +238,6 @@ async def enumerate_token_ids(npm_contract, owner: str) -> list[int]:
     count = int(balance or 0)
     if count <= 0:
         return []
-    import asyncio
-
     ids = await asyncio.gather(
         *(
             npm_contract.functions.tokenOfOwnerByIndex(owner, i).call(
@@ -254,8 +255,6 @@ async def read_all_positions(
     token_ids = await enumerate_token_ids(npm_contract, owner)
     if not token_ids:
         return []
-    import asyncio
-
     raws = await asyncio.gather(
         *(
             npm_contract.functions.positions(tid).call(block_identifier="latest")
@@ -301,8 +300,6 @@ def filter_positions(
 async def find_pool(
     factory_contract, token_a: str, token_b: str, fee: int
 ) -> str | None:
-    from wayfinder_paths.core.constants import ZERO_ADDRESS
-
     addr = await factory_contract.functions.getPool(
         to_checksum_address(token_a),
         to_checksum_address(token_b),
