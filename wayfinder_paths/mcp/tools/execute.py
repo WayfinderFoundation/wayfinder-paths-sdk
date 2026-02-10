@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from eth_account import Account
 from eth_utils import to_checksum_address
@@ -106,8 +106,7 @@ class ExecutionRequest(BaseModel):
 def _addr_lower(addr: str | None) -> str | None:
     if not addr:
         return None
-    a = str(addr).strip()
-    return a.lower() if a else None
+    return addr.strip().lower()
 
 
 def _chain_id_from_token(meta: dict[str, Any]) -> int | None:
@@ -180,11 +179,11 @@ async def _resolve_token_meta(query: str) -> tuple[str, dict[str, Any]]:
             try:
                 gas_meta = await TOKEN_CLIENT.get_gas_token(chain_code)
                 if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
-                    return q, cast(dict[str, Any], gas_meta)
+                    return q, gas_meta
             except Exception:
                 pass
     meta = await TOKEN_CLIENT.get_token_details(q)
-    return q, cast(dict[str, Any], meta)
+    return q, meta
 
 
 def _infer_chain_code_from_query(query: str, meta: dict[str, Any]) -> str | None:

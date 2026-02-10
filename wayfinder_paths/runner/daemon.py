@@ -19,6 +19,7 @@ from wayfinder_paths.runner.constants import (
     JobStatus,
     RunStatus,
 )
+from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
@@ -139,8 +140,6 @@ class RunnerDaemon:
         aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
-
-        from wayfinder_paths.runner.control import RunnerControlServer
 
         self._control = RunnerControlServer(
             sock_path=self._paths.sock_path, daemon=self
@@ -277,9 +276,8 @@ class RunnerDaemon:
                 )
 
         self._running.pop(rp.run_id, None)
-        self._running_by_job[rp.job_id] = max(
-            0, self._running_by_job.get(rp.job_id, 1) - 1
-        )
+        current = self._running_by_job.get(rp.job_id, 0)
+        self._running_by_job[rp.job_id] = max(0, current - 1)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
@@ -449,8 +447,6 @@ class RunnerDaemon:
 
             script = resolve_script_path(self._paths, str(sp))
             args = payload.get("args") or []
-            if args is None:
-                args = []
             if not isinstance(args, list):
                 raise ValueError("payload.args must be a list of strings")
             arg_list = [str(a) for a in args if str(a).strip()]

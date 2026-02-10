@@ -29,7 +29,6 @@ class MCPInterface(Protocol):
 def make_click_option(
     name: str, schema: dict, *, required: bool = False
 ) -> click.Option:
-    """Convert a JSON schema property to a click option."""
     has_default = "default" in schema
     default = schema.get("default")
     # required only applies when there's no default
@@ -55,7 +54,6 @@ def make_click_option(
 
 
 def coerce_by_type(value: Any, typ: str | None) -> Any:
-    """Coerce a value to the specified JSON schema type."""
     if typ in ("boolean", "string") or typ is None:
         return value
     if typ == "integer":

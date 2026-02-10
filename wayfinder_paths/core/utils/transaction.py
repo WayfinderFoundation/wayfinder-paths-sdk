@@ -1,7 +1,7 @@
 import asyncio
 import math
 from collections.abc import Callable
-from typing import Any, cast
+from typing import Any
 
 from eth_account import Account
 from loguru import logger
@@ -53,13 +53,11 @@ def _raise_revert_error(
     transaction: dict[str, Any],
     cause: Exception | None = None,
 ) -> None:
-    gas_used = 0
     try:
         gas_used = int(receipt.get("gasUsed") or 0)
     except Exception:
         gas_used = 0
 
-    gas_limit = 0
     try:
         gas_limit = int(transaction.get("gas") or 0)
     except Exception:
@@ -157,8 +155,6 @@ async def gas_price_transaction(transaction: dict):
 
 async def gas_limit_transaction(transaction: dict):
     transaction = transaction.copy()
-
-    # prevents RPCs from taking this as a serious limit
     transaction.pop("gas", None)
 
     async def _estimate_gas(web3: AsyncWeb3, transaction: dict) -> int:
@@ -218,10 +214,9 @@ async def wait_for_transaction_receipt(
         txn_hash = f"0x{txn_hash}"
 
     async def _wait_for_receipt(web3: AsyncWeb3, tx_hash: str) -> dict[str, Any]:
-        receipt = await web3.eth.wait_for_transaction_receipt(
+        return await web3.eth.wait_for_transaction_receipt(
             tx_hash, poll_latency=poll_interval, timeout=timeout
         )
-        return cast(dict[str, Any], receipt)
 
     async def _get_block_number(web3: AsyncWeb3) -> int:
         return await web3.eth.block_number
@@ -287,7 +282,6 @@ async def send_transaction(
         except Exception:
             status = None
 
-        # Defensive: should have been raised inside wait_for_transaction_receipt.
         if status is not None and int(status) == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash

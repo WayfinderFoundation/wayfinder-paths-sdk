@@ -83,7 +83,7 @@ def get_rpc_urls() -> dict[str, Any]:
 
 
 def get_api_base_url() -> str:
-    system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
+    system = CONFIG.get("system", {})
     api_url = system.get("api_base_url")
     if api_url and isinstance(api_url, str):
         return api_url.strip()
@@ -91,7 +91,7 @@ def get_api_base_url() -> str:
 
 
 def get_api_key() -> str | None:
-    system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
+    system = CONFIG.get("system", {})
     api_key = system.get("api_key")
     if api_key and isinstance(api_key, str):
         return api_key.strip()

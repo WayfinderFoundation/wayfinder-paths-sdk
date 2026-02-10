@@ -2,8 +2,6 @@ import json
 import os
 from typing import Any
 
-from loguru import logger
-
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 
 
@@ -50,36 +48,29 @@ def resolve_private_key_for_from_address(
 
     main_pk = None
     strategy_pk = None
-    try:
-        if isinstance(main_wallet, dict):
-            main_pk = main_wallet.get("private_key") or main_wallet.get(
-                "private_key_hex"
-            )
-        if isinstance(strategy_wallet, dict):
-            strategy_pk = strategy_wallet.get("private_key") or strategy_wallet.get(
-                "private_key_hex"
-            )
-    except (AttributeError, TypeError) as e:
-        logger.debug("Error resolving private keys from wallet config: %s", e)
+    if isinstance(main_wallet, dict):
+        main_pk = main_wallet.get("private_key") or main_wallet.get("private_key_hex")
+    if isinstance(strategy_wallet, dict):
+        strategy_pk = strategy_wallet.get("private_key") or strategy_wallet.get(
+            "private_key_hex"
+        )
 
     main_addr = None
     strategy_addr = None
-    try:
-        main_addr = (main_wallet or {}).get("address") or (
-            (main_wallet or {}).get("evm") or {}
+    if isinstance(main_wallet, dict):
+        main_addr = main_wallet.get("address") or (main_wallet.get("evm") or {}).get(
+            "address"
+        )
+    if isinstance(strategy_wallet, dict):
+        strategy_addr = strategy_wallet.get("address") or (
+            strategy_wallet.get("evm") or {}
         ).get("address")
-        strategy_addr = (strategy_wallet or {}).get("address") or (
-            (strategy_wallet or {}).get("evm") or {}
-        ).get("address")
-    except (AttributeError, TypeError) as e:
-        logger.debug("Error resolving addresses from wallet config: %s", e)
 
-    if main_addr and from_addr_norm == (main_addr or "").lower():
+    if main_addr and from_addr_norm == main_addr.lower():
         return main_pk
-    if strategy_addr and from_addr_norm == (strategy_addr or "").lower():
+    if strategy_addr and from_addr_norm == strategy_addr.lower():
         return strategy_pk
 
-    # No fallback - private keys must be in config or config.json
     return None
 
 

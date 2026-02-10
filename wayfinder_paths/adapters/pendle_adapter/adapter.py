@@ -103,7 +103,6 @@ def _now_utc() -> datetime:
 
 
 def _parse_iso8601(s: str) -> datetime:
-    # Handles "2024-03-28T00:00:00.000Z"
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
