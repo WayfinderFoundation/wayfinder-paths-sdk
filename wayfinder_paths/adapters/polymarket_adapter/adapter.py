@@ -83,8 +83,8 @@ async def _try_brap_swap_polygon(
         quote = await BRAP_CLIENT.get_quote(
             from_token=str(from_token_address),
             to_token=str(to_token_address),
-            from_chain=int(POLYGON_CHAIN_ID),
-            to_chain=int(POLYGON_CHAIN_ID),
+            from_chain=POLYGON_CHAIN_ID,
+            to_chain=POLYGON_CHAIN_ID,
             from_wallet=to_checksum_address(from_address),
             from_amount=str(int(amount_base_unit)),
         )
@@ -95,7 +95,7 @@ async def _try_brap_swap_polygon(
 
         tx: dict[str, Any] = {
             **calldata,
-            "chainId": int(POLYGON_CHAIN_ID),
+            "chainId": POLYGON_CHAIN_ID,
             "from": to_checksum_address(from_address),
         }
         if "value" in tx:
@@ -109,7 +109,7 @@ async def _try_brap_swap_polygon(
                 owner=to_checksum_address(from_address),
                 spender=str(spender),
                 amount=int(best["input_amount"]),
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 signing_callback=signing_callback,
             )
             if not ok_appr:
@@ -122,9 +122,9 @@ async def _try_brap_swap_polygon(
             "method": "brap",
             "tx_hash": swap_tx_hash,
             "approve_tx_hash": approve_tx_hash,
-            "from_chain_id": int(POLYGON_CHAIN_ID),
+            "from_chain_id": POLYGON_CHAIN_ID,
             "from_token_address": str(from_token_address),
-            "to_chain_id": int(POLYGON_CHAIN_ID),
+            "to_chain_id": POLYGON_CHAIN_ID,
             "to_token_address": str(to_token_address),
             "amount_base_unit": str(int(amount_base_unit)),
             "provider": best.get("provider"),
@@ -149,7 +149,6 @@ class PolymarketAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        chain_id: int = POLYGON_CHAIN_ID,
         strategy_wallet_signing_callback=None,
         private_key_hex: str | None = None,
         funder: str | None = None,
@@ -162,7 +161,6 @@ class PolymarketAdapter(BaseAdapter):
     ) -> None:
         super().__init__("polymarket_adapter", config)
 
-        self.chain_id = int(chain_id)
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         self._private_key_hex = private_key_hex
         self._funder_override = funder
@@ -741,7 +739,7 @@ class PolymarketAdapter(BaseAdapter):
 
         rcpt = to_checksum_address(recipient_address)
         if (
-            int(from_chain_id) == int(self.chain_id) == int(POLYGON_CHAIN_ID)
+            int(from_chain_id) == POLYGON_CHAIN_ID
             and to_checksum_address(from_token_address)
             == to_checksum_address(POLYGON_USDC_ADDRESS)
             and rcpt == to_checksum_address(from_address)
@@ -804,7 +802,7 @@ class PolymarketAdapter(BaseAdapter):
 
         rcpt = to_checksum_address(recipient_addr)
         if (
-            int(to_chain_id) == int(self.chain_id) == int(POLYGON_CHAIN_ID)
+            int(to_chain_id) == POLYGON_CHAIN_ID
             and to_checksum_address(to_token_address)
             == to_checksum_address(POLYGON_USDC_ADDRESS)
             and rcpt == to_checksum_address(from_address)
@@ -836,7 +834,7 @@ class PolymarketAdapter(BaseAdapter):
             from_address=from_address,
             to_address=str(withdraw_evm),
             token_address=POLYGON_USDC_E_ADDRESS,
-            chain_id=int(self.chain_id),
+            chain_id=POLYGON_CHAIN_ID,
             amount=int(base_units),
         )
         tx_hash = await send_transaction(tx, sign_cb)
@@ -844,7 +842,7 @@ class PolymarketAdapter(BaseAdapter):
         return True, {
             "method": "polymarket_bridge",
             "tx_hash": tx_hash,
-            "from_chain_id": int(self.chain_id),
+            "from_chain_id": POLYGON_CHAIN_ID,
             "from_token_address": POLYGON_USDC_E_ADDRESS,
             "withdraw_address": str(withdraw_evm),
             "amount_base_unit": str(base_units),
@@ -917,7 +915,7 @@ class PolymarketAdapter(BaseAdapter):
                 "collateral": POLYGON_USDC_E_ADDRESS,
                 "conditional_tokens": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
             }
-        cfg = get_contract_config(int(self.chain_id), neg_risk=bool(neg_risk))
+        cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=bool(neg_risk))
         return {
             "exchange": str(cfg.exchange),
             "collateral": str(cfg.collateral),
@@ -931,7 +929,7 @@ class PolymarketAdapter(BaseAdapter):
             funder = self._resolve_funder()
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
-                chain_id=int(self.chain_id),
+                chain_id=POLYGON_CHAIN_ID,
                 key=pk,
                 signature_type=self._signature_type,
                 funder=funder,
@@ -977,7 +975,7 @@ class PolymarketAdapter(BaseAdapter):
                 owner=from_address,
                 spender=spender,
                 amount=MAX_UINT256 // 2,
-                chain_id=int(self.chain_id),
+                chain_id=POLYGON_CHAIN_ID,
                 signing_callback=sign_cb,
                 approval_amount=MAX_UINT256,
             )
@@ -992,7 +990,7 @@ class PolymarketAdapter(BaseAdapter):
                 owner=from_address,
                 operator=operator,
                 approved=True,
-                chain_id=int(self.chain_id),
+                chain_id=POLYGON_CHAIN_ID,
                 signing_callback=sign_cb,
             )
             if not ok:
@@ -1133,7 +1131,7 @@ class PolymarketAdapter(BaseAdapter):
         addr = to_checksum_address(account)
         out: dict[str, Any] = {
             "protocol": "polymarket",
-            "chainId": int(self.chain_id),
+            "chainId": POLYGON_CHAIN_ID,
             "account": addr,
             "positions": None,
             "positionsSummary": None,
@@ -1169,8 +1167,8 @@ class PolymarketAdapter(BaseAdapter):
 
         async def _fetch_balances() -> tuple[bool, dict[str, Any] | str]:
             bal_usdce, bal_usdc = await asyncio.gather(
-                get_token_balance(POLYGON_USDC_E_ADDRESS, int(self.chain_id), addr),
-                get_token_balance(POLYGON_USDC_ADDRESS, int(self.chain_id), addr),
+                get_token_balance(POLYGON_USDC_E_ADDRESS, POLYGON_CHAIN_ID, addr),
+                get_token_balance(POLYGON_USDC_ADDRESS, POLYGON_CHAIN_ID, addr),
             )
             return True, {
                 "usdc_e": {
@@ -1340,7 +1338,7 @@ class PolymarketAdapter(BaseAdapter):
         index_set: int,
     ) -> int:
         ctf_addr = self._contract_addrs(neg_risk=False)["conditional_tokens"]
-        async with web3_from_chain_id(int(self.chain_id)) as web3:
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
             ctf = web3.eth.contract(
                 address=to_checksum_address(ctf_addr),
                 abi=CONDITIONAL_TOKENS_ABI,
@@ -1358,7 +1356,7 @@ class PolymarketAdapter(BaseAdapter):
 
     async def _balance_of_position(self, *, holder: str, position_id: int) -> int:
         ctf_addr = self._contract_addrs(neg_risk=False)["conditional_tokens"]
-        async with web3_from_chain_id(int(self.chain_id)) as web3:
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
             ctf = web3.eth.contract(
                 address=to_checksum_address(ctf_addr),
                 abi=CONDITIONAL_TOKENS_ABI,
@@ -1385,7 +1383,7 @@ class PolymarketAdapter(BaseAdapter):
 
     async def _find_parent_collection_id(self, *, condition_id: bytes) -> bytes | None:
         ctf_addr = self._contract_addrs(neg_risk=False)["conditional_tokens"]
-        async with web3_from_chain_id(int(self.chain_id)) as web3:
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
             latest = await web3.eth.block_number
 
             pos_split_sig = web3.keccak(
@@ -1514,7 +1512,7 @@ class PolymarketAdapter(BaseAdapter):
             fn_name="redeemPositions",
             args=[collateral, parent, cond, index_sets],
             from_address=holder_addr,
-            chain_id=int(self.chain_id),
+            chain_id=POLYGON_CHAIN_ID,
         )
         tx_hash = await send_transaction(tx, sign_cb)
 
@@ -1522,7 +1520,7 @@ class PolymarketAdapter(BaseAdapter):
             POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
         ):
             shares = await get_token_balance(
-                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, int(self.chain_id), holder_addr
+                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, POLYGON_CHAIN_ID, holder_addr
             )
             if int(shares) > 0:
                 unwrap_tx = await encode_call(
@@ -1531,7 +1529,7 @@ class PolymarketAdapter(BaseAdapter):
                     fn_name="unwrap",
                     args=[holder_addr, int(shares)],
                     from_address=holder_addr,
-                    chain_id=int(self.chain_id),
+                    chain_id=POLYGON_CHAIN_ID,
                 )
                 await send_transaction(unwrap_tx, sign_cb)
 
