@@ -1,9 +1,11 @@
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
 from wayfinder_paths.core.constants.projectx import THBILL_USDC_METADATA
+from wayfinder_paths.core.utils.uniswap_v3_math import price_to_sqrt_price_x96
 from wayfinder_paths.strategies.projectx_thbill_usdc_strategy.strategy import (
     ProjectXThbillUsdcStrategy,
 )
@@ -104,3 +106,41 @@ async def test_smoke(strategy):
 
     ok, msg = await strategy.exit()
     assert_status_tuple((ok, msg))
+
+
+@pytest.mark.asyncio
+async def test_quote_estimates_fee_apy_from_swap_volume(strategy):
+    sqrt_price_x96 = price_to_sqrt_price_x96(1.0, 6, 18)
+    strategy.projectx.pool_overview = AsyncMock(
+        return_value={
+            "sqrt_price_x96": sqrt_price_x96,
+            "tick": 0,
+            "tick_spacing": 10,
+            "fee": 3000,  # 0.30%
+            "liquidity": 0,  # simplify share -> 1.0
+            "token0": {
+                "address": "0x0",
+                "decimals": 6,
+                "symbol": "USDC",
+                "token_id": "usd-coin-hyperevm",
+            },
+            "token1": {
+                "address": "0x1",
+                "decimals": 18,
+                "symbol": "THBILL",
+                "token_id": "theo-short-duration-us-treasury-fund-hyperevm",
+            },
+        }
+    )
+
+    strategy.projectx.fetch_swaps = AsyncMock(
+        return_value=[
+            {"timestamp": int(time.time()), "tick": 0, "amount_usd": 10_000.0},
+            {"timestamp": int(time.time()), "tick": 10, "amount_usd": 5_000.0},
+            {"timestamp": int(time.time()), "tick": 100, "amount_usd": 20_000.0},
+        ]
+    )
+
+    q = await strategy.quote(deposit_amount=1000.0)
+    assert q["expected_apy"] == pytest.approx(16.425, rel=1e-6)
+    assert q["components"]["volume_usd_in_range"] == pytest.approx(15_000.0, rel=1e-9)

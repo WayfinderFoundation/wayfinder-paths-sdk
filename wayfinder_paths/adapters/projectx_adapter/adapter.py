@@ -118,6 +118,29 @@ query Swaps(
 }
 """
 
+SWAPS_QUERY_VOLUME_TICK = """
+query Swaps(
+  $pool: String!
+  $first: Int!
+) {
+  swaps(
+    first: $first
+    orderBy: timestamp
+    orderDirection: desc
+    where: { pool: $pool }
+  ) {
+    id
+    timestamp
+    tick
+    sqrtPriceX96
+    amount0
+    amount1
+    amountUSD
+    pool { id }
+  }
+}
+"""
+
 SWAPS_QUERY_SIMPLE = """
 query Swaps(
   $pool: String!
@@ -132,6 +155,28 @@ query Swaps(
     id
     timestamp
     sqrtPriceX96
+    pool { id }
+  }
+}
+"""
+
+SWAPS_QUERY_VOLUME = """
+query Swaps(
+  $pool: String!
+  $first: Int!
+) {
+  swaps(
+    first: $first
+    orderBy: timestamp
+    orderDirection: desc
+    where: { pool: $pool }
+  ) {
+    id
+    timestamp
+    sqrtPriceX96
+    amount0
+    amount1
+    amountUSD
     pool { id }
   }
 }
@@ -158,7 +203,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
         self._token_cache: dict[str, dict[str, Any]] = {}
         self._pool_meta_cache: dict[str, Any] | None = None
-        self._subgraph_url: str | None = get_prjx_subgraph_url(config)
+        self._subgraph_url: str = get_prjx_subgraph_url(config)
 
     async def pool_overview(self) -> dict[str, Any]:
         meta = await self._pool_meta()
@@ -172,6 +217,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             "tick": meta["tick"],
             "tick_spacing": meta["tick_spacing"],
             "fee": meta["fee"],
+            "liquidity": meta["liquidity"],
             "token0": token0_meta,
             "token1": token1_meta,
         }
@@ -253,10 +299,7 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         start_timestamp: int | None = None,
         end_timestamp: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Return recent swaps for the configured pool (subgraph; optional)."""
-        if not self._subgraph_url:
-            return []
-
+        """Return recent swaps for the configured pool via subgraph."""
         variables = {
             "pool": THBILL_USDC_POOL.lower(),
             "first": max(1, int(limit or 1)),
@@ -274,7 +317,12 @@ class ProjectXLiquidityAdapter(BaseAdapter):
 
         data: dict[str, Any] = {}
         last_err: Exception | None = None
-        for query_str in (SWAPS_QUERY_SIMPLE_TICK, SWAPS_QUERY_SIMPLE):
+        for query_str in (
+            SWAPS_QUERY_VOLUME_TICK,
+            SWAPS_QUERY_VOLUME,
+            SWAPS_QUERY_SIMPLE_TICK,
+            SWAPS_QUERY_SIMPLE,
+        ):
             try:
                 data = await _query(query_str)
                 if data.get("swaps") is not None:
@@ -293,6 +341,9 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 ts_raw = swap.get("timestamp")
                 sqrt_raw = swap.get("sqrtPriceX96") or swap.get("sqrt_price_x96")
                 tick_raw = swap.get("tick")
+                amount0_raw = swap.get("amount0")
+                amount1_raw = swap.get("amount1")
+                amount_usd_raw = swap.get("amountUSD") or swap.get("amount_usd")
                 tick_val: int | None = None
                 if tick_raw is not None:
                     tick_val = int(tick_raw)
@@ -300,12 +351,28 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                     tick_val = int(tick_from_sqrt_price_x96(int(sqrt_raw)))
                 if tick_val is None:
                     continue
+
+                amount0: float | None = None
+                amount1: float | None = None
+                amount_usd: float | None = None
+                try:
+                    if amount0_raw is not None:
+                        amount0 = float(amount0_raw)
+                    if amount1_raw is not None:
+                        amount1 = float(amount1_raw)
+                    if amount_usd_raw is not None:
+                        amount_usd = float(amount_usd_raw)
+                except (TypeError, ValueError):
+                    amount0 = amount1 = amount_usd = None
                 parsed.append(
                     {
                         "id": swap.get("id"),
                         "timestamp": int(ts_raw or 0),
                         "tick": tick_val,
                         "sqrt_price_x96": int(sqrt_raw or 0),
+                        "amount0": amount0,
+                        "amount1": amount1,
+                        "amount_usd": amount_usd,
                     }
                 )
             except (TypeError, ValueError):  # pragma: no cover - defensive

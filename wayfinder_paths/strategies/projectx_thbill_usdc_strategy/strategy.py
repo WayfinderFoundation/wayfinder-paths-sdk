@@ -26,8 +26,10 @@ from wayfinder_paths.core.strategies.descriptors import (
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
+    liq_for_amounts,
     round_tick_to_spacing,
     sqrt_price_x96_from_tick,
+    sqrt_price_x96_to_price,
 )
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
 from wayfinder_paths.policies.prjx import prjx_npm, prjx_swap
@@ -51,12 +53,15 @@ class ProjectXThbillUsdcStrategy(Strategy):
     MINIMUM_NET_DEPOSIT = 5.0
 
     # Optional tick anchoring from swap history (requires subgraph URL)
-    HISTORIC_CENTER_WINDOW_SEC = 4 * 60 * 60  # 4 hours
+    HISTORIC_CENTER_WINDOW_SEC = 24 * 60 * 60  # 24 hours
     HISTORIC_CENTER_MIN_SWAPS = 20
 
     RECENTER_WINDOW_SEC = 60 * 60  # 1 hour
     RECENTER_MIN_SWAPS = 10
     RECENTER_OUTSIDE_FRACTION = 0.8
+
+    QUOTE_FEE_WINDOW_SEC = 24 * 60 * 60  # 24 hours
+    QUOTE_FEE_MAX_SWAPS = 1000
 
     INFO = StratDescriptor(
         description=(
@@ -352,7 +357,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
         )
         lower, upper = self._band_ticks(center_tick, tick_spacing)
         summary = f"Target band centered at tick {center_tick} spanning {upper - lower} ticks."
-        return {
+        out = {
             "expected_apy": 0.0,
             "apy_type": "gross",
             "confidence": "low",
@@ -366,6 +371,174 @@ class ProjectXThbillUsdcStrategy(Strategy):
             "as_of": datetime.now(UTC).isoformat(),
             "summary": summary,
         }
+        if deposit_amount is None or float(deposit_amount) <= 0:
+            return out
+
+        fee_tier = float(overview.get("fee") or 0)
+        fee_rate = max(0.0, fee_tier / 1_000_000.0)
+        if fee_rate <= 0:
+            return out
+
+        tick_now = int(overview.get("tick") or 0)
+        out["components"]["tick_current"] = tick_now
+        if tick_now < lower or tick_now >= upper:
+            out["methodology"] = (
+                "Band target derived from recent swap ticks (if available). "
+                "Fee APY estimate omitted because the current tick is outside the proposed band."
+            )
+            return out
+
+        sqrt_p = int(overview.get("sqrt_price_x96") or 0)
+        if sqrt_p <= 0:
+            return out
+
+        token0_meta = overview.get("token0") or {}
+        token1_meta = overview.get("token1") or {}
+        dec0 = int(token0_meta.get("decimals", 18))
+        dec1 = int(token1_meta.get("decimals", 18))
+        price_token1_per_token0 = float(sqrt_price_x96_to_price(sqrt_p, dec0, dec1))
+        if price_token1_per_token0 <= 0:
+            return out
+
+        sqrt_pl = sqrt_price_x96_from_tick(int(lower))
+        sqrt_pu = sqrt_price_x96_from_tick(int(upper))
+
+        # Estimate liquidity share from deposit size. This assumes the deposit is swapped into
+        # an approximately optimal token0/token1 mix at the current mid-price.
+        ref_liq = 2**128
+        need0_ref, need1_ref = amounts_for_liq_inrange(
+            sqrt_p, sqrt_pl, sqrt_pu, ref_liq
+        )
+        deposit_usd = float(deposit_amount)
+        if deposit_usd <= 0:
+            return out
+
+        if need0_ref > 0 and need1_ref > 0:
+            ratio_need0_over_need1 = float(need0_ref) / float(need1_ref)
+            denom = (10**dec0) + (
+                ratio_need0_over_need1 * price_token1_per_token0 * (10**dec1)
+            )
+            if denom <= 0:
+                return out
+
+            usdc_to_token0 = (
+                ratio_need0_over_need1
+                * price_token1_per_token0
+                * (10**dec1)
+                * deposit_usd
+            ) / denom
+            usdc_to_token0 = max(0.0, min(deposit_usd, usdc_to_token0))
+            usdc_to_token1 = max(0.0, deposit_usd - usdc_to_token0)
+
+            amount0_raw = int(usdc_to_token0 * (10**dec0))
+            amount1_raw = int(usdc_to_token1 * price_token1_per_token0 * (10**dec1))
+        elif need0_ref > 0:
+            amount0_raw = int(deposit_usd * (10**dec0))
+            amount1_raw = 0
+        else:
+            amount0_raw = 0
+            amount1_raw = int(deposit_usd * price_token1_per_token0 * (10**dec1))
+
+        liq_est = int(
+            liq_for_amounts(sqrt_p, sqrt_pl, sqrt_pu, int(amount0_raw), int(amount1_raw))
+        )
+        if liq_est <= 0:
+            return out
+
+        pool_liquidity = int(overview.get("liquidity") or 0)
+        if pool_liquidity > 0:
+            liquidity_share_est = float(liq_est) / float(pool_liquidity + liq_est)
+        else:
+            liquidity_share_est = 1.0
+
+        out["components"].update(
+            {
+                "fee_rate": fee_rate,
+                "liquidity_pool_active": pool_liquidity,
+                "liquidity_position_est": liq_est,
+                "liquidity_share_est": liquidity_share_est,
+            }
+        )
+
+        end_ts = int(time.time())
+        start_ts = end_ts - int(self.QUOTE_FEE_WINDOW_SEC)
+        try:
+            swaps = await self.projectx.fetch_swaps(
+                limit=int(self.QUOTE_FEE_MAX_SWAPS),
+                start_timestamp=start_ts,
+                end_timestamp=end_ts,
+            )
+        except Exception:  # noqa: BLE001
+            swaps = []
+
+        volume_usd_total = 0.0
+        volume_usd_in_range = 0.0
+        swaps_with_usd = 0
+        swaps_in_range = 0
+        oldest_swap_ts: int | None = None
+
+        for swap in swaps:
+            try:
+                ts = int(swap.get("timestamp") or 0)
+            except Exception:
+                ts = 0
+            if ts:
+                oldest_swap_ts = ts if oldest_swap_ts is None else min(oldest_swap_ts, ts)
+
+            tick_val = swap.get("tick")
+            amount_usd_raw = swap.get("amount_usd")
+            if tick_val is None or amount_usd_raw is None:
+                continue
+            try:
+                tick_int = int(tick_val)
+                amount_usd = abs(float(amount_usd_raw))
+            except Exception:
+                continue
+
+            swaps_with_usd += 1
+            volume_usd_total += amount_usd
+            if lower <= tick_int < upper:
+                swaps_in_range += 1
+                volume_usd_in_range += amount_usd
+
+        out["components"].update(
+            {
+                "window_sec": int(self.QUOTE_FEE_WINDOW_SEC),
+                "swaps_with_usd": swaps_with_usd,
+                "swaps_in_range": swaps_in_range,
+                "volume_usd": volume_usd_total,
+                "volume_usd_in_range": volume_usd_in_range,
+            }
+        )
+        if oldest_swap_ts is not None:
+            out["components"]["oldest_swap_ts"] = int(oldest_swap_ts)
+
+        if swaps_with_usd <= 0 or volume_usd_total <= 0:
+            out["methodology"] = (
+                "Band target derived from recent swap ticks (if available). "
+                "Fee APY estimate requires subgraph swap volume (amountUSD)."
+            )
+            return out
+
+        fees_usd_window = volume_usd_in_range * fee_rate
+        annualize = (365.0 * 24.0 * 60.0 * 60.0) / float(self.QUOTE_FEE_WINDOW_SEC)
+        expected_fees_annual = fees_usd_window * annualize
+        expected_fees_annual_to_you = expected_fees_annual * liquidity_share_est
+        expected_apy = expected_fees_annual_to_you / deposit_usd
+
+        confidence = "low"
+        if oldest_swap_ts is not None and oldest_swap_ts <= start_ts:
+            confidence = "medium"
+
+        out["expected_apy"] = float(max(0.0, expected_apy))
+        out["confidence"] = confidence
+        out["methodology"] = (
+            "Fee APY estimated from last-24h subgraph swap volume (amountUSD) that occurred while "
+            "the pool tick was within the proposed band, multiplied by pool fee tier and an estimated "
+            "share of active liquidity implied by the deposit size."
+        )
+        out["components"]["fees_usd_window"] = float(fees_usd_window)
+        return out
 
     async def deposit(
         self, main_token_amount: float = 0.0, gas_token_amount: float = 0.0

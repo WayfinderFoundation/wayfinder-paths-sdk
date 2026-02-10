@@ -49,9 +49,15 @@ TOKEN_ID_TO_ADDRESS: dict[str, str] = {v: k for k, v in ADDRESS_TO_TOKEN_ID.item
 
 PRJX_POINTS_API_URL = "https://api.prjx.com/points/user"
 
+PRJX_SUBGRAPH_URL = (
+    "https://api.goldsky.com/api/public/"
+    "project_cmbbm2iwckb1b01t39xed236t/subgraphs/"
+    "uniswap-v3-hyperevm-position/prod/gn"
+)
 
-def get_prjx_subgraph_url(config: dict[str, Any] | None = None) -> str | None:
-    """Resolve the ProjectX subgraph URL from config or environment variables."""
+
+def get_prjx_subgraph_url(config: dict[str, Any] | None = None) -> str:
+    """Resolve the ProjectX subgraph URL (config/env override, else default)."""
 
     if config and isinstance(config, dict):
         for key in ("prjx_subgraph_url", "projectx_subgraph_url", "subgraph_url"):
@@ -70,4 +76,4 @@ def get_prjx_subgraph_url(config: dict[str, Any] | None = None) -> str | None:
         if env_val and env_val.strip():
             return env_val.strip()
 
-    return None
+    return PRJX_SUBGRAPH_URL
