@@ -65,7 +65,6 @@ def _fuzzy_score(query: str, text: str) -> float:
     return SequenceMatcher(None, q, t).ratio()
 
 
-
 def _maybe_parse_json_list(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -77,55 +76,6 @@ def _maybe_parse_json_list(value: Any) -> Any:
     except Exception:
         return value
     return parsed
-
-
-def _safe_int(value: Any) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    try:
-        return int(value)
-    except Exception:
-        s = str(value).strip()
-        if not s:
-            return 0
-        if s.startswith("0x") or s.startswith("0X"):
-            return int(s, 16)
-        return int(s)
-
-
-def _unwrap_brap_best_quote(data: Any) -> dict[str, Any] | None:
-    # BRAP quote responses have historically appeared in two shapes:
-    # 1) {"quotes": [...], "best_quote": {...}}
-    # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
-    if not isinstance(data, dict):
-        return None
-
-    best = data.get("best_quote")
-    if isinstance(best, dict):
-        return best
-
-    quotes = data.get("quotes")
-    if isinstance(quotes, dict):
-        best2 = quotes.get("best_quote")
-        if isinstance(best2, dict):
-            return best2
-        all_quotes = quotes.get("all_quotes") or quotes.get("quotes") or []
-        if isinstance(all_quotes, list) and all_quotes:
-            rows = [q for q in all_quotes if isinstance(q, dict)]
-            if rows:
-                return max(rows, key=lambda q: int(q.get("output_amount") or 0))
-        return None
-
-    if isinstance(quotes, list) and quotes:
-        rows = [q for q in quotes if isinstance(q, dict)]
-        if rows:
-            return max(rows, key=lambda q: int(q.get("output_amount") or 0))
-
-    return None
 
 
 async def _try_brap_swap_polygon(
@@ -151,13 +101,8 @@ async def _try_brap_swap_polygon(
             from_wallet=to_checksum_address(from_address),
             from_amount=str(int(amount_base_unit)),
         )
-        best = _unwrap_brap_best_quote(quote)
-        if not best:
-            return None
-
-        calldata = best.get("calldata") or {}
-        if not isinstance(calldata, dict):
-            return None
+        best = quote["best_quote"]
+        calldata = best["calldata"]
         if not calldata.get("data") or not calldata.get("to"):
             return None
 
@@ -167,17 +112,16 @@ async def _try_brap_swap_polygon(
             "from": to_checksum_address(from_address),
         }
         if "value" in tx:
-            tx["value"] = _safe_int(tx.get("value"))
+            tx["value"] = int(tx["value"])
 
         approve_tx_hash: str | None = None
         spender = tx.get("to")
-        approve_amount = _safe_int(best.get("input_amount") or amount_base_unit)
         if spender:
             ok_appr, appr = await ensure_allowance(
                 token_address=str(from_token_address),
                 owner=to_checksum_address(from_address),
                 spender=str(spender),
-                amount=int(approve_amount),
+                amount=int(best["input_amount"]),
                 chain_id=int(POLYGON_CHAIN_ID),
                 signing_callback=signing_callback,
             )
@@ -203,7 +147,6 @@ async def _try_brap_swap_polygon(
         }
     except Exception:
         return None
-
 
 
 class PolymarketAdapter(BaseAdapter):
@@ -262,7 +205,6 @@ class PolymarketAdapter(BaseAdapter):
         for key in ("outcomes", "outcomePrices", "clobTokenIds"):
             out[key] = _maybe_parse_json_list(out.get(key))
         return out
-
 
     async def list_markets(
         self,
@@ -580,7 +522,6 @@ class PolymarketAdapter(BaseAdapter):
             fidelity=fidelity,
         )
 
-
     async def get_price(
         self,
         *,
@@ -659,7 +600,6 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-
     async def get_positions(
         self,
         *,
@@ -730,7 +670,6 @@ class PolymarketAdapter(BaseAdapter):
             return True, data
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
-
 
     async def bridge_supported_assets(self) -> tuple[bool, dict[str, Any] | str]:
         try:
@@ -957,7 +896,6 @@ class PolymarketAdapter(BaseAdapter):
             "to_token_address": str(to_token_address),
             "recipient_addr": to_checksum_address(recipient_addr),
         }
-
 
     def _resolve_wallet(self) -> dict[str, Any]:
         cfg = self.config or {}
@@ -1305,7 +1243,10 @@ class PolymarketAdapter(BaseAdapter):
             # CLOB requires Level-2 auth; only works for the configured signing wallet.
             signer_addr = self._resolve_funder()
             if to_checksum_address(signer_addr) != addr:
-                return False, "Open orders can only be fetched for the configured signing wallet (account mismatch)."
+                return (
+                    False,
+                    "Open orders can only be fetched for the configured signing wallet (account mismatch).",
+                )
             return await self.list_open_orders()
 
         coros: list[Any] = [_fetch_all_positions(), _fetch_balances()]
@@ -1341,9 +1282,7 @@ class PolymarketAdapter(BaseAdapter):
                 total_current_value = sum(
                     _as_float(p.get("currentValue")) for p in positions
                 )
-                total_cash_pnl = sum(
-                    _as_float(p.get("cashPnl")) for p in positions
-                )
+                total_cash_pnl = sum(_as_float(p.get("cashPnl")) for p in positions)
                 total_realized_pnl = sum(
                     _as_float(p.get("realizedPnl")) for p in positions
                 )
@@ -1374,9 +1313,7 @@ class PolymarketAdapter(BaseAdapter):
                     "totalCurrentValue": float(total_current_value),
                     "totalCashPnl": float(total_cash_pnl),
                     "totalRealizedPnl": float(total_realized_pnl),
-                    "totalUnrealizedPnl": float(
-                        total_cash_pnl - total_realized_pnl
-                    ),
+                    "totalUnrealizedPnl": float(total_cash_pnl - total_realized_pnl),
                     "totalPercentPnl": float(total_percent_pnl)
                     if total_percent_pnl is not None
                     else None,
@@ -1438,7 +1375,6 @@ class PolymarketAdapter(BaseAdapter):
                     out["errors"]["recentTrades"] = tr_data
 
         return ok_any, out
-
 
     @staticmethod
     def _b32(x: str | bytes | HexBytes) -> bytes:
