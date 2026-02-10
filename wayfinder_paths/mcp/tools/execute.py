@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.base import GAS_ALIASES
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -31,7 +32,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     parse_amount_to_raw,
 )
-from wayfinder_paths.core.constants.base import GAS_ALIASES
+
 
 class ExecutionRequest(BaseModel):
     kind: Literal["swap", "send", "hyperliquid_deposit"]
