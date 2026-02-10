@@ -192,7 +192,10 @@ def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, A
 def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     req = tool_input if isinstance(tool_input, dict) else {}
     if not req:
-        return {"summary": "POLYMARKET_EXECUTE missing parameters.", "recipient_mismatch": False}
+        return {
+            "summary": "POLYMARKET_EXECUTE missing parameters.",
+            "recipient_mismatch": False,
+        }
 
     action = str(req.get("action") or "").strip()
     wallet_label = str(req.get("wallet_label") or "").strip()

@@ -1,15 +1,6 @@
-"""Polymarket protocol constants.
-
-These are intentionally small and focused on what the SDK needs for:
-- Market discovery (Gamma)
-- Orderbook / price history (CLOB)
-- User positions / trades (Data API)
-- Bridging helper endpoints (Bridge API)
-
-Addresses are Polygon mainnet (chain_id=137).
-"""
-
 from __future__ import annotations
+
+from typing import Any
 
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
@@ -41,3 +32,86 @@ POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = "0x3A3BD7bb9528E159577F7C2e685CC81A76500
 
 MAX_UINT256 = (1 << 256) - 1
 ZERO32_STR = "0x" + "00" * 32
+
+ERC1155_APPROVAL_ABI: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "isApprovedForAll",
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "operator", "type": "address"},
+        ],
+        "outputs": [{"name": "", "type": "bool"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "name": "setApprovalForAll",
+        "inputs": [
+            {"name": "operator", "type": "address"},
+            {"name": "approved", "type": "bool"},
+        ],
+        "outputs": [],
+    },
+]
+
+CONDITIONAL_TOKENS_ABI: list[dict[str, Any]] = [
+    *ERC1155_APPROVAL_ABI,
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "getCollectionId",
+        "inputs": [
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSet", "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "bytes32"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "getPositionId",
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "collectionId", "type": "bytes32"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "balanceOf",
+        "inputs": [
+            {"name": "account", "type": "address"},
+            {"name": "id", "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "name": "redeemPositions",
+        "inputs": [
+            {"name": "collateralToken", "type": "address"},
+            {"name": "parentCollectionId", "type": "bytes32"},
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "indexSets", "type": "uint256[]"},
+        ],
+        "outputs": [],
+    },
+]
+
+TOKEN_UNWRAP_ABI: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "name": "unwrap",
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+        ],
+        "outputs": [],
+    }
+]

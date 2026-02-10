@@ -121,4 +121,3 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
         assert out["result"]["action"] == "buy"
         effects = out["result"]["effects"]
         assert effects and effects[0]["label"] == "buy"
-

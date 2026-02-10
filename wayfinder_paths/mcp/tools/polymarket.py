@@ -28,7 +28,11 @@ def _resolve_wallet(
     if not w:
         return want, None, None
     addr = normalize_address(w.get("address"))
-    pk = (w.get("private_key") or w.get("private_key_hex")) if isinstance(w, dict) else None
+    pk = (
+        (w.get("private_key") or w.get("private_key_hex"))
+        if isinstance(w, dict)
+        else None
+    )
     pk_s = str(pk).strip() if pk else None
     return want, addr, pk_s
 
@@ -108,7 +112,11 @@ async def polymarket(
         return err(
             "invalid_request",
             "account (or wallet_label/wallet_address) is required",
-            {"wallet_label": wallet_label, "wallet_address": wallet_address, "account": account},
+            {
+                "wallet_label": wallet_label,
+                "wallet_address": wallet_address,
+                "account": account,
+            },
         )
 
     if action == "open_orders" and not want:
@@ -354,6 +362,7 @@ async def polymarket_execute(
     effects: list[dict[str, Any]] = []
     adapter = PolymarketAdapter(config=cfg)
     try:
+
         def _done(status: str) -> dict[str, Any]:
             return ok(
                 {
@@ -372,7 +381,14 @@ async def polymarket_execute(
                     also_approve_conditional_tokens_spender
                 )
             )
-            effects.append({"type": "polymarket", "label": "ensure_approvals", "ok": ok_appr, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "ensure_approvals",
+                    "ok": ok_appr,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_appr else "failed"
             _annotate(
                 address=sender,
@@ -394,7 +410,14 @@ async def polymarket_execute(
                 recipient_address=str(rcpt),
                 token_decimals=int(token_decimals),
             )
-            effects.append({"type": "polymarket", "label": "bridge_deposit", "ok": ok_dep, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "bridge_deposit",
+                    "ok": ok_dep,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_dep else "failed"
             _annotate(
                 address=sender,
@@ -423,7 +446,14 @@ async def polymarket_execute(
                 recipient_addr=str(rcpt),
                 token_decimals=int(token_decimals),
             )
-            effects.append({"type": "polymarket", "label": "bridge_withdraw", "ok": ok_wd, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "bridge_withdraw",
+                    "ok": ok_wd,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_wd else "failed"
             _annotate(
                 address=sender,
@@ -481,7 +511,9 @@ async def polymarket_execute(
                         ensure_approvals=bool(ensure_approvals),
                     )
 
-            effects.append({"type": "polymarket", "label": action, "ok": ok_trade, "result": res})
+            effects.append(
+                {"type": "polymarket", "label": action, "ok": ok_trade, "result": res}
+            )
             status = "confirmed" if ok_trade else "failed"
             _annotate(
                 address=sender,
@@ -493,7 +525,9 @@ async def polymarket_execute(
                     "market_slug": str(market_slug) if market_slug else None,
                     "token_id": str(token_id) if token_id else None,
                     "outcome": str(outcome),
-                    "amount_usdc": float(amount_usdc) if amount_usdc is not None else None,
+                    "amount_usdc": float(amount_usdc)
+                    if amount_usdc is not None
+                    else None,
                     "shares": float(shares) if shares is not None else None,
                 },
             )
@@ -515,12 +549,17 @@ async def polymarket_execute(
                 tid = str(tid_or_err)
 
             if not tid and condition_id:
-                ok_pos, pos = await adapter.get_positions(user=sender, limit=500, offset=0)
+                ok_pos, pos = await adapter.get_positions(
+                    user=sender, limit=500, offset=0
+                )
                 if ok_pos and isinstance(pos, list):
                     for p in pos:
                         if not isinstance(p, dict):
                             continue
-                        if str(p.get("conditionId") or "").lower() == str(condition_id).lower():
+                        if (
+                            str(p.get("conditionId") or "").lower()
+                            == str(condition_id).lower()
+                        ):
                             tid = str(p.get("asset") or "").strip()
                             if tid:
                                 break
@@ -533,7 +572,9 @@ async def polymarket_execute(
 
             sell_shares = shares
             if sell_shares is None:
-                ok_pos, pos = await adapter.get_positions(user=sender, limit=500, offset=0)
+                ok_pos, pos = await adapter.get_positions(
+                    user=sender, limit=500, offset=0
+                )
                 if not ok_pos:
                     return err("error", f"Failed to fetch positions: {pos}")
                 if not isinstance(pos, list):
@@ -542,7 +583,8 @@ async def polymarket_execute(
                     (
                         p
                         for p in pos
-                        if isinstance(p, dict) and str(p.get("asset") or "").strip() == tid
+                        if isinstance(p, dict)
+                        and str(p.get("asset") or "").strip() == tid
                     ),
                     None,
                 )
@@ -561,7 +603,14 @@ async def polymarket_execute(
                 amount=float(sell_shares),
                 ensure_approvals=bool(ensure_approvals),
             )
-            effects.append({"type": "polymarket", "label": "close_position", "ok": ok_sell, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "close_position",
+                    "ok": ok_sell,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_sell else "failed"
             _annotate(
                 address=sender,
@@ -576,9 +625,14 @@ async def polymarket_execute(
         if action == "place_limit_order":
             tid = str(token_id or "").strip()
             if not tid:
-                return err("invalid_request", "token_id is required for place_limit_order")
+                return err(
+                    "invalid_request", "token_id is required for place_limit_order"
+                )
             if price is None or size is None:
-                return err("invalid_request", "price and size are required for place_limit_order")
+                return err(
+                    "invalid_request",
+                    "price and size are required for place_limit_order",
+                )
             ok_lo, res = await adapter.place_limit_order(
                 token_id=tid,
                 side=side,
@@ -587,7 +641,14 @@ async def polymarket_execute(
                 post_only=bool(post_only),
                 ensure_approvals=bool(ensure_approvals),
             )
-            effects.append({"type": "polymarket", "label": "place_limit_order", "ok": ok_lo, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "place_limit_order",
+                    "ok": ok_lo,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_lo else "failed"
             _annotate(
                 address=sender,
@@ -595,7 +656,13 @@ async def polymarket_execute(
                 action="place_limit_order",
                 status=status,
                 chain_id=int(POLYGON_CHAIN_ID),
-                details={"token_id": tid, "side": side, "price": float(price), "size": float(size), "post_only": bool(post_only)},
+                details={
+                    "token_id": tid,
+                    "side": side,
+                    "price": float(price),
+                    "size": float(size),
+                    "post_only": bool(post_only),
+                },
             )
             return _done(status)
 
@@ -604,7 +671,14 @@ async def polymarket_execute(
             if not oid:
                 return err("invalid_request", "order_id is required for cancel_order")
             ok_c, res = await adapter.cancel_order(order_id=oid)
-            effects.append({"type": "polymarket", "label": "cancel_order", "ok": ok_c, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "cancel_order",
+                    "ok": ok_c,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_c else "failed"
             _annotate(
                 address=sender,
@@ -619,11 +693,20 @@ async def polymarket_execute(
         if action == "redeem_positions":
             cid = str(condition_id or "").strip()
             if not cid:
-                return err("invalid_request", "condition_id is required for redeem_positions")
+                return err(
+                    "invalid_request", "condition_id is required for redeem_positions"
+                )
             ok_r, res = await adapter.redeem_positions(
                 condition_id=cid, holder=sender, simulation=bool(simulation)
             )
-            effects.append({"type": "polymarket", "label": "redeem_positions", "ok": ok_r, "result": res})
+            effects.append(
+                {
+                    "type": "polymarket",
+                    "label": "redeem_positions",
+                    "ok": ok_r,
+                    "result": res,
+                }
+            )
             status = "confirmed" if ok_r else "failed"
             _annotate(
                 address=sender,

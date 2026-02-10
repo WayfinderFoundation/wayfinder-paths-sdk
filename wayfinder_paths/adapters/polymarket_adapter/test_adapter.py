@@ -160,7 +160,9 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+        )
 
         best_quote = {
             "provider": "enso",
@@ -204,13 +206,17 @@ class TestPolymarketAdapter:
         assert res["to_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
 
     @pytest.mark.asyncio
-    async def test_bridge_deposit_falls_back_to_polymarket_bridge(self, adapter, monkeypatch):
+    async def test_bridge_deposit_falls_back_to_polymarket_bridge(
+        self, adapter, monkeypatch
+    ):
         from_address = "0x000000000000000000000000000000000000dEaD"
 
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+        )
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",
@@ -219,12 +225,24 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             adapter,
             "bridge_deposit_addresses",
-            AsyncMock(return_value=(True, {"address": {"evm": "0x2222222222222222222222222222222222222222"}})),
+            AsyncMock(
+                return_value=(
+                    True,
+                    {"address": {"evm": "0x2222222222222222222222222222222222222222"}},
+                )
+            ),
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
             "build_send_transaction",
-            AsyncMock(return_value={"to": "0x2222222222222222222222222222222222222222", "from": from_address, "data": "0x", "chainId": 137}),
+            AsyncMock(
+                return_value={
+                    "to": "0x2222222222222222222222222222222222222222",
+                    "from": from_address,
+                    "data": "0x",
+                    "chainId": 137,
+                }
+            ),
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
@@ -251,7 +269,9 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+        )
 
         best_quote = {
             "provider": "enso",
@@ -295,13 +315,17 @@ class TestPolymarketAdapter:
         assert res["to_token_address"].lower() == POLYGON_USDC_ADDRESS.lower()
 
     @pytest.mark.asyncio
-    async def test_bridge_withdraw_falls_back_to_polymarket_bridge(self, adapter, monkeypatch):
+    async def test_bridge_withdraw_falls_back_to_polymarket_bridge(
+        self, adapter, monkeypatch
+    ):
         from_address = "0x000000000000000000000000000000000000dEaD"
 
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+        )
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",
@@ -310,12 +334,24 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             adapter,
             "bridge_withdraw_addresses",
-            AsyncMock(return_value=(True, {"address": {"evm": "0x3333333333333333333333333333333333333333"}})),
+            AsyncMock(
+                return_value=(
+                    True,
+                    {"address": {"evm": "0x3333333333333333333333333333333333333333"}},
+                )
+            ),
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
             "build_send_transaction",
-            AsyncMock(return_value={"to": "0x3333333333333333333333333333333333333333", "from": from_address, "data": "0x", "chainId": 137}),
+            AsyncMock(
+                return_value={
+                    "to": "0x3333333333333333333333333333333333333333",
+                    "from": from_address,
+                    "data": "0x",
+                    "chainId": 137,
+                }
+            ),
         )
         monkeypatch.setattr(
             polymarket_adapter_module,

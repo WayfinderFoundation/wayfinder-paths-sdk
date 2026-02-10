@@ -32,7 +32,8 @@ class TestPolymarketLiveRead:
             (
                 m
                 for m in markets
-                if m.get("enableOrderBook") and live_adapter._ensure_list(m.get("clobTokenIds"))
+                if m.get("enableOrderBook")
+                and live_adapter._ensure_list(m.get("clobTokenIds"))
             ),
             markets[0],
         )
@@ -52,4 +53,3 @@ class TestPolymarketLiveRead:
         assert ok
         assert isinstance(hist, dict)
         assert "history" in hist
-
