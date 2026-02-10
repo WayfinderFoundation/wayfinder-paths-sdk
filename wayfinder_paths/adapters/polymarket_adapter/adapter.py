@@ -22,9 +22,9 @@ from py_clob_client.config import (  # type: ignore[import-untyped]
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
-    ERC1155_APPROVAL_ABI,
     MAX_UINT256,
     POLYGON_CHAIN_ID,
     POLYGON_USDC_ADDRESS,
