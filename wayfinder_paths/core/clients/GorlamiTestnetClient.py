@@ -5,15 +5,15 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_gorlami_api_key, get_gorlami_base_url
+from wayfinder_paths.core.config import get_api_key, get_gorlami_base_url
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 
 class GorlamiTestnetClient:
     def __init__(self):
         self.base_url = get_gorlami_base_url().rstrip("/")
-        api_key = get_gorlami_api_key()
-        headers = {"Authorization": api_key} if api_key else {}
+        api_key = get_api_key()
+        headers = {"X-API-KEY": api_key} if api_key else {}
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
             headers=headers,

@@ -42,9 +42,10 @@ MCP server entrypoint:
 
 - `poetry run python -m wayfinder_paths.mcp.server`
 
-Simulation / scenario testing:
+Simulation / scenario testing (vnet only):
 
-- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). These are virtual testnets that simulate **sequential operations** with real EVM state changes. Use `/simulation-dry-run` and see `SIMULATION.md`.
+- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). These are EVM virtual testnets (vnets) that simulate **sequential on-chain operations** with real EVM state changes. Use `/simulation-dry-run` and see `SIMULATION.md`.
+- **Scope:** Vnets only cover EVM chains (Base, Arbitrum, etc.). Off-chain or non-EVM protocols like Hyperliquid **cannot** be simulated — dry-runs only apply to on-chain EVM transactions.
 
 Safety defaults:
 

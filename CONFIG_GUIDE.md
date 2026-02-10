@@ -21,8 +21,7 @@ The `config.json` file has three main sections:
   "system": {
     "api_base_url": "https://api.wayfinder.ai",
     "api_key": "sk_live_...",
-    "gorlami_base_url": "https://app.wayfinder.ai/gorlami/api/v1/gornet",
-    "gorlami_api_key": "gorlami_..."
+    "gorlami_base_url": "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
   },
   "strategy": {
     "rpc_urls": {
@@ -52,12 +51,9 @@ The `config.json` file has three main sections:
 |-------|----------|-------------|
 | `api_key` | Yes | Wayfinder API key (sent as `X-API-KEY` header) |
 | `api_base_url` | No | API endpoint (default: `https://api.wayfinder.ai`) |
-| `gorlami_base_url` | No* | Base URL for Gorlami forks (dry-run / simulation) |
-| `gorlami_api_key` | No* | Gorlami API key (sent as `Authorization: <key>`) |
+| `gorlami_base_url` | No | Base URL for Gorlami forks (default: `https://strategies.wayfinder.ai/api/v1/blockchain/gorlami`) |
 
-The API key is automatically loaded and included in all API requests. You don't need to pass it explicitly to strategies or clients.
-
-`gorlami_*` fields are only required if you want to run **dry-runs** against a fork. See `SIMULATION.md`.
+The API key is automatically loaded and included in all API requests (including Gorlami dry-runs). You don't need to pass it explicitly to strategies or clients.
 
 ## Strategy Configuration
 

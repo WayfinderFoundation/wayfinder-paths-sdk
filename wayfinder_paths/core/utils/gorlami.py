@@ -34,7 +34,9 @@ async def gorlami_fork(
     try:
         if native_balances:
             for address, balance in native_balances.items():
-                await client.set_native_balance(fork_id=fork_id, wallet=address, amount=balance)
+                await client.set_native_balance(
+                    fork_id=fork_id, wallet=address, amount=balance
+                )
 
         if erc20_balances:
             for token, address, amount in erc20_balances:
@@ -79,4 +81,3 @@ def gorlami_dry_run(
         return _wrapped
 
     return _decorator
-

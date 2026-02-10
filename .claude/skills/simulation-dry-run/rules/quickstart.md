@@ -2,20 +2,17 @@
 
 ## 1) Configure Gorlami
 
-Add to `config.json`:
+Gorlami is proxied through the Wayfinder API. If your `system.api_key` is set in `config.json`, dry-runs work out of the box — no extra config needed.
+
+To override the default Gorlami URL:
 
 ```json
 {
   "system": {
-    "gorlami_base_url": "https://app.wayfinder.ai/gorlami/api/v1/gornet",
-    "gorlami_api_key": "gorlami_..."
+    "gorlami_base_url": "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
   }
 }
 ```
-
-Notes:
-- Header is `Authorization: <key>` (raw key; not `Bearer ...`).
-- Keep `config.json` local (gitignored).
 
 ## 2) Run a strategy on a fork
 

@@ -8,20 +8,18 @@ This repo supports dry-runs via **Gorlami** (Wayfinder’s virtual testnet servi
 
 ## Configure Gorlami
 
-Add these fields to `config.json`:
+Gorlami is proxied through the Wayfinder API at `strategies.wayfinder.ai/gorlami/`. Authentication uses your existing Wayfinder API key (`system.api_key` in `config.json`).
+
+No additional configuration is needed — if your `api_key` is set, dry-runs work out of the box. To override the default Gorlami URL, add `gorlami_base_url` to `config.json`:
 
 ```json
 {
   "system": {
-    "gorlami_base_url": "https://app.wayfinder.ai/gorlami/api/v1/gornet",
-    "gorlami_api_key": "gorlami_..."
+    "api_key": "wk_...",
+    "gorlami_base_url": "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
   }
 }
 ```
-
-Notes:
-- Gorlami uses an `Authorization: <api_key>` header (raw key; not `Bearer ...`).
-- `config.json` is gitignored; do not commit keys.
 
 ## Dry-run a strategy (preferred)
 

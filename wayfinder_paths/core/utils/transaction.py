@@ -267,7 +267,9 @@ async def send_transaction(
     logger.info(f"Broadcasting transaction {transaction}...")
     chain_id = get_transaction_chain_id(transaction)
     if confirmations is None:
-        confirmations = 0 if _is_gorlami_fork_chain(chain_id) else _DEFAULT_CONFIRMATIONS
+        confirmations = (
+            0 if _is_gorlami_fork_chain(chain_id) else _DEFAULT_CONFIRMATIONS
+        )
     transaction = await gas_limit_transaction(transaction)
     transaction = await nonce_transaction(transaction)
     transaction = await gas_price_transaction(transaction)

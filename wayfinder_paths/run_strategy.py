@@ -106,7 +106,9 @@ async def _infer_chain_id(module, strategy_cls: type[Strategy]) -> int:
     info = getattr(strategy_cls, "INFO", None)
     token_id = None
     if info is not None:
-        token_id = getattr(info, "deposit_token_id", None) or getattr(info, "gas_token_id", None)
+        token_id = getattr(info, "deposit_token_id", None) or getattr(
+            info, "gas_token_id", None
+        )
     if isinstance(token_id, str) and token_id.strip():
         details = await TOKEN_CLIENT.get_token_details(token_id.strip())
         chain = details.get("chain") or {}
@@ -151,7 +153,9 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         await strategy.setup()
 
         if action == "policy":
-            policies = await strategy.policies() if hasattr(strategy, "policies") else []
+            policies = (
+                await strategy.policies() if hasattr(strategy, "policies") else []
+            )
             if wallet_id := kw.get("wallet_id"):
                 policies = [p.replace("FORMAT_WALLET_ID", wallet_id) for p in policies]
             return {"policies": policies}
@@ -174,7 +178,9 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         if action == "analyze":
             if not hasattr(strategy, "analyze"):
                 raise ValueError(f"Strategy {strategy_name} does not support analyze")
-            deposit_usdc = kw.get("main_token_amount") or kw.get("deposit_usdc") or 1000.0
+            deposit_usdc = (
+                kw.get("main_token_amount") or kw.get("deposit_usdc") or 1000.0
+            )
             verbose = kw.get("verbose", True)
             return await strategy.analyze(
                 deposit_usdc=float(deposit_usdc),
@@ -196,7 +202,11 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         raise ValueError(f"Unknown action: {action}")
 
     if gorlami:
-        chain_id = int(gorlami_chain_id) if gorlami_chain_id is not None else await _infer_chain_id(module, strategy_cls)
+        chain_id = (
+            int(gorlami_chain_id)
+            if gorlami_chain_id is not None
+            else await _infer_chain_id(module, strategy_cls)
+        )
 
         native_balances = _parse_native_funds(list(gorlami_fund_native_eth))
         if not gorlami_no_default_gas:
@@ -210,7 +220,9 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
 
         if action == "deposit" and not gorlami_fund_erc20:
             info = getattr(strategy_cls, "INFO", None)
-            token_id = getattr(info, "deposit_token_id", None) if info is not None else None
+            token_id = (
+                getattr(info, "deposit_token_id", None) if info is not None else None
+            )
             main_addr = config.get("main_wallet", {}).get("address")
             amount = kw.get("main_token_amount")
             if isinstance(token_id, str) and main_addr and amount:
@@ -220,7 +232,11 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
                     decimals = int(details.get("decimals", 18) or 18)
                     if token_address:
                         erc20_balances.append(
-                            (str(token_address), str(main_addr), to_erc20_raw(str(amount), decimals))
+                            (
+                                str(token_address),
+                                str(main_addr),
+                                to_erc20_raw(str(amount), decimals),
+                            )
                         )
                 except Exception:
                     # best-effort auto-funding only

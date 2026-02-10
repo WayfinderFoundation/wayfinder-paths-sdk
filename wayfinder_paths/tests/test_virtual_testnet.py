@@ -1,18 +1,17 @@
 import pytest
 
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
-from wayfinder_paths.core.config import CONFIG, get_gorlami_api_key
+from wayfinder_paths.core.config import get_api_key
 from wayfinder_paths.core.utils import web3 as web3_utils
 
 
 def gorlami_configured() -> bool:
-    system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
-    return bool(system.get("gorlami_base_url")) and bool(get_gorlami_api_key())
+    return bool(get_api_key())
 
 
 pytestmark = pytest.mark.skipif(
     not gorlami_configured(),
-    reason="gorlami_base_url/gorlami_api_key not configured",
+    reason="api_key not configured (needed for gorlami proxy)",
 )
 
 
@@ -67,6 +66,45 @@ class TestGorlamiTestnetClient:
             await client.delete_fork(fork_info["fork_id"])
 
 
+class TestGorlamiProxyAuth:
+    """Verify Gorlami operations work via the strategies.wayfinder.ai proxy with X-API-KEY auth."""
+
+    @pytest.fixture
+    async def client(self):
+        client = GorlamiTestnetClient()
+        yield client
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_proxy_round_trip(self, client):
+        # Uses X-API-KEY header (not the old Authorization: <gorlami_key>)
+        assert "X-API-KEY" in client.client.headers
+
+        fork_info = await client.create_fork(chain_id=8453)
+        fork_id = fork_info["fork_id"]
+        try:
+            assert fork_info["rpc_url"].startswith(client.base_url)
+
+            wallet = "0x1234567890123456789012345678901234567890"
+            await client.set_native_balance(fork_id, wallet, 10**18)
+            await client.set_erc20_balance(
+                fork_id,
+                "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                wallet,
+                500 * 10**6,
+            )
+
+            block = await client.send_rpc(fork_id, "eth_blockNumber", [])
+            assert int(block, 16) > 0
+
+            balance_hex = await client.send_rpc(
+                fork_id, "eth_getBalance", [wallet, "latest"]
+            )
+            assert int(balance_hex, 16) == 10**18
+        finally:
+            assert await client.delete_fork(fork_id) is True
+
+
 class TestGorlamiFixture:
     @pytest.mark.asyncio
     async def test_set_and_get_balance(self, gorlami):
@@ -83,7 +121,9 @@ class TestGorlamiFixture:
             fork_info = gorlami.forks.get("8453")
             assert fork_info is not None
 
-            await gorlami.set_native_balance(fork_info["fork_id"], test_wallet, test_amount)
+            await gorlami.set_native_balance(
+                fork_info["fork_id"], test_wallet, test_amount
+            )
 
             new_balance = await web3.eth.get_balance(test_wallet)
             assert new_balance == test_amount

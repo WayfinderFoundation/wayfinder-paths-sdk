@@ -51,8 +51,14 @@ async def gorlami():
 
     try:
         with (
-            patch("wayfinder_paths.core.utils.web3.web3_from_chain_id", patched_web3_from_chain_id),
-            patch("wayfinder_paths.core.utils.web3.web3s_from_chain_id", patched_web3s_from_chain_id),
+            patch(
+                "wayfinder_paths.core.utils.web3.web3_from_chain_id",
+                patched_web3_from_chain_id,
+            ),
+            patch(
+                "wayfinder_paths.core.utils.web3.web3s_from_chain_id",
+                patched_web3s_from_chain_id,
+            ),
         ):
             yield client
     finally:

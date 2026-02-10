@@ -6,7 +6,7 @@ from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
 from wayfinder_paths.core.config import (
-    get_gorlami_api_key,
+    get_api_key,
     get_gorlami_base_url,
     get_rpc_urls,
 )
@@ -80,9 +80,9 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
         headers = AsyncHTTPProvider.get_request_headers()
-        api_key = (get_gorlami_api_key() or "").strip()
+        api_key = (get_api_key() or "").strip()
         if api_key:
-            headers["Authorization"] = api_key
+            headers["X-API-KEY"] = api_key
         provider = _GorlamiProvider(rpc, request_kwargs={"headers": headers})
         web3 = AsyncWeb3(provider)
     else:

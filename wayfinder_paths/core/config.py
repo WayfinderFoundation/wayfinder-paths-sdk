@@ -98,17 +98,9 @@ def get_api_key() -> str | None:
     return os.environ.get("WAYFINDER_API_KEY")
 
 
+_DEFAULT_GORLAMI_BASE_URL = "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
+
+
 def get_gorlami_base_url() -> str:
     system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
-    url = system.get("gorlami_base_url")
-    if not url:
-        raise ValueError("gorlami_base_url not configured in system config")
-    return url
-
-
-def get_gorlami_api_key() -> str | None:
-    system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
-    api_key = system.get("gorlami_api_key")
-    if api_key and isinstance(api_key, str):
-        return api_key.strip()
-    return os.environ.get("GORLAMI_API_KEY")
+    return system.get("gorlami_base_url") or _DEFAULT_GORLAMI_BASE_URL
