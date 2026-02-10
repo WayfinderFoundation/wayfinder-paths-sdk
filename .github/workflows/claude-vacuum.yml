@@ -69,4 +69,4 @@ jobs:
             - Summarize your changes in the PR description.
           model: claude-opus-4-6
           claude_args: |
-            --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
+            --verbose --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
