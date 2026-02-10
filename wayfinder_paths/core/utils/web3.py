@@ -80,12 +80,12 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
-        headers = AsyncHTTPProvider.get_request_headers()
         api_key = get_api_key()
-        if api_key:
-            headers["X-API-KEY"] = api_key
-        else:
+        headers = AsyncHTTPProvider.get_request_headers()
+        if not api_key:
             logger.warning("No API key configured; Gorlami fork requests may fail")
+        else:
+            headers = {**headers, "X-API-KEY": api_key}
         provider = _GorlamiProvider(rpc, request_kwargs={"headers": headers})
         web3 = AsyncWeb3(provider)
     else:

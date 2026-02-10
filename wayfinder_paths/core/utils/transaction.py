@@ -28,8 +28,11 @@ _DEFAULT_CONFIRMATIONS = 3
 
 
 def _is_gorlami_fork_chain(chain_id: int) -> bool:
-    rpcs = get_rpc_urls().get(str(chain_id)) or get_rpc_urls().get(chain_id) or []
-    return any(_is_gorlami_fork_rpc(rpc) for rpc in rpcs)
+    rpc_urls = get_rpc_urls()
+    rpcs = rpc_urls.get(str(chain_id)) or rpc_urls.get(chain_id) or []
+    if isinstance(rpcs, str):
+        rpcs = [rpcs]
+    return any(_is_gorlami_fork_rpc(rpc) for rpc in rpcs if isinstance(rpc, str))
 
 
 class TransactionRevertedError(RuntimeError):
@@ -294,7 +297,7 @@ async def sign_and_send_transaction(
     transaction: dict,
     private_key: str,
     wait_for_receipt: bool = True,
-    confirmations: int | None = None,
+    confirmations: int = 0,
 ) -> str:
     account = Account.from_key(private_key)
 
