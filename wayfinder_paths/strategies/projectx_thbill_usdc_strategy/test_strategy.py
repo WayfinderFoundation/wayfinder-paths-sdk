@@ -48,33 +48,43 @@ def strategy():
     s.ledger_adapter.get_strategy_net_deposit = AsyncMock(return_value=(True, 0.0))
 
     s.projectx.pool_overview = AsyncMock(
-        return_value={
-            "sqrt_price_x96": 0,
-            "tick": 0,
-            "tick_spacing": 10,
-            "fee": 100,
-            "token0": {
-                "address": "0x0",
-                "decimals": 6,
-                "symbol": "USDC",
-                "token_id": "usd-coin-hyperevm",
+        return_value=(
+            True,
+            {
+                "sqrt_price_x96": 0,
+                "tick": 0,
+                "tick_spacing": 10,
+                "fee": 100,
+                "token0": {
+                    "address": "0x0",
+                    "decimals": 6,
+                    "symbol": "USDC",
+                    "token_id": "usd-coin-hyperevm",
+                },
+                "token1": {
+                    "address": "0x1",
+                    "decimals": 18,
+                    "symbol": "THBILL",
+                    "token_id": "theo-short-duration-us-treasury-fund-hyperevm",
+                },
             },
-            "token1": {
-                "address": "0x1",
-                "decimals": 18,
-                "symbol": "THBILL",
-                "token_id": "theo-short-duration-us-treasury-fund-hyperevm",
-            },
-        }
+        )
     )
-    s.projectx.list_positions = AsyncMock(return_value=[])
+    s.projectx.list_positions = AsyncMock(return_value=(True, []))
     s.projectx.mint_from_balances = AsyncMock(
-        return_value=(123, "0xtxhash_mint", {"token0_spent": 0, "token1_spent": 0})
+        return_value=(
+            True,
+            {
+                "token_id": 123,
+                "tx_hash": "0xtxhash_mint",
+                "spent": {"token0_spent": 0, "token1_spent": 0},
+            },
+        )
     )
-    s.projectx.current_balances = AsyncMock(return_value={"0x0": 0, "0x1": 0})
-    s.projectx.fetch_swaps = AsyncMock(return_value=[])
-    s.projectx.fetch_prjx_points = AsyncMock(return_value={"points": 0})
-    s.projectx.live_fee_snapshot = AsyncMock(return_value={"usd": 0.0})
+    s.projectx.current_balances = AsyncMock(return_value=(True, {"0x0": 0, "0x1": 0}))
+    s.projectx.fetch_swaps = AsyncMock(return_value=(True, []))
+    s.projectx.fetch_prjx_points = AsyncMock(return_value=(True, {"points": 0}))
+    s.projectx.live_fee_snapshot = AsyncMock(return_value=(True, {"usd": 0.0}))
 
     return s
 
@@ -112,33 +122,39 @@ async def test_smoke(strategy):
 async def test_quote_estimates_fee_apy_from_swap_volume(strategy):
     sqrt_price_x96 = price_to_sqrt_price_x96(1.0, 6, 18)
     strategy.projectx.pool_overview = AsyncMock(
-        return_value={
-            "sqrt_price_x96": sqrt_price_x96,
-            "tick": 0,
-            "tick_spacing": 10,
-            "fee": 3000,  # 0.30%
-            "liquidity": 0,  # simplify share -> 1.0
-            "token0": {
-                "address": "0x0",
-                "decimals": 6,
-                "symbol": "USDC",
-                "token_id": "usd-coin-hyperevm",
+        return_value=(
+            True,
+            {
+                "sqrt_price_x96": sqrt_price_x96,
+                "tick": 0,
+                "tick_spacing": 10,
+                "fee": 3000,  # 0.30%
+                "liquidity": 0,  # simplify share -> 1.0
+                "token0": {
+                    "address": "0x0",
+                    "decimals": 6,
+                    "symbol": "USDC",
+                    "token_id": "usd-coin-hyperevm",
+                },
+                "token1": {
+                    "address": "0x1",
+                    "decimals": 18,
+                    "symbol": "THBILL",
+                    "token_id": "theo-short-duration-us-treasury-fund-hyperevm",
+                },
             },
-            "token1": {
-                "address": "0x1",
-                "decimals": 18,
-                "symbol": "THBILL",
-                "token_id": "theo-short-duration-us-treasury-fund-hyperevm",
-            },
-        }
+        )
     )
 
     strategy.projectx.fetch_swaps = AsyncMock(
-        return_value=[
-            {"timestamp": int(time.time()), "tick": 0, "amount_usd": 10_000.0},
-            {"timestamp": int(time.time()), "tick": 10, "amount_usd": 5_000.0},
-            {"timestamp": int(time.time()), "tick": 100, "amount_usd": 20_000.0},
-        ]
+        return_value=(
+            True,
+            [
+                {"timestamp": int(time.time()), "tick": 0, "amount_usd": 10_000.0},
+                {"timestamp": int(time.time()), "tick": 10, "amount_usd": 5_000.0},
+                {"timestamp": int(time.time()), "tick": 100, "amount_usd": 20_000.0},
+            ],
+        )
     )
 
     q = await strategy.quote(deposit_amount=1000.0)

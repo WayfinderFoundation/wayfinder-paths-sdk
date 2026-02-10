@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import wayfinder_paths.adapters.projectx_adapter.adapter as projectx_adapter_module
+import wayfinder_paths.adapters.uniswap_adapter.base as uniswap_base_module
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 
@@ -99,11 +100,12 @@ async def test_find_pool_for_pair_picks_first_nonzero_fee(monkeypatch):
     adapter = ProjectXLiquidityAdapter(
         {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
     )
-    out = await adapter.find_pool_for_pair(
+    ok, out = await adapter.find_pool_for_pair(
         "0x1111111111111111111111111111111111111111",
         "0x3333333333333333333333333333333333333333",
         prefer_fees=[100, 500, 1000],
     )
+    assert ok is True
     assert out["fee"] == 1000
     assert out["pool"].lower() == "0x2222222222222222222222222222222222222222"
 
@@ -163,20 +165,12 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
         lambda _cid: _DummyAsyncContext(fake_web3),
     )
     monkeypatch.setattr(
-        projectx_adapter_module,
-        "ensure_allowance",
-        AsyncMock(return_value=None),
+        uniswap_base_module, "ensure_allowance", AsyncMock(return_value=None)
     )
     mock_encode_call = AsyncMock(return_value={"chainId": 8453, "data": "0x"})
+    monkeypatch.setattr(uniswap_base_module, "encode_call", mock_encode_call)
     monkeypatch.setattr(
-        projectx_adapter_module,
-        "encode_call",
-        mock_encode_call,
-    )
-    monkeypatch.setattr(
-        projectx_adapter_module,
-        "send_transaction",
-        AsyncMock(return_value="0xtxhash"),
+        uniswap_base_module, "send_transaction", AsyncMock(return_value="0xtxhash")
     )
 
     token_id, tx_hash, spent = await adapter._mint_from_balances_once(
@@ -207,34 +201,102 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_burn_position_decreases_collects_then_burns(monkeypatch):
+async def test_burn_position_calls_remove_liquidity():
     adapter = ProjectXLiquidityAdapter(
         {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
         strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
     )
-    adapter._read_position_struct = AsyncMock(
-        return_value={"liquidity": 42, "tokens_owed0": 0, "tokens_owed1": 0}
-    )
-    adapter.decrease_liquidity = AsyncMock(return_value="0xtx_decrease")
-    adapter.collect_fees = AsyncMock(return_value=("0xtx_collect", {}))
+    adapter.remove_liquidity = AsyncMock(return_value=(True, "0xtx_burn"))
 
-    mock_encode_call = AsyncMock(return_value={"chainId": 8453, "data": "0x"})
-    monkeypatch.setattr(
-        projectx_adapter_module,
-        "encode_call",
-        mock_encode_call,
-    )
-    monkeypatch.setattr(
-        projectx_adapter_module,
-        "send_transaction",
-        AsyncMock(return_value="0xtx_burn"),
-    )
-
-    tx_hash = await adapter.burn_position(123)
+    ok, tx_hash = await adapter.burn_position(123)
+    assert ok is True
     assert tx_hash == "0xtx_burn"
-    adapter.decrease_liquidity.assert_awaited_once_with(123, liquidity=42)
-    adapter.collect_fees.assert_awaited_once_with(123)
-    mock_encode_call.assert_awaited_once()
-    call_kwargs = mock_encode_call.call_args.kwargs
-    assert call_kwargs["fn_name"] == "burn"
-    assert call_kwargs["args"] == [123]
+    adapter.remove_liquidity.assert_awaited_once_with(123, collect=True, burn=True)
+
+
+@pytest.mark.asyncio
+async def test_poll_for_any_position_id_destructures_list_positions_tuple(monkeypatch):
+    monkeypatch.setattr(projectx_adapter_module, "MINT_POLL_ATTEMPTS", 1)
+    monkeypatch.setattr(
+        projectx_adapter_module.asyncio, "sleep", AsyncMock(return_value=None)
+    )
+
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    position = projectx_adapter_module.PositionSnapshot(
+        token_id=321,
+        liquidity=1,
+        tick_lower=0,
+        tick_upper=0,
+        fee=100,
+        token0="0x1111111111111111111111111111111111111111",
+        token1="0x3333333333333333333333333333333333333333",
+    )
+    adapter.list_positions = AsyncMock(return_value=(True, [position]))
+
+    token_id = await adapter._poll_for_any_position_id()
+    assert token_id == 321
+    adapter.list_positions.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_swap_once_to_band_ratio_returns_false_on_no_prjx_route(monkeypatch):
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "web3_from_chain_id",
+        lambda _cid: _DummyAsyncContext(object()),
+    )
+    monkeypatch.setattr(
+        projectx_adapter_module, "_target_ratio_need0_over_need1", lambda *a, **k: 1.0
+    )
+    monkeypatch.setattr(
+        projectx_adapter_module, "sqrt_price_x96_to_price", lambda *a: 1.0
+    )
+
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    adapter._pool_meta = AsyncMock(
+        return_value={
+            "token0": "0x1111111111111111111111111111111111111111",
+            "token1": "0x3333333333333333333333333333333333333333",
+        }
+    )
+    adapter._balances_for_tokens = AsyncMock(return_value=(2_000_000, 1_000_000))
+    adapter._token_meta = AsyncMock(return_value={"decimals": 6, "symbol": "TKN"})
+    adapter.swap_exact_in = AsyncMock(return_value=(False, "No PRJX route for pair"))
+
+    swapped = await adapter._swap_once_to_band_ratio(1, 1, 1, slippage_bps=30)
+    assert swapped is False
+
+
+@pytest.mark.asyncio
+async def test_swap_once_to_band_ratio_raises_on_swap_failure(monkeypatch):
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "web3_from_chain_id",
+        lambda _cid: _DummyAsyncContext(object()),
+    )
+    monkeypatch.setattr(
+        projectx_adapter_module, "_target_ratio_need0_over_need1", lambda *a, **k: 1.0
+    )
+    monkeypatch.setattr(
+        projectx_adapter_module, "sqrt_price_x96_to_price", lambda *a: 1.0
+    )
+
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    adapter._pool_meta = AsyncMock(
+        return_value={
+            "token0": "0x1111111111111111111111111111111111111111",
+            "token1": "0x3333333333333333333333333333333333333333",
+        }
+    )
+    adapter._balances_for_tokens = AsyncMock(return_value=(2_000_000, 1_000_000))
+    adapter._token_meta = AsyncMock(return_value={"decimals": 6, "symbol": "TKN"})
+    adapter.swap_exact_in = AsyncMock(return_value=(False, "Swap failed"))
+
+    with pytest.raises(RuntimeError, match="Swap failed"):
+        await adapter._swap_once_to_band_ratio(1, 1, 1, slippage_bps=30)
