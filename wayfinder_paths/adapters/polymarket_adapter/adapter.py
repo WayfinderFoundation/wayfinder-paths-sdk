@@ -65,7 +65,6 @@ def _fuzzy_score(query: str, text: str) -> float:
     return SequenceMatcher(None, q, t).ratio()
 
 
-
 async def _try_brap_swap_polygon(
     *,
     from_token_address: str,

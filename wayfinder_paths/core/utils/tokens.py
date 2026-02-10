@@ -7,8 +7,8 @@ from web3 import AsyncWeb3
 from web3.exceptions import BadFunctionCallOutput
 
 from wayfinder_paths.core.constants.contracts import TOKENS_REQUIRING_APPROVAL_RESET
-from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -186,9 +186,9 @@ async def ensure_erc1155_approval(
 
     async with web3_from_chain_id(chain_id) as web3:
         contract = web3.eth.contract(address=token_address, abi=ERC1155_APPROVAL_ABI)
-        is_approved = await contract.functions.isApprovedForAll(
-            owner, operator
-        ).call(block_identifier="pending")
+        is_approved = await contract.functions.isApprovedForAll(owner, operator).call(
+            block_identifier="pending"
+        )
         if bool(is_approved) == bool(approved):
             return True, "already-approved"
 

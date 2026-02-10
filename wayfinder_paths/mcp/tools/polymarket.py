@@ -694,9 +694,7 @@ async def polymarket_execute(
                 return err(
                     "invalid_request", "condition_id is required for redeem_positions"
                 )
-            ok_r, res = await adapter.redeem_positions(
-                condition_id=cid, holder=sender
-            )
+            ok_r, res = await adapter.redeem_positions(condition_id=cid, holder=sender)
             effects.append(
                 {
                     "type": "polymarket",

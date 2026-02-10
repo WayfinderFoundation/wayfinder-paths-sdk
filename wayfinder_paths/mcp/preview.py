@@ -268,10 +268,7 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
         return {"summary": header + base + details, "recipient_mismatch": False}
 
     if action == "redeem_positions":
-        details = (
-            "\n\nREDEEM\n"
-            f"condition_id: {req.get('condition_id')}"
-        )
+        details = f"\n\nREDEEM\ncondition_id: {req.get('condition_id')}"
         return {"summary": header + base + details, "recipient_mismatch": False}
 
     if action == "ensure_approvals":
