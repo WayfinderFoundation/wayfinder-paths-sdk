@@ -97,7 +97,7 @@ class TokenAdapter(BaseAdapter):
     async def get_amount_usd(
         self,
         token_id: str | None,
-        raw_amount: int | str | None,
+        raw_amount: int | float | str | None,
         decimals: int = 18,
     ) -> float | None:
         if raw_amount is None or token_id is None:

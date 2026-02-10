@@ -953,7 +953,7 @@ class StablecoinYieldStrategy(Strategy):
             return (True, "Main wallet is strategy wallet, no transfer needed")
 
         usdc_token_id = (
-            self.usdc_token_info.get("token_id")
+            self.usdc_token_info.get("token_id", "usd-coin-base")
             if isinstance(self.usdc_token_info, dict)
             else "usd-coin-base"
         )
@@ -963,7 +963,7 @@ class StablecoinYieldStrategy(Strategy):
             else 6
         )
         gas_token_id = (
-            self.gas_token.get("token_id")
+            self.gas_token.get("token_id", "ethereum-base")
             if isinstance(self.gas_token, dict)
             else "ethereum-base"
         )
@@ -1144,6 +1144,8 @@ class StablecoinYieldStrategy(Strategy):
                 )
                 return (True, cooldown_notice)
 
+        if not previous_pool:
+            return (False, "No source pool available for swap")
         await self.brap_adapter.swap_from_quote(
             previous_pool,
             target_pool,
