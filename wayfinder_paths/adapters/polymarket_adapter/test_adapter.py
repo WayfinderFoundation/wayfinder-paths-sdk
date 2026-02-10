@@ -30,7 +30,7 @@ class TestPolymarketAdapter:
             {
                 "slug": "test-market",
                 "outcomes": '["Yes","No"]',
-                "outcomePrices": '[0.5,0.5]',
+                "outcomePrices": "[0.5,0.5]",
                 "clobTokenIds": '["tok1","tok2"]',
             }
         ]
