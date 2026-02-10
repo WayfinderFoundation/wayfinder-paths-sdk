@@ -34,6 +34,24 @@ HYPERLEND_WRAPPED_TOKEN_GATEWAY = to_checksum_address(
 PRJX_ROUTER = to_checksum_address("0x1EbDFC75FfE3ba3de61E7138a3E8706aC841Af9B")
 PRJX_NPM = to_checksum_address("0xeaD19AE861c29bBb2101E834922B2FEee69B9091")
 
+UNISWAP_V3_NPM: dict[int, str] = {
+    1: to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88"),
+    42161: to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88"),
+    137: to_checksum_address("0xC36442b4a4522E871399CD717aBDD847Ab11FE88"),
+    8453: to_checksum_address("0x03a520b32C04BF3bEEf7BEb72E919cf822Ed34f1"),
+    56: to_checksum_address("0x7b8A01B39D58278b5DE7e48c8449c9f4F5170613"),
+    43114: to_checksum_address("0x655C406EBFa14EE2006250925e54ec43AD184f8B"),
+}
+
+UNISWAP_V3_FACTORY: dict[int, str] = {
+    1: to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+    42161: to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+    137: to_checksum_address("0x1F98431c8aD98523631AE4a59f267346ea31F984"),
+    8453: to_checksum_address("0x33128a8fC17869897dcE68Ed026d694621f6FDfD"),
+    56: to_checksum_address("0xdB1d10011AD0Ff90774D0C6Bb92e5C5c8b4461F7"),
+    43114: to_checksum_address("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"),
+}
+
 ARBITRUM_USDC = to_checksum_address("0xaf88d065e77c8cC2239327C5EDb3A432268e5831")
 
 HYPERLIQUID_BRIDGE = to_checksum_address("0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7")
