@@ -937,12 +937,6 @@ class PolymarketAdapter(BaseAdapter):
 
         return from_address, sign_cb
 
-    def _require_py_clob_client(self) -> None:
-        if ClobClient is None or get_contract_config is None:
-            raise RuntimeError(
-                "py-clob-client is required for trading features. Install with `poetry add py-clob-client`."
-            )
-
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
         if get_contract_config is None:
             return {
@@ -959,7 +953,6 @@ class PolymarketAdapter(BaseAdapter):
 
     @property
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
-        self._require_py_clob_client()
         if self._clob_client is None:
             pk = self._resolve_private_key()
             funder = self._resolve_funder()
@@ -1528,15 +1521,10 @@ class PolymarketAdapter(BaseAdapter):
         *,
         condition_id: str,
         holder: str,
-        simulation: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
         holder_addr, sign_cb = self._resolve_wallet_signer()
         if holder and to_checksum_address(holder) != holder_addr:
             return False, "holder must match the configured signing wallet"
-        if simulation:
-            return await self.preflight_redeem(
-                condition_id=condition_id, holder=holder_addr
-            )
 
         ok, path = await self.preflight_redeem(
             condition_id=condition_id, holder=holder_addr

@@ -308,7 +308,6 @@ async def polymarket_execute(
     order_id: str | None = None,
     # redeem
     condition_id: str | None = None,
-    simulation: bool = False,
 ) -> dict[str, Any]:
     want, sender, pk = _resolve_wallet(wallet_label=wallet_label)
     if not want:
@@ -345,7 +344,6 @@ async def polymarket_execute(
         "post_only": post_only,
         "order_id": order_id,
         "condition_id": condition_id,
-        "simulation": simulation,
     }
     preview_obj = build_polymarket_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
@@ -697,7 +695,7 @@ async def polymarket_execute(
                     "invalid_request", "condition_id is required for redeem_positions"
                 )
             ok_r, res = await adapter.redeem_positions(
-                condition_id=cid, holder=sender, simulation=bool(simulation)
+                condition_id=cid, holder=sender
             )
             effects.append(
                 {
@@ -714,7 +712,7 @@ async def polymarket_execute(
                 action="redeem_positions",
                 status=status,
                 chain_id=int(POLYGON_CHAIN_ID),
-                details={"condition_id": cid, "simulation": bool(simulation)},
+                details={"condition_id": cid},
             )
             return _done(status)
 
