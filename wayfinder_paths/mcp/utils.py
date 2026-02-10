@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from wayfinder_paths.core.config import load_config_json
+from wayfinder_paths.core.config import CONFIG
 
 getcontext().prec = 78
 
@@ -50,9 +50,8 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
 
 
 def load_wallets() -> list[dict[str, Any]]:
-    cfg = load_config_json()
-    if isinstance(cfg.get("wallets"), list):
-        return [w for w in cfg["wallets"] if isinstance(w, dict)]
+    if isinstance(CONFIG.get("wallets"), list):
+        return [w for w in CONFIG["wallets"] if isinstance(w, dict)]
     return []
 
 
