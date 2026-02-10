@@ -2,7 +2,7 @@ name: Daily Code Cleanup
 
 on:
   schedule:
-    - cron: "0 0 * * *" # Every day at midnight UTC
+    - cron: "0 9 * * *" # Every day at 4am ET (9:00 UTC)
   workflow_dispatch:
 
 jobs:
@@ -20,10 +20,36 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "1.8.3"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Load cached venv
+        id: cached-poetry-dependencies
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-3.12-${{ hashFiles('**/poetry.lock') }}
+
+      - name: Install dependencies
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+
+      - name: Install project
+        run: poetry install --no-interaction
+
       - name: Run Claude Code Cleanup
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           additional_permissions: |
             issues: write
@@ -42,5 +68,15 @@ jobs:
             - Commit the changes.
             - Push the branch and open a PR to main.
             - Summarize your changes in the PR description.
+          model: claude-opus-4-6
           claude_args: |
-            --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
+            --verbose --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
+
+      - name: Print execution log
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/claude-execution-output.json" ]; then
+            cat "$RUNNER_TEMP/claude-execution-output.json"
+          else
+            echo "No execution log found"
+          fi
