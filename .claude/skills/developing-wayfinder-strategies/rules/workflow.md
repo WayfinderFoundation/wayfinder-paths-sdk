@@ -23,7 +23,7 @@ Notes:
 
 For complex fund-moving flows (multi-step swaps, lending loops), run at least one **forked dry-run scenario** first:
 - Use `--gorlami` on `wayfinder_paths/run_strategy.py`
-- See `SIMULATION.md` and load `/simulation-dry-run`
+- Load `/simulation-dry-run` for setup and examples
 
 ## One-off execution (Claude Code)
 

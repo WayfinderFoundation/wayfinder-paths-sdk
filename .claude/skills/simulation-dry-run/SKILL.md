@@ -19,5 +19,4 @@ Use this skill when you are:
 - [rules/script-pattern.md](rules/script-pattern.md) - Recommended CLI + `gorlami_fork(...)` pattern
 - [rules/gotchas.md](rules/gotchas.md) - Common fork-mode failures and mitigations
 
-Also see: `SIMULATION.md` (repo doc).
 

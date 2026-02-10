@@ -225,7 +225,7 @@ poetry run python wayfinder_paths/run_strategy.py --script .wayfinder_runs/my_fl
 
 **Scope:** Vnets fork EVM chains (Base, Arbitrum, Ethereum, etc.) only. Off-chain or non-EVM protocols like Hyperliquid **cannot** be simulated — dry-runs only apply to on-chain EVM transactions.
 
-Uses your existing Wayfinder API key — no extra config needed. See `SIMULATION.md` for full details.
+Uses your existing Wayfinder API key — no extra config needed. See the `/simulation-dry-run` skill for full details.
 
 ## Claude MCP Integration
 

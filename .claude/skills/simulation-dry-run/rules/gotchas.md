@@ -16,9 +16,13 @@ Complex router/multicall transactions may fail gas estimation on forks.
 Forks often won’t produce additional blocks. Waiting for “3 confirmations” can hang.
 - Use 0 confirmations in fork mode (still wait for the receipt).
 
-## Make sure you’re on the fork
+## Make sure you're on the fork
 
 Before sending transactions:
 - verify the RPC URL points at `.../fork/<id>`
 - require `--confirm-live` for real RPC usage
+
+## Cross-chain bridges
+
+The bridge relayer does not operate between forks. Seed destination balances manually after verifying the source tx succeeds. See `quickstart.md` section 4 for the pattern.
 

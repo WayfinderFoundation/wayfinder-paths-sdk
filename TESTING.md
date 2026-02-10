@@ -22,7 +22,7 @@ Unit tests catch regressions, but complex fund-moving flows (multi-step swaps, l
 
 These dry-runs are **virtual testnets** (forks) that preserve state across transactions, so you can validate end-to-end **sequential operations** against real EVM execution (not mocks).
 
-This repo supports fork-based dry-runs via Gorlami. See `SIMULATION.md` for setup and examples.
+This repo supports fork-based dry-runs via Gorlami. See the `/simulation-dry-run` skill for setup and examples.
 
 ## Testing Strategies
 

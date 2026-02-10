@@ -44,8 +44,8 @@ MCP server entrypoint:
 
 Simulation / scenario testing (vnet only):
 
-- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). These are EVM virtual testnets (vnets) that simulate **sequential on-chain operations** with real EVM state changes. Use `/simulation-dry-run` and see `SIMULATION.md`.
-- **Cross-chain:** For flows spanning multiple EVM chains, spin up a fork per chain. Execute the source tx on the source fork, seed the expected tokens on the destination fork (simulating bridge delivery), then continue on the destination fork. See `SIMULATION.md` for the pattern.
+- Before broadcasting complex fund-moving flows live, run at least one forked **dry-run scenario** (Gorlami). These are EVM virtual testnets (vnets) that simulate **sequential on-chain operations** with real EVM state changes. Use `/simulation-dry-run` for full details.
+- **Cross-chain:** For flows spanning multiple EVM chains, spin up a fork per chain. Execute the source tx on the source fork, seed the expected tokens on the destination fork (simulating bridge delivery), then continue on the destination fork. See `/simulation-dry-run` for the pattern.
 - **Scope:** Vnets only cover EVM chains (Base, Arbitrum, etc.). Off-chain or non-EVM protocols like Hyperliquid **cannot** be simulated — dry-runs only apply to on-chain EVM transactions.
 
 Safety defaults:
@@ -297,7 +297,7 @@ amount_wei = str(to_erc20_raw(10.0, decimals=6))  # USDC has 6 decimals
 quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", amount=amount_wei, ...)
 ```
 
-**7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. See the cross-chain section in `SIMULATION.md`.
+**7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
 **8. Adapter read methods return `(ok, data)` tuples — always destructure**
 
