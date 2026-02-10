@@ -96,3 +96,10 @@ def get_api_key() -> str | None:
     if api_key and isinstance(api_key, str):
         return api_key.strip()
     return os.environ.get("WAYFINDER_API_KEY")
+
+
+_GORLAMI_PATH = "/blockchain/gorlami"
+
+
+def get_gorlami_base_url() -> str:
+    return f"{get_api_base_url().rstrip('/')}{_GORLAMI_PATH}"

@@ -19,6 +19,12 @@ Notes:
 - `config.json` is gitignored; treat it as local runtime state.
 - Strategy wallet lookup is label-based: `config.json.wallets[*].label == <strategy directory name>`.
 
+## Scenario testing (dry-run) before live
+
+For complex fund-moving flows (multi-step swaps, lending loops), run at least one **forked dry-run scenario** first:
+- Use `--gorlami` on `wayfinder_paths/run_strategy.py`
+- Load `/simulation-dry-run` for setup and examples
+
 ## One-off execution (Claude Code)
 
 If the user wants **immediate execution** (not a reusable strategy):

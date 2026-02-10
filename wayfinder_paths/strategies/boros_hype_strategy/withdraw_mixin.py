@@ -210,7 +210,8 @@ class BorosHypeWithdrawMixin:
                 if cross_hype_wei > int(0.001 * 1e18):
                     # IMPORTANT: Use raw integer balances to avoid float rounding up
                     # and triggering a Boros revert on gas estimation.
-                    withdraw_native = int(cross_hype_wei)  # HYPE native decimals (18)
+                    # HYPE native decimals (18)
+                    withdraw_native = int(cross_hype_wei)
 
                     (
                         ok_hype0,
@@ -825,7 +826,8 @@ class BorosHypeWithdrawMixin:
                         return False, f"Failed to sell HL spot HYPE: {res_sell}"
                     logger.info(f"Sold {rounded_size:.4f} HYPE to USDC on HL spot")
                     sold_hl_spot_hype = True
-                    await asyncio.sleep(10)  # HL spot trades need time to clear hold
+                    # HL spot trades need time to clear hold
+                    await asyncio.sleep(10)
 
             # Close any remaining perp short (use 0.001 threshold to catch dust)
             if current_short_size > 0.001:
@@ -879,11 +881,7 @@ class BorosHypeWithdrawMixin:
         # ─────────────────────────────────────────────────────────────────
         # STEP 7: Move all USDC from spot to perp margin (poll until cleared)
         # ─────────────────────────────────────────────────────────────────
-        usdc_sz_decimals = await self.hyperliquid_adapter.get_spot_token_sz_decimals(
-            "USDC"
-        )
-        if usdc_sz_decimals is None:
-            usdc_sz_decimals = 2
+        usdc_sz_decimals = 8
 
         spot_transfer_succeeded = False
         did_transfer_spot_usdc_to_perp = False

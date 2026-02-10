@@ -39,6 +39,21 @@ if success:
     print(f"Address: {data['address']}")
 ```
 
+Notes:
+- When querying by **address**, pass `chain_id` when possible.
+- If the Wayfinder token API does not recognize an address query, `get_token(...)` will best-effort fall back to reading ERC20 metadata directly from chain (symbol/name/decimals).
+
+### get_token_onchain
+
+Read ERC20 metadata (symbol/name/decimals) directly from chain.
+
+```python
+success, data = await adapter.get_token_onchain(
+  "0x833589fCD6eDb6E08f4c7C32d4f71b54bdA02913",
+  chain_id=8453,
+)
+```
+
 ### get_token_price
 
 Get current price data for a token.

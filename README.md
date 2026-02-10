@@ -209,6 +209,25 @@ Runner state (SQLite + per-run logs) is stored in `./.wayfinder/runner/`.
 
 For architecture/extensibility notes (e.g. future Docker/VM runner), see `RUNNER_ARCHITECTURE.md`.
 
+## Simulation / Dry-Runs (virtual testnets)
+
+Before broadcasting complex fund-moving flows, you can run them on a **virtual testnet** (vnet) first. The SDK integrates with **Gorlami**, Wayfinder's fork service, which creates a temporary EVM fork where each step updates on-chain state for the next — without risking real funds.
+
+```bash
+# Dry-run a strategy on a Base fork
+poetry run python wayfinder_paths/run_strategy.py moonwell_wsteth_loop_strategy \
+  --action deposit --main-token-amount 100 --gas-token-amount 0.01 \
+  --gorlami --chain-id 8453
+
+# Dry-run a local script
+poetry run python wayfinder_paths/run_strategy.py --script .wayfinder_runs/my_flow.py \
+  --gorlami --chain-id 8453
+```
+
+**Scope:** Vnets fork EVM chains (Base, Arbitrum, Ethereum, etc.) only. Off-chain or non-EVM protocols like Hyperliquid **cannot** be simulated — dry-runs only apply to on-chain EVM transactions.
+
+Uses your existing Wayfinder API key — no extra config needed. See the `/simulation-dry-run` skill for full details.
+
 ## Claude MCP Integration
 
 The repo includes an MCP server for Claude Code (see `.mcp.json`).

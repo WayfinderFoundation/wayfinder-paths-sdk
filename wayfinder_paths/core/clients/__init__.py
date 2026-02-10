@@ -1,5 +1,6 @@
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT, BalanceClient
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT, BRAPClient
+from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
 from wayfinder_paths.core.clients.HyperlendClient import (
     HYPERLEND_CLIENT,
     HyperlendClient,
@@ -40,4 +41,5 @@ __all__ = [
     "LedgerClientProtocol",
     "PoolClientProtocol",
     "BRAPClientProtocol",
+    "GorlamiTestnetClient",
 ]

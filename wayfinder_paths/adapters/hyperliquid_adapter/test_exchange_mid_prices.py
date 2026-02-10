@@ -3,12 +3,24 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.adapters.hyperliquid_adapter.exchange import Exchange
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 
 
 class _InfoStub(SimpleNamespace):
     def all_mids(self):
         return {"HYPE": "1.0"}
+
+    def post(self, url_path, payload=None):
+        if isinstance(payload, dict):
+            req_type = payload.get("type", "")
+            if req_type == "allMids":
+                return {"HYPE": "1.0"}
+            if req_type == "maxBuilderFee":
+                return 0
+        return {"status": "ok"}
+
+    def query_user_dex_abstraction_state(self, user):
+        return True
 
     @property
     def asset_to_sz_decimals(self):
@@ -19,25 +31,31 @@ class _InfoStub(SimpleNamespace):
         return {7: "HYPE"}
 
 
-class TestExchangeMidPriceFetch:
+class TestAdapterMidPriceFetch:
     @pytest.mark.asyncio
     async def test_place_market_order_uses_all_mids(self):
         info_stub = _InfoStub()
-        with patch(
-            "wayfinder_paths.adapters.hyperliquid_adapter.exchange.get_info",
-            return_value=info_stub,
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+                return_value=info_stub,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
+                return_value=[""],
+            ),
         ):
-            ex = Exchange(
-                sign_callback=AsyncMock(return_value="0x"),
-                signing_type="eip712",
+            adapter = HyperliquidAdapter(
+                config={},
+                sign_callback=AsyncMock(return_value="0x" + "00" * 65),
             )
 
             async def _no_broadcast(action, address):
-                return action
+                return {"status": "ok", "action": action}
 
-            ex.sign_and_broadcast_hypecore = _no_broadcast
+            adapter._sign_and_broadcast_hypecore = _no_broadcast
 
-            action = await ex.place_market_order(
+            success, result = await adapter.place_market_order(
                 asset_id=7,
                 is_buy=True,
                 slippage=0.01,
@@ -45,6 +63,7 @@ class TestExchangeMidPriceFetch:
                 address="0xabc",
             )
 
+            action = result["action"]
             assert action["type"] == "order"
             assert action["orders"][0]["a"] == 7
             assert action["orders"][0]["b"] is True
