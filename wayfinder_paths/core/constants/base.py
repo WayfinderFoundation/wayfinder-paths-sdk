@@ -45,3 +45,22 @@ GAS_ALIASES = {
     "hyperliquid",
     "plasma",
 }
+
+
+NATIVE_COINGECKO_IDS = {
+    "ethereum",
+    "polygon-ecosystem-token",
+    "avalanche-2",
+    "binancecoin",
+    "hyperliquid",
+    "plasma",
+}
+
+NATIVE_GAS_SYMBOLS = {
+    "eth",
+    "pol",
+    "avax",
+    "bnb",
+    "hype",
+    "xpl"
+}

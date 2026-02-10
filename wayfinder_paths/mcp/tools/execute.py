@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.base import GAS_ALIASES
+from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS_SYMBOLS
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -157,7 +157,7 @@ def _normalize_token_query(query: str) -> str:
 def _is_gas_token(meta: dict[str, Any]) -> bool:
     asset_id = str(meta.get("asset_id") or "").lower()
     symbol = str(meta.get("symbol") or "").lower()
-    return asset_id in GAS_ALIASES or symbol in GAS_ALIASES
+    return asset_id in NATIVE_COINGECKO_IDS or symbol in NATIVE_GAS_SYMBOLS
 
 
 def _split_asset_chain(query: str) -> tuple[str, str] | None:
@@ -175,7 +175,7 @@ async def _resolve_token_meta(query: str) -> tuple[str, dict[str, Any]]:
     split = _split_asset_chain(q)
     if split:
         asset, chain_code = split
-        if asset in GAS_ALIASES:
+        if asset in NATIVE_COINGECKO_IDS or asset in NATIVE_GAS_SYMBOLS:
             try:
                 gas_meta = await TOKEN_CLIENT.get_gas_token(chain_code)
                 if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
