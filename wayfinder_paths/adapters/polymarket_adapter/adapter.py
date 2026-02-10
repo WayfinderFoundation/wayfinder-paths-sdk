@@ -1637,26 +1637,18 @@ class PolymarketAdapter(BaseAdapter):
         if to_checksum_address(collateral) == to_checksum_address(
             POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
         ):
-            await self._settle_adapter_collateral(holder_addr, sign_cb)
+            shares = await get_token_balance(
+                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, int(self.chain_id), holder_addr
+            )
+            if int(shares) > 0:
+                unwrap_tx = await encode_call(
+                    target=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                    abi=TOKEN_UNWRAP_ABI,
+                    fn_name="unwrap",
+                    args=[holder_addr, int(shares)],
+                    from_address=holder_addr,
+                    chain_id=int(self.chain_id),
+                )
+                await send_transaction(unwrap_tx, sign_cb)
 
         return True, {"tx_hash": tx_hash, "path": path}
-
-    async def _settle_adapter_collateral(self, holder: str, sign_cb) -> None:
-        try:
-            shares = await get_token_balance(
-                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, int(self.chain_id), holder
-            )
-        except Exception:
-            return
-        if int(shares) <= 0:
-            return
-
-        tx = await encode_call(
-            target=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-            abi=TOKEN_UNWRAP_ABI,
-            fn_name="unwrap",
-            args=[holder, int(shares)],
-            from_address=holder,
-            chain_id=int(self.chain_id),
-        )
-        await send_transaction(tx, sign_cb)
