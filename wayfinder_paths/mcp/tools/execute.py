@@ -107,7 +107,6 @@ def _addr_lower(addr: str | None) -> str | None:
     a = str(addr).strip()
     return a.lower() if a else None
 
-
 def _sanitize_for_json(obj: Any) -> Any:
     if hasattr(obj, "hex") and callable(obj.hex):
         return obj.hex()
@@ -488,6 +487,8 @@ async def execute(
 
     if req.kind == "send":
         recipient = normalize_address(req.recipient)
+        if not recipient:
+            raise ValueError("Recipient address is required for send")
         token_q = str(req.token or "").strip()
         response: dict[str, Any] = {
             "kind": req.kind,

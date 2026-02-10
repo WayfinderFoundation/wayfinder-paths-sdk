@@ -166,6 +166,8 @@ class BalanceAdapter(BaseAdapter):
     ) -> tuple[bool, str]:
         token_info = await TOKEN_CLIENT.get_token_details(token_id)
         chain_id = resolve_chain_id(token_info)
+        if chain_id is None:
+            return False, "Could not resolve chain_id from token"
         tx = await build_send_transaction(
             from_address=from_wallet["address"],
             to_address=to_address,
@@ -189,6 +191,8 @@ class BalanceAdapter(BaseAdapter):
     ) -> tuple[bool, str]:
         token_info = await TOKEN_CLIENT.get_token_details(token_id)
         chain_id = resolve_chain_id(token_info)
+        if chain_id is None:
+            return False, "Could not resolve chain_id from token"
         decimals = token_info.get("decimals", 18)
         raw_amount = int(amount * (10**decimals))
 
