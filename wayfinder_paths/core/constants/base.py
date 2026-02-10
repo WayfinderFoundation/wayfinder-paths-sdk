@@ -38,11 +38,4 @@ NATIVE_COINGECKO_IDS = {
     "plasma",
 }
 
-NATIVE_GAS_SYMBOLS = {
-    "eth",
-    "pol",
-    "avax",
-    "bnb",
-    "hype",
-    "xpl"
-}
+NATIVE_GAS_SYMBOLS = {"eth", "pol", "avax", "bnb", "hype", "xpl"}
