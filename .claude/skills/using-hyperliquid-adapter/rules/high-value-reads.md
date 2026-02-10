@@ -55,7 +55,7 @@ Use one of:
 - Perp account state: `HyperliquidAdapter.get_user_state(address)`
 - Spot balances: `HyperliquidAdapter.get_spot_user_state(address)`
 - Orders/fills:
-  - `get_open_orders(address)`
-  - `get_frontend_open_orders(address)` (includes trigger orders)
+  - `get_frontend_open_orders(address)` (rich response: order type, trigger info, cloid, original size, etc.)
+  - `get_open_orders(address)` (delegates to `get_frontend_open_orders`)
   - `get_user_fills(address)`
   - `get_order_status(address, order_id)`

@@ -219,8 +219,8 @@ class BasisSnapshotMixin:
             funding_data, candle_data = [], []
 
         hourly_funding = [float(x.get("fundingRate", 0.0)) for x in funding_data]
-        closes = [float(c.get("c", 0)) for c in candle_data if c.get("c")]
-        highs = [float(c.get("h", 0)) for c in candle_data if c.get("h")]
+        closes = [float(c_val) for c in candle_data if (c_val := c.get("c"))]
+        highs = [float(h_val) for c in candle_data if (h_val := c.get("h"))]
 
         safe_map: dict[str, dict[str, Any]] = {}
         depth_checks = best.get("depth_checks") or {}
@@ -447,8 +447,8 @@ class BasisSnapshotMixin:
                 continue
 
             hourly_funding = [float(x.get("fundingRate", 0.0)) for x in funding_data]
-            closes = [float(c.get("c", 0)) for c in candle_data if c.get("c")]
-            highs = [float(c.get("h", 0)) for c in candle_data if c.get("h")]
+            closes = [float(c_val) for c in candle_data if (c_val := c.get("c"))]
+            highs = [float(h_val) for c in candle_data if (h_val := c.get("h"))]
 
             n_ok = min(len(hourly_funding), len(closes), len(highs))
             if n_ok < (lookback_days * 24 - 48):
@@ -817,8 +817,8 @@ class BasisSnapshotMixin:
             return None
 
         hourly_funding = [float(x.get("fundingRate", 0.0)) for x in funding_data]
-        closes = [float(c.get("c", 0)) for c in candle_data if c.get("c")]
-        highs = [float(c.get("h", 0)) for c in candle_data if c.get("h")]
+        closes = [float(c_val) for c in candle_data if (c_val := c.get("c"))]
+        highs = [float(h_val) for c in candle_data if (h_val := c.get("h"))]
 
         n_ok = min(len(hourly_funding), len(closes), len(highs))
         if n_ok < (int(lookback_days) * 24 - 48):

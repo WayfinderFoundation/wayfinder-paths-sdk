@@ -51,7 +51,7 @@ The `config.json` file has three main sections:
 | `api_key` | Yes | Wayfinder API key (sent as `X-API-KEY` header) |
 | `api_base_url` | No | API endpoint (default: `https://api.wayfinder.ai`) |
 
-The API key is automatically loaded and included in all API requests. You don't need to pass it explicitly to strategies or clients.
+The API key is automatically loaded and included in all API requests (including Gorlami dry-runs). You don't need to pass it explicitly to strategies or clients.
 
 ## Strategy Configuration
 

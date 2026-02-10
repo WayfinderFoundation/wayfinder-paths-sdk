@@ -114,9 +114,10 @@ def _chain_id_from_token(meta: dict[str, Any]) -> int | None:
     # Token payloads often include an internal/db `id` field. Only accept:
     # - meta["chain_id"] (preferred)
     # - meta["chain"]["chain_id"] / ["chainId"] / ["id"]
-    if meta.get("chain_id") is not None:
+    chain_id_val = meta.get("chain_id")
+    if chain_id_val is not None:
         try:
-            return int(meta.get("chain_id"))
+            return int(chain_id_val)
         except (TypeError, ValueError):
             return None
 
@@ -125,10 +126,11 @@ def _chain_id_from_token(meta: dict[str, Any]) -> int | None:
         return None
 
     for key in ("chain_id", "chainId", "id"):
-        if chain.get(key) is None:
+        val = chain.get(key)
+        if val is None:
             continue
         try:
-            return int(chain.get(key))
+            return int(val)
         except (TypeError, ValueError):
             return None
 
@@ -616,6 +618,8 @@ async def execute(
 
     if req.kind == "send":
         recipient = normalize_address(req.recipient)
+        if not recipient:
+            raise ValueError("Recipient address is required for send")
         token_q = str(req.token or "").strip()
         is_native = token_q.lower() == "native"
         response: dict[str, Any] = {
