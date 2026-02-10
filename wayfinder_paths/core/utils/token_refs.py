@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-import re
+from eth_utils import is_address
 
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
-
-_EVM_ADDRESS_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
 
 
 def looks_like_evm_address(value: str | None) -> bool:
     if value is None:
         return False
-    return bool(_EVM_ADDRESS_RE.match(str(value).strip()))
+
+    raw = str(value).strip()
+    if not raw:
+        return False
+
+    # Avoid false positives for token slugs by requiring a 0x/0X prefix.
+    if not raw.startswith(("0x", "0X")):
+        return False
+
+    return bool(is_address(raw))
 
 
 def _parse_chain_part(value: str) -> int | None:
