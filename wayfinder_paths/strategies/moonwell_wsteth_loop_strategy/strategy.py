@@ -362,8 +362,8 @@ class MoonwellWstethLoopStrategy(Strategy):
             return (raw / (10**dec)) * float(price)
 
         wallet_usd = (
-            _usd(wallet_eth, eth_price, eth_dec)
-            + _usd(wallet_weth, weth_price, weth_dec)
+            # wallet_eth excluded from wallet value as it is only used for gas
+            _usd(wallet_weth, weth_price, weth_dec)
             + _usd(wallet_wsteth, wsteth_price, wsteth_dec)
             + _usd(wallet_usdc, usdc_price, usdc_dec)
         )
