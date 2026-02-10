@@ -10,11 +10,13 @@ import asyncio
 import math
 import time
 from decimal import Decimal, getcontext
-from typing import TypedDict
+from typing import Any, TypedDict
 
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.uniswap_v3_abi import UNISWAP_V3_POOL_ABI
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 getcontext().prec = 64
 
@@ -74,6 +76,13 @@ def band_from_bps(mid_price: float, bps_width: float) -> tuple[float, float]:
     lo = mid_price * (1 - bps_width / 10_000)
     hi = mid_price * (1 + bps_width / 10_000)
     return lo, hi
+
+
+def ticks_for_range(current_tick: int, bps: int, spacing: int) -> tuple[int, int]:
+    delta = math.floor(math.log(1 + bps / 10_000, TICK_BASE))
+    tick_lower = round_tick_to_spacing(current_tick - delta, spacing)
+    tick_upper = round_tick_to_spacing(current_tick + delta, spacing)
+    return tick_lower, tick_upper
 
 
 def amt0_for_liq(sqrt_a: int, sqrt_b: int, liquidity: int) -> int:
@@ -308,6 +317,24 @@ async def find_pool(
     if not addr or str(addr).lower() == ZERO_ADDRESS.lower():
         return None
     return to_checksum_address(addr)
+
+
+async def get_pool_slot0(
+    pool_address: str,
+    chain_id: int,
+    token0_decimals: int,
+    token1_decimals: int,
+) -> dict[str, Any]:
+    async with web3_from_chain_id(chain_id) as w3:
+        pool = w3.eth.contract(
+            address=to_checksum_address(pool_address), abi=UNISWAP_V3_POOL_ABI
+        )
+        slot0 = await pool.functions.slot0().call()
+
+    sqrt_price_x96 = slot0[0]
+    tick = slot0[1]
+    price = sqrt_price_x96_to_price(sqrt_price_x96, token0_decimals, token1_decimals)
+    return {"sqrt_price_x96": sqrt_price_x96, "tick": tick, "price": price}
 
 
 def collect_params(token_id: int, recipient: str) -> tuple:

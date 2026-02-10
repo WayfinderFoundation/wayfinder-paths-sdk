@@ -330,3 +330,32 @@ class TestTickSpacing:
         adapter = _make_adapter()
         with pytest.raises(ValueError, match="Unknown fee tier"):
             adapter._tick_spacing_for_fee(999)
+
+
+class TestTicksForRange:
+    def test_symmetric_range(self):
+        from wayfinder_paths.core.utils.uniswap_v3_math import ticks_for_range
+
+        lo, hi = ticks_for_range(current_tick=-200200, bps=500, spacing=10)
+        assert lo < -200200 < hi
+        assert lo % 10 == 0
+        assert hi % 10 == 0
+
+    def test_range_width_matches_bps(self):
+        from wayfinder_paths.core.utils.uniswap_v3_math import (
+            tick_to_price,
+            ticks_for_range,
+        )
+
+        lo, hi = ticks_for_range(current_tick=0, bps=500, spacing=1)
+        price_lo = tick_to_price(lo)
+        price_hi = tick_to_price(hi)
+        # ±5% → ratio should be ~1.05/0.95 ≈ 1.105
+        assert 1.09 < price_hi / price_lo < 1.11
+
+    def test_respects_spacing(self):
+        from wayfinder_paths.core.utils.uniswap_v3_math import ticks_for_range
+
+        lo, hi = ticks_for_range(current_tick=-200200, bps=500, spacing=60)
+        assert lo % 60 == 0
+        assert hi % 60 == 0
