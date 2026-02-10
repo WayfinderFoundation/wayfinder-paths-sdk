@@ -52,4 +52,10 @@ Fork funding controls (optional):
 Examples in this repo:
 - `scripts/moonwell_dry_run.py` (Moonwell `deposit -> update` on a Base fork)
 
-See `SIMULATION.md` for details.
+## 4) Cross-chain simulation
+
+For flows that span multiple chains (e.g. bridge + swap), spin up **forks for each chain**. Execute the source chain tx on one fork, then seed the expected tokens on the destination fork (simulating bridge delivery) and continue there. Nest multiple `gorlami_fork()` context managers — each overrides `web3_from_chain_id` for its chain only.
+
+The bridge relayer does not run between forks — manually seed what the bridge would deliver using `set_erc20_balance` after verifying the source tx succeeds.
+
+See `SIMULATION.md` for full details and a cross-chain script example.
