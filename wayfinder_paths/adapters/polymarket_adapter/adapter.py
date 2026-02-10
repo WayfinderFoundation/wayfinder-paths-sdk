@@ -29,10 +29,8 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
     POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-    POLYMARKET_APPROVAL_TARGETS,
     POLYMARKET_BRIDGE_BASE_URL,
     POLYMARKET_CLOB_BASE_URL,
-    POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_GAMMA_BASE_URL,
     TOKEN_UNWRAP_ABI,
@@ -81,12 +79,12 @@ async def _try_brap_swap_polygon(
     """
     try:
         quote = await BRAP_CLIENT.get_quote(
-            from_token=str(from_token_address),
-            to_token=str(to_token_address),
+            from_token=from_token_address,
+            to_token=to_token_address,
             from_chain=POLYGON_CHAIN_ID,
             to_chain=POLYGON_CHAIN_ID,
             from_wallet=to_checksum_address(from_address),
-            from_amount=str(int(amount_base_unit)),
+            from_amount=str(amount_base_unit),
         )
         best = quote["best_quote"]
         calldata = best["calldata"]
@@ -105,7 +103,7 @@ async def _try_brap_swap_polygon(
         spender = tx.get("to")
         if spender:
             ok_appr, appr = await ensure_allowance(
-                token_address=str(from_token_address),
+                token_address=from_token_address,
                 owner=to_checksum_address(from_address),
                 spender=str(spender),
                 amount=int(best["input_amount"]),
@@ -123,10 +121,10 @@ async def _try_brap_swap_polygon(
             "tx_hash": swap_tx_hash,
             "approve_tx_hash": approve_tx_hash,
             "from_chain_id": POLYGON_CHAIN_ID,
-            "from_token_address": str(from_token_address),
+            "from_token_address": from_token_address,
             "to_chain_id": POLYGON_CHAIN_ID,
-            "to_token_address": str(to_token_address),
-            "amount_base_unit": str(int(amount_base_unit)),
+            "to_token_address": to_token_address,
+            "amount_base_unit": str(amount_base_unit),
             "provider": best.get("provider"),
             "input_amount": best.get("input_amount"),
             "output_amount": best.get("output_amount"),
@@ -137,12 +135,6 @@ async def _try_brap_swap_polygon(
 
 
 class PolymarketAdapter(BaseAdapter):
-    """Polymarket adapter (Gamma + CLOB + Data + Bridge).
-
-    Read-only endpoints are public. Trading endpoints are handled in a later
-    section of this adapter (requires wallet + approvals).
-    """
-
     adapter_type = "POLYMARKET"
 
     def __init__(
@@ -201,13 +193,13 @@ class PolymarketAdapter(BaseAdapter):
         ascending: bool | None = None,
         **filters: Any,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        params: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if closed is not None:
-            params["closed"] = str(bool(closed)).lower()
+            params["closed"] = str(closed).lower()
         if order:
-            params["order"] = str(order)
+            params["order"] = order
         if ascending is not None:
-            params["ascending"] = str(bool(ascending)).lower()
+            params["ascending"] = str(ascending).lower()
         params.update({k: v for k, v in filters.items() if v is not None})
 
         try:
@@ -231,13 +223,13 @@ class PolymarketAdapter(BaseAdapter):
         ascending: bool | None = None,
         **filters: Any,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        params: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if closed is not None:
-            params["closed"] = str(bool(closed)).lower()
+            params["closed"] = str(closed).lower()
         if order:
-            params["order"] = str(order)
+            params["order"] = order
         if ascending is not None:
-            params["ascending"] = str(bool(ascending)).lower()
+            params["ascending"] = str(ascending).lower()
         params.update({k: v for k, v in filters.items() if v is not None})
 
         try:
@@ -288,9 +280,9 @@ class PolymarketAdapter(BaseAdapter):
         **kwargs: Any,
     ) -> tuple[bool, dict[str, Any] | str]:
         params: dict[str, Any] = {
-            "q": str(q),
-            "limit_per_type": int(limit_per_type),
-            "page": int(page),
+            "q": q,
+            "limit_per_type": limit_per_type,
+            "page": page,
             "keep_closed_markets": "1" if keep_closed_markets else "0",
         }
         params.update({k: v for k, v in kwargs.items() if v is not None})
@@ -319,8 +311,8 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         ok, data = await self.public_search(
             q=query,
-            limit_per_type=max(int(limit), 1),
-            page=int(page),
+            limit_per_type=max(limit, 1),
+            page=page,
             keep_closed_markets=keep_closed_markets,
         )
         if not ok:
@@ -344,11 +336,10 @@ class PolymarketAdapter(BaseAdapter):
             return True, markets[:limit]
 
         def score(m: dict[str, Any]) -> float:
-            q = str(query)
             return max(
-                _fuzzy_score(q, str(m.get("question") or "")),
-                _fuzzy_score(q, str(m.get("slug") or "")),
-                _fuzzy_score(q, str((m.get("_event") or {}).get("title") or "")),
+                _fuzzy_score(query, str(m.get("question") or "")),
+                _fuzzy_score(query, str(m.get("slug") or "")),
+                _fuzzy_score(query, str((m.get("_event") or {}).get("title") or "")),
             )
 
         markets.sort(key=score, reverse=True)
@@ -359,7 +350,7 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             res = await self._gamma_http.get(
-                "/markets", params={"condition_ids": str(condition_id)}
+                "/markets", params={"condition_ids": condition_id}
             )
             res.raise_for_status()
             data = res.json()
@@ -382,7 +373,7 @@ class PolymarketAdapter(BaseAdapter):
             return False, "Market missing clobTokenIds (not tradable on CLOB)"
 
         if isinstance(outcome, int):
-            idx = int(outcome)
+            idx = outcome
         else:
             want = _normalize_text(outcome)
             idx = -1
@@ -400,7 +391,7 @@ class PolymarketAdapter(BaseAdapter):
                         default=None,
                     )
                     if best and _fuzzy_score(want, str(best[1])) >= 0.5:
-                        idx = int(best[0])
+                        idx = best[0]
             else:
                 if want in {"yes", "no"} and len(token_ids) >= 2:
                     idx = 0 if want == "yes" else 1
@@ -429,7 +420,7 @@ class PolymarketAdapter(BaseAdapter):
         return await self.place_market_order(
             token_id=token_id,
             side="BUY",
-            amount=float(amount_usdc),
+            amount=amount_usdc,
         )
 
     async def cash_out_prediction(
@@ -439,7 +430,6 @@ class PolymarketAdapter(BaseAdapter):
         outcome: str | int = "YES",
         shares: float = 1.0,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Sell shares back to the orderbook (market order)."""
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
             return False, market
@@ -451,7 +441,7 @@ class PolymarketAdapter(BaseAdapter):
         return await self.place_market_order(
             token_id=token_id,
             side="SELL",
-            amount=float(shares),
+            amount=shares,
         )
 
     async def get_market_prices_history(
@@ -489,7 +479,7 @@ class PolymarketAdapter(BaseAdapter):
         try:
             res = await self._clob_http.get(
                 "/price",
-                params={"token_id": str(token_id), "side": str(side).upper()},
+                params={"token_id": token_id, "side": side},
             )
             res.raise_for_status()
             data = res.json()
@@ -503,7 +493,7 @@ class PolymarketAdapter(BaseAdapter):
         self, *, token_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            res = await self._clob_http.get("/book", params={"token_id": str(token_id)})
+            res = await self._clob_http.get("/book", params={"token_id": token_id})
             res.raise_for_status()
             data = res.json()
             if not isinstance(data, dict):
@@ -516,7 +506,7 @@ class PolymarketAdapter(BaseAdapter):
         self, *, token_ids: list[str]
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
-            payload = [{"token_id": str(t)} for t in token_ids]
+            payload = [{"token_id": t} for t in token_ids]
             res = await self._clob_http.post("/books", json=payload)
             res.raise_for_status()
             data = res.json()
@@ -535,15 +525,15 @@ class PolymarketAdapter(BaseAdapter):
         end_ts: int | None = None,
         fidelity: int | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
-        params: dict[str, Any] = {"market": str(token_id)}
+        params: dict[str, Any] = {"market": token_id}
         if interval:
-            params["interval"] = str(interval)
+            params["interval"] = interval
         if start_ts is not None:
-            params["startTs"] = int(start_ts)
+            params["startTs"] = start_ts
         if end_ts is not None:
-            params["endTs"] = int(end_ts)
+            params["endTs"] = end_ts
         if fidelity is not None:
-            params["fidelity"] = int(fidelity)
+            params["fidelity"] = fidelity
 
         try:
             res = await self._clob_http.get("/prices-history", params=params)
@@ -568,8 +558,8 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         params = {
             "user": to_checksum_address(user),
-            "limit": int(limit),
-            "offset": int(offset),
+            "limit": limit,
+            "offset": offset,
             **{k: v for k, v in filters.items() if v is not None},
         }
         try:
@@ -592,8 +582,8 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         params = {
             "user": to_checksum_address(user),
-            "limit": int(limit),
-            "offset": int(offset),
+            "limit": limit,
+            "offset": offset,
             **{k: v for k, v in filters.items() if v is not None},
         }
         try:
@@ -614,7 +604,7 @@ class PolymarketAdapter(BaseAdapter):
         user: str | None = None,
         **filters: Any,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        params: dict[str, Any] = {"limit": int(limit), "offset": int(offset)}
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if user:
             params["user"] = to_checksum_address(user)
         params.update({k: v for k, v in filters.items() if v is not None})
@@ -654,12 +644,12 @@ class PolymarketAdapter(BaseAdapter):
         to_token_address: str = POLYGON_USDC_E_ADDRESS,
     ) -> tuple[bool, dict[str, Any] | str]:
         body = {
-            "fromAmountBaseUnit": str(from_amount_base_unit),
+            "fromAmountBaseUnit": from_amount_base_unit,
             "fromChainId": str(from_chain_id),
-            "fromTokenAddress": str(from_token_address),
+            "fromTokenAddress": from_token_address,
             "recipientAddress": to_checksum_address(recipient_address),
             "toChainId": str(to_chain_id),
-            "toTokenAddress": str(to_token_address),
+            "toTokenAddress": to_token_address,
         }
         try:
             res = await self._bridge_http.post("/quote", json=body)
@@ -696,7 +686,7 @@ class PolymarketAdapter(BaseAdapter):
         body = {
             "address": to_checksum_address(address),
             "toChainId": str(to_chain_id),
-            "toTokenAddress": str(to_token_address),
+            "toTokenAddress": to_token_address,
             "recipientAddr": to_checksum_address(recipient_addr),
         }
         try:
@@ -739,16 +729,16 @@ class PolymarketAdapter(BaseAdapter):
 
         rcpt = to_checksum_address(recipient_address)
         if (
-            int(from_chain_id) == POLYGON_CHAIN_ID
+            from_chain_id == POLYGON_CHAIN_ID
             and to_checksum_address(from_token_address)
             == to_checksum_address(POLYGON_USDC_ADDRESS)
             and rcpt == to_checksum_address(from_address)
         ):
             brap = await _try_brap_swap_polygon(
-                from_token_address=str(from_token_address),
+                from_token_address=from_token_address,
                 to_token_address=POLYGON_USDC_E_ADDRESS,
                 from_address=from_address,
-                amount_base_unit=int(base_units),
+                amount_base_unit=base_units,
                 signing_callback=sign_cb,
             )
             if brap:
@@ -767,17 +757,17 @@ class PolymarketAdapter(BaseAdapter):
         tx = await build_send_transaction(
             from_address=from_address,
             to_address=str(deposit_evm),
-            token_address=str(from_token_address),
-            chain_id=int(from_chain_id),
-            amount=int(base_units),
+            token_address=from_token_address,
+            chain_id=from_chain_id,
+            amount=base_units,
         )
         tx_hash = await send_transaction(tx, sign_cb)
 
         return True, {
             "method": "polymarket_bridge",
             "tx_hash": tx_hash,
-            "from_chain_id": int(from_chain_id),
-            "from_token_address": str(from_token_address),
+            "from_chain_id": from_chain_id,
+            "from_token_address": from_token_address,
             "deposit_address": str(deposit_evm),
             "amount_base_unit": str(base_units),
             "recipient_address": to_checksum_address(recipient_address),
@@ -809,9 +799,9 @@ class PolymarketAdapter(BaseAdapter):
         ):
             brap = await _try_brap_swap_polygon(
                 from_token_address=POLYGON_USDC_E_ADDRESS,
-                to_token_address=str(to_token_address),
+                to_token_address=to_token_address,
                 from_address=from_address,
-                amount_base_unit=int(base_units),
+                amount_base_unit=base_units,
                 signing_callback=sign_cb,
             )
             if brap:
@@ -835,7 +825,7 @@ class PolymarketAdapter(BaseAdapter):
             to_address=str(withdraw_evm),
             token_address=POLYGON_USDC_E_ADDRESS,
             chain_id=POLYGON_CHAIN_ID,
-            amount=int(base_units),
+            amount=base_units,
         )
         tx_hash = await send_transaction(tx, sign_cb)
 
@@ -847,7 +837,7 @@ class PolymarketAdapter(BaseAdapter):
             "withdraw_address": str(withdraw_evm),
             "amount_base_unit": str(base_units),
             "to_chain_id": str(to_chain_id),
-            "to_token_address": str(to_token_address),
+            "to_token_address": to_token_address,
             "recipient_addr": to_checksum_address(recipient_addr),
         }
 
@@ -873,7 +863,7 @@ class PolymarketAdapter(BaseAdapter):
 
     def _resolve_private_key(self) -> str:
         if self._private_key_hex:
-            return str(self._private_key_hex).removeprefix("0x")
+            return self._private_key_hex.removeprefix("0x")
         wallet = self._resolve_wallet()
         pk = wallet.get("private_key_hex") or wallet.get("private_key")
         if not pk:
@@ -909,13 +899,7 @@ class PolymarketAdapter(BaseAdapter):
         return from_address, sign_cb
 
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
-        if get_contract_config is None:
-            return {
-                "exchange": POLYMARKET_APPROVAL_TARGETS[1 if neg_risk else 0],
-                "collateral": POLYGON_USDC_E_ADDRESS,
-                "conditional_tokens": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
-            }
-        cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=bool(neg_risk))
+        cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=neg_risk)
         return {
             "exchange": str(cfg.exchange),
             "collateral": str(cfg.collateral),
@@ -937,7 +921,6 @@ class PolymarketAdapter(BaseAdapter):
         return self._clob_client  # type: ignore[return-value]
 
     async def ensure_api_creds(self) -> tuple[bool, dict[str, Any] | str]:
-        """Create/derive API creds and attach to the client (Level-2 auth)."""
         try:
             if self._api_creds_set:
                 return True, {"ok": True}
@@ -954,7 +937,6 @@ class PolymarketAdapter(BaseAdapter):
         *,
         also_approve_conditional_tokens_spender: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Ensure USDC.e + CTF approvals for Polymarket exchanges."""
         from_address, sign_cb = self._resolve_wallet_signer()
 
         cfg = self._contract_addrs(neg_risk=False)
@@ -1024,14 +1006,14 @@ class PolymarketAdapter(BaseAdapter):
             return False, msg
         try:
             order_args = OrderArgs(
-                token_id=str(token_id),
-                price=float(price),
-                size=float(size),
-                side=str(side),
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=side,
             )  # type: ignore[misc]
             order = await asyncio.to_thread(self.clob_client.create_order, order_args)
             resp = await asyncio.to_thread(
-                self.clob_client.post_order, order, "GTC", bool(post_only)
+                self.clob_client.post_order, order, "GTC", post_only
             )
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
@@ -1046,11 +1028,7 @@ class PolymarketAdapter(BaseAdapter):
         price: float | None = None,
         ensure_approvals: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Place a market order.
-
-        BUY amount: collateral ($) to spend.
-        SELL amount: shares to sell.
-        """
+        # BUY amount = collateral ($) to spend, SELL amount = shares to sell
         if ensure_approvals:
             ok_appr, appr = await self.ensure_onchain_approvals()
             if not ok_appr:
@@ -1061,10 +1039,10 @@ class PolymarketAdapter(BaseAdapter):
 
         try:
             order_args = MarketOrderArgs(  # type: ignore[misc]
-                token_id=str(token_id),
-                side=str(side),
-                amount=float(amount),
-                price=float(price or 0),
+                token_id=token_id,
+                side=side,
+                amount=amount,
+                price=price or 0.0,
             )
             order = await asyncio.to_thread(
                 self.clob_client.create_market_order, order_args
@@ -1081,7 +1059,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
-            resp = await asyncio.to_thread(self.clob_client.cancel, str(order_id))
+            resp = await asyncio.to_thread(self.clob_client.cancel, order_id)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1098,7 +1076,7 @@ class PolymarketAdapter(BaseAdapter):
             params = None
             if token_id:
                 # CLOB uses `asset_id` for the outcome token id returned by Gamma `clobTokenIds`.
-                params = OpenOrderParams(asset_id=str(token_id))  # type: ignore[misc]
+                params = OpenOrderParams(asset_id=token_id)  # type: ignore[misc]
             data = await asyncio.to_thread(self.clob_client.get_orders, params)
             if isinstance(data, list):
                 return True, data
@@ -1120,14 +1098,6 @@ class PolymarketAdapter(BaseAdapter):
         positions_limit: int = 500,
         max_positions_pages: int = 10,
     ) -> tuple[bool, dict[str, Any]]:
-        """Full Polymarket user state snapshot.
-
-        Includes:
-        - Positions (Data API) + aggregated PnL summary
-        - USDC / USDC.e balances on Polygon
-        - Open orders (CLOB, requires configured signing wallet)
-        - Optional recent activity / trades (Data API)
-        """
         addr = to_checksum_address(account)
         out: dict[str, Any] = {
             "protocol": "polymarket",
@@ -1151,18 +1121,18 @@ class PolymarketAdapter(BaseAdapter):
         async def _fetch_all_positions() -> tuple[bool, list[dict[str, Any]] | str]:
             rows: list[dict[str, Any]] = []
             offset = 0
-            for _ in range(max(1, int(max_positions_pages))):
+            for _ in range(max(1, max_positions_pages)):
                 ok_page, page = await self.get_positions(
-                    user=addr, limit=int(positions_limit), offset=int(offset)
+                    user=addr, limit=positions_limit, offset=offset
                 )
                 if not ok_page:
                     return False, page
                 if not page:
                     break
                 rows.extend(page)
-                if len(page) < int(positions_limit):
+                if len(page) < positions_limit:
                     break
-                offset += int(positions_limit)
+                offset += positions_limit
             return True, rows
 
         async def _fetch_balances() -> tuple[bool, dict[str, Any] | str]:
@@ -1174,14 +1144,14 @@ class PolymarketAdapter(BaseAdapter):
                 "usdc_e": {
                     "address": POLYGON_USDC_E_ADDRESS,
                     "decimals": 6,
-                    "amount_base_units": int(bal_usdce),
-                    "amount": float(bal_usdce) / 1_000_000,
+                    "amount_base_units": bal_usdce,
+                    "amount": bal_usdce / 1_000_000,
                 },
                 "usdc": {
                     "address": POLYGON_USDC_ADDRESS,
                     "decimals": 6,
-                    "amount_base_units": int(bal_usdc),
-                    "amount": float(bal_usdc) / 1_000_000,
+                    "amount_base_units": bal_usdc,
+                    "amount": bal_usdc / 1_000_000,
                 },
             }
 
@@ -1199,11 +1169,9 @@ class PolymarketAdapter(BaseAdapter):
         if include_orders:
             coros.append(_fetch_orders())
         if include_activity:
-            coros.append(
-                self.get_activity(user=addr, limit=int(activity_limit), offset=0)
-            )
+            coros.append(self.get_activity(user=addr, limit=activity_limit, offset=0))
         if include_trades:
-            coros.append(self.get_trades(user=addr, limit=int(trades_limit), offset=0))
+            coros.append(self.get_trades(user=addr, limit=trades_limit, offset=0))
 
         results = await asyncio.gather(*coros, return_exceptions=True)
 
@@ -1216,21 +1184,19 @@ class PolymarketAdapter(BaseAdapter):
                 ok_any = True
                 out["positions"] = positions
 
-                def _as_float(x: Any) -> float:
-                    try:
-                        return float(x)
-                    except Exception:
-                        return 0.0
+                # Data API returns PnL values as strings or None
+                def _pnl_float(x: Any) -> float:
+                    return float(x) if x is not None else 0.0
 
                 total_initial_value = sum(
-                    _as_float(p.get("initialValue")) for p in positions
+                    _pnl_float(p.get("initialValue")) for p in positions
                 )
                 total_current_value = sum(
-                    _as_float(p.get("currentValue")) for p in positions
+                    _pnl_float(p.get("currentValue")) for p in positions
                 )
-                total_cash_pnl = sum(_as_float(p.get("cashPnl")) for p in positions)
+                total_cash_pnl = sum(_pnl_float(p.get("cashPnl")) for p in positions)
                 total_realized_pnl = sum(
-                    _as_float(p.get("realizedPnl")) for p in positions
+                    _pnl_float(p.get("realizedPnl")) for p in positions
                 )
 
                 total_percent_pnl: float | None = None
@@ -1249,20 +1215,18 @@ class PolymarketAdapter(BaseAdapter):
 
                 out["positionsSummary"] = {
                     "count": len(positions),
-                    "redeemableCount": int(redeemable_count),
-                    "mergeableCount": int(mergeable_count),
-                    "negativeRiskCount": int(negative_risk_count),
+                    "redeemableCount": redeemable_count,
+                    "mergeableCount": mergeable_count,
+                    "negativeRiskCount": negative_risk_count,
                 }
 
                 out["pnl"] = {
-                    "totalInitialValue": float(total_initial_value),
-                    "totalCurrentValue": float(total_current_value),
-                    "totalCashPnl": float(total_cash_pnl),
-                    "totalRealizedPnl": float(total_realized_pnl),
-                    "totalUnrealizedPnl": float(total_cash_pnl - total_realized_pnl),
-                    "totalPercentPnl": float(total_percent_pnl)
-                    if total_percent_pnl is not None
-                    else None,
+                    "totalInitialValue": total_initial_value,
+                    "totalCurrentValue": total_current_value,
+                    "totalCashPnl": total_cash_pnl,
+                    "totalRealizedPnl": total_realized_pnl,
+                    "totalUnrealizedPnl": total_cash_pnl - total_realized_pnl,
+                    "totalPercentPnl": total_percent_pnl,
                 }
             else:
                 out["errors"]["positions"] = positions
@@ -1346,7 +1310,7 @@ class PolymarketAdapter(BaseAdapter):
             collection_id = await ctf.functions.getCollectionId(
                 parent_collection_id,
                 condition_id,
-                int(index_set),
+                index_set,
             ).call(block_identifier="pending")
             pos_id = await ctf.functions.getPositionId(
                 to_checksum_address(collateral),
@@ -1362,14 +1326,14 @@ class PolymarketAdapter(BaseAdapter):
                 abi=CONDITIONAL_TOKENS_ABI,
             )
             bal = await ctf.functions.balanceOf(
-                to_checksum_address(holder), int(position_id)
+                to_checksum_address(holder), position_id
             ).call(block_identifier="pending")
             return int(bal)
 
     async def _outcome_index_sets(self, *, condition_id: str) -> list[int]:
         try:
             res = await self._gamma_http.get(
-                "/markets", params={"condition_ids": str(condition_id)}
+                "/markets", params={"condition_ids": condition_id}
             )
             res.raise_for_status()
             data = res.json()
@@ -1501,10 +1465,10 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, path
 
-        collateral = str(path["collateral"])
-        parent = str(path["parentCollectionId"])
-        cond = str(path["conditionId"])
-        index_sets = list(path["indexSets"])
+        collateral = path["collateral"]
+        parent = path["parentCollectionId"]
+        cond = path["conditionId"]
+        index_sets = path["indexSets"]
 
         tx = await encode_call(
             target=self._contract_addrs(neg_risk=False)["conditional_tokens"],
@@ -1522,12 +1486,12 @@ class PolymarketAdapter(BaseAdapter):
             shares = await get_token_balance(
                 POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, POLYGON_CHAIN_ID, holder_addr
             )
-            if int(shares) > 0:
+            if shares > 0:
                 unwrap_tx = await encode_call(
                     target=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
                     abi=TOKEN_UNWRAP_ABI,
                     fn_name="unwrap",
-                    args=[holder_addr, int(shares)],
+                    args=[holder_addr, shares],
                     from_address=holder_addr,
                     chain_id=POLYGON_CHAIN_ID,
                 )
