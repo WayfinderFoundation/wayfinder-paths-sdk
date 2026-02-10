@@ -58,10 +58,11 @@ jobs:
           prompt: |
             Perform a codebase cleanup. You must create a new branch for any changes.
 
-            Focus on these three areas:
+            Focus on these four areas:
             1. **Redundant Comments:** Review code against patterns in Claude.MD. Remove comments that explain 'what' the code does if the code is self-documenting.
             2. **Inline Imports:** Identify and consolidate inline imports into top-level imports unless there is a specific performance reason to keep them.
             3. **Defensive Over-engineering:** Remove unnecessary guards, redundant type casts, or excessively defensive code that clutters logic without adding safety (you may check with curl or search to find http responses).
+            4. **Reusable Code:** Extract repeated or near-identical logic into shared helpers, utilities, or base-class methods to reduce duplication and improve maintainability.
 
             If changes are made:
             - Create a branch named 'maintenance/daily-cleanup-${{ github.run_id }}'
