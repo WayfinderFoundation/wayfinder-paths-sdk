@@ -28,7 +28,11 @@ from wayfinder_paths.core.constants.projectx_abi import (
     PROJECTX_POOL_ABI,
     PROJECTX_ROUTER_ABI,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance, is_native_token
+from wayfinder_paths.core.utils.tokens import (
+    ensure_allowance,
+    get_token_balance,
+    is_native_token,
+)
 from wayfinder_paths.core.utils.transaction import (
     send_transaction,
     wait_for_transaction_receipt,
@@ -992,12 +996,15 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             return [int(b) for b in balances]
 
     async def _balance(self, web3: AsyncWeb3, token_address: str) -> int:
-        checksum = to_checksum_address(token_address)
-        contract = web3.eth.contract(address=checksum, abi=ERC20_ABI)
-        bal = await contract.functions.balanceOf(self.owner).call(
-            block_identifier="pending"
+        return int(
+            await get_token_balance(
+                token_address,
+                PROJECTX_CHAIN_ID,
+                self.owner,
+                web3=web3,
+                block_identifier="pending",
+            )
         )
-        return int(bal)
 
     async def _ensure_allowance(
         self, token_address: str, spender: str, needed: int

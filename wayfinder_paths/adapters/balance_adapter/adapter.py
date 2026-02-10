@@ -6,10 +6,13 @@ from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
-from wayfinder_paths.core.utils.tokens import build_send_transaction, get_token_balance
+from wayfinder_paths.core.utils.tokens import (
+    build_send_transaction,
+    get_token_balance,
+    is_native_token,
+)
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -269,12 +272,7 @@ class BalanceAdapter(BaseAdapter):
             token_addr_str = (
                 str(token_address).strip() if token_address is not None else None
             )
-            is_native = (
-                token_addr_str is None
-                or token_addr_str == ""
-                or token_addr_str.lower() == "native"
-                or token_addr_str.lower() == ZERO_ADDRESS.lower()
-            )
+            is_native = is_native_token(token_addr_str)
 
             normalized.append(
                 {

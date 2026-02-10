@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import Any, Optional, cast
 
 import httpx
-from eth_utils import to_checksum_address
 from loguru import logger
 
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
@@ -15,7 +14,6 @@ from wayfinder_paths.adapters.moonwell_adapter.adapter import MoonwellAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WSTETH
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.tokens import (
     TOKEN_ID_ETH_BASE,
     TOKEN_ID_STETH,
@@ -33,6 +31,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from wayfinder_paths.policies.enso import ENSO_ROUTER, enso_swap
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
@@ -1788,21 +1787,15 @@ class MoonwellWstethLoopStrategy(Strategy):
         for attempt in range(max_retries):
             try:
                 async with web3_from_chain_id(BASE_CHAIN_ID) as w3:
-                    if token_id == ETH_TOKEN_ID:
-                        bal = await w3.eth.get_balance(
-                            to_checksum_address(wallet_address),
+                    return int(
+                        await get_token_balance(
+                            token_address,
+                            BASE_CHAIN_ID,
+                            wallet_address,
+                            web3=w3,
                             block_identifier=block_id,
                         )
-                        return int(bal)
-
-                    contract = w3.eth.contract(
-                        address=to_checksum_address(str(token_address)),
-                        abi=ERC20_ABI,
                     )
-                    bal = await contract.functions.balanceOf(
-                        to_checksum_address(wallet_address)
-                    ).call(block_identifier=block_id)
-                    return int(bal)
             except Exception as exc:
                 last_error = exc if isinstance(exc, Exception) else Exception(str(exc))
                 err = str(exc)

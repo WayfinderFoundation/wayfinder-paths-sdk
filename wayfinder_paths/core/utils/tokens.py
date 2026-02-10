@@ -20,8 +20,13 @@ NATIVE_TOKEN_ADDRESSES: set = {
 }
 
 
-def is_native_token(token_address: str) -> bool:
-    return token_address.lower() in NATIVE_TOKEN_ADDRESSES
+def is_native_token(token_address: str | None) -> bool:
+    if token_address is None:
+        return True
+    normalized = str(token_address).strip().lower()
+    if normalized in ("", "native"):
+        return True
+    return normalized in NATIVE_TOKEN_ADDRESSES
 
 
 def _coerce_bytes32_str(value: Any) -> str:
@@ -82,22 +87,37 @@ async def get_erc20_metadata(
 
 
 async def get_token_balance(
-    token_address: str, chain_id: int, wallet_address: str
+    token_address: str | None,
+    chain_id: int,
+    wallet_address: str,
+    *,
+    web3: AsyncWeb3 | None = None,
+    block_identifier: str | int = "pending",
 ) -> int:
-    async with web3_from_chain_id(chain_id) as web3:
-        checksum_wallet = web3.to_checksum_address(wallet_address)
+    async def _read_with_web3(w3: AsyncWeb3) -> int:
+        checksum_wallet = w3.to_checksum_address(wallet_address)
+
         if is_native_token(token_address):
-            balance = await web3.eth.get_balance(
+            balance = await w3.eth.get_balance(
                 checksum_wallet,
-                block_identifier="pending",
+                block_identifier=block_identifier,
             )
             return int(balance)
-        checksum_token = web3.to_checksum_address(token_address)
-        contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+
+        if token_address is None:
+            raise ValueError("token_address is required for ERC20 balance reads")
+
+        checksum_token = w3.to_checksum_address(str(token_address))
+        contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
         balance = await contract.functions.balanceOf(checksum_wallet).call(
-            block_identifier="pending"
+            block_identifier=block_identifier
         )
         return int(balance)
+
+    if web3 is None:
+        async with web3_from_chain_id(chain_id) as w3:
+            return await _read_with_web3(w3)
+    return await _read_with_web3(web3)
 
 
 async def get_token_allowance(
