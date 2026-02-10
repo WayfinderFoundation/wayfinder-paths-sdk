@@ -17,6 +17,7 @@ from wayfinder_paths.mcp.utils import (
     normalize_address,
     ok,
     resolve_wallet_address,
+    validate_finite_positive,
 )
 
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
@@ -57,6 +58,9 @@ def _resolve_builder_fee(
         raise ValueError("builder_fee_tenths_bp must be an int") from exc
     if fee_i <= 0:
         raise ValueError("builder_fee_tenths_bp must be > 0")
+    # Cap at 100 tenths of a bp (= 10 bp = 0.1%) to prevent excessive fees
+    if fee_i > 100:
+        raise ValueError("builder_fee_tenths_bp must be <= 100 (10 bp)")
 
     return {"b": expected_builder, "f": fee_i}
 
@@ -155,8 +159,8 @@ async def hyperliquid(
             inc = float(expected_increase)
         except (TypeError, ValueError):
             return err("invalid_request", "expected_increase must be a number")
-        if inc <= 0:
-            return err("invalid_request", "expected_increase must be positive")
+        if msg := validate_finite_positive(inc, "expected_increase"):
+            return err("invalid_request", msg)
 
         ok_dep, final_bal = await adapter.wait_for_deposit(
             addr,
@@ -318,9 +322,8 @@ async def hyperliquid_execute(
         except (TypeError, ValueError):
             response = err("invalid_request", "amount_usdc must be a number")
             return response
-        if amt <= 0:
-            response = err("invalid_request", "amount_usdc must be positive")
-            return response
+        if msg := validate_finite_positive(amt, "amount_usdc"):
+            return err("invalid_request", msg)
 
         ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
         effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
@@ -353,8 +356,8 @@ async def hyperliquid_execute(
             amt = float(usd_amount)
         except (TypeError, ValueError):
             return err("invalid_request", "usd_amount must be a number")
-        if amt <= 0:
-            return err("invalid_request", "usd_amount must be positive")
+        if msg := validate_finite_positive(amt, "usd_amount"):
+            return err("invalid_request", msg)
 
         to_perp = action == "spot_to_perp_transfer"
         if to_perp:
@@ -429,6 +432,9 @@ async def hyperliquid_execute(
             return response
         if lev <= 0:
             response = err("invalid_request", "leverage must be positive")
+            return response
+        if lev > 200:
+            response = err("invalid_request", "leverage must be <= 200")
             return response
 
         ok_lev, res = await adapter.update_leverage(
@@ -549,8 +555,8 @@ async def hyperliquid_execute(
         except (TypeError, ValueError):
             response = err("invalid_request", "price must be a number")
             return response
-        if px_for_sizing <= 0:
-            response = err("invalid_request", "price must be positive")
+        if msg := validate_finite_positive(px_for_sizing, "price"):
+            response = err("invalid_request", msg)
             return response
     else:
         try:
@@ -558,8 +564,8 @@ async def hyperliquid_execute(
         except (TypeError, ValueError):
             response = err("invalid_request", "slippage must be a number")
             return response
-        if slip < 0:
-            response = err("invalid_request", "slippage must be >= 0")
+        if msg := validate_finite_positive(slip, "slippage", allow_zero=True):
+            response = err("invalid_request", msg)
             return response
         if slip > 0.25:
             response = err("invalid_request", "slippage > 0.25 is too risky")
@@ -573,8 +579,8 @@ async def hyperliquid_execute(
         except (TypeError, ValueError):
             response = err("invalid_request", "size must be a number")
             return response
-        if sz <= 0:
-            response = err("invalid_request", "size must be positive")
+        if msg := validate_finite_positive(sz, "size"):
+            response = err("invalid_request", msg)
             return response
     else:
         if usd_amount is None:
@@ -588,8 +594,8 @@ async def hyperliquid_execute(
         except (TypeError, ValueError):
             response = err("invalid_request", "usd_amount must be a number")
             return response
-        if usd_amt <= 0:
-            response = err("invalid_request", "usd_amount must be positive")
+        if msg := validate_finite_positive(usd_amt, "usd_amount"):
+            response = err("invalid_request", msg)
             return response
 
         # Spot: usd_amount is always notional (no leverage)
@@ -616,6 +622,9 @@ async def hyperliquid_execute(
                 return response
             if lev <= 0:
                 response = err("invalid_request", "leverage must be positive")
+                return response
+            if lev > 200:
+                response = err("invalid_request", "leverage must be <= 200")
                 return response
             notional_usd = usd_amt * float(lev)
             margin_usd = usd_amt
@@ -694,6 +703,9 @@ async def hyperliquid_execute(
             return response
         if lev <= 0:
             response = err("invalid_request", "leverage must be positive")
+            return response
+        if lev > 200:
+            response = err("invalid_request", "leverage must be <= 200")
             return response
         ok_lev, res = await adapter.update_leverage(
             resolved_asset_id, lev, bool(is_cross), sender

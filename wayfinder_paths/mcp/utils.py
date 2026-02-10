@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,21 @@ import yaml
 from wayfinder_paths.core.config import load_config_json
 
 getcontext().prec = 78
+
+
+def validate_finite_positive(
+    value: float, name: str, *, allow_zero: bool = False
+) -> str | None:
+    """Return an error message if *value* is not a finite positive number, else ``None``."""
+    if math.isnan(value) or math.isinf(value):
+        return f"{name} must be a finite number"
+    if allow_zero:
+        if value < 0:
+            return f"{name} must be >= 0"
+    else:
+        if value <= 0:
+            return f"{name} must be positive"
+    return None
 
 
 def ok(result: Any) -> dict[str, Any]:
@@ -97,6 +113,8 @@ def parse_amount_to_raw(amount: str, decimals: int) -> int:
         d = Decimal(str(amount).strip())
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"Invalid amount: {amount}") from exc
+    if not d.is_finite():
+        raise ValueError(f"Invalid amount: {amount} (must be a finite number)")
     if d <= 0:
         raise ValueError("Amount must be positive")
     scale = Decimal(10) ** int(decimals)

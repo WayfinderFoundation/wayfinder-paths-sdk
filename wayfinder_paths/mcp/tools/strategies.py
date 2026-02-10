@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import math
 from pathlib import Path
 from typing import Any, Literal
 
@@ -78,6 +79,9 @@ async def run_strategy(
 ) -> dict[str, Any]:
     if not strategy.strip():
         return err("invalid_request", "strategy is required")
+
+    if math.isnan(amount_usdc) or math.isinf(amount_usdc) or amount_usdc <= 0:
+        return err("invalid_request", "amount_usdc must be a finite positive number")
 
     try:
         strategy_class, strategy_status = _load_strategy_class(strategy)
@@ -177,9 +181,21 @@ async def run_strategy(
                     "invalid_request",
                     "main_token_amount required for deposit (optionally gas_token_amount)",
                 )
+            mta = float(main_token_amount)
+            gta = float(gas_token_amount)
+            if math.isnan(mta) or math.isinf(mta) or mta <= 0:
+                return err(
+                    "invalid_request",
+                    "main_token_amount must be a finite positive number",
+                )
+            if math.isnan(gta) or math.isinf(gta) or gta < 0:
+                return err(
+                    "invalid_request",
+                    "gas_token_amount must be a finite non-negative number",
+                )
             success, msg = await strategy_obj.deposit(
-                main_token_amount=float(main_token_amount),
-                gas_token_amount=float(gas_token_amount),
+                main_token_amount=mta,
+                gas_token_amount=gta,
             )
             return ok_with_warning(
                 {

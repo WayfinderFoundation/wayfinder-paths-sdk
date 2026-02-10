@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Literal, cast
 
@@ -68,6 +69,8 @@ class ExecutionRequest(BaseModel):
                 raise ValueError("swap requires from_token and to_token")
             if self.slippage_bps < 0:
                 raise ValueError("slippage_bps must be >= 0")
+            if self.slippage_bps > 5000:
+                raise ValueError("slippage_bps must be <= 5000 (50%)")
             if self.deadline_seconds <= 0:
                 raise ValueError("deadline_seconds must be positive")
         if self.kind == "send":
@@ -96,10 +99,13 @@ class ExecutionRequest(BaseModel):
                 amt = float(self.amount)
             except (TypeError, ValueError):
                 amt = None
-            if amt is not None and amt < 5:
-                raise ValueError(
-                    "hyperliquid_deposit amount must be >= 5 USDC (deposits below are lost)"
-                )
+            if amt is not None:
+                if math.isnan(amt) or math.isinf(amt):
+                    raise ValueError("amount must be a finite number")
+                if amt < 5:
+                    raise ValueError(
+                        "hyperliquid_deposit amount must be >= 5 USDC (deposits below are lost)"
+                    )
         return self
 
 
