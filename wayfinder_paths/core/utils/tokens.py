@@ -7,8 +7,9 @@ from web3 import AsyncWeb3
 from web3.exceptions import BadFunctionCallOutput
 
 from wayfinder_paths.core.constants.contracts import TOKENS_REQUIRING_APPROVAL_RESET
+from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
-from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 NATIVE_TOKEN_ADDRESSES: set = {
@@ -168,6 +169,39 @@ async def build_send_transaction(
                 "data": data,
                 "chainId": chain_id,
             }
+
+
+async def ensure_erc1155_approval(
+    *,
+    token_address: str,
+    owner: str,
+    operator: str,
+    approved: bool,
+    chain_id: int,
+    signing_callback: Callable,
+) -> tuple[bool, str]:
+    owner = to_checksum_address(owner)
+    operator = to_checksum_address(operator)
+    token_address = to_checksum_address(token_address)
+
+    async with web3_from_chain_id(chain_id) as web3:
+        contract = web3.eth.contract(address=token_address, abi=ERC1155_APPROVAL_ABI)
+        is_approved = await contract.functions.isApprovedForAll(
+            owner, operator
+        ).call(block_identifier="pending")
+        if bool(is_approved) == bool(approved):
+            return True, "already-approved"
+
+    tx = await encode_call(
+        target=token_address,
+        abi=ERC1155_APPROVAL_ABI,
+        fn_name="setApprovalForAll",
+        args=[operator, bool(approved)],
+        from_address=owner,
+        chain_id=chain_id,
+    )
+    tx_hash = await send_transaction(tx, signing_callback)
+    return True, tx_hash
 
 
 async def ensure_allowance(

@@ -22,7 +22,6 @@ from py_clob_client.config import (  # type: ignore[import-untyped]
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
-from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
     MAX_UINT256,
@@ -42,6 +41,7 @@ from wayfinder_paths.core.constants.polymarket import (
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
+    ensure_erc1155_approval,
     get_token_balance,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
@@ -1021,11 +1021,12 @@ class PolymarketAdapter(BaseAdapter):
                 txs.append(res)
 
         for operator in sorted(exchanges):
-            ok, res = await self._ensure_erc1155_approval_for_all(
+            ok, res = await ensure_erc1155_approval(
                 token_address=conditional_tokens,
                 owner=from_address,
                 operator=operator,
                 approved=True,
+                chain_id=int(self.chain_id),
                 signing_callback=sign_cb,
             )
             if not ok:
@@ -1365,40 +1366,6 @@ class PolymarketAdapter(BaseAdapter):
         if len(hb) > 32:
             raise ValueError(f"bytes32 too long: {len(hb)}")
         return bytes(hb.rjust(32, b"\x00"))
-
-    async def _ensure_erc1155_approval_for_all(
-        self,
-        *,
-        token_address: str,
-        owner: str,
-        operator: str,
-        approved: bool,
-        signing_callback,
-    ) -> tuple[bool, str | dict[str, Any]]:
-        owner = to_checksum_address(owner)
-        operator = to_checksum_address(operator)
-        token_address = to_checksum_address(token_address)
-
-        async with web3_from_chain_id(int(self.chain_id)) as web3:
-            contract = web3.eth.contract(
-                address=token_address, abi=ERC1155_APPROVAL_ABI
-            )
-            is_approved = await contract.functions.isApprovedForAll(
-                owner, operator
-            ).call(block_identifier="pending")
-            if bool(is_approved) == bool(approved):
-                return True, "already-approved"
-
-        tx = await encode_call(
-            target=token_address,
-            abi=ERC1155_APPROVAL_ABI,
-            fn_name="setApprovalForAll",
-            args=[operator, bool(approved)],
-            from_address=owner,
-            chain_id=int(self.chain_id),
-        )
-        tx_hash = await send_transaction(tx, signing_callback)
-        return True, tx_hash
 
     async def _compute_position_id(
         self,
