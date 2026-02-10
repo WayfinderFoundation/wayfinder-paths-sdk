@@ -65,18 +65,6 @@ def _fuzzy_score(query: str, text: str) -> float:
     return SequenceMatcher(None, q, t).ratio()
 
 
-def _maybe_parse_json_list(value: Any) -> Any:
-    if not isinstance(value, str):
-        return value
-    s = value.strip()
-    if not (s.startswith("[") and s.endswith("]")):
-        return value
-    try:
-        parsed = json.loads(s)
-    except Exception:
-        return value
-    return parsed
-
 
 async def _try_brap_swap_polygon(
     *,
@@ -203,7 +191,7 @@ class PolymarketAdapter(BaseAdapter):
     def _normalize_market(market: dict[str, Any]) -> dict[str, Any]:
         out = dict(market)
         for key in ("outcomes", "outcomePrices", "clobTokenIds"):
-            out[key] = _maybe_parse_json_list(out.get(key))
+            out[key] = json.loads(out[key])
         return out
 
     async def list_markets(
@@ -400,19 +388,14 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    @staticmethod
-    def _ensure_list(value: Any) -> list[Any]:
-        parsed = _maybe_parse_json_list(value)
-        return parsed if isinstance(parsed, list) else []
-
     def resolve_clob_token_id(
         self,
         *,
         market: dict[str, Any],
         outcome: str | int,
     ) -> tuple[bool, str]:
-        outcomes = self._ensure_list(market.get("outcomes"))
-        token_ids = self._ensure_list(market.get("clobTokenIds"))
+        outcomes: list[Any] = market.get("outcomes") or []
+        token_ids: list[Any] = market.get("clobTokenIds") or []
 
         if not token_ids:
             return False, "Market missing clobTokenIds (not tradable on CLOB)"
@@ -1462,7 +1445,7 @@ class PolymarketAdapter(BaseAdapter):
             res.raise_for_status()
             data = res.json()
             if isinstance(data, list) and data and isinstance(data[0], dict):
-                outcomes = _maybe_parse_json_list(data[0].get("outcomes")) or []
+                outcomes = json.loads(data[0].get("outcomes", "[]"))
                 if isinstance(outcomes, list) and len(outcomes) >= 2:
                     return [1 << i for i in range(len(outcomes))]
         except Exception:
