@@ -28,3 +28,20 @@ DEFAULT_PAGINATION_LIMIT = 50
 MANTISSA = 10**18
 SECONDS_PER_YEAR = 365 * 24 * 60 * 60
 MAX_UINT256 = 2**256 - 1
+
+GAS_ALIASES = {
+    "eth",
+    "ethereum",
+    "matic",
+    "pol",
+    "polygon",
+    "avax",
+    "avalanche",
+    "bnb",
+    "bsc",
+    "binance-coin",
+    "binancecoin",
+    "hype",
+    "hyperliquid",
+    "plasma",
+}

@@ -31,7 +31,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     parse_amount_to_raw,
 )
-
+from wayfinder_paths.core.constants.base import GAS_ALIASES
 
 class ExecutionRequest(BaseModel):
     kind: Literal["swap", "send", "hyperliquid_deposit"]
@@ -153,10 +153,10 @@ def _normalize_token_query(query: str) -> str:
     return q
 
 
-def _is_eth_like_token(meta: dict[str, Any]) -> bool:
+def _is_gas_token(meta: dict[str, Any]) -> bool:
     asset_id = str(meta.get("asset_id") or "").lower()
     symbol = str(meta.get("symbol") or "").lower()
-    return asset_id == "ethereum" or symbol == "eth"
+    return asset_id in GAS_ALIASES or symbol in GAS_ALIASES
 
 
 def _split_asset_chain(query: str) -> tuple[str, str] | None:
@@ -174,10 +174,10 @@ async def _resolve_token_meta(query: str) -> tuple[str, dict[str, Any]]:
     split = _split_asset_chain(q)
     if split:
         asset, chain_code = split
-        if asset in {"eth", "ethereum"}:
+        if asset in GAS_ALIASES:
             try:
                 gas_meta = await TOKEN_CLIENT.get_gas_token(chain_code)
-                if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
+                if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
                     return q, cast(dict[str, Any], gas_meta)
             except Exception:
                 pass
@@ -232,7 +232,7 @@ def _select_token_chain(
     # Native gas tokens (e.g. ETH) may come back from the API with a null
     # address.  Normalize to ZERO_ADDRESS so swap/quote paths treat them the
     # same as the send path (which already does this explicitly).
-    if not token_address_out and _is_eth_like_token(meta):
+    if not token_address_out and _is_gas_token(meta):
         token_address_out = ZERO_ADDRESS
 
     return chain_id, token_address_out
