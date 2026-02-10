@@ -8,9 +8,14 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
+from wayfinder_paths.core.utils.token_refs import (
+    looks_like_evm_address,
+    parse_token_id_to_chain_and_address,
+)
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     get_token_balance,
+    get_token_balance_with_decimals,
     is_native_token,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -31,6 +36,57 @@ class BalanceAdapter(BaseAdapter):
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
+        self._token_details_cache: dict[str, dict[str, Any]] = {}
+
+    async def _get_token_details_cached(
+        self, token_id: str, *, chain_id: int | None = None
+    ) -> dict[str, Any] | None:
+        cache_key = f"{int(chain_id)}:{token_id}" if chain_id is not None else token_id
+        cached = self._token_details_cache.get(cache_key)
+        if cached:
+            return cached
+
+        if chain_id is None:
+            token_info = await TOKEN_CLIENT.get_token_details(token_id)
+        else:
+            token_info = await TOKEN_CLIENT.get_token_details(
+                token_id, chain_id=int(chain_id)
+            )
+
+        if token_info:
+            self._token_details_cache[cache_key] = token_info
+        return token_info
+
+    async def _resolve_token_address_and_chain_id(
+        self,
+        *,
+        token_id: str | None,
+        token_address: str | None,
+        chain_id: int | None,
+    ) -> tuple[str | None, int | None, dict[str, Any] | None]:
+        if token_address:
+            return token_address, chain_id, None
+        if not token_id:
+            return None, chain_id, None
+        if str(token_id).strip().lower() == "native":
+            # Native token on the provided chain (requires chain_id).
+            return None, chain_id, None
+
+        parsed_chain_id, parsed_address = parse_token_id_to_chain_and_address(token_id)
+        if parsed_address and parsed_chain_id:
+            return parsed_address, parsed_chain_id, None
+
+        # Allow token_id="0x..." with an explicit chain_id to avoid API lookups.
+        if looks_like_evm_address(token_id) and chain_id is not None:
+            return token_id, int(chain_id), None
+
+        token_info = await self._get_token_details_cached(token_id, chain_id=chain_id)
+        if not token_info:
+            return None, chain_id, None
+
+        resolved_address = token_info.get("address") or None
+        resolved_chain_id = chain_id or resolve_chain_id(token_info)
+        return resolved_address, resolved_chain_id, token_info
 
     async def get_balance(
         self,
@@ -41,14 +97,103 @@ class BalanceAdapter(BaseAdapter):
         chain_id: int | None = None,
     ) -> tuple[bool, int | str]:
         try:
-            if token_id and not token_address:
-                token_info = await TOKEN_CLIENT.get_token_details(token_id)
-                token_address = token_info["address"]
-                chain_id = chain_id or resolve_chain_id(token_info)
-            balance = await get_token_balance(token_address, chain_id, wallet_address)
+            (
+                token_address,
+                chain_id,
+                _token_info,
+            ) = await self._resolve_token_address_and_chain_id(
+                token_id=token_id, token_address=token_address, chain_id=chain_id
+            )
+            if (
+                token_id
+                and token_address is None
+                and str(token_id).strip().lower() != "native"
+            ):
+                raise ValueError(f"Token not found: {token_id}")
+            if chain_id is None:
+                raise ValueError("chain_id is required")
+            balance = await get_token_balance(
+                token_address,
+                int(chain_id),
+                wallet_address,
+            )
             return True, balance
         except Exception as e:
             return False, str(e)
+
+    async def get_balance_details(
+        self,
+        *,
+        wallet_address: str,
+        token_id: str | None = None,
+        token_address: str | None = None,
+        chain_id: int | None = None,
+        default_native_decimals: int = 18,
+        balance_block_identifier: str | int = "pending",
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Return on-chain balance with decimals (RPC-first; API only for token_id lookup)."""
+        try:
+            (
+                token_address,
+                chain_id,
+                token_info,
+            ) = await self._resolve_token_address_and_chain_id(
+                token_id=token_id, token_address=token_address, chain_id=chain_id
+            )
+            if (
+                token_id
+                and token_address is None
+                and str(token_id).strip().lower() != "native"
+            ):
+                raise ValueError(f"Token not found: {token_id}")
+            if chain_id is None:
+                raise ValueError("chain_id is required")
+
+            is_native = is_native_token(token_address)
+            token_address_out = None if is_native else token_address
+
+            decimals: int | None = None
+            if token_info and not is_native:
+                try:
+                    decimals = int(token_info.get("decimals"))  # type: ignore[arg-type]
+                except Exception:
+                    decimals = None
+
+            if decimals is not None:
+                balance_raw = await get_token_balance(
+                    token_address,
+                    int(chain_id),
+                    wallet_address,
+                    block_identifier=balance_block_identifier,
+                )
+            else:
+                balance_raw, decimals = await get_token_balance_with_decimals(
+                    token_address,
+                    int(chain_id),
+                    wallet_address,
+                    balance_block_identifier=balance_block_identifier,
+                    default_native_decimals=int(default_native_decimals),
+                )
+
+            balance_decimal = (
+                float(balance_raw) / (10 ** int(decimals))
+                if int(decimals) >= 0
+                else None
+            )
+            return True, {
+                "success": True,
+                "token_id": token_id,
+                "token_address": token_address_out,
+                "chain_id": int(chain_id),
+                "wallet_address": str(wallet_address),
+                "balance_raw": int(balance_raw),
+                "decimals": int(decimals),
+                "balance_decimal": float(balance_decimal)
+                if balance_decimal is not None
+                else None,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     async def get_vault_wallet_balance(self, token_id: str) -> tuple[bool, int | str]:
         addr = self._wallet_address(self.config.get("strategy_wallet", {}))
@@ -234,28 +379,46 @@ class BalanceAdapter(BaseAdapter):
                 continue
 
             if token_id and (token_address is None or chain_id is None):
-                try:
-                    token_info = await TOKEN_CLIENT.get_token_details(token_id)
-                except Exception as exc:  # noqa: BLE001
-                    token_info = None
-                    self.logger.warning(
-                        f"TokenClient lookup failed for {token_id}: {exc}"
+                if str(token_id).strip().lower() != "native":
+                    parsed_chain_id, parsed_address = (
+                        parse_token_id_to_chain_and_address(str(token_id))
                     )
+                    if parsed_address and parsed_chain_id:
+                        token_address = token_address or parsed_address
+                        chain_id = chain_id or parsed_chain_id
+                    elif (
+                        looks_like_evm_address(str(token_id))
+                        and token_address is None
+                        and chain_id is not None
+                    ):
+                        token_address = str(token_id)
 
-                if not token_info:
-                    results[idx] = {
-                        "success": False,
-                        "error": f"Token not found: {token_id}",
-                        "token_id": token_id,
-                        "token_address": token_address,
-                        "chain_id": chain_id,
-                        "wallet_address": req_wallet,
-                    }
-                    all_success = False
-                    continue
+                    token_info = None
+                    if token_address is None or chain_id is None:
+                        try:
+                            token_info = await self._get_token_details_cached(
+                                str(token_id), chain_id=chain_id
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            token_info = None
+                            self.logger.warning(
+                                f"TokenClient lookup failed for {token_id}: {exc}"
+                            )
 
-                token_address = token_address or token_info.get("address")
-                chain_id = chain_id or resolve_chain_id(token_info)
+                        if not token_info:
+                            results[idx] = {
+                                "success": False,
+                                "error": f"Token not found: {token_id}",
+                                "token_id": token_id,
+                                "token_address": token_address,
+                                "chain_id": chain_id,
+                                "wallet_address": req_wallet,
+                            }
+                            all_success = False
+                            continue
+
+                        token_address = token_address or token_info.get("address")
+                        chain_id = chain_id or resolve_chain_id(token_info)
 
             if chain_id is None:
                 results[idx] = {
