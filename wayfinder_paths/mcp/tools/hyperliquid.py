@@ -4,13 +4,13 @@ import re
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
 from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
-from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.mcp.utils import (
     err,
     find_wallet_by_label,
