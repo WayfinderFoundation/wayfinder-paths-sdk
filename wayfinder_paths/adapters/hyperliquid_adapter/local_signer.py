@@ -36,18 +36,15 @@ def create_local_signer(
             "Provide strategy_wallet.private_key_hex or strategy_wallet.private_key"
         )
 
-    # Create account
     pk = private_key if private_key.startswith("0x") else "0x" + private_key
     account: LocalAccount = Account.from_key(pk)
 
     async def sign(
         action: dict[str, Any], payload: str, address: str
     ) -> dict[str, str] | None:
-        # Verify address matches account
         if address.lower() != account.address.lower():
             return None
 
-        # Sign the hash
         signed = account.sign_message(payload)
         return {"r": hex(signed.r), "s": hex(signed.s), "v": signed.v}
 

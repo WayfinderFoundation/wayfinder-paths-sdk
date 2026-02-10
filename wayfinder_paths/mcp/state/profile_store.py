@@ -47,8 +47,7 @@ class WalletProfileStore:
             data = json.loads(self.path.read_text())
             if not isinstance(data, dict):
                 return {"schema_version": self.SCHEMA_VERSION, "profiles": {}}
-            if not isinstance(data.get("profiles"), dict):
-                data["profiles"] = {}
+            data.setdefault("profiles", {})
             return data
         except Exception as exc:
             logger.warning(f"Failed to load wallet profiles: {exc}")

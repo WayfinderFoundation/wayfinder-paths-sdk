@@ -122,8 +122,6 @@ def _chain_id_from_token(meta: dict[str, Any]) -> int | None:
             return None
 
     chain = meta.get("chain") or {}
-    if not isinstance(chain, dict):
-        return None
 
     for key in ("chain_id", "chainId", "id"):
         val = chain.get(key)
@@ -180,11 +178,11 @@ async def _resolve_token_meta(query: str) -> tuple[str, dict[str, Any]]:
             try:
                 gas_meta = await TOKEN_CLIENT.get_gas_token(chain_code)
                 if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
-                    return q, cast(dict[str, Any], gas_meta)
+                    return q, gas_meta
             except Exception:
                 pass
     meta = await TOKEN_CLIENT.get_token_details(q)
-    return q, cast(dict[str, Any], meta)
+    return q, meta
 
 
 def _infer_chain_code_from_query(query: str, meta: dict[str, Any]) -> str | None:

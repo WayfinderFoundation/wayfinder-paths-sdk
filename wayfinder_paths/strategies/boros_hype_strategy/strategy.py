@@ -252,7 +252,6 @@ class BorosHypeStrategy(
         main_wallet = self._config.get("main_wallet", {})
         user_address = strategy_wallet.get("address") if strategy_wallet else None
 
-        # Create signing callbacks from wallet private keys
         strategy_pk = (
             strategy_wallet.get("private_key") or strategy_wallet.get("private_key_hex")
             if strategy_wallet
@@ -269,7 +268,6 @@ class BorosHypeStrategy(
         )
         main_sign_callback = self._make_sign_callback(main_pk) if main_pk else None
 
-        # Initialize Boros adapter
         self.boros_adapter = BorosAdapter(
             config=self._config,
             sign_callback=self._sign_callback,
@@ -998,7 +996,6 @@ class BorosHypeStrategy(
                         else:
                             logger.warning(f"[SAFETY] Boros coverage fix failed: {msg}")
 
-            # Append safety messages to result
             if safety_messages:
                 message = f"{message} | SAFETY: {'; '.join(safety_messages)}"
 
@@ -1019,7 +1016,6 @@ class BorosHypeStrategy(
         yield_info.khype_apy = khype_apy
         yield_info.lhype_apy = lhype_apy
 
-        # Get Boros APR from active position
         boros_notional_usd = 0.0
         if self.boros_adapter:
             try:
@@ -1175,7 +1171,6 @@ class BorosHypeStrategy(
         alloc = self._get_allocation_status(inv)
         yield_info = await self._get_yield_info(inv)
 
-        # Build human-readable summary with full breakdown
         spot_parts = []
         if inv.khype_balance > 0.001:
             spot_parts.append(

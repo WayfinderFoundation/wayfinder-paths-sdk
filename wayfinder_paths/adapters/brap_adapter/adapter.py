@@ -135,7 +135,7 @@ class BRAPAdapter(BaseAdapter):
                         return (True, selected)
 
                 if quote:
-                    return (True, cast(dict[str, Any], quote))
+                    return (True, quote)
 
                 last_error = "No quotes available"
             except Exception as e:

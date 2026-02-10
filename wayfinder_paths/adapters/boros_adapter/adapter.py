@@ -1850,14 +1850,12 @@ class BorosAdapter(BaseAdapter):
         Returns:
             Tuple of (success, transaction result).
         """
-        # Backwards-compat: older callers/tests used amount_wei even though this is
-        # native token decimals. Prefer amount_native going forward.
         if amount_native is None:
-            if amount_wei is None:
-                raise TypeError(
-                    "withdraw_collateral requires amount_native (or amount_wei)"
-                )
-            amount_native = int(amount_wei)
+            amount_native = amount_wei
+        if amount_native is None:
+            raise TypeError(
+                "withdraw_collateral requires amount_native (or amount_wei)"
+            )
 
         try:
             calldata = await self.boros_client.build_withdraw_calldata(
