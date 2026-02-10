@@ -275,9 +275,7 @@ class PolymarketAdapter(BaseAdapter):
                 return False, f"Unexpected /events/slug response: {type(data).__name__}"
             if "markets" in data:
                 data = dict(data)
-                data["markets"] = [
-                    self._normalize_market(m) for m in data["markets"]
-                ]
+                data["markets"] = [self._normalize_market(m) for m in data["markets"]]
             return True, data
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
