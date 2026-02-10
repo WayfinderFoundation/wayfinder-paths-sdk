@@ -1281,64 +1281,12 @@ class PolymarketAdapter(BaseAdapter):
                 offset += int(positions_limit)
             return True, rows
 
-        pos_ok, positions = await _fetch_all_positions()
-        if pos_ok and isinstance(positions, list):
-            ok_any = True
-            out["positions"] = positions
-
-            def _as_float(x: Any) -> float:
-                try:
-                    return float(x)
-                except Exception:
-                    return 0.0
-
-            total_initial_value = sum(
-                _as_float(p.get("initialValue")) for p in positions
-            )
-            total_current_value = sum(
-                _as_float(p.get("currentValue")) for p in positions
-            )
-            total_cash_pnl = sum(_as_float(p.get("cashPnl")) for p in positions)
-            total_realized_pnl = sum(_as_float(p.get("realizedPnl")) for p in positions)
-
-            total_percent_pnl: float | None = None
-            if total_initial_value:
-                total_percent_pnl = (total_cash_pnl / total_initial_value) * 100.0
-
-            redeemable_count = sum(1 for p in positions if p.get("redeemable") is True)
-            mergeable_count = sum(1 for p in positions if p.get("mergeable") is True)
-            negative_risk_count = sum(
-                1 for p in positions if p.get("negativeRisk") is True
-            )
-
-            out["positionsSummary"] = {
-                "count": len(positions),
-                "redeemableCount": int(redeemable_count),
-                "mergeableCount": int(mergeable_count),
-                "negativeRiskCount": int(negative_risk_count),
-            }
-
-            out["pnl"] = {
-                "totalInitialValue": float(total_initial_value),
-                "totalCurrentValue": float(total_current_value),
-                "totalCashPnl": float(total_cash_pnl),
-                "totalRealizedPnl": float(total_realized_pnl),
-                "totalUnrealizedPnl": float(total_cash_pnl - total_realized_pnl),
-                "totalPercentPnl": float(total_percent_pnl)
-                if total_percent_pnl is not None
-                else None,
-            }
-        else:
-            out["errors"]["positions"] = positions
-
-        try:
+        async def _fetch_balances() -> tuple[bool, dict[str, Any] | str]:
             bal_usdce, bal_usdc = await asyncio.gather(
                 get_token_balance(POLYGON_USDC_E_ADDRESS, int(self.chain_id), addr),
                 get_token_balance(POLYGON_USDC_ADDRESS, int(self.chain_id), addr),
             )
-            out["usdc_e_balance"] = float(bal_usdce) / 1_000_000
-            out["usdc_balance"] = float(bal_usdc) / 1_000_000
-            out["balances"] = {
+            return True, {
                 "usdc_e": {
                     "address": POLYGON_USDC_E_ADDRESS,
                     "decimals": 6,
@@ -1352,61 +1300,142 @@ class PolymarketAdapter(BaseAdapter):
                     "amount": float(bal_usdc) / 1_000_000,
                 },
             }
-            ok_any = True
-        except Exception as exc:  # noqa: BLE001
-            out["errors"]["balances"] = str(exc)
 
+        async def _fetch_orders() -> tuple[bool, list[dict[str, Any]] | str]:
+            # CLOB requires Level-2 auth; only works for the configured signing wallet.
+            signer_addr = self._resolve_funder()
+            if to_checksum_address(signer_addr) != addr:
+                return False, "Open orders can only be fetched for the configured signing wallet (account mismatch)."
+            return await self.list_open_orders()
+
+        coros: list[Any] = [_fetch_all_positions(), _fetch_balances()]
         if include_orders:
-            # Open orders are only available for the configured signing wallet
-            # (CLOB requires Level-2 auth). Avoid returning orders for a different
-            # account than the one requested.
-            can_query_orders = True
-            signer_addr: str | None = None
-            try:
-                signer_addr = self._resolve_funder()
-            except Exception:
-                can_query_orders = False
+            coros.append(_fetch_orders())
+        if include_activity:
+            coros.append(
+                self.get_activity(user=addr, limit=int(activity_limit), offset=0)
+            )
+        if include_trades:
+            coros.append(self.get_trades(user=addr, limit=int(trades_limit), offset=0))
 
-            if (
-                can_query_orders
-                and signer_addr
-                and to_checksum_address(signer_addr) != addr
-            ):
-                can_query_orders = False
-                out["errors"]["openOrders"] = (
-                    "Open orders can only be fetched for the configured signing wallet (account mismatch)."
+        results = await asyncio.gather(*coros, return_exceptions=True)
+
+        pos_result = results[0]
+        if isinstance(pos_result, Exception):
+            out["errors"]["positions"] = str(pos_result)
+        else:
+            pos_ok, positions = pos_result
+            if pos_ok and isinstance(positions, list):
+                ok_any = True
+                out["positions"] = positions
+
+                def _as_float(x: Any) -> float:
+                    try:
+                        return float(x)
+                    except Exception:
+                        return 0.0
+
+                total_initial_value = sum(
+                    _as_float(p.get("initialValue")) for p in positions
+                )
+                total_current_value = sum(
+                    _as_float(p.get("currentValue")) for p in positions
+                )
+                total_cash_pnl = sum(
+                    _as_float(p.get("cashPnl")) for p in positions
+                )
+                total_realized_pnl = sum(
+                    _as_float(p.get("realizedPnl")) for p in positions
                 )
 
-            if can_query_orders:
-                orders = await self.list_open_orders()
-                if orders[0]:
+                total_percent_pnl: float | None = None
+                if total_initial_value:
+                    total_percent_pnl = (total_cash_pnl / total_initial_value) * 100.0
+
+                redeemable_count = sum(
+                    1 for p in positions if p.get("redeemable") is True
+                )
+                mergeable_count = sum(
+                    1 for p in positions if p.get("mergeable") is True
+                )
+                negative_risk_count = sum(
+                    1 for p in positions if p.get("negativeRisk") is True
+                )
+
+                out["positionsSummary"] = {
+                    "count": len(positions),
+                    "redeemableCount": int(redeemable_count),
+                    "mergeableCount": int(mergeable_count),
+                    "negativeRiskCount": int(negative_risk_count),
+                }
+
+                out["pnl"] = {
+                    "totalInitialValue": float(total_initial_value),
+                    "totalCurrentValue": float(total_current_value),
+                    "totalCashPnl": float(total_cash_pnl),
+                    "totalRealizedPnl": float(total_realized_pnl),
+                    "totalUnrealizedPnl": float(
+                        total_cash_pnl - total_realized_pnl
+                    ),
+                    "totalPercentPnl": float(total_percent_pnl)
+                    if total_percent_pnl is not None
+                    else None,
+                }
+            else:
+                out["errors"]["positions"] = positions
+
+        bal_result = results[1]
+        if isinstance(bal_result, Exception):
+            out["errors"]["balances"] = str(bal_result)
+        else:
+            bal_ok, bal_data = bal_result
+            if bal_ok and isinstance(bal_data, dict):
+                ok_any = True
+                out["balances"] = bal_data
+                out["usdc_e_balance"] = bal_data["usdc_e"]["amount"]
+                out["usdc_balance"] = bal_data["usdc"]["amount"]
+            else:
+                out["errors"]["balances"] = bal_data
+
+        idx = 2
+        if include_orders:
+            ord_result = results[idx]
+            idx += 1
+            if isinstance(ord_result, Exception):
+                out["errors"]["openOrders"] = str(ord_result)
+            else:
+                ord_ok, ord_data = ord_result
+                if ord_ok:
                     ok_any = True
-                    out["openOrders"] = orders[1]
-                    out["orders"] = orders[1]
+                    out["openOrders"] = ord_data
+                    out["orders"] = ord_data
                 else:
-                    out["errors"]["openOrders"] = orders[1]
-            elif "openOrders" not in out["errors"]:
-                out["errors"]["openOrders"] = (
-                    "Open orders require a configured signing wallet (private_key_hex)."
-                )
+                    out["errors"]["openOrders"] = ord_data
 
         if include_activity:
-            act = await self.get_activity(
-                user=addr, limit=int(activity_limit), offset=0
-            )
-            if act[0]:
-                ok_any = True
-                out["recentActivity"] = act[1]
+            act_result = results[idx]
+            idx += 1
+            if isinstance(act_result, Exception):
+                out["errors"]["recentActivity"] = str(act_result)
             else:
-                out["errors"]["recentActivity"] = act[1]
+                act_ok, act_data = act_result
+                if act_ok:
+                    ok_any = True
+                    out["recentActivity"] = act_data
+                else:
+                    out["errors"]["recentActivity"] = act_data
 
         if include_trades:
-            tr = await self.get_trades(user=addr, limit=int(trades_limit), offset=0)
-            if tr[0]:
-                ok_any = True
-                out["recentTrades"] = tr[1]
+            tr_result = results[idx]
+            if isinstance(tr_result, Exception):
+                out["errors"]["recentTrades"] = str(tr_result)
             else:
-                out["errors"]["recentTrades"] = tr[1]
+                tr_ok, tr_data = tr_result
+                if tr_ok:
+                    ok_any = True
+                    out["recentTrades"] = tr_data
+                else:
+                    out["errors"]["recentTrades"] = tr_data
 
         return ok_any, out
 
@@ -1524,15 +1553,25 @@ class PolymarketAdapter(BaseAdapter):
 
             while scanned <= max_back and end > 0:
                 start = max(0, end - step)
-                for sig in (pos_split_sig, pos_merge_sig):
-                    logs = await web3.eth.get_logs(
+                split_logs, merge_logs = await asyncio.gather(
+                    web3.eth.get_logs(
                         {
                             "fromBlock": start,
                             "toBlock": end,
                             "address": to_checksum_address(ctf_addr),
-                            "topics": [sig, None, None, cond_topic],
+                            "topics": [pos_split_sig, None, None, cond_topic],
                         }
-                    )
+                    ),
+                    web3.eth.get_logs(
+                        {
+                            "fromBlock": start,
+                            "toBlock": end,
+                            "address": to_checksum_address(ctf_addr),
+                            "topics": [pos_merge_sig, None, None, cond_topic],
+                        }
+                    ),
+                )
+                for logs in (split_logs, merge_logs):
                     if logs:
                         parent = HexBytes(logs[-1]["topics"][2]).rjust(32, b"\x00")
                         if parent.hex() != HexBytes(ZERO32_STR).hex():
@@ -1568,15 +1607,17 @@ class PolymarketAdapter(BaseAdapter):
 
         for parent in parent_candidates:
             for collateral in collaterals:
-                pos_ids = [
-                    await self._compute_position_id(
-                        collateral=collateral,
-                        parent_collection_id=parent,
-                        condition_id=cond_b32,
-                        index_set=i,
-                    )
-                    for i in index_sets
-                ]
+                pos_ids = await asyncio.gather(
+                    *[
+                        self._compute_position_id(
+                            collateral=collateral,
+                            parent_collection_id=parent,
+                            condition_id=cond_b32,
+                            index_set=i,
+                        )
+                        for i in index_sets
+                    ]
+                )
                 bals = await asyncio.gather(
                     *[
                         self._balance_of_position(holder=holder, position_id=pid)
