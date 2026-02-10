@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from decimal import Decimal, InvalidOperation, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal, InvalidOperation
 
 
 def _to_decimal(value: str | int | float | Decimal) -> Decimal:
@@ -53,4 +53,3 @@ def parse_erc20_funds(specs: Iterable[str]) -> list[tuple[str, str, int]]:
         token, wallet, amount, decimals = parts
         balances.append((token, wallet, to_erc20_raw(amount, int(decimals))))
     return balances
-

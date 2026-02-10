@@ -19,6 +19,7 @@ from wayfinder_paths.run_strategy import (
     get_strategy_config,
 )
 
+
 async def _run(args: argparse.Namespace) -> None:
     load_config(args.config, require_exists=bool(args.config))
 
@@ -43,7 +44,9 @@ async def _run(args: argparse.Namespace) -> None:
     }
     erc20_balances = [(BASE_USDC, str(main_addr), int(usdc_raw))]
 
-    module = importlib.import_module(f"wayfinder_paths.strategies.{strategy_name}.strategy")
+    module = importlib.import_module(
+        f"wayfinder_paths.strategies.{strategy_name}.strategy"
+    )
     strategy_cls = find_strategy_class(module)
 
     def signing_cb(address: str):
@@ -74,11 +77,21 @@ async def _run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Run Moonwell strategy on a Gorlami Base fork (dry run).")
+    p = argparse.ArgumentParser(
+        description="Run Moonwell strategy on a Gorlami Base fork (dry run)."
+    )
     p.add_argument("--config", default=None, help="Config path (default: config.json)")
-    p.add_argument("--wallet-label", default=None, help="Strategy wallet label override")
-    p.add_argument("--main-wallet-label", default=None, help="Main wallet label override (default: main)")
-    p.add_argument("--amount-usdc", type=str, default="20", help="USDC to deposit (default: 20)")
+    p.add_argument(
+        "--wallet-label", default=None, help="Strategy wallet label override"
+    )
+    p.add_argument(
+        "--main-wallet-label",
+        default=None,
+        help="Main wallet label override (default: main)",
+    )
+    p.add_argument(
+        "--amount-usdc", type=str, default="20", help="USDC to deposit (default: 20)"
+    )
     p.add_argument(
         "--fund-main-eth",
         type=str,
