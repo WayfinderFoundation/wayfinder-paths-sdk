@@ -34,6 +34,7 @@ from wayfinder_paths.core.utils.tokens import (
     is_native_token,
 )
 from wayfinder_paths.core.utils.transaction import (
+    encode_call,
     send_transaction,
     wait_for_transaction_receipt,
 )
@@ -436,13 +437,14 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             deadline(1200),
         )
 
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            )
-            data = npm.encode_abi("mint", args=[params])
-        tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
+        tx = await encode_call(
+            target=str(THBILL_USDC_METADATA["npm"]),
+            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+            fn_name="mint",
+            args=[params],
+            from_address=self.owner,
+            chain_id=PROJECTX_CHAIN_ID,
+        )
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
 
         token_id = await self._extract_token_id_from_receipt(tx_hash)
@@ -477,10 +479,15 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 return None
             target = min(int(liquidity or current_liq), current_liq)
 
-            params = (int(token_id), int(target), 0, 0, deadline(600))
-            data = npm.encode_abi("decreaseLiquidity", args=[params])
-
-        tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
+        params = (int(token_id), int(target), 0, 0, deadline(600))
+        tx = await encode_call(
+            target=str(THBILL_USDC_METADATA["npm"]),
+            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+            fn_name="decreaseLiquidity",
+            args=[params],
+            from_address=self.owner,
+            chain_id=PROJECTX_CHAIN_ID,
+        )
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
         return tx_hash
 
@@ -495,11 +502,14 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             token1 = pos["token1"]
             before0, before1 = await self._balances_for_tokens(web3, [token0, token1])
 
-            data = npm.encode_abi(
-                "collect", args=[collect_params(int(token_id), self.owner)]
-            )
-
-        tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
+        tx = await encode_call(
+            target=str(THBILL_USDC_METADATA["npm"]),
+            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+            fn_name="collect",
+            args=[collect_params(int(token_id), self.owner)],
+            from_address=self.owner,
+            chain_id=PROJECTX_CHAIN_ID,
+        )
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
@@ -526,14 +536,14 @@ class ProjectXLiquidityAdapter(BaseAdapter):
         elif owed0 > 0 or owed1 > 0:
             await self.collect_fees(token_id)
 
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            )
-            data = npm.encode_abi("burn", args=[int(token_id)])
-
-        tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
+        tx = await encode_call(
+            target=str(THBILL_USDC_METADATA["npm"]),
+            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+            fn_name="burn",
+            args=[int(token_id)],
+            from_address=self.owner,
+            chain_id=PROJECTX_CHAIN_ID,
+        )
         return await send_transaction(tx, self.strategy_wallet_signing_callback)
 
     async def increase_liquidity(
@@ -609,14 +619,14 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             deadline(900),
         )
 
-        async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            npm = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["npm"])),
-                abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
-            )
-            data = npm.encode_abi("increaseLiquidity", args=[params])
-
-        tx = self._build_tx(str(THBILL_USDC_METADATA["npm"]), data)
+        tx = await encode_call(
+            target=str(THBILL_USDC_METADATA["npm"]),
+            abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+            fn_name="increaseLiquidity",
+            args=[params],
+            from_address=self.owner,
+            chain_id=PROJECTX_CHAIN_ID,
+        )
         tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
 
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
@@ -687,54 +697,50 @@ class ProjectXLiquidityAdapter(BaseAdapter):
             dec_in = int(meta_in.get("decimals", 18))
             dec_out = int(meta_out.get("decimals", 18))
 
-            # Compute a conservative minOut from current mid price.
-            price_token1_per_token0 = sqrt_price_x96_to_price(
-                sqrt_price_x96,
-                int(token0_meta.get("decimals", 18)),
-                int(token1_meta.get("decimals", 18)),
-            )
-            fee_frac = max(0.0, min(0.5, float(selected_fee) / 1_000_000.0))
-            slippage = max(1, int(slippage_bps)) / 10_000.0
+        # Compute a conservative minOut from current mid price.
+        price_token1_per_token0 = sqrt_price_x96_to_price(
+            sqrt_price_x96,
+            int(token0_meta.get("decimals", 18)),
+            int(token1_meta.get("decimals", 18)),
+        )
+        fee_frac = max(0.0, min(0.5, float(selected_fee) / 1_000_000.0))
+        slippage = max(1, int(slippage_bps)) / 10_000.0
 
-            amount_in_tokens = float(amount_in) / (10**dec_in)
-            if (
-                token_in.lower() == token0.lower()
-                and token_out.lower() == token1.lower()
-            ):
-                expected_out_tokens = amount_in_tokens * price_token1_per_token0
-            elif (
-                token_in.lower() == token1.lower()
-                and token_out.lower() == token0.lower()
-            ):
-                expected_out_tokens = (
-                    amount_in_tokens / price_token1_per_token0
-                    if price_token1_per_token0 > 0
-                    else 0.0
+        amount_in_tokens = float(amount_in) / (10**dec_in)
+        if token_in.lower() == token0.lower() and token_out.lower() == token1.lower():
+            expected_out_tokens = amount_in_tokens * price_token1_per_token0
+        elif token_in.lower() == token1.lower() and token_out.lower() == token0.lower():
+            expected_out_tokens = (
+                amount_in_tokens / price_token1_per_token0
+                if price_token1_per_token0 > 0
+                else 0.0
+            )
+        else:
+            raise RuntimeError("Selected pool does not match swap token pair")
+
+        expected_out_tokens *= max(0.0, 1.0 - fee_frac)
+        expected_out_raw = int(expected_out_tokens * (10**dec_out))
+        amount_out_min = int(max(0, expected_out_raw) * max(0.0, 1.0 - slippage))
+
+        tx = await encode_call(
+            target=str(THBILL_USDC_METADATA["router"]),
+            abi=PROJECTX_ROUTER_ABI,
+            fn_name="exactInputSingle",
+            args=[
+                (
+                    token_in,
+                    token_out,
+                    int(selected_fee),
+                    self.owner,
+                    deadline(900),
+                    int(amount_in),
+                    int(amount_out_min),
+                    0,
                 )
-            else:
-                raise RuntimeError("Selected pool does not match swap token pair")
-
-            expected_out_tokens *= max(0.0, 1.0 - fee_frac)
-            expected_out_raw = int(expected_out_tokens * (10**dec_out))
-            amount_out_min = int(max(0, expected_out_raw) * max(0.0, 1.0 - slippage))
-
-            router = web3.eth.contract(
-                address=to_checksum_address(str(THBILL_USDC_METADATA["router"])),
-                abi=PROJECTX_ROUTER_ABI,
-            )
-            params = (
-                token_in,
-                token_out,
-                int(selected_fee),
-                self.owner,
-                deadline(900),
-                int(amount_in),
-                int(amount_out_min),
-                0,
-            )
-            data = router.encode_abi("exactInputSingle", args=[params])
-
-        tx = self._build_tx(str(THBILL_USDC_METADATA["router"]), data)
+            ],
+            from_address=self.owner,
+            chain_id=PROJECTX_CHAIN_ID,
+        )
         return await send_transaction(tx, self.strategy_wallet_signing_callback)
 
     @staticmethod
@@ -955,15 +961,6 @@ class ProjectXLiquidityAdapter(BaseAdapter):
                 block_identifier="pending",
             )
         )
-
-    def _build_tx(self, to_address: str, data: str, value: int = 0) -> dict[str, Any]:
-        return {
-            "chainId": int(PROJECTX_CHAIN_ID),
-            "from": self.owner,
-            "to": to_checksum_address(to_address),
-            "data": data,
-            "value": int(value),
-        }
 
     async def _extract_token_id_from_receipt(self, tx_hash: str) -> int | None:
         try:

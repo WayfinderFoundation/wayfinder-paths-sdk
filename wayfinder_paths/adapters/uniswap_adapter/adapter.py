@@ -91,8 +91,24 @@ class UniswapAdapter(BaseAdapter):
         if tick_upper <= tick_lower:
             tick_upper = tick_lower + spacing
 
-        await self._ensure_allowance(t0, self.npm_address, amount0_desired)
-        await self._ensure_allowance(t1, self.npm_address, amount1_desired)
+        await ensure_allowance(
+            token_address=t0,
+            owner=self.owner,
+            spender=to_checksum_address(self.npm_address),
+            amount=int(amount0_desired),
+            chain_id=self.chain_id,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amount0_desired * 2),
+        )
+        await ensure_allowance(
+            token_address=t1,
+            owner=self.owner,
+            spender=to_checksum_address(self.npm_address),
+            amount=int(amount1_desired),
+            chain_id=self.chain_id,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amount1_desired * 2),
+        )
 
         params = (
             t0,
@@ -134,8 +150,24 @@ class UniswapAdapter(BaseAdapter):
             )
             pos = await read_position(npm, token_id)
 
-        await self._ensure_allowance(pos["token0"], self.npm_address, amount0_desired)
-        await self._ensure_allowance(pos["token1"], self.npm_address, amount1_desired)
+        await ensure_allowance(
+            token_address=to_checksum_address(pos["token0"]),
+            owner=self.owner,
+            spender=to_checksum_address(self.npm_address),
+            amount=int(amount0_desired),
+            chain_id=self.chain_id,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amount0_desired * 2),
+        )
+        await ensure_allowance(
+            token_address=to_checksum_address(pos["token1"]),
+            owner=self.owner,
+            spender=to_checksum_address(self.npm_address),
+            amount=int(amount1_desired),
+            chain_id=self.chain_id,
+            signing_callback=self.strategy_wallet_signing_callback,
+            approval_amount=int(amount1_desired * 2),
+        )
 
         params = (
             int(token_id),
@@ -275,17 +307,3 @@ class UniswapAdapter(BaseAdapter):
             pool_addr = await find_pool(factory, token_a, token_b, fee)
         return True, pool_addr
 
-    async def _ensure_allowance(
-        self, token_address: str, spender: str, needed: int
-    ) -> None:
-        if needed <= 0:
-            return
-        await ensure_allowance(
-            token_address=to_checksum_address(token_address),
-            owner=self.owner,
-            spender=to_checksum_address(spender),
-            amount=int(needed),
-            chain_id=self.chain_id,
-            signing_callback=self.strategy_wallet_signing_callback,
-            approval_amount=int(needed * 2),
-        )
