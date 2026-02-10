@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from eth_account import Account
 from eth_utils import to_checksum_address
