@@ -1,0 +1,45 @@
+name: Daily Code Cleanup
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # Every day at midnight UTC
+  workflow_dispatch:
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Cleanup
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          additional_permissions: |
+            issues: write
+            pull-requests: write
+            contents: write
+          prompt: |
+            Perform a codebase cleanup. You must create a new branch for any changes.
+
+            Focus on these three areas:
+            1. **Redundant Comments:** Review code against patterns in Claude.MD. Remove comments that explain 'what' the code does if the code is self-documenting.
+            2. **Inline Imports:** Identify and consolidate inline imports into top-level imports unless there is a specific performance reason to keep them.
+            3. **Defensive Over-engineering:** Remove unnecessary guards, redundant type casts, or excessively defensive code that clutters logic without adding safety.
+
+            If changes are made:
+            - Create a branch named 'maintenance/daily-cleanup-${{ github.run_id }}'
+            - Commit the changes.
+            - Push the branch and open a PR to main.
+            - Summarize your changes in the PR description.
+          claude_args: |
+            --allowedTools "Read,Write,Edit,Bash(*)"
