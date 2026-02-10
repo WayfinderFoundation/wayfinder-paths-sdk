@@ -102,8 +102,4 @@ _GORLAMI_PATH = "/blockchain/gorlami"
 
 
 def get_gorlami_base_url() -> str:
-    system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
-    explicit = system.get("gorlami_base_url")
-    if explicit and isinstance(explicit, str):
-        return explicit.strip()
     return f"{get_api_base_url().rstrip('/')}{_GORLAMI_PATH}"
