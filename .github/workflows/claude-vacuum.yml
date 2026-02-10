@@ -71,3 +71,12 @@ jobs:
           model: claude-opus-4-6
           claude_args: |
             --verbose --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
+
+      - name: Print execution log
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/claude-execution-output.json" ]; then
+            cat "$RUNNER_TEMP/claude-execution-output.json"
+          else
+            echo "No execution log found"
+          fi
