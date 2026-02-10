@@ -26,7 +26,14 @@ class TestPolymarketAdapter:
     async def test_list_markets(self, adapter, monkeypatch):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
-        mock_resp.json.return_value = [{"slug": "test-market"}]
+        mock_resp.json.return_value = [
+            {
+                "slug": "test-market",
+                "outcomes": '["Yes","No"]',
+                "outcomePrices": '[0.5,0.5]',
+                "clobTokenIds": '["tok1","tok2"]',
+            }
+        ]
 
         async def mock_get(*_args, **_kwargs):
             return mock_resp
