@@ -34,7 +34,7 @@ jobs:
             Focus on these three areas:
             1. **Redundant Comments:** Review code against patterns in Claude.MD. Remove comments that explain 'what' the code does if the code is self-documenting.
             2. **Inline Imports:** Identify and consolidate inline imports into top-level imports unless there is a specific performance reason to keep them.
-            3. **Defensive Over-engineering:** Remove unnecessary guards, redundant type casts, or excessively defensive code that clutters logic without adding safety.
+            3. **Defensive Over-engineering:** Remove unnecessary guards, redundant type casts, or excessively defensive code that clutters logic without adding safety (you may check with curl or search to find http responses).
 
             If changes are made:
             - Create a branch named 'maintenance/daily-cleanup-${{ github.run_id }}'
