@@ -29,6 +29,7 @@ The `config.json` file has three main sections:
       "42161": "https://arb1.arbitrum.io/rpc"
     }
   },
+  "wallet_mnemonic": "abandon ...",
   "wallets": [
     {
       "label": "main",
@@ -85,6 +86,8 @@ Override them in config.json if needed:
 
 ## Wallet Configuration
 
+Optional: you can add a `wallet_mnemonic` (BIP-39) to deterministically derive wallets using MetaMask's default derivation path (`m/44'/60'/0'/0/N`) when generating local dev wallets.
+
 Wallets are stored in the `wallets` array. Each wallet has:
 
 | Field | Description |
@@ -110,6 +113,9 @@ For example, when running `stablecoin_yield_strategy`, the system looks for:
 # Create main wallet
 just create-wallets
 # Or: poetry run python scripts/make_wallets.py -n 1
+
+# Create deterministic wallets from a generated mnemonic (saved to config.json)
+poetry run python scripts/make_wallets.py -n 1 --mnemonic
 
 # Create strategy-specific wallet
 just create-wallet stablecoin_yield_strategy

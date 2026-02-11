@@ -5,7 +5,14 @@ import re
 import shutil
 from pathlib import Path
 
-from wayfinder_paths.core.utils.wallets import make_random_wallet, write_wallet_to_json
+from wayfinder_paths.core.utils.wallets import (
+    load_wallet_mnemonic,
+    load_wallets,
+    make_random_wallet,
+    make_wallet_from_mnemonic,
+    next_derivation_index_for_mnemonic,
+    write_wallet_to_json,
+)
 
 
 def sanitize_name(name: str) -> str:
@@ -150,6 +157,12 @@ def main():
     (strategy_dir / "examples.json").write_text("{}\n")
     (strategy_dir / "README.md").write_text(README_MD.format(**fmt))
 
+    mnemonic = None
+    if args.wallets_file.exists():
+        mnemonic = load_wallet_mnemonic(
+            args.wallets_file.parent, args.wallets_file.name
+        )
+
     if not args.wallets_file.exists():
         main_wallet = make_random_wallet()
         main_wallet["label"] = "main"
@@ -159,7 +172,14 @@ def main():
             filename=args.wallets_file.name,
         )
 
-    wallet = make_random_wallet()
+    existing = load_wallets(args.wallets_file.parent, args.wallets_file.name)
+    if mnemonic:
+        derivation_index = next_derivation_index_for_mnemonic(
+            mnemonic, existing, start=1
+        )
+        wallet = make_wallet_from_mnemonic(mnemonic, account_index=derivation_index)
+    else:
+        wallet = make_random_wallet()
     wallet["label"] = dir_name
     write_wallet_to_json(
         wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name

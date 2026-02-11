@@ -54,6 +54,9 @@ cp config.example.json config.json
 
 # Create a main wallet for local testing
 poetry run python scripts/make_wallets.py -n 1
+
+# Or: create deterministic wallets from a generated mnemonic (saved to config.json)
+poetry run python scripts/make_wallets.py -n 1 --mnemonic
 ```
 
 ## Configuration
