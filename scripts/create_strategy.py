@@ -170,7 +170,9 @@ def main():
         )
 
     existing = load_wallets(args.wallets_file.parent, args.wallets_file.name)
-    wallet = make_local_wallet(label=dir_name, existing_wallets=existing, mnemonic=mnemonic)
+    wallet = make_local_wallet(
+        label=dir_name, existing_wallets=existing, mnemonic=mnemonic
+    )
     write_wallet_to_json(
         wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name
     )

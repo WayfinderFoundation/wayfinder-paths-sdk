@@ -210,7 +210,9 @@ def main() -> int:
 
     _ensure_config(api_key=api_key or None)
     _ensure_mcp_json()
-    _ensure_wallets(poetry, non_interactive=args.non_interactive, mnemonic=args.mnemonic)
+    _ensure_wallets(
+        poetry, non_interactive=args.non_interactive, mnemonic=args.mnemonic
+    )
 
     config = _read_json(REPO_ROOT / "config.json") or {}
     if not config.get("system", {}).get("api_key"):

@@ -133,7 +133,9 @@ def main() -> int:
         _run([*base, "--label", name])
 
     print("\nStage 2 complete.")
-    print("- Open Claude Code in this repo and enable the project MCP server when prompted.")
+    print(
+        "- Open Claude Code in this repo and enable the project MCP server when prompted."
+    )
     return 0
 
 
