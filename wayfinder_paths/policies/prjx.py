@@ -1,4 +1,8 @@
 from wayfinder_paths.core.constants.contracts import PRJX_NPM, PRJX_ROUTER
+from wayfinder_paths.core.constants.projectx_abi import PROJECTX_ROUTER_ABI
+from wayfinder_paths.core.constants.uniswap_v3_abi import (
+    NONFUNGIBLE_POSITION_MANAGER_ABI,
+)
 from wayfinder_paths.policies.util import allow_functions
 
 
@@ -13,6 +17,7 @@ async def prjx_swap():
             "exactOutput",
             "exactOutputSingle",
         ],
+        manual_abi=PROJECTX_ROUTER_ABI,
     )
 
 
@@ -22,7 +27,11 @@ async def prjx_npm():
         abi_chain_id=999,
         address=PRJX_NPM,
         function_names=[
+            "mint",
             "increaseLiquidity",
             "decreaseLiquidity",
+            "collect",
+            "burn",
         ],
+        manual_abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
     )

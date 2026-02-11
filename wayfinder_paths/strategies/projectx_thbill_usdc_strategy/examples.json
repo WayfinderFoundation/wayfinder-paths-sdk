@@ -1,0 +1,9 @@
+{
+  "smoke": {
+    "deposit": {
+      "main_token_amount": 5.0,
+      "gas_token_amount": 0.06
+    }
+  }
+}
+
