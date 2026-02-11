@@ -8,9 +8,7 @@ from pathlib import Path
 from wayfinder_paths.core.utils.wallets import (
     load_wallet_mnemonic,
     load_wallets,
-    make_random_wallet,
-    make_wallet_from_mnemonic,
-    next_derivation_index_for_mnemonic,
+    make_local_wallet,
     write_wallet_to_json,
 )
 
@@ -164,8 +162,7 @@ def main():
         )
 
     if not args.wallets_file.exists():
-        main_wallet = make_random_wallet()
-        main_wallet["label"] = "main"
+        main_wallet = make_local_wallet(label="main")
         write_wallet_to_json(
             main_wallet,
             out_dir=args.wallets_file.parent,
@@ -173,14 +170,7 @@ def main():
         )
 
     existing = load_wallets(args.wallets_file.parent, args.wallets_file.name)
-    if mnemonic:
-        derivation_index = next_derivation_index_for_mnemonic(
-            mnemonic, existing, start=1
-        )
-        wallet = make_wallet_from_mnemonic(mnemonic, account_index=derivation_index)
-    else:
-        wallet = make_random_wallet()
-    wallet["label"] = dir_name
+    wallet = make_local_wallet(label=dir_name, existing_wallets=existing, mnemonic=mnemonic)
     write_wallet_to_json(
         wallet, out_dir=args.wallets_file.parent, filename=args.wallets_file.name
     )

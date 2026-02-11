@@ -7,9 +7,7 @@ from typing import Any, Literal
 
 from wayfinder_paths.core.utils.wallets import (
     load_wallet_mnemonic,
-    make_random_wallet,
-    make_wallet_from_mnemonic,
-    next_derivation_index_for_mnemonic,
+    make_local_wallet,
     write_wallet_to_json,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
@@ -162,17 +160,7 @@ async def wallets(
                 )
 
         mnemonic = load_wallet_mnemonic(root, "config.json")
-        if mnemonic:
-            if want.lower() == "main":
-                derivation_index = 0
-            else:
-                derivation_index = next_derivation_index_for_mnemonic(
-                    mnemonic, existing, start=1
-                )
-            w = make_wallet_from_mnemonic(mnemonic, account_index=derivation_index)
-        else:
-            w = make_random_wallet()
-        w["label"] = want
+        w = make_local_wallet(label=want, existing_wallets=existing, mnemonic=mnemonic)
         write_wallet_to_json(w, out_dir=root, filename="config.json")
 
         refreshed = load_wallets()

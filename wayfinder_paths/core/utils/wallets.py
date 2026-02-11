@@ -1,22 +1,13 @@
 import json
-import re
 from pathlib import Path
 from typing import Any
 
 from eth_account import Account
 
+from wayfinder_paths.core.config import load_config_json
+
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
-
-_HD_WALLET_ENABLED = False
-
-
-def _enable_hd_wallet_features() -> None:
-    global _HD_WALLET_ENABLED
-    if _HD_WALLET_ENABLED:
-        return
-    Account.enable_unaudited_hdwallet_features()
-    _HD_WALLET_ENABLED = True
 
 
 def make_random_wallet() -> dict[str, str]:
@@ -27,58 +18,37 @@ def make_random_wallet() -> dict[str, str]:
     }
 
 
-def default_evm_account_path(index: int) -> str:
-    idx = int(index)
-    if idx < 0:
-        raise ValueError("account index must be non-negative")
-    return _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE.format(index=idx)
-
-
 def make_wallet_from_mnemonic(
     mnemonic: str,
     *,
     account_index: int = 0,
-    account_path: str | None = None,
 ) -> dict[str, Any]:
     """Derive an EVM wallet from a BIP-39 mnemonic.
 
-    Uses MetaMask's default derivation path: ``m/44'/60'/0'/0/{index}``.
+    Uses MetaMask's default derivation path: ``m/44'/60'/0'/0/{account_index}``.
     """
-    _enable_hd_wallet_features()
-    idx = int(account_index)
-    if idx < 0:
-        raise ValueError("account_index must be non-negative")
-    path = str(account_path).strip() if account_path else default_evm_account_path(idx)
-    acct = Account.from_mnemonic(str(mnemonic).strip(), account_path=path)
+    Account.enable_unaudited_hdwallet_features()
+    path = _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE.format(index=account_index)
+    acct = Account.from_mnemonic(mnemonic, account_path=path)
     return {
         "address": acct.address,
         "private_key_hex": acct.key.hex(),
         "derivation_path": path,
-        "derivation_index": idx,
+        "derivation_index": account_index,
     }
 
 
 def generate_wallet_mnemonic(*, num_words: int = 24) -> str:
-    _enable_hd_wallet_features()
-    _acct, mnemonic = Account.create_with_mnemonic(num_words=int(num_words))
+    Account.enable_unaudited_hdwallet_features()
+    _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
     return mnemonic
-
-
-def _load_config_dict(file_path: Path) -> dict[str, Any]:
-    if not file_path.exists():
-        return {}
-    try:
-        parsed = json.loads(file_path.read_text())
-        return parsed if isinstance(parsed, dict) else {}
-    except Exception:
-        return {}
 
 
 def load_wallet_mnemonic(
     out_dir: str | Path = ".", filename: str = "config.json"
 ) -> str | None:
     file_path = Path(out_dir) / filename
-    config = _load_config_dict(file_path)
+    config = load_config_json(file_path)
     value = config.get(_WALLET_MNEMONIC_KEY)
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -95,8 +65,8 @@ def write_wallet_mnemonic(
     out_dir_path.mkdir(parents=True, exist_ok=True)
     file_path = out_dir_path / filename
 
-    config = _load_config_dict(file_path)
-    config[_WALLET_MNEMONIC_KEY] = str(mnemonic).strip()
+    config = load_config_json(file_path)
+    config[_WALLET_MNEMONIC_KEY] = mnemonic
     file_path.write_text(json.dumps(config, indent=2))
     return file_path
 
@@ -113,37 +83,6 @@ def ensure_wallet_mnemonic(
     mnemonic = generate_wallet_mnemonic(num_words=int(num_words))
     write_wallet_mnemonic(mnemonic, out_dir=out_dir, filename=filename)
     return mnemonic
-
-
-def _extract_derivation_index(wallet: dict[str, Any]) -> int | None:
-    raw = wallet.get("derivation_index")
-    if isinstance(raw, int):
-        return raw if raw >= 0 else None
-    if isinstance(raw, str) and raw.isdigit():
-        return int(raw)
-
-    path = wallet.get("derivation_path")
-    if isinstance(path, str) and path.strip():
-        m = re.fullmatch(r"m/44'/60'/0'/0/(\d+)", path.strip())
-        if m:
-            return int(m.group(1))
-
-    return None
-
-
-def next_derivation_index(wallets: list[dict[str, Any]], *, start: int = 1) -> int:
-    used: set[int] = set()
-    for w in wallets:
-        idx = _extract_derivation_index(w)
-        if idx is not None:
-            used.add(idx)
-
-    i = int(start)
-    if i < 0:
-        raise ValueError("start must be non-negative")
-    while i in used:
-        i += 1
-    return i
 
 
 def next_derivation_index_for_mnemonic(
@@ -164,17 +103,37 @@ def next_derivation_index_for_mnemonic(
         if isinstance(w, dict) and w.get("address")
     }
 
-    i = int(start)
-    if i < 0:
-        raise ValueError("start must be non-negative")
-
-    for _ in range(int(max_tries)):
+    for i in range(start, start + max_tries):
         derived = make_wallet_from_mnemonic(mnemonic, account_index=i)
         if str(derived.get("address", "")).lower() not in existing_addrs:
             return i
-        i += 1
 
     raise RuntimeError("Unable to find an unused derivation index")
+
+
+def make_local_wallet(
+    *,
+    label: str,
+    existing_wallets: list[dict[str, Any]] | None = None,
+    mnemonic: str | None = None,
+) -> dict[str, Any]:
+    """Create a local dev wallet.
+
+    - If a mnemonic is provided, derive MetaMask-style accounts.
+    - Otherwise, generate a random wallet.
+    """
+    wallets = existing_wallets or []
+    if mnemonic:
+        derivation_index = (
+            0
+            if label.lower() == "main"
+            else next_derivation_index_for_mnemonic(mnemonic, wallets, start=1)
+        )
+        wallet = make_wallet_from_mnemonic(mnemonic, account_index=derivation_index)
+    else:
+        wallet = make_random_wallet()
+    wallet["label"] = label
+    return wallet
 
 
 def _load_existing_wallets(file_path: Path) -> list[dict[str, Any]]:

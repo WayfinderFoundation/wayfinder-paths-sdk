@@ -8,9 +8,7 @@ from wayfinder_paths.core.utils.wallets import (
     ensure_wallet_mnemonic,
     load_wallet_mnemonic,
     load_wallets,
-    make_random_wallet,
-    make_wallet_from_mnemonic,
-    next_derivation_index_for_mnemonic,
+    make_local_wallet,
     write_wallet_mnemonic,
     write_wallet_to_json,
 )
@@ -112,21 +110,11 @@ def main():
         if any(w.get("label") == args.label for w in existing):
             print(f"Wallet with label '{args.label}' already exists, skipping...")
         else:
-            if mnemonic_to_use:
-                is_main_label = str(args.label).strip().lower() == "main"
-                derivation_index = (
-                    0
-                    if is_main_label
-                    else next_derivation_index_for_mnemonic(
-                        mnemonic_to_use, existing, start=1
-                    )
-                )
-                w = make_wallet_from_mnemonic(
-                    mnemonic_to_use, account_index=derivation_index
-                )
-            else:
-                w = make_random_wallet()
-            w["label"] = args.label
+            w = make_local_wallet(
+                label=args.label,
+                existing_wallets=existing,
+                mnemonic=mnemonic_to_use,
+            )
             rows.append(w)
             print(f"[{index}] {w['address']}  (label: {args.label})")
             write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
@@ -139,11 +127,11 @@ def main():
 
             # If no wallets existed before, also create a "main" wallet
             if existing_was_empty and str(args.label).strip().lower() != "main":
-                if mnemonic_to_use:
-                    main_w = make_wallet_from_mnemonic(mnemonic_to_use, account_index=0)
-                else:
-                    main_w = make_random_wallet()
-                main_w["label"] = "main"
+                main_w = make_local_wallet(
+                    label="main",
+                    existing_wallets=existing,
+                    mnemonic=mnemonic_to_use,
+                )
                 rows.append(main_w)
                 print(f"[{index}] {main_w['address']}  (main)")
                 write_wallet_to_json(
@@ -182,27 +170,22 @@ def main():
         for i in range(args.n):
             # Label first wallet as "main" if main doesn't exist, otherwise use temporary_N
             if i == 0 and not has_main:
-                if mnemonic_to_use:
-                    w = make_wallet_from_mnemonic(mnemonic_to_use, account_index=0)
-                else:
-                    w = make_random_wallet()
-                w["label"] = "main"
+                w = make_local_wallet(
+                    label="main",
+                    existing_wallets=existing,
+                    mnemonic=mnemonic_to_use,
+                )
                 rows.append(w)
                 print(f"[{index}] {w['address']}  (main)")
                 has_main = True
             else:
-                if mnemonic_to_use:
-                    derivation_index = next_derivation_index_for_mnemonic(
-                        mnemonic_to_use, existing, start=1
-                    )
-                    w = make_wallet_from_mnemonic(
-                        mnemonic_to_use, account_index=derivation_index
-                    )
-                else:
-                    w = make_random_wallet()
                 while next_temp_num in temp_numbers:
                     next_temp_num += 1
-                w["label"] = f"temporary_{next_temp_num}"
+                w = make_local_wallet(
+                    label=f"temporary_{next_temp_num}",
+                    existing_wallets=existing,
+                    mnemonic=mnemonic_to_use,
+                )
                 temp_numbers.add(next_temp_num)
                 rows.append(w)
                 print(f"[{index}] {w['address']}  (label: temporary_{next_temp_num})")
