@@ -4,20 +4,13 @@ import json
 import re
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
-from wayfinder_paths.mcp.utils import find_wallet_by_label, normalize_address
+from wayfinder_paths.mcp.utils import resolve_wallet_address
 
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
 
 
-def _resolve_wallet_address(label: str) -> str | None:
-    w = find_wallet_by_label(label)
-    if not w:
-        return None
-    return normalize_address(w.get("address"))
-
-
 async def get_user_state(label: str) -> str:
-    addr = _resolve_wallet_address(label)
+    addr, _ = resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
 
@@ -29,7 +22,7 @@ async def get_user_state(label: str) -> str:
 
 
 async def get_spot_user_state(label: str) -> str:
-    addr = _resolve_wallet_address(label)
+    addr, _ = resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
 

@@ -9,11 +9,10 @@ from wayfinder_paths.core.utils.wallets import make_random_wallet, write_wallet_
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
-    find_wallet_by_label,
     load_wallets,
-    normalize_address,
     ok,
     repo_root,
+    resolve_wallet_address,
 )
 
 PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
@@ -57,29 +56,19 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "account_param": "account",
         "extra_kwargs": {"chain": 42161, "include_zero_positions": False},
     },
+    "polymarket": {
+        "module": "wayfinder_paths.adapters.polymarket_adapter.adapter",
+        "class": "PolymarketAdapter",
+        "init_kwargs": {},
+        "method": "get_full_user_state",
+        "account_param": "account",
+        "extra_kwargs": {"include_orders": False},
+    },
 }
 
 
 def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
     return {"label": w.get("label"), "address": w.get("address")}
-
-
-def _resolve_wallet_address(
-    *, wallet_label: str | None, wallet_address: str | None
-) -> tuple[str | None, str | None]:
-    waddr = normalize_address(wallet_address)
-    if waddr:
-        return waddr, None
-
-    want = (wallet_label or "").strip()
-    if not want:
-        return None, None
-
-    w = find_wallet_by_label(want)
-    if not w:
-        return None, None
-
-    return normalize_address(w.get("address")), want
 
 
 async def _query_adapter(
@@ -180,7 +169,7 @@ async def wallets(
         )
 
     if action == "annotate":
-        address, lbl = _resolve_wallet_address(
+        address, lbl = resolve_wallet_address(
             wallet_label=wallet_label or label, wallet_address=wallet_address
         )
         if not address:
@@ -218,7 +207,7 @@ async def wallets(
         )
 
     if action == "discover_portfolio":
-        address, lbl = _resolve_wallet_address(
+        address, lbl = resolve_wallet_address(
             wallet_label=wallet_label or label, wallet_address=wallet_address
         )
         if not address:
