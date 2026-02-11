@@ -62,6 +62,29 @@ CCXT handles rate limiting internally when `enableRateLimit` is set (it's off by
 }
 ```
 
+## `get_adapter(CCXTAdapter)` requires `ccxt` section in config.json
+
+If `config.json` has no `ccxt` key, `get_adapter(CCXTAdapter)` loads zero exchanges — no error, but accessing `adapter.aster` raises `AttributeError`. For public-data-only access (no API keys), construct directly:
+
+```python
+# No config.json needed — empty dict works for public endpoints (tickers, funding, orderbooks)
+adapter = CCXTAdapter(exchanges={"aster": {}, "binance": {}})
+```
+
+## For Hyperliquid reads, prefer the SDK Info client over CCXT
+
+The native `HyperliquidAdapter` requires a wallet even for reads. For read-only data (funding history, meta, orderbooks), use the SDK `Info` client directly:
+
+```python
+from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info
+
+info = get_info()
+meta_and_ctxs = info.meta_and_asset_ctxs()  # sync, not async
+rows = info.funding_history("ETH", start_ms, end_ms)  # sync
+```
+
+Note: `Info` methods are **sync** (not async). `funding_history` returns `[{"fundingRate": "0.00001", "time": "..."}]`.
+
 ## Exchange instances are properties, not methods
 
 ```python
