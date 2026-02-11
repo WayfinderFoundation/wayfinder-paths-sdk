@@ -6,8 +6,8 @@ from pathlib import Path
 from wayfinder_paths.core.utils.wallets import (
     ensure_wallet_mnemonic,
     load_wallet_mnemonic,
+    make_local_wallet,
     make_wallet_from_mnemonic,
-    next_derivation_index_for_mnemonic,
 )
 
 
@@ -37,7 +37,7 @@ def test_ensure_wallet_mnemonic_persists(tmp_path: Path) -> None:
     assert cfg["wallet_mnemonic"] == m1
 
 
-def test_next_derivation_index_for_mnemonic_skips_existing_addresses() -> None:
+def test_make_local_wallet_skips_existing_addresses_for_mnemonic() -> None:
     mnemonic = "test test test test test test test test test test test junk"
     existing = [
         {
@@ -46,5 +46,9 @@ def test_next_derivation_index_for_mnemonic_skips_existing_addresses() -> None:
         }
     ]
 
-    idx = next_derivation_index_for_mnemonic(mnemonic, existing, start=1)
-    assert idx == 2
+    w = make_local_wallet(
+        label="strategy_wallet",
+        existing_wallets=existing,
+        mnemonic=mnemonic,
+    )
+    assert w["derivation_index"] == 2

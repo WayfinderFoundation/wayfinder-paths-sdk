@@ -85,7 +85,7 @@ def ensure_wallet_mnemonic(
     return mnemonic
 
 
-def next_derivation_index_for_mnemonic(
+def _next_derivation_index_for_mnemonic(
     mnemonic: str,
     wallets: list[dict[str, Any]],
     *,
@@ -127,7 +127,7 @@ def make_local_wallet(
         derivation_index = (
             0
             if label.lower() == "main"
-            else next_derivation_index_for_mnemonic(mnemonic, wallets, start=1)
+            else _next_derivation_index_for_mnemonic(mnemonic, wallets, start=1)
         )
         wallet = make_wallet_from_mnemonic(mnemonic, account_index=derivation_index)
     else:
