@@ -189,7 +189,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
         tick_upper = round_tick_to_spacing(current_tick + half, tick_spacing)
         if tick_lower >= tick_upper:
             tick_upper = tick_lower + tick_spacing
-        return int(tick_lower), int(tick_upper)
+        return tick_lower, tick_upper
 
     async def _recent_ticks(
         self, *, window_sec: int, min_swaps: int, max_swaps: int = 500
@@ -221,7 +221,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
         core = ticks[trim : n - trim] if n - 2 * trim > 0 else ticks
 
         center_raw = int(statistics.median(core))
-        center = int(round_tick_to_spacing(center_raw, tick_spacing))
+        center = round_tick_to_spacing(center_raw, tick_spacing)
 
         max_jump = 5 * int(tick_spacing)
         if abs(center - int(fallback_tick)) > max_jump:
@@ -454,9 +454,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             amount1_raw = int(deposit_usd * price_token1_per_token0 * (10**dec1))
 
         liq_est = int(
-            liq_for_amounts(
-                sqrt_p, sqrt_pl, sqrt_pu, int(amount0_raw), int(amount1_raw)
-            )
+            liq_for_amounts(sqrt_p, sqrt_pl, sqrt_pu, amount0_raw, amount1_raw)
         )
         if liq_est <= 0:
             return out
