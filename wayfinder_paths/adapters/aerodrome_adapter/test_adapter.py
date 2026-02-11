@@ -8,14 +8,13 @@ from eth_utils import keccak
 from web3.exceptions import Web3RPCError
 
 import wayfinder_paths.adapters.aerodrome_adapter.adapter as aerodrome
-from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
-    AerodromeAdapter,
-    Route,
-    SlipstreamRangeMetrics,
-    SugarEpoch,
-    SugarPool,
-    SugarReward,
-)
+
+AerodromeAdapter = aerodrome.AerodromeAdapter
+Route = aerodrome.Route
+SlipstreamRangeMetrics = aerodrome.SlipstreamRangeMetrics
+SugarEpoch = aerodrome.SugarEpoch
+SugarPool = aerodrome.SugarPool
+SugarReward = aerodrome.SugarReward
 
 
 class _FakeCall:
@@ -236,14 +235,16 @@ class TestAerodromeAdapter:
         ) -> list[int]:  # noqa: ARG001
             return [10, 60]
 
-        async def _fake_pool_state(*, pool: str):
+        async def _fake_pool_state_with_web3(*, pool: str, web3):  # noqa: ARG001
             liq = 100 if pool.lower() == pool_low.lower() else 200
             return SimpleNamespace(liquidity=liq)
 
         monkeypatch.setattr(
             adapter, "_slipstream_tick_spacings_for_pair", _fake_tick_spacings_for_pair
         )
-        monkeypatch.setattr(adapter, "slipstream_pool_state", _fake_pool_state)
+        monkeypatch.setattr(
+            adapter, "_slipstream_pool_state_with_web3", _fake_pool_state_with_web3
+        )
 
         fake_eth = _FakeEth(
             now_ts=1_700_000_000,
@@ -1223,3 +1224,11 @@ class TestAerodromeAdapter:
             )
             is None
         )
+
+        with pytest.raises(ValueError, match="tick_lower must be < tick_upper"):
+            await adapter.slipstream_prob_in_range_week(
+                pool="0x" + "11" * 20,
+                tick_lower=10,
+                tick_upper=10,
+                sigma_annual=0.2,
+            )

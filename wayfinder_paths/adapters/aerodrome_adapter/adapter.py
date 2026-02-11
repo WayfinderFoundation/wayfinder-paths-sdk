@@ -439,7 +439,9 @@ class AerodromeAdapter(BaseAdapter):
                     continue
                 pool_cs = to_checksum_address(pool)
                 try:
-                    st = await self.slipstream_pool_state(pool=pool_cs)
+                    st = await self._slipstream_pool_state_with_web3(
+                        pool=pool_cs, web3=web3
+                    )
                 except Exception:
                     continue
                 liq = int(st.liquidity)
@@ -544,6 +546,8 @@ class AerodromeAdapter(BaseAdapter):
             if weth_to_usdc and int(weth_to_usdc) > 0:
                 return int(weth_to_usdc)
         except Exception:
+            # Pathfinding can fail when v2 routes are temporarily unavailable;
+            # fall back to slipstream-only quoting below.
             pass
 
         weth_direct = await self._slipstream_quote_best_single_hop(
@@ -743,17 +747,18 @@ class AerodromeAdapter(BaseAdapter):
         spacing = int(spacing)
         return int((-(-int(tick) // spacing)) * spacing)
 
-    async def slipstream_pool_state(self, *, pool: str) -> SlipstreamPoolState:
+    async def _slipstream_pool_state_with_web3(
+        self, *, pool: str, web3: Any
+    ) -> SlipstreamPoolState:
         pool = to_checksum_address(pool)
-        async with web3_from_chain_id(self.chain_id) as web3:
-            c = web3.eth.contract(address=pool, abi=SLIPSTREAM_CLPOOL_ABI)
-            sqrt_price_x96, tick, *_ = await c.functions.slot0().call()
-            token0 = to_checksum_address(await c.functions.token0().call())
-            token1 = to_checksum_address(await c.functions.token1().call())
-            tick_spacing = int(await c.functions.tickSpacing().call())
-            liquidity = int(await c.functions.liquidity().call())
-            fee_pips = int(await c.functions.fee().call())
-            unstaked_fee_pips = int(await c.functions.unstakedFee().call())
+        c = web3.eth.contract(address=pool, abi=SLIPSTREAM_CLPOOL_ABI)
+        sqrt_price_x96, tick, *_ = await c.functions.slot0().call()
+        token0 = to_checksum_address(await c.functions.token0().call())
+        token1 = to_checksum_address(await c.functions.token1().call())
+        tick_spacing = int(await c.functions.tickSpacing().call())
+        liquidity = int(await c.functions.liquidity().call())
+        fee_pips = int(await c.functions.fee().call())
+        unstaked_fee_pips = int(await c.functions.unstakedFee().call())
 
         return SlipstreamPoolState(
             pool=pool,
@@ -766,6 +771,10 @@ class AerodromeAdapter(BaseAdapter):
             fee_pips=int(fee_pips),
             unstaked_fee_pips=int(unstaked_fee_pips),
         )
+
+    async def slipstream_pool_state(self, *, pool: str) -> SlipstreamPoolState:
+        async with web3_from_chain_id(self.chain_id) as web3:
+            return await self._slipstream_pool_state_with_web3(pool=pool, web3=web3)
 
     async def slipstream_range_metrics(
         self,
@@ -1239,6 +1248,8 @@ class AerodromeAdapter(BaseAdapter):
         tick_upper: int,
         sigma_annual: float,
     ) -> float | None:
+        if int(tick_lower) >= int(tick_upper):
+            raise ValueError("tick_lower must be < tick_upper")
         sigma = float(sigma_annual)
         if not math.isfinite(sigma) or sigma <= 0:
             return None
@@ -1580,6 +1591,8 @@ class AerodromeAdapter(BaseAdapter):
                             ids = await multicall_uint256(calls)
                             return sorted({int(x) for x in ids})
                         except Exception:
+                            # Enumerable method unsupported/unstable on some
+                            # providers; use log-scan fallback below.
                             pass
 
                     # Log scan fallback (progressively increase lookback if needed).
@@ -1614,6 +1627,8 @@ class AerodromeAdapter(BaseAdapter):
                         await add_ids_from_logs(list(logs_full))
                         return sorted(candidate_ids)
                     except (Web3RPCError, TimeoutError):
+                        # Full-range log query may exceed provider limits; use
+                        # bounded backfill scanning below.
                         pass
 
                     # If we know the owner holds NFTs (balanceOf), scan recent history until we
