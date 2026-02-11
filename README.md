@@ -44,6 +44,10 @@ python3 scripts/setup.py
 # One-command setup with deterministic wallets (generates + saves wallet_mnemonic)
 python3 scripts/setup.py --mnemonic
 
+# Remote two-stage setup (stage 1 installs deps + writes config.json)
+python3 scripts/remote_setup_stage1.py --api-key wk_...
+python3 scripts/remote_setup_stage2.py --mnemonic "test test test test test test test test test test test junk"
+
 # Check strategy status
 poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action status --config config.json
 ```
