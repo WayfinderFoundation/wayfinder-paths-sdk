@@ -5,6 +5,7 @@ from typing import Any, cast
 
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS_SYMBOLS
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.utils.token_refs import (
     looks_like_evm_address,
@@ -33,7 +34,7 @@ def _normalize_token_query(query: str) -> str:
 def _is_eth_like_token(meta: dict[str, Any]) -> bool:
     asset_id = str(meta.get("asset_id") or "").lower()
     symbol = str(meta.get("symbol") or "").lower()
-    return asset_id == "ethereum" or symbol == "eth"
+    return asset_id in NATIVE_COINGECKO_IDS or symbol in NATIVE_GAS_SYMBOLS
 
 
 def _split_asset_chain(query: str) -> tuple[str, str] | None:
@@ -216,7 +217,7 @@ class TokenResolver:
         split = _split_asset_chain(q)
         if split:
             asset, chain_code = split
-            if asset in {"eth", "ethereum"}:
+            if asset in NATIVE_COINGECKO_IDS or asset in NATIVE_GAS_SYMBOLS:
                 try:
                     gas_meta = await cls._get_gas_token_cached(chain_code)
                     if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
