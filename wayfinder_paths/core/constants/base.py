@@ -29,3 +29,14 @@ DEFAULT_PAGINATION_LIMIT = 50
 MANTISSA = 10**18
 SECONDS_PER_YEAR = 365 * 24 * 60 * 60
 MAX_UINT256 = 2**256 - 1
+
+NATIVE_COINGECKO_IDS = {
+    "ethereum",
+    "polygon-ecosystem-token",
+    "avalanche-2",
+    "binancecoin",
+    "hyperliquid",
+    "plasma",
+}
+
+NATIVE_GAS_SYMBOLS = {"eth", "pol", "avax", "bnb", "hype", "xpl"}
