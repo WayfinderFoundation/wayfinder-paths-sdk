@@ -3,10 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
-from wayfinder_paths.mcp.tools.execute import (
-    _resolve_token_meta,
-    _select_token_chain,
-)
+from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     err,
     find_wallet_by_label,
@@ -79,13 +76,15 @@ async def quote_swap(
         return err("invalid_wallet", f"Wallet {wallet_label} missing address")
 
     try:
-        from_q, from_meta = await _resolve_token_meta(from_token)
-        to_q, to_meta = await _resolve_token_meta(to_token)
+        from_meta = await TokenResolver.resolve_token_meta(from_token)
+        to_meta = await TokenResolver.resolve_token_meta(to_token)
     except Exception as exc:  # noqa: BLE001
         return err("token_error", str(exc))
 
-    from_chain_id, from_token_addr = _select_token_chain(from_meta, query=from_q)
-    to_chain_id, to_token_addr = _select_token_chain(to_meta, query=to_q)
+    from_chain_id = from_meta.get("chain_id")
+    to_chain_id = to_meta.get("chain_id")
+    from_token_addr = str(from_meta.get("address") or "").strip() or None
+    to_token_addr = str(to_meta.get("address") or "").strip() or None
     if from_chain_id is None or to_chain_id is None:
         return err(
             "invalid_token",
@@ -180,8 +179,8 @@ async def quote_swap(
     if rcpt.lower() != sender.lower():
         preview = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + preview
 
-    from_token_id = from_meta.get("token_id") or from_q
-    to_token_id = to_meta.get("token_id") or to_q
+    from_token_id = from_meta.get("token_id") or from_token
+    to_token_id = to_meta.get("token_id") or to_token
 
     result = {
         "preview": preview,

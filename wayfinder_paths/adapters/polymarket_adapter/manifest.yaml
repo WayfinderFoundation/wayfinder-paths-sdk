@@ -1,0 +1,15 @@
+schema_version: "0.1"
+entrypoint: "adapters.polymarket_adapter.adapter.PolymarketAdapter"
+capabilities:
+  - "market.read"
+  - "market.search"
+  - "market.orderbook"
+  - "market.candles"
+  - "position.read"
+  - "order.execute"
+  - "order.cancel"
+  - "bridge.deposit"
+  - "bridge.withdraw"
+dependencies:
+  - "py-clob-client"
+

@@ -38,6 +38,7 @@ from wayfinder_paths.mcp.resources.wallets import (
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
+from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 from wayfinder_paths.mcp.tools.quotes import quote_swap
 from wayfinder_paths.mcp.tools.run_script import run_script
 from wayfinder_paths.mcp.tools.runner import runner
@@ -70,6 +71,8 @@ mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
 mcp.tool()(quote_swap)
 mcp.tool()(hyperliquid)
 mcp.tool()(hyperliquid_execute)
+mcp.tool()(polymarket)
+mcp.tool()(polymarket_execute)
 mcp.tool()(run_strategy)
 mcp.tool()(run_script)
 mcp.tool()(execute)

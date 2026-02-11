@@ -87,6 +87,7 @@ class MulticallAdapter(BaseAdapter):
         calls: Iterable[MulticallCall | tuple[str, bytes | str]],
         *,
         value: int = 0,
+        block_identifier: str | int | None = None,
     ) -> MulticallResult:
         calls_list = list(calls)
         if not calls_list:
@@ -97,9 +98,13 @@ class MulticallAdapter(BaseAdapter):
             target, calldata = self._coerce_call(call)
             encoded_calls.append((target, calldata))
 
-        block_number, return_data = await self.contract.functions.aggregate(
-            encoded_calls
-        ).call({"value": int(value)})
+        call_fn = self.contract.functions.aggregate(encoded_calls).call
+        if block_identifier is None:
+            block_number, return_data = await call_fn({"value": int(value)})
+        else:
+            block_number, return_data = await call_fn(
+                {"value": int(value)}, block_identifier=block_identifier
+            )
         payload = tuple(self._ensure_bytes(r) for r in return_data)
         return MulticallResult(block_number=int(block_number), return_data=payload)
 

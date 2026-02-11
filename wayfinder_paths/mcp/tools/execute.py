@@ -1,23 +1,20 @@
 from __future__ import annotations
 
-import re
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from eth_account import Account
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
-from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS_SYMBOLS
-from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
     ARBITRUM_USDC_TOKEN_ID,
     HYPERLIQUID_BRIDGE_ADDRESS,
 )
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
+from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
@@ -109,136 +106,6 @@ def _addr_lower(addr: str | None) -> str | None:
         return None
     a = str(addr).strip()
     return a.lower() if a else None
-
-
-def _chain_id_from_token(meta: dict[str, Any]) -> int | None:
-    # Token payloads often include an internal/db `id` field. Only accept:
-    # - meta["chain_id"] (preferred)
-    # - meta["chain"]["chain_id"] / ["chainId"] / ["id"]
-    chain_id_val = meta.get("chain_id")
-    if chain_id_val is not None:
-        try:
-            return int(chain_id_val)
-        except (TypeError, ValueError):
-            return None
-
-    chain = meta.get("chain") or {}
-    if not isinstance(chain, dict):
-        return None
-
-    for key in ("chain_id", "chainId", "id"):
-        val = chain.get(key)
-        if val is None:
-            continue
-        try:
-            return int(val)
-        except (TypeError, ValueError):
-            return None
-
-    return None
-
-
-_SIMPLE_CHAIN_SUFFIX_RE = re.compile(r"^[a-z0-9]+\s+[a-z0-9-]+$", re.IGNORECASE)
-_ASSET_CHAIN_SPLIT_RE = re.compile(
-    r"^(?P<asset>[a-z0-9]+)[- _](?P<chain>[a-z0-9-]+)$", re.IGNORECASE
-)
-
-
-def _normalize_token_query(query: str) -> str:
-    q = " ".join(str(query).strip().split())
-    if not q or "-" in q or "_" in q:
-        return q
-    if not _SIMPLE_CHAIN_SUFFIX_RE.match(q):
-        return q
-    asset, chain_code = q.rsplit(" ", 1)
-    if chain_code.lower() in CHAIN_CODE_TO_ID:
-        return f"{asset}-{chain_code}"
-    return q
-
-
-def _is_gas_token(meta: dict[str, Any]) -> bool:
-    asset_id = str(meta.get("asset_id") or "").lower()
-    symbol = str(meta.get("symbol") or "").lower()
-    return asset_id in NATIVE_COINGECKO_IDS or symbol in NATIVE_GAS_SYMBOLS
-
-
-def _split_asset_chain(query: str) -> tuple[str, str] | None:
-    q = str(query).strip()
-    if not q:
-        return None
-    m = _ASSET_CHAIN_SPLIT_RE.match(q)
-    if not m:
-        return None
-    return m.group("asset").lower(), m.group("chain").lower()
-
-
-async def _resolve_token_meta(query: str) -> tuple[str, dict[str, Any]]:
-    q = _normalize_token_query(query)
-    split = _split_asset_chain(q)
-    if split:
-        asset, chain_code = split
-        if asset in NATIVE_COINGECKO_IDS or asset in NATIVE_GAS_SYMBOLS:
-            try:
-                gas_meta = await TOKEN_CLIENT.get_gas_token(chain_code)
-                if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
-                    return q, cast(dict[str, Any], gas_meta)
-            except Exception:
-                pass
-    meta = await TOKEN_CLIENT.get_token_details(q)
-    return q, cast(dict[str, Any], meta)
-
-
-def _infer_chain_code_from_query(query: str, meta: dict[str, Any]) -> str | None:
-    q = str(query).strip().lower()
-    if not q:
-        return None
-
-    candidates: set[str] = {str(k).lower() for k in CHAIN_CODE_TO_ID.keys()}
-    addrs = meta.get("addresses") or {}
-    if isinstance(addrs, dict):
-        candidates.update(str(k).lower() for k in addrs.keys())
-
-    best: str | None = None
-    for code in candidates:
-        if q.endswith(f"-{code}"):
-            if best is None or len(code) > len(best):
-                best = code
-    return best
-
-
-def _address_for_chain(meta: dict[str, Any], chain_code: str) -> str | None:
-    addrs = meta.get("addresses") or {}
-    if not isinstance(addrs, dict):
-        return None
-    for key, val in addrs.items():
-        if str(key).lower() == chain_code and val:
-            return str(val)
-    return None
-
-
-def _select_token_chain(
-    meta: dict[str, Any], *, query: str
-) -> tuple[int | None, str | None]:
-    chain_id = _chain_id_from_token(meta)
-    token_address = meta.get("address")
-
-    desired_chain = _infer_chain_code_from_query(query, meta)
-    if desired_chain:
-        addr = _address_for_chain(meta, desired_chain)
-        if addr:
-            token_address = addr
-        if desired_chain in CHAIN_CODE_TO_ID:
-            chain_id = CHAIN_CODE_TO_ID[desired_chain]
-
-    token_address_out = str(token_address).strip() if token_address else None
-
-    # Native gas tokens (e.g. ETH) may come back from the API with a null
-    # address.  Normalize to ZERO_ADDRESS so swap/quote paths treat them the
-    # same as the send path (which already does this explicitly).
-    if not token_address_out and _is_gas_token(meta):
-        token_address_out = ZERO_ADDRESS
-
-    return chain_id, token_address_out
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -477,14 +344,16 @@ async def execute(
             "effects": {},
         }
         try:
-            from_q, from_meta = await _resolve_token_meta(str(req.from_token))
-            to_q, to_meta = await _resolve_token_meta(str(req.to_token))
+            from_meta = await TokenResolver.resolve_token_meta(str(req.from_token))
+            to_meta = await TokenResolver.resolve_token_meta(str(req.to_token))
         except Exception as exc:  # noqa: BLE001
             response = err("token_error", str(exc))
             return response
 
-        from_chain_id, from_token_addr = _select_token_chain(from_meta, query=from_q)
-        to_chain_id, to_token_addr = _select_token_chain(to_meta, query=to_q)
+        from_chain_id = from_meta.get("chain_id")
+        to_chain_id = to_meta.get("chain_id")
+        from_token_addr = str(from_meta.get("address") or "").strip() or None
+        to_token_addr = str(to_meta.get("address") or "").strip() or None
         if from_chain_id is None or to_chain_id is None:
             response = err(
                 "invalid_token",
@@ -622,7 +491,6 @@ async def execute(
         if not recipient:
             raise ValueError("Recipient address is required for send")
         token_q = str(req.token or "").strip()
-        is_native = token_q.lower() == "native"
         response: dict[str, Any] = {
             "kind": req.kind,
             "sender": sender,
@@ -631,33 +499,25 @@ async def execute(
             "effects": {},
         }
 
-        if is_native:
-            chain_id = int(req.chain_id or 0)
-            if chain_id <= 0:
-                response = err(
-                    "invalid_request", "chain_id must be provided for native sends"
-                )
-                return response
-            token_address = ZERO_ADDRESS
-            decimals = 18
-            token_meta = None
-        else:
-            try:
-                token_meta = await TOKEN_CLIENT.get_token_details(token_q)
-            except Exception as exc:  # noqa: BLE001
-                response = err("token_error", str(exc))
-                return response
+        try:
+            token_meta = await TokenResolver.resolve_token_meta(
+                token_q, chain_id=req.chain_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            response = err("token_error", str(exc))
+            return response
 
-            token_address = str(token_meta.get("address") or "").strip()
-            chain_id = _chain_id_from_token(token_meta)
-            if not token_address or chain_id is None:
-                response = err(
-                    "invalid_token",
-                    "Token missing address/chain_id",
-                    {"token": token_meta},
-                )
-                return response
-            decimals = int(token_meta.get("decimals") or 18)
+        token_address = str(token_meta.get("address") or "").strip()
+        chain_id = token_meta.get("chain_id")
+        if not token_address or chain_id is None:
+            response = err(
+                "invalid_token",
+                "Token missing address/chain_id",
+                {"token": token_meta},
+            )
+            return response
+        decimals = int(token_meta.get("decimals") or 18)
+        is_native = token_address.lower() == ZERO_ADDRESS.lower()
 
         try:
             amount_raw = parse_amount_to_raw(req.amount, decimals)
@@ -682,8 +542,7 @@ async def execute(
         status = "confirmed" if sent_ok else "failed"
         response["status"] = status
         response["raw"] = {"transaction": transaction}
-        if token_meta:
-            response["raw"]["token"] = token_meta
+        response["raw"]["token"] = token_meta
 
         _annotate_profile(
             address=sender,
