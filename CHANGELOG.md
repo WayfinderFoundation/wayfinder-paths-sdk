@@ -7,6 +7,7 @@ Added
 1. Polymarket adapter and MCP tools.
 2. ProjectX adapter and THBILL/USDC strategy.
 3. Uniswap adapter support with shared math/utilities and tests.
+4. VNet simulation via API.
 
 Changed
 
