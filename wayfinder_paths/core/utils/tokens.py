@@ -24,7 +24,7 @@ NATIVE_TOKEN_ADDRESSES: set = {
 def is_native_token(token_address: str | None) -> bool:
     if token_address is None:
         return True
-    normalized = str(token_address).strip().lower()
+    normalized = token_address.strip().lower()
     if normalized in ("", "native"):
         return True
     return normalized in NATIVE_TOKEN_ADDRESSES
