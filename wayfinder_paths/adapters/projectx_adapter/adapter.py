@@ -211,9 +211,9 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         owner = to_checksum_address(str(addr))
 
         pool_address = _resolve_pool_address(config)
-        if not pool_address:
-            raise ValueError("pool_address is required for ProjectX adapter")
-        self.pool_address = to_checksum_address(str(pool_address))
+        self.pool_address: str | None = (
+            to_checksum_address(str(pool_address)) if pool_address else None
+        )
 
         super().__init__(
             "projectx_adapter",
@@ -229,6 +229,14 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         self._token_cache: dict[str, dict[str, Any]] = {}
         self._pool_meta_cache: dict[str, Any] | None = None
         self._subgraph_url: str = get_prjx_subgraph_url(config)
+
+    def _require_pool_address(self) -> str:
+        if not self.pool_address:
+            raise ValueError(
+                "pool_address is required for this operation. "
+                "Pass pool_address in config or config_overrides."
+            )
+        return self.pool_address
 
     async def pool_overview(self) -> tuple[bool, dict[str, Any] | str]:
         try:
@@ -301,6 +309,36 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def _list_all_positions(
+        self, *, owner: str | None = None
+    ) -> tuple[bool, list[PositionSnapshot] | str]:
+        try:
+            target_owner = to_checksum_address(owner) if owner else self.owner
+
+            async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
+                npm = web3.eth.contract(
+                    address=self.npm_address,
+                    abi=NONFUNGIBLE_POSITION_MANAGER_ABI,
+                )
+                all_positions = await read_all_positions(npm, target_owner)
+
+            filtered = filter_positions(all_positions, active_only=True)
+            out = [
+                PositionSnapshot(
+                    token_id=tid,
+                    liquidity=pos["liquidity"],
+                    tick_lower=pos["tick_lower"],
+                    tick_upper=pos["tick_upper"],
+                    fee=pos["fee"],
+                    token0=pos["token0"],
+                    token1=pos["token1"],
+                )
+                for tid, pos in filtered
+            ]
+            return True, out
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     async def get_full_user_state(
         self,
         *,
@@ -326,7 +364,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
 
         ok_any = False
 
-        if include_overview:
+        if include_overview and self.pool_address:
             ok_over, overview = await self.pool_overview()
             if ok_over:
                 ok_any = True
@@ -334,7 +372,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             else:
                 out["errors"]["poolOverview"] = overview
 
-        if include_balances:
+        if include_balances and self.pool_address:
             ok_bal, balances = await self.current_balances(owner=acct)
             if ok_bal:
                 ok_any = True
@@ -343,7 +381,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 out["errors"]["balances"] = balances
 
         if include_positions:
-            ok_pos, positions = await self.list_positions(owner=acct)
+            ok_pos, positions = await self._list_all_positions(owner=acct)
             if ok_pos and isinstance(positions, list):
                 ok_any = True
                 out["positions"] = [
@@ -386,6 +424,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         the subgraph's per-query cap of 1000 results.
         """
         try:
+            self._require_pool_address()
             batch_size = min(max(1, limit), self._SUBGRAPH_MAX_PAGE)
             id_gt: str | None = None
             all_parsed: list[dict[str, Any]] = []
@@ -714,15 +753,18 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                     "ProjectX swap adapter currently supports ERC20 tokens only"
                 )
 
-            meta = await self._pool_meta()
-            pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
-            if {token_in.lower(), token_out.lower()} == pool_tokens:
-                selected_fee = int(meta["fee"])
-                pool_address = self.pool_address
-            else:
-                selected_fee, pool_address = await self._find_pool_for_pair(
-                    token_in, token_out, prefer_fees=prefer_fees
-                )
+            if self.pool_address and not prefer_fees:
+                meta = await self._pool_meta()
+                pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
+                if {token_in.lower(), token_out.lower()} == pool_tokens:
+                    prefer_fees = [int(meta["fee"])] + [
+                        f
+                        for f in (100, 500, 1000, 3000, 10000)
+                        if f != int(meta["fee"])
+                    ]
+            selected_fee, pool_address = await self._find_pool_for_pair(
+                token_in, token_out, prefer_fees=prefer_fees
+            )
 
             await ensure_allowance(
                 token_address=to_checksum_address(token_in),
@@ -908,12 +950,11 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         self, token_id: int
     ) -> tuple[bool, dict[str, float] | str]:
         try:
+            pool_addr = self._require_pool_address()
             owed0, owed1 = await self._read_live_claimable_fees(int(token_id))
             position = await self._read_position_struct(int(token_id))
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-                pool = web3.eth.contract(
-                    address=self.pool_address, abi=PROJECTX_POOL_ABI
-                )
+                pool = web3.eth.contract(address=pool_addr, abi=PROJECTX_POOL_ABI)
                 token0_meta, token1_meta, slot0 = await asyncio.gather(
                     self._token_meta(web3, position["token0"]),
                     self._token_meta(web3, position["token1"]),
@@ -961,8 +1002,9 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         if self._pool_meta_cache:
             return self._pool_meta_cache
 
+        pool_addr = self._require_pool_address()
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            pool = web3.eth.contract(address=self.pool_address, abi=PROJECTX_POOL_ABI)
+            pool = web3.eth.contract(address=pool_addr, abi=PROJECTX_POOL_ABI)
             slot0, tick_spacing, fee, liquidity, token0, token1 = await asyncio.gather(
                 pool.functions.slot0().call(block_identifier="latest"),
                 pool.functions.tickSpacing().call(block_identifier="latest"),
@@ -1140,12 +1182,14 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             dec1 = int(token1_meta["decimals"])
 
         target_ratio = _target_ratio_need0_over_need1(sqrt_p, sqrt_pl, sqrt_pu)
-        price_mid = sqrt_price_x96_to_price(sqrt_p, dec0, dec1)
-        if price_mid <= 0:
+        # Use raw price (token1_raw / token0_raw) — no decimal adjustment —
+        # because target_ratio and balances are all in raw units.
+        price_raw = (sqrt_p / (1 << 96)) ** 2
+        if price_raw <= 0:
             return False
 
         fee_haircut = max(5, int(slippage_bps)) / 10_000.0
-        price_net = max(price_mid * (1.0 - fee_haircut), 1e-18)
+        price_net = max(price_raw * (1.0 - fee_haircut), 1e-18)
 
         numer = b0 - target_ratio * b1
         if numer > 0:
@@ -1255,11 +1299,10 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         return f0_inside, f1_inside
 
     async def _read_live_claimable_fees(self, token_id: int) -> tuple[int, int]:
+        pool_addr = self._require_pool_address()
         position = await self._read_position_struct(int(token_id))
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
-            pool_contract = web3.eth.contract(
-                address=self.pool_address, abi=PROJECTX_POOL_ABI
-            )
+            pool_contract = web3.eth.contract(address=pool_addr, abi=PROJECTX_POOL_ABI)
             slot0 = await pool_contract.functions.slot0().call(
                 block_identifier="latest"
             )
@@ -1312,9 +1355,22 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             results = await asyncio.gather(
                 *(find_pool(factory, token_a, token_b, fee) for fee in fees)
             )
+            fallback: tuple[int, str] | None = None
             for fee, pool_addr in zip(fees, results, strict=True):
-                if pool_addr:
+                if not pool_addr:
+                    continue
+                if fallback is None:
+                    fallback = (fee, pool_addr)
+                pool_contract = web3.eth.contract(
+                    address=pool_addr, abi=PROJECTX_POOL_ABI
+                )
+                liq = await pool_contract.functions.liquidity().call(
+                    block_identifier="latest"
+                )
+                if int(liq) > 0:
                     return fee, pool_addr
+            if fallback:
+                return fallback
         raise RuntimeError(
             f"No PRJX route for pair {token_a}->{token_b} (fees tried: {fees})"
         )

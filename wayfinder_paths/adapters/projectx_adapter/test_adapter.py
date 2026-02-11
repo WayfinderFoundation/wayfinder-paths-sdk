@@ -8,7 +8,7 @@ import wayfinder_paths.adapters.projectx_adapter.adapter as projectx_adapter_mod
 import wayfinder_paths.adapters.uniswap_adapter.base as uniswap_base_module
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
+from wayfinder_paths.core.constants.projectx import PRJX_FACTORY, THBILL_USDC_POOL
 
 
 def test_init_requires_strategy_wallet():
@@ -66,22 +66,38 @@ class _FakeFactoryFunctions:
         return _FakeCall(self._pools_by_fee.get(int(fee), ZERO_ADDRESS))
 
 
+class _FakePoolFunctions:
+    def __init__(self, liquidity: int = 1):
+        self._liquidity = liquidity
+
+    def liquidity(self):
+        return _FakeCall(self._liquidity)
+
+
+class _FakePoolContract:
+    def __init__(self, liquidity: int = 1):
+        self.functions = _FakePoolFunctions(liquidity)
+
+
 class _FakeFactoryContract:
     def __init__(self, pools_by_fee: dict[int, str]):
         self.functions = _FakeFactoryFunctions(pools_by_fee)
 
 
 class _FakeEth:
-    def __init__(self, contract):
-        self._contract = contract
+    def __init__(self, factory_contract, pool_liquidity: int = 1):
+        self._factory = factory_contract
+        self._pool = _FakePoolContract(pool_liquidity)
 
     def contract(self, address=None, abi=None):  # noqa: ARG002 - unused in fake
-        return self._contract
+        if address and address.lower() == PRJX_FACTORY.lower():
+            return self._factory
+        return self._pool
 
 
 class _FakeWeb3:
-    def __init__(self, contract):
-        self.eth = _FakeEth(contract)
+    def __init__(self, factory_contract, pool_liquidity: int = 1):
+        self.eth = _FakeEth(factory_contract, pool_liquidity)
 
 
 @pytest.mark.asyncio
@@ -242,7 +258,7 @@ async def test_get_full_user_state_serializes_positions():
     )
     adapter.pool_overview = AsyncMock(return_value=(True, {"pool": "ok"}))
     adapter.current_balances = AsyncMock(return_value=(True, {"token": 123}))
-    adapter.list_positions = AsyncMock(
+    adapter._list_all_positions = AsyncMock(
         return_value=(
             True,
             [
@@ -288,7 +304,7 @@ async def test_get_full_user_state_returns_false_when_everything_fails():
     )
     adapter.pool_overview = AsyncMock(return_value=(False, "no overview"))
     adapter.current_balances = AsyncMock(return_value=(False, "no balances"))
-    adapter.list_positions = AsyncMock(return_value=(False, "no positions"))
+    adapter._list_all_positions = AsyncMock(return_value=(False, "no positions"))
     adapter.fetch_prjx_points = AsyncMock(return_value=(False, "no points"))
 
     ok, state = await adapter.get_full_user_state()
@@ -330,6 +346,93 @@ async def test_poll_for_any_position_id_destructures_list_positions_tuple(monkey
     token_id = await adapter._poll_for_any_position_id()
     assert token_id == 321
     adapter.list_positions.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_all_positions_returns_positions_across_pools(monkeypatch):
+    adapter = ProjectXLiquidityAdapter(
+        {
+            "strategy_wallet": {
+                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "pool_address": THBILL_USDC_POOL,
+        }
+    )
+
+    pool_a_token0 = "0x1111111111111111111111111111111111111111"
+    pool_a_token1 = "0x2222222222222222222222222222222222222222"
+    pool_b_token0 = "0x3333333333333333333333333333333333333333"
+    pool_b_token1 = "0x4444444444444444444444444444444444444444"
+
+    raw_positions = [
+        (
+            10,
+            {
+                "liquidity": 500,
+                "tick_lower": -100,
+                "tick_upper": 100,
+                "fee": 500,
+                "token0": pool_a_token0,
+                "token1": pool_a_token1,
+                "tokens_owed0": 0,
+                "tokens_owed1": 0,
+            },
+        ),
+        (
+            20,
+            {
+                "liquidity": 800,
+                "tick_lower": -200,
+                "tick_upper": 200,
+                "fee": 3000,
+                "token0": pool_b_token0,
+                "token1": pool_b_token1,
+                "tokens_owed0": 0,
+                "tokens_owed1": 0,
+            },
+        ),
+        (
+            30,
+            {
+                "liquidity": 0,
+                "tick_lower": -50,
+                "tick_upper": 50,
+                "fee": 500,
+                "token0": pool_a_token0,
+                "token1": pool_a_token1,
+                "tokens_owed0": 0,
+                "tokens_owed1": 0,
+            },
+        ),
+    ]
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "read_all_positions",
+        AsyncMock(return_value=raw_positions),
+    )
+
+    fake_npm = object()
+
+    class _FakeEthForNpm:
+        def contract(self, address=None, abi=None):  # noqa: ARG002
+            return fake_npm
+
+    class _FakeWeb3ForNpm:
+        eth = _FakeEthForNpm()
+
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "web3_from_chain_id",
+        lambda _cid: _DummyAsyncContext(_FakeWeb3ForNpm()),
+    )
+
+    ok, positions = await adapter._list_all_positions()
+    assert ok is True
+    assert len(positions) == 2
+    assert positions[0].token_id == 10
+    assert positions[0].token0 == pool_a_token0
+    assert positions[1].token_id == 20
+    assert positions[1].token0 == pool_b_token0
 
 
 @pytest.mark.asyncio
@@ -402,3 +505,88 @@ async def test_swap_once_to_band_ratio_raises_on_swap_failure(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Swap failed"):
         await adapter._swap_once_to_band_ratio(1, 1, 1, slippage_bps=30)
+
+
+# ---------------------------------------------------------------------------
+# Pool-agnostic mode tests
+# ---------------------------------------------------------------------------
+
+
+def test_init_without_pool_address():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    assert adapter.pool_address is None
+
+
+@pytest.mark.asyncio
+async def test_pool_overview_fails_without_pool():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    ok, err = await adapter.pool_overview()
+    assert ok is False
+    assert "pool_address is required" in err
+
+
+@pytest.mark.asyncio
+async def test_current_balances_fails_without_pool():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    ok, err = await adapter.current_balances()
+    assert ok is False
+    assert "pool_address is required" in err
+
+
+@pytest.mark.asyncio
+async def test_list_positions_fails_without_pool():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    ok, err = await adapter.list_positions()
+    assert ok is False
+    assert "pool_address is required" in err
+
+
+@pytest.mark.asyncio
+async def test_fetch_swaps_raises_without_pool():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    ok, err = await adapter.fetch_swaps()
+    assert ok is False
+    assert "pool_address is required" in err
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_state_without_pool_skips_overview_and_balances():
+    adapter = ProjectXLiquidityAdapter(
+        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+    )
+    adapter._list_all_positions = AsyncMock(
+        return_value=(
+            True,
+            [
+                projectx_adapter_module.PositionSnapshot(
+                    token_id=42,
+                    liquidity=100,
+                    tick_lower=-10,
+                    tick_upper=10,
+                    fee=500,
+                    token0="0x1111111111111111111111111111111111111111",
+                    token1="0x3333333333333333333333333333333333333333",
+                )
+            ],
+        )
+    )
+    adapter.fetch_prjx_points = AsyncMock(return_value=(True, {"points": 7}))
+
+    ok, state = await adapter.get_full_user_state()
+    assert ok is True
+    assert state["pool"] is None
+    assert state["poolOverview"] is None
+    assert state["balances"] is None
+    assert state["positions"][0]["token_id"] == 42
+    assert state["points"] == {"points": 7}
+    assert state["errors"] == {}
