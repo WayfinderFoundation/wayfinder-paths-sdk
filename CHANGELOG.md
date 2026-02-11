@@ -1,6 +1,32 @@
 # Changelog
 
-## [0.2.0] - 2026-02-06
+## [0.3.0] - 2026-02-10 (dcd133eecc7d36e8051f5ba690e0fdfa1493d41d)
+
+Added
+
+1. Polymarket adapter and MCP tools.
+2. ProjectX adapter and THBILL/USDC strategy.
+3. Uniswap adapter support with shared math/utilities and tests.
+
+Changed
+
+1. Hyperliquid adapter refactor (cleanup, exchange consolidation, HIP3 updates).
+2. Strategy runtime and multiple strategy implementations.
+3. MCP wallet/address resolution and Gorlami configuration behavior.
+
+Fixed
+
+1. Type-checking and compatibility issues across adapters and utilities.
+2. Moonwell portfolio value calculation (removed gas component).
+3. Frontend open-orders path by removing unused functions and simplifying flow.
+
+Chore / Docs
+
+1. Added Claude vacuum workflow and related CI configuration updates.
+2. Updated dependency and Python environment files.
+3. Expanded adapter/testing documentation and simulation scripts.
+
+## [0.2.0] - 2026-02-06 (4d13d6c0dc131f2e4469db60a3058e215b5b8fd1)
 
 Added
 
