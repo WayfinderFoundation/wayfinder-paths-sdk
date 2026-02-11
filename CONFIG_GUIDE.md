@@ -8,6 +8,9 @@ This guide explains how to configure Wayfinder Paths for local development and t
 # One-command setup (installs Poetry + deps, prompts for your Wayfinder API key, updates .mcp.json)
 python3 scripts/setup.py
 
+# Or: deterministic wallets from a generated mnemonic (saved to config.json)
+python3 scripts/setup.py --mnemonic
+
 # Run a strategy
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
 ```

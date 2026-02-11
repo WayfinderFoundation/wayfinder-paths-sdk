@@ -41,6 +41,9 @@ cd wayfinder-paths
 # One-command setup (installs Poetry + deps, writes config.json, updates .mcp.json)
 python3 scripts/setup.py
 
+# One-command setup with deterministic wallets (generates + saves wallet_mnemonic)
+python3 scripts/setup.py --mnemonic
+
 # Check strategy status
 poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action status --config config.json
 ```

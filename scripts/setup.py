@@ -136,19 +136,25 @@ def _discover_strategies() -> list[str]:
     )
 
 
-def _ensure_wallets(poetry: str, *, non_interactive: bool) -> None:
+def _ensure_wallets(poetry: str, *, non_interactive: bool, mnemonic: bool) -> None:
     existing = _get_wallet_labels()
 
     if "main" not in existing:
         if non_interactive or _confirm("Create a local dev wallet (label: main)?"):
-            _run([poetry, "run", "python", "scripts/make_wallets.py", "-n", "1"])
+            cmd = [poetry, "run", "python", "scripts/make_wallets.py", "-n", "1"]
+            if mnemonic:
+                cmd.append("--mnemonic")
+            _run(cmd)
             existing = _get_wallet_labels()
 
     missing = [s for s in _discover_strategies() if s not in existing]
     if missing:
         print(f"Creating wallets for {len(missing)} strategies: {', '.join(missing)}")
         for name in missing:
-            _run([poetry, "run", "python", "scripts/make_wallets.py", "--label", name])
+            cmd = [poetry, "run", "python", "scripts/make_wallets.py", "--label", name]
+            if mnemonic:
+                cmd.append("--mnemonic")
+            _run(cmd)
 
 
 def _ensure_mcp_json() -> None:
@@ -176,6 +182,14 @@ def main() -> int:
         action="store_true",
         help="Fail instead of prompting for installs / secrets.",
     )
+    parser.add_argument(
+        "--mnemonic",
+        action="store_true",
+        help=(
+            "Generate and use a BIP-39 mnemonic for deterministic local wallets. "
+            "This persists wallet_mnemonic in config.json and derives MetaMask-style EVM accounts."
+        ),
+    )
     args = parser.parse_args()
 
     os.chdir(REPO_ROOT)
@@ -196,7 +210,7 @@ def main() -> int:
 
     _ensure_config(api_key=api_key or None)
     _ensure_mcp_json()
-    _ensure_wallets(poetry, non_interactive=args.non_interactive)
+    _ensure_wallets(poetry, non_interactive=args.non_interactive, mnemonic=args.mnemonic)
 
     config = _read_json(REPO_ROOT / "config.json") or {}
     if not config.get("system", {}).get("api_key"):
