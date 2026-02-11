@@ -83,6 +83,12 @@ def _raise_revert_error(
 
 
 def _get_transaction_from_address(transaction: dict) -> str:
+    """Return a checksum-cased sender address.
+
+    Web3 tooling frequently assumes EIP-55 checksum addresses; converting here
+    makes downstream RPC calls and logs consistent while still rejecting
+    malformed input early.
+    """
     if "from" not in transaction:
         raise ValueError("Transaction does not contain from address")
     return AsyncWeb3.to_checksum_address(transaction["from"])

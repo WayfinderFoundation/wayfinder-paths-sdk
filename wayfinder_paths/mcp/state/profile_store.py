@@ -60,10 +60,10 @@ class WalletProfileStore:
         self.path.write_text(json.dumps(data, indent=2, sort_keys=False))
 
     def _normalize_address(self, address: str) -> str:
-        addr = str(address).strip().lower()
-        if addr.startswith("0x"):
-            return addr
-        return addr
+        # Addresses may come in with varying checksum casing. For storage/lookups we
+        # canonicalize to a stable key so that "0xAbc..." and "0xabc..." map to the
+        # same profile.
+        return str(address).strip().lower()
 
     def get_profile(self, address: str) -> dict[str, Any] | None:
         data = self._load()

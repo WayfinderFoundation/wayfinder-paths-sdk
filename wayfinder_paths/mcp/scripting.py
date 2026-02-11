@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 from typing import Any
 
 from eth_account import Account
@@ -40,21 +41,45 @@ def _detect_callback_params(adapter_class: type) -> set[str]:
     }
 
 
+def _find_wallet_by_label_in_config(
+    config: dict[str, Any], wallet_label: str
+) -> dict[str, Any] | None:
+    want = str(wallet_label).strip()
+    if not want:
+        return None
+    wallets = config.get("wallets")
+    if not isinstance(wallets, list):
+        return None
+    for w in wallets:
+        if not isinstance(w, dict):
+            continue
+        if str(w.get("label", "")).strip() == want:
+            return w
+    return None
+
+
 def get_adapter[T](
     adapter_class: type[T],
     wallet_label: str | None = None,
     *,
+    config_path: str | Path | None = None,
     config_overrides: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> T:
-    config = load_config_json()
+    config = (
+        load_config_json(config_path, require_exists=True)
+        if config_path is not None
+        else load_config_json()
+    )
 
     if config_overrides:
         config = {**config, **config_overrides}
 
     sign_callback = None
     if wallet_label:
-        wallet = find_wallet_by_label(wallet_label)
+        wallet = _find_wallet_by_label_in_config(config, wallet_label)
+        if wallet is None and config_path is None:
+            wallet = find_wallet_by_label(wallet_label)
         if not wallet:
             raise ValueError(
                 f"Wallet '{wallet_label}' not found in config.json. "

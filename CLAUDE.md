@@ -71,6 +71,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Pendle                | `/using-pendle-adapter`          |
 | Hyperliquid           | `/using-hyperliquid-adapter`     |
 | Hyperlend             | `/using-hyperlend-adapter`       |
+| Aerodrome             | `/using-aerodrome-adapter`       |
 | Boros                 | `/using-boros-adapter`           |
 | BRAP (swaps)          | `/using-brap-adapter`            |
 | Polymarket            | `/using-polymarket-adapter`      |

@@ -1,0 +1,10 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.adapters.aerodrome_adapter.adapter.AerodromeAdapter"
+capabilities:
+  - "swap"
+  - "lp_add"
+  - "gauge_deposit"
+  - "ve_lock"
+  - "vote"
+dependencies: []
+

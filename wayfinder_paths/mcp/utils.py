@@ -67,6 +67,13 @@ def find_wallet_by_label(label: str) -> dict[str, Any] | None:
 
 
 def normalize_address(addr: str | None) -> str | None:
+    """Lightweight address cleanup helper.
+
+    This intentionally does **not** validate or checksum an address; it only:
+    - coerces to string
+    - strips surrounding whitespace
+    - converts empty/None to None
+    """
     if not addr:
         return None
     a = str(addr).strip()
