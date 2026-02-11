@@ -80,7 +80,7 @@ def ensure_wallet_mnemonic(
     existing = load_wallet_mnemonic(out_dir, filename)
     if existing:
         return existing
-    mnemonic = generate_wallet_mnemonic(num_words=int(num_words))
+    mnemonic = generate_wallet_mnemonic(num_words=num_words)
     write_wallet_mnemonic(mnemonic, out_dir=out_dir, filename=filename)
     return mnemonic
 
