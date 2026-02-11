@@ -95,6 +95,16 @@ await adapter.binance.fetch_ticker("BTC/USDT")
 await adapter.fetch_ticker("binance", "BTC/USDT")
 ```
 
+## Aster-specific quirks
+
+**Min order sizes matter:** BTC min is 0.001 BTC (~$68 at $68k). For small test trades, use ETH (min 0.001 ETH, ~$2). Always check `aster.markets[symbol]["limits"]["amount"]["min"]` before ordering.
+
+**Only USDT-margined perps:** Aster perps are `{COIN}/USDT:USDT`. No `USDC:USDC` pairs available.
+
+**`fetch_balance()` underreports futures margin:** Shows $0 USDT/USDC even when the futures account has funds. Don't gate on balance checks — if the order fails, it fails.
+
+**Market order fills are async:** `create_order` returns `status: "open"` and `filled: 0.0` even for market orders that fill instantly. To confirm execution, call `fetch_positions()` after a short `asyncio.sleep(2)` instead of trusting the order response.
+
 ## Script execution
 
 Run scripts via MCP with wallet tracking:
