@@ -16,6 +16,9 @@ eth-account>=0.13.7
 # HTTP client
 httpx>=0.28.1
 
+# Polymarket (CLOB client)
+py-clob-client>=0.34.5
+
 # Data processing
 numpy>=1.26.0
 pandas>=2.2.0

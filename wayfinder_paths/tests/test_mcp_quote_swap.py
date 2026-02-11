@@ -28,10 +28,11 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
         "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     }
 
-    async def fake_resolve(query: str):
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
         if "ethereum" in query.lower() or "eth" in query.lower():
-            return query, from_meta
-        return query, to_meta
+            return from_meta
+        return to_meta
 
     fake_brap = AsyncMock()
     calldata = "0x" + ("ab" * 4096)
@@ -68,7 +69,8 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
             return_value=fake_wallet,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.quotes._resolve_token_meta",
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
             side_effect=fake_resolve,
         ),
         patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
@@ -115,10 +117,11 @@ async def test_quote_swap_can_include_calldata_when_requested():
         "address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     }
 
-    async def fake_resolve(query: str):
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
         if "ethereum" in query.lower() or "eth" in query.lower():
-            return query, from_meta
-        return query, to_meta
+            return from_meta
+        return to_meta
 
     calldata = "0x" + ("cd" * 1024)
     fake_brap = AsyncMock()
@@ -142,7 +145,8 @@ async def test_quote_swap_can_include_calldata_when_requested():
             return_value=fake_wallet,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.quotes._resolve_token_meta",
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
             side_effect=fake_resolve,
         ),
         patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
@@ -182,10 +186,11 @@ async def test_quote_swap_accepts_top_level_brap_shape():
         "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
     }
 
-    async def fake_resolve(query: str):
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
         if "tether" in query.lower() or "usdt" in query.lower():
-            return query, to_meta
-        return query, from_meta
+            return to_meta
+        return from_meta
 
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
@@ -205,7 +210,8 @@ async def test_quote_swap_accepts_top_level_brap_shape():
             return_value=fake_wallet,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.quotes._resolve_token_meta",
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
             side_effect=fake_resolve,
         ),
         patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),

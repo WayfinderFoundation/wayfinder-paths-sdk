@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from typing import Any, Optional, cast
 
 import httpx
-from eth_utils import to_checksum_address
 from loguru import logger
 
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
@@ -15,7 +14,6 @@ from wayfinder_paths.adapters.moonwell_adapter.adapter import MoonwellAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WSTETH
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.tokens import (
     TOKEN_ID_ETH_BASE,
     TOKEN_ID_STETH,
@@ -33,6 +31,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from wayfinder_paths.policies.enso import ENSO_ROUTER, enso_swap
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
@@ -354,7 +353,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         )
 
         gas_keep_wei = int(self._gas_keep_wei())
-        eth_usable_wei = max(0, int(wallet_eth) - int(gas_keep_wei))
+        eth_usable_wei = max(0, wallet_eth - gas_keep_wei)
 
         def _usd(raw: int, price: float, dec: int) -> float:
             if raw <= 0 or not price or price <= 0:
@@ -864,7 +863,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                 wallet_address=addr,
                 block_identifier=pinned_block,
             )
-            amount_to_swap = min(int(wallet_wsteth), int(underlying_raw))
+            amount_to_swap = min(wallet_wsteth, underlying_raw)
             if amount_to_swap <= 0:
                 return (
                     False,
@@ -952,7 +951,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         # 3) Use wallet WETH -> wstETH
         used_any = False
         if snap.wallet_weth > 0 and needed_weth_raw > 0:
-            amt = min(int(snap.wallet_weth), int(needed_weth_raw))
+            amt = min(snap.wallet_weth, needed_weth_raw)
             if amt > 0:
                 wsteth_before = await self._get_balance_raw(
                     token_id=WSTETH_TOKEN_ID, wallet_address=addr
@@ -988,7 +987,7 @@ class MoonwellWstethLoopStrategy(Strategy):
 
         # 4) Use wallet ETH (above reserve) -> wstETH
         if needed_weth_raw > 0 and snap.eth_usable_wei > 0:
-            eth_amt = min(int(snap.eth_usable_wei), int(needed_weth_raw))
+            eth_amt = min(snap.eth_usable_wei, needed_weth_raw)
             if eth_amt > 0:
                 wsteth_before = await self._get_balance_raw(
                     token_id=WSTETH_TOKEN_ID, wallet_address=addr
@@ -1098,7 +1097,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                 attempts=5,
             )
 
-        amount_to_swap = min(int(wsteth_wallet_raw), int(desired_underlying_raw))
+        amount_to_swap = min(wsteth_wallet_raw, desired_underlying_raw)
         if amount_to_swap <= 0:
             return (False, "No wstETH available in wallet after unlend")
 
@@ -1227,7 +1226,7 @@ class MoonwellWstethLoopStrategy(Strategy):
 
             # 1) Wallet WETH -> repay
             if snap.wallet_weth > 0:
-                repay_amt = min(int(snap.wallet_weth), int(batch_weth_raw))
+                repay_amt = min(snap.wallet_weth, batch_weth_raw)
                 if repay_amt > 0:
                     repaid = await self._repay_weth(repay_amt, snap.weth_debt)
                     if repaid > 0:
@@ -1236,7 +1235,7 @@ class MoonwellWstethLoopStrategy(Strategy):
 
             # 2) Wallet ETH (above reserve) -> wrap -> repay
             if snap.eth_usable_wei > 0:
-                wrap_amt = min(int(snap.eth_usable_wei), int(batch_weth_raw))
+                wrap_amt = min(snap.eth_usable_wei, batch_weth_raw)
                 if wrap_amt > 0:
                     wrap_ok, wrap_msg = await self.moonwell_adapter.wrap_eth(
                         amount=wrap_amt
@@ -1274,7 +1273,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                 needed_wsteth_raw = (
                     int(needed_wsteth_usd / snap.wsteth_price * 10**snap.wsteth_dec) + 1
                 )
-                swap_amt = min(int(snap.wallet_wsteth), int(needed_wsteth_raw))
+                swap_amt = min(snap.wallet_wsteth, needed_wsteth_raw)
                 if swap_amt > 0:
                     repaid = await self._swap_to_weth_and_repay(
                         WSTETH_TOKEN_ID, swap_amt, snap.weth_debt
@@ -1299,7 +1298,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                 needed_usdc_raw = (
                     int(needed_usdc_usd / snap.usdc_price * 10**snap.usdc_dec) + 1
                 )
-                swap_amt = min(int(snap.wallet_usdc), int(needed_usdc_raw))
+                swap_amt = min(snap.wallet_usdc, needed_usdc_raw)
                 if swap_amt > 0:
                     repaid = await self._swap_to_weth_and_repay(
                         USDC_TOKEN_ID, swap_amt, snap.weth_debt
@@ -1488,7 +1487,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                         attempts=5,
                     )
 
-                amount_to_swap = min(int(wallet_underlying), int(underlying_raw))
+                amount_to_swap = min(wallet_underlying, underlying_raw)
                 if amount_to_swap <= 0:
                     continue
 
@@ -1788,21 +1787,15 @@ class MoonwellWstethLoopStrategy(Strategy):
         for attempt in range(max_retries):
             try:
                 async with web3_from_chain_id(BASE_CHAIN_ID) as w3:
-                    if token_id == ETH_TOKEN_ID:
-                        bal = await w3.eth.get_balance(
-                            to_checksum_address(wallet_address),
+                    return int(
+                        await get_token_balance(
+                            token_address,
+                            BASE_CHAIN_ID,
+                            wallet_address,
+                            web3=w3,
                             block_identifier=block_id,
                         )
-                        return int(bal)
-
-                    contract = w3.eth.contract(
-                        address=to_checksum_address(str(token_address)),
-                        abi=ERC20_ABI,
                     )
-                    bal = await contract.functions.balanceOf(
-                        to_checksum_address(wallet_address)
-                    ).call(block_identifier=block_id)
-                    return int(bal)
             except Exception as exc:
                 last_error = exc if isinstance(exc, Exception) else Exception(str(exc))
                 err = str(exc)
@@ -2370,7 +2363,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         weth_bal = int(weth_after)
 
         if eth_delta > 0 and usable_eth > 0:
-            wrap_amt = min(int(safe_borrow_amt), int(usable_eth))
+            wrap_amt = min(safe_borrow_amt, usable_eth)
             logger.info(
                 f"Borrow arrived as native ETH, wrapping {wrap_amt / 10**18:.6f} ETH to WETH"
             )
@@ -2406,7 +2399,7 @@ class MoonwellWstethLoopStrategy(Strategy):
                     f"Post-wrap WETH balance (calculated): {weth_bal / 10**18:.6f}"
                 )
 
-        amount_to_swap = min(int(safe_borrow_amt), int(weth_bal))
+        amount_to_swap = min(safe_borrow_amt, weth_bal)
 
         if amount_to_swap <= 0:
             raise Exception(

@@ -112,12 +112,11 @@ class MoonwellAdapter(BaseAdapter):
 
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
 
-        # Chain configuration (Base-only for now)
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
         self.comptroller_address = MOONWELL_COMPTROLLER
         self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
-        self.m_usdc = MOONWELL_M_USDC  # Sample mtoken for ABI extraction
+        self.m_usdc = MOONWELL_M_USDC
 
         strategy_wallet = cfg.get("strategy_wallet") or {}
         self.strategy_wallet_address = to_checksum_address(strategy_wallet["address"])

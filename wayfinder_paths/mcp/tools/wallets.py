@@ -56,6 +56,14 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "account_param": "account",
         "extra_kwargs": {"chain": 42161, "include_zero_positions": False},
     },
+    "polymarket": {
+        "module": "wayfinder_paths.adapters.polymarket_adapter.adapter",
+        "class": "PolymarketAdapter",
+        "init_kwargs": {},
+        "method": "get_full_user_state",
+        "account_param": "account",
+        "extra_kwargs": {"include_orders": False},
+    },
 }
 
 

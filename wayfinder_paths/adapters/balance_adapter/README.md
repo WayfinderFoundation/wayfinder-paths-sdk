@@ -40,6 +40,23 @@ success, balance = await adapter.get_balance(
 
 **Returns**: `(bool, int)` - success flag and raw balance (in token units)
 
+### get_balance_details
+
+Get token balance for a wallet, including decimals and a human-readable balance.
+
+```python
+ok, data = await adapter.get_balance_details(
+    token_id="usd-coin-base",
+    wallet_address="0x...",
+)
+```
+
+**Returns**: `(bool, dict)` with keys like `balance_raw`, `decimals`, and `balance_decimal`.
+
+**API behavior**:
+- If `token_id` is a human slug (e.g. `usd-coin-base`), the adapter resolves it via `TokenClient` first.
+- If `token_id` already encodes chain+address (e.g. `base_0x...` or `0x..._base`), it skips the API and goes straight to RPC.
+
 ### move_from_main_wallet_to_strategy_wallet
 
 Transfer tokens from main wallet to strategy wallet with ledger recording.

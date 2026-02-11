@@ -394,7 +394,7 @@ async def hyperliquid_execute(
     def _coin_from_asset_id(aid: int) -> str | None:
         for k, v in (adapter.coin_to_asset or {}).items():
             try:
-                if int(v) == int(aid):
+                if v == aid:
                     return str(k)
             except Exception:
                 continue

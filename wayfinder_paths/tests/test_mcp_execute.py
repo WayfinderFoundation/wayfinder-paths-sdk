@@ -6,14 +6,22 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.mcp.tools.execute import _select_token_chain, execute
+from wayfinder_paths.core.utils.token_resolver import TokenResolver
+from wayfinder_paths.mcp.tools.execute import execute
 
 
-def test_select_token_chain_native_gas_token_null_address():
+@pytest.fixture(autouse=True)
+def _clear_token_resolver_cache():
+    TokenResolver._token_details_cache.clear()
+    TokenResolver._gas_token_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_resolve_token_meta_native_gas_token_null_address():
     """Native gas tokens (e.g. ETH) may have address=null from the API.
 
-    _select_token_chain should normalize null -> ZERO_ADDRESS when the
-    metadata looks like a native gas token, mirroring the send path.
+    TokenResolver should normalize null -> ZERO_ADDRESS when the metadata looks
+    like a native gas token.
     """
     meta = {
         "asset_id": "ethereum",
@@ -22,12 +30,17 @@ def test_select_token_chain_native_gas_token_null_address():
         "address": None,
         "chain_id": 1,
     }
-    chain_id, addr = _select_token_chain(meta, query="ethereum-ethereum")
-    assert addr == ZERO_ADDRESS
-    assert chain_id is not None
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_gas_token",
+        new=AsyncMock(return_value=meta),
+    ):
+        out = await TokenResolver.resolve_token_meta("ethereum-ethereum")
+        assert out["address"] == ZERO_ADDRESS
+        assert out["chain_id"] == 1
 
 
-def test_select_token_chain_native_gas_token_missing_address():
+@pytest.mark.asyncio
+async def test_resolve_token_meta_native_gas_token_missing_address():
     """Same as above but address key is missing entirely."""
     meta = {
         "asset_id": "ethereum",
@@ -35,13 +48,18 @@ def test_select_token_chain_native_gas_token_missing_address():
         "decimals": 18,
         "chain_id": 8453,
     }
-    chain_id, addr = _select_token_chain(meta, query="ethereum-base")
-    assert addr == ZERO_ADDRESS
-    assert chain_id == 8453
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_gas_token",
+        new=AsyncMock(return_value=meta),
+    ):
+        out = await TokenResolver.resolve_token_meta("ethereum-base")
+        assert out["address"] == ZERO_ADDRESS
+        assert out["chain_id"] == 8453
 
 
-def test_select_token_chain_erc20_null_address_not_normalized():
-    """Non-native tokens with null address should stay None (real error)."""
+@pytest.mark.asyncio
+async def test_resolve_token_meta_erc20_null_address_raises():
+    """Non-native tokens with null address should raise (real error)."""
     meta = {
         "asset_id": "usd-coin",
         "symbol": "USDC",
@@ -49,11 +67,16 @@ def test_select_token_chain_erc20_null_address_not_normalized():
         "address": None,
         "chain_id": 1,
     }
-    _chain_id, addr = _select_token_chain(meta, query="usd-coin-ethereum")
-    assert addr is None
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_token_details",
+        new=AsyncMock(return_value=meta),
+    ):
+        with pytest.raises(ValueError, match="Cannot resolve token"):
+            await TokenResolver.resolve_token_meta("usd-coin-ethereum")
 
 
-def test_select_token_chain_normal_erc20_unchanged():
+@pytest.mark.asyncio
+async def test_resolve_token_meta_normal_erc20_unchanged():
     """Normal ERC20 tokens should pass through unchanged."""
     meta = {
         "asset_id": "usd-coin",
@@ -62,8 +85,12 @@ def test_select_token_chain_normal_erc20_unchanged():
         "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
         "chain_id": 1,
     }
-    _chain_id, addr = _select_token_chain(meta, query="usd-coin-ethereum")
-    assert addr == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_token_details",
+        new=AsyncMock(return_value=meta),
+    ):
+        out = await TokenResolver.resolve_token_meta("usd-coin-ethereum")
+        assert out["address"] == "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
 
 @pytest.mark.asyncio
@@ -100,11 +127,12 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         "address": "0x2222222222222222222222222222222222222222",
     }
 
-    async def fake_resolve(query: str):
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
         if query == "from":
-            return query, from_meta
+            return from_meta
         if query == "to":
-            return query, to_meta
+            return to_meta
         raise AssertionError(f"unexpected token query: {query}")
 
     fake_brap = AsyncMock()
@@ -135,7 +163,8 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             return_value=wallet,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute._resolve_token_meta",
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
             side_effect=fake_resolve,
         ),
         patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),

@@ -1,0 +1,12 @@
+schema_version: "0.1"
+entrypoint: "adapters.uniswap_adapter.adapter.UniswapAdapter"
+capabilities:
+  - "uniswap.liquidity.add"
+  - "uniswap.liquidity.increase"
+  - "uniswap.liquidity.remove"
+  - "uniswap.fees.collect"
+  - "uniswap.position.get"
+  - "uniswap.positions.list"
+  - "uniswap.fees.uncollected"
+  - "uniswap.pool.get"
+dependencies: []
