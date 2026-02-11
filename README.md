@@ -139,6 +139,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `LedgerAdapter` (transaction recording)
 - `TokenAdapter` (token metadata + pricing)
 - `PoolAdapter` (pool analytics)
+- `PolymarketAdapter` (Polymarket markets, orderbooks, history, and trading)
 
 ## CLI Reference
 

@@ -1,0 +1,27 @@
+schema_version: "0.1"
+status: wip
+entrypoint: "wayfinder_paths.strategies.projectx_thbill_usdc_strategy.strategy.ProjectXThbillUsdcStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow swaps on HyperEVM
+      (action.type == 'swap' AND action.chain_id == 999) OR
+      # Allow concentrated liquidity actions
+      (action.type == 'lp_add') OR
+      (action.type == 'lp_remove') OR
+      (action.type == 'lp_collect') OR
+      # Allow ERC20 approvals
+      (action.type == 'erc20_approve') OR
+      # Allow withdrawals back to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "PROJECTX"
+    capabilities: ["pool.read", "positions.read", "swap", "lp.write"]
+

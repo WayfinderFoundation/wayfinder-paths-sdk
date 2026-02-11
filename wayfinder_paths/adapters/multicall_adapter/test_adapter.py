@@ -14,8 +14,9 @@ class _DummyAggregate:
         self._expected_value = expected_value
         self._result = result
 
-    async def call(self, tx_params):
+    async def call(self, tx_params, block_identifier=None):
         assert tx_params == {"value": self._expected_value}
+        assert block_identifier is None
         return self._result
 
 
