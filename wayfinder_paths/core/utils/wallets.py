@@ -38,7 +38,7 @@ def make_wallet_from_mnemonic(
     }
 
 
-def generate_wallet_mnemonic(*, num_words: int = 24) -> str:
+def generate_wallet_mnemonic(*, num_words: int = 12) -> str:
     Account.enable_unaudited_hdwallet_features()
     _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
     return mnemonic
@@ -75,7 +75,7 @@ def ensure_wallet_mnemonic(
     *,
     out_dir: str | Path = ".",
     filename: str = "config.json",
-    num_words: int = 24,
+    num_words: int = 12,
 ) -> str:
     existing = load_wallet_mnemonic(out_dir, filename)
     if existing:

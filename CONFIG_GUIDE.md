@@ -90,7 +90,7 @@ Override them in config.json if needed:
 ## Wallet Configuration
 
 Optional: you can add a `wallet_mnemonic` (BIP-39) to deterministically derive wallets using MetaMask's default derivation path (`m/44'/60'/0'/0/N`) when generating local dev wallets.
-Newly generated mnemonics are 24 words by default.
+Newly generated mnemonics are 12 words by default.
 
 Wallets are stored in the `wallets` array. Each wallet has:
 

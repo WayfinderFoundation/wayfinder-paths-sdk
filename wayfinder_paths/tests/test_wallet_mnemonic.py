@@ -29,7 +29,7 @@ def test_ensure_wallet_mnemonic_persists(tmp_path: Path) -> None:
     m2 = ensure_wallet_mnemonic(out_dir=tmp_path, filename="config.json")
 
     assert isinstance(m1, str) and m1
-    assert len(m1.split()) == 24
+    assert len(m1.split()) == 12
     assert m1 == m2
     assert load_wallet_mnemonic(tmp_path, "config.json") == m1
 
