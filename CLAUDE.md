@@ -52,6 +52,7 @@ Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
 - Hyperliquid perp writes: use MCP `hyperliquid_execute(...)` (orders/leverage). Also gated by a review prompt.
+- Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.
 
 Transaction outcome rules (don’t assume a tx hash means success):
@@ -72,6 +73,8 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Hyperlend             | `/using-hyperlend-adapter`       |
 | Boros                 | `/using-boros-adapter`           |
 | BRAP (swaps)          | `/using-brap-adapter`            |
+| Polymarket            | `/using-polymarket-adapter`      |
+| Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
@@ -147,6 +150,7 @@ When a user wants **immediate, one-off execution**:
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send).
 - **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
+- **Polymarket:** use `mcp__wayfinder__polymarket` (search/status/history) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 ### Complex transaction flow (multi-step or fund-moving)
@@ -175,6 +179,15 @@ Hyperliquid deposits (Bridge2):
 - Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
 - Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address). If you need to retry an identical request, pass `force=true`.
 - Withdraw flow: `mcp__wayfinder__hyperliquid_execute(action="withdraw", amount_usdc=...)` → `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal")`.
+
+Polymarket quick flows:
+
+- Search markets/events: `mcp__wayfinder__polymarket(action="search", query="bitcoin february 9", limit=10)`
+- Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket(action="status", wallet_label="main")`
+- Convert **USDC → USDC.e** (required collateral): `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)`
+- Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_usdc=2)`
+- Close a position (sell full size): `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES")`
+- Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
 Sizing note (avoid ambiguity):
 
