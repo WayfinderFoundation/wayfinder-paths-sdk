@@ -1387,9 +1387,18 @@ class AerodromeAdapter(BaseAdapter):
 
             try:
                 batch = await self.sugar_all(limit=batch_limit, offset=offset)
-            except Exception:
+            except Exception as exc:
                 # Sugar reverts once offset exceeds its internal max pool count.
-                break
+                # Only swallow known pagination-end errors; unexpected provider/
+                # transport errors should surface to callers.
+                msg = str(exc).lower()
+                if (
+                    "execution reverted" in msg
+                    or "revert" in msg
+                    or "out of bounds" in msg
+                ):
+                    break
+                raise
             if not batch:
                 break
             out.extend(batch)
@@ -1438,12 +1447,14 @@ class AerodromeAdapter(BaseAdapter):
         include_slipstream: bool = True,
         multicall_chunk_size: int = 250,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = (
-            to_checksum_address(account)
-            if account
-            else to_checksum_address(self.strategy_wallet_address or "")
-        )
-        if not acct or acct == "0x0000000000000000000000000000000000000000":
+        acct_raw = account or self.strategy_wallet_address
+        if not acct_raw:
+            return False, "account is required (or set config.strategy_wallet.address)"
+        try:
+            acct = to_checksum_address(acct_raw)
+        except Exception:
+            return False, f"invalid account address: {acct_raw}"
+        if acct == "0x0000000000000000000000000000000000000000":
             return False, "account is required (or set config.strategy_wallet.address)"
 
         try:
@@ -2065,6 +2076,13 @@ class AerodromeAdapter(BaseAdapter):
     def _deadline(self, seconds_from_now: int = 600) -> int:
         return int(time.time()) + int(seconds_from_now)
 
+    @staticmethod
+    def _validate_slippage_bps(slippage_bps: int) -> int:
+        bps = int(slippage_bps)
+        if bps < 0 or bps >= 10_000:
+            raise ValueError("slippage_bps must be in [0, 10000)")
+        return bps
+
     async def swap_exact_tokens_for_tokens(
         self,
         *,
@@ -2083,6 +2101,7 @@ class AerodromeAdapter(BaseAdapter):
         strategy = self._require_wallet()
         to_address = to_checksum_address(to_address or strategy)
         deadline = int(deadline or self._deadline())
+        slippage_bps_u = self._validate_slippage_bps(slippage_bps)
 
         amount_in = int(amount_in)
         if amount_in <= 0:
@@ -2100,7 +2119,7 @@ class AerodromeAdapter(BaseAdapter):
 
         route = await self.choose_best_single_hop_route(amount_in, token_in, token_out)
         quoted_out = (await self.get_amounts_out(amount_in, [route]))[-1]
-        amount_out_min = int(quoted_out * (10_000 - int(slippage_bps)) // 10_000)
+        amount_out_min = int(quoted_out * (10_000 - slippage_bps_u) // 10_000)
 
         tx = await encode_call(
             target=self.router,
@@ -2139,6 +2158,7 @@ class AerodromeAdapter(BaseAdapter):
         strategy = self._require_wallet()
         to_address = to_checksum_address(to_address or strategy)
         deadline = int(deadline or self._deadline())
+        slippage_bps_u = self._validate_slippage_bps(slippage_bps)
 
         amount_in = int(amount_in)
         if amount_in <= 0:
@@ -2160,7 +2180,7 @@ class AerodromeAdapter(BaseAdapter):
             token_out=token_out,
             intermediates=intermediates or [BASE_WETH],
         )
-        amount_out_min = int(quoted_out * (10_000 - int(slippage_bps)) // 10_000)
+        amount_out_min = int(quoted_out * (10_000 - slippage_bps_u) // 10_000)
         route_tuples = [r.as_tuple() for r in routes]
 
         tx = await encode_call(

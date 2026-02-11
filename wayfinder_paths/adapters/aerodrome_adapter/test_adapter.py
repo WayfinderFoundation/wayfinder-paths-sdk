@@ -573,6 +573,17 @@ class TestAerodromeAdapter:
         assert pools_limited == [pool1, pool2]
 
     @pytest.mark.asyncio
+    async def test_list_pools_raises_unexpected_error(
+        self, adapter: AerodromeAdapter, monkeypatch
+    ):
+        async def _fake_sugar_all(*, limit: int, offset: int) -> list[SugarPool]:  # noqa: ARG001
+            raise RuntimeError("provider timeout")
+
+        monkeypatch.setattr(adapter, "sugar_all", _fake_sugar_all)
+        with pytest.raises(RuntimeError, match="provider timeout"):
+            await adapter.list_pools(page_size=2)
+
+    @pytest.mark.asyncio
     async def test_rank_v2_pools_by_emissions_apr(
         self, adapter: AerodromeAdapter, monkeypatch
     ):
@@ -1052,6 +1063,25 @@ class TestAerodromeAdapter:
 
         monkeypatch.setattr(aerodrome, "get_token_balance", _fake_get_token_balance)
         assert await adapter.lp_balance(pool) == 123
+
+    def test_validate_slippage_bps(self):
+        assert AerodromeAdapter._validate_slippage_bps(0) == 0
+        assert AerodromeAdapter._validate_slippage_bps(9999) == 9999
+        with pytest.raises(ValueError, match="slippage_bps"):
+            AerodromeAdapter._validate_slippage_bps(-1)
+        with pytest.raises(ValueError, match="slippage_bps"):
+            AerodromeAdapter._validate_slippage_bps(10_000)
+
+    @pytest.mark.asyncio
+    async def test_get_full_user_state_account_validation(self):
+        adapter = AerodromeAdapter(config={})
+        ok, err = await adapter.get_full_user_state()
+        assert ok is False
+        assert "account is required" in str(err)
+
+        ok, err = await adapter.get_full_user_state(account="not-an-address")
+        assert ok is False
+        assert "invalid account address" in str(err)
 
     @pytest.mark.asyncio
     async def test_slipstream_tx_helpers(self, monkeypatch: pytest.MonkeyPatch):
