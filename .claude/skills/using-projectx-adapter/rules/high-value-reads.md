@@ -6,6 +6,64 @@
 - Only report values fetched from on-chain contracts (RPC) or the ProjectX subgraph/points endpoints.
 - If you can’t fetch data (missing RPCs / network), respond with “unavailable” and show the exact script call needed.
 
+## Full user state (positions + balances + points in one call)
+
+`get_full_user_state()` is the single best method for checking a wallet's ProjectX positions.
+
+**Pool-agnostic** (no `pool_address` needed): returns all positions across all pools + points.
+Overview and balances are silently skipped when no pool is configured.
+
+```python
+import asyncio
+
+from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
+from wayfinder_paths.mcp.scripting import get_adapter
+
+
+async def main():
+    adapter = get_adapter(ProjectXLiquidityAdapter, "main")
+
+    ok, state = await adapter.get_full_user_state()
+    print("ok:", ok)
+    if ok:
+        print("positions:", state["positions"])
+        print("points:", state["points"])
+
+asyncio.run(main())
+```
+
+**Pool-scoped** (with `pool_address`): also returns pool overview and token balances.
+
+```python
+import asyncio
+
+from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
+from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
+from wayfinder_paths.mcp.scripting import get_adapter
+
+
+async def main():
+    adapter = get_adapter(
+        ProjectXLiquidityAdapter,
+        "main",
+        config_overrides={"pool_address": THBILL_USDC_POOL},
+    )
+
+    ok, state = await adapter.get_full_user_state()
+    print("ok:", ok)
+    if ok:
+        print("positions:", state["positions"])
+        print("balances:", state["balances"])
+        print("points:", state["points"])
+        print("pool:", state["poolOverview"])
+        if state["errors"]:
+            print("errors:", state["errors"])
+
+asyncio.run(main())
+```
+
+Optional flags: `include_overview`, `include_balances`, `include_positions`, `include_points` (all default `True`).
+
 ## Primary data sources
 
 - Adapter: `wayfinder_paths/adapters/projectx_adapter/adapter.py`
@@ -22,7 +80,8 @@
 ## Required configuration
 
 - `config.json` must include RPC URLs for HyperEVM **chain id 999** under `rpcs["999"]`.
-- `ProjectXLiquidityAdapter` requires a `pool_address` in config (also accepts `pool`, `projectx_pool_address`, `projectx_pool`, and checks nested `strategy` config).
+- `pool_address` is optional. Pool-specific methods (`pool_overview`, `current_balances`, `list_positions`, `fetch_swaps`, `live_fee_snapshot`) require it; cross-pool reads (`get_full_user_state` without overview/balances, `_list_all_positions`, `fetch_prjx_points`) do not.
+- Accepts `pool_address`, `pool`, `projectx_pool_address`, `projectx_pool` in config (also checks nested `strategy` config).
 
 ## Ad-hoc read scripts
 
@@ -132,9 +191,10 @@ asyncio.run(main())
 
 | Method | Purpose | Notes |
 |--------|---------|-------|
-| `pool_overview()` | Pool tick/spacing/fee + token metadata | Uses configured `pool_address` |
-| `current_balances(owner=...)` | Raw balances for pool token0/token1 | Pool-scoped |
-| `list_positions(owner=...)` | Active NPM positions for this pool | Pool-scoped + filtered |
+| `get_full_user_state()` | All-in-one: overview + balances + positions + points | Pool-agnostic (skips overview/balances without pool) |
+| `pool_overview()` | Pool tick/spacing/fee + token metadata | Requires `pool_address` |
+| `current_balances(owner=...)` | Raw balances for pool token0/token1 | Requires `pool_address` |
+| `list_positions(owner=...)` | Active NPM positions for this pool | Requires `pool_address` |
 | `fetch_swaps(limit=..., start_timestamp=..., end_timestamp=...)` | Recent swap history | Subgraph (HTTP) |
 | `fetch_prjx_points(wallet_address)` | Points program totals | HTTP API |
 | `get_position(token_id)` | Single position struct | Inherited from `UniswapV3BaseAdapter` |
