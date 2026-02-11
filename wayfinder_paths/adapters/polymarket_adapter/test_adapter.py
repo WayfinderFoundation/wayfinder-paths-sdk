@@ -270,6 +270,65 @@ class TestPolymarketAdapter:
         assert res["tx_hash"] == "0xtransfer"
 
     @pytest.mark.asyncio
+    async def test_preflight_redeem_prefers_zero_parent_without_log_scan(
+        self, adapter, monkeypatch
+    ):
+        condition_id = "0x" + "11" * 32
+        holder = "0x" + "22" * 20
+
+        monkeypatch.setattr(
+            adapter, "_outcome_index_sets", AsyncMock(return_value=[1, 2])
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_compute_position_id",
+            AsyncMock(
+                side_effect=lambda **kwargs: 1 if kwargs["index_set"] == 1 else 2
+            ),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_balance_of_position",
+            AsyncMock(
+                side_effect=lambda **kwargs: 10 if kwargs["position_id"] == 1 else 0
+            ),
+        )
+        parent_scan = AsyncMock(
+            side_effect=ValueError({"code": -32005, "message": "too many"})
+        )
+        monkeypatch.setattr(adapter, "_find_parent_collection_id", parent_scan)
+
+        ok, path = await adapter.preflight_redeem(
+            condition_id=condition_id, holder=holder
+        )
+        assert ok is True
+        assert isinstance(path, dict)
+        assert path["indexSets"] == [1]
+        assert parent_scan.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_preflight_redeem_ignores_log_scan_errors(self, adapter, monkeypatch):
+        condition_id = "0x" + "11" * 32
+        holder = "0x" + "22" * 20
+
+        monkeypatch.setattr(
+            adapter, "_outcome_index_sets", AsyncMock(return_value=[1, 2])
+        )
+        monkeypatch.setattr(adapter, "_compute_position_id", AsyncMock(return_value=1))
+        monkeypatch.setattr(adapter, "_balance_of_position", AsyncMock(return_value=0))
+        monkeypatch.setattr(
+            adapter,
+            "_find_parent_collection_id",
+            AsyncMock(side_effect=ValueError({"code": -32005, "message": "too many"})),
+        )
+
+        ok, msg = await adapter.preflight_redeem(
+            condition_id=condition_id, holder=holder
+        )
+        assert ok is False
+        assert isinstance(msg, str)
+
+    @pytest.mark.asyncio
     async def test_bridge_withdraw_prefers_brap_swap(self, adapter, monkeypatch):
         from_address = "0x000000000000000000000000000000000000dEaD"
 

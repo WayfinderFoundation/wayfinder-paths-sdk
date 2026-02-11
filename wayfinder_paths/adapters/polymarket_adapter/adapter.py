@@ -1345,7 +1345,19 @@ class PolymarketAdapter(BaseAdapter):
             pass
         return [1, 2]
 
-    async def _find_parent_collection_id(self, *, condition_id: bytes) -> bytes | None:
+    def _is_rpc_log_limit_error(self, exc: Exception) -> bool:
+        if isinstance(exc, ValueError) and exc.args:
+            payload = exc.args[0]
+            if isinstance(payload, dict) and int(payload.get("code", 0)) == -32005:
+                return True
+        return "query returned more than 10000 results" in str(exc).lower()
+
+    async def _find_parent_collection_id(
+        self,
+        *,
+        condition_id: bytes,
+        stakeholder: str | None = None,
+    ) -> bytes | None:
         ctf_addr = self._contract_addrs(neg_risk=False)["conditional_tokens"]
         async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
             latest = await web3.eth.block_number
@@ -1358,31 +1370,65 @@ class PolymarketAdapter(BaseAdapter):
             )
             cond_topic = HexBytes(condition_id).rjust(32, b"\x00")
 
+            stakeholder_topic: HexBytes | None = None
+            if stakeholder:
+                try:
+                    stakeholder_topic = HexBytes(stakeholder).rjust(32, b"\x00")
+                except Exception:
+                    stakeholder_topic = None
+
             end = int(latest)
-            step = 300_000
+            step = 10_000  # Polygon RPCs cap at 10k results per query
+            min_step = 500
             max_back = 4_000_000
             scanned = 0
 
             while scanned <= max_back and end > 0:
                 start = max(0, end - step)
-                split_logs, merge_logs = await asyncio.gather(
-                    web3.eth.get_logs(
+                split_logs: list[dict[str, Any]] = []
+                merge_logs: list[dict[str, Any]] = []
+
+                too_many = False
+                try:
+                    split_logs = await web3.eth.get_logs(
                         {
                             "fromBlock": start,
                             "toBlock": end,
                             "address": to_checksum_address(ctf_addr),
-                            "topics": [pos_split_sig, None, None, cond_topic],
+                            "topics": [
+                                pos_split_sig,
+                                stakeholder_topic,
+                                None,
+                                cond_topic,
+                            ],
                         }
-                    ),
-                    web3.eth.get_logs(
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    too_many = self._is_rpc_log_limit_error(exc)
+
+                try:
+                    merge_logs = await web3.eth.get_logs(
                         {
                             "fromBlock": start,
                             "toBlock": end,
                             "address": to_checksum_address(ctf_addr),
-                            "topics": [pos_merge_sig, None, None, cond_topic],
+                            "topics": [
+                                pos_merge_sig,
+                                stakeholder_topic,
+                                None,
+                                cond_topic,
+                            ],
                         }
-                    ),
-                )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    too_many = too_many or self._is_rpc_log_limit_error(exc)
+
+                if too_many:
+                    if step <= min_step:
+                        return None
+                    step = max(min_step, step // 2)
+                    continue
+
                 for logs in (split_logs, merge_logs):
                     if logs:
                         parent = HexBytes(logs[-1]["topics"][2]).rjust(32, b"\x00")
@@ -1403,11 +1449,6 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         holder = to_checksum_address(holder)
         cond_b32 = self._b32(condition_id)
-        parent_candidates: list[bytes] = [self._b32(ZERO32_STR)]
-
-        parent_nz = await self._find_parent_collection_id(condition_id=cond_b32)
-        if parent_nz:
-            parent_candidates.append(parent_nz)
 
         collaterals = candidate_collaterals or [
             POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
@@ -1417,7 +1458,7 @@ class PolymarketAdapter(BaseAdapter):
 
         index_sets = await self._outcome_index_sets(condition_id=condition_id)
 
-        for parent in parent_candidates:
+        async def _try_parent(parent: bytes) -> tuple[bool, dict[str, Any] | str]:
             for collateral in collaterals:
                 pos_ids = await asyncio.gather(
                     *[
@@ -1446,6 +1487,26 @@ class PolymarketAdapter(BaseAdapter):
                         "conditionId": "0x" + cond_b32.hex(),
                         "indexSets": redeemable,
                     }
+            return (
+                False,
+                "No redeemable balance detected for the provided condition_id.",
+            )
+
+        # Most markets redeem with parentCollectionId = 0x0. Avoid expensive log scans unless needed.
+        ok, path = await _try_parent(self._b32(ZERO32_STR))
+        if ok:
+            return True, path
+
+        try:
+            parent_nz = await self._find_parent_collection_id(
+                condition_id=cond_b32, stakeholder=holder
+            )
+        except Exception:  # noqa: BLE001
+            parent_nz = None
+        if parent_nz:
+            ok, path = await _try_parent(parent_nz)
+            if ok:
+                return True, path
 
         return False, "No redeemable balance detected for the provided condition_id."
 
