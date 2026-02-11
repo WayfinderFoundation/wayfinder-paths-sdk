@@ -4,12 +4,11 @@ from pathlib import Path
 
 from eth_account import Account
 
+from wayfinder_paths.core.config import load_wallet_mnemonic, write_wallet_mnemonic
 from wayfinder_paths.core.utils.wallets import (
     ensure_wallet_mnemonic,
-    load_wallet_mnemonic,
     load_wallets,
     make_local_wallet,
-    write_wallet_mnemonic,
     write_wallet_to_json,
 )
 
@@ -67,8 +66,9 @@ def main():
         args.n = 1
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    config_path = args.out_dir / "config.json"
 
-    existing_mnemonic = load_wallet_mnemonic(args.out_dir, "config.json")
+    existing_mnemonic = load_wallet_mnemonic(config_path)
     mnemonic_to_use = existing_mnemonic
     generated_new_mnemonic = False
 
@@ -76,7 +76,7 @@ def main():
         if args.mnemonic == "__generate__":
             if not mnemonic_to_use:
                 mnemonic_to_use = ensure_wallet_mnemonic(
-                    out_dir=args.out_dir, filename="config.json"
+                    config_path=config_path,
                 )
                 generated_new_mnemonic = True
         else:
@@ -88,9 +88,7 @@ def main():
                     "config.json already contains wallet_mnemonic; refusing to overwrite"
                 )
             if not mnemonic_to_use:
-                write_wallet_mnemonic(
-                    phrase, out_dir=args.out_dir, filename="config.json"
-                )
+                write_wallet_mnemonic(phrase, config_path)
                 mnemonic_to_use = phrase
 
     if generated_new_mnemonic and mnemonic_to_use:
@@ -101,102 +99,54 @@ def main():
     existing_was_empty = not existing
     has_main = any(w.get("label") in ("main", "default") for w in existing)
 
-    rows: list[dict[str, str]] = []
-    index = 0
-
-    # Custom labeled wallet (e.g., for strategy name)
+    labels_to_create: list[str] = []
     if args.label:
-        # Check if label already exists - if so, skip (don't create duplicate)
-        if any(w.get("label") == args.label for w in existing):
-            print(f"Wallet with label '{args.label}' already exists, skipping...")
-        else:
-            w = make_local_wallet(
-                label=args.label,
-                existing_wallets=existing,
-                mnemonic=mnemonic_to_use,
-            )
-            rows.append(w)
-            print(f"[{index}] {w['address']}  (label: {args.label})")
-            write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
-            existing.append(w)
-            if args.keystore_password:
-                ks = to_keystore_json(w["private_key_hex"], args.keystore_password)
-                ks_path = args.out_dir / f"keystore_{w['address']}.json"
-                ks_path.write_text(json.dumps(ks))
-            index += 1
-
-            # If no wallets existed before, also create a "main" wallet
-            if existing_was_empty and str(args.label).strip().lower() != "main":
-                main_w = make_local_wallet(
-                    label="main",
-                    existing_wallets=existing,
-                    mnemonic=mnemonic_to_use,
-                )
-                rows.append(main_w)
-                print(f"[{index}] {main_w['address']}  (main)")
-                write_wallet_to_json(
-                    main_w, out_dir=args.out_dir, filename="config.json"
-                )
-                existing.append(main_w)
-                has_main = True
-                if args.keystore_password:
-                    ks = to_keystore_json(
-                        main_w["private_key_hex"], args.keystore_password
-                    )
-                    ks_path = args.out_dir / f"keystore_{main_w['address']}.json"
-                    ks_path.write_text(json.dumps(ks))
-                index += 1
+        want = str(args.label).strip()
+        if any(w.get("label") == want for w in existing):
+            print(f"Wallet with label '{want}' already exists, skipping...")
+            return
+        labels_to_create.append(want)
+        if existing_was_empty and want.lower() != "main":
+            labels_to_create.append("main")
     else:
         if args.n == 0:
             args.n = 1
 
-        # Find next temporary number
-        existing_labels = {
-            w.get("label", "")
-            for w in existing
-            if w.get("label", "").startswith("temporary_")
-        }
-        temp_numbers = set()
-        for label in existing_labels:
-            try:
-                num = int(label.replace("temporary_", ""))
-                temp_numbers.add(num)
-            except ValueError:
-                pass
-        next_temp_num = 1
-        if temp_numbers:
-            next_temp_num = max(temp_numbers) + 1
+        remaining = int(args.n)
+        if not has_main:
+            labels_to_create.append("main")
+            remaining -= 1
 
-        for i in range(args.n):
-            # Label first wallet as "main" if main doesn't exist, otherwise use temporary_N
-            if i == 0 and not has_main:
-                w = make_local_wallet(
-                    label="main",
-                    existing_wallets=existing,
-                    mnemonic=mnemonic_to_use,
-                )
-                rows.append(w)
-                print(f"[{index}] {w['address']}  (main)")
-                has_main = True
-            else:
-                while next_temp_num in temp_numbers:
-                    next_temp_num += 1
-                w = make_local_wallet(
-                    label=f"temporary_{next_temp_num}",
-                    existing_wallets=existing,
-                    mnemonic=mnemonic_to_use,
-                )
-                temp_numbers.add(next_temp_num)
-                rows.append(w)
-                print(f"[{index}] {w['address']}  (label: temporary_{next_temp_num})")
+        existing_temp_numbers = set()
+        for w in existing:
+            label = str(w.get("label", ""))
+            if label.startswith("temporary_"):
+                suffix = label.removeprefix("temporary_")
+                if suffix.isdigit():
+                    existing_temp_numbers.add(int(suffix))
 
-            write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
-            existing.append(w)
-            if args.keystore_password:
-                ks = to_keystore_json(w["private_key_hex"], args.keystore_password)
-                ks_path = args.out_dir / f"keystore_{w['address']}.json"
-                ks_path.write_text(json.dumps(ks))
-            index += 1
+        next_temp_num = max(existing_temp_numbers, default=0) + 1
+        for _ in range(max(0, remaining)):
+            while next_temp_num in existing_temp_numbers:
+                next_temp_num += 1
+            labels_to_create.append(f"temporary_{next_temp_num}")
+            existing_temp_numbers.add(next_temp_num)
+            next_temp_num += 1
+
+    for i, label in enumerate(labels_to_create):
+        w = make_local_wallet(
+            label=label,
+            existing_wallets=existing,
+            mnemonic=mnemonic_to_use,
+        )
+        suffix = "(main)" if label.lower() == "main" else f"(label: {label})"
+        print(f"[{i}] {w['address']}  {suffix}")
+        write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
+        existing.append(w)
+        if args.keystore_password:
+            ks = to_keystore_json(w["private_key_hex"], args.keystore_password)
+            ks_path = args.out_dir / f"keystore_{w['address']}.json"
+            ks_path.write_text(json.dumps(ks))
 
 
 if __name__ == "__main__":

@@ -5,8 +5,8 @@ import re
 import shutil
 from pathlib import Path
 
+from wayfinder_paths.core.config import load_wallet_mnemonic
 from wayfinder_paths.core.utils.wallets import (
-    load_wallet_mnemonic,
     load_wallets,
     make_local_wallet,
     write_wallet_to_json,
@@ -157,9 +157,7 @@ def main():
 
     mnemonic = None
     if args.wallets_file.exists():
-        mnemonic = load_wallet_mnemonic(
-            args.wallets_file.parent, args.wallets_file.name
-        )
+        mnemonic = load_wallet_mnemonic(args.wallets_file)
 
     if not args.wallets_file.exists():
         main_wallet = make_local_wallet(label="main")

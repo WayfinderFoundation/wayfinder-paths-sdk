@@ -4,10 +4,11 @@ from typing import Any
 
 from eth_account import Account
 
-from wayfinder_paths.core.config import load_config_json
+from wayfinder_paths.core.config import load_wallet_mnemonic, write_wallet_mnemonic
 
-_WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
+
+Account.enable_unaudited_hdwallet_features()
 
 
 def make_random_wallet() -> dict[str, str]:
@@ -27,7 +28,6 @@ def make_wallet_from_mnemonic(
 
     Uses MetaMask's default derivation path: ``m/44'/60'/0'/0/{account_index}``.
     """
-    Account.enable_unaudited_hdwallet_features()
     path = _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE.format(index=account_index)
     acct = Account.from_mnemonic(mnemonic, account_path=path)
     return {
@@ -39,49 +39,20 @@ def make_wallet_from_mnemonic(
 
 
 def generate_wallet_mnemonic(*, num_words: int = 12) -> str:
-    Account.enable_unaudited_hdwallet_features()
     _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
     return mnemonic
 
 
-def load_wallet_mnemonic(
-    out_dir: str | Path = ".", filename: str = "config.json"
-) -> str | None:
-    file_path = Path(out_dir) / filename
-    config = load_config_json(file_path)
-    value = config.get(_WALLET_MNEMONIC_KEY)
-    if isinstance(value, str) and value.strip():
-        return value.strip()
-    return None
-
-
-def write_wallet_mnemonic(
-    mnemonic: str,
-    *,
-    out_dir: str | Path = ".",
-    filename: str = "config.json",
-) -> Path:
-    out_dir_path = Path(out_dir)
-    out_dir_path.mkdir(parents=True, exist_ok=True)
-    file_path = out_dir_path / filename
-
-    config = load_config_json(file_path)
-    config[_WALLET_MNEMONIC_KEY] = mnemonic
-    file_path.write_text(json.dumps(config, indent=2))
-    return file_path
-
-
 def ensure_wallet_mnemonic(
     *,
-    out_dir: str | Path = ".",
-    filename: str = "config.json",
+    config_path: str | Path = "config.json",
     num_words: int = 12,
 ) -> str:
-    existing = load_wallet_mnemonic(out_dir, filename)
+    existing = load_wallet_mnemonic(config_path)
     if existing:
         return existing
     mnemonic = generate_wallet_mnemonic(num_words=num_words)
-    write_wallet_mnemonic(mnemonic, out_dir=out_dir, filename=filename)
+    write_wallet_mnemonic(mnemonic, config_path)
     return mnemonic
 
 

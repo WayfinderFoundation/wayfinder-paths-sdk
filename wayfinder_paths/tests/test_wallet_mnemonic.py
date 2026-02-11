@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from wayfinder_paths.core.config import load_wallet_mnemonic
 from wayfinder_paths.core.utils.wallets import (
     ensure_wallet_mnemonic,
-    load_wallet_mnemonic,
     make_local_wallet,
     make_wallet_from_mnemonic,
 )
@@ -25,13 +25,14 @@ def test_make_wallet_from_mnemonic_derives_metamask_addresses() -> None:
 
 
 def test_ensure_wallet_mnemonic_persists(tmp_path: Path) -> None:
-    m1 = ensure_wallet_mnemonic(out_dir=tmp_path, filename="config.json")
-    m2 = ensure_wallet_mnemonic(out_dir=tmp_path, filename="config.json")
+    cfg_path = tmp_path / "config.json"
+    m1 = ensure_wallet_mnemonic(config_path=cfg_path)
+    m2 = ensure_wallet_mnemonic(config_path=cfg_path)
 
     assert isinstance(m1, str) and m1
     assert len(m1.split()) == 12
     assert m1 == m2
-    assert load_wallet_mnemonic(tmp_path, "config.json") == m1
+    assert load_wallet_mnemonic(cfg_path) == m1
 
     cfg = json.loads((tmp_path / "config.json").read_text())
     assert cfg["wallet_mnemonic"] == m1
