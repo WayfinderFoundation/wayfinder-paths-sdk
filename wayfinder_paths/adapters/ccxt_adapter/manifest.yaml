@@ -1,0 +1,6 @@
+schema_version: "0.1"
+entrypoint: "adapters.ccxt_adapter.adapter.CCXTAdapter"
+capabilities:
+  - "exchange.factory"
+dependencies:
+  - "ccxt"
