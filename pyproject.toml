@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "wayfinder-paths"
-version = "0.2.0"
+version = "0.3.0"
 description = "Wayfinder Path: strategies and adapters"
 readme = "README.md"
 authors = ["Wayfinder <dev@wayfinder.ai>"]
