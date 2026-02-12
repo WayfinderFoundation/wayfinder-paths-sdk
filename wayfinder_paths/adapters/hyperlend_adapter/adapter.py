@@ -25,8 +25,7 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
 
 class HyperlendAdapter(BaseAdapter):
@@ -149,14 +148,12 @@ class HyperlendAdapter(BaseAdapter):
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
-        qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
-        chain_id = int(chain_id)
 
         if native:
             token_addr = HYPEREVM_WHYPE
-            transaction = await self._encode_call(
+            transaction = await encode_call(
                 target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
                 abi=WRAPPED_TOKEN_GATEWAY_ABI,
                 fn_name="depositETH",
@@ -177,7 +174,7 @@ class HyperlendAdapter(BaseAdapter):
             )
             if not approved[0]:
                 return approved
-            transaction = await self._encode_call(
+            transaction = await encode_call(
                 target=HYPERLEND_POOL,
                 abi=POOL_ABI,
                 fn_name="supply",
@@ -212,14 +209,12 @@ class HyperlendAdapter(BaseAdapter):
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
-        qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
-        chain_id = int(chain_id)
 
         if native:
             token_addr = HYPEREVM_WHYPE
-            transaction = await self._encode_call(
+            transaction = await encode_call(
                 target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
                 abi=WRAPPED_TOKEN_GATEWAY_ABI,
                 fn_name="withdrawETH",
@@ -229,7 +224,7 @@ class HyperlendAdapter(BaseAdapter):
             )
         else:
             token_addr = to_checksum_address(underlying_token)
-            transaction = await self._encode_call(
+            transaction = await encode_call(
                 target=HYPERLEND_POOL,
                 abi=POOL_ABI,
                 fn_name="withdraw",
@@ -252,37 +247,6 @@ class HyperlendAdapter(BaseAdapter):
         )
 
         return True, txn_hash
-
-    async def _encode_call(
-        self,
-        *,
-        target: str,
-        abi: list[dict[str, Any]],
-        fn_name: str,
-        args: list[Any],
-        from_address: str,
-        chain_id: int,
-        value: int = 0,
-    ) -> dict[str, Any]:
-        async with web3_from_chain_id(chain_id) as web3:
-            contract = web3.eth.contract(address=target, abi=abi)
-            try:
-                data = (
-                    await getattr(contract.functions, fn_name)(*args).build_transaction(
-                        {"from": from_address}
-                    )
-                )["data"]
-            except ValueError as exc:
-                raise ValueError(f"Failed to encode {fn_name}: {exc}") from exc
-
-            transaction: dict[str, Any] = {
-                "chainId": int(chain_id),
-                "from": to_checksum_address(from_address),
-                "to": to_checksum_address(target),
-                "data": data,
-                "value": int(value),
-            }
-            return transaction
 
     async def _record_pool_op(
         self,
