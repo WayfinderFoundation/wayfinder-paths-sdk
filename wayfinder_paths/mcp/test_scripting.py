@@ -161,10 +161,7 @@ class TestGetAdapter:
             def __init__(self, config=None):
                 self.config = config
 
-        with patch(
-            "wayfinder_paths.mcp.scripting.load_config_json",
-            return_value={"foo": "bar"},
-        ):
+        with patch("wayfinder_paths.mcp.scripting.CONFIG", {"foo": "bar"}):
             adapter = get_adapter(MockAdapter)
             assert adapter.config == {"foo": "bar"}
 
@@ -185,9 +182,7 @@ class TestGetAdapter:
         with patch(
             "wayfinder_paths.mcp.scripting.find_wallet_by_label", return_value=wallet
         ):
-            with patch(
-                "wayfinder_paths.mcp.scripting.load_config_json", return_value={}
-            ):
+            with patch("wayfinder_paths.mcp.scripting.CONFIG", {}):
                 adapter = get_adapter(MockAdapter, "main")
                 assert adapter.config["strategy_wallet"] == wallet
                 assert adapter.callback is not None
@@ -199,10 +194,7 @@ class TestGetAdapter:
             def __init__(self, config=None):
                 self.config = config
 
-        with patch(
-            "wayfinder_paths.mcp.scripting.load_config_json",
-            return_value={"base": "value"},
-        ):
+        with patch("wayfinder_paths.mcp.scripting.CONFIG", {"base": "value"}):
             adapter = get_adapter(MockAdapter, config_overrides={"override": "yes"})
             assert adapter.config["base"] == "value"
             assert adapter.config["override"] == "yes"
@@ -215,7 +207,7 @@ class TestGetAdapter:
                 self.config = config
                 self.custom_arg = custom_arg
 
-        with patch("wayfinder_paths.mcp.scripting.load_config_json", return_value={}):
+        with patch("wayfinder_paths.mcp.scripting.CONFIG", {}):
             adapter = get_adapter(MockAdapter, custom_arg="my_value")
             assert adapter.custom_arg == "my_value"
 
@@ -237,9 +229,7 @@ class TestGetAdapter:
         with patch(
             "wayfinder_paths.mcp.scripting.find_wallet_by_label", return_value=wallet
         ):
-            with patch(
-                "wayfinder_paths.mcp.scripting.load_config_json", return_value={}
-            ):
+            with patch("wayfinder_paths.mcp.scripting.CONFIG", {}):
                 adapter = get_adapter(
                     MockAdapter,
                     "main",
@@ -258,9 +248,7 @@ class TestGetAdapter:
         with patch(
             "wayfinder_paths.mcp.scripting.find_wallet_by_label", return_value=wallet
         ):
-            with patch(
-                "wayfinder_paths.mcp.scripting.load_config_json", return_value={}
-            ):
+            with patch("wayfinder_paths.mcp.scripting.CONFIG", {}):
                 adapter = get_adapter(MoonwellAdapter, "main")
                 assert isinstance(adapter, MoonwellAdapter)
                 assert adapter.strategy_wallet_signing_callback is not None
