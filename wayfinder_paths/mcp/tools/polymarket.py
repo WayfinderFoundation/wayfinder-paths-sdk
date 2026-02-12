@@ -18,7 +18,6 @@ from wayfinder_paths.mcp.utils import (
     ok,
 )
 
-
 _TRIM_MARKET_FIELDS: set[str] = {
     "id",
     "questionID",
@@ -258,7 +257,13 @@ async def polymarket(
             )
             if not ok_rows:
                 return err("error", str(rows))
-            return ok({"action": action, "query": q, "markets": [_trim_market(m) for m in rows]})
+            return ok(
+                {
+                    "action": action,
+                    "query": q,
+                    "markets": [_trim_market(m) for m in rows],
+                }
+            )
 
         if action == "trending":
             ok_rows, rows = await adapter.list_markets(
