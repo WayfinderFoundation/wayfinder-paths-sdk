@@ -33,6 +33,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_CLOB_BASE_URL,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_GAMMA_BASE_URL,
+    POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
 )
@@ -942,7 +943,11 @@ class PolymarketAdapter(BaseAdapter):
         cfg = self._contract_addrs(neg_risk=False)
         cfg_nr = self._contract_addrs(neg_risk=True)
 
-        exchanges: set[str] = {cfg["exchange"], cfg_nr["exchange"]}
+        exchanges: set[str] = {
+            cfg["exchange"],
+            cfg_nr["exchange"],
+            POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
+        }
         collateral = cfg["collateral"]
         conditional_tokens = cfg["conditional_tokens"]
 
