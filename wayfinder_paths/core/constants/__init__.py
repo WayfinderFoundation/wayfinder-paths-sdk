@@ -1,6 +1,7 @@
 from wayfinder_paths.core.constants.base import (
     ADAPTER_BALANCE,
     ADAPTER_BRAP,
+    ADAPTER_CCXT,
     ADAPTER_HYPERLEND,
     ADAPTER_HYPERLIQUID,
     ADAPTER_LEDGER,
@@ -85,6 +86,7 @@ __all__ = [
     "ADAPTER_LEDGER",
     "ADAPTER_HYPERLEND",
     "ADAPTER_UNISWAP",
+    "ADAPTER_CCXT",
     "CHAIN_ID_ETHEREUM",
     "CHAIN_ID_BASE",
     "CHAIN_ID_ARBITRUM",
