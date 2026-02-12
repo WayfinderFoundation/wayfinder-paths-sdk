@@ -46,6 +46,91 @@ async def test_polymarket_search_uses_adapter_search():
 
 
 @pytest.mark.asyncio
+async def test_polymarket_search_trims_market_fields():
+    fat_market = {
+        "slug": "btc-100k",
+        "question": "Will BTC hit 100k?",
+        "conditionId": "0xcond",
+        "outcomes": ["Yes", "No"],
+        "outcomePrices": [0.6, 0.4],
+        "clobTokenIds": ["tok1", "tok2"],
+        "enableOrderBook": True,
+        "acceptingOrders": True,
+        "active": True,
+        "closed": False,
+        "volume24hr": 50000,
+        "liquidityNum": 12000,
+        "negRisk": False,
+        "endDate": "2026-03-01",
+        "_event": {"id": "ev1", "slug": "btc-event", "title": "BTC Event"},
+        # Fields that should be stripped:
+        "description": "A very long description " * 50,
+        "image": "https://example.com/img.png",
+        "icon": "https://example.com/icon.png",
+        "id": "12345",
+        "createdAt": "2025-01-01",
+        "updatedAt": "2025-06-01",
+        "marketMakerAddress": "0xdeadbeef",
+        "commentCount": 42,
+        "resolutionSource": "https://source.com",
+        "twitterCardImage": "https://example.com/tw.png",
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets_fuzzy",
+            new=AsyncMock(return_value=(True, [fat_market])),
+        ),
+    ):
+        out = await polymarket("search", query="btc", limit=1)
+        assert out["ok"] is True
+        m = out["result"]["markets"][0]
+        assert m["slug"] == "btc-100k"
+        assert m["question"] == "Will BTC hit 100k?"
+        assert m["_event"]["slug"] == "btc-event"
+        # Stripped fields must not appear
+        assert "description" not in m
+        assert "image" not in m
+        assert "icon" not in m
+        assert "id" not in m
+        assert "createdAt" not in m
+        assert "marketMakerAddress" not in m
+        assert "commentCount" not in m
+        assert "twitterCardImage" not in m
+
+
+@pytest.mark.asyncio
+async def test_polymarket_trending_trims_market_fields():
+    fat_market = {
+        "slug": "trending-market",
+        "question": "Trending?",
+        "outcomes": ["Yes", "No"],
+        "outcomePrices": [0.7, 0.3],
+        "clobTokenIds": ["t1", "t2"],
+        "volume24hr": 100000,
+        # Bloat
+        "description": "Long text " * 100,
+        "image": "https://example.com/img.png",
+        "marketMakerAddress": "0xdead",
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.list_markets",
+            new=AsyncMock(return_value=(True, [fat_market])),
+        ),
+    ):
+        out = await polymarket("trending", limit=1)
+        assert out["ok"] is True
+        m = out["result"]["markets"][0]
+        assert m["slug"] == "trending-market"
+        assert m["volume24hr"] == 100000
+        assert "description" not in m
+        assert "image" not in m
+        assert "marketMakerAddress" not in m
+
+
+@pytest.mark.asyncio
 async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 

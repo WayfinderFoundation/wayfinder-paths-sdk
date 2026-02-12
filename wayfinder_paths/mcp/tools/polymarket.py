@@ -17,6 +17,30 @@ from wayfinder_paths.mcp.utils import (
     ok,
 )
 
+# Fields to keep in search/trending market results. Full data via get_market.
+_SLIM_MARKET_KEYS: set[str] = {
+    "slug",
+    "question",
+    "conditionId",
+    "outcomes",
+    "outcomePrices",
+    "clobTokenIds",
+    "endDate",
+    "enableOrderBook",
+    "acceptingOrders",
+    "active",
+    "closed",
+    "volume24hr",
+    "liquidityNum",
+    "negRisk",
+    # Injected by adapter for search results
+    "_event",
+}
+
+
+def _slim_market(market: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in market.items() if k in _SLIM_MARKET_KEYS}
+
 
 def _resolve_wallet(
     *, wallet_label: str | None
@@ -166,7 +190,7 @@ async def polymarket(
             )
             if not ok_rows:
                 return err("error", str(rows))
-            return ok({"action": action, "query": q, "markets": rows})
+            return ok({"action": action, "query": q, "markets": [_slim_market(m) for m in rows]})
 
         if action == "trending":
             ok_rows, rows = await adapter.list_markets(
@@ -178,7 +202,7 @@ async def polymarket(
             )
             if not ok_rows:
                 return err("error", str(rows))
-            return ok({"action": action, "markets": rows})
+            return ok({"action": action, "markets": [_slim_market(m) for m in rows]})
 
         if action == "get_market":
             slug = str(market_slug or "").strip()
