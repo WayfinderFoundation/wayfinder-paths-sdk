@@ -17,10 +17,7 @@ async def test_polymarket_status_uses_adapter_full_state():
             "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
             return_value=wallet,
         ),
-        patch(
-            "wayfinder_paths.mcp.tools.polymarket.load_config_json",
-            return_value={},
-        ),
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_full_user_state",
             new=AsyncMock(return_value=(True, {"protocol": "polymarket"})),
@@ -36,10 +33,7 @@ async def test_polymarket_status_uses_adapter_full_state():
 @pytest.mark.asyncio
 async def test_polymarket_search_uses_adapter_search():
     with (
-        patch(
-            "wayfinder_paths.mcp.tools.polymarket.load_config_json",
-            return_value={},
-        ),
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets_fuzzy",
             new=AsyncMock(return_value=(True, [{"slug": "m1"}])),
@@ -65,10 +59,7 @@ async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
             "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
             return_value=wallet,
         ),
-        patch(
-            "wayfinder_paths.mcp.tools.polymarket.load_config_json",
-            return_value={},
-        ),
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.bridge_deposit",
             new=AsyncMock(return_value=(True, {"tx_hash": "0xabc"})),
@@ -100,10 +91,7 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
             "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
             return_value=wallet,
         ),
-        patch(
-            "wayfinder_paths.mcp.tools.polymarket.load_config_json",
-            return_value={},
-        ),
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.place_prediction",
             new=AsyncMock(return_value=(True, {"status": "matched"})),

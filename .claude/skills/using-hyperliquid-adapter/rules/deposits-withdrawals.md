@@ -49,8 +49,6 @@ This hard-codes:
 - recipient: `HYPERLIQUID_BRIDGE_ADDRESS`
 - chain: Arbitrum (42161)
 
-If you need to retry an identical request, pass `force=true`.
-
 ### Withdrawal initiation
 
 - Call: `HyperliquidAdapter.withdraw(amount, address)` (USDC withdraw to Arbitrum via executor)

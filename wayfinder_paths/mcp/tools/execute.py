@@ -282,8 +282,6 @@ async def execute(
     # send-only
     token: str | None = None,
     chain_id: int | None = None,
-    # Control
-    force: bool = False,
 ) -> dict[str, Any]:
     request_data = {
         "kind": kind,
