@@ -7,6 +7,8 @@
     "rpc_urls": {
       "1": ["https://eth.llamarpc.com"],
       "42161": ["https://arb1.arbitrum.io/rpc"],
+      "56": ["https://bsc-dataseed.binance.org"],
+      "137": ["https://polygon-rpc.com"],
       "8453": ["https://mainnet.base.org"],
       "43114": ["https://api.avax.network/ext/bc/C/rpc"],
       "9745": ["https://plasma.drpc.org"],
