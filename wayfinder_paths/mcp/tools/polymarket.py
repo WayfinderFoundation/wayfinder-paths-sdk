@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -89,6 +90,8 @@ async def polymarket(
     keep_closed_markets: bool = False,
     rerank: bool = True,
     offset: int = 0,
+    events_status: str | None = "active",
+    end_date_min: str | None = datetime.now(UTC).strftime("%Y-%m-%d"),
     # market/event
     market_slug: str | None = None,
     event_slug: str | None = None,
@@ -157,11 +160,19 @@ async def polymarket(
             q = str(query or "").strip()
             if not q:
                 return err("invalid_request", "query is required for search")
+            if events_status and events_status not in {"active", "closed", "archived"}:
+                return err(
+                    "invalid_request",
+                    f"events_status must be one of: active, closed, archived (got {events_status!r})",
+                )
+
             ok_rows, rows = await adapter.search_markets_fuzzy(
                 query=q,
                 limit=int(limit),
                 page=int(page),
                 keep_closed_markets=bool(keep_closed_markets),
+                events_status=events_status,
+                end_date_min=end_date_min,
                 rerank=bool(rerank),
             )
             if not ok_rows:

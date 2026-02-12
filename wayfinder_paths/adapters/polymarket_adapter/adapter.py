@@ -308,6 +308,8 @@ class PolymarketAdapter(BaseAdapter):
         limit: int = 10,
         page: int = 1,
         keep_closed_markets: bool = False,
+        events_status: str | None = None,
+        end_date_min: str | None = None,
         rerank: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         ok, data = await self.public_search(
@@ -315,6 +317,7 @@ class PolymarketAdapter(BaseAdapter):
             limit_per_type=max(limit, 1),
             page=page,
             keep_closed_markets=keep_closed_markets,
+            events_status=events_status,
         )
         if not ok:
             return False, str(data)
@@ -332,6 +335,13 @@ class PolymarketAdapter(BaseAdapter):
                         },
                     }
                 )
+
+        if end_date_min:
+            markets = [
+                m
+                for m in markets
+                if (m.get("endDateIso") or m.get("endDate") or "") >= end_date_min
+            ]
 
         if not rerank:
             return True, markets[:limit]
