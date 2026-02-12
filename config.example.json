@@ -19,10 +19,6 @@
       "apiKey": "",
       "secret": ""
     },
-    "hyperliquid": {
-      "walletAddress": "",
-      "privateKey": ""
-    },
     "aster": {
       "apiKey": "",
       "secret": ""
