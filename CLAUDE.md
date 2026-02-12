@@ -148,7 +148,7 @@ When a user asks to run, check, or interact with a strategy:
 When a user wants **immediate, one-off execution**:
 
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
-- **On-chain:** use `mcp__wayfinder__execute` (swap/send).
+- **On-chain:** use `mcp__wayfinder__execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
 - **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
 - **Polymarket:** use `mcp__wayfinder__polymarket` (search/status/history) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
@@ -189,11 +189,10 @@ Polymarket quick flows:
 - Close a position (sell full size): `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES")`
 - Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
-Polymarket funding (important — avoid unnecessary hops):
+Polymarket funding (USDC.e collateral):
 
-- `bridge_deposit` uses BRAP and supports **any chain/token as input** — it is not limited to Polygon USDC. Call it directly from Base, Arbitrum, etc.
-- Do NOT pre-swap to Polygon USDC before calling `bridge_deposit`. That adds an unnecessary extra hop. Just call `bridge_deposit` directly and let BRAP route cross-chain to USDC.e.
-- Equivalently, `mcp__wayfinder__execute(kind="swap", ..., to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` achieves the same result — both tools use BRAP.
+- **Have USDC on Polygon:** Use `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` to convert Polygon USDC → USDC.e.
+- **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
 
 Sizing note (avoid ambiguity):
 
@@ -305,7 +304,9 @@ from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 contract = w3.eth.contract(address=token, abi=ERC20_ABI)
 ```
 
-**6. BRAP swap amounts are wei strings, not human-readable**
+**6. Python `quote_swap` amounts are wei strings, not human-readable**
+
+Note: This applies to the Python `quote_swap()` function in scripts. The MCP `execute(...)` tool takes **human-readable** amounts (e.g. `"5"` for 5 USDC).
 
 ```python
 # WRONG — "10.0" is not a valid wei amount
