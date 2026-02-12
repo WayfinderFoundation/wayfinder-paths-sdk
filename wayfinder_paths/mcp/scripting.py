@@ -5,7 +5,8 @@ from typing import Any
 
 from eth_account import Account
 
-from wayfinder_paths.mcp.utils import find_wallet_by_label, load_config_json
+from wayfinder_paths.core.config import CONFIG
+from wayfinder_paths.mcp.utils import find_wallet_by_label
 
 # Known signing callback parameter names used by adapters
 _SIGNING_CALLBACK_PARAMS = frozenset(
@@ -47,10 +48,10 @@ def get_adapter[T](
     config_overrides: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> T:
-    config = load_config_json()
+    config = dict(CONFIG)
 
     if config_overrides:
-        config = {**config, **config_overrides}
+        config.update(config_overrides)
 
     sign_callback = None
     if wallet_label:

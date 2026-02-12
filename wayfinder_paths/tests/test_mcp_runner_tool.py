@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import time
 from pathlib import Path
@@ -80,6 +81,4 @@ def test_mcp_runner_tool_status_roundtrip() -> None:
 
 
 def _run(coro):  # type: ignore[no-untyped-def]
-    import asyncio
-
     return asyncio.run(coro)

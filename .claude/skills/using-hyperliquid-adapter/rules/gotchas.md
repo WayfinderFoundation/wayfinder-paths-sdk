@@ -76,6 +76,38 @@ Execution is intentionally separated from data:
   - `HyperliquidDataClient.get_funding_history(...)` (Wayfinder API), or
   - the underlying SDK `Info.funding_history(...)` via `adapter.info.funding_history(...)`.
 
+## `info.funding_history()` is sync — parallelize with ThreadPoolExecutor
+
+All `Info` methods are synchronous. Fetching funding history for many coins sequentially is slow. Use `run_in_executor` to parallelize:
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+loop = asyncio.get_event_loop()
+with ThreadPoolExecutor(max_workers=10) as pool:
+    futures = {
+        coin: loop.run_in_executor(pool, info.funding_history, coin, start_ms, end_ms)
+        for coin in coins
+    }
+    for coin, fut in futures.items():
+        rates = await fut
+```
+
+## Enumerating all perp coins from metadata
+
+`info.meta_and_asset_ctxs()` returns `[meta, asset_ctxs]`. The coin list and current funding are in parallel arrays:
+
+```python
+meta, ctxs = info.meta_and_asset_ctxs()
+for i, asset in enumerate(meta["universe"]):
+    coin = asset["name"]
+    current_funding = float(ctxs[i]["funding"])  # hourly rate as decimal
+```
+
+## Funding rate is hourly — annualize with `* 24 * 365`
+
+Hyperliquid settles funding every hour. The `fundingRate` field is the per-hour rate as a decimal (e.g. `0.0001` = 0.01%/hr). To annualize: `rate * 24 * 365`. Don't confuse with 8h-settlement exchanges (Binance, Aster) which use `* 3 * 365`.
+
 ## Builder fee approvals
 
 Hyperliquid builder fees are opt-in per **user ↔ builder** pair:

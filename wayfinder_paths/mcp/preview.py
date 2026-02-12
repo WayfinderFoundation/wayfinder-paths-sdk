@@ -246,8 +246,7 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
             f"outcome: {req.get('outcome')}\n"
             f"token_id: {req.get('token_id')}\n"
             f"amount_usdc: {req.get('amount_usdc')}\n"
-            f"shares: {req.get('shares')}\n"
-            f"ensure_approvals: {req.get('ensure_approvals')}"
+            f"shares: {req.get('shares')}"
         )
         return {"summary": header + base + details, "recipient_mismatch": False}
 
@@ -258,8 +257,7 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
             f"side: {req.get('side')}\n"
             f"price: {req.get('price')}\n"
             f"size: {req.get('size')}\n"
-            f"post_only: {req.get('post_only')}\n"
-            f"ensure_approvals: {req.get('ensure_approvals')}"
+            f"post_only: {req.get('post_only')}"
         )
         return {"summary": header + base + details, "recipient_mismatch": False}
 
@@ -269,13 +267,6 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
 
     if action == "redeem_positions":
         details = f"\n\nREDEEM\ncondition_id: {req.get('condition_id')}"
-        return {"summary": header + base + details, "recipient_mismatch": False}
-
-    if action == "ensure_approvals":
-        details = (
-            "\n\nAPPROVALS\n"
-            f"also_approve_conditional_tokens_spender: {req.get('also_approve_conditional_tokens_spender')}"
-        )
         return {"summary": header + base + details, "recipient_mismatch": False}
 
     return {"summary": header + base, "recipient_mismatch": mismatch}
