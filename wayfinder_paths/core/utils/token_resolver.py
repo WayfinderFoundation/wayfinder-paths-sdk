@@ -290,7 +290,11 @@ class TokenResolver:
             if chain_code.lower() == "native":
                 chain_code = asset
                 asset = "native"
-            if asset in NATIVE_COINGECKO_IDS or asset in NATIVE_GAS_SYMBOLS or asset == "native":
+            if (
+                asset in NATIVE_COINGECKO_IDS
+                or asset in NATIVE_GAS_SYMBOLS
+                or asset == "native"
+            ):
                 try:
                     gas_meta = await cls._get_gas_token_cached(chain_code)
                     if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
@@ -302,7 +306,9 @@ class TokenResolver:
             try:
                 meta = await cls._get_token_details_cached(q, chain_id=chain_id)
             except Exception as e:
-                raise ValueError(f"Cannot resolve token: {query}, chain_id: {chain_id}, {e}")
+                raise ValueError(
+                    f"Cannot resolve token: {query}, chain_id: {chain_id}"
+                ) from e
 
         chain_out, addr_out = _select_chain_and_address(meta, query=q)
         if chain_out is None or not addr_out:
