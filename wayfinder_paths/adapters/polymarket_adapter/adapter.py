@@ -933,11 +933,7 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def ensure_onchain_approvals(
-        self,
-        *,
-        also_approve_conditional_tokens_spender: bool = True,
-    ) -> tuple[bool, dict[str, Any] | str]:
+    async def ensure_onchain_approvals(self) -> tuple[bool, dict[str, Any] | str]:
         from_address, sign_cb = self._resolve_wallet_signer()
 
         cfg = self._contract_addrs(neg_risk=False)
@@ -951,9 +947,7 @@ class PolymarketAdapter(BaseAdapter):
         collateral = cfg["collateral"]
         conditional_tokens = cfg["conditional_tokens"]
 
-        spenders = set(exchanges)
-        if also_approve_conditional_tokens_spender:
-            spenders.add(conditional_tokens)
+        spenders = set(exchanges) | {conditional_tokens}
 
         txs: list[str] = []
         for spender in sorted(spenders):
@@ -1000,12 +994,10 @@ class PolymarketAdapter(BaseAdapter):
         price: float,
         size: float,
         post_only: bool = False,
-        ensure_approvals: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
-        if ensure_approvals:
-            ok_appr, appr = await self.ensure_onchain_approvals()
-            if not ok_appr:
-                return False, appr
+        ok_appr, appr = await self.ensure_onchain_approvals()
+        if not ok_appr:
+            return False, appr
         ok, msg = await self.ensure_api_creds()
         if not ok:
             return False, msg
@@ -1031,13 +1023,11 @@ class PolymarketAdapter(BaseAdapter):
         side: Literal["BUY", "SELL"],
         amount: float,
         price: float | None = None,
-        ensure_approvals: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
         # BUY amount = collateral ($) to spend, SELL amount = shares to sell
-        if ensure_approvals:
-            ok_appr, appr = await self.ensure_onchain_approvals()
-            if not ok_appr:
-                return False, appr
+        ok_appr, appr = await self.ensure_onchain_approvals()
+        if not ok_appr:
+            return False, appr
         ok, msg = await self.ensure_api_creds()
         if not ok:
             return False, msg
