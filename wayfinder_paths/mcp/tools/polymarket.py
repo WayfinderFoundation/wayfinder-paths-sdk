@@ -18,6 +18,86 @@ from wayfinder_paths.mcp.utils import (
     ok,
 )
 
+_TRIM_MARKET_FIELDS: set[str] = {
+    "id",
+    "questionID",
+    "image",
+    "icon",
+    "resolutionSource",
+    "startDate",
+    "startDateIso",
+    "createdAt",
+    "updatedAt",
+    "marketMakerAddress",
+    "new",
+    "featured",
+    "submitted_by",
+    "archived",
+    "resolvedBy",
+    "restricted",
+    "groupItemThreshold",
+    "enableOrderBook",
+    "hasReviewedDates",
+    "volumeNum",
+    "liquidityNum",
+    "volume1wk",
+    "volume1mo",
+    "volume1yr",
+    "volume24hrClob",
+    "volume1wkClob",
+    "volume1moClob",
+    "volume1yrClob",
+    "volumeClob",
+    "liquidityClob",
+    "umaBond",
+    "umaReward",
+    "umaResolutionStatus",
+    "umaResolutionStatuses",
+    "customLiveness",
+    "negRisk",
+    "negRiskMarketID",
+    "negRiskRequestID",
+    "ready",
+    "funded",
+    "acceptingOrdersTimestamp",
+    "cyom",
+    "competitive",
+    "pagerDutyNotificationEnabled",
+    "approved",
+    "clobRewards",
+    "rewardsMinSize",
+    "rewardsMaxSpread",
+    "automaticallyActive",
+    "clearBookOnStart",
+    "seriesColor",
+    "showGmpSeries",
+    "showGmpOutcome",
+    "manualActivation",
+    "negRiskOther",
+    "pendingDeployment",
+    "deploying",
+    "deployingTimestamp",
+    "rfqEnabled",
+    "holdingRewardsEnabled",
+    "feesEnabled",
+    "requiresTranslation",
+    "oneWeekPriceChange",
+    "oneMonthPriceChange",
+    "oneHourPriceChange",
+}
+
+
+def _trim_market(m: dict[str, Any]) -> dict[str, Any]:
+    out = {k: v for k, v in m.items() if k not in _TRIM_MARKET_FIELDS}
+    desc = out.get("description") or ""
+    if len(desc) > 300:
+        out["description"] = desc[:300] + "…"
+    if "events" in out:
+        evt = out.pop("events")
+        if evt:
+            out["_event"] = {"slug": evt[0].get("slug"), "title": evt[0].get("title")}
+    return out
+
 
 def _resolve_wallet(
     *, wallet_label: str | None
@@ -177,7 +257,13 @@ async def polymarket(
             )
             if not ok_rows:
                 return err("error", str(rows))
-            return ok({"action": action, "query": q, "markets": rows})
+            return ok(
+                {
+                    "action": action,
+                    "query": q,
+                    "markets": [_trim_market(m) for m in rows],
+                }
+            )
 
         if action == "trending":
             ok_rows, rows = await adapter.list_markets(
@@ -189,7 +275,7 @@ async def polymarket(
             )
             if not ok_rows:
                 return err("error", str(rows))
-            return ok({"action": action, "markets": rows})
+            return ok({"action": action, "markets": [_trim_market(m) for m in rows]})
 
         if action == "get_market":
             slug = str(market_slug or "").strip()
