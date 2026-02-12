@@ -189,6 +189,12 @@ Polymarket quick flows:
 - Close a position (sell full size): `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES")`
 - Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
+Polymarket funding (important — avoid unnecessary hops):
+
+- `bridge_deposit` uses BRAP and supports **any chain/token as input** — it is not limited to Polygon USDC. Call it directly from Base, Arbitrum, etc.
+- Do NOT pre-swap to Polygon USDC before calling `bridge_deposit`. That adds an unnecessary extra hop. Just call `bridge_deposit` directly and let BRAP route cross-chain to USDC.e.
+- Equivalently, `mcp__wayfinder__execute(kind="swap", ..., to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` achieves the same result — both tools use BRAP.
+
 Sizing note (avoid ambiguity):
 
 - If a user says "$X at Y× leverage", confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.

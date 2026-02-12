@@ -159,6 +159,10 @@ Interpretation:
 
 Polymarket trades use **USDC.e**, not native Polygon USDC.
 
+### Cross-chain funding (funds on Base, Arbitrum, etc.)
+
+`bridge_deposit` uses BRAP and supports **any chain/token as input** — not just Polygon USDC. Call it directly and BRAP will route cross-chain to USDC.e on Polygon. Do NOT pre-swap to Polygon USDC first — that's an unnecessary extra hop.
+
 ### Option A (recommended): BRAP swap (fast, on-chain)
 
 The adapter’s `bridge_deposit()` / `bridge_withdraw()` methods prefer a **BRAP** (DEX/aggregator) swap on Polygon:

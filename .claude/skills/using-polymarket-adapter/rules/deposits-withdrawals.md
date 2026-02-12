@@ -9,9 +9,15 @@
 
 ## MCP shortcuts (Claude Code)
 
-- Convert **USDC → USDC.e**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)`
+- Convert **USDC → USDC.e** (funds already on Polygon): `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)`
 - Convert **USDC.e → USDC**: `mcp__wayfinder__polymarket_execute(action="bridge_withdraw", wallet_label="main", amount_usdce=10)`
 - Monitor bridge status: `mcp__wayfinder__polymarket(action="bridge_status", wallet_label="main")`
+
+## Cross-chain funding (funds on Base, Arbitrum, etc.)
+
+`bridge_deposit` uses BRAP and supports **any chain/token as input** — not just Polygon USDC. Call it directly from Base, Arbitrum, etc. and BRAP will route cross-chain to USDC.e on Polygon.
+
+Do NOT pre-swap to Polygon USDC before calling `bridge_deposit` — that's an unnecessary extra hop.
 
 ## Recommended conversion: BRAP swap (fallback to Polymarket Bridge)
 
