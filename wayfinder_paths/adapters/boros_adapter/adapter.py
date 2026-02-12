@@ -79,7 +79,6 @@ class BorosAdapter(BaseAdapter):
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
 
-        # Extract user address from config if not provided
         if not user_address:
             wallet = (config or {}).get("strategy_wallet") or (config or {}).get(
                 "main_wallet"
@@ -262,7 +261,6 @@ class BorosAdapter(BaseAdapter):
         # Handle v3 API format that returns {'calldatas': ['0x...']} without 'to' address
         data_val = tx_src.get("data") or calldata.get("data")
         if not data_val:
-            # Check for calldatas array format (v3 API)
             calldatas = calldata.get("calldatas") or tx_src.get("calldatas")
             if isinstance(calldatas, list) and len(calldatas) > 0:
                 data_val = calldatas[0]
@@ -338,7 +336,6 @@ class BorosAdapter(BaseAdapter):
         # Check for calldatas array format (multiple transactions)
         calldatas = calldata.get("calldatas")
         if isinstance(calldatas, list) and len(calldatas) > 1:
-            # Execute each calldata sequentially (multi-tx response)
             results = []
             for i, data in enumerate(calldatas):
                 single_calldata = {"data": data, "to": BOROS_ROUTER}
@@ -924,7 +921,6 @@ class BorosAdapter(BaseAdapter):
             underlyings: dict[str, dict[str, Any]] = {}
 
             for m in markets:
-                # Filter expired/inactive if requested
                 if active_only:
                     state = m.get("state") or ""
                     maturity_ts = self._extract_maturity_ts(m) or 0
@@ -952,7 +948,6 @@ class BorosAdapter(BaseAdapter):
                 underlyings[symbol]["markets_count"] += 1
                 underlyings[symbol]["platforms"].add(platform_name)
 
-            # Convert sets to sorted lists
             result = []
             for u in sorted(underlyings.values(), key=lambda x: x["symbol"]):
                 result.append(
@@ -1058,32 +1053,22 @@ class BorosAdapter(BaseAdapter):
             if not ok:
                 return False, []
 
-            # Get assets for enrichment
-            ok_assets, assets = await self.get_assets()
-            assets_by_id = {}
-            if ok_assets and assets:
-                for a in assets:
-                    tid = a.get("tokenId")
-                    if tid is not None:
-                        assets_by_id[tid] = a
+            assets_by_id = await self._fetch_assets_by_id()
 
             now_ts = int(time.time())
             filtered = []
 
             for m in markets:
-                # Filter by collateral token ID
                 if collateral is not None:
                     market_token_id = m.get("tokenId")
                     if market_token_id != collateral:
                         continue
 
-                # Filter by underlying asset symbol
                 if asset is not None:
                     underlying = self._extract_underlying(m).upper()
                     if underlying != asset.upper():
                         continue
 
-                # Filter by platform
                 if platform is not None:
                     metadata = m.get("metadata") or {}
                     plat = m.get("platform") or {}
@@ -1093,7 +1078,6 @@ class BorosAdapter(BaseAdapter):
                     if platform_name.lower() != platform.lower():
                         continue
 
-                # Filter active only
                 if active_only:
                     state = m.get("state") or ""
                     maturity_ts = self._extract_maturity_ts(m) or 0
@@ -1129,20 +1113,23 @@ class BorosAdapter(BaseAdapter):
             if not ok:
                 return False, {"error": f"Market {market_id} not found"}
 
-            # Get assets for enrichment
-            ok_assets, assets = await self.get_assets()
-            assets_by_id = {}
-            if ok_assets and assets:
-                for a in assets:
-                    tid = a.get("tokenId")
-                    if tid is not None:
-                        assets_by_id[tid] = a
+            assets_by_id = await self._fetch_assets_by_id()
 
             enriched = self._enrich_market(market, assets_by_id)
             return True, enriched
         except Exception as e:
             logger.error(f"Failed to get enriched market {market_id}: {e}")
             return False, {"error": str(e)}
+
+    async def _fetch_assets_by_id(self) -> dict[int, dict[str, Any]]:
+        ok_assets, assets = await self.get_assets()
+        assets_by_id: dict[int, dict[str, Any]] = {}
+        if ok_assets and assets:
+            for a in assets:
+                tid = a.get("tokenId")
+                if tid is not None:
+                    assets_by_id[tid] = a
+        return assets_by_id
 
     def _enrich_market(
         self,

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from wayfinder_paths.adapters.uniswap_adapter.adapter import UniswapAdapter
+from wayfinder_paths.core.utils.uniswap_v3_math import tick_to_price, ticks_for_range
 
 OWNER = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
 TOKEN_A = "0x1111111111111111111111111111111111111111"
@@ -338,19 +339,12 @@ class TestTickSpacing:
 
 class TestTicksForRange:
     def test_symmetric_range(self):
-        from wayfinder_paths.core.utils.uniswap_v3_math import ticks_for_range
-
         lo, hi = ticks_for_range(current_tick=-200200, bps=500, spacing=10)
         assert lo < -200200 < hi
         assert lo % 10 == 0
         assert hi % 10 == 0
 
     def test_range_width_matches_bps(self):
-        from wayfinder_paths.core.utils.uniswap_v3_math import (
-            tick_to_price,
-            ticks_for_range,
-        )
-
         lo, hi = ticks_for_range(current_tick=0, bps=500, spacing=1)
         price_lo = tick_to_price(lo)
         price_hi = tick_to_price(hi)
@@ -358,8 +352,6 @@ class TestTicksForRange:
         assert 1.09 < price_hi / price_lo < 1.11
 
     def test_respects_spacing(self):
-        from wayfinder_paths.core.utils.uniswap_v3_math import ticks_for_range
-
         lo, hi = ticks_for_range(current_tick=-200200, bps=500, spacing=60)
         assert lo % 60 == 0
         assert hi % 60 == 0
