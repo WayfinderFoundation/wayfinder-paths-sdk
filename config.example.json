@@ -15,5 +15,15 @@
       "999": ["https://rpc.hyperliquid.xyz/evm"]
     }
   },
-  "wallets": []
+  "wallets": [],
+  "ccxt": {
+    "binance": {
+      "apiKey": "",
+      "secret": ""
+    },
+    "aster": {
+      "apiKey": "",
+      "secret": ""
+    }
+  }
 }
