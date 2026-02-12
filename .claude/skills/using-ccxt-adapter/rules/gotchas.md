@@ -105,6 +105,47 @@ await adapter.fetch_ticker("binance", "BTC/USDT")
 
 **Market order fills are async:** `create_order` returns `status: "open"` and `filled: 0.0` even for market orders that fill instantly. To confirm execution, call `fetch_positions()` after a short `asyncio.sleep(2)` instead of trusting the order response.
 
+## Bulk `fetch_funding_rate_history` times out if sequential
+
+Fetching funding history for 100+ symbols one-by-one easily exceeds `run_script` timeouts. Use `asyncio.gather` with a semaphore to parallelize:
+
+```python
+sem = asyncio.Semaphore(10)
+
+async def fetch_rates(exchange, symbol, since_ms):
+    async with sem:
+        return await exchange.fetch_funding_rate_history(symbol, since=since_ms, limit=500)
+
+tasks = [fetch_rates(adapter.aster, f"{coin}/USDT:USDT", since_ms) for coin in coins]
+results = await asyncio.gather(*tasks)
+```
+
+Don't combine `enableRateLimit: true` with your own semaphore — it double-throttles and makes timeouts worse. Pick one concurrency control mechanism.
+
+## Discovering perp markets programmatically
+
+Call `load_markets()` first, then filter on market properties:
+
+```python
+await adapter.aster.load_markets()
+perp_coins = {
+    m["base"]
+    for m in adapter.aster.markets.values()
+    if m.get("swap") and m.get("linear") and m.get("quote") == "USDT"
+}
+```
+
+## Funding settlement intervals differ across exchanges
+
+Aster settles every 8h, Hyperliquid every 1h. When comparing rates, annualize with the correct multiplier:
+
+```python
+aster_annual = avg_8h_rate * 3 * 365    # 3 settlements/day
+hl_annual    = avg_1h_rate * 24 * 365   # 24 settlements/day
+```
+
+Raw rate numbers are not comparable without normalization.
+
 ## Script execution
 
 Run scripts via MCP with wallet tracking:
