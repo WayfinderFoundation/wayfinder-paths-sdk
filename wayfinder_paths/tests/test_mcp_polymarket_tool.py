@@ -87,9 +87,9 @@ async def test_polymarket_search_trims_market_fields():
         m = out["result"]["markets"][0]
         assert m["slug"] == "btc-100k"
         assert m["question"] == "Will BTC hit 100k?"
+        assert "description" in m
         assert m["_event"]["slug"] == "btc-event"
         # Stripped fields must not appear
-        assert "description" not in m
         assert "image" not in m
         assert "icon" not in m
         assert "id" not in m
@@ -104,12 +104,12 @@ async def test_polymarket_trending_trims_market_fields():
     fat_market = {
         "slug": "trending-market",
         "question": "Trending?",
+        "description": "Some description",
         "outcomes": ["Yes", "No"],
         "outcomePrices": [0.7, 0.3],
         "clobTokenIds": ["t1", "t2"],
         "volume24hr": 100000,
         # Bloat
-        "description": "Long text " * 100,
         "image": "https://example.com/img.png",
         "marketMakerAddress": "0xdead",
     }
@@ -125,7 +125,7 @@ async def test_polymarket_trending_trims_market_fields():
         m = out["result"]["markets"][0]
         assert m["slug"] == "trending-market"
         assert m["volume24hr"] == 100000
-        assert "description" not in m
+        assert m["description"] == "Some description"
         assert "image" not in m
         assert "marketMakerAddress" not in m
 

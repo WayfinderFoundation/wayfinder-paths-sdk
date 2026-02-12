@@ -21,6 +21,7 @@ from wayfinder_paths.mcp.utils import (
 _SLIM_MARKET_KEYS: set[str] = {
     "slug",
     "question",
+    "description",
     "conditionId",
     "outcomes",
     "outcomePrices",
@@ -190,7 +191,13 @@ async def polymarket(
             )
             if not ok_rows:
                 return err("error", str(rows))
-            return ok({"action": action, "query": q, "markets": [_slim_market(m) for m in rows]})
+            return ok(
+                {
+                    "action": action,
+                    "query": q,
+                    "markets": [_slim_market(m) for m in rows],
+                }
+            )
 
         if action == "trending":
             ok_rows, rows = await adapter.list_markets(
