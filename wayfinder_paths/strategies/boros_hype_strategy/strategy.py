@@ -252,7 +252,6 @@ class BorosHypeStrategy(
         main_wallet = self._config.get("main_wallet", {})
         user_address = strategy_wallet.get("address") if strategy_wallet else None
 
-        # Create signing callbacks from wallet private keys
         strategy_pk = (
             strategy_wallet.get("private_key") or strategy_wallet.get("private_key_hex")
             if strategy_wallet
@@ -269,7 +268,6 @@ class BorosHypeStrategy(
         )
         main_sign_callback = self._make_sign_callback(main_pk) if main_pk else None
 
-        # Initialize Boros adapter
         self.boros_adapter = BorosAdapter(
             config=self._config,
             sign_callback=self._sign_callback,
@@ -423,7 +421,6 @@ class BorosHypeStrategy(
             pending_withdrawal_completion=self._opa_pending_withdrawal,
         )
 
-        # Convert to OPA Plan format
         opa_plan = OPAPlan[PlanOp](
             steps=[
                 OPAPlanStep(
@@ -998,7 +995,6 @@ class BorosHypeStrategy(
                         else:
                             logger.warning(f"[SAFETY] Boros coverage fix failed: {msg}")
 
-            # Append safety messages to result
             if safety_messages:
                 message = f"{message} | SAFETY: {'; '.join(safety_messages)}"
 
@@ -1012,14 +1008,12 @@ class BorosHypeStrategy(
     async def _get_yield_info(self, inv: Inventory) -> YieldInfo:
         yield_info = YieldInfo()
 
-        # Fetch external APYs in parallel
         khype_apy, lhype_apy = await asyncio.gather(
             fetch_khype_apy(), fetch_lhype_apy()
         )
         yield_info.khype_apy = khype_apy
         yield_info.lhype_apy = lhype_apy
 
-        # Get Boros APR from active position
         boros_notional_usd = 0.0
         if self.boros_adapter:
             try:
@@ -1045,27 +1039,22 @@ class BorosHypeStrategy(
             except Exception as e:
                 logger.warning(f"Failed to get Boros APR: {e}")
 
-        # Calculate expected annual yields in USD
-
-        # kHYPE yield: APY applied to kHYPE value
+        # kHYPE yield
         if yield_info.khype_apy and inv.khype_value_usd > 0:
             yield_info.khype_expected_yield_usd = (
                 inv.khype_value_usd * yield_info.khype_apy
             )
 
-        # lHYPE yield: APY applied to lHYPE value
         if yield_info.lhype_apy and inv.looped_hype_value_usd > 0:
             yield_info.lhype_expected_yield_usd = (
                 inv.looped_hype_value_usd * yield_info.lhype_apy
             )
 
-        # Boros yield: Locks in funding rate on perp position
         if yield_info.boros_apr is not None and boros_notional_usd > 0:
             yield_info.boros_expected_yield_usd = (
                 yield_info.boros_apr * boros_notional_usd
             )
 
-        # Total expected yield
         yield_info.total_expected_yield_usd = (
             yield_info.khype_expected_yield_usd
             + yield_info.lhype_expected_yield_usd

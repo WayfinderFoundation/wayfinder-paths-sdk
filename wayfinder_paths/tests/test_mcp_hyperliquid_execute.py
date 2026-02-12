@@ -50,9 +50,7 @@ async def test_hyperliquid_execute_withdraw(tmp_path: Path, monkeypatch):
             "wayfinder_paths.mcp.tools.hyperliquid.find_wallet_by_label",
             return_value=wallet,
         ),
-        patch(
-            "wayfinder_paths.mcp.tools.hyperliquid.load_config_json", return_value={}
-        ),
+        patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.withdraw",
             new=AsyncMock(return_value=(True, {"status": "ok"})),

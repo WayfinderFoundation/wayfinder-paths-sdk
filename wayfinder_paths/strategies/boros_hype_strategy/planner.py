@@ -46,7 +46,7 @@ def _choose_boros_market(
     if not valid_quotes:
         return None, None, None, None, None
 
-    # Sort by tenor (prefer longer tenors for reduced rollover frequency)
+    # Prefer longer tenors for reduced rollover frequency
     sorted_quotes = sorted(
         valid_quotes,
         key=lambda q: (q.tenor_days or 0, q.mid_apr or 0),
@@ -204,8 +204,6 @@ def build_plan(
         total >= config.min_total_for_boros and inv.boros_pending_withdrawal_usd <= 0
     )
 
-    # Calculate target allocations.
-    #
     # IMPORTANT: Boros has a hard minimum deposit in HYPE terms, which can cause
     # the naive pct-based targets to sum > 100% on smaller portfolios.
     #

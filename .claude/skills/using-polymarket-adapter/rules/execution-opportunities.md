@@ -3,7 +3,7 @@
 ## MCP tools (Claude Code)
 
 - Read-only: `mcp__wayfinder__polymarket` (search, market metadata, prices/books/history, status)
-- Writes: `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, approvals, buy/sell, limit/cancel, close, redeem)
+- Writes: `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit/cancel, close, redeem)
 
 ## Preconditions (for write paths)
 
@@ -12,24 +12,11 @@
 - Have Polygon gas token for tx fees
 - Have **USDC.e** balance (see `rules/deposits-withdrawals.md`)
 
-## One-time setup: approvals + API creds
+## Approvals + API creds (automatic)
 
-Trading requires:
+Trading requires ERC20 allowance of **USDC.e** and ERC1155 `setApprovalForAll` on ConditionalTokens to exchange contracts. These are handled automatically on every order — `ensure_onchain_approvals()` is idempotent and called before every `place_market_order` and `place_limit_order`.
 
-- ERC20 allowance of **USDC.e** to Polymarket exchange contracts
-- ERC1155 `setApprovalForAll` on ConditionalTokens to exchange contracts
-
-```python
-ok, res = await adapter.ensure_onchain_approvals()
-```
-
-The adapter uses `py-clob-client` and derives “Level-2” API creds automatically:
-
-- `ensure_api_creds()` is called under the hood before order placement
-
-MCP shortcut:
-
-- `mcp__wayfinder__polymarket_execute(action="ensure_approvals", wallet_label="main")`
+API creds (`ensure_api_creds()`) are also derived automatically before order placement.
 
 ## Buying (place prediction)
 
