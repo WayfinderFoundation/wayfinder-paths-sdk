@@ -156,7 +156,6 @@ async def run_script(
     args: list[str] | None = None,
     timeout_s: int = 600,
     env: dict[str, str] | None = None,
-    force: bool = False,
     wallet_label: str | None = None,
 ) -> dict[str, Any]:
     ok_path, resolved_or_error = _resolve_script_path(script_path)
