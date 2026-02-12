@@ -10,7 +10,9 @@ from wayfinder_paths.core.config import (
     load_config_json,
     load_wallet_mnemonic,
     write_config_json,
+    write_wallet_mnemonic,
 )
+from wayfinder_paths.core.utils.wallets import ensure_wallet_mnemonic
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -18,6 +20,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 def _run(cmd: list[str]) -> None:
     print(f"$ {' '.join(cmd)}")
     subprocess.run(cmd, check=True)
+
+
+def _read_mnemonic_file(path: Path) -> str:
+    phrase = " ".join(path.read_text().strip().split())
+    if not phrase:
+        raise SystemExit(f"Mnemonic file is empty: {path}")
+    return phrase
 
 
 def _discover_strategies() -> list[str]:
@@ -65,12 +74,16 @@ def main() -> int:
     )
     parser.add_argument(
         "--mnemonic",
-        nargs="?",
-        const="__generate__",
+        action="store_true",
+        help="Generate and persist a new wallet mnemonic in config.json (if missing).",
+    )
+    parser.add_argument(
+        "--mnemonic-file",
+        type=Path,
         default=None,
         help=(
-            "Use mnemonic-derived deterministic wallets. If config.json has no wallet_mnemonic, "
-            "provide this flag (optionally with a phrase) to persist one."
+            "Path to a file containing a BIP-39 mnemonic phrase. This avoids putting the "
+            "mnemonic in shell history."
         ),
     )
     args = parser.parse_args()
@@ -82,12 +95,30 @@ def main() -> int:
 
     _ensure_mcp_json(config_path=config_path)
 
-    has_mnemonic = load_wallet_mnemonic(config_path) is not None
-    if not has_mnemonic and args.mnemonic is None:
-        raise SystemExit(
-            "config.json has no wallet_mnemonic. Provide --mnemonic (to generate) "
-            "or --mnemonic 'your twelve words'."
-        )
+    if args.mnemonic and args.mnemonic_file is not None:
+        raise SystemExit("Pass only one of --mnemonic or --mnemonic-file.")
+
+    existing_mnemonic = load_wallet_mnemonic(config_path)
+    if existing_mnemonic:
+        if args.mnemonic_file is not None:
+            phrase = _read_mnemonic_file(args.mnemonic_file.expanduser())
+            if phrase != existing_mnemonic:
+                raise SystemExit(
+                    "config.json already contains wallet_mnemonic; refusing to overwrite."
+                )
+    else:
+        if args.mnemonic_file is not None:
+            phrase = _read_mnemonic_file(args.mnemonic_file.expanduser())
+            write_wallet_mnemonic(phrase, config_path)
+        elif args.mnemonic:
+            mnemonic = ensure_wallet_mnemonic(config_path=config_path)
+            print("Generated wallet mnemonic (saved to config.json):")
+            print(mnemonic)
+        else:
+            raise SystemExit(
+                "config.json has no wallet_mnemonic. Provide --mnemonic (to generate) "
+                "or --mnemonic-file /path/to/mnemonic.txt."
+            )
 
     base = [
         "poetry",
@@ -98,13 +129,7 @@ def main() -> int:
         str(config_path.parent),
     ]
 
-    mnemonic_args: list[str] = []
-    if args.mnemonic is not None:
-        mnemonic_args = ["--mnemonic"]
-        if args.mnemonic != "__generate__":
-            mnemonic_args.append(args.mnemonic)
-
-    _run([*base, "--label", "main", *mnemonic_args])
+    _run([*base, "--label", "main"])
     for name in _discover_strategies():
         _run([*base, "--label", name])
 
