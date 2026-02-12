@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-from pathlib import Path
 
-from wayfinder_paths.core.config import load_config_json, write_config_json
+from remote_setup_utils import REPO_ROOT, load_core_config_module
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+_config = load_core_config_module(REPO_ROOT)
+load_config_json = _config.load_config_json
+write_config_json = _config.write_config_json
 
 
 def _run(cmd: list[str]) -> None:

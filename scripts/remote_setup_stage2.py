@@ -6,15 +6,13 @@ import os
 import subprocess
 from pathlib import Path
 
-from wayfinder_paths.core.config import (
-    load_config_json,
-    load_wallet_mnemonic,
-    write_config_json,
-    write_wallet_mnemonic,
-)
-from wayfinder_paths.core.utils.wallets import ensure_wallet_mnemonic
+from remote_setup_utils import REPO_ROOT, load_core_config_module
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+_config = load_core_config_module(REPO_ROOT)
+load_config_json = _config.load_config_json
+load_wallet_mnemonic = _config.load_wallet_mnemonic
+write_config_json = _config.write_config_json
+write_wallet_mnemonic = _config.write_wallet_mnemonic
 
 
 def _run(cmd: list[str]) -> None:
@@ -99,6 +97,7 @@ def main() -> int:
         raise SystemExit("Pass only one of --mnemonic or --mnemonic-file.")
 
     existing_mnemonic = load_wallet_mnemonic(config_path)
+    main_wallet_args: list[str] = []
     if existing_mnemonic:
         if args.mnemonic_file is not None:
             phrase = _read_mnemonic_file(args.mnemonic_file.expanduser())
@@ -111,9 +110,8 @@ def main() -> int:
             phrase = _read_mnemonic_file(args.mnemonic_file.expanduser())
             write_wallet_mnemonic(phrase, config_path)
         elif args.mnemonic:
-            mnemonic = ensure_wallet_mnemonic(config_path=config_path)
-            print("Generated wallet mnemonic (saved to config.json):")
-            print(mnemonic)
+            # Let `scripts/make_wallets.py` generate + persist the mnemonic.
+            main_wallet_args = ["--mnemonic"]
         else:
             raise SystemExit(
                 "config.json has no wallet_mnemonic. Provide --mnemonic (to generate) "
@@ -129,7 +127,7 @@ def main() -> int:
         str(config_path.parent),
     ]
 
-    _run([*base, "--label", "main"])
+    _run([*base, "--label", "main", *main_wallet_args])
     for name in _discover_strategies():
         _run([*base, "--label", name])
 
