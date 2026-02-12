@@ -5,7 +5,7 @@ from typing import Any
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
-POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
+POLYMARKET_CLOB_BASE_URL = "https://clober2-630978094941.asia-northeast1.run.app"
 POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com"
 POLYMARKET_BRIDGE_BASE_URL = "https://bridge.polymarket.com"
 
