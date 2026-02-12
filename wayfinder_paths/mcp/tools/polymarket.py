@@ -268,7 +268,6 @@ async def polymarket_execute(
     action: Literal[
         "bridge_deposit",
         "bridge_withdraw",
-        "ensure_approvals",
         "buy",
         "sell",
         "close_position",
@@ -288,15 +287,12 @@ async def polymarket_execute(
     to_token_address: str = POLYGON_USDC_ADDRESS,
     recipient_addr: str | None = None,
     token_decimals: int = 6,
-    # approvals
-    also_approve_conditional_tokens_spender: bool = True,
     # trade
     market_slug: str | None = None,
     outcome: str | int = "YES",
     token_id: str | None = None,
     amount_usdc: float | None = None,
     shares: float | None = None,
-    ensure_approvals: bool = True,
     # limit/cancel
     side: Literal["BUY", "SELL"] = "BUY",
     price: float | None = None,
@@ -328,13 +324,11 @@ async def polymarket_execute(
         "to_token_address": to_token_address,
         "recipient_addr": recipient_addr,
         "token_decimals": token_decimals,
-        "also_approve_conditional_tokens_spender": also_approve_conditional_tokens_spender,
         "market_slug": market_slug,
         "outcome": outcome,
         "token_id": token_id,
         "amount_usdc": amount_usdc,
         "shares": shares,
-        "ensure_approvals": ensure_approvals,
         "side": side,
         "price": price,
         "size": size,
@@ -366,30 +360,6 @@ async def polymarket_execute(
                     "effects": effects,
                 }
             )
-
-        if action == "ensure_approvals":
-            ok_appr, res = await adapter.ensure_onchain_approvals(
-                also_approve_conditional_tokens_spender=bool(
-                    also_approve_conditional_tokens_spender
-                )
-            )
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "ensure_approvals",
-                    "ok": ok_appr,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_appr else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="ensure_approvals",
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-            )
-            return _done(status)
 
         if action == "bridge_deposit":
             if amount is None:
@@ -491,7 +461,6 @@ async def polymarket_execute(
                         token_id=tid,
                         side="BUY",
                         amount=float(amount_usdc),
-                        ensure_approvals=bool(ensure_approvals),
                     )
                 else:
                     if shares is None:
@@ -500,7 +469,6 @@ async def polymarket_execute(
                         token_id=tid,
                         side="SELL",
                         amount=float(shares),
-                        ensure_approvals=bool(ensure_approvals),
                     )
 
             effects.append(
@@ -593,7 +561,6 @@ async def polymarket_execute(
                 token_id=str(tid),
                 side="SELL",
                 amount=float(sell_shares),
-                ensure_approvals=bool(ensure_approvals),
             )
             effects.append(
                 {
@@ -631,7 +598,6 @@ async def polymarket_execute(
                 price=float(price),
                 size=float(size),
                 post_only=bool(post_only),
-                ensure_approvals=bool(ensure_approvals),
             )
             effects.append(
                 {
