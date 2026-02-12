@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
+from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
     POLYGON_USDC_ADDRESS,
@@ -12,7 +13,6 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
     find_wallet_by_label,
-    load_config_json,
     normalize_address,
     ok,
 )
@@ -124,10 +124,7 @@ async def polymarket(
 
     config: dict[str, Any] | None = None
     if want and waddr:
-        config = load_config_json()
-        if not isinstance(config, dict):
-            config = {}
-        config = dict(config)
+        config = dict(CONFIG)
         wobj: dict[str, Any] = {"address": waddr}
         if _pk:
             wobj["private_key_hex"] = _pk
@@ -350,10 +347,7 @@ async def polymarket_execute(
     if preview_obj.get("recipient_mismatch"):
         preview_text = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + preview_text
 
-    cfg = load_config_json()
-    if not isinstance(cfg, dict):
-        cfg = {}
-    cfg = dict(cfg)
+    cfg = dict(CONFIG)
     cfg["main_wallet"] = {"address": sender, "private_key_hex": pk}
     cfg["strategy_wallet"] = {"address": sender, "private_key_hex": pk}
 

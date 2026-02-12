@@ -78,21 +78,18 @@ asyncio.run(main())
 
 ## Remove + burn (close position)
 
+`burn_position()` works without `pool_address` — it only needs the NFT token_id.
+
 ```python
 import asyncio
 
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
-from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
 from wayfinder_paths.mcp.scripting import get_adapter
 
 TOKEN_ID = 123
 
 async def main():
-    adapter = get_adapter(
-        ProjectXLiquidityAdapter,
-        "main",
-        config_overrides={"pool_address": THBILL_USDC_POOL},
-    )
+    adapter = get_adapter(ProjectXLiquidityAdapter, "main")
     ok, tx = await adapter.burn_position(TOKEN_ID)
     print(ok, tx)
 
@@ -101,7 +98,11 @@ asyncio.run(main())
 
 ## Swap exact in
 
-`swap_exact_in()` only supports ERC20 addresses (use wrapped HYPE for “native”).
+`swap_exact_in()` only supports ERC20 addresses (use wrapped HYPE for "native").
+
+Pool routing is automatic: `swap_exact_in` calls `_find_pool_for_pair` which checks on-chain
+`liquidity()` and picks the deepest pool. When the swap tokens match the configured pool's pair,
+its fee tier is tried first. Use `prefer_fees=[fee1, fee2, ...]` to override the search order.
 
 ```python
 import asyncio
