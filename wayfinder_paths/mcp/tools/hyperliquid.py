@@ -248,7 +248,6 @@ async def hyperliquid_execute(
     is_cross: bool = True,
     amount_usdc: float | None = None,
     builder_fee_tenths_bp: int | None = None,
-    force: bool = False,
 ) -> dict[str, Any]:
     want = str(wallet_label or "").strip()
     if not want:

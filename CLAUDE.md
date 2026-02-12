@@ -177,7 +177,7 @@ HIP-3 dex abstraction (required for multi-dex trading):
 Hyperliquid deposits (Bridge2):
 
 - Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
-- Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address). If you need to retry an identical request, pass `force=true`.
+- Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address).
 - Withdraw flow: `mcp__wayfinder__hyperliquid_execute(action="withdraw", amount_usdc=...)` → `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal")`.
 
 Polymarket quick flows:
@@ -405,7 +405,7 @@ Supported chains:
 | Ethereum  | 1     | `ethereum`   | ETH    | `ethereum-ethereum`    |
 | Base      | 8453  | `base`       | ETH    | `ethereum-base`        |
 | Arbitrum  | 42161 | `arbitrum`   | ETH    | `ethereum-arbitrum`    |
-| Polygon   | 137   | `polygon`    | POL    | `matic-network-polygon`|
+| Polygon   | 137   | `polygon`    | POL    | `polygon-ecosystem-token-polygon`|
 | BSC       | 56    | `bsc`        | BNB    | `binancecoin-bsc`      |
 | Avalanche | 43114 | `avalanche`  | AVAX   | `avalanche-avalanche`|
 | Plasma    | 9745  | `plasma`     | PLASMA | `plasma-plasma`        |
