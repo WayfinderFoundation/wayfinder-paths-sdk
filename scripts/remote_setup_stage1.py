@@ -3,18 +3,8 @@ from __future__ import annotations
 
 import argparse
 import os
-import subprocess
 
-from remote_setup_utils import REPO_ROOT, load_core_config_module
-
-_config = load_core_config_module(REPO_ROOT)
-load_config_json = _config.load_config_json
-write_config_json = _config.write_config_json
-
-
-def _run(cmd: list[str]) -> None:
-    print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
+from remote_setup_utils import REPO_ROOT, ensure_config, run_cmd
 
 
 def main() -> int:
@@ -30,26 +20,8 @@ def main() -> int:
     if not api_key:
         raise SystemExit("Missing API key. Pass --api-key or set WAYFINDER_API_KEY.")
 
-    config_path = REPO_ROOT / "config.json"
-    template_path = REPO_ROOT / "config.example.json"
-    config = load_config_json(config_path) or load_config_json(template_path)
-
-    system = config.get("system")
-    if not isinstance(system, dict):
-        system = {}
-    system["api_key"] = api_key
-    system.setdefault("api_base_url", "https://wayfinder.ai/api")
-    config["system"] = system
-
-    if "strategy" not in config:
-        template = load_config_json(template_path)
-        if isinstance(template.get("strategy"), dict):
-            config["strategy"] = template["strategy"]
-
-    write_config_json(config_path, config)
-    print(f"Wrote {config_path}")
-
-    _run(["poetry", "install"])
+    ensure_config(api_key=api_key)
+    run_cmd(["poetry", "install"])
     return 0
 
 

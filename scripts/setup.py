@@ -3,16 +3,21 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import os
 import shutil
 import subprocess
 import sys
 import urllib.request
 from pathlib import Path
-from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+from remote_setup_utils import (
+    REPO_ROOT,
+    discover_strategies,
+    ensure_config,
+    ensure_mcp_json,
+    read_json,
+    run_cmd,
+)
 
 
 def _confirm(prompt: str, *, default: bool = True) -> bool:
@@ -26,24 +31,6 @@ def _confirm(prompt: str, *, default: bool = True) -> bool:
         if raw in ("n", "no"):
             return False
         print("Please answer 'y' or 'n'.")
-
-
-def _run(cmd: list[str]) -> None:
-    print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
-
-
-def _read_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    parsed = json.loads(path.read_text())
-    if not isinstance(parsed, dict):
-        raise RuntimeError(f"{path} must be a JSON object at the top level.")
-    return parsed
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def _require_python312() -> None:
@@ -81,7 +68,7 @@ def _install_poetry(*, non_interactive: bool) -> str:
         raise RuntimeError("Poetry is required to continue.")
 
     if shutil.which("pipx"):
-        _run(["pipx", "install", "poetry"])
+        run_cmd(["pipx", "install", "poetry"])
     else:
         print("Downloading Poetry installer...")
         script = urllib.request.urlopen("https://install.python-poetry.org").read()
@@ -96,44 +83,12 @@ def _install_poetry(*, non_interactive: bool) -> str:
     return poetry
 
 
-def _ensure_config(*, api_key: str | None) -> None:
-    config_path = REPO_ROOT / "config.json"
-    template_path = REPO_ROOT / "config.example.json"
-
-    config = _read_json(config_path) or _read_json(template_path) or {}
-    system = config.get("system", {})
-    if not isinstance(system, dict):
-        system = {}
-
-    if api_key:
-        system["api_key"] = api_key
-    system.setdefault("api_base_url", "https://wayfinder.ai/api")
-    config["system"] = system
-
-    if "strategy" not in config:
-        template = _read_json(template_path) or {}
-        if isinstance(template.get("strategy"), dict):
-            config["strategy"] = template["strategy"]
-
-    _write_json(config_path, config)
-    print("Wrote config.json")
-
-
 def _get_wallet_labels() -> set[str]:
-    config = _read_json(REPO_ROOT / "config.json") or {}
+    config = read_json(REPO_ROOT / "config.json") or {}
     wallets = config.get("wallets", [])
     if not isinstance(wallets, list):
         return set()
     return {w.get("label") for w in wallets if isinstance(w, dict) and w.get("label")}
-
-
-def _discover_strategies() -> list[str]:
-    strategies_dir = REPO_ROOT / "wayfinder_paths" / "strategies"
-    if not strategies_dir.exists():
-        return []
-    return sorted(
-        d.name for d in strategies_dir.iterdir() if (d / "strategy.py").exists()
-    )
 
 
 def _ensure_wallets(poetry: str, *, non_interactive: bool, mnemonic: bool) -> None:
@@ -144,32 +99,17 @@ def _ensure_wallets(poetry: str, *, non_interactive: bool, mnemonic: bool) -> No
             cmd = [poetry, "run", "python", "scripts/make_wallets.py", "-n", "1"]
             if mnemonic:
                 cmd.append("--mnemonic")
-            _run(cmd)
+            run_cmd(cmd)
             existing = _get_wallet_labels()
 
-    missing = [s for s in _discover_strategies() if s not in existing]
+    missing = [s for s in discover_strategies() if s not in existing]
     if missing:
         print(f"Creating wallets for {len(missing)} strategies: {', '.join(missing)}")
         for name in missing:
             cmd = [poetry, "run", "python", "scripts/make_wallets.py", "--label", name]
             if mnemonic:
                 cmd.append("--mnemonic")
-            _run(cmd)
-
-
-def _ensure_mcp_json() -> None:
-    mcp_path = REPO_ROOT / ".mcp.json"
-    mcp = _read_json(mcp_path)
-    if not mcp:
-        raise RuntimeError("Missing .mcp.json (expected in repo root).")
-
-    wayfinder = mcp.get("mcpServers", {}).get("wayfinder")
-    if not isinstance(wayfinder, dict):
-        raise RuntimeError(".mcp.json is missing 'mcpServers.wayfinder'.")
-
-    wayfinder["command"] = "poetry"
-    _write_json(mcp_path, mcp)
-    print("Updated .mcp.json")
+            run_cmd(cmd)
 
 
 def main() -> int:
@@ -206,15 +146,16 @@ def main() -> int:
             api_key = ""
 
     poetry = _find_poetry() or _install_poetry(non_interactive=args.non_interactive)
-    _run([poetry, "install"])
+    run_cmd([poetry, "install"])
 
-    _ensure_config(api_key=api_key or None)
-    _ensure_mcp_json()
+    config_path = REPO_ROOT / "config.json"
+    ensure_config(api_key=api_key or None)
+    ensure_mcp_json(config_path=config_path)
     _ensure_wallets(
         poetry, non_interactive=args.non_interactive, mnemonic=args.mnemonic
     )
 
-    config = _read_json(REPO_ROOT / "config.json") or {}
+    config = read_json(config_path) or {}
     if not config.get("system", {}).get("api_key"):
         print(
             "Note: system.api_key is not set. Update config.json or export WAYFINDER_API_KEY."

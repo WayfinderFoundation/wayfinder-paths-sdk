@@ -2,22 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import subprocess
+import sys
 from pathlib import Path
 
-from remote_setup_utils import REPO_ROOT, load_core_config_module
+from remote_setup_utils import (
+    REPO_ROOT,
+    discover_strategies,
+    load_core_config_module,
+    run_cmd,
+)
 
 _config = load_core_config_module(REPO_ROOT)
 load_config_json = _config.load_config_json
 load_wallet_mnemonic = _config.load_wallet_mnemonic
-write_config_json = _config.write_config_json
 write_wallet_mnemonic = _config.write_wallet_mnemonic
-
-
-def _run(cmd: list[str]) -> None:
-    print(f"$ {' '.join(cmd)}")
-    subprocess.run(cmd, check=True)
 
 
 def _read_mnemonic_file(path: Path) -> str:
@@ -25,45 +25,6 @@ def _read_mnemonic_file(path: Path) -> str:
     if not phrase:
         raise SystemExit(f"Mnemonic file is empty: {path}")
     return phrase
-
-
-def _discover_strategies() -> list[str]:
-    strategies_dir = REPO_ROOT / "wayfinder_paths" / "strategies"
-    if not strategies_dir.exists():
-        return []
-    return sorted(
-        d.name for d in strategies_dir.iterdir() if (d / "strategy.py").exists()
-    )
-
-
-def _ensure_mcp_json(*, config_path: Path) -> None:
-    mcp_path = REPO_ROOT / ".mcp.json"
-    mcp = load_config_json(mcp_path)
-
-    mcp_servers = mcp.get("mcpServers")
-    if not isinstance(mcp_servers, dict):
-        mcp_servers = {}
-        mcp["mcpServers"] = mcp_servers
-
-    wayfinder = mcp_servers.get("wayfinder")
-    if not isinstance(wayfinder, dict):
-        wayfinder = {}
-        mcp_servers["wayfinder"] = wayfinder
-
-    wayfinder["command"] = "poetry"
-    wayfinder["args"] = ["run", "python", "-m", "wayfinder_paths.mcp.server"]
-
-    env = wayfinder.get("env")
-    if not isinstance(env, dict):
-        env = {}
-    try:
-        env["WAYFINDER_CONFIG_PATH"] = str(config_path.relative_to(REPO_ROOT))
-    except ValueError:
-        env["WAYFINDER_CONFIG_PATH"] = str(config_path)
-    wayfinder["env"] = env
-
-    write_config_json(mcp_path, mcp)
-    print(f"Wrote {mcp_path}")
 
 
 def main() -> int:
@@ -84,6 +45,11 @@ def main() -> int:
             "mnemonic in shell history."
         ),
     )
+    parser.add_argument(
+        "--mnemonic-stdin",
+        action="store_true",
+        help="Read BIP-39 mnemonic phrase from stdin (pipe-friendly).",
+    )
     args = parser.parse_args()
 
     os.chdir(REPO_ROOT)
@@ -91,31 +57,38 @@ def main() -> int:
     if not config_path.exists():
         raise SystemExit("Missing config.json. Run stage 1 first.")
 
-    _ensure_mcp_json(config_path=config_path)
-
-    if args.mnemonic and args.mnemonic_file is not None:
-        raise SystemExit("Pass only one of --mnemonic or --mnemonic-file.")
+    sources = sum([args.mnemonic, args.mnemonic_file is not None, args.mnemonic_stdin])
+    if sources > 1:
+        raise SystemExit(
+            "Pass only one of --mnemonic, --mnemonic-file, or --mnemonic-stdin."
+        )
 
     existing_mnemonic = load_wallet_mnemonic(config_path)
     main_wallet_args: list[str] = []
+
+    phrase_from_input: str | None = None
+    if args.mnemonic_file is not None:
+        phrase_from_input = _read_mnemonic_file(args.mnemonic_file.expanduser())
+    elif args.mnemonic_stdin:
+        phrase_from_input = " ".join(sys.stdin.read().strip().split())
+        if not phrase_from_input:
+            raise SystemExit("No mnemonic received on stdin.")
+
     if existing_mnemonic:
-        if args.mnemonic_file is not None:
-            phrase = _read_mnemonic_file(args.mnemonic_file.expanduser())
-            if phrase != existing_mnemonic:
-                raise SystemExit(
-                    "config.json already contains wallet_mnemonic; refusing to overwrite."
-                )
+        if phrase_from_input and phrase_from_input != existing_mnemonic:
+            raise SystemExit(
+                "config.json already contains wallet_mnemonic; refusing to overwrite."
+            )
     else:
-        if args.mnemonic_file is not None:
-            phrase = _read_mnemonic_file(args.mnemonic_file.expanduser())
-            write_wallet_mnemonic(phrase, config_path)
+        if phrase_from_input:
+            write_wallet_mnemonic(phrase_from_input, config_path)
         elif args.mnemonic:
             # Let `scripts/make_wallets.py` generate + persist the mnemonic.
             main_wallet_args = ["--mnemonic"]
         else:
             raise SystemExit(
-                "config.json has no wallet_mnemonic. Provide --mnemonic (to generate) "
-                "or --mnemonic-file /path/to/mnemonic.txt."
+                "config.json has no wallet_mnemonic. Provide --mnemonic (to generate), "
+                "--mnemonic-file /path/to/mnemonic.txt, or --mnemonic-stdin."
             )
 
     base = [
@@ -127,13 +100,19 @@ def main() -> int:
         str(config_path.parent),
     ]
 
-    _run([*base, "--label", "main", *main_wallet_args])
-    for name in _discover_strategies():
-        _run([*base, "--label", name])
+    run_cmd([*base, "--label", "main", *main_wallet_args])
+    for name in discover_strategies():
+        run_cmd([*base, "--label", name])
 
-    print("\nStage 2 complete.")
+    config = load_config_json(config_path)
+    wallets = config.get("wallets", [])
+    main_wallet = next((w for w in wallets if w.get("label") == "main"), None)
+    main_address = main_wallet["address"] if main_wallet else None
+
     print(
-        "- Open Claude Code in this repo and enable the project MCP server when prompted."
+        json.dumps(
+            {"stage": 2, "status": "complete", "main_wallet_address": main_address}
+        )
     )
     return 0
 
