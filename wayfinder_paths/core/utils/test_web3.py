@@ -1,10 +1,13 @@
+import copy
 from unittest.mock import AsyncMock
 
 import pytest
 
+import wayfinder_paths.core.config as config
 from wayfinder_paths.core.utils.web3 import (
     _clear_rate_limit_cooldowns,
     _FailoverRpcProvider,
+    _get_web3,
 )
 
 
@@ -19,6 +22,13 @@ def clear_cooldowns():
     _clear_rate_limit_cooldowns()
     yield
     _clear_rate_limit_cooldowns()
+
+
+@pytest.fixture
+def restore_global_config() -> None:
+    original = copy.deepcopy(config.CONFIG)
+    yield
+    config.set_config(original)
 
 
 @pytest.mark.asyncio
@@ -92,3 +102,32 @@ async def test_failover_provider_uses_cooldown_after_rate_limit():
     # First call hit primary then failover; second call should skip primary due to cooldown.
     assert provider._make_request.await_count == 1
     assert provider.failover_provider._make_request.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_failover_provider_disconnect_closes_failover_provider():
+    provider = _FailoverRpcProvider("https://primary-rpc.invalid", chain_id=8453)
+    provider.failover_provider.disconnect = AsyncMock()
+
+    await provider.disconnect()
+
+    assert provider.failover_provider.disconnect.await_count == 1
+
+
+def test_primary_rpc_headers_do_not_include_wayfinder_api_key(
+    restore_global_config: None,
+):
+    config.set_config(
+        {
+            "system": {"api_key": "wk_should_not_leak"},
+            "strategy": {"rpc_urls": {"8453": ["https://primary-rpc.invalid"]}},
+        }
+    )
+    w3 = _get_web3("https://primary-rpc.invalid", 8453)
+    provider = w3.provider
+
+    assert "X-API-KEY" not in provider._request_kwargs["headers"]
+    assert (
+        provider.failover_provider._request_kwargs["headers"]["X-API-KEY"]
+        == "wk_should_not_leak"
+    )

@@ -50,7 +50,11 @@ _DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
 _RPC_RATE_LIMIT_COOLDOWN_UNTIL: dict[tuple[int, str], float] = {}
 
 
-def _auth_headers() -> dict[str, str]:
+def _default_rpc_headers() -> dict[str, str]:
+    return AsyncHTTPProvider.get_request_headers()
+
+
+def _wayfinder_auth_headers() -> dict[str, str]:
     headers = AsyncHTTPProvider.get_request_headers()
     api_key = get_api_key()
     if api_key:
@@ -200,15 +204,30 @@ class _FailoverRpcProvider(AsyncHTTPProvider):
         self,
         rpc: str,
         chain_id: int,
-        request_kwargs: dict | None = None,
+        primary_request_kwargs: dict | None = None,
+        failover_request_kwargs: dict | None = None,
     ):
-        super().__init__(rpc, request_kwargs=request_kwargs)
+        super().__init__(rpc, request_kwargs=primary_request_kwargs)
         self.chain_id = chain_id
         self.failover_endpoint = _get_rpc_failover_endpoint(chain_id)
         self.failover_provider = AsyncHTTPProvider(
             self.failover_endpoint,
-            request_kwargs=request_kwargs,
+            request_kwargs=failover_request_kwargs,
         )
+
+    async def disconnect(self) -> None:
+        primary_exc: Exception | None = None
+        try:
+            await super().disconnect()
+        except Exception as exc:
+            primary_exc = exc
+        try:
+            await self.failover_provider.disconnect()
+        except Exception:
+            if primary_exc is None:
+                raise
+        if primary_exc is not None:
+            raise primary_exc
 
     async def _request_via_failover(
         self, *, method: str, request_data: bytes, request_id: Any
@@ -304,15 +323,19 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
-        headers = _auth_headers()
+        headers = _wayfinder_auth_headers()
         if "X-API-KEY" not in headers:
             logger.warning("No API key configured; Gorlami fork requests may fail")
         provider = _GorlamiProvider(rpc, request_kwargs={"headers": headers})
         web3 = AsyncWeb3(provider)
     else:
-        headers = _auth_headers()
+        primary_headers = _default_rpc_headers()
+        failover_headers = _wayfinder_auth_headers()
         provider = _FailoverRpcProvider(
-            rpc, chain_id, request_kwargs={"headers": headers}
+            rpc,
+            chain_id,
+            primary_request_kwargs={"headers": primary_headers},
+            failover_request_kwargs={"headers": failover_headers},
         )
         web3 = AsyncWeb3(provider)
     if chain_id in POA_MIDDLEWARE_CHAIN_IDS:

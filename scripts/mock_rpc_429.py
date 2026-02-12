@@ -19,8 +19,9 @@ class _Mock429Handler(BaseHTTPRequestHandler):
             parsed = json.loads(body.decode("utf-8"))
             if isinstance(parsed, dict) and "id" in parsed:
                 request_id = parsed["id"]
-        except Exception:
-            pass
+        except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError):
+            # Keep default request_id for malformed request payloads.
+            request_id = 1
 
         payload = {
             "jsonrpc": "2.0",
