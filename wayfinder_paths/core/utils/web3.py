@@ -196,7 +196,7 @@ class _GorlamiProvider(AsyncHTTPProvider):
 
 def _get_rpc_failover_endpoint(chain_id: int) -> str:
     base = get_api_base_url().rstrip("/")
-    return f"{base}{_RPC_FAILOVER_PATH}?chain_id={chain_id}"
+    return f"{base}{_RPC_FAILOVER_PATH}/{chain_id}/"
 
 
 class _FailoverRpcProvider(AsyncHTTPProvider):
@@ -232,12 +232,16 @@ class _FailoverRpcProvider(AsyncHTTPProvider):
     async def _request_via_failover(
         self, *, method: str, request_data: bytes, request_id: Any
     ) -> dict[str, Any]:
-        return await _perform_rpc_request(
+        response = await _perform_rpc_request(
             self.failover_provider,
             method=method,
             request_data=request_data,
             request_id=request_id,
         )
+        logger.info(
+            f"RPC failover succeeded chain={self.chain_id} method={method} id={request_id}"
+        )
+        return response
 
     async def make_request(self, method, params):  # type: ignore[override]
         req = self.form_request(method, params)
