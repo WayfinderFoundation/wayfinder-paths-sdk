@@ -15,17 +15,59 @@ from wayfinder_paths.core.clients.HyperlendClient import (
     MarketEntry,
     StableMarketsHeadroomResponse,
 )
+from wayfinder_paths.core.constants.base import SECONDS_PER_YEAR
+from wayfinder_paths.core.constants.chains import CHAIN_ID_HYPEREVM
 from wayfinder_paths.core.constants.contracts import (
     HYPEREVM_WHYPE,
     HYPERLEND_POOL,
+    HYPERLEND_POOL_ADDRESSES_PROVIDER,
+    HYPERLEND_UI_POOL_DATA_PROVIDER,
     HYPERLEND_WRAPPED_TOKEN_GATEWAY,
 )
 from wayfinder_paths.core.constants.hyperlend_abi import (
     POOL_ABI,
+    UI_POOL_DATA_PROVIDER_ABI,
+    UI_POOL_RESERVE_KEYS,
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
+from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+RAY = 10**27
+
+
+def _ray_to_apr(ray: int) -> float:
+    if not ray:
+        return 0.0
+    return float(ray) / RAY
+
+
+def _apr_to_apy(apr: float) -> float:
+    return (1 + apr / SECONDS_PER_YEAR) ** SECONDS_PER_YEAR - 1
+
+
+def _compute_supply_cap_headroom(
+    reserve: dict[str, Any], decimals: int
+) -> tuple[int | None, int | None]:
+    supply_cap_tokens = int(reserve.get("supplyCap") or 0)
+    if supply_cap_tokens <= 0:
+        return (None, None)
+    unit = 10**max(0, int(decimals))
+    supply_cap_wei = supply_cap_tokens * unit
+
+    available = int(reserve.get("availableLiquidity") or 0)
+    scaled_variable_debt = int(reserve.get("totalScaledVariableDebt") or 0)
+    variable_index = int(reserve.get("variableBorrowIndex") or 0)
+    stable_debt = int(reserve.get("totalPrincipalStableDebt") or 0)
+    current_variable_debt = (scaled_variable_debt * variable_index) // RAY
+
+    total_supplied = available + current_variable_debt + stable_debt
+    headroom = supply_cap_wei - total_supplied
+    if headroom < 0:
+        headroom = 0
+    return (headroom, supply_cap_tokens)
 
 
 class HyperlendAdapter(BaseAdapter):
@@ -33,7 +75,7 @@ class HyperlendAdapter(BaseAdapter):
 
     def __init__(
         self,
-        config: dict[str, Any],
+        config: dict[str, Any] | None = None,
         strategy_wallet_signing_callback=None,
     ) -> None:
         super().__init__("hyperlend_adapter", config)
@@ -46,7 +88,9 @@ class HyperlendAdapter(BaseAdapter):
         strategy_wallet = config.get("strategy_wallet") or {}
         strategy_addr = strategy_wallet.get("address")
 
-        self.strategy_wallet_address = to_checksum_address(strategy_addr)
+        self.strategy_wallet_address: str | None = (
+            to_checksum_address(strategy_addr) if strategy_addr else None
+        )
 
     async def get_stable_markets(
         self,
@@ -138,6 +182,124 @@ class HyperlendAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    async def get_all_markets(self) -> tuple[bool, list[dict[str, Any]] | str]:
+        try:
+            async with web3_from_chain_id(CHAIN_ID_HYPEREVM) as web3:
+                ui_pool = web3.eth.contract(
+                    address=HYPERLEND_UI_POOL_DATA_PROVIDER,
+                    abi=UI_POOL_DATA_PROVIDER_ABI,
+                )
+
+                reserves, base_currency = await ui_pool.functions.getReservesData(
+                    HYPERLEND_POOL_ADDRESSES_PROVIDER
+                ).call(block_identifier="pending")
+
+                try:
+                    ref_unit = int(base_currency[0]) if base_currency else 1
+                except (TypeError, ValueError):
+                    ref_unit = 1
+                if not ref_unit:
+                    ref_unit = 1
+
+                try:
+                    ref_usd_raw = int(base_currency[1]) if base_currency else 0
+                except (TypeError, ValueError):
+                    ref_usd_raw = 0
+
+                try:
+                    ref_usd_decimals = int(base_currency[3]) if base_currency else 0
+                except (TypeError, ValueError):
+                    ref_usd_decimals = 0
+
+                ref_usd = (
+                    ref_usd_raw / (10**ref_usd_decimals)
+                    if ref_usd_decimals and ref_usd_decimals > 0
+                    else float(ref_usd_raw)
+                )
+
+                reserve_keys = UI_POOL_RESERVE_KEYS
+
+                markets: list[dict[str, Any]] = []
+                for reserve in reserves or []:
+                    if isinstance(reserve, dict):
+                        r = dict(reserve)
+                    else:
+                        r = dict(zip(reserve_keys, reserve, strict=False))
+
+                    underlying = to_checksum_address(str(r.get("underlyingAsset")))
+                    symbol_raw = r.get("symbol") or ""
+                    decimals = int(r.get("decimals") or 18)
+                    a_token = to_checksum_address(str(r.get("aTokenAddress")))
+                    v_debt = to_checksum_address(str(r.get("variableDebtTokenAddress")))
+
+                    is_active = bool(r.get("isActive"))
+                    is_frozen = bool(r.get("isFrozen"))
+                    is_paused = bool(r.get("isPaused"))
+                    is_siloed = bool(r.get("isSiloedBorrowing"))
+
+                    liquidity_rate_ray = int(r.get("liquidityRate") or 0)
+                    variable_borrow_rate_ray = int(r.get("variableBorrowRate") or 0)
+
+                    price_market_ref = int(r.get("priceInMarketReferenceCurrency") or 0)
+                    try:
+                        price_market_ref_float = (
+                            float(price_market_ref) / ref_unit if ref_unit else 0.0
+                        )
+                    except ZeroDivisionError:
+                        price_market_ref_float = 0.0
+                    price_usd = price_market_ref_float * ref_usd
+
+                    supply_apr = _ray_to_apr(liquidity_rate_ray)
+                    borrow_apr = _ray_to_apr(variable_borrow_rate_ray)
+
+                    available_liquidity = int(r.get("availableLiquidity") or 0)
+                    scaled_variable_debt = int(r.get("totalScaledVariableDebt") or 0)
+                    variable_index = int(r.get("variableBorrowIndex") or 0)
+                    total_variable_debt = (scaled_variable_debt * variable_index) // RAY
+                    tvl = available_liquidity + total_variable_debt
+
+                    symbol_canonical = normalize_symbol(symbol_raw) or normalize_symbol(
+                        underlying
+                    )
+
+                    headroom_wei, supply_cap_tokens = _compute_supply_cap_headroom(
+                        r, decimals
+                    )
+
+                    markets.append(
+                        {
+                            "underlying": underlying,
+                            "symbol": str(symbol_raw),
+                            "symbol_canonical": symbol_canonical,
+                            "decimals": int(decimals),
+                            "a_token": a_token,
+                            "variable_debt_token": v_debt,
+                            "is_active": is_active,
+                            "is_frozen": is_frozen,
+                            "is_paused": is_paused,
+                            "is_siloed_borrowing": is_siloed,
+                            "is_stablecoin": is_stable_symbol(symbol_raw),
+                            "usage_as_collateral_enabled": bool(
+                                r.get("usageAsCollateralEnabled")
+                            ),
+                            "borrowing_enabled": bool(r.get("borrowingEnabled")),
+                            "price_usd": float(price_usd),
+                            "supply_apr": float(supply_apr),
+                            "supply_apy": float(_apr_to_apy(supply_apr)),
+                            "variable_borrow_apr": float(borrow_apr),
+                            "variable_borrow_apy": float(_apr_to_apy(borrow_apr)),
+                            "available_liquidity": int(available_liquidity),
+                            "total_variable_debt": int(total_variable_debt),
+                            "tvl": int(tvl),
+                            "supply_cap": supply_cap_tokens,
+                            "supply_cap_headroom": headroom_wei,
+                        }
+                    )
+
+                return True, markets
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     async def lend(
         self,
         *,
@@ -148,6 +310,8 @@ class HyperlendAdapter(BaseAdapter):
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         if qty <= 0:
             return False, "qty must be positive"
 
@@ -209,6 +373,8 @@ class HyperlendAdapter(BaseAdapter):
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         if qty <= 0:
             return False, "qty must be positive"
 

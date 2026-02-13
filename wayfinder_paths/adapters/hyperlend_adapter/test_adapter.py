@@ -1,8 +1,10 @@
-from unittest.mock import AsyncMock, patch
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from wayfinder_paths.adapters.hyperlend_adapter.adapter import HyperlendAdapter
+from wayfinder_paths.core.constants.hyperlend_abi import UI_POOL_RESERVE_KEYS
 
 
 class TestHyperlendAdapter:
@@ -171,6 +173,96 @@ class TestHyperlendAdapter:
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "HYPERLEND"
+
+    def test_strategy_address_optional(self):
+        adapter = HyperlendAdapter(config={})
+        assert adapter.strategy_wallet_address is None
+
+    @pytest.mark.asyncio
+    async def test_get_all_markets_success(self, adapter):
+        reserve_keys = UI_POOL_RESERVE_KEYS
+
+        def build_reserve(**overrides):
+            base = dict.fromkeys(reserve_keys, 0)
+            base.update(
+                {
+                    "underlyingAsset": "0x0000000000000000000000000000000000000001",
+                    "name": "",
+                    "symbol": "",
+                    "decimals": 18,
+                    "usageAsCollateralEnabled": True,
+                    "borrowingEnabled": True,
+                    "isActive": True,
+                    "isFrozen": False,
+                    "isPaused": False,
+                    "isSiloedBorrowing": False,
+                    "aTokenAddress": "0x0000000000000000000000000000000000000002",
+                    "variableDebtTokenAddress": "0x0000000000000000000000000000000000000003",
+                    "interestRateStrategyAddress": "0x0000000000000000000000000000000000000004",
+                    "priceOracle": "0x0000000000000000000000000000000000000005",
+                    "flashLoanEnabled": True,
+                    "borrowableInIsolation": False,
+                    "virtualAccActive": False,
+                }
+            )
+            base.update(overrides)
+            return tuple(base[k] for k in reserve_keys)
+
+        reserves = [
+            build_reserve(
+                underlyingAsset="0x0000000000000000000000000000000000000011",
+                symbol="USDC",
+                decimals=6,
+                liquidityRate=int(0.05 * 10**27),
+                variableBorrowRate=int(0.10 * 10**27),
+                priceInMarketReferenceCurrency=100000000,
+                availableLiquidity=5000000,
+                totalScaledVariableDebt=0,
+                variableBorrowIndex=10**27,
+                supplyCap=0,
+            ),
+            build_reserve(
+                underlyingAsset="0x0000000000000000000000000000000000000022",
+                symbol="uSOL",
+                decimals=6,
+                liquidityRate=int(0.02 * 10**27),
+                variableBorrowRate=int(0.08 * 10**27),
+                priceInMarketReferenceCurrency=2000000000,
+                availableLiquidity=10000000,
+                totalScaledVariableDebt=5000000,
+                variableBorrowIndex=10**27,
+                supplyCap=100,
+            ),
+        ]
+        base_currency = (100000000, 100000000, 0, 8)  # ref_unit=1e8, ref_usd=1.0
+
+        mock_ui_pool = MagicMock()
+        mock_ui_pool.functions.getReservesData = MagicMock(
+            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract = MagicMock(return_value=mock_ui_pool)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        with patch(
+            "wayfinder_paths.adapters.hyperlend_adapter.adapter.web3_from_chain_id",
+            mock_web3_ctx,
+        ):
+            ok, markets = await adapter.get_all_markets()
+
+        assert ok is True
+        assert isinstance(markets, list)
+        assert len(markets) == 2
+
+        usol = next(m for m in markets if m["symbol"].lower() == "usol")
+        assert usol["is_stablecoin"] is False
+        assert usol["price_usd"] == 20.0
+        assert usol["supply_cap"] == 100
+        assert usol["supply_cap_headroom"] == 85000000
 
     @pytest.mark.asyncio
     async def test_get_stable_markets_with_is_stable_symbol(

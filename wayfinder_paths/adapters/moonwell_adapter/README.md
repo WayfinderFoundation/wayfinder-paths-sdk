@@ -25,6 +25,7 @@ The MoonwellAdapter provides:
 ## Protocol Addresses (Base)
 
 - **Comptroller**: `0xfbb21d0380bee3312b33c4353c8936a0f13ef26c`
+- **Views (Lens)**: `0x6834770aba6c2028f448e3259ddee4bcb879d459`
 - **Reward Distributor**: `0xe9005b078701e2a0948d2eac43010d35870ad9d2`
 - **WELL Token**: `0xA88594D404727625A9437C3f886C7643872296AE`
 
@@ -100,6 +101,13 @@ success, position = await adapter.get_pos(
     mtoken="0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22",
 )
 
+# List all markets (on-chain)
+success, markets = await adapter.get_all_markets(
+    include_apy=True,        # default True: include base + rewards yield fields
+    include_rewards=True,    # default True: include WELL incentives in yield breakdown
+    include_usd=False,       # optional: include totalSupplyUsd/totalBorrowsUsd via Moonwell oracle prices
+)
+
 # Get collateral factor
 success, cf = await adapter.get_collateral_factor(
     mtoken="0x627Fe393Bc6EdDA28e99AE648fD6fF362514304b",
@@ -109,11 +117,17 @@ success, cf = await adapter.get_collateral_factor(
 success, apy = await adapter.get_apy(
     mtoken="0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22",
     apy_type="supply",  # or "borrow"
+    include_rewards=True,  # include WELL incentives (supply adds, borrow subtracts)
 )
 
 # Get max borrowable
 success, amount = await adapter.get_borrowable_amount(account="0x...")
 ```
+
+Notes:
+- `get_all_markets()` returns all markets from the Comptroller (no user-position filtering).
+- `get_all_markets()` returns `baseSupplyApy/baseBorrowApy`, `rewardSupplyApy/rewardBorrowApy`, and net `supplyApy/borrowApy`.
+- Reward APR/APY is derived from on-chain emission speeds + Moonwell oracle prices via the Moonwell Views contract.
 
 ### Rewards
 

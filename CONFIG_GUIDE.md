@@ -74,14 +74,9 @@ The `strategy` section contains strategy-specific settings:
 
 ### RPC URLs
 
-Default RPC endpoints are provided for common chains:
-- Ethereum (chain ID: `1`)
-- Base (chain ID: `8453`)
-- Arbitrum (chain ID: `42161`)
-- Avalanche (chain ID: `43114`)
-- Plasma (chain ID: `9745`)
+This repo ships with example RPC endpoints in `config.example.json` for common chains (Ethereum/Base/Arbitrum/etc). These are primarily public endpoints and may rate limit under load.
 
-Override them in config.json if needed:
+Override them in your `config.json` with your own provider(s) if needed:
 
 ```json
 {
@@ -93,6 +88,12 @@ Override them in config.json if needed:
   }
 }
 ```
+
+Notes:
+
+- Adapter reads use the RPCs from `strategy.rpc_urls`.
+- If you provide a list, `web3_from_chain_id(...)` uses the first entry for reads; put your best RPC first.
+- If a script appears to be using a public RPC, print `resolve_config_path()` and `get_rpc_urls()` to confirm which config file was loaded.
 
 ## Wallet Configuration
 

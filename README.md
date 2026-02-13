@@ -106,7 +106,23 @@ Example:
 }
 ```
 
+> **Important:** The RPC URLs in the example above are public endpoints and may rate limit. For reliable adapter reads, set `strategy.rpc_urls` to your own RPC provider(s) (Alchemy/Infura/QuickNode/Tenderly/etc) and put the most reliable URL first.
+
 For detailed config documentation, see `CONFIG_GUIDE.md`.
+
+### Config Resolution (scripts)
+
+By default, the SDK reads `config.json` from the repo root. To use a different file, set `WAYFINDER_CONFIG_PATH` before starting Python (or call `wayfinder_paths.core.config.load_config()` in your script).
+
+Quick sanity check:
+
+```bash
+poetry run python - <<'PY'
+from wayfinder_paths.core.config import resolve_config_path, get_rpc_urls
+print("config_path:", resolve_config_path())
+print("base_rpc:", (get_rpc_urls() or {}).get("8453"))
+PY
+```
 
 ### Supported Chains
 
