@@ -377,6 +377,7 @@ async def execute(
             response = err("invalid_amount", str(exc))
             return response
 
+        slippage = max(0.0, float(int(req.slippage_bps)) / 10_000.0)
         try:
             quote_data = await BRAP_CLIENT.get_quote(
                 from_token=from_token_addr,
@@ -385,6 +386,7 @@ async def execute(
                 to_chain=to_chain_id,
                 from_wallet=sender,
                 from_amount=str(amount_raw),
+                slippage=slippage
             )
         except Exception as exc:  # noqa: BLE001
             response = err("quote_error", str(exc))
