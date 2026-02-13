@@ -10,6 +10,12 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.mcp.resources.delta_lab import (
+    get_basis_apy_sources,
+    get_basis_symbols,
+    get_best_delta_neutral_pairs,
+    get_delta_lab_asset,
+)
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
     describe_strategy,
@@ -66,6 +72,10 @@ mcp.resource("wayfinder://hyperliquid/prices/{coin}")(get_mid_price)
 mcp.resource("wayfinder://hyperliquid/markets")(get_markets)
 mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
+mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
+mcp.resource("wayfinder://delta-lab/{basis_symbol}/apy-sources")(get_basis_apy_sources)
+mcp.resource("wayfinder://delta-lab/{basis_symbol}/delta-neutral")(get_best_delta_neutral_pairs)
+mcp.resource("wayfinder://delta-lab/assets/{asset_id}")(get_delta_lab_asset)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)
