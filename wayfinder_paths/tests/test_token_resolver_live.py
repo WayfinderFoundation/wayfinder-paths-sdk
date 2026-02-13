@@ -16,6 +16,7 @@ def event_loop():
     yield loop
     loop.close()
 
+
 @pytest.mark.skipif(
     os.environ.get("CI") == "true",
     reason="Live quote_swap test — local only",
@@ -102,6 +103,7 @@ class TestNativeTokenQueries:
     async def test_bad_string(self):
         with pytest.raises(ValueError, match="Cannot resolve token: "):
             await TokenResolver.resolve_token_meta("dfcghvbjknml")
+
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true",

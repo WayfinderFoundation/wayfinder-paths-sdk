@@ -15,6 +15,7 @@ from wayfinder_paths.core.utils.tokens import get_token_decimals, is_native_toke
 
 _SIMPLE_CHAIN_SUFFIX_RE = re.compile(r"^[a-z0-9]+\s+[a-z0-9-]+$", re.IGNORECASE)
 
+
 def _normalize_token_query(query: str) -> str:
     q = " ".join(str(query).strip().split())
     if not q or "-" in q or "_" in q:
