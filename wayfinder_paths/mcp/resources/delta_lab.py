@@ -29,7 +29,9 @@ async def get_basis_apy_sources(basis_symbol: str, limit: str = "10") -> dict[st
         return {"error": str(exc)}
 
 
-async def get_best_delta_neutral_pairs(basis_symbol: str, limit: str = "5") -> dict[str, Any]:
+async def get_best_delta_neutral_pairs(
+    basis_symbol: str, limit: str = "5"
+) -> dict[str, Any]:
     """Get top delta-neutral pair candidates for an asset.
 
     Args:
