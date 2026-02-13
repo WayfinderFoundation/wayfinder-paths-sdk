@@ -35,9 +35,7 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
         return to_meta
 
     fake_brap = AsyncMock()
-    calldata = {
-        "data": "0x" + ("ab" * 4096)
-    }
+    calldata = {"data": "0x" + ("ab" * 4096)}
     fake_brap.get_quote = AsyncMock(
         return_value={
             "quotes": {
@@ -125,9 +123,7 @@ async def test_quote_swap_can_include_calldata_when_requested():
             return from_meta
         return to_meta
 
-    calldata = {
-        "data": "0x" + ("cd" * 1024)
-    }
+    calldata = {"data": "0x" + ("cd" * 1024)}
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
         return_value={
@@ -203,7 +199,7 @@ async def test_quote_swap_accepts_top_level_brap_shape():
             "best_quote": {
                 "provider": "brap_best",
                 "output_amount": "1",
-                "calldata": {"data":"0xabc"},
+                "calldata": {"data": "0xabc"},
             },
         }
     )
