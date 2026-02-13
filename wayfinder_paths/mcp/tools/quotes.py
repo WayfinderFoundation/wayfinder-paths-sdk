@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
@@ -76,8 +77,10 @@ async def quote_swap(
         return err("invalid_wallet", f"Wallet {wallet_label} missing address")
 
     try:
-        from_meta = await TokenResolver.resolve_token_meta(from_token)
-        to_meta = await TokenResolver.resolve_token_meta(to_token)
+        from_meta, to_meta = await asyncio.gather(
+            TokenResolver.resolve_token_meta(from_token),
+            TokenResolver.resolve_token_meta(to_token),
+        )
     except Exception as exc:  # noqa: BLE001
         return err("token_error", str(exc))
 
@@ -138,8 +141,8 @@ async def quote_swap(
 
     best_out: dict[str, Any] | None = None
     if isinstance(best_quote, dict):
-        calldata = best_quote.get("calldata")
-        calldata_len = len(calldata) if calldata else 0
+        tx_data: dict[str, Any] = best_quote.get("calldata") or {}
+        calldata = tx_data.get("data")
 
         best_out = {
             "provider": best_quote.get("provider"),
@@ -151,7 +154,6 @@ async def quote_swap(
             "fee_estimate": best_quote.get("fee_estimate"),
             "native_input": best_quote.get("native_input"),
             "native_output": best_quote.get("native_output"),
-            "error": best_quote.get("error"),
         }
 
         # Strip data fields from wrap/unwrap transactions to reduce response size
@@ -169,7 +171,7 @@ async def quote_swap(
         if include_calldata:
             best_out["calldata"] = calldata
         else:
-            best_out["calldata_len"] = calldata_len
+            best_out["calldata_len"] = len(calldata) if calldata else 0
 
     preview = (
         f"Swap {amount} {from_meta.get('symbol')} → {to_meta.get('symbol')} "
