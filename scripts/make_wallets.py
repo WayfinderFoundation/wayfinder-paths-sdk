@@ -86,8 +86,6 @@ def main():
         if args.mnemonic == "__generate__":
             if not mnemonic_to_use:
                 mnemonic_to_use = ensure_wallet_mnemonic(config_path=config_path)
-                print("Generated wallet mnemonic (saved to config.json):")
-                print(mnemonic_to_use)
         else:
             try:
                 phrase = validate_wallet_mnemonic(args.mnemonic)
