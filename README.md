@@ -41,6 +41,16 @@ cd wayfinder-paths
 # One-command setup (installs Poetry + deps, writes config.json, updates .mcp.json)
 python3 scripts/setup.py
 
+# One-command setup with deterministic wallets (generates + saves wallet_mnemonic)
+python3 scripts/setup.py --mnemonic
+
+# Remote two-stage setup (stage 1 installs deps + writes config.json)
+python3 scripts/remote_setup_stage1.py --api-key wk_...
+# Stage 2 option A (recommended): generate + persist a mnemonic (prints once)
+python3 scripts/remote_setup_stage2.py --mnemonic
+# Stage 2 option B: load mnemonic from file (avoids shell history)
+python3 scripts/remote_setup_stage2.py --mnemonic-file /path/to/mnemonic.txt
+
 # Check strategy status
 poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action status --config config.json
 ```
@@ -54,6 +64,9 @@ cp config.example.json config.json
 
 # Create a main wallet for local testing
 poetry run python scripts/make_wallets.py -n 1
+
+# Or: create deterministic wallets from a generated mnemonic (saved to config.json)
+poetry run python scripts/make_wallets.py -n 1 --mnemonic
 ```
 
 ## Configuration
