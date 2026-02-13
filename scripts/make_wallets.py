@@ -9,6 +9,7 @@ from wayfinder_paths.core.utils.wallets import (
     ensure_wallet_mnemonic,
     load_wallets,
     make_local_wallet,
+    validate_wallet_mnemonic,
     write_wallet_to_json,
 )
 
@@ -61,39 +62,46 @@ def main():
     )
     args = parser.parse_args()
 
-    # --default is equivalent to -n 1 (create main wallet if needed)
-    if args.default and args.n == 0 and not args.label:
-        args.n = 1
+    # --default means "ensure main wallet exists" (and do nothing otherwise).
+    if args.default:
+        if args.label:
+            raise SystemExit("--default cannot be combined with --label")
+        if args.n:
+            raise SystemExit("--default cannot be combined with -n")
+        args.label = "main"
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     config_path = args.out_dir / "config.json"
 
-    existing_mnemonic = load_wallet_mnemonic(config_path)
-    mnemonic_to_use = existing_mnemonic
-    generated_new_mnemonic = False
+    mnemonic_to_use = load_wallet_mnemonic(config_path)
+    if mnemonic_to_use:
+        try:
+            mnemonic_to_use = validate_wallet_mnemonic(mnemonic_to_use)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Invalid wallet_mnemonic in {config_path}; refusing to proceed: {exc}"
+            ) from exc
 
     if args.mnemonic is not None:
         if args.mnemonic == "__generate__":
             if not mnemonic_to_use:
-                mnemonic_to_use = ensure_wallet_mnemonic(
-                    config_path=config_path,
-                )
-                generated_new_mnemonic = True
+                mnemonic_to_use = ensure_wallet_mnemonic(config_path=config_path)
+                print("Generated wallet mnemonic (saved to config.json):")
+                print(mnemonic_to_use)
         else:
-            phrase = str(args.mnemonic).strip()
-            if not phrase:
-                raise SystemExit("--mnemonic was provided but empty")
-            if mnemonic_to_use and phrase != mnemonic_to_use:
+            try:
+                phrase = validate_wallet_mnemonic(args.mnemonic)
+            except ValueError as exc:
                 raise SystemExit(
-                    "config.json already contains wallet_mnemonic; refusing to overwrite"
-                )
+                    f"Invalid mnemonic provided via --mnemonic: {exc}"
+                ) from exc
             if not mnemonic_to_use:
                 write_wallet_mnemonic(phrase, config_path)
                 mnemonic_to_use = phrase
-
-    if generated_new_mnemonic and mnemonic_to_use:
-        print("Generated wallet mnemonic (saved to config.json):")
-        print(mnemonic_to_use)
+            elif phrase != mnemonic_to_use:
+                raise SystemExit(
+                    "config.json already contains wallet_mnemonic; refusing to overwrite"
+                )
 
     existing = load_wallets(args.out_dir, "config.json")
     existing_was_empty = not existing
@@ -141,12 +149,18 @@ def main():
         )
         suffix = "(main)" if label.lower() == "main" else f"(label: {label})"
         print(f"[{i}] {w['address']}  {suffix}")
-        write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
+        try:
+            write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         existing.append(w)
         if args.keystore_password:
             ks = to_keystore_json(w["private_key_hex"], args.keystore_password)
             ks_path = args.out_dir / f"keystore_{w['address']}.json"
-            ks_path.write_text(json.dumps(ks))
+            if ks_path.exists():
+                print(f"Keystore already exists, skipping: {ks_path}")
+            else:
+                ks_path.write_text(json.dumps(ks))
 
 
 if __name__ == "__main__":

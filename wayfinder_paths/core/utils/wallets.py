@@ -40,7 +40,16 @@ def make_wallet_from_mnemonic(
 
 def generate_wallet_mnemonic(*, num_words: int = 12) -> str:
     _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
-    return mnemonic
+    return " ".join(str(mnemonic).strip().split())
+
+
+def validate_wallet_mnemonic(mnemonic: str) -> str:
+    phrase = " ".join(str(mnemonic).strip().split())
+    if not phrase:
+        raise ValueError("mnemonic is empty")
+    # Raises if the phrase is not a valid mnemonic.
+    make_wallet_from_mnemonic(phrase, account_index=0)
+    return phrase
 
 
 def ensure_wallet_mnemonic(
@@ -51,7 +60,7 @@ def ensure_wallet_mnemonic(
     existing = load_wallet_mnemonic(config_path)
     if existing:
         return existing
-    mnemonic = generate_wallet_mnemonic(num_words=num_words)
+    mnemonic = validate_wallet_mnemonic(generate_wallet_mnemonic(num_words=num_words))
     write_wallet_mnemonic(mnemonic, config_path)
     return mnemonic
 
@@ -102,7 +111,17 @@ def make_local_wallet(
         )
         wallet = make_wallet_from_mnemonic(mnemonic, account_index=derivation_index)
     else:
-        wallet = make_random_wallet()
+        existing_addrs = {
+            str(w.get("address", "")).lower()
+            for w in wallets
+            if isinstance(w, dict) and w.get("address")
+        }
+        for _ in range(10_000):
+            wallet = make_random_wallet()
+            if wallet["address"].lower() not in existing_addrs:
+                break
+        else:
+            raise RuntimeError("Unable to generate a unique random wallet address")
     wallet["label"] = label
     return wallet
 
@@ -142,17 +161,40 @@ def write_wallet_to_json(
     file_path = out_dir_path / filename
 
     existing = _load_existing_wallets(file_path)
-    index_by_address: dict[str, int] = {}
-    for i, w in enumerate(existing):
-        addr = w.get("address")
-        if isinstance(addr, str):
-            index_by_address[addr.lower()] = i
+    addr = wallet.get("address")
+    if not isinstance(addr, str) or not addr.strip():
+        raise ValueError("wallet.address is required")
+    label = wallet.get("label")
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("wallet.label is required")
 
-    addr_key = wallet["address"].lower()
-    if addr_key in index_by_address:
-        existing[index_by_address[addr_key]] = wallet
-    else:
-        existing.append(wallet)
+    addr_key = addr.lower()
+    label_key = label.strip()
+
+    for w in existing:
+        if not isinstance(w, dict):
+            continue
+        existing_addr = w.get("address")
+        existing_label = w.get("label")
+
+        if isinstance(existing_addr, str) and existing_addr.lower() == addr_key:
+            if w == wallet:
+                return file_path
+            raise ValueError(
+                f"Wallet address already exists in {file_path}; refusing to overwrite: {addr}"
+            )
+
+        if (
+            isinstance(existing_label, str)
+            and existing_label.strip() == label_key
+            and isinstance(existing_addr, str)
+            and existing_addr.lower() != addr_key
+        ):
+            raise ValueError(
+                f"Wallet label already exists in {file_path}; refusing to create duplicate: {label_key}"
+            )
+
+    existing.append(wallet)
 
     _save_wallets(file_path, existing)
     return file_path

@@ -34,13 +34,15 @@ def _confirm(prompt: str, *, default: bool = True) -> bool:
 
 
 def _require_python312() -> None:
-    if sys.version_info[:2] == (3, 12):
+    # NOTE: This script may be invoked with an older system Python; keep this
+    # guard even though the package itself targets 3.12+. (Ruff: UP036)
+    if sys.version_info[:2] >= (3, 12):  # noqa: UP036
         return
     python312 = shutil.which("python3.12")
     if python312:
         os.execv(python312, [python312, *sys.argv])
     raise RuntimeError(
-        "Python 3.12 is required. Install it and re-run with `python3.12 scripts/setup.py`."
+        "Python 3.12+ is required. Install it and re-run with `python3.12 scripts/setup.py`."
     )
 
 

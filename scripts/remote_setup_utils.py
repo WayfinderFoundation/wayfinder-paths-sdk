@@ -72,9 +72,10 @@ def ensure_config(
         template_path = REPO_ROOT / "config.example.json"
 
     _cfg = load_core_config_module()
-    config = (
-        _cfg.load_config_json(config_path) or _cfg.load_config_json(template_path) or {}
-    )
+    if config_path.exists():
+        config = read_json(config_path) or {}
+    else:
+        config = read_json(template_path) or {}
 
     system = config.get("system")
     if not isinstance(system, dict):
@@ -85,7 +86,7 @@ def ensure_config(
     config["system"] = system
 
     if "strategy" not in config:
-        template = _cfg.load_config_json(template_path) or {}
+        template = read_json(template_path) or {}
         if isinstance(template.get("strategy"), dict):
             config["strategy"] = template["strategy"]
 
