@@ -322,7 +322,11 @@ class MoonwellAdapter(BaseAdapter):
         account: str | None = None,
     ) -> tuple[bool, bool | str]:
         try:
-            acct = to_checksum_address(account) if account else self.strategy_wallet_address
+            acct = (
+                to_checksum_address(account)
+                if account
+                else self.strategy_wallet_address
+            )
             if not acct:
                 return False, "strategy wallet address not configured"
             mtoken = to_checksum_address(mtoken)
@@ -418,7 +422,9 @@ class MoonwellAdapter(BaseAdapter):
     async def _calculate_rewards_usd(self, rewards: dict[str, int]) -> float:
         total_usd = 0.0
         for token_key, amount in rewards.items():
-            token_data = await TOKEN_CLIENT.get_token_details(token_key, market_data=True)
+            token_data = await TOKEN_CLIENT.get_token_details(
+                token_key, market_data=True
+            )
             if token_data:
                 price = (
                     token_data.get("price_usd")
@@ -724,8 +730,10 @@ class MoonwellAdapter(BaseAdapter):
                         td = await TOKEN_CLIENT.get_token_details(key, market_data=True)
                         if not td:
                             continue
-                        price = td.get("price_usd") or td.get("price") or td.get(
-                            "current_price"
+                        price = (
+                            td.get("price_usd")
+                            or td.get("price")
+                            or td.get("current_price")
                         )
                         dec = int(td.get("decimals", 18))
                         if price is None:
@@ -761,7 +769,9 @@ class MoonwellAdapter(BaseAdapter):
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 multicall = MulticallAdapter(chain_id=self.chain_id, web3=web3)
-                views = web3.eth.contract(address=MOONWELL_VIEWS, abi=MOONWELL_VIEWS_ABI)
+                views = web3.eth.contract(
+                    address=MOONWELL_VIEWS, abi=MOONWELL_VIEWS_ABI
+                )
 
                 markets_info = await views.functions.getAllMarketsInfo().call(
                     block_identifier="pending"
@@ -922,7 +932,11 @@ class MoonwellAdapter(BaseAdapter):
                                     "borrowEmissionsPerSec": borrow_speed,
                                 }
 
-                                if token_price and denom_supply > 0 and supply_speed > 0:
+                                if (
+                                    token_price
+                                    and denom_supply > 0
+                                    and supply_speed > 0
+                                ):
                                     inc_supply_apr = float(
                                         (supply_speed * SECONDS_PER_YEAR * token_price)
                                         / denom_supply
@@ -932,7 +946,11 @@ class MoonwellAdapter(BaseAdapter):
                                 else:
                                     inc_row["supplyRewardsApy"] = 0.0
 
-                                if token_price and denom_borrow > 0 and borrow_speed > 0:
+                                if (
+                                    token_price
+                                    and denom_borrow > 0
+                                    and borrow_speed > 0
+                                ):
                                     inc_borrow_apr = float(
                                         (borrow_speed * SECONDS_PER_YEAR * token_price)
                                         / denom_borrow
@@ -988,7 +1006,9 @@ class MoonwellAdapter(BaseAdapter):
         block_identifier: int | str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         mtoken = to_checksum_address(mtoken)
-        account = to_checksum_address(account) if account else self.strategy_wallet_address
+        account = (
+            to_checksum_address(account) if account else self.strategy_wallet_address
+        )
         if not account:
             return False, "strategy wallet address not configured"
         block_id = block_identifier if block_identifier is not None else "pending"
@@ -1144,14 +1164,20 @@ class MoonwellAdapter(BaseAdapter):
                     mkt_config = []
                     total_value = 0
                     if include_rewards:
-                        mkt_config = await reward_distributor.functions.getAllMarketConfigs(
-                            mtoken
-                        ).call(block_identifier="pending")
-                        total_supply = await mtoken_contract.functions.totalSupply().call(
-                            block_identifier="pending"
+                        mkt_config = (
+                            await reward_distributor.functions.getAllMarketConfigs(
+                                mtoken
+                            ).call(block_identifier="pending")
                         )
-                        exch = await mtoken_contract.functions.exchangeRateStored().call(
-                            block_identifier="pending"
+                        total_supply = (
+                            await mtoken_contract.functions.totalSupply().call(
+                                block_identifier="pending"
+                            )
+                        )
+                        exch = (
+                            await mtoken_contract.functions.exchangeRateStored().call(
+                                block_identifier="pending"
+                            )
                         )
                         # Convert mToken supply -> underlying supply for rewards APR denominator
                         total_value = (
@@ -1166,9 +1192,11 @@ class MoonwellAdapter(BaseAdapter):
                     mkt_config = []
                     total_value = 0
                     if include_rewards:
-                        mkt_config = await reward_distributor.functions.getAllMarketConfigs(
-                            mtoken
-                        ).call(block_identifier="pending")
+                        mkt_config = (
+                            await reward_distributor.functions.getAllMarketConfigs(
+                                mtoken
+                            ).call(block_identifier="pending")
+                        )
                         total_value = (
                             await mtoken_contract.functions.totalBorrows().call(
                                 block_identifier="pending"
@@ -1282,7 +1310,9 @@ class MoonwellAdapter(BaseAdapter):
         *,
         account: str | None = None,
     ) -> tuple[bool, int | str]:
-        account = to_checksum_address(account) if account else self.strategy_wallet_address
+        account = (
+            to_checksum_address(account) if account else self.strategy_wallet_address
+        )
         if not account:
             return False, "strategy wallet address not configured"
 
@@ -1317,7 +1347,9 @@ class MoonwellAdapter(BaseAdapter):
         account: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         mtoken = to_checksum_address(mtoken)
-        account = to_checksum_address(account) if account else self.strategy_wallet_address
+        account = (
+            to_checksum_address(account) if account else self.strategy_wallet_address
+        )
         if not account:
             return False, "strategy wallet address not configured"
 

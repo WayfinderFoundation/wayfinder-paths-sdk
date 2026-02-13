@@ -59,4 +59,3 @@ def is_stable_symbol(symbol: str | None) -> bool:
         return False
     upper = str(symbol).upper()
     return any(keyword in upper for keyword in STABLE_SYMBOL_KEYWORDS)
-

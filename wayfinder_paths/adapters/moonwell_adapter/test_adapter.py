@@ -105,7 +105,9 @@ class TestMoonwellAdapter:
     async def test_get_all_markets_basic(self, adapter):
         m1 = MOONWELL_M_USDC
         m2 = MOONWELL_M_WETH
-        m3 = Web3.to_checksum_address("0xdC7810B47eAAb250De623F0eE07764afa5F71ED1")  # mWELL
+        m3 = Web3.to_checksum_address(
+            "0xdC7810B47eAAb250De623F0eE07764afa5F71ED1"
+        )  # mWELL
 
         markets_info = [
             # m1 (USDC)
@@ -766,9 +768,7 @@ class TestMoonwellAdapter:
         assert abs(float(result) - expected_rewards_apr) < 1e-6
 
     @pytest.mark.asyncio
-    async def test_get_apy_borrow_includes_rewards_subtracts_emissions(
-        self, adapter
-    ):
+    async def test_get_apy_borrow_includes_rewards_subtracts_emissions(self, adapter):
         # base rate = 0 so returned APY should be negative (rewards offset cost)
         rate_per_second = 0
         total_borrowed = 1_000_000 * 10**6  # 1m USDC (raw)

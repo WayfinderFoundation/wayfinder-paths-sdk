@@ -238,7 +238,9 @@ class TestHyperlendAdapter:
 
         mock_ui_pool = MagicMock()
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
 
         mock_web3 = MagicMock()

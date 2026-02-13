@@ -54,7 +54,7 @@ def _compute_supply_cap_headroom(
     supply_cap_tokens = int(reserve.get("supplyCap") or 0)
     if supply_cap_tokens <= 0:
         return (None, None)
-    unit = 10**max(0, int(decimals))
+    unit = 10 ** max(0, int(decimals))
     supply_cap_wei = supply_cap_tokens * unit
 
     available = int(reserve.get("availableLiquidity") or 0)
