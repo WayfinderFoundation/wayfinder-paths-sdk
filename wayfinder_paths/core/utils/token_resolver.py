@@ -41,7 +41,7 @@ def _split_asset_chain(query: str) -> tuple[str, str] | None:
     q = str(query).strip().lower()
     if not q:
         return None
-    
+
     normalized = q.replace("_", "-")
     parts = normalized.split("-")
     if len(parts) < 2:
@@ -51,6 +51,7 @@ def _split_asset_chain(query: str) -> tuple[str, str] | None:
     if parts[0] in CHAIN_CODE_TO_ID:
         return "-".join(parts[1:]), parts[0]
     return None
+
 
 def _chain_id_from_meta(meta: dict[str, Any]) -> int | None:
     if meta.get("chain_id") is not None:
@@ -309,7 +310,9 @@ class TokenResolver:
                     meta = None
             else:
                 try:
-                    meta = await cls._get_token_details_cached(asset, chain_id=CHAIN_CODE_TO_ID[chain_code])
+                    meta = await cls._get_token_details_cached(
+                        asset, chain_id=CHAIN_CODE_TO_ID[chain_code]
+                    )
                 except Exception as e:
                     raise ValueError(
                         f"Cannot resolve token: {query}, chain_id: {chain_id}"

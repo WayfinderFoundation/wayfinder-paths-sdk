@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 
 import pytest
 
-from wayfinder_paths.core.config import CONFIG, load_config
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
+
 
 @pytest.fixture(scope="module")
 def event_loop():
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()
+
 
 class TestNativeTokenQueries:
     @pytest.mark.asyncio
@@ -118,31 +118,51 @@ class TestCoingeckoIdQueries:
     @pytest.mark.asyncio
     async def test_usd_coin_base(self):
         meta = await TokenResolver.resolve_token_meta("usd-coin-base")
-        assert meta["token_id"] == "base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower()
+        assert (
+            meta["token_id"]
+            == "base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower()
+        )
         assert meta["symbol"].lower() == "usdc"
         assert meta["decimals"] == 6
         assert meta["chain_id"] == CHAIN_CODE_TO_ID["base"]
-        assert meta["address"].lower() == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower()
+        assert (
+            meta["address"].lower()
+            == "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913".lower()
+        )
         assert meta["metadata"].get("source") == "api"
 
     @pytest.mark.asyncio
     async def test_usd_coin_arbitrum(self):
         meta = await TokenResolver.resolve_token_meta("usd-coin-arbitrum")
-        assert meta["token_id"] == "arbitrum_0xaf88d065e77c8cc2239327c5edb3a432268e5831".lower()
+        assert (
+            meta["token_id"]
+            == "arbitrum_0xaf88d065e77c8cc2239327c5edb3a432268e5831".lower()
+        )
         assert meta["symbol"].lower() == "usdc"
         assert meta["decimals"] == 6
         assert meta["chain_id"] == CHAIN_CODE_TO_ID["arbitrum"]
-        assert meta["address"].lower() == "0xaf88d065e77c8cc2239327c5edb3a432268e5831".lower()
+        assert (
+            meta["address"].lower()
+            == "0xaf88d065e77c8cc2239327c5edb3a432268e5831".lower()
+        )
         assert meta["metadata"].get("source") == "api"
 
     @pytest.mark.asyncio
     async def test_bridged_usdc_polygon(self):
-        meta = await TokenResolver.resolve_token_meta("polygon-bridged-usdc-polygon-pos-bridge")
-        assert meta["token_id"] == "polygon_0x2791bca1f2de4661ed88a30c99a7a9449aa84174".lower()
+        meta = await TokenResolver.resolve_token_meta(
+            "polygon-bridged-usdc-polygon-pos-bridge"
+        )
+        assert (
+            meta["token_id"]
+            == "polygon_0x2791bca1f2de4661ed88a30c99a7a9449aa84174".lower()
+        )
         assert meta["symbol"].lower() == "usdc.e"
         assert meta["decimals"] == 6
         assert meta["chain_id"] == CHAIN_CODE_TO_ID["polygon"]
-        assert meta["address"].lower() == "0x2791bca1f2de4661ed88a30c99a7a9449aa84174".lower()
+        assert (
+            meta["address"].lower()
+            == "0x2791bca1f2de4661ed88a30c99a7a9449aa84174".lower()
+        )
         assert meta["metadata"].get("source") == "api"
 
     @pytest.mark.asyncio
@@ -154,7 +174,7 @@ class TestCoingeckoIdQueries:
         assert meta["chain_id"] == 1
         assert meta["address"] == "0xdac17f958d2ee523a2206206994597c13d831ec7"
         assert meta["metadata"].get("source") == "api"
-        
+
     @pytest.mark.asyncio
     async def test_weth_ethereum(self):
         meta = await TokenResolver.resolve_token_meta("WETH-ethereum")
