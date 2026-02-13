@@ -1,12 +1,13 @@
 # Changelog
 
-## [0.4.0] - 2026-02-13 (1277255355859b1d11a082bb445e23541fe2ca19)
+## [0.4.1] - 2026-02-13 (1277255355859b1d11a082bb445e23541fe2ca19)
 
 Added
 
 1. CCXT adapter for multi-exchange reads & trades (Binance, Hyperliquid, Aster, etc.).
 2. Wallet generation from BIP-39 mnemonic phrase.
 3. Polymarket search filters, trimmed search/trending returns, and funding prompt updates.
+4. Wayfinder RPCs and user RPC overrides.
 
 Changed
 
