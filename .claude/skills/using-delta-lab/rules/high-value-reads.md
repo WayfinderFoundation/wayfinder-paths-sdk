@@ -18,16 +18,80 @@ These are the core Delta Lab client methods you'll use most often.
 
 ## MCP Resources (Interactive Access)
 
-Delta Lab is also available via MCP resources for interactive queries:
+Delta Lab is also available via MCP resources for interactive queries without writing scripts:
 
-- `wayfinder://delta-lab/symbols` - List all available basis symbols
-- `wayfinder://delta-lab/{basis_symbol}/apy-sources` - Get APY sources (defaults: lookback_days=7, limit=500)
-- `wayfinder://delta-lab/{basis_symbol}/delta-neutral` - Get delta-neutral pairs (defaults: lookback_days=7, limit=20)
-- `wayfinder://delta-lab/assets/{asset_id}` - Get asset metadata
+### Available Resources
 
-**Example:** Use `ReadMcpResourceTool` to fetch data without writing code.
+1. **`wayfinder://delta-lab/symbols`**
+   - Returns: All basis symbols with opportunity counts
+   - Use for: Discovery of available assets
 
-**Note:** MCP resources use default parameters for simplicity. For custom parameters (different lookback periods, limits, etc.), use the Python client directly.
+2. **`wayfinder://delta-lab/{basis_symbol}/apy-sources/{limit}`**
+   - Path parameters:
+     - `{basis_symbol}` - Uppercase symbol (e.g., `WSTETH`, `BTC`)
+     - `{limit}` - Max opportunities (default: `10`, max: `1000`)
+   - Fixed parameter: `lookback_days=7`
+   - Returns: Top N opportunities grouped by LONG/SHORT with APY, risk, venues
+   - Use for: Quick APY/rate queries (adjust limit as needed)
+
+3. **`wayfinder://delta-lab/{basis_symbol}/delta-neutral/{limit}`**
+   - Path parameters:
+     - `{basis_symbol}` - Uppercase symbol
+     - `{limit}` - Max pairs (default: `5`, max: `100`)
+   - Fixed parameter: `lookback_days=7`
+   - Returns: Top N carry/hedge pairs sorted by net APY, Pareto frontier
+   - Use for: Delta-neutral strategy discovery (adjust limit as needed)
+
+4. **`wayfinder://delta-lab/assets/{asset_id}`**
+   - Path parameter: `{asset_id}` - Internal asset ID (integer)
+   - Returns: Asset metadata (symbol, name, chain, address, etc.)
+   - Use for: Resolving asset IDs to symbols/addresses
+
+### When to use MCP vs Python client
+
+| User Request | Action | Why |
+|--------------|--------|-----|
+| "Best rates for X" | MCP with `/10` | Default limit |
+| "Show me X rates" | MCP with `/10` | Default is enough |
+| "Top 10 rates" | MCP with `/10` | That's the default |
+| **"Get me more"** (after MCP) | **MCP with `/50`** | **Just change limit in URI** |
+| **"Show all"** or **"100 results"** | **MCP with `/100`** | **Adjust limit as needed** |
+| "30-day lookback" | Python client | MCP uses 7 days (only custom param) |
+| "Filter by venue" | Python client | MCP doesn't filter |
+
+**Examples:**
+```
+# Get top 10 wstETH rates (default)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/WSTETH/apy-sources/10")
+
+# User asks for more: just change the limit!
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/WSTETH/apy-sources/50")
+
+# Get 100 opportunities
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/WSTETH/apy-sources/100")
+
+# Only use Python client for custom lookback_days:
+data = await DELTA_LAB_CLIENT.get_basis_apy_sources(
+    basis_symbol="WSTETH",
+    lookback_days=30,  # MCP fixed at 7
+    limit=100
+)
+```
+
+**Important:**
+- **Default to MCP resource first** - use `/10` for apy-sources, `/5` for delta-neutral
+- **Change limit easily**: Just modify the last number in the URI (max: 1000 for apy-sources, 100 for delta-neutral)
+- **Only use Python client for**: Custom `lookback_days`, complex filtering, or batch queries
+- Don't write scripts for simple limit changes - just adjust the URI
+
+**Common follow-up pattern:**
+```
+User: "What are the best wstETH rates?"
+→ uri="wayfinder://delta-lab/WSTETH/apy-sources/10"
+
+User: "Get me more" or "Show 50"
+→ uri="wayfinder://delta-lab/WSTETH/apy-sources/50"  (just change the number!)
+```
 
 ## 0. Get Basis Symbols (Discovery)
 

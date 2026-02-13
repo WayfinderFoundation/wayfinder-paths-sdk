@@ -94,6 +94,91 @@ When answering questions about **rates/APYs/funding**:
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
 
+## Delta Lab MCP resources (yield discovery)
+
+Delta Lab queries are available via MCP resources for instant yield discovery **without writing scripts**:
+
+**Available resources:**
+
+1. **`wayfinder://delta-lab/symbols`** - List all available basis symbols
+   - Returns: All basis symbols with opportunity counts
+
+2. **`wayfinder://delta-lab/{SYMBOL}/apy-sources/{LIMIT}`** - Get top N lending/yield opportunities
+   - Path parameters:
+     - `{SYMBOL}` - Uppercase basis symbol (e.g., `WSTETH`, `BTC`, `ETH`)
+     - `{LIMIT}` - Max opportunities to return (default: `10`, max: `1000`)
+   - Fixed parameter: `lookback_days=7`
+   - Returns: Top N opportunities grouped by LONG/SHORT with APY, risk metrics, venues
+   - **Omit limit for default 10**: `wayfinder://delta-lab/WSTETH/apy-sources/10`
+
+3. **`wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LIMIT}`** - Get top N delta-neutral pair candidates
+   - Path parameters:
+     - `{SYMBOL}` - Uppercase basis symbol
+     - `{LIMIT}` - Max pairs to return (default: `5`, max: `100`)
+   - Fixed parameter: `lookback_days=7`
+   - Returns: Top N carry/hedge pairs sorted by net APY, includes Pareto frontier
+   - **Omit limit for default 5**: `wayfinder://delta-lab/ETH/delta-neutral/5`
+
+4. **`wayfinder://delta-lab/assets/{asset_id}`** - Get asset metadata
+   - Path parameter: `{asset_id}` - Internal Delta Lab asset ID (integer)
+   - Returns: Symbol, name, decimals, chain_id, address, coingecko_id
+
+**When to use MCP vs Python client:**
+
+| User Request | Action | Why |
+|--------------|--------|-----|
+| "Best wstETH rates" | Use MCP with `/10` | Returns top 10, instant |
+| "Top 10 wstETH rates" | Use MCP with `/10` | Default limit |
+| "Show me wstETH rates" | Use MCP with `/10` | Default is sufficient |
+| **"Get me more"** (after MCP) | **Use MCP with `/50`** | **Just change the limit in URI** |
+| **"Show all"** or **"100 results"** | **Use MCP with `/100`** | **Adjust limit as needed** |
+| "30-day lookback" | Write script | MCP uses 7 days (only custom param) |
+| "Filter by protocol" | Write script | MCP doesn't filter |
+| "Compare across assets" | Write script | More efficient |
+
+**Examples:**
+
+```
+# Get top 10 wstETH opportunities (default)
+→ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/WSTETH/apy-sources/10")
+
+# User asks for more: just change the limit!
+→ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/WSTETH/apy-sources/50")
+
+# Get top 100 opportunities
+→ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/WSTETH/apy-sources/100")
+
+# Top 5 delta-neutral pairs (default)
+→ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/ETH/delta-neutral/5")
+
+# Get 20 delta-neutral pairs
+→ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/ETH/delta-neutral/20")
+
+# Only write script for custom lookback_days:
+→ Write a script using DELTA_LAB_CLIENT.get_basis_apy_sources(
+    basis_symbol="WSTETH",
+    lookback_days=30,  # MCP fixed at 7
+    limit=100
+  )
+```
+
+**Important:**
+- **Default limits**: Use `/10` for apy-sources, `/5` for delta-neutral
+- **Change limit easily**: Just modify the last number in the URI
+- **Max limits**: 1000 for apy-sources, 100 for delta-neutral
+- **Only write scripts for**: Custom `lookback_days`, complex filtering, or batch queries
+- Symbols must be uppercase (e.g., `WSTETH`, `BTC`, `ETH`)
+- MCP resource returns pre-parsed JSON data with same structure as Python client
+
+**Common follow-up pattern:**
+```
+User: "What are the best wstETH rates?"
+→ uri="wayfinder://delta-lab/WSTETH/apy-sources/10"
+
+User: "Get me more" or "Show 50"
+→ uri="wayfinder://delta-lab/WSTETH/apy-sources/50"  (just change the number!)
+```
+
 ## Running strategies via MCP
 
 When a user asks to run, check, or interact with a strategy:
