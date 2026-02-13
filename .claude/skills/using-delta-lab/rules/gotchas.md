@@ -6,12 +6,100 @@ Common mistakes and important considerations when using Delta Lab.
 
 | ❌ Wrong | ✅ Right | Why |
 |---------|---------|-----|
+| `ok, data = await DELTA_LAB_CLIENT...` | `data = await DELTA_LAB_CLIENT...` | Clients return data directly, not tuples |
+| `data["opportunities"]` | `data["directions"]["LONG"]` | Lending opps are in LONG direction |
+| `candidate["net_apy"]["value"]` | `candidate["net_apy"]` | net_apy is a float, not a dict |
 | `basis_symbol="bitcoin"` | `basis_symbol="BTC"` | Use root symbol, not coingecko ID |
 | `max(opps, key=lambda x: x["apy"]["value"])` | `max([o for o in opps if o["apy"]["value"]], ...)` | APY can be null |
 | Assuming delta-neutral = risk-free | Check `erisk_proxy` and understand risks | Still has funding, liquidation, smart contract risk |
 | Using `candidates[0]` for lowest risk | Use `pareto_frontier` | Candidates sorted by APY, not risk |
 | Ignoring `warnings` field | Always check `result["warnings"]` | Data quality issues affect decisions |
 | `basis_symbol="usdc-base"` | `basis_symbol="USDC"` | Use symbol, not token ID |
+
+## 0. Client Return Pattern & Response Structure
+
+**CRITICAL: Delta Lab CLIENT returns data directly (not tuples).**
+
+```python
+# WRONG - Delta Lab CLIENT doesn't return tuples
+ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError!
+
+# RIGHT - Clients return data directly
+data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ✅
+```
+
+See CLAUDE.md "Scripting gotchas #0" for full Client vs Adapter explanation.
+
+### Response Structures
+
+**`get_basis_apy_sources()` response:**
+
+```python
+{
+  "as_of": "2026-02-13T16:00:00+00:00",
+  "basis": {...},
+  "summary": {...},
+  "warnings": [],
+  "directions": {
+    "LONG": [  # ← Lending/supply opportunities
+      {
+        "apy": {"value": 0.048529, ...},  # ← DECIMAL form (4.853%)
+        "venue": "morpho_ethereum",
+        "instrument_type": "LENDING_SUPPLY",
+        ...
+      }
+    ],
+    "SHORT": [...]  # ← Borrowing opportunities
+  }
+}
+
+# Access lending opportunities:
+opportunities = data["directions"]["LONG"]
+
+# NOT: data["opportunities"] ❌
+```
+
+**`get_best_delta_neutral_pairs()` response:**
+
+```python
+{
+  "candidates": [
+    {
+      "net_apy": 1.546,  # ← Float, already % (NOT 0.01546!)
+      "carry_leg": {
+        "apy": {"value": 0.048529, ...},  # ← Decimal form
+        "venue": "morpho_ethereum"
+      },
+      "hedge_leg": {
+        "apy": {"value": 1.497886, ...},  # ← Already %
+        "venue": "hyperliquid"
+      }
+    }
+  ]
+}
+
+# Access net APY:
+net_apy = candidate["net_apy"]  # Float, not candidate["net_apy"]["value"] ❌
+```
+
+### APY Format Inconsistency ⚠️
+
+Different fields use different formats:
+
+| Field | Format | Example | Display As |
+|-------|--------|---------|------------|
+| `carry_leg.apy.value` | Decimal | `0.048529` | `× 100` = 4.853% |
+| `hedge_leg.apy.value` | Percentage | `1.497886` | As-is = 1.498% |
+| `net_apy` | Percentage | `1.546` | As-is = 1.546% |
+
+**Why?** Hedge funding rates come from Hyperliquid data which is already annualized in percentage form.
+
+**Script pattern:**
+```python
+carry_apy = candidate["carry_leg"]["apy"]["value"] * 100  # ✅ Multiply
+hedge_apy = candidate["hedge_leg"]["apy"]["value"]  # ✅ Don't multiply
+net_apy = candidate["net_apy"]  # ✅ Don't multiply (and no ["value"]!)
+```
 
 ## 1. Symbol Resolution
 
