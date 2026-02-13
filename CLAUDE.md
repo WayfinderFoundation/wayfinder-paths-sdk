@@ -224,7 +224,7 @@ async with web3_from_chain_id(8453) as w3:
     balance = await w3.eth.get_balance(addr)
 ```
 
-It reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`). For sync access, use `get_web3s_from_chain_id(chain_id)` instead.
+It uses `strategy.rpc_urls` overrides from your config (defaults to the Wayfinder RPC proxy at `{system.api_base_url}/blockchain/rpc/{chain_id}/`; config defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`). For sync access, use `get_web3s_from_chain_id(chain_id)` instead.
 
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 

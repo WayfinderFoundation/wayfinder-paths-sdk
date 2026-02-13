@@ -33,11 +33,7 @@ The `config.json` file has three main sections:
     "api_key": "sk_live_..."
   },
   "strategy": {
-    "rpc_urls": {
-      "1": "https://eth.llamarpc.com",
-      "8453": "https://mainnet.base.org",
-      "42161": "https://arb1.arbitrum.io/rpc"
-    }
+    "rpc_urls": {}
   },
   "wallet_mnemonic": "abandon ...",
   "wallets": [
@@ -74,12 +70,11 @@ The `strategy` section contains strategy-specific settings:
 
 ### RPC URLs
 
-Default RPC endpoints are provided for common chains:
-- Ethereum (chain ID: `1`)
-- Base (chain ID: `8453`)
-- Arbitrum (chain ID: `42161`)
-- Avalanche (chain ID: `43114`)
-- Plasma (chain ID: `9745`)
+By default, the SDK uses the **Wayfinder RPC proxy** at:
+
+`{system.api_base_url}/blockchain/rpc/{chain_id}/`
+
+This is what `web3_from_chain_id(chain_id)` uses when `strategy.rpc_urls` is empty/omitted, and it automatically includes your `X-API-KEY` header.
 
 Override them in config.json if needed:
 
@@ -87,8 +82,8 @@ Override them in config.json if needed:
 {
   "strategy": {
     "rpc_urls": {
-      "1": "https://your-ethereum-rpc.com",
-      "8453": "https://your-base-rpc.com"
+      "1": "https://your-ethereum-rpc.example.com",
+      "8453": "https://your-base-rpc.example.com"
     }
   }
 }
@@ -153,9 +148,11 @@ class MyStrategy(Strategy):
         strategy_wallet = self.config.get("strategy_wallet", {})
         strategy_address = strategy_wallet.get("address")
 
-        # Access RPC URLs
-        rpc_urls = self.config.get("rpc_urls", {})
-        base_rpc = rpc_urls.get("8453")
+        # Get a Web3 instance (uses Wayfinder RPC proxy by default)
+        from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+        async with web3_from_chain_id(8453) as w3:
+            base_block = await w3.eth.block_number
 
         # Access strategy-specific config
         custom_param = self.config.get("my_custom_param", "default")

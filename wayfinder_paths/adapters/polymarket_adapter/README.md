@@ -56,7 +56,7 @@ Most methods return `(ok: bool, data_or_error: Any | str)`.
 You need:
 
 - A configured wallet with a private key (`wallets[].private_key_hex` in `config.json`, or pass `private_key_hex=...`)
-- A Polygon RPC URL (`strategy.rpc_urls["137"]`)
+- A Polygon RPC URL (optional: defaults to the Wayfinder RPC proxy; override via `strategy.rpc_urls["137"]`)
 - Some native Polygon gas token for transactions
 
 Convenient pattern used by repo scripts:

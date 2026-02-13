@@ -77,7 +77,7 @@ Key fields:
 
 - `system.api_key`: Wayfinder API key (or set `WAYFINDER_API_KEY` env var)
 - `system.api_base_url`: API base URL (defaults to `https://wayfinder.ai/api` if omitted)
-- `strategy.rpc_urls`: chain ID -> RPC URL(s) (string or list)
+- `strategy.rpc_urls`: optional chain ID -> RPC URL(s) overrides (string or list). If empty/omitted, the SDK uses Wayfinder's RPC proxy via `system.api_base_url`.
 - `wallets`: local wallets with `label`, `address`, and `private_key_hex`
 
 Example:
@@ -89,12 +89,7 @@ Example:
     "api_key": "wk_your_api_key_here"
   },
   "strategy": {
-    "rpc_urls": {
-      "1": ["https://eth.llamarpc.com"],
-      "8453": ["https://mainnet.base.org"],
-      "42161": ["https://arb1.arbitrum.io/rpc"],
-      "999": ["https://rpc.hyperliquid.xyz/evm"]
-    }
+    "rpc_urls": {}
   },
   "wallets": [
     {
@@ -103,6 +98,18 @@ Example:
       "private_key_hex": "0x..."
     }
   ]
+}
+```
+
+If you want to override RPCs (e.g. to use a private/paid provider), set `strategy.rpc_urls`:
+
+```json
+{
+  "strategy": {
+    "rpc_urls": {
+      "8453": ["https://your-base-rpc.example.com"]
+    }
+  }
 }
 ```
 
@@ -220,6 +227,18 @@ poetry run wayfinder runner stop
 
 Runner state (SQLite + per-run logs) is stored in `./.wayfinder/runner/`.
 
+### Writing `.wayfinder_runs/` scripts
+
+If your run script needs direct Web3 access, use `web3_from_chain_id(chain_id)` so it picks up the configured RPCs (and defaults to the Wayfinder RPC proxy). Avoid hardcoding public RPC URLs.
+
+```python
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+async with web3_from_chain_id(8453) as w3:
+    block = await w3.eth.block_number
+    print(block)
+```
+
 For architecture/extensibility notes (e.g. future Docker/VM runner), see `RUNNER_ARCHITECTURE.md`.
 
 ## Simulation / Dry-Runs (virtual testnets)
@@ -333,7 +352,7 @@ More details in `TESTING.md`.
 
 - **Never commit `config.json`** (contains private keys)
 - **Use test wallets** for development
-- **RPCs are required**: set `strategy.rpc_urls` for each chain you use
+- **Avoid hardcoding RPC URLs in scripts**: use `web3_from_chain_id(chain_id)` so the SDK can use the Wayfinder RPC proxy (or your configured overrides)
 
 ## Community
 
