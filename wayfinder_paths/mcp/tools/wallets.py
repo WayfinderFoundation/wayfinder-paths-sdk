@@ -5,13 +5,20 @@ import importlib
 import time
 from typing import Any, Literal
 
-from wayfinder_paths.core.utils.wallets import make_random_wallet, write_wallet_to_json
+from wayfinder_paths.core.config import (
+    load_config,
+    load_wallet_mnemonic,
+    resolve_config_path,
+)
+from wayfinder_paths.core.utils.wallets import (
+    make_local_wallet,
+    write_wallet_to_json,
+)
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
     load_wallets,
     ok,
-    repo_root,
     resolve_wallet_address,
 )
 
@@ -133,10 +140,11 @@ async def wallets(
     parallel: bool = False,
     include_zero_positions: bool = False,
 ) -> dict[str, Any]:
-    root = repo_root()
+    config_path = resolve_config_path()
     store = WalletProfileStore.default()
 
     if action == "create":
+        load_config(config_path)
         existing = load_wallets()
         want = (label or "").strip()
         if not want:
@@ -155,9 +163,10 @@ async def wallets(
                     }
                 )
 
-        w = make_random_wallet()
-        w["label"] = want
-        write_wallet_to_json(w, out_dir=root, filename="config.json")
+        mnemonic = load_wallet_mnemonic()
+        w = make_local_wallet(label=want, existing_wallets=existing, mnemonic=mnemonic)
+        write_wallet_to_json(w, out_dir=config_path.parent, filename=config_path.name)
+        load_config(config_path)
 
         refreshed = load_wallets()
         return ok(
