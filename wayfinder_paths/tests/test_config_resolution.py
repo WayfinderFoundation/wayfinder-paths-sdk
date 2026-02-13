@@ -46,22 +46,27 @@ def test_load_config_json_supports_env_override(
     assert isinstance(cfg.get("strategy"), dict)
     rpc_urls = cfg["strategy"].get("rpc_urls")
     assert isinstance(rpc_urls, dict)
-    assert "8453" in rpc_urls
 
 
 @pytest.mark.asyncio
-async def test_web3s_use_rpcs_from_config(
-    monkeypatch: pytest.MonkeyPatch, restore_global_config: None, tmp_path: Path
+async def test_web3s_fallback_to_rpc_proxy(
+    restore_global_config: None,
 ) -> None:
-    monkeypatch.setenv("WAYFINDER_CONFIG_PATH", "config.example.json")
-    monkeypatch.chdir(tmp_path)
-    config.load_config()
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+                "api_key": "wk_test",
+            },
+            "strategy": {"rpc_urls": {}},
+        }
+    )
 
     from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE, CHAIN_ID_HYPEREVM
     from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
 
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
-        assert web3s[0].provider.endpoint_uri == "https://mainnet.base.org"
+        assert "/blockchain/rpc/8453/" in web3s[0].provider.endpoint_uri
 
     async with web3s_from_chain_id(CHAIN_ID_HYPEREVM) as web3s:
         assert hasattr(web3s[0], "hype")

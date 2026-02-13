@@ -1,12 +1,13 @@
 import asyncio
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
-from loguru import logger
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
 from wayfinder_paths.core.config import (
+    get_api_base_url,
     get_api_key,
     get_gorlami_base_url,
     get_rpc_urls,
@@ -52,6 +53,10 @@ class _GorlamiProvider(AsyncHTTPProvider):
                 raise
 
 
+def _is_wayfinder_rpc(rpc: str) -> bool:
+    return urlparse(rpc).netloc == urlparse(get_api_base_url()).netloc
+
+
 def _get_gorlami_base_url_safe() -> str | None:
     try:
         return get_gorlami_base_url().rstrip("/")
@@ -66,13 +71,24 @@ def _is_gorlami_fork_rpc(rpc: str) -> bool:
     return rpc.startswith(f"{base}/fork/")
 
 
+def _wayfinder_auth_headers() -> dict[str, str]:
+    headers = AsyncHTTPProvider.get_request_headers()
+    api_key = get_api_key()
+    if api_key:
+        headers = {**headers, "X-API-KEY": api_key}
+    return headers
+
+
 def _get_rpcs_for_chain_id(chain_id: int) -> list:
     mapping = get_rpc_urls()
     rpcs = mapping.get(str(chain_id))
     if rpcs is None:
-        rpcs = mapping.get(chain_id)  # allow int keys
+        # User overrides
+        rpcs = mapping.get(chain_id)
     if rpcs is None:
-        raise ValueError(f"No RPCs configured for chain ID {chain_id}")
+        # WF proxy RPCs
+        rpcs = [f"{get_api_base_url()}/blockchain/rpc/{chain_id}/"]
+
     if isinstance(rpcs, str):
         return [rpcs]
     return rpcs
@@ -80,14 +96,16 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
-        api_key = get_api_key()
-        headers = AsyncHTTPProvider.get_request_headers()
-        if not api_key:
-            logger.warning("No API key configured; Gorlami fork requests may fail")
-        else:
-            headers = {**headers, "X-API-KEY": api_key}
-        provider = _GorlamiProvider(rpc, request_kwargs={"headers": headers})
+        provider = _GorlamiProvider(
+            rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
+        )
         web3 = AsyncWeb3(provider)
+    elif _is_wayfinder_rpc(rpc):
+        web3 = AsyncWeb3(
+            AsyncHTTPProvider(
+                rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
+            )
+        )
     else:
         web3 = AsyncWeb3(AsyncHTTPProvider(rpc))
     if chain_id in POA_MIDDLEWARE_CHAIN_IDS:
