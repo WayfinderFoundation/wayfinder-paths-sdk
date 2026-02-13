@@ -10,7 +10,9 @@ from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 class WayfinderClient:
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT), follow_redirects=True
+        )
         self.headers = {
             "Content-Type": "application/json",
         }
