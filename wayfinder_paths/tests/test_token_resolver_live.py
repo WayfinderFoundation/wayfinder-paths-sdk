@@ -16,7 +16,10 @@ def event_loop():
     yield loop
     loop.close()
 
-
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="Live quote_swap test — local only",
+)
 class TestNativeTokenQueries:
     @pytest.mark.asyncio
     async def test_literal_native_with_chain_id(self):
@@ -100,7 +103,10 @@ class TestNativeTokenQueries:
         with pytest.raises(ValueError, match="Cannot resolve token: "):
             await TokenResolver.resolve_token_meta("dfcghvbjknml")
 
-
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="Live quote_swap test — local only",
+)
 class TestCoingeckoIdQueries:
     @pytest.mark.asyncio
     async def test_arbitrum_bridged_weth(self):
