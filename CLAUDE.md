@@ -76,6 +76,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Polymarket            | `/using-polymarket-adapter`      |
 | Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
+| Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 
