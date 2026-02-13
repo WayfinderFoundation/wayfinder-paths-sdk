@@ -386,7 +386,7 @@ async def execute(
                 to_chain=to_chain_id,
                 from_wallet=sender,
                 from_amount=str(amount_raw),
-                slippage=slippage
+                slippage=slippage,
             )
         except Exception as exc:  # noqa: BLE001
             response = err("quote_error", str(exc))
