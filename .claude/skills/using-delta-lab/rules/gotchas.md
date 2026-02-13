@@ -10,95 +10,32 @@ Common mistakes and important considerations when using Delta Lab.
 | `data["opportunities"]` | `data["directions"]["LONG"]` | Lending opps are in LONG direction |
 | `candidate["net_apy"]["value"]` | `candidate["net_apy"]` | net_apy is a float, not a dict |
 | `basis_symbol="bitcoin"` | `basis_symbol="BTC"` | Use root symbol, not coingecko ID |
+| **Negative funding = good for shorts** | **Negative funding = shorts PAY longs** | **CRITICAL: Sign is backwards from intuition** |
 | `max(opps, key=lambda x: x["apy"]["value"])` | `max([o for o in opps if o["apy"]["value"]], ...)` | APY can be null |
-| Assuming delta-neutral = risk-free | Check `erisk_proxy` and understand risks | Still has funding, liquidation, smart contract risk |
 | Using `candidates[0]` for lowest risk | Use `pareto_frontier` | Candidates sorted by APY, not risk |
 | Ignoring `warnings` field | Always check `result["warnings"]` | Data quality issues affect decisions |
-| `basis_symbol="usdc-base"` | `basis_symbol="USDC"` | Use symbol, not token ID |
 
-## 0. Client Return Pattern & Response Structure
+## 0. Client Return Pattern
 
 **CRITICAL: Delta Lab CLIENT returns data directly (not tuples).**
 
 ```python
-# WRONG - Delta Lab CLIENT doesn't return tuples
-ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError!
+# WRONG - Clients don't return tuples
+ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌
 
 # RIGHT - Clients return data directly
 data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ✅
 ```
 
-See CLAUDE.md "Scripting gotchas #0" for full Client vs Adapter explanation.
+See CLAUDE.md "Scripting gotchas #0" for Client vs Adapter explanation.
 
-### Response Structures
-
-**`get_basis_apy_sources()` response:**
-
+**Response structure quick reference:**
 ```python
-{
-  "as_of": "2026-02-13T16:00:00+00:00",
-  "basis": {...},
-  "summary": {...},
-  "warnings": [],
-  "directions": {
-    "LONG": [  # ← Lending/supply opportunities
-      {
-        "apy": {"value": 0.048529, ...},  # ← DECIMAL form (4.853%)
-        "venue": "morpho_ethereum",
-        "instrument_type": "LENDING_SUPPLY",
-        ...
-      }
-    ],
-    "SHORT": [...]  # ← Borrowing opportunities
-  }
-}
+# APY sources
+data["directions"]["LONG"]  # ← Lending opportunities (NOT data["opportunities"])
 
-# Access lending opportunities:
-opportunities = data["directions"]["LONG"]
-
-# NOT: data["opportunities"] ❌
-```
-
-**`get_best_delta_neutral_pairs()` response:**
-
-```python
-{
-  "candidates": [
-    {
-      "net_apy": 1.546,  # ← Float, already % (NOT 0.01546!)
-      "carry_leg": {
-        "apy": {"value": 0.048529, ...},  # ← Decimal form
-        "venue": "morpho_ethereum"
-      },
-      "hedge_leg": {
-        "apy": {"value": 1.497886, ...},  # ← Already %
-        "venue": "hyperliquid"
-      }
-    }
-  ]
-}
-
-# Access net APY:
-net_apy = candidate["net_apy"]  # Float, not candidate["net_apy"]["value"] ❌
-```
-
-### APY Format Inconsistency ⚠️
-
-Different fields use different formats:
-
-| Field | Format | Example | Display As |
-|-------|--------|---------|------------|
-| `carry_leg.apy.value` | Decimal | `0.048529` | `× 100` = 4.853% |
-| `hedge_leg.apy.value` | Percentage | `1.497886` | As-is = 1.498% |
-| `net_apy` | Percentage | `1.546` | As-is = 1.546% |
-
-**Why?** Hedge funding rates come from Hyperliquid data which is already annualized in percentage form.
-
-**Script pattern:**
-```python
-carry_apy = candidate["carry_leg"]["apy"]["value"] * 100  # ✅ Multiply
-hedge_apy = candidate["hedge_leg"]["apy"]["value"]  # ✅ Don't multiply
-net_apy = candidate["net_apy"]  # ✅ Don't multiply (and no ["value"]!)
+# Delta-neutral pairs
+candidate["net_apy"]  # ← Float (NOT candidate["net_apy"]["value"])
 ```
 
 ## 1. Symbol Resolution
@@ -152,30 +89,56 @@ APY can be `null` for several reasons:
 - Market just launched
 - Data source temporarily unavailable
 
-## 3. Side vs Sign
+## 3. Funding Rate Sign (CRITICAL MISCONCEPTION)
+
+**CRITICAL: Negative funding means shorts PAY longs.**
+
+```python
+# Funding rate = +15% annually (0.15)
+# ✅ GOOD for shorts: Longs pay shorts 15%/year
+# ❌ BAD for longs: Longs pay 15%/year
+
+# Funding rate = -8% annually (-0.08)
+# ❌ BAD for shorts: Shorts pay longs 8%/year
+# ✅ GOOD for longs: Longs receive 8%/year
+```
+
+**Common mistake:**
+```python
+# WRONG interpretation
+funding = -0.08  # -8% annually
+print("Negative funding = good for shorts!")  # ❌ BACKWARDS!
+
+# RIGHT interpretation
+funding = -0.08  # -8% annually
+if funding < 0:
+    print("Shorts PAY longs (bad for shorts)")  # ✅ Correct
+else:
+    print("Longs PAY shorts (good for shorts)")  # ✅ Correct
+```
+
+**In Delta Lab data:**
+- Positive funding → SHORT perp is a LONG opportunity (you receive funding)
+- Negative funding → SHORT perp is a SHORT opportunity (you pay funding)
+- The APY value is already signed correctly for the direction shown
+
+## 4. Side vs Sign
 
 **Don't confuse direction with sign:**
 
 ```python
-# This is a LONG opportunity (you receive yield)
-{
-    "side": "LONG",
-    "instrument_type": "lending",
-    "apy": {"value": 0.08}  # Positive: you earn 8%
-}
-
-# This is also a LONG opportunity (you receive yield as short perp)
+# This is a LONG opportunity (you receive yield as short perp)
 {
     "side": "LONG",
     "instrument_type": "perp",
-    "apy": {"value": 0.12}  # Positive: you earn funding as short perp
+    "apy": {"value": 0.12}  # Positive funding = shorts receive
 }
 
-# This is a SHORT opportunity (you pay yield)
+# This is a SHORT opportunity (you pay yield as short perp)
 {
     "side": "SHORT",
-    "instrument_type": "lending",  # Borrowing
-    "apy": {"value": -0.05}  # Negative: you pay 5%
+    "instrument_type": "perp",
+    "apy": {"value": -0.08}  # Negative funding = shorts pay
 }
 ```
 
@@ -249,177 +212,16 @@ Status codes:
 - 404 - Asset not found (get_asset only)
 - 500 - Internal server error
 
-## 6. Lookback Period Affects Results
+## 6. Lookback Period
 
-**Short lookback (1-3 days):**
-- More recent data
-- May be volatile/noisy
-- Better for short-term opportunities
+MCP uses 7 days (fixed). For custom lookback, use Python client. Short lookback (1-3 days) = recent but volatile. Long lookback (7-30 days) = smoothed averages.
 
-**Long lookback (7-30 days):**
-- Smoothed averages
-- More stable estimates
-- Better for long-term strategies
-- Default is 7 days
+## 7. Limit & Warnings
 
-```python
-# Short-term (recent funding spike)
-recent = await DELTA_LAB_CLIENT.get_basis_apy_sources(
-    basis_symbol="BTC",
-    lookback_days=1
-)
-
-# Long-term (smoothed average)
-stable = await DELTA_LAB_CLIENT.get_basis_apy_sources(
-    basis_symbol="BTC",
-    lookback_days=30
-)
-```
-
-## 7. Limit Parameter
-
-**Don't assume you got everything:**
-
-```python
-# Default limit is 500
-result = await DELTA_LAB_CLIENT.get_basis_apy_sources(basis_symbol="BTC")
-
-# Check summary to see if you're missing data
-total_count = sum(result["summary"]["instrument_type_counts"].values())
-if total_count >= 500:
-    print("Warning: Results may be truncated. Increase limit or filter by type.")
-```
-
-- `get_basis_apy_sources`: limit=500 (max 1000)
-- `get_best_delta_neutral_pairs`: limit=20 (max 100)
-
-## 8. Delta-Neutral Doesn't Mean Risk-Free
-
-**Common misconception:**
-```python
-# This is delta-neutral (no price risk)
-pair = result["candidates"][0]
-print(f"Risk-free {pair['net_apy']:.2%} yield!")  # WRONG!
-```
-
-**Reality:**
-Delta-neutral pairs eliminate **price risk** but still have:
-- **Funding rate risk** - Funding can change (for floating legs)
-- **Liquidation risk** - Margin requirements for perps/leverage
-- **Smart contract risk** - Protocol exploits/failures
-- **Liquidity risk** - Can't exit positions at expected prices
-- **Execution risk** - Slippage, failed transactions
-- **Correlation risk** - Imperfect hedges (different venues/chains)
-
-The `erisk_proxy` metric attempts to capture these, but it's not comprehensive.
-
-## 9. Cross-Chain/Venue Complexity
-
-**Be aware of execution complexity:**
-
-```python
-pair = result["candidates"][0]
-
-carry_venue = pair["carry_leg"]["venue"]  # "moonwell" (Base chain)
-hedge_venue = pair["hedge_leg"]["venue"]  # "hyperliquid" (L1)
-
-# This requires:
-# 1. Funds on Base for Moonwell deposit
-# 2. Funds on Arbitrum for Hyperliquid deposit (Bridge2)
-# 3. Managing two separate positions on different chains
-# 4. Cross-chain rebalancing if needed
-```
-
-Always check:
-- `venue` - Different protocols
-- `chain_id` - Different chains
-- Asset compatibility (e.g., different USDC versions)
-
-## 10. Maturity and Time Decay
-
-**For fixed-term instruments:**
-
-```python
-opp = result["opportunities"][0]
-maturity = opp.get("maturity_ts")
-
-if maturity:
-    # This is a fixed-term position (PT, fixed-rate market)
-    # APY is for the full term, but time remaining affects:
-    # - Entry attractiveness
-    # - Exit liquidity
-    # - Duration risk
-
-    from datetime import datetime
-    maturity_dt = datetime.fromisoformat(maturity.replace("Z", "+00:00"))
-    now = datetime.now(maturity_dt.tzinfo)
-    days_remaining = (maturity_dt - now).days
-
-    if days_remaining < 7:
-        print("Warning: Less than 7 days to maturity - check exit liquidity")
-```
-
-## 11. Instrument-Specific Considerations
-
-### Perps
-- Check `funding_rate_hourly_latest` vs `funding_rate_hourly_avg` for volatility
-- High OI + low liquidity = liquidation risk
-
-### Lending
-- `supply_apr` can change rapidly based on utilization
-- Check `tvl_usd` for protocol size/safety
-
-### Fixed-rate (Boros)
-- `implied_apy` is the locked rate - won't change after entry
-- Compare to `funding_apy_est` (floating) for arbitrage
-- Check `liquidity_usd` for exit ability
-
-### PT/YT (Pendle)
-- PT yield is fixed at entry based on discount to maturity
-- YT yield depends on underlying rate - variable
-- Check `maturity_ts` and `duration_risk`
-
-## 12. Asset ID vs Asset Reference
-
-**Don't mix internal IDs with API calls:**
-
-```python
-# Opportunity contains asset references
-opp = result["opportunities"][0]
-
-# WRONG - using the nested dict
-deposit_asset = opp["opportunity"]["deposit_asset_id"]  # This is just an int!
-
-# RIGHT - using the resolved asset
-deposit_asset = opp["deposit_asset"]  # This is {"asset_id": 3, "symbol": "USDT"}
-symbol = deposit_asset["symbol"]
-asset_id = deposit_asset["asset_id"]
-
-# If you need more details, use get_asset
-details = await DELTA_LAB_CLIENT.get_asset(asset_id=asset_id)
-# Now you have address, chain_id, decimals, coingecko_id
-```
-
-## 13. Warnings Field
+**MCP uses fixed limits:** 10 for apy-sources, 5 for delta-neutral. For more results, adjust limit in URI or use Python client.
 
 **Always check warnings:**
-
 ```python
-result = await DELTA_LAB_CLIENT.get_basis_apy_sources(basis_symbol="BTC")
-
 if result["warnings"]:
-    for warning in result["warnings"]:
-        print(f"Warning: {warning}")
-    # Examples:
-    # - "Insufficient data for some opportunities"
-    # - "Some venues temporarily unavailable"
-    # - "Liquidity data may be stale"
+    print(f"Data quality issues: {result['warnings']}")
 ```
-
-Warnings indicate:
-- Data quality issues
-- Missing information
-- Potential staleness
-- Source availability problems
-
-Don't ignore them - they affect decision quality.
