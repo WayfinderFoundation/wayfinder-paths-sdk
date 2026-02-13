@@ -238,6 +238,44 @@ Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 
 Common mistakes when writing run scripts. **Read before writing any script.**
 
+**0. Client vs Adapter return patterns — CRITICAL DIFFERENCE**
+
+**Clients return data directly; Adapters return `(ok, data)` tuples.** This is the #1 source of script errors.
+
+```python
+# CLIENTS (return data directly, raise exceptions on errors)
+from wayfinder_paths.core.clients import DELTA_LAB_CLIENT, POOL_CLIENT, TOKEN_CLIENT
+
+# WRONG — clients don't return tuples
+ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError: too many values to unpack
+
+# RIGHT — clients return data directly
+data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ✅ dict
+pools = await POOL_CLIENT.get_pools(...)  # ✅ LlamaMatchesResponse
+token = await TOKEN_CLIENT.get_token_details(...)  # ✅ TokenDetails
+
+# ADAPTERS (always return tuple[bool, data])
+from wayfinder_paths.mcp.scripting import get_adapter
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+
+adapter = get_adapter(HyperliquidAdapter)
+
+# WRONG — adapters always return tuples
+data = await adapter.get_meta_and_asset_ctxs()  # ❌ data is actually (True, {...})
+
+# RIGHT — destructure the tuple and check ok
+ok, data = await adapter.get_meta_and_asset_ctxs()  # ✅
+if not ok:
+    raise RuntimeError(f"Adapter call failed: {data}")
+meta, ctxs = data[0], data[1]
+```
+
+**Why the difference?**
+- **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
+- **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
+
+**Rule of thumb:** If it's in `wayfinder_paths.core.clients`, it returns data directly. If it's in `wayfinder_paths.adapters`, it returns a tuple.
+
 **1. `get_adapter()` already loads config — don't call `load_config()` first**
 
 ```python
