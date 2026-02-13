@@ -141,7 +141,8 @@ async def quote_swap(
 
     best_out: dict[str, Any] | None = None
     if isinstance(best_quote, dict):
-        calldata = best_quote.get("calldata")
+        tx_data: dict[str, Any] = best_quote.get("calldata") or {}
+        calldata = tx_data.get("data")
 
         best_out = {
             "provider": best_quote.get("provider"),
@@ -170,8 +171,7 @@ async def quote_swap(
         if include_calldata:
             best_out["calldata"] = calldata
         else:
-            cd_data = calldata.get("data", "") if isinstance(calldata, dict) else ""
-            best_out["calldata_len"] = len(cd_data) if cd_data else 0
+            best_out["calldata_len"] = len(calldata) if calldata else 0
 
     preview = (
         f"Swap {amount} {from_meta.get('symbol')} → {to_meta.get('symbol')} "
