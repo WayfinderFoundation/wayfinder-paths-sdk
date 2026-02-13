@@ -159,6 +159,17 @@ Interpretation:
 
 Polymarket trades use **USDC.e**, not native Polygon USDC.
 
+### Funding from other chains (Base, Arbitrum, etc.)
+
+If funds are not on Polygon, use a BRAP swap to go directly to USDC.e — don't bridge to Polygon USDC first:
+
+```python
+# Example: Base USDC → Polygon USDC.e via BRAP
+mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10",
+    from_token="usd-coin-base",
+    to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
+```
+
 ### Option A (recommended): BRAP swap (fast, on-chain)
 
 The adapter’s `bridge_deposit()` / `bridge_withdraw()` methods prefer a **BRAP** (DEX/aggregator) swap on Polygon:
