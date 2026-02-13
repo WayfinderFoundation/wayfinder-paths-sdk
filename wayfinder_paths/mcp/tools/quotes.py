@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
@@ -11,8 +12,6 @@ from wayfinder_paths.mcp.utils import (
     ok,
     parse_amount_to_raw,
 )
-
-import asyncio
 
 
 def _slippage_float(slippage_bps: int) -> float:
