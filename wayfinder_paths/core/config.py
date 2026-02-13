@@ -5,6 +5,7 @@ from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
+_WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 
 
 def _find_project_root(start: Path) -> Path | None:
@@ -49,6 +50,13 @@ def load_config_json(
         return json.loads(cfg_path.read_text())
     except Exception:
         return {}
+
+
+def write_config_json(path: str | Path | None, config: dict[str, Any]) -> Path:
+    cfg_path = resolve_config_path(path)
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text(json.dumps(config, indent=2) + "\n")
+    return cfg_path
 
 
 CONFIG: dict[str, Any] = load_config_json()
@@ -96,6 +104,27 @@ def get_api_key() -> str | None:
     if api_key and isinstance(api_key, str):
         return api_key.strip()
     return os.environ.get("WAYFINDER_API_KEY")
+
+
+def load_wallet_mnemonic(path: str | Path | None = None) -> str | None:
+    config = CONFIG if path is None else load_config_json(path)
+    value = config.get(_WALLET_MNEMONIC_KEY)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def write_wallet_mnemonic(mnemonic: str, path: str | Path | None = None) -> Path:
+    cfg_path = resolve_config_path(path)
+    config = load_config_json(cfg_path)
+    config[_WALLET_MNEMONIC_KEY] = mnemonic
+    write_config_json(cfg_path, config)
+
+    default_path = resolve_config_path()
+    if cfg_path.resolve() == default_path.resolve():
+        CONFIG[_WALLET_MNEMONIC_KEY] = mnemonic
+
+    return cfg_path
 
 
 _GORLAMI_PATH = "/blockchain/gorlami"
