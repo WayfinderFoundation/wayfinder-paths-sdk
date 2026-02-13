@@ -1,7 +1,5 @@
 import asyncio
 from contextlib import asynccontextmanager
-from urllib.parse import urlparse
-
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
@@ -54,7 +52,7 @@ class _GorlamiProvider(AsyncHTTPProvider):
 
 
 def _is_wayfinder_rpc(rpc: str) -> bool:
-    return urlparse(rpc).netloc == urlparse(get_api_base_url()).netloc
+    return rpc.startswith(get_api_base_url())
 
 
 def _get_gorlami_base_url_safe() -> str | None:
