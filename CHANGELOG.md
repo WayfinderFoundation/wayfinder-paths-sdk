@@ -7,6 +7,7 @@ Added
 1. CCXT adapter for multi-exchange reads & trades (Binance, Hyperliquid, Aster, etc.).
 2. Wallet generation from BIP-39 mnemonic phrase.
 3. Polymarket search filters, trimmed search/trending returns, and funding prompt updates.
+4. Wayfinder RPCs and user RPC overrides.
 
 Changed
 

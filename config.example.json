@@ -4,16 +4,7 @@
     "api_key": "wk_your_key_here"
   },
   "strategy": {
-    "rpc_urls": {
-      "1": ["https://eth.llamarpc.com"],
-      "42161": ["https://arb1.arbitrum.io/rpc"],
-      "56": ["https://bsc-dataseed.binance.org"],
-      "137": ["https://polygon-rpc.com"],
-      "8453": ["https://mainnet.base.org"],
-      "43114": ["https://api.avax.network/ext/bc/C/rpc"],
-      "9745": ["https://plasma.drpc.org"],
-      "999": ["https://rpc.hyperliquid.xyz/evm"]
-    }
+    "rpc_urls": {}
   },
   "wallets": [],
   "ccxt": {
