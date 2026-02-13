@@ -10,12 +10,12 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_USDC_ADDRESS,
 )
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
-from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    annotate_wallet_profile,
     err,
-    find_wallet_by_label,
     normalize_address,
     ok,
+    resolve_wallet_with_pk,
 )
 
 _TRIM_MARKET_FIELDS: set[str] = {
@@ -105,17 +105,10 @@ def _resolve_wallet(
     want = (wallet_label or "").strip()
     if not want:
         return None, None, None
-    w = find_wallet_by_label(want)
-    if not w:
+    _, addr, pk = resolve_wallet_with_pk(want)
+    if not addr:
         return want, None, None
-    addr = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    pk_s = str(pk).strip() if pk else None
-    return want, addr, pk_s
+    return want, addr, pk
 
 
 def _annotate(
@@ -127,7 +120,7 @@ def _annotate(
     chain_id: int | None = None,
     details: dict[str, Any] | None = None,
 ) -> None:
-    WalletProfileStore.default().annotate_safe(
+    annotate_wallet_profile(
         address=address,
         label=label,
         protocol="polymarket",

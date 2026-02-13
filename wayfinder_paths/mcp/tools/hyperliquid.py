@@ -10,13 +10,12 @@ from wayfinder_paths.core.constants.hyperliquid import (
     HYPE_FEE_WALLET,
 )
 from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
-from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    annotate_wallet_profile,
     err,
-    find_wallet_by_label,
-    normalize_address,
     ok,
     resolve_wallet_address,
+    resolve_wallet_with_pk,
 )
 
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
@@ -206,15 +205,14 @@ def _annotate_hl_profile(
     status: str,
     details: dict[str, Any] | None = None,
 ) -> None:
-    store = WalletProfileStore.default()
-    store.annotate_safe(
+    annotate_wallet_profile(
         address=address,
         label=label,
         protocol="hyperliquid",
         action=action,
         tool="hyperliquid_execute",
         status=status,
-        chain_id=999,  # Hyperliquid chain ID
+        chain_id=999,
         details=details,
     )
 
@@ -279,23 +277,15 @@ async def hyperliquid_execute(
     preview_obj = build_hyperliquid_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
-    w = find_wallet_by_label(want)
+    w, sender, pk = resolve_wallet_with_pk(want)
     if not w:
         return err("not_found", f"Unknown wallet_label: {want}")
-
-    sender = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
     if not sender or not pk:
-        response = err(
+        return err(
             "invalid_wallet",
             "Wallet must include address and private_key_hex in config.json (local dev only)",
             {"wallet_label": want},
         )
-        return response
 
     strategy_raw = CONFIG.get("strategy")
     strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}

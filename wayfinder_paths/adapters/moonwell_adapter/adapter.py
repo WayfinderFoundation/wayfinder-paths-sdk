@@ -39,10 +39,6 @@ def _timestamp_rate_to_apy(rate: float) -> float:
 class MoonwellAdapter(BaseAdapter):
     adapter_type = "MOONWELL"
 
-    # ---------------------------
-    # Multicall decoding helpers
-    # ---------------------------
-
     @staticmethod
     def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
         return [seq[i : i + n] for i in range(0, len(seq), n)]
@@ -408,10 +404,6 @@ class MoonwellAdapter(BaseAdapter):
                 decimals = token_data.get("decimals", 18)
                 total_usd += (amount / (10**decimals)) * price
         return total_usd
-
-    # ------------------------------------------------------------------ #
-    # Public API - Position & Market Data                                 #
-    # ------------------------------------------------------------------ #
 
     async def get_full_user_state(
         self,

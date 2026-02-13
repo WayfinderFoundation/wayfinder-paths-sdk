@@ -14,7 +14,7 @@ async def test_polymarket_status_uses_adapter_full_state():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
+            "wayfinder_paths.mcp.utils.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
@@ -56,7 +56,7 @@ async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
+            "wayfinder_paths.mcp.utils.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
@@ -88,7 +88,7 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
+            "wayfinder_paths.mcp.utils.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),

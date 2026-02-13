@@ -47,7 +47,7 @@ async def test_hyperliquid_execute_withdraw(tmp_path: Path, monkeypatch):
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.hyperliquid.find_wallet_by_label",
+            "wayfinder_paths.mcp.utils.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),

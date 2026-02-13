@@ -74,9 +74,8 @@ def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_run_script_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
-    ti = tool_input if isinstance(tool_input, dict) else {}
-    path_raw = ti.get("script_path") or ti.get("path")
-    args = ti.get("args") if isinstance(ti.get("args"), list) else []
+    path_raw = tool_input.get("script_path") or tool_input.get("path")
+    args = tool_input.get("args") if isinstance(tool_input.get("args"), list) else []
 
     if not isinstance(path_raw, str) or not path_raw.strip():
         return {"summary": "RUN_SCRIPT missing script_path."}
@@ -90,15 +89,15 @@ def build_run_script_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     rel = str(resolved)
     try:
         rel = str(resolved.relative_to(root))
-    except Exception:
+    except ValueError:
         pass
 
     sha = None
     try:
         if resolved.exists():
             sha = hashlib.sha256(resolved.read_bytes()).hexdigest()
-    except Exception:
-        sha = None
+    except OSError:
+        pass
 
     excerpt = read_text_excerpt(resolved, max_chars=1200) if resolved.exists() else None
 
