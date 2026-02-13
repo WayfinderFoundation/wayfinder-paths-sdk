@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0] - 2026-02-13 (1277255355859b1d11a082bb445e23541fe2ca19)
+
+Added
+
+1. CCXT adapter for multi-exchange reads & trades (Binance, Hyperliquid, Aster, etc.).
+2. Wallet generation from BIP-39 mnemonic phrase.
+3. Polymarket search filters, trimmed search/trending returns, and funding prompt updates.
+4. Wayfinder RPCs and user RPC overrides.
+
+Changed
+
+1. Approvals are now automatic; fixed missing approval flows.
+2. Replaced `load_config_json()` calls with `CONFIG` constant.
+3. Removed redundant type casts, defensive code patterns, and redundant comments.
+4. ProjectX swaps pagination support.
+
+Fixed
+
+1. `resolve_token_meta` for reverse token lookups.
+2. Native tokens not handled properly in swaps.
+3. Claude-vacuum workflow (invalid model input, lint/format).
+
 ## [0.3.0] - 2026-02-10 (dcd133eecc7d36e8051f5ba690e0fdfa1493d41d)
 
 Added

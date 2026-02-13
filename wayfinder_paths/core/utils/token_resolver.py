@@ -6,7 +6,7 @@ from typing import Any, cast
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS_SYMBOLS
-from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID, CHAIN_ID_TO_CODE
 from wayfinder_paths.core.utils.token_refs import (
     looks_like_evm_address,
     parse_token_id_to_chain_and_address,
@@ -14,9 +14,6 @@ from wayfinder_paths.core.utils.token_refs import (
 from wayfinder_paths.core.utils.tokens import get_token_decimals, is_native_token
 
 _SIMPLE_CHAIN_SUFFIX_RE = re.compile(r"^[a-z0-9]+\s+[a-z0-9-]+$", re.IGNORECASE)
-_ASSET_CHAIN_SPLIT_RE = re.compile(
-    r"^(?P<asset>[a-z0-9]+)[- _](?P<chain>[a-z0-9-]+)$", re.IGNORECASE
-)
 
 
 def _normalize_token_query(query: str) -> str:
@@ -31,20 +28,26 @@ def _normalize_token_query(query: str) -> str:
     return q
 
 
-def _is_eth_like_token(meta: dict[str, Any]) -> bool:
+def _is_gas_token(meta: dict[str, Any]) -> bool:
     asset_id = str(meta.get("asset_id") or "").lower()
     symbol = str(meta.get("symbol") or "").lower()
     return asset_id in NATIVE_COINGECKO_IDS or symbol in NATIVE_GAS_SYMBOLS
 
 
 def _split_asset_chain(query: str) -> tuple[str, str] | None:
-    q = str(query).strip()
+    q = str(query).strip().lower()
     if not q:
         return None
-    m = _ASSET_CHAIN_SPLIT_RE.match(q)
-    if not m:
+
+    normalized = q.replace("_", "-")
+    parts = normalized.split("-")
+    if len(parts) < 2:
         return None
-    return m.group("asset").lower(), m.group("chain").lower()
+    if parts[-1] in CHAIN_CODE_TO_ID:
+        return "-".join(parts[:-1]), parts[-1]
+    if parts[0] in CHAIN_CODE_TO_ID:
+        return "-".join(parts[1:]), parts[0]
+    return None
 
 
 def _chain_id_from_meta(meta: dict[str, Any]) -> int | None:
@@ -138,7 +141,7 @@ def _select_chain_and_address(
     token_address_out = _normalize_token_address(
         str(token_address).strip() if token_address else None
     )
-    if token_address_out is None and _is_eth_like_token(meta):
+    if token_address_out is None and _is_gas_token(meta):
         token_address_out = ZERO_ADDRESS
 
     return chain_id, token_address_out
@@ -220,7 +223,7 @@ class TokenResolver:
             if asset in NATIVE_COINGECKO_IDS or asset in NATIVE_GAS_SYMBOLS:
                 try:
                     gas_meta = await cls._get_gas_token_cached(chain_code)
-                    if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
+                    if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
                         meta = gas_meta
                 except Exception:
                     meta = None
@@ -241,17 +244,17 @@ class TokenResolver:
         if not q_raw:
             raise ValueError("token query is required")
 
+        meta: dict[str, Any] | None = None
+        chain_code: str = None
         if q_raw.lower() == "native":
-            chain_id_i = cls._validate_chain_id_hint(chain_id, query=q_raw)
-            return {
-                "token_id": "native",
-                "asset_id": "native",
-                "symbol": "NATIVE",
-                "decimals": 18,
-                "chain_id": chain_id_i,
-                "address": ZERO_ADDRESS,
-                "metadata": {"source": "native"},
-            }
+            if chain_id:
+                chain_id_i = cls._validate_chain_id_hint(chain_id, query=q_raw)
+                chain_code = CHAIN_ID_TO_CODE.get(chain_id_i)
+                gas_meta = await cls._get_gas_token_cached(chain_code)
+                if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
+                    meta = gas_meta
+            else:
+                raise ValueError("Chain id is not provided for native query")
 
         parsed_chain_id, parsed_address = parse_token_id_to_chain_and_address(q_raw)
         if parsed_chain_id is not None and parsed_address is not None:
@@ -284,21 +287,43 @@ class TokenResolver:
             }
 
         q = _normalize_token_query(q_raw)
-        meta: dict[str, Any] | None = None
 
         split = _split_asset_chain(q)
         if split:
             asset, chain_code = split
-            if asset in {"eth", "ethereum"}:
+            if chain_code.lower() == "native":
+                chain_code = asset
+                asset = "native"
+            if (
+                asset in NATIVE_COINGECKO_IDS
+                or asset in NATIVE_GAS_SYMBOLS
+                or asset == "native"
+            ):
                 try:
                     gas_meta = await cls._get_gas_token_cached(chain_code)
-                    if isinstance(gas_meta, dict) and _is_eth_like_token(gas_meta):
+                    if isinstance(gas_meta, dict) and _is_gas_token(gas_meta):
                         meta = gas_meta
                 except Exception:
                     meta = None
+            else:
+                try:
+                    meta = await cls._get_token_details_cached(
+                        asset, chain_id=CHAIN_CODE_TO_ID[chain_code]
+                    )
+                except Exception as e:
+                    raise ValueError(
+                        f"Cannot resolve token: {query}, chain_id: {chain_id}"
+                    ) from e
 
         if meta is None:
-            meta = await cls._get_token_details_cached(q, chain_id=chain_id)
+            try:
+                if chain_id is None and chain_code is not None:
+                    chain_id = CHAIN_CODE_TO_ID[chain_code]
+                meta = await cls._get_token_details_cached(q, chain_id=chain_id)
+            except Exception as e:
+                raise ValueError(
+                    f"Cannot resolve token: {query}, chain_id: {chain_id}"
+                ) from e
 
         chain_out, addr_out = _select_chain_and_address(meta, query=q)
         if chain_out is None or not addr_out:
