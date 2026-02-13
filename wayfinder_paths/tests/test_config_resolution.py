@@ -66,10 +66,40 @@ async def test_web3s_fallback_to_rpc_proxy(
     from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
 
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
-        assert "/blockchain/rpc/8453/" in web3s[0].provider.endpoint_uri
+        uri = web3s[0].provider.endpoint_uri
+        assert uri == "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/8453/"
+        assert web3s[0].provider._request_kwargs["headers"]["X-API-KEY"] == "wk_test"
 
     async with web3s_from_chain_id(CHAIN_ID_HYPEREVM) as web3s:
+        uri = web3s[0].provider.endpoint_uri
+        assert uri == "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/999/"
+        assert web3s[0].provider._request_kwargs["headers"]["X-API-KEY"] == "wk_test"
         assert hasattr(web3s[0], "hype")
+
+
+@pytest.mark.asyncio
+async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+                "api_key": "wk_test",
+            },
+            "strategy": {"rpc_urls": {"8453": ["https://custom-rpc.example.com"]}},
+        }
+    )
+
+    from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE, CHAIN_ID_ARBITRUM
+    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+
+    async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
+        assert web3s[0].provider.endpoint_uri == "https://custom-rpc.example.com"
+        assert "X-API-KEY" not in web3s[0].provider._request_kwargs.get("headers", {})
+
+    async with web3s_from_chain_id(CHAIN_ID_ARBITRUM) as web3s:
+        uri = web3s[0].provider.endpoint_uri
+        assert uri == "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/42161/"
+        assert web3s[0].provider._request_kwargs["headers"]["X-API-KEY"] == "wk_test"
 
 
 def test_web3s_accept_int_rpc_url_keys(restore_global_config: None) -> None:
