@@ -232,11 +232,17 @@ Runner state (SQLite + per-run logs) is stored in `./.wayfinder/runner/`.
 If your run script needs direct Web3 access, use `web3_from_chain_id(chain_id)` so it picks up the configured RPCs (and defaults to the Wayfinder RPC proxy). Avoid hardcoding public RPC URLs.
 
 ```python
+import asyncio
+
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-async with web3_from_chain_id(8453) as w3:
-    block = await w3.eth.block_number
-    print(block)
+async def main() -> None:
+    async with web3_from_chain_id(8453) as w3:
+        block = await w3.eth.block_number
+        print(block)
+
+
+asyncio.run(main())
 ```
 
 For architecture/extensibility notes (e.g. future Docker/VM runner), see `RUNNER_ARCHITECTURE.md`.
