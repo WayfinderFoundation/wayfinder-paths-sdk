@@ -89,7 +89,7 @@ async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
         }
     )
 
-    from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE, CHAIN_ID_ARBITRUM
+    from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM, CHAIN_ID_BASE
     from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
 
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:

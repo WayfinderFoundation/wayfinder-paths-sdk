@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
