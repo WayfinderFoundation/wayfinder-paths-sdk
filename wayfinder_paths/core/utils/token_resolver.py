@@ -14,10 +14,6 @@ from wayfinder_paths.core.utils.token_refs import (
 from wayfinder_paths.core.utils.tokens import get_token_decimals, is_native_token
 
 _SIMPLE_CHAIN_SUFFIX_RE = re.compile(r"^[a-z0-9]+\s+[a-z0-9-]+$", re.IGNORECASE)
-_ASSET_CHAIN_SPLIT_RE = re.compile(
-    r"^(?P<asset>[a-z0-9]+)[- _](?P<chain>[a-z0-9-]+)$", re.IGNORECASE
-)
-
 
 def _normalize_token_query(query: str) -> str:
     q = " ".join(str(query).strip().split())
