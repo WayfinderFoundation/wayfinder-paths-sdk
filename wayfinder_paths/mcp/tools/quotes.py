@@ -12,6 +12,8 @@ from wayfinder_paths.mcp.utils import (
     parse_amount_to_raw,
 )
 
+import asyncio
+
 
 def _slippage_float(slippage_bps: int) -> float:
     return max(0.0, float(int(slippage_bps)) / 10_000.0)
@@ -76,8 +78,10 @@ async def quote_swap(
         return err("invalid_wallet", f"Wallet {wallet_label} missing address")
 
     try:
-        from_meta = await TokenResolver.resolve_token_meta(from_token)
-        to_meta = await TokenResolver.resolve_token_meta(to_token)
+        from_meta, to_meta = await asyncio.gather(
+            TokenResolver.resolve_token_meta(from_token),
+            TokenResolver.resolve_token_meta(to_token),
+        )
     except Exception as exc:  # noqa: BLE001
         return err("token_error", str(exc))
 
@@ -151,7 +155,6 @@ async def quote_swap(
             "fee_estimate": best_quote.get("fee_estimate"),
             "native_input": best_quote.get("native_input"),
             "native_output": best_quote.get("native_output"),
-            "error": best_quote.get("error"),
         }
 
         # Strip data fields from wrap/unwrap transactions to reduce response size
