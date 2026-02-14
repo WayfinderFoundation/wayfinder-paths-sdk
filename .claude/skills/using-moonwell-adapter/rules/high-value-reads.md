@@ -93,7 +93,7 @@ if __name__ == "__main__":
 
 | Method | Purpose | Wallet needed? |
 |--------|---------|----------------|
-| `get_all_markets(include_apy?, include_usd?)` | All markets with symbols, rates, TVL | No |
+| `get_all_markets(include_apy?, include_usd?, include_rewards?)` | All markets with symbols, rates, TVL | No |
 | `get_apy(mtoken, apy_type, include_rewards)` | Supply/borrow APY for single market | No |
 | `get_collateral_factor(mtoken)` | Collateral factor (e.g., 0.88) | No |
 | `get_pos(mtoken, account?, include_usd?)` | Single market position | Yes (or pass account) |
