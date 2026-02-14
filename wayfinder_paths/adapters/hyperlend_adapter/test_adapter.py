@@ -4,6 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from wayfinder_paths.adapters.hyperlend_adapter.adapter import HyperlendAdapter
+from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.contracts import (
+    HYPEREVM_WHYPE,
+    HYPERLEND_POOL,
+    HYPERLEND_WRAPPED_TOKEN_GATEWAY,
+)
 from wayfinder_paths.core.constants.hyperlend_abi import UI_POOL_RESERVE_KEYS
 
 
@@ -505,3 +511,152 @@ class TestHyperlendAdapter:
             assert len(data.get("assets", [])) == 0
             # New API uses account_data; total_value may not be present
             assert data.get("account_data", {}).get("total_collateral_base") == 0
+
+    @pytest.mark.asyncio
+    async def test_lend_native_uses_whype(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch.object(
+                adapter, "_record_pool_op", new_callable=AsyncMock
+            ) as mock_record,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            mock_record.return_value = None
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.lend(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        mock_encode.assert_awaited_once()
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "depositETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+        assert kwargs["value"] == 123
+
+    @pytest.mark.asyncio
+    async def test_unlend_native_uses_whype(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch.object(
+                adapter, "_record_pool_op", new_callable=AsyncMock
+            ) as mock_record,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            mock_record.return_value = None
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.unlend(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        mock_encode.assert_awaited_once()
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "withdrawETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+
+    @pytest.mark.asyncio
+    async def test_borrow_erc20_calls_pool_borrow(self, adapter):
+        token = "0x0000000000000000000000000000000000000011"
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.borrow(
+                underlying_token=token,
+                qty=123,
+                chain_id=999,
+                native=False,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_POOL
+        assert kwargs["fn_name"] == "borrow"
+        assert kwargs["args"][0].lower() == token.lower()
+        assert kwargs["args"][1] == 123
+        assert kwargs["args"][2] == 2  # variable rate mode
+        assert kwargs["args"][3] == 0  # referral code
+
+    @pytest.mark.asyncio
+    async def test_repay_erc20_approves_and_calls_pool_repay(self, adapter):
+        token = "0x0000000000000000000000000000000000000011"
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.ensure_allowance",
+                new_callable=AsyncMock,
+            ) as mock_allow,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_allow.return_value = (True, "ok")
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.repay(
+                underlying_token=token,
+                qty=123,
+                chain_id=999,
+                native=False,
+                repay_full=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        mock_allow.assert_awaited_once()
+        _, allow_kwargs = mock_allow.await_args
+        assert allow_kwargs["spender"] == HYPERLEND_POOL
+        assert allow_kwargs["approval_amount"] == MAX_UINT256
+
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_POOL
+        assert kwargs["fn_name"] == "repay"
+        assert kwargs["args"][0].lower() == token.lower()
+        assert kwargs["args"][1] == MAX_UINT256
+        assert kwargs["args"][2] == 2  # variable rate mode

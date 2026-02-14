@@ -15,7 +15,7 @@ from wayfinder_paths.core.clients.HyperlendClient import (
     MarketEntry,
     StableMarketsHeadroomResponse,
 )
-from wayfinder_paths.core.constants.base import SECONDS_PER_YEAR
+from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_HYPEREVM
 from wayfinder_paths.core.constants.contracts import (
     HYPEREVM_WHYPE,
@@ -36,6 +36,8 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 RAY = 10**27
+VARIABLE_RATE_MODE = 2
+REFERRAL_CODE = 0
 
 
 def _ray_to_apr(ray: int) -> float:
@@ -321,7 +323,7 @@ class HyperlendAdapter(BaseAdapter):
                 target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
                 abi=WRAPPED_TOKEN_GATEWAY_ABI,
                 fn_name="depositETH",
-                args=[HYPERLEND_POOL, strategy, 0],
+                args=[HYPEREVM_WHYPE, strategy, REFERRAL_CODE],
                 from_address=strategy,
                 chain_id=chain_id,
                 value=qty,
@@ -342,7 +344,7 @@ class HyperlendAdapter(BaseAdapter):
                 target=HYPERLEND_POOL,
                 abi=POOL_ABI,
                 fn_name="supply",
-                args=[token_addr, qty, strategy, 0],
+                args=[token_addr, qty, strategy, REFERRAL_CODE],
                 from_address=strategy,
                 chain_id=chain_id,
             )
@@ -384,7 +386,7 @@ class HyperlendAdapter(BaseAdapter):
                 target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
                 abi=WRAPPED_TOKEN_GATEWAY_ABI,
                 fn_name="withdrawETH",
-                args=[HYPERLEND_POOL, qty, strategy],
+                args=[HYPEREVM_WHYPE, qty, strategy],
                 from_address=strategy,
                 chain_id=chain_id,
             )
@@ -412,6 +414,149 @@ class HyperlendAdapter(BaseAdapter):
             op_type="unlend",
         )
 
+        return True, txn_hash
+
+    async def borrow(
+        self,
+        *,
+        underlying_token: str,
+        qty: int,
+        chain_id: int,
+        native: bool = False,
+    ) -> tuple[bool, Any]:
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        if qty <= 0:
+            return False, "qty must be positive"
+
+        if native:
+            transaction = await encode_call(
+                target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
+                abi=WRAPPED_TOKEN_GATEWAY_ABI,
+                fn_name="borrowETH",
+                args=[HYPEREVM_WHYPE, qty, REFERRAL_CODE],
+                from_address=strategy,
+                chain_id=chain_id,
+            )
+        else:
+            asset = to_checksum_address(underlying_token)
+            transaction = await encode_call(
+                target=HYPERLEND_POOL,
+                abi=POOL_ABI,
+                fn_name="borrow",
+                args=[asset, qty, VARIABLE_RATE_MODE, REFERRAL_CODE, strategy],
+                from_address=strategy,
+                chain_id=chain_id,
+            )
+
+        txn_hash = await send_transaction(
+            transaction, self.strategy_wallet_signing_callback
+        )
+        return True, txn_hash
+
+    async def repay(
+        self,
+        *,
+        underlying_token: str,
+        qty: int,
+        chain_id: int,
+        native: bool = False,
+        repay_full: bool = False,
+    ) -> tuple[bool, Any]:
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        if qty <= 0:
+            return False, "qty must be positive"
+
+        repay_amount = MAX_UINT256 if repay_full else qty
+
+        if native:
+            transaction = await encode_call(
+                target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
+                abi=WRAPPED_TOKEN_GATEWAY_ABI,
+                fn_name="repayETH",
+                args=[HYPEREVM_WHYPE, repay_amount, strategy],
+                from_address=strategy,
+                chain_id=chain_id,
+                value=qty,
+            )
+        else:
+            asset = to_checksum_address(underlying_token)
+            allowance_target = MAX_UINT256 if repay_full else qty
+            approved = await ensure_allowance(
+                token_address=asset,
+                owner=strategy,
+                spender=HYPERLEND_POOL,
+                amount=allowance_target,
+                chain_id=chain_id,
+                signing_callback=self.strategy_wallet_signing_callback,
+                approval_amount=MAX_UINT256,
+            )
+            if not approved[0]:
+                return approved
+
+            transaction = await encode_call(
+                target=HYPERLEND_POOL,
+                abi=POOL_ABI,
+                fn_name="repay",
+                args=[asset, repay_amount, VARIABLE_RATE_MODE, strategy],
+                from_address=strategy,
+                chain_id=chain_id,
+            )
+
+        txn_hash = await send_transaction(
+            transaction, self.strategy_wallet_signing_callback
+        )
+        return True, txn_hash
+
+    async def set_collateral(
+        self,
+        *,
+        underlying_token: str,
+        chain_id: int,
+    ) -> tuple[bool, Any]:
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+
+        asset = to_checksum_address(underlying_token)
+        transaction = await encode_call(
+            target=HYPERLEND_POOL,
+            abi=POOL_ABI,
+            fn_name="setUserUseReserveAsCollateral",
+            args=[asset, True],
+            from_address=strategy,
+            chain_id=chain_id,
+        )
+        txn_hash = await send_transaction(
+            transaction, self.strategy_wallet_signing_callback
+        )
+        return True, txn_hash
+
+    async def remove_collateral(
+        self,
+        *,
+        underlying_token: str,
+        chain_id: int,
+    ) -> tuple[bool, Any]:
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+
+        asset = to_checksum_address(underlying_token)
+        transaction = await encode_call(
+            target=HYPERLEND_POOL,
+            abi=POOL_ABI,
+            fn_name="setUserUseReserveAsCollateral",
+            args=[asset, False],
+            from_address=strategy,
+            chain_id=chain_id,
+        )
+        txn_hash = await send_transaction(
+            transaction, self.strategy_wallet_signing_callback
+        )
         return True, txn_hash
 
     async def _record_pool_op(

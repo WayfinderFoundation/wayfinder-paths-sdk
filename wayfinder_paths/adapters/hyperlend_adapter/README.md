@@ -11,7 +11,8 @@ The HyperlendAdapter provides:
 - Stable-market discovery via backend API (headroom-filtered)
 - Full on-chain reserve listing (no filtering) via `UiPoolDataProvider`
 - User asset views via backend API
-- Lending (supply/withdraw) via the Pool contract
+- Lending + borrowing (supply/withdraw/borrow/repay) via the Pool contract
+- Collateral toggles via `Pool.setUserUseReserveAsCollateral(...)`
 
 ## Protocol Addresses (HyperEVM)
 
@@ -67,6 +68,34 @@ Fetch a user’s HyperLend asset snapshot (supplies/borrows, prices, rates).
 success, view = await adapter.get_assets_view(user_address="0x...")
 ```
 
+### borrow / repay (on-chain)
+
+Borrow and repay via the Pool contract (Aave-style). Uses variable rate mode (`2`).
+
+```python
+success, tx_hash = await adapter.borrow(
+    underlying_token="0x...",
+    qty=123,
+    chain_id=999,
+)
+
+success, tx_hash = await adapter.repay(
+    underlying_token="0x...",
+    qty=123,
+    chain_id=999,
+    repay_full=False,
+)
+```
+
+### set_collateral / remove_collateral (on-chain)
+
+Enable/disable an underlying asset as collateral.
+
+```python
+success, tx_hash = await adapter.set_collateral(underlying_token="0x...", chain_id=999)
+success, tx_hash = await adapter.remove_collateral(underlying_token="0x...", chain_id=999)
+```
+
 ## Return Format
 
 All methods return `(success: bool, data: Any)` tuples.
@@ -76,4 +105,3 @@ All methods return `(success: bool, data: Any)` tuples.
 ```bash
 poetry run pytest wayfinder_paths/adapters/hyperlend_adapter/ -v
 ```
-
