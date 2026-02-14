@@ -170,6 +170,11 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
         )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
+        )
 
         best_quote = {
             "provider": "enso",
@@ -223,6 +228,11 @@ class TestPolymarketAdapter:
 
         monkeypatch.setattr(
             adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
         )
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,

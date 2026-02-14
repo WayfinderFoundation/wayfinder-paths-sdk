@@ -736,17 +736,58 @@ class PolymarketAdapter(BaseAdapter):
         Fallback (async, bridge service): Polymarket Bridge deposit address transfer.
         """
         from_address, sign_cb = self._resolve_wallet_signer()
+        from_token = to_checksum_address(from_token_address)
         base_units = to_erc20_raw(amount, token_decimals)
 
         rcpt = to_checksum_address(recipient_address)
+        async with web3_from_chain_id(int(from_chain_id)) as web3:
+            bal = await get_token_balance(
+                from_token,
+                int(from_chain_id),
+                from_address,
+                web3=web3,
+                block_identifier="pending",
+            )
+            if bal < base_units:
+                msg = (
+                    "Insufficient balance for bridge_deposit "
+                    f"(token={from_token}, need_base_units={base_units}, balance_base_units={bal})."
+                )
+                if int(from_chain_id) == POLYGON_CHAIN_ID:
+                    usdce_bal, usdc_bal = await asyncio.gather(
+                        get_token_balance(
+                            POLYGON_USDC_E_ADDRESS,
+                            POLYGON_CHAIN_ID,
+                            from_address,
+                            web3=web3,
+                            block_identifier="pending",
+                        ),
+                        get_token_balance(
+                            POLYGON_USDC_ADDRESS,
+                            POLYGON_CHAIN_ID,
+                            from_address,
+                            web3=web3,
+                            block_identifier="pending",
+                        ),
+                    )
+                    msg += (
+                        " Polygon balances: "
+                        f"usdc_e_base_units={usdce_bal}, usdc_base_units={usdc_bal}."
+                    )
+                    if usdce_bal > 0:
+                        msg += (
+                            f" Note: Polymarket collateral is USDC.e ({POLYGON_USDC_E_ADDRESS}); "
+                            "if you already have USDC.e you can trade without running bridge_deposit."
+                        )
+                return False, msg
+
         if (
             from_chain_id == POLYGON_CHAIN_ID
-            and to_checksum_address(from_token_address)
-            == to_checksum_address(POLYGON_USDC_ADDRESS)
+            and from_token == to_checksum_address(POLYGON_USDC_ADDRESS)
             and rcpt == to_checksum_address(from_address)
         ):
             brap = await _try_brap_swap_polygon(
-                from_token_address=from_token_address,
+                from_token_address=from_token,
                 to_token_address=POLYGON_USDC_E_ADDRESS,
                 from_address=from_address,
                 amount_base_unit=base_units,
@@ -768,7 +809,7 @@ class PolymarketAdapter(BaseAdapter):
         tx = await build_send_transaction(
             from_address=from_address,
             to_address=str(deposit_evm),
-            token_address=from_token_address,
+            token_address=from_token,
             chain_id=from_chain_id,
             amount=base_units,
         )
