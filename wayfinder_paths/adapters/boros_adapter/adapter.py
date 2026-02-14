@@ -22,6 +22,7 @@ from wayfinder_paths.core.utils.tokens import (
     get_token_balance,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 from .client import BorosClient
@@ -1615,7 +1616,7 @@ class BorosAdapter(BaseAdapter):
                 withdrawal = coll.get("withdrawal", {})
                 raw = withdrawal.get("lastWithdrawalAmount", "0")
                 if raw and int(raw) > 0:
-                    return float(raw) / (10**token_decimals)
+                    return from_erc20_raw(raw, token_decimals)
 
             return 0.0
         except Exception as e:
@@ -1668,7 +1669,9 @@ class BorosAdapter(BaseAdapter):
                 withdrawal = coll.get("withdrawal", {})
                 request_time = int(withdrawal.get("lastWithdrawalRequestTime", 0))
                 raw_amount = int(withdrawal.get("lastWithdrawalAmount", 0))
-                amount = raw_amount / (10**token_decimals) if raw_amount else 0.0
+                amount = (
+                    from_erc20_raw(raw_amount, token_decimals) if raw_amount else 0.0
+                )
 
                 current_time = int(time.time())
                 elapsed = current_time - request_time if request_time > 0 else 0
