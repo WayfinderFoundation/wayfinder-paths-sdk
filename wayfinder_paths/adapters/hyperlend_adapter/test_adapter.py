@@ -660,3 +660,62 @@ class TestHyperlendAdapter:
         assert kwargs["args"][0].lower() == token.lower()
         assert kwargs["args"][1] == MAX_UINT256
         assert kwargs["args"][2] == 2  # variable rate mode
+
+    @pytest.mark.asyncio
+    async def test_repay_native_calls_gateway_repayeth_with_value(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.repay(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+                repay_full=False,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "repayETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+        assert kwargs["args"][1] == 123
+        assert kwargs["args"][2] == adapter.strategy_wallet_address
+        assert kwargs["value"] == 123
+
+    @pytest.mark.asyncio
+    async def test_repay_native_disallows_repay_full(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            ok, err = await adapter.repay(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+                repay_full=True,
+            )
+
+        assert ok is False
+        assert "repay_full is not supported for native repayments" in str(err)
+        mock_encode.assert_not_awaited()
+        mock_send.assert_not_awaited()

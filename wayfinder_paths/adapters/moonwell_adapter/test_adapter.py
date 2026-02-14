@@ -242,6 +242,136 @@ class TestMoonwellAdapter:
         assert usdc["rewardBorrowApy"] == pytest.approx(-1.0)
 
     @pytest.mark.asyncio
+    async def test_get_all_markets_filters_invalid_entries(self, adapter):
+        m1 = MOONWELL_M_USDC
+        m2 = MOONWELL_M_WETH
+        m3 = Web3.to_checksum_address(
+            "0xdC7810B47eAAb250De623F0eE07764afa5F71ED1"
+        )  # mWELL
+
+        markets_info = [
+            None,
+            # m1 (USDC)
+            (
+                m1,
+                True,  # isListed
+                0,
+                0,
+                False,
+                False,
+                int(0.5 * MANTISSA),  # collateralFactor
+                1,  # underlyingPrice (mantissa, simplified)
+                SECONDS_PER_YEAR,  # totalSupply
+                SECONDS_PER_YEAR,  # totalBorrows
+                0,
+                0,  # cash
+                MANTISSA,  # exchangeRate
+                0,
+                0,
+                0,  # borrowRate
+                0,  # supplyRate
+                [(MOONWELL_WELL_TOKEN, 1, 1)],  # incentives
+            ),
+            # m2 (WETH)
+            (
+                m2,
+                True,
+                0,
+                0,
+                False,
+                False,
+                int(0.5 * MANTISSA),
+                1,
+                0,
+                0,
+                0,
+                0,
+                MANTISSA,
+                0,
+                0,
+                0,
+                0,
+                [(MOONWELL_WELL_TOKEN, 1, 1)],
+            ),
+            # m3 (WELL)
+            (
+                m3,
+                True,
+                0,
+                0,
+                False,
+                False,
+                int(0.5 * MANTISSA),
+                1,
+                0,
+                0,
+                0,
+                0,
+                MANTISSA,
+                0,
+                0,
+                0,
+                0,
+                [],
+            ),
+        ]
+
+        w3 = Web3()
+        mock_web3 = MagicMock()
+        mock_web3.codec = w3.codec
+        mock_web3.to_checksum_address = w3.to_checksum_address
+
+        mock_views = MagicMock()
+        mock_views.functions.getAllMarketsInfo = MagicMock(
+            return_value=MagicMock(call=AsyncMock(return_value=markets_info))
+        )
+
+        def contract_side_effect(*, address=None, abi=None, **_kwargs):
+            if address and address.lower() == MOONWELL_VIEWS.lower():
+                return mock_views
+            c = MagicMock()
+            c.abi = abi or []
+            c.encode_abi = MagicMock(return_value="0x00")
+            return c
+
+        mock_web3.eth.contract = MagicMock(side_effect=contract_side_effect)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        ret_meta = [
+            # m1
+            w3.codec.encode(["string"], ["mUSDC"]),
+            w3.codec.encode(["address"], [BASE_USDC]),
+            w3.codec.encode(["uint8"], [8]),
+            # m2
+            w3.codec.encode(["string"], ["mWETH"]),
+            w3.codec.encode(["address"], [BASE_WETH]),
+            w3.codec.encode(["uint8"], [8]),
+            # m3
+            w3.codec.encode(["string"], ["mWELL"]),
+            w3.codec.encode(["address"], [MOONWELL_WELL_TOKEN]),
+            w3.codec.encode(["uint8"], [8]),
+        ]
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.web3_from_chain_id",
+                mock_web3_ctx,
+            ),
+            patch.object(
+                adapter, "_multicall_chunked", new_callable=AsyncMock
+            ) as mock_multicall,
+        ):
+            mock_multicall.return_value = ret_meta
+            ok, markets = await adapter.get_all_markets(include_usd=False)
+
+        assert ok is True
+        assert isinstance(markets, list)
+        assert len(markets) == 3
+
+    @pytest.mark.asyncio
     async def test_lend(self, adapter):
         mock_tx_hash = {"tx_hash": "0xabc123", "status": "success"}
         with (

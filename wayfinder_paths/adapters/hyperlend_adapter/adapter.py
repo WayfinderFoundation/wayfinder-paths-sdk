@@ -471,19 +471,24 @@ class HyperlendAdapter(BaseAdapter):
         if qty <= 0:
             return False, "qty must be positive"
 
-        repay_amount = MAX_UINT256 if repay_full else qty
-
         if native:
+            if repay_full:
+                return (
+                    False,
+                    "repay_full is not supported for native repayments; pass qty and set repay_full=False",
+                )
+
             transaction = await encode_call(
                 target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
                 abi=WRAPPED_TOKEN_GATEWAY_ABI,
                 fn_name="repayETH",
-                args=[HYPEREVM_WHYPE, repay_amount, strategy],
+                args=[HYPEREVM_WHYPE, qty, strategy],
                 from_address=strategy,
                 chain_id=chain_id,
                 value=qty,
             )
         else:
+            repay_amount = MAX_UINT256 if repay_full else qty
             asset = to_checksum_address(underlying_token)
             allowance_target = MAX_UINT256 if repay_full else qty
             approved = await ensure_allowance(
