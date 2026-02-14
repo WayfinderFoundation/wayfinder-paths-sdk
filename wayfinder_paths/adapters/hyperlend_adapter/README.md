@@ -87,8 +87,10 @@ success, tx_hash = await adapter.repay(
 )
 ```
 
-For native HYPE (via the Wrapped Token Gateway), pass `native=True`. For a native full repay,
-use `repay_full=True` (the adapter reads current debt on-chain and sends a buffered `msg.value`).
+For native HYPE:
+- `borrow(native=True)` borrows WHYPE via the Pool, then unwraps to HYPE (two txs).
+- `repay(native=True)` uses the Wrapped Token Gateway. For a native full repay, use
+  `repay_full=True` (the adapter reads current debt on-chain and sends a buffered `msg.value`).
 
 ### set_collateral / remove_collateral (on-chain)
 

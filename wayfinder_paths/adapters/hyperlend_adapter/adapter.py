@@ -28,6 +28,7 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     POOL_ABI,
     UI_POOL_DATA_PROVIDER_ABI,
     UI_POOL_RESERVE_KEYS,
+    WETH_ABI,
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
@@ -48,6 +49,12 @@ def _ray_to_apr(ray: int) -> float:
 
 def _apr_to_apy(apr: float) -> float:
     return (1 + apr / SECONDS_PER_YEAR) ** SECONDS_PER_YEAR - 1
+
+
+def _reserve_to_dict(reserve: Any, reserve_keys: list[str]) -> dict[str, Any]:
+    if isinstance(reserve, dict):
+        return dict(reserve)
+    return dict(zip(reserve_keys, reserve, strict=False))
 
 
 def _compute_supply_cap_headroom(
@@ -94,6 +101,7 @@ class HyperlendAdapter(BaseAdapter):
         self.strategy_wallet_address: str | None = (
             to_checksum_address(strategy_addr) if strategy_addr else None
         )
+        self._variable_debt_token_by_underlying: dict[str, str] = {}
 
     async def get_stable_markets(
         self,
@@ -224,16 +232,14 @@ class HyperlendAdapter(BaseAdapter):
 
                 markets: list[dict[str, Any]] = []
                 for reserve in reserves or []:
-                    if isinstance(reserve, dict):
-                        r = dict(reserve)
-                    else:
-                        r = dict(zip(reserve_keys, reserve, strict=False))
+                    r = _reserve_to_dict(reserve, reserve_keys)
 
                     underlying = to_checksum_address(str(r.get("underlyingAsset")))
                     symbol_raw = r.get("symbol") or ""
                     decimals = int(r.get("decimals") or 18)
                     a_token = to_checksum_address(str(r.get("aTokenAddress")))
                     v_debt = to_checksum_address(str(r.get("variableDebtTokenAddress")))
+                    self._variable_debt_token_by_underlying[underlying.lower()] = v_debt
 
                     is_active = bool(r.get("isActive"))
                     is_frozen = bool(r.get("isFrozen"))
@@ -432,14 +438,31 @@ class HyperlendAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         if native:
-            transaction = await encode_call(
-                target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
-                abi=WRAPPED_TOKEN_GATEWAY_ABI,
-                fn_name="borrowETH",
-                args=[HYPEREVM_WHYPE, qty, REFERRAL_CODE],
+            asset = HYPEREVM_WHYPE
+            borrow_tx = await encode_call(
+                target=HYPERLEND_POOL,
+                abi=POOL_ABI,
+                fn_name="borrow",
+                args=[asset, qty, VARIABLE_RATE_MODE, REFERRAL_CODE, strategy],
                 from_address=strategy,
                 chain_id=chain_id,
             )
+            borrow_tx_hash = await send_transaction(
+                borrow_tx, self.strategy_wallet_signing_callback
+            )
+
+            unwrap_tx = await encode_call(
+                target=asset,
+                abi=WETH_ABI,
+                fn_name="withdraw",
+                args=[qty],
+                from_address=strategy,
+                chain_id=chain_id,
+            )
+            unwrap_tx_hash = await send_transaction(
+                unwrap_tx, self.strategy_wallet_signing_callback
+            )
+            return True, {"borrow_tx": borrow_tx_hash, "unwrap_tx": unwrap_tx_hash}
         else:
             asset = to_checksum_address(underlying_token)
             transaction = await encode_call(
@@ -474,31 +497,37 @@ class HyperlendAdapter(BaseAdapter):
         if native:
             if repay_full:
                 async with web3_from_chain_id(chain_id) as web3:
-                    ui_pool = web3.eth.contract(
-                        address=HYPERLEND_UI_POOL_DATA_PROVIDER,
-                        abi=UI_POOL_DATA_PROVIDER_ABI,
+                    cache_key = HYPEREVM_WHYPE.lower()
+                    variable_debt_token = self._variable_debt_token_by_underlying.get(
+                        cache_key
                     )
-                    reserves, _ = await ui_pool.functions.getReservesData(
-                        HYPERLEND_POOL_ADDRESSES_PROVIDER
-                    ).call(block_identifier="pending")
-
-                    variable_debt_token = None
-                    reserve_keys = UI_POOL_RESERVE_KEYS
-                    for reserve in reserves or []:
-                        if isinstance(reserve, dict):
-                            r = dict(reserve)
-                        else:
-                            r = dict(zip(reserve_keys, reserve, strict=False))
-
-                        underlying = str(r.get("underlyingAsset") or "")
-                        if underlying and underlying.lower() == HYPEREVM_WHYPE.lower():
-                            variable_debt_token = r.get("variableDebtTokenAddress")
-                            break
-
                     if not variable_debt_token:
-                        return (
-                            False,
-                            "could not resolve variable debt token for WHYPE",
+                        ui_pool = web3.eth.contract(
+                            address=HYPERLEND_UI_POOL_DATA_PROVIDER,
+                            abi=UI_POOL_DATA_PROVIDER_ABI,
+                        )
+                        reserves, _ = await ui_pool.functions.getReservesData(
+                            HYPERLEND_POOL_ADDRESSES_PROVIDER
+                        ).call(block_identifier="pending")
+
+                        reserve_keys = UI_POOL_RESERVE_KEYS
+                        for reserve in reserves or []:
+                            r = _reserve_to_dict(reserve, reserve_keys)
+                            underlying = str(r.get("underlyingAsset") or "")
+                            if underlying and underlying.lower() == cache_key:
+                                v = r.get("variableDebtTokenAddress")
+                                if v:
+                                    variable_debt_token = to_checksum_address(str(v))
+                                break
+
+                        if not variable_debt_token:
+                            return (
+                                False,
+                                "could not resolve variable debt token for WHYPE",
+                            )
+
+                        self._variable_debt_token_by_underlying[cache_key] = (
+                            variable_debt_token
                         )
 
                     variable_debt = await get_token_balance(

@@ -618,6 +618,47 @@ class TestHyperlendAdapter:
         assert kwargs["args"][3] == 0  # referral code
 
     @pytest.mark.asyncio
+    async def test_borrow_native_borrows_and_unwraps(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_encode.side_effect = [{"tx": "borrow"}, {"tx": "unwrap"}]
+            mock_send.side_effect = ["0xborrow", "0xunwrap"]
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, res = await adapter.borrow(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+            )
+
+        assert ok is True
+        assert res == {"borrow_tx": "0xborrow", "unwrap_tx": "0xunwrap"}
+
+        assert mock_encode.await_count == 2
+        first_kwargs = mock_encode.await_args_list[0].kwargs
+        assert first_kwargs["target"] == HYPERLEND_POOL
+        assert first_kwargs["fn_name"] == "borrow"
+        assert first_kwargs["args"][0] == HYPEREVM_WHYPE
+        assert first_kwargs["args"][1] == 123
+        assert first_kwargs["args"][2] == 2  # variable rate mode
+        assert first_kwargs["args"][3] == 0  # referral code
+        assert first_kwargs["args"][4] == adapter.strategy_wallet_address
+
+        second_kwargs = mock_encode.await_args_list[1].kwargs
+        assert second_kwargs["target"] == HYPEREVM_WHYPE
+        assert second_kwargs["fn_name"] == "withdraw"
+        assert second_kwargs["args"][0] == 123
+
+    @pytest.mark.asyncio
     async def test_repay_erc20_approves_and_calls_pool_repay(self, adapter):
         token = "0x0000000000000000000000000000000000000011"
         with (
