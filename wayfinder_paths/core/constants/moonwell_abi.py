@@ -1,5 +1,12 @@
 MTOKEN_ABI = [
     {
+        "name": "symbol",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "string"}],
+    },
+    {
         "name": "mint",
         "type": "function",
         "stateMutability": "nonpayable",
@@ -321,15 +328,15 @@ REWARD_DISTRIBUTOR_ABI = [
                 "name": "",
                 "type": "tuple[]",
                 "components": [
-                    {"name": "mToken", "type": "address"},
-                    {"name": "rewardToken", "type": "address"},
                     {"name": "owner", "type": "address"},
-                    {"name": "emissionCap", "type": "uint256"},
+                    {"name": "emissionToken", "type": "address"},
+                    {"name": "endTime", "type": "uint256"},
+                    {"name": "supplyGlobalIndex", "type": "uint256"},
+                    {"name": "supplyGlobalTimestamp", "type": "uint256"},
+                    {"name": "borrowGlobalIndex", "type": "uint256"},
+                    {"name": "borrowGlobalTimestamp", "type": "uint256"},
                     {"name": "supplyEmissionsPerSec", "type": "uint256"},
                     {"name": "borrowEmissionsPerSec", "type": "uint256"},
-                    {"name": "supplyGlobalIndex", "type": "uint256"},
-                    {"name": "borrowGlobalIndex", "type": "uint256"},
-                    {"name": "endTime", "type": "uint256"},
                 ],
             }
         ],
@@ -358,4 +365,47 @@ WETH_ABI = [
         "inputs": [{"name": "account", "type": "address"}],
         "outputs": [{"name": "", "type": "uint256"}],
     },
+]
+
+MOONWELL_VIEWS_ABI = [
+    {
+        "name": "getAllMarketsInfo",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "market", "type": "address"},
+                    {"name": "isListed", "type": "bool"},
+                    {"name": "borrowCap", "type": "uint256"},
+                    {"name": "supplyCap", "type": "uint256"},
+                    {"name": "mintPaused", "type": "bool"},
+                    {"name": "borrowPaused", "type": "bool"},
+                    {"name": "collateralFactor", "type": "uint256"},
+                    {"name": "underlyingPrice", "type": "uint256"},
+                    {"name": "totalSupply", "type": "uint256"},
+                    {"name": "totalBorrows", "type": "uint256"},
+                    {"name": "totalReserves", "type": "uint256"},
+                    {"name": "cash", "type": "uint256"},
+                    {"name": "exchangeRate", "type": "uint256"},
+                    {"name": "borrowIndex", "type": "uint256"},
+                    {"name": "reserveFactor", "type": "uint256"},
+                    {"name": "borrowRate", "type": "uint256"},
+                    {"name": "supplyRate", "type": "uint256"},
+                    {
+                        "name": "incentives",
+                        "type": "tuple[]",
+                        "components": [
+                            {"name": "token", "type": "address"},
+                            {"name": "supplyIncentivesPerSec", "type": "uint256"},
+                            {"name": "borrowIncentivesPerSec", "type": "uint256"},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
 ]

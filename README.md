@@ -77,7 +77,7 @@ Key fields:
 
 - `system.api_key`: Wayfinder API key (or set `WAYFINDER_API_KEY` env var)
 - `system.api_base_url`: API base URL (defaults to `https://wayfinder.ai/api` if omitted)
-- `strategy.rpc_urls`: chain ID -> RPC URL(s) (string or list)
+- `strategy.rpc_urls`: *(optional)* chain ID -> RPC URL(s) (string or list). If omitted for a chain, reads default to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/`.
 - `wallets`: local wallets with `label`, `address`, and `private_key_hex`
 
 Example:
@@ -106,7 +106,23 @@ Example:
 }
 ```
 
+> **Important:** The RPC URLs in the example above are public endpoints and may rate limit. For reliable adapter reads, set `strategy.rpc_urls` to your own RPC provider(s) (Alchemy/Infura/QuickNode/Tenderly/etc) and put the most reliable URL first.
+
 For detailed config documentation, see `CONFIG_GUIDE.md`.
+
+### Config Resolution (scripts)
+
+By default, the SDK reads `config.json` from the repo root. To use a different file, set `WAYFINDER_CONFIG_PATH` before starting Python (or call `wayfinder_paths.core.config.load_config()` in your script).
+
+Quick sanity check:
+
+```bash
+poetry run python - <<'PY'
+from wayfinder_paths.core.config import resolve_config_path, get_rpc_urls
+print("config_path:", resolve_config_path())
+print("base_rpc:", (get_rpc_urls() or {}).get("8453"))
+PY
+```
 
 ### Supported Chains
 
@@ -145,7 +161,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `BRAPAdapter` (cross-chain swaps + bridges)
 - `BorosAdapter` (Boros lending positions)
 - `HyperliquidAdapter` (perps, spot, deposits, withdrawals)
-- `HyperlendAdapter` (HyperLend stable lending)
+- `HyperlendAdapter` (HyperLend lending/borrowing)
 - `MoonwellAdapter` (Moonwell lending/borrowing)
 - `PendleAdapter` (PT/YT and hosted SDK operations)
 - `MulticallAdapter` (batch contract calls)
@@ -333,7 +349,7 @@ More details in `TESTING.md`.
 
 - **Never commit `config.json`** (contains private keys)
 - **Use test wallets** for development
-- **RPCs are required**: set `strategy.rpc_urls` for each chain you use
+- **RPCs are optional**: if `strategy.rpc_urls` is not set for a chain, reads default to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/` (requires `system.api_key`). Set `strategy.rpc_urls` to use your own RPC provider(s).
 
 ## Community
 
