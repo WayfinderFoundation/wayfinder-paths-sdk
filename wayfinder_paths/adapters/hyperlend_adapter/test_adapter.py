@@ -747,7 +747,9 @@ class TestHyperlendAdapter:
         ]
         base_currency = (0, 0, 0, 0)
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
 
         mock_web3 = MagicMock()
@@ -810,7 +812,9 @@ class TestHyperlendAdapter:
         ]
         base_currency = (0, 0, 0, 0)
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
 
         mock_web3 = MagicMock()
@@ -864,7 +868,9 @@ class TestHyperlendAdapter:
         ]
         base_currency = (0, 0, 0, 0)
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
 
         mock_web3 = MagicMock()
