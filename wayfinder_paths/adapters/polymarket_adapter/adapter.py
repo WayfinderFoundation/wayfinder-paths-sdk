@@ -730,10 +730,11 @@ class PolymarketAdapter(BaseAdapter):
         recipient_address: str,
         token_decimals: int = 6,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Convert USDC → USDC.e.
+        """Convert a supported token → USDC.e (Polymarket collateral).
 
         Preferred path (fast, on-chain): BRAP swap on Polygon, when possible.
-        Fallback (async, bridge service): Polymarket Bridge deposit address transfer.
+        Fallback (async, bridge service): Polymarket Bridge deposit address transfer
+        from `from_chain_id` (see `bridge_supported_assets()`).
         """
         from_address, sign_cb = self._resolve_wallet_signer()
         from_token = to_checksum_address(from_token_address)
