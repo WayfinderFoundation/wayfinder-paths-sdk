@@ -775,11 +775,10 @@ class PolymarketAdapter(BaseAdapter):
                         " Polygon balances: "
                         f"usdc_e_base_units={usdce_bal}, usdc_base_units={usdc_bal}."
                     )
-                    if usdce_bal > 0:
-                        msg += (
-                            f" Note: Polymarket collateral is USDC.e ({POLYGON_USDC_E_ADDRESS}); "
-                            "if you already have USDC.e you can trade without running bridge_deposit."
-                        )
+                    msg += (
+                        f" Note: Polymarket collateral is USDC.e ({POLYGON_USDC_E_ADDRESS}); "
+                        "if you already have USDC.e you can trade without running bridge_deposit."
+                    )
                 return False, msg
 
         if (
