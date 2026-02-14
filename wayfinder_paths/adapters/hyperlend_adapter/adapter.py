@@ -31,7 +31,7 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
-from wayfinder_paths.core.utils.tokens import ensure_allowance
+from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -468,25 +468,89 @@ class HyperlendAdapter(BaseAdapter):
         strategy = self.strategy_wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
-        if qty <= 0:
+        if qty <= 0 and not repay_full:
             return False, "qty must be positive"
 
         if native:
             if repay_full:
-                return (
-                    False,
-                    "repay_full is not supported for native repayments; pass qty and set repay_full=False",
+                async with web3_from_chain_id(chain_id) as web3:
+                    ui_pool = web3.eth.contract(
+                        address=HYPERLEND_UI_POOL_DATA_PROVIDER,
+                        abi=UI_POOL_DATA_PROVIDER_ABI,
+                    )
+                    reserves, _ = await ui_pool.functions.getReservesData(
+                        HYPERLEND_POOL_ADDRESSES_PROVIDER
+                    ).call(block_identifier="pending")
+
+                    variable_debt_token = None
+                    reserve_keys = UI_POOL_RESERVE_KEYS
+                    for reserve in reserves or []:
+                        if isinstance(reserve, dict):
+                            r = dict(reserve)
+                        else:
+                            r = dict(zip(reserve_keys, reserve, strict=False))
+
+                        underlying = str(r.get("underlyingAsset") or "")
+                        if underlying and underlying.lower() == HYPEREVM_WHYPE.lower():
+                            variable_debt_token = r.get("variableDebtTokenAddress")
+                            break
+
+                    if not variable_debt_token:
+                        return (
+                            False,
+                            "could not resolve variable debt token for WHYPE",
+                        )
+
+                    variable_debt = await get_token_balance(
+                        str(variable_debt_token),
+                        chain_id,
+                        strategy,
+                        web3=web3,
+                        block_identifier="pending",
+                    )
+                    if variable_debt <= 0:
+                        return True, None
+
+                    native_balance = await get_token_balance(
+                        None,
+                        chain_id,
+                        strategy,
+                        web3=web3,
+                        block_identifier="pending",
+                    )
+
+                    # Send a small buffer to avoid leaving dust from interest accrual between
+                    # the read and execution; excess is expected to be refunded by the gateway.
+                    buffer_wei = max(1, variable_debt // 10_000)  # 0.01%
+                    value = variable_debt + buffer_wei
+                    if native_balance < value:
+                        if native_balance < variable_debt:
+                            return (
+                                False,
+                                f"insufficient HYPE balance for repay_full (debt_wei={variable_debt}, balance_wei={native_balance})",
+                            )
+                        value = variable_debt
+
+                transaction = await encode_call(
+                    target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
+                    abi=WRAPPED_TOKEN_GATEWAY_ABI,
+                    fn_name="repayETH",
+                    args=[HYPEREVM_WHYPE, MAX_UINT256, strategy],
+                    from_address=strategy,
+                    chain_id=chain_id,
+                    value=value,
+                )
+            else:
+                transaction = await encode_call(
+                    target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
+                    abi=WRAPPED_TOKEN_GATEWAY_ABI,
+                    fn_name="repayETH",
+                    args=[HYPEREVM_WHYPE, qty, strategy],
+                    from_address=strategy,
+                    chain_id=chain_id,
+                    value=qty,
                 )
 
-            transaction = await encode_call(
-                target=HYPERLEND_WRAPPED_TOKEN_GATEWAY,
-                abi=WRAPPED_TOKEN_GATEWAY_ABI,
-                fn_name="repayETH",
-                args=[HYPEREVM_WHYPE, qty, strategy],
-                from_address=strategy,
-                chain_id=chain_id,
-                value=qty,
-            )
         else:
             repay_amount = MAX_UINT256 if repay_full else qty
             asset = to_checksum_address(underlying_token)
