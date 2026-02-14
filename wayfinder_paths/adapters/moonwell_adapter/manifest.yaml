@@ -9,6 +9,7 @@ capabilities:
   - "collateral.remove"
   - "rewards.claim"
   - "position.read"
+  - "market.list"
   - "market.apy"
   - "market.collateral_factor"
 dependencies: []

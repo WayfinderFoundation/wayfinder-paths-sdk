@@ -1,6 +1,7 @@
 schema_version: "0.1"
 entrypoint: "adapters.hyperlend_adapter.adapter.HyperlendAdapter"
 capabilities:
+  - "market.list"
   - "market.stable_markets"
   - "market.assets_view"
   - "market.rate_history"
