@@ -740,10 +740,10 @@ class PolymarketAdapter(BaseAdapter):
         base_units = to_erc20_raw(amount, token_decimals)
 
         rcpt = to_checksum_address(recipient_address)
-        async with web3_from_chain_id(int(from_chain_id)) as web3:
+        async with web3_from_chain_id(from_chain_id) as web3:
             bal = await get_token_balance(
                 from_token,
-                int(from_chain_id),
+                from_chain_id,
                 from_address,
                 web3=web3,
                 block_identifier="pending",
@@ -753,7 +753,7 @@ class PolymarketAdapter(BaseAdapter):
                     "Insufficient balance for bridge_deposit "
                     f"(token={from_token}, need_base_units={base_units}, balance_base_units={bal})."
                 )
-                if int(from_chain_id) == POLYGON_CHAIN_ID:
+                if from_chain_id == POLYGON_CHAIN_ID:
                     usdce_bal, usdc_bal = await asyncio.gather(
                         get_token_balance(
                             POLYGON_USDC_E_ADDRESS,
@@ -784,7 +784,7 @@ class PolymarketAdapter(BaseAdapter):
         if (
             from_chain_id == POLYGON_CHAIN_ID
             and from_token == to_checksum_address(POLYGON_USDC_ADDRESS)
-            and rcpt == to_checksum_address(from_address)
+            and rcpt == from_address
         ):
             brap = await _try_brap_swap_polygon(
                 from_token_address=from_token,
@@ -819,10 +819,10 @@ class PolymarketAdapter(BaseAdapter):
             "method": "polymarket_bridge",
             "tx_hash": tx_hash,
             "from_chain_id": from_chain_id,
-            "from_token_address": from_token_address,
+            "from_token_address": from_token,
             "deposit_address": str(deposit_evm),
             "amount_base_unit": str(base_units),
-            "recipient_address": to_checksum_address(recipient_address),
+            "recipient_address": rcpt,
         }
 
     async def bridge_withdraw(

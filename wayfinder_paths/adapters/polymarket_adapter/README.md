@@ -76,7 +76,7 @@ adapter = get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.j
 
 Typical lifecycle for an automated agent:
 
-1) **Convert to USDC.e** (`bridge_deposit`), or otherwise acquire USDC.e.
+1) **Acquire USDC.e** (Polymarket collateral). Use `bridge_deposit` only if you have *native Polygon USDC* (`0x3c499c...`); skip if you already have USDC.e (`0x2791...`).
 2) **Search and select a market** (Gamma `public-search` / `markets`, filter for `enableOrderBook` + `acceptingOrders`).
 3) **Resolve the CLOB token id** for the desired outcome (`resolve_clob_token_id`).
 4) **Approve once** (`ensure_onchain_approvals`).
