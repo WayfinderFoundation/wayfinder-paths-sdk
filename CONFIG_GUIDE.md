@@ -60,7 +60,7 @@ The `config.json` file has three main sections:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `api_key` | Yes | Wayfinder API key (sent as `X-API-KEY` header) |
-| `api_base_url` | No | API endpoint (default: `https://api.wayfinder.ai`) |
+| `api_base_url` | No | API endpoint (default: `https://wayfinder.ai/api`) |
 
 The API key is automatically loaded and included in all API requests (including Gorlami dry-runs). You don't need to pass it explicitly to strategies or clients.
 
@@ -91,7 +91,7 @@ Override them in your `config.json` with your own provider(s) if needed:
 
 Notes:
 
-- Adapter reads use the RPCs from `strategy.rpc_urls`.
+- If `strategy.rpc_urls` is not set for a chain, `web3_from_chain_id(...)` defaults to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/` (requires `api_key`).
 - If you provide a list, `web3_from_chain_id(...)` uses the first entry for reads; put your best RPC first.
 - If a script appears to be using a public RPC, print `resolve_config_path()` and `get_rpc_urls()` to confirm which config file was loaded.
 
