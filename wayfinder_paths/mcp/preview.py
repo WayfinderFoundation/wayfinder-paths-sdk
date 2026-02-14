@@ -223,7 +223,7 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
 
     if action == "bridge_deposit":
         details = (
-            "\n\nCONVERT (native Polygon USDC → USDC.e)\n"
+            "\n\nCONVERT (token → USDC.e)\n"
             "route: BRAP swap preferred; Polymarket Bridge fallback\n"
             f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
             f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"
@@ -237,7 +237,7 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
 
     if action == "bridge_withdraw":
         details = (
-            "\n\nCONVERT (USDC.e → native Polygon USDC)\n"
+            "\n\nCONVERT (USDC.e → token)\n"
             "route: BRAP swap preferred; Polymarket Bridge fallback\n"
             f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
             f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"

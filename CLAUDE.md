@@ -194,6 +194,7 @@ Polymarket funding (USDC.e collateral):
 - **Have native Polygon USDC (0x3c499c...) on Polygon:** Use `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` to convert it → USDC.e (0x2791...).
 - **Already have USDC.e (0x2791...) on Polygon:** You can trade immediately; skip `bridge_deposit`.
 - **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
+- **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
 
 Sizing note (avoid ambiguity):
 
