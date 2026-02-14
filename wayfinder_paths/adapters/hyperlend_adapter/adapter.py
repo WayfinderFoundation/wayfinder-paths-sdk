@@ -62,10 +62,11 @@ def _compute_supply_cap_headroom(
     available = int(reserve.get("availableLiquidity") or 0)
     scaled_variable_debt = int(reserve.get("totalScaledVariableDebt") or 0)
     variable_index = int(reserve.get("variableBorrowIndex") or 0)
-    stable_debt = int(reserve.get("totalPrincipalStableDebt") or 0)
     current_variable_debt = (scaled_variable_debt * variable_index) // RAY
 
-    total_supplied = available + current_variable_debt + stable_debt
+    # Note: stable debt is not included here because it is not exposed
+    # via UI_POOL_RESERVE_KEYS / UI_POOL_DATA_PROVIDER_ABI for tuple-based data.
+    total_supplied = available + current_variable_debt
     headroom = supply_cap_wei - total_supplied
     if headroom < 0:
         headroom = 0
