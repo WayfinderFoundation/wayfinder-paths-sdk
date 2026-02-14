@@ -37,6 +37,10 @@ Collateral tokens on Polygon:
 
 Outcome “shares” are **not ERC20s**. They’re represented on-chain as Conditional Tokens (ERC1155 positions), and on the CLOB as **`token_id` strings** from `clobTokenIds`.
 
+Important clarification:
+- On Polygon, many wallets/UIs label `0x2791...` as “USDC”. In this repo we refer to it as **USDC.e** because it’s the (bridged) USDC token Polymarket uses as collateral.
+- `0x3c499c...` is **Circle native USDC on Polygon** and is **not** accepted as Polymarket collateral.
+
 ## Usage
 
 ### Read-only (no wallet needed)
@@ -177,6 +181,8 @@ The adapter’s `bridge_deposit()` / `bridge_withdraw()` methods prefer a **BRAP
 - USDC (native Polygon) → **USDC.e** (bridged)
 - **USDC.e** → USDC (native Polygon)
 
+Only run `bridge_deposit()` if you actually have **native Polygon USDC** (`0x3c499c...`). If you already have **USDC.e** (`0x2791...`), you can skip this step and trade.
+
 If BRAP quoting/execution fails (no route / API error), it falls back to the **Polymarket Bridge** deposit/withdraw flow.
 
 Convert native Polygon USDC → USDC.e:
@@ -186,7 +192,7 @@ from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID, POLYGON_
 
 ok, res = await adapter.bridge_deposit(
     from_chain_id=POLYGON_CHAIN_ID,
-    from_token_address=POLYGON_USDC_ADDRESS,  # native Polygon USDC
+    from_token_address=POLYGON_USDC_ADDRESS,  # native Polygon USDC (0x3c499c...)
     amount=10.0,                              # human units
     recipient_address="0xYourWallet",
 )
@@ -209,6 +215,7 @@ Notes:
 
 - If the result has `method="brap"`, the conversion is a normal on-chain swap (no bridge status needed).
 - If the result has `method="polymarket_bridge"`, the conversion is **asynchronous**; use `bridge_status(address=...)` and/or poll balances.
+- `mcp__wayfinder__polymarket_execute(action="bridge_deposit", ...)` defaults `from_token_address` to native Polygon USDC (`0x3c499c...`). If your wallet only has USDC.e (`0x2791...`), the transfer will fail; check `mcp__wayfinder__polymarket(action="status", wallet_label=...)` first.
 
 ### Option B: Polymarket Bridge conversion (fallback)
 

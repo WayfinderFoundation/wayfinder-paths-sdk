@@ -9,6 +9,10 @@ from wayfinder_paths.core.constants.hyperliquid import (
     HYPE_FEE_WALLET,
     HYPERLIQUID_BRIDGE_ADDRESS,
 )
+from wayfinder_paths.core.constants.polymarket import (
+    POLYGON_USDC_ADDRESS,
+    POLYGON_USDC_E_ADDRESS,
+)
 from wayfinder_paths.mcp.utils import (
     find_wallet_by_label,
     normalize_address,
@@ -221,10 +225,13 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
         details = (
             "\n\nCONVERT (USDC → USDC.e)\n"
             "route: BRAP swap preferred; Polymarket Bridge fallback\n"
+            f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
+            f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"
             f"from_chain_id: {req.get('from_chain_id')}\n"
             f"from_token_address: {req.get('from_token_address')}\n"
             f"amount: {req.get('amount')}\n"
-            f"recipient_address: {req.get('recipient_address')}"
+            f"recipient_address: {req.get('recipient_address')}\n"
+            "note: If you already have USDC.e on Polygon, you can trade without running bridge_deposit."
         )
         return {"summary": header + base + details, "recipient_mismatch": mismatch}
 
@@ -232,6 +239,8 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
         details = (
             "\n\nCONVERT (USDC.e → USDC)\n"
             "route: BRAP swap preferred; Polymarket Bridge fallback\n"
+            f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
+            f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"
             f"amount_usdce: {req.get('amount_usdce')}\n"
             f"to_chain_id: {req.get('to_chain_id')}\n"
             f"to_token_address: {req.get('to_token_address')}\n"
