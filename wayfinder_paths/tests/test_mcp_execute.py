@@ -159,7 +159,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.find_wallet_by_label",
+            "wayfinder_paths.mcp.utils.find_wallet_by_label",
             return_value=wallet,
         ),
         patch(

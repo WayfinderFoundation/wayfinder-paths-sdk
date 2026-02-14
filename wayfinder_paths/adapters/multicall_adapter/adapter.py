@@ -143,7 +143,7 @@ class MulticallAdapter(BaseAdapter):
         return target, calldata
 
     @staticmethod
-    def _normalize_call_data(data: bytes | str) -> bytes:
+    def _to_bytes(data: bytes | str | HexBytes) -> bytes:
         if isinstance(data, bytes):
             return data
         if isinstance(data, HexBytes):
@@ -152,16 +152,8 @@ class MulticallAdapter(BaseAdapter):
             if data.startswith("0x"):
                 return bytes.fromhex(data[2:])
             return data.encode()
-        raise TypeError("Unsupported calldata type")
+        raise TypeError(f"Unsupported data type: {type(data).__name__}")
 
-    @staticmethod
-    def _ensure_bytes(data: bytes | str | HexBytes) -> bytes:
-        if isinstance(data, bytes):
-            return data
-        if isinstance(data, HexBytes):
-            return bytes(data)
-        if isinstance(data, str):
-            if data.startswith("0x"):
-                return bytes.fromhex(data[2:])
-            return data.encode()
-        raise TypeError("Unexpected return data type from multicall")
+    # Keep old names as aliases for backwards-compat within this file
+    _normalize_call_data = _to_bytes
+    _ensure_bytes = _to_bytes

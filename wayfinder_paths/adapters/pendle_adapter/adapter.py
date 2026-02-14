@@ -210,10 +210,6 @@ class PendleAdapter(BaseAdapter):
             self.client = None
             self._owns_client = False
 
-    # ---------------------------
-    # Execution helpers
-    # ---------------------------
-
     def _strategy_address(self) -> str:
         addr = None
         if isinstance(self.strategy_wallet, dict):
@@ -231,10 +227,6 @@ class PendleAdapter(BaseAdapter):
             )
         txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
         return True, txn_hash
-
-    # ---------------------------
-    # Multicall helpers
-    # ---------------------------
 
     @staticmethod
     def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
@@ -361,10 +353,6 @@ class PendleAdapter(BaseAdapter):
         payload = self._decode_response_payload(response)
         return self._attach_meta(payload, response)
 
-    # ---------------------------
-    # Pendle API endpoints
-    # ---------------------------
-
     async def fetch_markets(
         self,
         chain_id: int | None = None,
@@ -449,10 +437,6 @@ class PendleAdapter(BaseAdapter):
         )
         return data if isinstance(data, dict) else {"data": data}
 
-    # ---------------------------
-    # Helpful SDK & discovery
-    # ---------------------------
-
     async def fetch_supported_chain_ids(self) -> dict[str, Any]:
         data = await self._get("/v1/chains")
         return data if isinstance(data, dict) else {"data": data}
@@ -480,10 +464,6 @@ class PendleAdapter(BaseAdapter):
             f"/v1/dashboard/positions/database/{user}", params=params or None
         )
         return data if isinstance(data, dict) else {"data": data}
-
-    # ---------------------------------------
-    # Limit Orders
-    # ---------------------------------------
 
     async def fetch_taker_limit_orders(
         self,
@@ -553,10 +533,6 @@ class PendleAdapter(BaseAdapter):
         data = await self._get("/v1/limit-orders/makers/limit-orders", params=params)
         return data if isinstance(data, dict) else {"data": data}
 
-    # ---------------------------------------
-    # Deployments (address discovery)
-    # ---------------------------------------
-
     async def fetch_core_deployments(
         self,
         *,
@@ -592,10 +568,6 @@ class PendleAdapter(BaseAdapter):
         if not isinstance(addr, str) or not addr:
             raise ValueError("limitRouter not found in Pendle deployments")
         return to_checksum_address(addr)
-
-    # ---------------------------------------
-    # RouterStatic (off-chain spot-rate checks)
-    # ---------------------------------------
 
     async def router_static_rates(
         self,
@@ -690,10 +662,6 @@ class PendleAdapter(BaseAdapter):
             f"/v2/sdk/{chain_id}/markets/{market_address}/swap", params=params
         )
         return data if isinstance(data, dict) else {"data": data}
-
-    # ---------------------------------------
-    # Hosted SDK: Universal Convert
-    # ---------------------------------------
 
     @staticmethod
     def _bool_q(v: bool) -> str:
@@ -924,10 +892,6 @@ class PendleAdapter(BaseAdapter):
             "raw": convert_response,
         }
 
-    # ---------------------------------------
-    # Market discovery: PT/YT markets
-    # ---------------------------------------
-
     async def list_active_pt_yt_markets(
         self,
         *,
@@ -1051,10 +1015,6 @@ class PendleAdapter(BaseAdapter):
 
         rows.sort(key=sort_key, reverse=descending)
         return rows
-
-    # ---------------------------------------
-    # Decision + execution: best PT swap
-    # ---------------------------------------
 
     async def build_best_pt_swap_tx(
         self,
@@ -1650,10 +1610,6 @@ class PendleAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    # ---------------------------------------
-    # Execute swap
-    # ---------------------------------------
-
     async def execute_swap(
         self,
         *,
@@ -1772,10 +1728,6 @@ class PendleAdapter(BaseAdapter):
             "quote": quote_result.get("data"),
             "tokenApprovals": token_approvals,
         }
-
-    # ---------------------------------------
-    # Execute universal convert
-    # ---------------------------------------
 
     async def execute_convert(
         self,

@@ -96,10 +96,6 @@ class BorosAdapter(BaseAdapter):
             account_id=self.account_id,
         )
 
-    # ------------------------------------------------------------------ #
-    # Transaction Helpers                                                 #
-    # ------------------------------------------------------------------ #
-
     BOROS_MARKET_HUB_VIEW_ABI = [
         {
             "inputs": [
@@ -407,10 +403,6 @@ class BorosAdapter(BaseAdapter):
             "attempts": max_retries + 1,
         }
 
-    # ------------------------------------------------------------------ #
-    # Tick Math Utilities                                                  #
-    # ------------------------------------------------------------------ #
-
     @classmethod
     def tick_from_rate(cls, rate: float, tick_step: int, *, round_down: bool) -> int:
         """Convert APR rate to Boros limitTick.
@@ -464,10 +456,6 @@ class BorosAdapter(BaseAdapter):
             return int(value)
         except (TypeError, ValueError):
             return None
-
-    # ------------------------------------------------------------------ #
-    # Market Data                                                          #
-    # ------------------------------------------------------------------ #
 
     async def list_markets(
         self,
@@ -826,10 +814,6 @@ class BorosAdapter(BaseAdapter):
 
         quotes.sort(key=lambda q: q.maturity)
         return True, quotes
-
-    # ------------------------------------------------------------------ #
-    # Account Data                                                         #
-    # ------------------------------------------------------------------ #
 
     async def get_assets(self) -> tuple[bool, list[dict[str, Any]]]:
         """Get all Boros assets (collateral tokens with addresses).
@@ -1695,10 +1679,6 @@ class BorosAdapter(BaseAdapter):
             logger.error(f"Failed to get withdrawal status: {e}")
             return False, {"error": str(e)}
 
-    # ------------------------------------------------------------------ #
-    # Execution Methods                                                    #
-    # ------------------------------------------------------------------ #
-
     async def deposit_to_cross_margin(
         self,
         collateral_address: str,
@@ -2481,10 +2461,6 @@ class BorosAdapter(BaseAdapter):
         except Exception as e:
             logger.error(f"Failed to finalize vault withdrawal: {e}")
             return False, {"error": str(e)}
-
-    # ------------------------------------------------------------------ #
-    # Internal Helpers                                                     #
-    # ------------------------------------------------------------------ #
 
     def _extract_symbol(self, market: dict[str, Any]) -> str:
         return extract_symbol(market)

@@ -21,13 +21,13 @@ from wayfinder_paths.core.utils.tokens import (
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.mcp.preview import build_execution_preview
-from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    annotate_wallet_profile,
     err,
-    find_wallet_by_label,
     normalize_address,
     ok,
     parse_amount_to_raw,
+    resolve_wallet_with_pk,
 )
 
 
@@ -244,29 +244,6 @@ async def _ensure_allowance(
     return sent_ok, result
 
 
-def _annotate_profile(
-    *,
-    address: str,
-    label: str,
-    protocol: str,
-    action: str,
-    status: str,
-    chain_id: int | None = None,
-    details: dict[str, Any] | None = None,
-) -> None:
-    store = WalletProfileStore.default()
-    store.annotate_safe(
-        address=address,
-        label=label,
-        protocol=protocol,
-        action=action,
-        tool="execute",
-        status=status,
-        chain_id=chain_id,
-        details=details,
-    )
-
-
 async def execute(
     *,
     kind: Literal["swap", "send", "hyperliquid_deposit"],
@@ -312,23 +289,15 @@ async def execute(
     preview_obj = build_execution_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
-    w = find_wallet_by_label(req.wallet_label)
+    w, sender, pk = resolve_wallet_with_pk(req.wallet_label)
     if not w:
         return err("not_found", f"Unknown wallet_label: {req.wallet_label}")
-
-    sender = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
     if not sender or not pk:
-        response = err(
+        return err(
             "invalid_wallet",
             "Wallet must include address and private_key_hex in config.json (local dev only)",
             {"wallet_label": req.wallet_label},
         )
-        return response
 
     sign_callback = _make_sign_callback(pk)
 
@@ -434,15 +403,13 @@ async def execute(
 
         if (
             token_addr
-            and isinstance(token_addr, str)
-            and token_addr.strip()
             and token_addr.lower() != ZERO_ADDRESS.lower()
             and spender
             and approve_amount is not None
         ):
             try:
                 need = int(approve_amount)
-            except Exception:
+            except (TypeError, ValueError):
                 need = int(amount_raw)
             ok_allow, approval_tx = await _ensure_allowance(
                 sign_callback=sign_callback,
@@ -468,11 +435,12 @@ async def execute(
         response["status"] = status
         response["raw"] = _compact_quote(quote_data, best_quote)
 
-        _annotate_profile(
+        annotate_wallet_profile(
             address=sender,
             label=req.wallet_label,
             protocol="brap",
             action="swap",
+            tool="execute",
             status=status,
             chain_id=int(from_chain_id),
             details={
@@ -542,11 +510,12 @@ async def execute(
         response["raw"] = {"transaction": transaction}
         response["raw"]["token"] = token_meta
 
-        _annotate_profile(
+        annotate_wallet_profile(
             address=sender,
             label=req.wallet_label,
             protocol="balance",
             action=label,
+            tool="execute",
             status=status,
             chain_id=int(chain_id),
             details={"recipient": recipient, "amount": req.amount, "token": token_q},
@@ -588,11 +557,12 @@ async def execute(
         response["status"] = status
         response["raw"] = {"transaction": transaction}
 
-        _annotate_profile(
+        annotate_wallet_profile(
             address=sender,
             label=req.wallet_label,
             protocol="hyperliquid",
             action="hyperliquid_deposit",
+            tool="execute",
             status=status,
             chain_id=chain_id,
             details={"recipient": recipient, "amount": req.amount},

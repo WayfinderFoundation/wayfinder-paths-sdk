@@ -105,6 +105,46 @@ def parse_amount_to_raw(amount: str, decimals: int) -> int:
     return int(raw)
 
 
+def resolve_wallet_with_pk(
+    wallet_label: str,
+) -> tuple[dict[str, Any] | None, str | None, str | None]:
+    """Look up a wallet by label and extract (wallet, address, private_key).
+
+    Returns ``(None, None, None)`` when the label is not found.
+    """
+    w = find_wallet_by_label(wallet_label)
+    if not w:
+        return None, None, None
+    addr = normalize_address(w.get("address"))
+    pk = w.get("private_key") or w.get("private_key_hex")
+    return w, addr, str(pk).strip() if pk else None
+
+
+def annotate_wallet_profile(
+    *,
+    address: str,
+    label: str,
+    protocol: str,
+    action: str,
+    tool: str,
+    status: str,
+    chain_id: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+
+    WalletProfileStore.default().annotate_safe(
+        address=address,
+        label=label,
+        protocol=protocol,
+        action=action,
+        tool=tool,
+        status=status,
+        chain_id=chain_id,
+        details=details,
+    )
+
+
 def sha256_json(obj: Any) -> str:
     payload = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()

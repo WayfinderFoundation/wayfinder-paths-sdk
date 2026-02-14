@@ -35,7 +35,6 @@ def make_click_option(
     # required only applies when there's no default
     is_required = required and not has_default
 
-    # Build kwargs, only include default if explicitly specified
     kwargs: dict = {"help": schema.get("description", ""), "required": is_required}
     if has_default:
         kwargs["default"] = default
