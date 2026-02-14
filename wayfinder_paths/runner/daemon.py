@@ -19,6 +19,7 @@ from wayfinder_paths.runner.constants import (
     JobStatus,
     RunStatus,
 )
+from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
@@ -139,8 +140,6 @@ class RunnerDaemon:
         aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
-
-        from wayfinder_paths.runner.control import RunnerControlServer
 
         self._control = RunnerControlServer(
             sock_path=self._paths.sock_path, daemon=self

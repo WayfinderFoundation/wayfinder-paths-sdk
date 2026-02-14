@@ -203,24 +203,6 @@ class StablecoinYieldStrategy(Strategy):
             logger.error(f"Failed to initialize strategy adapters: {e}")
             raise
 
-    def _get_strategy_wallet_address(self) -> str:
-        strategy_wallet = self.config.get("strategy_wallet")
-        if not strategy_wallet or not isinstance(strategy_wallet, dict):
-            raise ValueError("strategy_wallet not configured in strategy config")
-        address = strategy_wallet.get("address")
-        if not address:
-            raise ValueError("strategy_wallet address not found in config")
-        return str(address)
-
-    def _get_main_wallet_address(self) -> str:
-        main_wallet = self.config.get("main_wallet")
-        if not main_wallet or not isinstance(main_wallet, dict):
-            raise ValueError("main_wallet not configured in strategy config")
-        address = main_wallet.get("address")
-        if not address:
-            raise ValueError("main_wallet address not found in config")
-        return str(address)
-
     def _track_token(self, token_id: str, balance_wei: int = 0):
         if token_id:
             self.tracked_token_ids.add(token_id)

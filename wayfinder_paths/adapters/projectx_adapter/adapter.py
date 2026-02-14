@@ -53,6 +53,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     sqrt_price_x96_to_price,
     tick_from_sqrt_price_x96,
 )
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 MINT_POLL_ATTEMPTS = 6
@@ -806,7 +807,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             fee_frac = max(0.0, min(0.5, float(selected_fee) / 1_000_000.0))
             slippage = max(1, int(slippage_bps)) / 10_000.0
 
-            amount_in_tokens = float(amount_in) / (10**dec_in)
+            amount_in_tokens = from_erc20_raw(amount_in, dec_in)
             if (
                 token_in.lower() == token0.lower()
                 and token_out.lower() == token1.lower()
@@ -1333,8 +1334,8 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         if sqrt_price_x96 <= 0:
             return 0.0
         price_adjusted = sqrt_price_x96_to_price(sqrt_price_x96, decimals0, decimals1)
-        f0 = owed0 / (10**decimals0)
-        f1 = owed1 / (10**decimals1)
+        f0 = from_erc20_raw(owed0, decimals0)
+        f1 = from_erc20_raw(owed1, decimals1)
         if token1_is_usd_like:
             usd_value = f1 + f0 * price_adjusted
         elif price_adjusted != 0:
