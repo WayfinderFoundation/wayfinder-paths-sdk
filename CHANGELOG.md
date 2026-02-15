@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0] - 2026-02-14 (57cac507e8e00165f9027b30584e93ff2d7f596b)
+
+Added
+
+1. Moonwell and Hyperlend market views, including expanded adapter support, constants/ABI coverage, and symbol utilities for market-level reads.
+2. Hyperlend borrow/repay flows, including ERC-20 and native-token paths, plus full-repay handling and test coverage.
+3. Polymarket bridge preflight checks with broader adapter test coverage.
+
+Changed
+
+1. Quote flow cleanup in MCP swap tooling, including corresponding quote test updates.
+2. Documentation updates across adapter READMEs, high-value read rules, and config/readme references for the new market view capabilities.
+
 ## [0.4.1] - 2026-02-13 (1277255355859b1d11a082bb445e23541fe2ca19)
 
 Added
