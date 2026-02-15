@@ -291,7 +291,16 @@ class HyperlendAdapter(BaseAdapter):
                             "usage_as_collateral_enabled": bool(
                                 r.get("usageAsCollateralEnabled")
                             ),
+                            "ltv_bps": int(r.get("baseLTVasCollateral") or 0),
+                            "liquidation_threshold_bps": int(
+                                r.get("reserveLiquidationThreshold") or 0
+                            ),
+                            "liquidation_bonus_bps": int(
+                                r.get("reserveLiquidationBonus") or 0
+                            ),
+                            "reserve_factor_bps": int(r.get("reserveFactor") or 0),
                             "borrowing_enabled": bool(r.get("borrowingEnabled")),
+                            "borrow_cap": int(r.get("borrowCap") or 0),
                             "price_usd": float(price_usd),
                             "supply_apr": float(supply_apr),
                             "supply_apy": float(_apr_to_apy(supply_apr)),
@@ -302,6 +311,10 @@ class HyperlendAdapter(BaseAdapter):
                             "tvl": int(tvl),
                             "supply_cap": supply_cap_tokens,
                             "supply_cap_headroom": headroom_wei,
+                            "debt_ceiling": int(r.get("debtCeiling") or 0),
+                            "debt_ceiling_decimals": int(
+                                r.get("debtCeilingDecimals") or 0
+                            ),
                         }
                     )
 

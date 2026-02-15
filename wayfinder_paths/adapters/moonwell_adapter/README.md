@@ -126,6 +126,7 @@ success, amount = await adapter.get_borrowable_amount(account="0x...")
 
 Notes:
 - `get_all_markets()` returns all markets from the Comptroller (no user-position filtering).
+- Each market entry also includes protocol parameters from `MoonwellViews.getAllMarketsInfo()`, e.g. `borrowCap`, `supplyCap`, `mintPaused`, `borrowPaused`, `reserveFactor`, `borrowIndex`, `totalReserves`.
 - `baseSupplyApy/baseBorrowApy` are compounded APY values derived from the market interest rates.
 - `rewardSupplyApy/rewardBorrowApy` (and `incentives[*].supplyRewardsApy/borrowRewardsApy`) are *linear* reward APR values derived from on-chain emission speeds and Moonwell oracle prices. They are stored under `*Apy` keys for backward-compatibility, but they are **not** compounded.
 - `supplyApy/borrowApy` are computed as `base*` + the reward APR component, so treat these as an approximation for display; keep base + rewards separate if you need strictly consistent APY math.
