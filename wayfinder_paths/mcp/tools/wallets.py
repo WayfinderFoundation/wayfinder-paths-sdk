@@ -47,6 +47,14 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "account_param": "account",
         "extra_kwargs": {"include_zero_positions": False},
     },
+    "morpho": {
+        "module": "wayfinder_paths.adapters.morpho_adapter.adapter",
+        "class": "MorphoAdapter",
+        "init_kwargs": {},
+        "method": "get_full_user_state",
+        "account_param": "account",
+        "extra_kwargs": {"chain_id": 8453, "include_zero_positions": False},
+    },
     "boros": {
         "module": "wayfinder_paths.adapters.boros_adapter.adapter",
         "class": "BorosAdapter",

@@ -1,0 +1,14 @@
+schema_version: "0.1"
+entrypoint: "adapters.morpho_adapter.adapter.MorphoAdapter"
+capabilities:
+  - "market.list"
+  - "market.read"
+  - "position.read"
+  - "lending.lend"
+  - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "collateral.deposit"
+  - "collateral.withdraw"
+dependencies: []
+
