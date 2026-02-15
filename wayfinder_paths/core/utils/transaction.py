@@ -53,19 +53,9 @@ def _raise_revert_error(
     transaction: dict[str, Any],
     cause: Exception | None = None,
 ) -> None:
-    gas_used = 0
-    try:
-        gas_used = int(receipt.get("gasUsed") or 0)
-    except Exception:
-        gas_used = 0
-
-    gas_limit = 0
-    try:
-        gas_limit = int(transaction.get("gas") or 0)
-    except Exception:
-        gas_limit = 0
-
-    oogs = bool(gas_used and gas_limit and gas_used >= gas_limit)
+    gas_used = int(receipt.get("gasUsed") or 0)
+    gas_limit = int(transaction.get("gas") or 0)
+    oogs = gas_used > 0 and gas_limit > 0 and gas_used >= gas_limit
     suffix = (
         f" gasUsed={gas_used} gasLimit={gas_limit}"
         + (" (likely out of gas)" if oogs else "")
@@ -281,14 +271,9 @@ async def send_transaction(
             )
             _raise_revert_error(txn_hash, receipt, transaction, cause=exc)
 
-        status = None
-        try:
-            status = receipt.get("status")
-        except Exception:
-            status = None
-
+        status = receipt.get("status")
         # Defensive: should have been raised inside wait_for_transaction_receipt.
-        if status is not None and int(status) == 0:
+        if status is not None and status == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash
 

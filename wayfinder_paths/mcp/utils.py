@@ -20,7 +20,7 @@ def ok(result: Any) -> dict[str, Any]:
 def err(code: str, message: str, details: Any | None = None) -> dict[str, Any]:
     return {
         "ok": False,
-        "error": {"code": str(code), "message": str(message), "details": details},
+        "error": {"code": code, "message": message, "details": details},
     }
 
 
@@ -103,6 +103,66 @@ def parse_amount_to_raw(amount: str, decimals: int) -> int:
     if raw <= 0:
         raise ValueError("Amount is too small after decimal scaling")
     return int(raw)
+
+
+def extract_wallet_credentials(
+    wallet_label: str,
+) -> tuple[str, str, str, None] | tuple[None, None, None, dict[str, Any]]:
+    """Look up a wallet by label and return (address, private_key, label, None) on
+    success, or (None, None, None, error_response) on failure."""
+    want = (wallet_label or "").strip()
+    if not want:
+        return None, None, None, err("invalid_request", "wallet_label is required")
+
+    w = find_wallet_by_label(want)
+    if not w:
+        return None, None, None, err("not_found", f"Unknown wallet_label: {want}")
+
+    sender = normalize_address(w.get("address"))
+    pk = w.get("private_key") or w.get("private_key_hex")
+    if not sender or not pk:
+        return (
+            None,
+            None,
+            None,
+            err(
+                "invalid_wallet",
+                "Wallet must include address and private_key_hex in config.json (local dev only)",
+                {"wallet_label": want},
+            ),
+        )
+
+    return sender, pk, want, None
+
+
+def validate_positive_float(
+    value: Any, field_name: str
+) -> tuple[float, None] | tuple[None, dict[str, Any]]:
+    """Parse and validate a positive float, returning (value, None) or (None, error_response)."""
+    if value is None:
+        return None, err("invalid_request", f"{field_name} is required")
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None, err("invalid_request", f"{field_name} must be a number")
+    if f <= 0:
+        return None, err("invalid_request", f"{field_name} must be positive")
+    return f, None
+
+
+def validate_positive_int(
+    value: Any, field_name: str
+) -> tuple[int, None] | tuple[None, dict[str, Any]]:
+    """Parse and validate a positive int, returning (value, None) or (None, error_response)."""
+    if value is None:
+        return None, err("invalid_request", f"{field_name} is required")
+    try:
+        i = int(value)
+    except (TypeError, ValueError):
+        return None, err("invalid_request", f"{field_name} must be an int")
+    if i <= 0:
+        return None, err("invalid_request", f"{field_name} must be positive")
+    return i, None
 
 
 def sha256_json(obj: Any) -> str:

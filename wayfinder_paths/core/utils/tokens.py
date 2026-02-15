@@ -84,7 +84,7 @@ async def get_erc20_metadata(
             ),
             contract.functions.decimals().call(block_identifier=block_identifier),
         )
-        return str(symbol), str(name), int(decimals)
+        return symbol, name, decimals
 
 
 async def get_token_balance(
@@ -99,21 +99,19 @@ async def get_token_balance(
         checksum_wallet = w3.to_checksum_address(wallet_address)
 
         if is_native_token(token_address):
-            balance = await w3.eth.get_balance(
+            return await w3.eth.get_balance(
                 checksum_wallet,
                 block_identifier=block_identifier,
             )
-            return int(balance)
 
         if token_address is None:
             raise ValueError("token_address is required for ERC20 balance reads")
 
-        checksum_token = w3.to_checksum_address(str(token_address))
+        checksum_token = w3.to_checksum_address(token_address)
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-        balance = await contract.functions.balanceOf(checksum_wallet).call(
+        return await contract.functions.balanceOf(checksum_wallet).call(
             block_identifier=block_identifier
         )
-        return int(balance)
 
     if web3 is None:
         async with web3_from_chain_id(chain_id) as w3:
@@ -131,17 +129,16 @@ async def get_token_decimals(
 ) -> int:
     async def _read_with_web3(w3: AsyncWeb3) -> int:
         if is_native_token(token_address):
-            return int(default_native_decimals)
+            return default_native_decimals
 
         if token_address is None:
             raise ValueError("token_address is required for ERC20 decimals reads")
 
-        checksum_token = w3.to_checksum_address(str(token_address))
+        checksum_token = w3.to_checksum_address(token_address)
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-        decimals = await contract.functions.decimals().call(
+        return await contract.functions.decimals().call(
             block_identifier=block_identifier
         )
-        return int(decimals)
 
     if web3 is None:
         async with web3_from_chain_id(chain_id) as w3:
@@ -167,12 +164,12 @@ async def get_token_balance_with_decimals(
                 checksum_wallet,
                 block_identifier=balance_block_identifier,
             )
-            return int(balance), int(default_native_decimals)
+            return balance, default_native_decimals
 
         if token_address is None:
             raise ValueError("token_address is required for ERC20 balance reads")
 
-        checksum_token = w3.to_checksum_address(str(token_address))
+        checksum_token = w3.to_checksum_address(token_address)
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
         balance_coro = contract.functions.balanceOf(checksum_wallet).call(
             block_identifier=balance_block_identifier
@@ -180,8 +177,7 @@ async def get_token_balance_with_decimals(
         decimals_coro = contract.functions.decimals().call(
             block_identifier=decimals_block_identifier
         )
-        balance, decimals = await asyncio.gather(balance_coro, decimals_coro)
-        return int(balance), int(decimals)
+        return await asyncio.gather(balance_coro, decimals_coro)
 
     if web3 is None:
         async with web3_from_chain_id(chain_id) as w3:
@@ -277,14 +273,14 @@ async def ensure_erc1155_approval(
         is_approved = await contract.functions.isApprovedForAll(owner, operator).call(
             block_identifier="pending"
         )
-        if bool(is_approved) == bool(approved):
+        if is_approved == approved:
             return True, "already-approved"
 
     tx = await encode_call(
         target=token_address,
         abi=ERC1155_APPROVAL_ABI,
         fn_name="setApprovalForAll",
-        args=[operator, bool(approved)],
+        args=[operator, approved],
         from_address=owner,
         chain_id=chain_id,
     )

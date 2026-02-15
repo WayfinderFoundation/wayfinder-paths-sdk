@@ -9,7 +9,7 @@ def looks_like_evm_address(value: str | None) -> bool:
     if value is None:
         return False
 
-    raw = str(value).strip()
+    raw = value.strip()
     if not raw:
         return False
 
@@ -43,7 +43,7 @@ def parse_token_id_to_chain_and_address(
     if token_id is None:
         return None, None
 
-    raw = str(token_id).strip()
+    raw = token_id.strip()
     if not raw:
         return None, None
 
@@ -58,10 +58,10 @@ def parse_token_id_to_chain_and_address(
 
     if looks_like_evm_address(right):
         chain_id = _parse_chain_part(left)
-        return (int(chain_id), right) if chain_id is not None else (None, None)
+        return (chain_id, right) if chain_id is not None else (None, None)
 
     if looks_like_evm_address(left):
         chain_id = _parse_chain_part(right)
-        return (int(chain_id), left) if chain_id is not None else (None, None)
+        return (chain_id, left) if chain_id is not None else (None, None)
 
     return None, None

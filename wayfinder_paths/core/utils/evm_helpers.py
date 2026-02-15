@@ -26,7 +26,7 @@ def resolve_rpc_url(
     if explicit_rpc_url:
         return explicit_rpc_url
     strategy_cfg = config.get("strategy") or {}
-    mapping = strategy_cfg.get("rpc_urls") if isinstance(strategy_cfg, dict) else None
+    mapping = strategy_cfg.get("rpc_urls")
     if chain_id is not None and isinstance(mapping, dict):
         by_int = mapping.get(chain_id)
         if by_int:
@@ -74,9 +74,9 @@ def resolve_private_key_for_from_address(
     except (AttributeError, TypeError) as e:
         logger.debug("Error resolving addresses from wallet config: %s", e)
 
-    if main_addr and from_addr_norm == (main_addr or "").lower():
+    if main_addr and from_addr_norm == main_addr.lower():
         return main_pk
-    if strategy_addr and from_addr_norm == (strategy_addr or "").lower():
+    if strategy_addr and from_addr_norm == strategy_addr.lower():
         return strategy_pk
 
     # No fallback - private keys must be in config or config.json

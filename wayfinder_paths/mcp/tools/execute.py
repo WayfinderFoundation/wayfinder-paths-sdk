@@ -24,7 +24,7 @@ from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
-    find_wallet_by_label,
+    extract_wallet_credentials,
     normalize_address,
     ok,
     parse_amount_to_raw,
@@ -312,23 +312,9 @@ async def execute(
     preview_obj = build_execution_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
-    w = find_wallet_by_label(req.wallet_label)
-    if not w:
-        return err("not_found", f"Unknown wallet_label: {req.wallet_label}")
-
-    sender = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    if not sender or not pk:
-        response = err(
-            "invalid_wallet",
-            "Wallet must include address and private_key_hex in config.json (local dev only)",
-            {"wallet_label": req.wallet_label},
-        )
-        return response
+    sender, pk, _, cred_err = extract_wallet_credentials(req.wallet_label)
+    if cred_err:
+        return cred_err
 
     sign_callback = _make_sign_callback(pk)
 
