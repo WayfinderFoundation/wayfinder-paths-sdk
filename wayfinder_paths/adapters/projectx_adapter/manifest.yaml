@@ -1,6 +1,7 @@
 schema_version: "0.1"
 entrypoint: "adapters.projectx_adapter.adapter.ProjectXLiquidityAdapter"
 capabilities:
+  - "position.read"
   - "projectx.pool.overview"
   - "projectx.positions.list"
   - "projectx.liquidity.mint"
@@ -10,4 +11,3 @@ capabilities:
   - "projectx.position.burn"
   - "projectx.swap.exact_in"
 dependencies: []
-
