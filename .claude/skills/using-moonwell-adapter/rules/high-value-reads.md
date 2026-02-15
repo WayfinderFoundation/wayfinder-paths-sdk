@@ -39,31 +39,28 @@ if __name__ == "__main__":
 ### Get all markets with rates
 
 ```python
-"""Fetch all Moonwell markets and rates."""
+"""Fetch all Moonwell markets with reward-inclusive APYs."""
 import asyncio
-from web3 import Web3
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
-from wayfinder_paths.adapters.moonwell_adapter.adapter import COMPTROLLER_ABI
-
-COMPTROLLER = "0xfbb21d0380bee3312b33c4353c8936a0f13ef26c"
-ERC20_ABI = [{"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "string"}], "type": "function"}]
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter)
-    web3 = Web3(Web3.HTTPProvider("https://mainnet.base.org"))
-    comptroller = web3.eth.contract(address=web3.to_checksum_address(COMPTROLLER), abi=COMPTROLLER_ABI)
-
-    for mtoken_addr in comptroller.functions.getAllMarkets().call():
-        mtoken_addr = web3.to_checksum_address(mtoken_addr)
-        symbol = web3.eth.contract(address=mtoken_addr, abi=ERC20_ABI).functions.symbol().call()
-        ok, supply = await adapter.get_apy(mtoken=mtoken_addr, apy_type="supply", include_rewards=True)
-        ok, borrow = await adapter.get_apy(mtoken=mtoken_addr, apy_type="borrow", include_rewards=True)
-        print(f"{symbol}: supply={supply:.2%} borrow={borrow:.2%}")
+    adapter = get_adapter(MoonwellAdapter)  # read-only, no wallet needed
+    ok, markets = await adapter.get_all_markets()
+    if not ok:
+        raise RuntimeError(f"Failed to fetch markets: {markets}")
+    for m in markets:
+        print(
+            f"{m.get('symbol', '')}: "
+            f"supply={m.get('supplyApy', 0.0):.2%} (base={m.get('baseSupplyApy', 0.0):.2%}, rewards={m.get('rewardSupplyApy', 0.0):.2%}) "
+            f"borrow={m.get('borrowApy', 0.0):.2%} (base={m.get('baseBorrowApy', 0.0):.2%}, rewards={m.get('rewardBorrowApy', 0.0):.2%})"
+        )
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+> **Note:** `get_all_markets(include_rewards=False)` skips reward incentives and returns base-only yields.
 
 ### Get user position
 
@@ -96,7 +93,8 @@ if __name__ == "__main__":
 
 | Method | Purpose | Wallet needed? |
 |--------|---------|----------------|
-| `get_apy(mtoken, apy_type, include_rewards)` | Supply/borrow APY | No |
+| `get_all_markets(include_apy?, include_usd?, include_rewards?)` | All markets with symbols, rates, TVL | No |
+| `get_apy(mtoken, apy_type, include_rewards)` | Supply/borrow APY for single market | No |
 | `get_collateral_factor(mtoken)` | Collateral factor (e.g., 0.88) | No |
 | `get_pos(mtoken, account?, include_usd?)` | Single market position | Yes (or pass account) |
 | `get_full_user_state(account?, include_rewards?, include_usd?, include_apy?)` | All positions + rewards | Yes (or pass account) |
