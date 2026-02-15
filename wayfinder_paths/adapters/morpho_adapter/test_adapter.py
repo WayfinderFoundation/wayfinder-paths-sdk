@@ -205,6 +205,78 @@ async def test_repay_full_uses_shares(adapter):
 
 
 @pytest.mark.asyncio
+async def test_withdraw_full_uses_shares(adapter):
+    key = "0x" + "55" * 32
+    market = _mock_market(
+        key,
+        loan_addr="0x4200000000000000000000000000000000000006",
+        collateral_addr="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    )
+
+    with (
+        patch.object(adapter, "_get_market", new=AsyncMock(return_value=market)),
+        patch.object(adapter, "_position", new=AsyncMock(return_value=(888, 0, 0))),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            new=AsyncMock(return_value="0xabc"),
+        ),
+    ):
+        ok, _tx = await adapter.unlend(
+            chain_id=CHAIN_ID_BASE,
+            market_unique_key=key,
+            qty=0,
+            withdraw_full=True,
+        )
+
+    assert ok is True
+    _, encode_kwargs = mock_encode.await_args
+    assert encode_kwargs["fn_name"] == "withdraw"
+    assert encode_kwargs["args"][1] == 0
+    assert encode_kwargs["args"][2] == 888
+
+
+@pytest.mark.asyncio
+async def test_get_health_computes_maxes(adapter):
+    key = "0x" + "66" * 32
+    market = _mock_market(
+        key,
+        loan_addr="0x4200000000000000000000000000000000000006",
+        collateral_addr="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    )
+    market["lltv"] = str(500000000000000000)
+    market["state"]["price"] = str(2 * (10**36))
+    market["state"]["liquidityAssets"] = str(50)
+
+    pos = {
+        "healthFactor": 1.2,
+        "priceVariationToLiquidationPrice": 0.1,
+        "state": {
+            "collateral": str(100),
+            "borrowAssets": str(40),
+        },
+    }
+
+    with (
+        patch.object(adapter, "_get_market", new=AsyncMock(return_value=market)),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_market_position",
+            new=AsyncMock(return_value=pos),
+        ),
+    ):
+        ok, out = await adapter.get_health(
+            chain_id=CHAIN_ID_BASE, market_unique_key=key, account=None
+        )
+
+    assert ok is True
+    assert out["max_borrow_assets"] == 50
+    assert out["max_withdraw_collateral_assets"] == 60
+
+
+@pytest.mark.asyncio
 async def test_get_full_user_state_filters_zero_positions(adapter):
     positions = [
         {"market": {"uniqueKey": "0x" + "11" * 32}, "state": {"supplyShares": 0, "borrowShares": 0, "collateral": 0}},
@@ -222,4 +294,3 @@ async def test_get_full_user_state_filters_zero_positions(adapter):
     assert ok is True
     assert len(state["positions"]) == 1
     assert state["positions"][0]["marketUniqueKey"] == "0x" + "22" * 32
-

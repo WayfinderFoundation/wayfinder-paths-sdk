@@ -123,6 +123,8 @@ class MorphoClient:
               lltv
               irmAddress
               listed
+              reallocatableLiquidityAssets
+              warnings { type level }
               loanAsset { address symbol name decimals priceUsd }
               collateralAsset { address symbol name decimals priceUsd }
               oracle { address }
@@ -133,6 +135,8 @@ class MorphoClient:
                 netBorrowApy
                 utilization
                 apyAtTarget
+                price
+                rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
                 liquidityAssets
                 liquidityAssetsUsd
                 supplyAssets
@@ -189,6 +193,17 @@ class MorphoClient:
             lltv
             irmAddress
             listed
+            reallocatableLiquidityAssets
+            warnings { type level }
+            publicAllocatorSharedLiquidity {
+              assets
+              publicAllocator { address }
+              vault { address symbol }
+              withdrawMarket { uniqueKey }
+              supplyMarket { uniqueKey }
+            }
+            supplyingVaults { address symbol }
+            supplyingVaultV2s { address symbol }
             loanAsset { address symbol name decimals priceUsd }
             collateralAsset { address symbol name decimals priceUsd }
             oracle { address }
@@ -199,6 +214,8 @@ class MorphoClient:
               netBorrowApy
               utilization
               apyAtTarget
+              price
+              rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
               liquidityAssets
               liquidityAssetsUsd
               supplyAssets
@@ -217,6 +234,66 @@ class MorphoClient:
             raise ValueError(f"Market not found for uniqueKey={unique_key}")
         return market
 
+    async def get_market_history(
+        self,
+        *,
+        unique_key: str,
+        chain_id: int | None = None,
+    ) -> dict[str, Any]:
+        query = """
+        query MarketHistory($k: String!, $chainId: Int) {
+          marketByUniqueKey(uniqueKey: $k, chainId: $chainId) {
+            uniqueKey
+            historicalState {
+              supplyApy { x y }
+              netSupplyApy { x y }
+              borrowApy { x y }
+              netBorrowApy { x y }
+
+              dailySupplyApy { x y }
+              dailyNetSupplyApy { x y }
+              dailyBorrowApy { x y }
+              dailyNetBorrowApy { x y }
+
+              weeklySupplyApy { x y }
+              weeklyNetSupplyApy { x y }
+              weeklyBorrowApy { x y }
+              weeklyNetBorrowApy { x y }
+
+              monthlySupplyApy { x y }
+              monthlyNetSupplyApy { x y }
+              monthlyBorrowApy { x y }
+              monthlyNetBorrowApy { x y }
+
+              quarterlySupplyApy { x y }
+              quarterlyNetSupplyApy { x y }
+              quarterlyBorrowApy { x y }
+              quarterlyNetBorrowApy { x y }
+
+              yearlySupplyApy { x y }
+              yearlyNetSupplyApy { x y }
+              yearlyBorrowApy { x y }
+              yearlyNetBorrowApy { x y }
+
+              utilization { x y }
+              liquidityAssets { x y }
+              borrowAssets { x y }
+              supplyAssets { x y }
+              price { x y }
+            }
+          }
+        }
+        """
+        payload = await self._post(
+            query=query, variables={"k": str(unique_key), "chainId": chain_id}
+        )
+        market = (
+            (payload or {}).get("marketByUniqueKey") if isinstance(payload, dict) else None
+        )
+        if not isinstance(market, dict):
+            raise ValueError(f"Market not found for uniqueKey={unique_key}")
+        return market.get("historicalState") or {}
+
     async def get_all_market_positions(
         self,
         *,
@@ -230,6 +307,8 @@ class MorphoClient:
           marketPositions(first: $first, skip: $skip, where: $where) {
             items {
               healthFactor
+              priceVariationToLiquidationPrice
+              listed
               market {
                 uniqueKey
                 lltv
@@ -297,6 +376,8 @@ class MorphoClient:
         query MarketPosition($userAddress: String!, $marketUniqueKey: String!, $chainId: Int) {
           marketPosition(userAddress: $userAddress, marketUniqueKey: $marketUniqueKey, chainId: $chainId) {
             healthFactor
+            priceVariationToLiquidationPrice
+            listed
             market {
               uniqueKey
               lltv
@@ -332,6 +413,226 @@ class MorphoClient:
                 f"Position not found for user={user_address} market={market_unique_key}"
             )
         return pos
+
+    async def get_all_vaults(
+        self,
+        *,
+        chain_id: int,
+        listed: bool | None = True,
+        page_size: int = 50,
+        max_pages: int = 50,
+    ) -> list[dict[str, Any]]:
+        query = """
+        query Vaults($first: Int, $skip: Int, $where: VaultFilters) {
+          vaults(first: $first, skip: $skip, where: $where) {
+            items {
+              address
+              symbol
+              name
+              listed
+              featured
+              warnings { type level }
+              asset { address symbol name decimals priceUsd }
+              state {
+                apy
+                netApy
+                netApyWithoutRewards
+                totalAssets
+                totalAssetsUsd
+                rewards { supplyApr asset { address symbol name decimals priceUsd } }
+                allocation {
+                  supplyAssets
+                  supplyAssetsUsd
+                  supplyCap
+                  supplyCapUsd
+                  market {
+                    uniqueKey
+                    lltv
+                    loanAsset { address symbol decimals }
+                    collateralAsset { address symbol decimals }
+                  }
+                }
+              }
+            }
+            pageInfo { countTotal count limit skip }
+          }
+        }
+        """
+
+        where: dict[str, Any] = {"chainId_in": [int(chain_id)]}
+        if listed is not None:
+            where["listed"] = bool(listed)
+
+        out: list[dict[str, Any]] = []
+        skip = 0
+        for _ in range(max_pages):
+            payload = await self._post(
+                query=query,
+                variables={"first": int(page_size), "skip": int(skip), "where": where},
+            )
+            page = (payload or {}).get("vaults") if isinstance(payload, dict) else None
+            items = (page or {}).get("items") or []
+            if not items:
+                break
+            out.extend([i for i in items if isinstance(i, dict)])
+
+            page_info = (page or {}).get("pageInfo") or {}
+            try:
+                count = int(page_info.get("count") or len(items))
+                total = int(page_info.get("countTotal") or 0)
+            except (TypeError, ValueError):
+                count = len(items)
+                total = 0
+
+            skip += count
+            if total and skip >= total:
+                break
+
+        return out
+
+    async def get_vault_by_address(
+        self, *, address: str, chain_id: int | None = None
+    ) -> dict[str, Any]:
+        query = """
+        query Vault($address: String!, $chainId: Int) {
+          vaultByAddress(address: $address, chainId: $chainId) {
+            address
+            symbol
+            name
+            listed
+            featured
+            warnings { type level }
+            asset { address symbol name decimals priceUsd }
+            state {
+              apy
+              netApy
+              netApyWithoutRewards
+              totalAssets
+              totalAssetsUsd
+              rewards { supplyApr asset { address symbol name decimals priceUsd } }
+              allocation {
+                supplyAssets
+                supplyAssetsUsd
+                supplyCap
+                supplyCapUsd
+                market {
+                  uniqueKey
+                  lltv
+                  loanAsset { address symbol decimals }
+                  collateralAsset { address symbol decimals }
+                }
+              }
+            }
+          }
+        }
+        """
+        payload = await self._post(
+            query=query, variables={"address": str(address), "chainId": chain_id}
+        )
+        vault = (payload or {}).get("vaultByAddress") if isinstance(payload, dict) else None
+        if not isinstance(vault, dict):
+            raise ValueError(f"Vault not found for address={address}")
+        return vault
+
+    async def get_all_vault_v2s(
+        self,
+        *,
+        chain_id: int,
+        listed: bool | None = True,
+        page_size: int = 50,
+        max_pages: int = 50,
+    ) -> list[dict[str, Any]]:
+        query = """
+        query VaultV2s($first: Int, $skip: Int, $where: VaultV2sFilters) {
+          vaultV2s(first: $first, skip: $skip, where: $where) {
+            items {
+              address
+              symbol
+              name
+              listed
+              warnings { type level }
+              asset { address symbol name decimals priceUsd }
+              apy
+              netApy
+              avgApy
+              avgNetApy
+              totalAssets
+              totalAssetsUsd
+              liquidity
+              liquidityUsd
+              rewards { supplyApr asset { address symbol name decimals priceUsd } }
+              liquidityAdapter { address type assets assetsUsd }
+              adapters { items { address type assets assetsUsd } }
+            }
+            pageInfo { countTotal count limit skip }
+          }
+        }
+        """
+
+        where: dict[str, Any] = {"chainId_in": [int(chain_id)]}
+        if listed is not None:
+            where["listed"] = bool(listed)
+
+        out: list[dict[str, Any]] = []
+        skip = 0
+        for _ in range(max_pages):
+            payload = await self._post(
+                query=query,
+                variables={"first": int(page_size), "skip": int(skip), "where": where},
+            )
+            page = (payload or {}).get("vaultV2s") if isinstance(payload, dict) else None
+            items = (page or {}).get("items") or []
+            if not items:
+                break
+            out.extend([i for i in items if isinstance(i, dict)])
+
+            page_info = (page or {}).get("pageInfo") or {}
+            try:
+                count = int(page_info.get("count") or len(items))
+                total = int(page_info.get("countTotal") or 0)
+            except (TypeError, ValueError):
+                count = len(items)
+                total = 0
+
+            skip += count
+            if total and skip >= total:
+                break
+
+        return out
+
+    async def get_vault_v2_by_address(
+        self, *, address: str, chain_id: int | None = None
+    ) -> dict[str, Any]:
+        query = """
+        query VaultV2($address: String!, $chainId: Int) {
+          vaultV2ByAddress(address: $address, chainId: $chainId) {
+            address
+            symbol
+            name
+            listed
+            warnings { type level }
+            asset { address symbol name decimals priceUsd }
+            apy
+            netApy
+            avgApy
+            avgNetApy
+            totalAssets
+            totalAssetsUsd
+            liquidity
+            liquidityUsd
+            rewards { supplyApr asset { address symbol name decimals priceUsd } }
+            liquidityAdapter { address type assets assetsUsd }
+            adapters { items { address type assets assetsUsd } }
+          }
+        }
+        """
+        payload = await self._post(
+            query=query, variables={"address": str(address), "chainId": chain_id}
+        )
+        vault = (payload or {}).get("vaultV2ByAddress") if isinstance(payload, dict) else None
+        if not isinstance(vault, dict):
+            raise ValueError(f"VaultV2 not found for address={address}")
+        return vault
 
 
 MORPHO_CLIENT = MorphoClient()

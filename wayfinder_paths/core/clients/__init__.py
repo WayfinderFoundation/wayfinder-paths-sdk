@@ -10,7 +10,12 @@ from wayfinder_paths.core.clients.HyperliquidDataClient import (
     HyperliquidDataClient,
 )
 from wayfinder_paths.core.clients.LedgerClient import LedgerClient
+from wayfinder_paths.core.clients.MerklClient import MERKL_CLIENT, MerklClient
 from wayfinder_paths.core.clients.MorphoClient import MORPHO_CLIENT, MorphoClient
+from wayfinder_paths.core.clients.MorphoRewardsClient import (
+    MORPHO_REWARDS_CLIENT,
+    MorphoRewardsClient,
+)
 from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT, PoolClient
 from wayfinder_paths.core.clients.protocols import (
     BRAPClientProtocol,
@@ -33,8 +38,12 @@ __all__ = [
     "HyperliquidDataClient",
     "HYPERLIQUID_DATA_CLIENT",
     "LedgerClient",
+    "MERKL_CLIENT",
+    "MerklClient",
     "MORPHO_CLIENT",
     "MorphoClient",
+    "MORPHO_REWARDS_CLIENT",
+    "MorphoRewardsClient",
     "POOL_CLIENT",
     "PoolClient",
     "TOKEN_CLIENT",

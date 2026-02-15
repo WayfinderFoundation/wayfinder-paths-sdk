@@ -16,6 +16,44 @@ MORPHO_BLUE_ABI = [
     {
         "type": "function",
         "stateMutability": "nonpayable",
+        "name": "setAuthorization",
+        "inputs": [
+            {"name": "authorized", "type": "address"},
+            {"name": "newIsAuthorized", "type": "bool"},
+        ],
+        "outputs": [],
+    },
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "name": "setAuthorizationWithSig",
+        "inputs": [
+            {
+                "name": "authorization",
+                "type": "tuple",
+                "components": [
+                    {"name": "authorizer", "type": "address"},
+                    {"name": "authorized", "type": "address"},
+                    {"name": "isAuthorized", "type": "bool"},
+                    {"name": "nonce", "type": "uint256"},
+                    {"name": "deadline", "type": "uint256"},
+                ],
+            },
+            {
+                "name": "signature",
+                "type": "tuple",
+                "components": [
+                    {"name": "v", "type": "uint8"},
+                    {"name": "r", "type": "bytes32"},
+                    {"name": "s", "type": "bytes32"},
+                ],
+            },
+        ],
+        "outputs": [],
+    },
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
         "name": "supply",
         "inputs": [
             {
@@ -146,4 +184,3 @@ MORPHO_BLUE_ABI = [
         ],
     },
 ]
-
