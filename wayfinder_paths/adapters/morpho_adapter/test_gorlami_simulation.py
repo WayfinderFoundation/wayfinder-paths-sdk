@@ -26,7 +26,7 @@ BASE_WETH = "0x4200000000000000000000000000000000000006"
 
 
 @pytest.mark.asyncio
-async def test_gorlami_morpho_markets_and_vaults(gorlami):
+async def test_gorlami_morpho_markets_and_borrow(gorlami):
     chain_id = CHAIN_ID_BASE
 
     acct = Account.create()
@@ -87,7 +87,8 @@ async def test_gorlami_morpho_markets_and_vaults(gorlami):
     ok, tx = await adapter.lend(
         chain_id=int(chain_id), market_unique_key=lend_key, qty=10 * 10**6
     )
-    assert ok is True and isinstance(tx, str) and tx.startswith("0x")
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
 
     supply_shares, _borrow_shares, _collateral = await adapter._position(
         chain_id=int(chain_id),
@@ -112,3 +113,102 @@ async def test_gorlami_morpho_markets_and_vaults(gorlami):
         ).call({"from": acct.address}, block_identifier="pending")
         assert int(shares_withdrawn) == int(supply_shares)
         assert int(assets_withdrawn) > 0
+
+    # Borrow flow on a USDC-loan / WETH-collateral market.
+    usdc_weth = [
+        m
+        for m in markets
+        if str((m.get("loanAsset") or {}).get("address") or "").lower()
+        == BASE_USDC.lower()
+        and str((m.get("collateralAsset") or {}).get("address") or "").lower()
+        == BASE_WETH.lower()
+    ]
+    if not usdc_weth:
+        pytest.skip("No USDC/WETH market found on Base")
+
+    borrow_market = max(usdc_weth, key=_liq)
+    borrow_key = str(borrow_market["uniqueKey"])
+
+    collateral_weth = int(0.05 * 10**18)
+    borrow_usdc = 50 * 10**6
+
+    ok, tx = await adapter.supply_collateral(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        qty=collateral_weth,
+    )
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    _supply_shares, borrow_shares, collateral_assets = await adapter._position(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        account=acct.address,
+    )
+    assert borrow_shares == 0
+    assert collateral_assets > 0
+
+    ok, tx = await adapter.borrow(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        qty=borrow_usdc,
+    )
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    _supply_shares, borrow_shares, _collateral_assets2 = await adapter._position(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        account=acct.address,
+    )
+    assert borrow_shares > 0
+
+    ok, tx = await adapter.repay_full(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+    )
+    assert ok is True, tx
+    assert tx is None or (isinstance(tx, str) and tx.startswith("0x"))
+
+    _supply_shares, borrow_shares, _collateral_assets3 = await adapter._position(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        account=acct.address,
+    )
+    assert borrow_shares == 0
+
+    _supply_shares, _borrow_shares, collateral_to_withdraw = await adapter._position(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        account=acct.address,
+    )
+    assert collateral_to_withdraw > 0
+
+    borrow_market_fresh = await adapter._get_market(
+        chain_id=int(chain_id), unique_key=borrow_key
+    )
+    borrow_params = adapter._market_params_from_market(borrow_market_fresh)
+
+    async with web3_utils.web3_from_chain_id(chain_id) as web3:
+        morpho = web3.eth.contract(address=morpho_addr, abi=MORPHO_BLUE_ABI)
+        # Ensure withdrawCollateral is callable for this position before sending a tx.
+        await morpho.functions.withdrawCollateral(
+            borrow_params,
+            int(collateral_to_withdraw),
+            acct.address,
+            acct.address,
+        ).call({"from": acct.address}, block_identifier="pending")
+
+    ok2, tx2 = await adapter.repay_full(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+    )
+    assert ok2 is True and tx2 is None
+
+    ok, tx = await adapter.withdraw_collateral(
+        chain_id=int(chain_id),
+        market_unique_key=borrow_key,
+        qty=collateral_to_withdraw,
+    )
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")

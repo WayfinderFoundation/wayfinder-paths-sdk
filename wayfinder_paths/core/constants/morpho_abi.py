@@ -145,7 +145,7 @@ MORPHO_BLUE_ABI = [
             {"name": "onBehalf", "type": "address"},
             {"name": "data", "type": "bytes"},
         ],
-        "outputs": [{"name": "assetsSupplied", "type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -161,7 +161,7 @@ MORPHO_BLUE_ABI = [
             {"name": "onBehalf", "type": "address"},
             {"name": "receiver", "type": "address"},
         ],
-        "outputs": [{"name": "assetsWithdrawn", "type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
