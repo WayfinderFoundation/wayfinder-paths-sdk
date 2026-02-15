@@ -5,24 +5,16 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.morpho_adapter.adapter import MorphoAdapter
 from wayfinder_paths.core.clients.MorphoClient import MORPHO_CLIENT
-from wayfinder_paths.core.config import get_api_key
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WETH
 from wayfinder_paths.core.constants.morpho_abi import MORPHO_BLUE_ABI
 from wayfinder_paths.core.utils import web3 as web3_utils
-
-
-def gorlami_configured() -> bool:
-    return bool(get_api_key())
-
+from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
     not gorlami_configured(),
     reason="api_key not configured (needed for gorlami fork proxy)",
 )
-
-
-BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
-BASE_WETH = "0x4200000000000000000000000000000000000006"
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,10 @@
 import pytest
 
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
-from wayfinder_paths.core.config import get_api_key
+from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils import web3 as web3_utils
-
-
-def gorlami_configured() -> bool:
-    return bool(get_api_key())
-
+from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
     not gorlami_configured(),
@@ -24,11 +21,11 @@ class TestGorlamiTestnetClient:
 
     @pytest.mark.asyncio
     async def test_create_and_delete_fork(self, client):
-        fork_info = await client.create_fork(chain_id=8453)
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
 
         assert "fork_id" in fork_info
         assert "rpc_url" in fork_info
-        assert fork_info["chain_id"] == 8453
+        assert fork_info["chain_id"] == CHAIN_ID_BASE
 
         result = await client.delete_fork(fork_info["fork_id"])
         assert result is True
@@ -40,7 +37,7 @@ class TestGorlamiTestnetClient:
 
     @pytest.mark.asyncio
     async def test_set_native_balance(self, client):
-        fork_info = await client.create_fork(chain_id=8453)
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         try:
             result = await client.set_native_balance(
                 fork_id=fork_info["fork_id"],
@@ -53,11 +50,11 @@ class TestGorlamiTestnetClient:
 
     @pytest.mark.asyncio
     async def test_set_erc20_balance(self, client):
-        fork_info = await client.create_fork(chain_id=8453)
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         try:
             result = await client.set_erc20_balance(
                 fork_id=fork_info["fork_id"],
-                token="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",  # USDC on Base
+                token=BASE_USDC,
                 wallet="0x1234567890123456789012345678901234567890",
                 amount=1000 * 10**6,
             )
@@ -80,7 +77,7 @@ class TestGorlamiProxyAuth:
         # Uses X-API-KEY header (not the old Authorization: <gorlami_key>)
         assert "X-API-KEY" in client.client.headers
 
-        fork_info = await client.create_fork(chain_id=8453)
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         fork_id = fork_info["fork_id"]
         try:
             assert fork_info["rpc_url"].startswith(client.base_url)
@@ -89,7 +86,7 @@ class TestGorlamiProxyAuth:
             await client.set_native_balance(fork_id, wallet, 10**18)
             await client.set_erc20_balance(
                 fork_id,
-                "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+                BASE_USDC,
                 wallet,
                 500 * 10**6,
             )
@@ -111,14 +108,14 @@ class TestGorlamiFixture:
         test_wallet = "0x1234567890123456789012345678901234567890"
         test_amount = 5 * 10**18
 
-        async with web3_utils.web3_from_chain_id(8453) as web3:
+        async with web3_utils.web3_from_chain_id(CHAIN_ID_BASE) as web3:
             block_num = await web3.eth.block_number
             assert block_num >= 0
 
             chain_id = await web3.eth.chain_id
-            assert chain_id == 8453
+            assert chain_id == CHAIN_ID_BASE
 
-            fork_info = gorlami.forks.get("8453")
+            fork_info = gorlami.forks.get(str(CHAIN_ID_BASE))
             assert fork_info is not None
 
             await gorlami.set_native_balance(

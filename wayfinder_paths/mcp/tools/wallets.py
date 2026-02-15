@@ -90,6 +90,7 @@ async def _query_adapter(
     protocol: str,
     address: str,
     include_zero_positions: bool = False,
+    chain_id: int | None = None,
 ) -> dict[str, Any]:
     config = PROTOCOL_ADAPTERS.get(protocol)
     if not config:
@@ -110,6 +111,12 @@ async def _query_adapter(
 
         if "include_zero_positions" in config["extra_kwargs"]:
             kwargs["include_zero_positions"] = include_zero_positions
+
+        if chain_id is not None:
+            if "chain_id" in kwargs:
+                kwargs["chain_id"] = int(chain_id)
+            elif "chain" in kwargs:
+                kwargs["chain"] = int(chain_id)
 
         success, data = await method(**kwargs)
         duration = time.time() - start
@@ -277,13 +284,18 @@ async def wallets(
 
         if parallel:
             tasks = [
-                _query_adapter(proto, address, include_zero_positions)
+                _query_adapter(proto, address, include_zero_positions, chain_id=chain_id)
                 for proto in supported_protocols
             ]
             results = await asyncio.gather(*tasks)
         else:
             for proto in supported_protocols:
-                result = await _query_adapter(proto, address, include_zero_positions)
+                result = await _query_adapter(
+                    proto,
+                    address,
+                    include_zero_positions,
+                    chain_id=chain_id,
+                )
                 results.append(result)
 
         total_duration = time.time() - start
