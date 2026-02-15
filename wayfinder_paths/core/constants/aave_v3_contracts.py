@@ -149,4 +149,3 @@ AAVE_V3_BY_CHAIN: dict[int, dict[str, str]] = {
         "oracle": to_checksum_address("0x33E0b3fc976DC9C516926BA48CfC0A9E10a2aAA5"),
     },
 }
-

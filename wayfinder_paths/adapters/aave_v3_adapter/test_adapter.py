@@ -83,7 +83,9 @@ class TestAaveV3Adapter:
 
         mock_ui_pool = MagicMock()
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
 
         mock_web3 = MagicMock()
@@ -180,7 +182,9 @@ class TestAaveV3Adapter:
 
         mock_ui_pool = MagicMock()
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
 
         mock_ui_incentives = MagicMock()
@@ -191,8 +195,14 @@ class TestAaveV3Adapter:
         mock_web3 = MagicMock()
 
         def contract_side_effect(*, address, abi):  # noqa: ARG001
-            if abi and isinstance(abi, list) and any(
-                x.get("name") == "getReservesIncentivesData" for x in abi if isinstance(x, dict)
+            if (
+                abi
+                and isinstance(abi, list)
+                and any(
+                    x.get("name") == "getReservesIncentivesData"
+                    for x in abi
+                    if isinstance(x, dict)
+                )
             ):
                 return mock_ui_incentives
             return mock_ui_pool
@@ -207,7 +217,9 @@ class TestAaveV3Adapter:
             "wayfinder_paths.adapters.aave_v3_adapter.adapter.web3_utils.web3_from_chain_id",
             mock_web3_ctx,
         ):
-            ok, markets = await adapter.get_all_markets(chain_id=42161, include_rewards=True)
+            ok, markets = await adapter.get_all_markets(
+                chain_id=42161, include_rewards=True
+            )
 
         assert ok is True
         assert isinstance(markets, list)
@@ -255,7 +267,9 @@ class TestAaveV3Adapter:
 
         mock_ui_pool = MagicMock()
         mock_ui_pool.functions.getReservesData = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=(reserves, base_currency)))
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
         )
         mock_ui_pool.functions.getUserReservesData = MagicMock(
             return_value=MagicMock(call=AsyncMock(return_value=(user_reserves, 0)))

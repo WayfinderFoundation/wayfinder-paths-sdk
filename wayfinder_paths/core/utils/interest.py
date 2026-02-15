@@ -19,4 +19,3 @@ def apr_to_apy(apr: float) -> float:
     Convert APR to APY via per-second compounding.
     """
     return (1 + float(apr) / SECONDS_PER_YEAR) ** SECONDS_PER_YEAR - 1
-

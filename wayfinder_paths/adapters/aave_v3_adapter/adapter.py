@@ -112,13 +112,17 @@ class AaveV3Adapter(BaseAdapter):
         return to_checksum_address(self._entry(int(chain_id))["pool"])
 
     async def _provider(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["pool_addresses_provider"])
+        return to_checksum_address(
+            self._entry(int(chain_id))["pool_addresses_provider"]
+        )
 
     async def _ui_pool(self, *, chain_id: int) -> str:
         return to_checksum_address(self._entry(int(chain_id))["ui_pool_data_provider"])
 
     async def _ui_incentives(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["ui_incentive_data_provider"])
+        return to_checksum_address(
+            self._entry(int(chain_id))["ui_incentive_data_provider"]
+        )
 
     async def _rewards_controller(self, *, chain_id: int) -> str:
         return to_checksum_address(self._entry(int(chain_id))["rewards_controller"])
@@ -130,14 +134,18 @@ class AaveV3Adapter(BaseAdapter):
 
         gateway = self._entry(int(chain_id)).get("wrapped_token_gateway")
         if not gateway:
-            raise ValueError(f"wrapped_token_gateway not configured for chain_id={chain_id}")
+            raise ValueError(
+                f"wrapped_token_gateway not configured for chain_id={chain_id}"
+            )
 
         async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
             gw = web3.eth.contract(
                 address=to_checksum_address(gateway),
                 abi=WRAPPED_TOKEN_GATEWAY_V3_ABI,
             )
-            wrapped = await gw.functions.getWETHAddress().call(block_identifier="pending")
+            wrapped = await gw.functions.getWETHAddress().call(
+                block_identifier="pending"
+            )
             wrapped = to_checksum_address(str(wrapped))
             self._wrapped_native_by_chain[int(chain_id)] = wrapped
             return wrapped
@@ -164,9 +172,11 @@ class AaveV3Adapter(BaseAdapter):
                             address=ui_incentives_addr,
                             abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
                         )
-                        inc_rows = await ui_incentives.functions.getReservesIncentivesData(
-                            provider_addr
-                        ).call(block_identifier="pending")
+                        inc_rows = (
+                            await ui_incentives.functions.getReservesIncentivesData(
+                                provider_addr
+                            ).call(block_identifier="pending")
+                        )
                         for row in inc_rows or []:
                             try:
                                 underlying = to_checksum_address(str(row[0]))
@@ -276,7 +286,8 @@ class AaveV3Adapter(BaseAdapter):
                             (available_liquidity + total_variable_debt)
                             / (10**decimals)
                             * price_usd
-                            if price_usd and (available_liquidity + total_variable_debt) > 0
+                            if price_usd
+                            and (available_liquidity + total_variable_debt) > 0
                             else 0.0
                         )
                         denom_borrow = (
@@ -313,10 +324,15 @@ class AaveV3Adapter(BaseAdapter):
                                     else 0.0
                                 )
                                 annual_rewards_usd = (
-                                    (float(emission_per_second) / (10**reward_token_decimals))
+                                    (
+                                        float(emission_per_second)
+                                        / (10**reward_token_decimals)
+                                    )
                                     * SECONDS_PER_YEAR
                                     * price_usd_r
-                                    if emission_per_second and reward_token_decimals >= 0 and price_usd_r
+                                    if emission_per_second
+                                    and reward_token_decimals >= 0
+                                    and price_usd_r
                                     else 0.0
                                 )
                                 apr = (
@@ -355,10 +371,15 @@ class AaveV3Adapter(BaseAdapter):
                                     else 0.0
                                 )
                                 annual_rewards_usd = (
-                                    (float(emission_per_second) / (10**reward_token_decimals))
+                                    (
+                                        float(emission_per_second)
+                                        / (10**reward_token_decimals)
+                                    )
                                     * SECONDS_PER_YEAR
                                     * price_usd_r
-                                    if emission_per_second and reward_token_decimals >= 0 and price_usd_r
+                                    if emission_per_second
+                                    and reward_token_decimals >= 0
+                                    and price_usd_r
                                     else 0.0
                                 )
                                 apr = (
@@ -412,7 +433,9 @@ class AaveV3Adapter(BaseAdapter):
             account = to_checksum_address(account)
 
             async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
-                ui_pool = web3.eth.contract(address=ui_pool_addr, abi=UI_POOL_DATA_PROVIDER_ABI)
+                ui_pool = web3.eth.contract(
+                    address=ui_pool_addr, abi=UI_POOL_DATA_PROVIDER_ABI
+                )
                 reserves, base_currency = await ui_pool.functions.getReservesData(
                     provider_addr
                 ).call(block_identifier="pending")
@@ -439,9 +462,11 @@ class AaveV3Adapter(BaseAdapter):
                             address=ui_incentives_addr,
                             abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
                         )
-                        user_inc = await ui_incentives.functions.getUserReservesIncentivesData(
-                            provider_addr, account
-                        ).call(block_identifier="pending")
+                        user_inc = (
+                            await ui_incentives.functions.getUserReservesIncentivesData(
+                                provider_addr, account
+                            ).call(block_identifier="pending")
+                        )
 
                         for row in user_inc or []:
                             try:
@@ -449,7 +474,11 @@ class AaveV3Adapter(BaseAdapter):
                             except Exception:  # noqa: BLE001
                                 continue
                             out_rewards: list[dict[str, Any]] = []
-                            for side_idx, side in ((1, "supply"), (2, "borrow"), (3, "stable_borrow")):
+                            for side_idx, side in (
+                                (1, "supply"),
+                                (2, "borrow"),
+                                (3, "stable_borrow"),
+                            ):
                                 try:
                                     inc = row[side_idx]
                                     rewards = list(inc[2] or [])
@@ -460,17 +489,22 @@ class AaveV3Adapter(BaseAdapter):
                                         out_rewards.append(
                                             {
                                                 "side": side,
-                                                "token": to_checksum_address(str(rwd[2])),
+                                                "token": to_checksum_address(
+                                                    str(rwd[2])
+                                                ),
                                                 "symbol": str(rwd[0] or ""),
                                                 "unclaimed": int(rwd[3] or 0),
                                                 "price_usd": (
                                                     float(int(rwd[5] or 0))
                                                     / (10 ** int(rwd[6] or 0))
-                                                    if int(rwd[5] or 0) and int(rwd[6] or 0)
+                                                    if int(rwd[5] or 0)
+                                                    and int(rwd[6] or 0)
                                                     else 0.0
                                                 ),
                                                 "price_feed_decimals": int(rwd[6] or 0),
-                                                "reward_token_decimals": int(rwd[7] or 0),
+                                                "reward_token_decimals": int(
+                                                    rwd[7] or 0
+                                                ),
                                             }
                                         )
                                     except Exception:  # noqa: BLE001
@@ -501,14 +535,18 @@ class AaveV3Adapter(BaseAdapter):
                 stable_debt = 0
                 is_collateral = bool(row[2])
 
-                supply_raw = (scaled_supply * liquidity_index) // RAY if scaled_supply else 0
+                supply_raw = (
+                    (scaled_supply * liquidity_index) // RAY if scaled_supply else 0
+                )
                 variable_debt_raw = (
                     (scaled_var_debt * variable_borrow_index) // RAY
                     if scaled_var_debt
                     else 0
                 )
 
-                price_market_ref = int(reserve.get("priceInMarketReferenceCurrency") or 0)
+                price_market_ref = int(
+                    reserve.get("priceInMarketReferenceCurrency") or 0
+                )
                 price_usd = (
                     (float(price_market_ref) / ref_unit) * float(ref_usd)
                     if ref_unit and price_market_ref
@@ -541,7 +579,9 @@ class AaveV3Adapter(BaseAdapter):
                         "symbol_canonical": normalize_symbol(symbol_raw)
                         or normalize_symbol(underlying),
                         "decimals": decimals,
-                        "a_token": to_checksum_address(str(reserve.get("aTokenAddress"))),
+                        "a_token": to_checksum_address(
+                            str(reserve.get("aTokenAddress"))
+                        ),
                         "variable_debt_token": to_checksum_address(
                             str(reserve.get("variableDebtTokenAddress"))
                         ),
@@ -552,7 +592,8 @@ class AaveV3Adapter(BaseAdapter):
                         "supply_usd": float(supply_usd),
                         "variable_borrow_usd": float(borrow_usd),
                         "price_usd": float(price_usd),
-                        "rewards": user_rewards_by_underlying.get(underlying.lower()) or [],
+                        "rewards": user_rewards_by_underlying.get(underlying.lower())
+                        or [],
                     }
                 )
 
@@ -596,7 +637,9 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=qty,
                 )
-                wrap_hash = await send_transaction(wrap_tx, self.strategy_wallet_signing_callback)
+                wrap_hash = await send_transaction(
+                    wrap_tx, self.strategy_wallet_signing_callback
+                )
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -671,7 +714,9 @@ class AaveV3Adapter(BaseAdapter):
 
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
-                before = await get_token_balance(wrapped, int(chain_id), strategy, block_identifier="pending")
+                before = await get_token_balance(
+                    wrapped, int(chain_id), strategy, block_identifier="pending"
+                )
 
                 withdraw_tx = await encode_call(
                     target=pool,
@@ -685,7 +730,9 @@ class AaveV3Adapter(BaseAdapter):
                     withdraw_tx, self.strategy_wallet_signing_callback
                 )
 
-                after = await get_token_balance(wrapped, int(chain_id), strategy, block_identifier="pending")
+                after = await get_token_balance(
+                    wrapped, int(chain_id), strategy, block_identifier="pending"
+                )
                 unwrap_amount = max(0, int(after) - int(before))
                 if unwrap_amount <= 0:
                     return True, {"withdraw_tx": withdraw_hash, "unwrap_tx": None}
@@ -808,13 +855,22 @@ class AaveV3Adapter(BaseAdapter):
                             chain_id=int(chain_id), include_rewards=False
                         )
                         if not ok or not isinstance(markets, list):
-                            return False, f"failed to resolve reserves for chain_id={chain_id}"
+                            return (
+                                False,
+                                f"failed to resolve reserves for chain_id={chain_id}",
+                            )
                         for m in markets:
-                            if str(m.get("underlying") or "").lower() == wrapped.lower():
+                            if (
+                                str(m.get("underlying") or "").lower()
+                                == wrapped.lower()
+                            ):
                                 v_debt = str(m.get("variable_debt_token") or "")
                                 break
                         if not v_debt:
-                            return False, "could not resolve variable debt token for wrapped native"
+                            return (
+                                False,
+                                "could not resolve variable debt token for wrapped native",
+                            )
                         self._variable_debt_token_by_chain_underlying[
                             (int(chain_id), wrapped.lower())
                         ] = to_checksum_address(v_debt)
@@ -855,7 +911,9 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=int(value),
                 )
-                wrap_hash = await send_transaction(wrap_tx, self.strategy_wallet_signing_callback)
+                wrap_hash = await send_transaction(
+                    wrap_tx, self.strategy_wallet_signing_callback
+                )
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -987,7 +1045,11 @@ class AaveV3Adapter(BaseAdapter):
                             token_addr = str((row[i] or [None])[0] or "")
                         except Exception:
                             token_addr = ""
-                        if token_addr and token_addr != "0x0000000000000000000000000000000000000000":
+                        if (
+                            token_addr
+                            and token_addr
+                            != "0x0000000000000000000000000000000000000000"
+                        ):
                             assets_set.add(to_checksum_address(token_addr))
                 assets = sorted(assets_set)
 

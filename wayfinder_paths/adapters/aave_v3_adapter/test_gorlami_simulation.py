@@ -52,8 +52,14 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     assert ok is True, markets
     assert isinstance(markets, list) and markets
 
-    usdc_market = next(m for m in markets if str(m.get("underlying", "")).lower() == ARBITRUM_USDC.lower())
-    weth_market = next(m for m in markets if str(m.get("underlying", "")).lower() == wrapped.lower())
+    usdc_market = next(
+        m
+        for m in markets
+        if str(m.get("underlying", "")).lower() == ARBITRUM_USDC.lower()
+    )
+    weth_market = next(
+        m for m in markets if str(m.get("underlying", "")).lower() == wrapped.lower()
+    )
 
     # Basic non-native supply/withdraw.
     ok, tx = await adapter.lend(
@@ -102,8 +108,16 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
         chain_id=chain_id, account=acct.address, include_rewards=False
     )
     assert ok is True, state
-    assert any(p.get("underlying", "").lower() == wrapped.lower() and int(p.get("supply_raw") or 0) > 0 for p in state.get("positions") or [])
-    assert any(p.get("underlying", "").lower() == ARBITRUM_USDC.lower() and int(p.get("variable_borrow_raw") or 0) > 0 for p in state.get("positions") or [])
+    assert any(
+        p.get("underlying", "").lower() == wrapped.lower()
+        and int(p.get("supply_raw") or 0) > 0
+        for p in state.get("positions") or []
+    )
+    assert any(
+        p.get("underlying", "").lower() == ARBITRUM_USDC.lower()
+        and int(p.get("variable_borrow_raw") or 0) > 0
+        for p in state.get("positions") or []
+    )
 
     ok, tx = await adapter.repay(
         chain_id=chain_id,
@@ -118,7 +132,11 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
         chain_id=chain_id, account=acct.address, include_rewards=False
     )
     assert ok is True, state
-    assert all(int(p.get("variable_borrow_raw") or 0) == 0 for p in state.get("positions") or [] if p.get("underlying", "").lower() == ARBITRUM_USDC.lower())
+    assert all(
+        int(p.get("variable_borrow_raw") or 0) == 0
+        for p in state.get("positions") or []
+        if p.get("underlying", "").lower() == ARBITRUM_USDC.lower()
+    )
 
     ok, tx = await adapter.unlend(
         chain_id=chain_id,
@@ -140,4 +158,3 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
-

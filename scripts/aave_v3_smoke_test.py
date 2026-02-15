@@ -67,13 +67,17 @@ async def main() -> None:
     collateral_wei = int(float(args.collateral_eth) * 10**18)
 
     if usdc_bal < lend_qty:
-        raise RuntimeError(f"insufficient usdc balance: have={usdc_bal} need={lend_qty}")
+        raise RuntimeError(
+            f"insufficient usdc balance: have={usdc_bal} need={lend_qty}"
+        )
     if eth_bal < collateral_wei:
         raise RuntimeError(
             f"insufficient native balance: have={eth_bal} need={collateral_wei}"
         )
 
-    ok, tx = await adapter.lend(chain_id=chain_id, underlying_token=usdc_addr, qty=lend_qty)
+    ok, tx = await adapter.lend(
+        chain_id=chain_id, underlying_token=usdc_addr, qty=lend_qty
+    )
     if not ok:
         raise RuntimeError(f"lend(usdc) failed: {tx}")
     print("lend_usdc_tx", tx)
@@ -105,7 +109,9 @@ async def main() -> None:
         raise RuntimeError(f"set_collateral(weth) failed: {tx}")
     print("set_collateral_tx", tx)
 
-    ok, tx = await adapter.borrow(chain_id=chain_id, underlying_token=usdc_addr, qty=borrow_qty)
+    ok, tx = await adapter.borrow(
+        chain_id=chain_id, underlying_token=usdc_addr, qty=borrow_qty
+    )
     if not ok:
         raise RuntimeError(f"borrow(usdc) failed: {tx}")
     print("borrow_tx", tx)
@@ -140,4 +146,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
