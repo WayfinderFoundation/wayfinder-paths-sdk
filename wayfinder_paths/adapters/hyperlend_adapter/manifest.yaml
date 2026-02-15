@@ -7,4 +7,8 @@ capabilities:
   - "market.rate_history"
   - "lending.lend"
   - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "collateral.set"
+  - "collateral.remove"
 dependencies: []
