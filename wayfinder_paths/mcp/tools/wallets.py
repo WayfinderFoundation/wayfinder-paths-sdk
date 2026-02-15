@@ -52,6 +52,8 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "class": "MorphoAdapter",
         "init_kwargs": {},
         "method": "get_full_user_state",
+        "method_per_chain": "get_full_user_state_per_chain",
+        "chain_param": "chain_id",
         "account_param": "account",
         "extra_kwargs": {"include_zero_positions": False},
     },
@@ -68,6 +70,8 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "class": "PendleAdapter",
         "init_kwargs": {},
         "method": "get_full_user_state",
+        "method_per_chain": "get_full_user_state_per_chain",
+        "chain_param": "chain",
         "account_param": "account",
         "extra_kwargs": {"include_zero_positions": False},
     },
@@ -84,6 +88,8 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "class": "AaveV3Adapter",
         "init_kwargs": {},
         "method": "get_full_user_state",
+        "method_per_chain": "get_full_user_state_per_chain",
+        "chain_param": "chain_id",
         "account_param": "account",
         "extra_kwargs": {"include_zero_positions": False},
     },
@@ -114,18 +120,24 @@ async def _query_adapter(
         adapter_class = getattr(module, config["class"])
         adapter = adapter_class(**config["init_kwargs"])
 
-        method = getattr(adapter, config["method"])
+        method_name = config["method"]
         kwargs = {config["account_param"]: address, **config["extra_kwargs"]}
 
         if "include_zero_positions" in config["extra_kwargs"]:
             kwargs["include_zero_positions"] = include_zero_positions
 
         if chain_id is not None:
+            method_per_chain = config.get("method_per_chain")
+            chain_param = config.get("chain_param")
+            if method_per_chain and chain_param:
+                method_name = str(method_per_chain)
+                kwargs[str(chain_param)] = int(chain_id)
             if "chain_id" in kwargs:
                 kwargs["chain_id"] = int(chain_id)
             elif "chain" in kwargs:
                 kwargs["chain"] = int(chain_id)
 
+        method = getattr(adapter, method_name)
         success, data = await method(**kwargs)
         duration = time.time() - start
 

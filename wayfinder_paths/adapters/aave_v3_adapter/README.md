@@ -33,8 +33,23 @@ ok, state = await adapter.get_full_user_state(account="0x...")
 Fetch user supplies/borrows via `UiPoolDataProvider.getUserReservesData(...)` and
 (optionally) claimable incentives via `UiIncentiveDataProviderV3.getUserReservesIncentivesData(...)`.
 
+When `include_rewards=True` (default), each position includes market-level APY and reward data
+computed from `UiPoolDataProvider.getReservesData(...)` and `UiIncentiveDataProviderV3.getReservesIncentivesData(...)`:
+
+| Field | Description |
+|-------|-------------|
+| `supply_apy` | Base supply APY (from `liquidityRate`) |
+| `variable_borrow_apy` | Base variable borrow APY (from `variableBorrowRate`) |
+| `reward_supply_apr` | Incentive APR earned on supply side |
+| `reward_borrow_apr` | Incentive APR offsetting borrow cost |
+| `supply_apy_with_rewards` | `supply_apy + reward_supply_apr` |
+| `borrow_apy_with_rewards` | `variable_borrow_apy - reward_borrow_apr` |
+| `rewards` | Per-user unclaimed reward entries (token, symbol, unclaimed amount) |
+
 ```python
 ok, state = await adapter.get_full_user_state_per_chain(chain_id=42161, account="0x...")
+for pos in state["positions"]:
+    print(pos["symbol"], pos["supply_apy"], pos["reward_supply_apr"])
 ```
 
 ### lend / unlend / borrow / repay
@@ -64,4 +79,3 @@ Claims all rewards via the per-chain RewardsController.
 ```python
 ok, tx = await adapter.claim_all_rewards(chain_id=42161)
 ```
-
