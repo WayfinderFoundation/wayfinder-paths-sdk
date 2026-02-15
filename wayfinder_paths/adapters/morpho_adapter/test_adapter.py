@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.adapters.morpho_adapter.adapter import MorphoAdapter
+from wayfinder_paths.adapters.morpho_adapter.adapter import (
+    MERKL_DISTRIBUTOR_ADDRESS,
+    MorphoAdapter,
+)
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
@@ -294,3 +297,225 @@ async def test_get_full_user_state_filters_zero_positions(adapter):
     assert ok is True
     assert len(state["positions"]) == 1
     assert state["positions"][0]["marketUniqueKey"] == "0x" + "22" * 32
+
+
+@pytest.mark.asyncio
+async def test_claim_merkl_rewards_noop_when_none(adapter):
+    with (
+        patch.object(
+            adapter,
+            "get_claimable_rewards",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {"merkl": {"rewards": []}},
+                )
+            ),
+        ),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            new=AsyncMock(return_value="0xabc"),
+        ) as mock_send,
+    ):
+        ok, tx = await adapter.claim_merkl_rewards(chain_id=CHAIN_ID_BASE)
+
+    assert ok is True
+    assert tx is None
+    mock_encode.assert_not_awaited()
+    mock_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_claim_merkl_rewards_encodes_claim(adapter):
+    token_a = "0x4200000000000000000000000000000000000006"
+    token_b = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+    rewards = [
+        {
+            "token": {"address": token_a},
+            "amount": "99",
+            "proofs": ["0x" + "11" * 32],
+        },
+        {
+            "token": {"address": token_b},
+            "amount": "101",
+            "proofs": ["0x" + "22" * 32, "0x" + "33" * 32],
+        },
+    ]
+    with (
+        patch.object(
+            adapter,
+            "get_claimable_rewards",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {"merkl": {"rewards": rewards}},
+                )
+            ),
+        ),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            new=AsyncMock(return_value="0xabc"),
+        ),
+    ):
+        ok, tx = await adapter.claim_merkl_rewards(
+            chain_id=CHAIN_ID_BASE,
+            min_claim_amount=100,
+        )
+
+    assert ok is True
+    assert tx == "0xabc"
+
+    _args, kwargs = mock_encode.await_args
+    assert kwargs["target"] == MERKL_DISTRIBUTOR_ADDRESS
+    assert kwargs["fn_name"] == "claim"
+
+    users, tokens, amounts, proofs = kwargs["args"]
+    assert users == [adapter.strategy_wallet_address]
+    assert tokens == [token_b]
+    assert amounts == [101]
+    assert proofs == [["0x" + "22" * 32, "0x" + "33" * 32]]
+
+
+@pytest.mark.asyncio
+async def test_claim_urd_rewards_sends_tx_data(adapter):
+    dists = [
+        {
+            "claimable": "0",
+            "txData": "0x1234",
+            "distributor": {"address": "0x1111111111111111111111111111111111111111"},
+        },
+        {
+            "claimable": "5",
+            "txData": "0xabcd",
+            "distributor": {"address": "0x2222222222222222222222222222222222222222"},
+        },
+    ]
+    with (
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_REWARDS_CLIENT.get_user_distributions",
+            new=AsyncMock(return_value=dists),
+        ),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            new=AsyncMock(return_value="0xaaa"),
+        ) as mock_send,
+    ):
+        ok, txs = await adapter.claim_urd_rewards(
+            chain_id=CHAIN_ID_BASE,
+            min_claimable=1,
+        )
+
+    assert ok is True
+    assert txs == ["0xaaa"]
+    mock_send.assert_awaited_once()
+
+    _args, kwargs = mock_send.await_args
+    tx = _args[0]
+    assert tx["to"].lower() == "0x2222222222222222222222222222222222222222"
+    assert tx["data"] == "0xabcd"
+
+
+@pytest.mark.asyncio
+async def test_borrow_with_jit_liquidity_atomic_uses_bundler(adapter):
+    adapter.bundler_address = "0x1111111111111111111111111111111111111111"
+    market_key = "0x" + "aa" * 32
+    withdraw_key = "0x" + "bb" * 32
+    market = _mock_market(
+        market_key,
+        loan_addr="0x4200000000000000000000000000000000000006",
+        collateral_addr="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    )
+    market["state"]["liquidityAssets"] = "0"
+    market["publicAllocatorSharedLiquidity"] = [
+        {
+            "assets": "1000",
+            "publicAllocator": {"address": "0x9999999999999999999999999999999999999999"},
+            "vault": {"address": "0x8888888888888888888888888888888888888888"},
+            "withdrawMarket": {"uniqueKey": withdraw_key},
+            "supplyMarket": {"uniqueKey": market_key},
+        }
+    ]
+    withdraw_market = _mock_market(
+        withdraw_key,
+        loan_addr="0x4200000000000000000000000000000000000006",
+        collateral_addr="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    )
+
+    async def _get_market(*, chain_id: int, unique_key: str):
+        return market if unique_key == market_key else withdraw_market
+
+    with (
+        patch.object(adapter, "_get_market", new=AsyncMock(side_effect=_get_market)),
+        patch.object(
+            adapter, "get_public_allocator_fee", new=AsyncMock(return_value=(True, 123))
+        ),
+        patch.object(
+            adapter,
+            "_encode_data",
+            new=AsyncMock(side_effect=["0xcall1", "0xcall2"]),
+        ),
+        patch.object(
+            adapter,
+            "bundler_multicall",
+            new=AsyncMock(return_value=(True, "0xmulticall")),
+        ) as mock_multi,
+    ):
+        ok, tx = await adapter.borrow_with_jit_liquidity(
+            chain_id=CHAIN_ID_BASE,
+            market_unique_key=market_key,
+            qty=10,
+            atomic=True,
+        )
+
+    assert ok is True
+    assert tx == "0xmulticall"
+
+    _args, kwargs = mock_multi.await_args
+    assert kwargs["calls"] == ["0xcall1", "0xcall2"]
+    assert kwargs["value"] == 123
+
+
+@pytest.mark.asyncio
+async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
+    vault = "0x1111111111111111111111111111111111111111"
+    asset = "0x2222222222222222222222222222222222222222"
+
+    with (
+        patch.object(adapter, "_vault_asset", new=AsyncMock(return_value=asset)),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.ensure_allowance",
+            new=AsyncMock(return_value=(True, None)),
+        ) as mock_allow,
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            new=AsyncMock(return_value="0xabc"),
+        ),
+    ):
+        ok, tx = await adapter.vault_deposit(
+            chain_id=CHAIN_ID_BASE,
+            vault_address=vault,
+            assets=123,
+        )
+
+    assert ok is True
+    assert tx == "0xabc"
+
+    _args, allow_kwargs = mock_allow.await_args
+    assert allow_kwargs["token_address"] == asset
+    assert allow_kwargs["spender"].lower() == vault.lower()
+
+    _args, encode_kwargs = mock_encode.await_args
+    assert encode_kwargs["fn_name"] == "deposit"
+    assert encode_kwargs["args"][0] == 123

@@ -11,14 +11,14 @@ from wayfinder_paths.core.clients.MorphoRewardsClient import MORPHO_REWARDS_CLIE
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.erc4626_abi import ERC4626_ABI
-from wayfinder_paths.core.constants.morpho_bundler_abi import BUNDLER3_ABI
 from wayfinder_paths.core.constants.morpho_abi import MORPHO_BLUE_ABI
+from wayfinder_paths.core.constants.morpho_bundler_abi import BUNDLER3_ABI
 from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
 from wayfinder_paths.core.constants.public_allocator_abi import PUBLIC_ALLOCATOR_ABI
 from wayfinder_paths.core.constants.rewards_abi import MERKL_DISTRIBUTOR_ABI
+from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 MarketParamsTuple = tuple[str, str, str, str, int]
 
@@ -623,7 +623,7 @@ class MorphoAdapter(BaseAdapter):
             return False, str(exc)
 
     async def _vault_asset(self, *, chain_id: int, vault_address: str) -> str:
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
             contract = web3.eth.contract(
                 address=to_checksum_address(str(vault_address)), abi=ERC4626_ABI
             )
@@ -889,7 +889,7 @@ class MorphoAdapter(BaseAdapter):
         account: str | None = None,
         min_claim_amount: int = 0,
         claimable_only: bool = True,
-    ) -> tuple[bool, str | None | str]:
+    ) -> tuple[bool, str | None]:
         acct = to_checksum_address(account) if account else self.strategy_wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
@@ -1443,7 +1443,7 @@ class MorphoAdapter(BaseAdapter):
                 if public_allocator
                 else await self._public_allocator_address(chain_id=int(chain_id))
             )
-            async with web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
                 contract = web3.eth.contract(address=allocator, abi=PUBLIC_ALLOCATOR_ABI)
                 fee = await contract.functions.fee(to_checksum_address(str(vault))).call(
                     block_identifier="pending"
@@ -1794,7 +1794,7 @@ class MorphoAdapter(BaseAdapter):
         account: str,
     ) -> tuple[int, int, int]:
         morpho = await self._morpho_address(chain_id=int(chain_id))
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
             contract = web3.eth.contract(address=morpho, abi=MORPHO_BLUE_ABI)
             supply_shares, borrow_shares, collateral = await contract.functions.position(
                 market_unique_key, to_checksum_address(account)

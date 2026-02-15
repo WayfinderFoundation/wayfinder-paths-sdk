@@ -20,6 +20,10 @@ env/
 
 # Poetry (keep poetry.lock committed)
 .poetry-cache/
+poetry.toml
+
+# uv
+uv.lock
 
 # Testing / coverage
 .pytest_cache/

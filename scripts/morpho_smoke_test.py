@@ -230,7 +230,7 @@ async def main() -> None:
         usdc_vaults = [
             v
             for v in vaults
-            if str(((v.get("asset") or {}).get("address") or "")).lower() == usdc_addr.lower()
+            if str((v.get("asset") or {}).get("address") or "").lower() == usdc_addr.lower()
         ]
         if not usdc_vaults:
             raise RuntimeError("No USDC vaults found on this chain")
