@@ -286,7 +286,7 @@ class TestAaveV3Adapter:
             "wayfinder_paths.adapters.aave_v3_adapter.adapter.web3_utils.web3_from_chain_id",
             mock_web3_ctx,
         ):
-            ok, state = await adapter.get_full_user_state(
+            ok, state = await adapter.get_full_user_state_per_chain(
                 chain_id=42161,
                 account="0x1234567890123456789012345678901234567890",
                 include_rewards=False,

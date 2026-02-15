@@ -420,6 +420,50 @@ class AaveV3Adapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
+        account: str,
+        include_zero_positions: bool = False,
+        include_rewards: bool = True,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Query all supported Aave V3 chains and merge results."""
+        account = to_checksum_address(account)
+        all_positions: list[dict[str, Any]] = []
+        chains_queried: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        for cid in AAVE_V3_BY_CHAIN:
+            ok, result = await self.get_full_user_state_per_chain(
+                chain_id=cid,
+                account=account,
+                include_zero_positions=include_zero_positions,
+                include_rewards=include_rewards,
+            )
+            if ok:
+                chain_data = result  # type: ignore[assignment]
+                all_positions.extend(chain_data.get("positions", []))
+                chains_queried.append(
+                    {
+                        "chain_id": cid,
+                        "pool": chain_data.get("pool"),
+                        "userEmodeCategoryId": chain_data.get("userEmodeCategoryId", 0),
+                    }
+                )
+            else:
+                errors.append(f"chain {cid}: {result}")
+
+        if not chains_queried and errors:
+            return False, "; ".join(errors)
+
+        return True, {
+            "protocol": "aave_v3",
+            "account": account,
+            "chains": chains_queried,
+            "positions": all_positions,
+            "errors": errors,
+        }
+
+    async def get_full_user_state_per_chain(
+        self,
+        *,
         chain_id: int,
         account: str,
         include_zero_positions: bool = False,
@@ -513,6 +557,91 @@ class AaveV3Adapter(BaseAdapter):
                     except Exception:
                         user_rewards_by_underlying = {}
 
+                # Compute per-underlying reward APRs from global incentives
+                reserves_reward_aprs: dict[str, dict[str, float]] = {}
+                if include_rewards:
+                    try:
+                        _ui_inc_addr = to_checksum_address(
+                            entry["ui_incentive_data_provider"]
+                        )
+                        _ui_inc = web3.eth.contract(
+                            address=_ui_inc_addr,
+                            abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
+                        )
+                        _inc_rows = await _ui_inc.functions.getReservesIncentivesData(
+                            provider_addr
+                        ).call(block_identifier="pending")
+                        for _row in _inc_rows or []:
+                            try:
+                                _u = to_checksum_address(str(_row[0]))
+                            except Exception:  # noqa: BLE001
+                                continue
+                            _r = by_underlying.get(_u.lower())
+                            if not _r:
+                                continue
+                            _dec = int(_r.get("decimals") or 18)
+                            _pmr = int(_r.get("priceInMarketReferenceCurrency") or 0)
+                            _p = (
+                                (float(_pmr) / ref_unit) * float(ref_usd)
+                                if ref_unit and _pmr
+                                else 0.0
+                            )
+                            _avail = int(_r.get("availableLiquidity") or 0)
+                            _svd = int(_r.get("totalScaledVariableDebt") or 0)
+                            _vi = int(_r.get("variableBorrowIndex") or 0)
+                            _tvd = (_svd * _vi) // RAY
+                            _ds = (
+                                (_avail + _tvd) / (10**_dec) * _p
+                                if _p and (_avail + _tvd) > 0
+                                else 0.0
+                            )
+                            _db = _tvd / (10**_dec) * _p if _p and _tvd > 0 else 0.0
+
+                            def _rr(info: Any) -> list[Any]:
+                                try:
+                                    return list(info[2] or [])
+                                except Exception:
+                                    return []
+
+                            _sa = 0.0
+                            _ba = 0.0
+                            for _rwd in _rr(_row[1] if len(_row) > 1 else None):
+                                try:
+                                    _eps = int(_rwd[3] or 0)
+                                    _rpf = int(_rwd[7] or 0)
+                                    _rtd = int(_rwd[8] or 0)
+                                    _pfd = int(_rwd[10] or 0)
+                                except Exception:  # noqa: BLE001
+                                    continue
+                                _rp = float(_rpf) / (10**_pfd) if _pfd and _rpf else 0.0
+                                _ar = (
+                                    (float(_eps) / (10**_rtd)) * SECONDS_PER_YEAR * _rp
+                                    if _eps and _rtd >= 0 and _rp
+                                    else 0.0
+                                )
+                                _sa += float(_ar) / float(_ds) if _ds and _ar else 0.0
+                            for _rwd in _rr(_row[2] if len(_row) > 2 else None):
+                                try:
+                                    _eps = int(_rwd[3] or 0)
+                                    _rpf = int(_rwd[7] or 0)
+                                    _rtd = int(_rwd[8] or 0)
+                                    _pfd = int(_rwd[10] or 0)
+                                except Exception:  # noqa: BLE001
+                                    continue
+                                _rp = float(_rpf) / (10**_pfd) if _pfd and _rpf else 0.0
+                                _ar = (
+                                    (float(_eps) / (10**_rtd)) * SECONDS_PER_YEAR * _rp
+                                    if _eps and _rtd >= 0 and _rp
+                                    else 0.0
+                                )
+                                _ba += float(_ar) / float(_db) if _db and _ar else 0.0
+                            reserves_reward_aprs[_u.lower()] = {
+                                "supply_apr": _sa,
+                                "borrow_apr": _ba,
+                            }
+                    except Exception:  # noqa: BLE001
+                        reserves_reward_aprs = {}
+
             positions: list[dict[str, Any]] = []
             for row in user_reserves or []:
                 try:
@@ -572,8 +701,20 @@ class AaveV3Adapter(BaseAdapter):
                 ):
                     continue
 
+                liquidity_rate_ray = int(reserve.get("liquidityRate") or 0)
+                variable_borrow_rate_ray = int(reserve.get("variableBorrowRate") or 0)
+                supply_apr = ray_to_apr(liquidity_rate_ray)
+                borrow_apr = ray_to_apr(variable_borrow_rate_ray)
+                supply_apy = float(apr_to_apy(supply_apr))
+                variable_borrow_apy = float(apr_to_apy(borrow_apr))
+
+                rwa = reserves_reward_aprs.get(underlying.lower()) or {}
+                reward_supply_apr = float(rwa.get("supply_apr") or 0.0)
+                reward_borrow_apr = float(rwa.get("borrow_apr") or 0.0)
+
                 positions.append(
                     {
+                        "chain_id": int(chain_id),
                         "underlying": underlying,
                         "symbol": symbol_raw,
                         "symbol_canonical": normalize_symbol(symbol_raw)
@@ -592,6 +733,13 @@ class AaveV3Adapter(BaseAdapter):
                         "supply_usd": float(supply_usd),
                         "variable_borrow_usd": float(borrow_usd),
                         "price_usd": float(price_usd),
+                        "supply_apy": supply_apy,
+                        "variable_borrow_apy": variable_borrow_apy,
+                        "reward_supply_apr": reward_supply_apr,
+                        "reward_borrow_apr": reward_borrow_apr,
+                        "supply_apy_with_rewards": supply_apy + reward_supply_apr,
+                        "borrow_apy_with_rewards": variable_borrow_apy
+                        - reward_borrow_apr,
                         "rewards": user_rewards_by_underlying.get(underlying.lower())
                         or [],
                     }

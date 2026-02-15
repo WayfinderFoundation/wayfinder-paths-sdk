@@ -53,7 +53,7 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "init_kwargs": {},
         "method": "get_full_user_state",
         "account_param": "account",
-        "extra_kwargs": {"chain_id": 8453, "include_zero_positions": False},
+        "extra_kwargs": {"include_zero_positions": False},
     },
     "boros": {
         "module": "wayfinder_paths.adapters.boros_adapter.adapter",
@@ -69,7 +69,7 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "init_kwargs": {},
         "method": "get_full_user_state",
         "account_param": "account",
-        "extra_kwargs": {"chain": 42161, "include_zero_positions": False},
+        "extra_kwargs": {"include_zero_positions": False},
     },
     "polymarket": {
         "module": "wayfinder_paths.adapters.polymarket_adapter.adapter",
@@ -78,6 +78,14 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "method": "get_full_user_state",
         "account_param": "account",
         "extra_kwargs": {"include_orders": False},
+    },
+    "aave": {
+        "module": "wayfinder_paths.adapters.aave_v3_adapter.adapter",
+        "class": "AaveV3Adapter",
+        "init_kwargs": {},
+        "method": "get_full_user_state",
+        "account_param": "account",
+        "extra_kwargs": {"include_zero_positions": False},
     },
 }
 

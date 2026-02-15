@@ -307,7 +307,9 @@ async def test_get_full_user_state_returns_false_when_everything_fails():
     adapter._list_all_positions = AsyncMock(return_value=(False, "no positions"))
     adapter.fetch_prjx_points = AsyncMock(return_value=(False, "no points"))
 
-    ok, state = await adapter.get_full_user_state()
+    ok, state = await adapter.get_full_user_state(
+        account="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     assert ok is False
     assert state["errors"] == {
         "poolOverview": "no overview",
@@ -582,7 +584,9 @@ async def test_get_full_user_state_without_pool_skips_overview_and_balances():
     )
     adapter.fetch_prjx_points = AsyncMock(return_value=(True, {"points": 7}))
 
-    ok, state = await adapter.get_full_user_state()
+    ok, state = await adapter.get_full_user_state(
+        account="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    )
     assert ok is True
     assert state["pool"] is None
     assert state["poolOverview"] is None

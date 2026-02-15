@@ -19,13 +19,22 @@ adapter = AaveV3Adapter(config={})
 ok, markets = await adapter.get_all_markets(chain_id=42161, include_rewards=True)
 ```
 
-### get_full_user_state (on-chain)
+### get_full_user_state (all chains)
+
+Queries all supported Aave V3 chains and merges positions into a single result.
+
+```python
+ok, state = await adapter.get_full_user_state(account="0x...")
+# state["positions"] includes a "chain_id" field on each position
+```
+
+### get_full_user_state_per_chain (single chain)
 
 Fetch user supplies/borrows via `UiPoolDataProvider.getUserReservesData(...)` and
 (optionally) claimable incentives via `UiIncentiveDataProviderV3.getUserReservesIncentivesData(...)`.
 
 ```python
-ok, state = await adapter.get_full_user_state(chain_id=42161, account="0x...")
+ok, state = await adapter.get_full_user_state_per_chain(chain_id=42161, account="0x...")
 ```
 
 ### lend / unlend / borrow / repay

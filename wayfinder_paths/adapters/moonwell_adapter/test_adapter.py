@@ -87,6 +87,7 @@ class TestMoonwellAdapter:
         ):
             mock_multicall.side_effect = [stage1, stage2]
             ok, state = await adapter.get_full_user_state(
+                account="0x1234567890123456789012345678901234567890",
                 include_rewards=True,
                 include_usd=False,
                 include_apy=False,

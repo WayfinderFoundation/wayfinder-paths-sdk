@@ -1485,6 +1485,51 @@ class PendleAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
+        account: str,
+        include_inactive: bool = True,
+        include_sy: bool = True,
+        include_zero_positions: bool = False,
+        multicall_chunk_size: int = 400,
+        include_prices: bool = False,
+        price_concurrency: int = 8,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Query all Pendle chains and return merged positions."""
+        all_positions: list[dict[str, Any]] = []
+        chains_queried: list[int] = []
+        errors: list[str] = []
+
+        for cid in PENDLE_CHAIN_IDS.values():
+            ok, result = await self.get_full_user_state_per_chain(
+                chain=cid,
+                account=account,
+                include_inactive=include_inactive,
+                include_sy=include_sy,
+                include_zero_positions=include_zero_positions,
+                multicall_chunk_size=multicall_chunk_size,
+                include_prices=include_prices,
+                price_concurrency=price_concurrency,
+            )
+            if ok:
+                chain_data = result  # type: ignore[assignment]
+                all_positions.extend(chain_data.get("positions", []))
+                chains_queried.append(cid)
+            else:
+                errors.append(f"chain {cid}: {result}")
+
+        if not chains_queried and errors:
+            return False, "; ".join(errors)
+
+        return True, {
+            "protocol": "pendle",
+            "account": account,
+            "chains": chains_queried,
+            "positions": all_positions,
+            "errors": errors,
+        }
+
+    async def get_full_user_state_per_chain(
+        self,
+        *,
         chain: ChainLike,
         account: str,
         include_inactive: bool = True,

@@ -104,7 +104,7 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, state = await adapter.get_full_user_state(
+    ok, state = await adapter.get_full_user_state_per_chain(
         chain_id=chain_id, account=acct.address, include_rewards=False
     )
     assert ok is True, state
@@ -128,7 +128,7 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, state = await adapter.get_full_user_state(
+    ok, state = await adapter.get_full_user_state_per_chain(
         chain_id=chain_id, account=acct.address, include_rewards=False
     )
     assert ok is True, state
