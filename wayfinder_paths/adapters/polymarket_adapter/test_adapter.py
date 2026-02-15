@@ -170,6 +170,11 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
         )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
+        )
 
         best_quote = {
             "provider": "enso",
@@ -225,6 +230,11 @@ class TestPolymarketAdapter:
             adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
         )
         monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
+        )
+        monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",
             AsyncMock(side_effect=Exception("no route")),
@@ -268,6 +278,62 @@ class TestPolymarketAdapter:
         assert isinstance(res, dict)
         assert res["method"] == "polymarket_bridge"
         assert res["tx_hash"] == "0xtransfer"
+
+    @pytest.mark.asyncio
+    async def test_bridge_deposit_polymarket_bridge_supports_non_polygon_from_chain(
+        self, adapter, monkeypatch
+    ):
+        from_address = "0x000000000000000000000000000000000000dEaD"
+
+        async def sign_cb(_tx: dict) -> bytes:
+            return b""
+
+        monkeypatch.setattr(
+            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "bridge_deposit_addresses",
+            AsyncMock(
+                return_value=(
+                    True,
+                    {"address": {"evm": "0x2222222222222222222222222222222222222222"}},
+                )
+            ),
+        )
+        build_send = AsyncMock(
+            return_value={
+                "to": "0x2222222222222222222222222222222222222222",
+                "from": from_address,
+                "data": "0x",
+                "chainId": 42161,
+            }
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module, "build_send_transaction", build_send
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "send_transaction",
+            AsyncMock(return_value="0xtransfer"),
+        )
+
+        ok, res = await adapter.bridge_deposit(
+            from_chain_id=42161,
+            from_token_address=POLYGON_USDC_ADDRESS,
+            amount=1.0,
+            recipient_address=from_address,
+            token_decimals=6,
+        )
+        assert ok is True
+        assert isinstance(res, dict)
+        assert res["method"] == "polymarket_bridge"
+        assert build_send.await_args.kwargs["chain_id"] == 42161
 
     @pytest.mark.asyncio
     async def test_preflight_redeem_prefers_zero_parent_without_log_scan(
