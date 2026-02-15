@@ -14,7 +14,9 @@ class MorphoRewardsClient:
         self.base_url = str(base_url).rstrip("/")
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
 
-    async def _get_json(self, *, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get_json(
+        self, *, path: str, params: dict[str, Any] | None = None
+    ) -> Any:
         url = f"{self.base_url}{path}"
         resp = await self.client.get(url, params=params or {})
         resp.raise_for_status()
@@ -88,4 +90,3 @@ class MorphoRewardsClient:
 
 
 MORPHO_REWARDS_CLIENT = MorphoRewardsClient()
-

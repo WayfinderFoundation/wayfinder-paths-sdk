@@ -51,4 +51,3 @@ ERC4626_ABI = [
         "outputs": [{"name": "assets", "type": "uint256"}],
     },
 ]
-

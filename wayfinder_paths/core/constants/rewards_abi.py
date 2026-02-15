@@ -31,4 +31,3 @@ URD_ABI = [
         "outputs": [{"name": "amount", "type": "uint256"}],
     }
 ]
-

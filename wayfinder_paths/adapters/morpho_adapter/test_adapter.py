@@ -162,7 +162,10 @@ async def test_supply_collateral_uses_collateral_token(adapter):
 
     assert ok is True
     _, kwargs = mock_allow.await_args
-    assert kwargs["token_address"].lower() == "0x833589fcD6eDb6E08f4c7C32D4f71b54bdA02913".lower()
+    assert (
+        kwargs["token_address"].lower()
+        == "0x833589fcD6eDb6E08f4c7C32D4f71b54bdA02913".lower()
+    )
 
 
 @pytest.mark.asyncio
@@ -282,8 +285,14 @@ async def test_get_health_computes_maxes(adapter):
 @pytest.mark.asyncio
 async def test_get_full_user_state_filters_zero_positions(adapter):
     positions = [
-        {"market": {"uniqueKey": "0x" + "11" * 32}, "state": {"supplyShares": 0, "borrowShares": 0, "collateral": 0}},
-        {"market": {"uniqueKey": "0x" + "22" * 32}, "state": {"supplyShares": 1, "borrowShares": 0, "collateral": 0}},
+        {
+            "market": {"uniqueKey": "0x" + "11" * 32},
+            "state": {"supplyShares": 0, "borrowShares": 0, "collateral": 0},
+        },
+        {
+            "market": {"uniqueKey": "0x" + "22" * 32},
+            "state": {"supplyShares": 1, "borrowShares": 0, "collateral": 0},
+        },
     ]
 
     with patch(
@@ -437,7 +446,9 @@ async def test_borrow_with_jit_liquidity_atomic_uses_bundler(adapter):
     market["publicAllocatorSharedLiquidity"] = [
         {
             "assets": "1000",
-            "publicAllocator": {"address": "0x9999999999999999999999999999999999999999"},
+            "publicAllocator": {
+                "address": "0x9999999999999999999999999999999999999999"
+            },
             "vault": {"address": "0x8888888888888888888888888888888888888888"},
             "withdrawMarket": {"uniqueKey": withdraw_key},
             "supplyMarket": {"uniqueKey": market_key},

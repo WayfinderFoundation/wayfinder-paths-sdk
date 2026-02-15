@@ -104,7 +104,10 @@ async def main() -> None:
 
     # Lend/withdraw-full market: USDC loan, any collateral. Pick the first.
     lend_market = next(
-        m for m in markets if str((m.get("loanAsset") or {}).get("address", "")).lower() == usdc_addr.lower()
+        m
+        for m in markets
+        if str((m.get("loanAsset") or {}).get("address", "")).lower()
+        == usdc_addr.lower()
     )
     lend_key = str(lend_market["uniqueKey"])
 
@@ -117,7 +120,9 @@ async def main() -> None:
     print(f"lend_market={lend_key} lend_qty={lend_qty}")
     print(f"borrow_market={borrow_key} mode={borrow_mode}")
 
-    ok, tx = await adapter.lend(chain_id=chain_id, market_unique_key=lend_key, qty=lend_qty)
+    ok, tx = await adapter.lend(
+        chain_id=chain_id, market_unique_key=lend_key, qty=lend_qty
+    )
     if not ok:
         raise RuntimeError(f"lend failed: {tx}")
     print("lend_tx", tx)
@@ -224,13 +229,16 @@ async def main() -> None:
 
     vault_usdc = float(args.vault_usdc or 0.0)
     if vault_usdc > 0:
-        ok, vaults = await adapter.get_all_vaults(chain_id=chain_id, listed=True, include_v2=True)
+        ok, vaults = await adapter.get_all_vaults(
+            chain_id=chain_id, listed=True, include_v2=True
+        )
         if not ok:
             raise RuntimeError(f"get_all_vaults failed: {vaults}")
         usdc_vaults = [
             v
             for v in vaults
-            if str((v.get("asset") or {}).get("address") or "").lower() == usdc_addr.lower()
+            if str((v.get("asset") or {}).get("address") or "").lower()
+            == usdc_addr.lower()
         ]
         if not usdc_vaults:
             raise RuntimeError("No USDC vaults found on this chain")
@@ -240,12 +248,16 @@ async def main() -> None:
             raise RuntimeError("vault missing address")
 
         deposit_qty = int(vault_usdc * 10**6)
-        ok, tx = await adapter.vault_deposit(chain_id=chain_id, vault_address=vault_addr, assets=deposit_qty)
+        ok, tx = await adapter.vault_deposit(
+            chain_id=chain_id, vault_address=vault_addr, assets=deposit_qty
+        )
         if not ok:
             raise RuntimeError(f"vault_deposit failed: {tx}")
         print("vault_deposit_tx", tx)
 
-        ok, tx = await adapter.vault_withdraw(chain_id=chain_id, vault_address=vault_addr, assets=deposit_qty)
+        ok, tx = await adapter.vault_withdraw(
+            chain_id=chain_id, vault_address=vault_addr, assets=deposit_qty
+        )
         if not ok:
             raise RuntimeError(f"vault_withdraw failed: {tx}")
         print("vault_withdraw_tx", tx)

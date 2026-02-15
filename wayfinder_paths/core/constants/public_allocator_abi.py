@@ -39,4 +39,3 @@ PUBLIC_ALLOCATOR_ABI = [
         "outputs": [],
     },
 ]
-

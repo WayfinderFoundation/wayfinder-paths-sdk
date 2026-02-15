@@ -195,7 +195,9 @@ class MorphoAdapter(BaseAdapter):
         irm_addr = market.get("irmAddress")
         lltv_raw = market.get("lltv")
 
-        if not (loan_addr and collateral_addr and oracle_addr and irm_addr and lltv_raw):
+        if not (
+            loan_addr and collateral_addr and oracle_addr and irm_addr and lltv_raw
+        ):
             raise ValueError("market is missing required MarketParams fields")
 
         try:
@@ -212,7 +214,9 @@ class MorphoAdapter(BaseAdapter):
         )
 
     @staticmethod
-    def _format_market(chain_id: int, morpho: str, market: dict[str, Any]) -> dict[str, Any]:
+    def _format_market(
+        chain_id: int, morpho: str, market: dict[str, Any]
+    ) -> dict[str, Any]:
         loan = market.get("loanAsset") or {}
         collateral = market.get("collateralAsset") or {}
         oracle = market.get("oracle") or {}
@@ -572,7 +576,9 @@ class MorphoAdapter(BaseAdapter):
         include_v2: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
-            v1 = await MORPHO_CLIENT.get_all_vaults(chain_id=int(chain_id), listed=listed)
+            v1 = await MORPHO_CLIENT.get_all_vaults(
+                chain_id=int(chain_id), listed=listed
+            )
             out: list[dict[str, Any]] = [
                 self._format_vault_v1(int(chain_id), v) for v in v1
             ]
@@ -868,7 +874,10 @@ class MorphoAdapter(BaseAdapter):
                         r for r in (item.get("rewards") or []) if isinstance(r, dict)
                     ]
                     break
-                out["merkl"] = {"distributor": MERKL_DISTRIBUTOR_ADDRESS, "rewards": rewards}
+                out["merkl"] = {
+                    "distributor": MERKL_DISTRIBUTOR_ADDRESS,
+                    "rewards": rewards,
+                }
 
             if include_urd:
                 dists = await MORPHO_REWARDS_CLIENT.get_user_distributions(
@@ -905,7 +914,11 @@ class MorphoAdapter(BaseAdapter):
             if not ok or not isinstance(data, dict):
                 return False, str(data)
 
-            rewards = ((data.get("merkl") or {}).get("rewards") or []) if isinstance(data, dict) else []
+            rewards = (
+                ((data.get("merkl") or {}).get("rewards") or [])
+                if isinstance(data, dict)
+                else []
+            )
             rewards = [r for r in rewards if isinstance(r, dict)]
             if not rewards:
                 return True, None
@@ -992,7 +1005,9 @@ class MorphoAdapter(BaseAdapter):
                     "data": str(tx_data),
                     "value": 0,
                 }
-                txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+                txn_hash = await send_transaction(
+                    tx, self.strategy_wallet_signing_callback
+                )
                 tx_hashes.append(str(txn_hash))
 
             return True, tx_hashes
@@ -1088,7 +1103,9 @@ class MorphoAdapter(BaseAdapter):
             market_unique_key=str(market_unique_key),
             chain_id=int(chain_id),
         )
-        market = await self._get_market(chain_id=int(chain_id), unique_key=str(market_unique_key))
+        market = await self._get_market(
+            chain_id=int(chain_id), unique_key=str(market_unique_key)
+        )
         state = (market.get("state") or {}) if isinstance(market, dict) else {}
 
         try:
@@ -1116,7 +1133,9 @@ class MorphoAdapter(BaseAdapter):
 
         collateral_value_loan_assets = 0
         if collateral_assets > 0 and price > 0:
-            collateral_value_loan_assets = (collateral_assets * price) // ORACLE_PRICE_SCALE
+            collateral_value_loan_assets = (
+                collateral_assets * price
+            ) // ORACLE_PRICE_SCALE
 
         borrow_limit = 0
         if collateral_value_loan_assets > 0 and lltv > 0:
@@ -1158,7 +1177,9 @@ class MorphoAdapter(BaseAdapter):
             "max_borrow_assets": max_borrow,
             "max_withdraw_collateral_assets": max_withdraw_collateral,
             "healthFactor": hf,
-            "priceVariationToLiquidationPrice": pos.get("priceVariationToLiquidationPrice"),
+            "priceVariationToLiquidationPrice": pos.get(
+                "priceVariationToLiquidationPrice"
+            ),
             "ltv": ltv,
             "liquidity_assets": liquidity_assets,
         }
@@ -1444,10 +1465,12 @@ class MorphoAdapter(BaseAdapter):
                 else await self._public_allocator_address(chain_id=int(chain_id))
             )
             async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
-                contract = web3.eth.contract(address=allocator, abi=PUBLIC_ALLOCATOR_ABI)
-                fee = await contract.functions.fee(to_checksum_address(str(vault))).call(
-                    block_identifier="pending"
+                contract = web3.eth.contract(
+                    address=allocator, abi=PUBLIC_ALLOCATOR_ABI
                 )
+                fee = await contract.functions.fee(
+                    to_checksum_address(str(vault))
+                ).call(block_identifier="pending")
                 return True, int(fee or 0)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1628,7 +1651,10 @@ class MorphoAdapter(BaseAdapter):
             shared = market.get("publicAllocatorSharedLiquidity") or []
             shared_items = [s for s in shared if isinstance(s, dict)]
             if not shared_items:
-                return False, "No public allocator shared liquidity available for this market"
+                return (
+                    False,
+                    "No public allocator shared liquidity available for this market",
+                )
 
             needed = qty - liquidity_assets
 
@@ -1666,7 +1692,10 @@ class MorphoAdapter(BaseAdapter):
             vault_addr = to_checksum_address(vault_addr_lc)
 
             if best_total < needed:
-                return False, f"Insufficient reallocatable liquidity: needed={needed} available={best_total}"
+                return (
+                    False,
+                    f"Insufficient reallocatable liquidity: needed={needed} available={best_total}",
+                )
 
             # Build withdrawals.
             remaining = needed
@@ -1759,7 +1788,9 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(fee_value),
             )
-            realloc_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            realloc_hash = await send_transaction(
+                tx, self.strategy_wallet_signing_callback
+            )
 
             ok2, borrow_tx = await self.borrow(
                 chain_id=int(chain_id),
@@ -1796,7 +1827,11 @@ class MorphoAdapter(BaseAdapter):
         morpho = await self._morpho_address(chain_id=int(chain_id))
         async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
             contract = web3.eth.contract(address=morpho, abi=MORPHO_BLUE_ABI)
-            supply_shares, borrow_shares, collateral = await contract.functions.position(
+            (
+                supply_shares,
+                borrow_shares,
+                collateral,
+            ) = await contract.functions.position(
                 market_unique_key, to_checksum_address(account)
             ).call(block_identifier="pending")
         return (int(supply_shares), int(borrow_shares), int(collateral))
@@ -1869,7 +1904,13 @@ class MorphoAdapter(BaseAdapter):
                 target=morpho,
                 abi=MORPHO_BLUE_ABI,
                 fn_name="repay",
-                args=[market_params, int(repay_assets), int(repay_shares), strategy, b""],
+                args=[
+                    market_params,
+                    int(repay_assets),
+                    int(repay_shares),
+                    strategy,
+                    b"",
+                ],
                 from_address=strategy,
                 chain_id=int(chain_id),
             )

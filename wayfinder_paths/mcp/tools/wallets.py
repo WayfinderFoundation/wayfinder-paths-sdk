@@ -284,7 +284,9 @@ async def wallets(
 
         if parallel:
             tasks = [
-                _query_adapter(proto, address, include_zero_positions, chain_id=chain_id)
+                _query_adapter(
+                    proto, address, include_zero_positions, chain_id=chain_id
+                )
                 for proto in supported_protocols
             ]
             results = await asyncio.gather(*tasks)

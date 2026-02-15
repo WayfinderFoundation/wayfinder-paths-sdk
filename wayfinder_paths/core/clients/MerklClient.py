@@ -47,4 +47,3 @@ class MerklClient:
 
 
 MERKL_CLIENT = MerklClient()
-

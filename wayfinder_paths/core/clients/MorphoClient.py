@@ -32,7 +32,9 @@ class MorphoClient:
         self.headers = {"Content-Type": "application/json"}
         self._morpho_by_chain_cache: dict[int, dict[str, str]] | None = None
 
-    async def _post(self, *, query: str, variables: dict[str, Any] | None = None) -> Any:
+    async def _post(
+        self, *, query: str, variables: dict[str, Any] | None = None
+    ) -> Any:
         resp = await self.client.post(
             self.graphql_url,
             headers=self.headers,
@@ -229,7 +231,11 @@ class MorphoClient:
         payload = await self._post(
             query=query, variables={"k": str(unique_key), "chainId": chain_id}
         )
-        market = (payload or {}).get("marketByUniqueKey") if isinstance(payload, dict) else None
+        market = (
+            (payload or {}).get("marketByUniqueKey")
+            if isinstance(payload, dict)
+            else None
+        )
         if not isinstance(market, dict):
             raise ValueError(f"Market not found for uniqueKey={unique_key}")
         return market
@@ -288,7 +294,9 @@ class MorphoClient:
             query=query, variables={"k": str(unique_key), "chainId": chain_id}
         )
         market = (
-            (payload or {}).get("marketByUniqueKey") if isinstance(payload, dict) else None
+            (payload or {}).get("marketByUniqueKey")
+            if isinstance(payload, dict)
+            else None
         )
         if not isinstance(market, dict):
             raise ValueError(f"Market not found for uniqueKey={unique_key}")
@@ -345,7 +353,9 @@ class MorphoClient:
                 variables={"first": int(page_size), "skip": int(skip), "where": where},
             )
             page = (
-                (payload or {}).get("marketPositions") if isinstance(payload, dict) else None
+                (payload or {}).get("marketPositions")
+                if isinstance(payload, dict)
+                else None
             )
             items = (page or {}).get("items") or []
             if not items:
@@ -407,7 +417,9 @@ class MorphoClient:
                 "chainId": chain_id,
             },
         )
-        pos = (payload or {}).get("marketPosition") if isinstance(payload, dict) else None
+        pos = (
+            (payload or {}).get("marketPosition") if isinstance(payload, dict) else None
+        )
         if not isinstance(pos, dict):
             raise ValueError(
                 f"Position not found for user={user_address} market={market_unique_key}"
@@ -529,7 +541,9 @@ class MorphoClient:
         payload = await self._post(
             query=query, variables={"address": str(address), "chainId": chain_id}
         )
-        vault = (payload or {}).get("vaultByAddress") if isinstance(payload, dict) else None
+        vault = (
+            (payload or {}).get("vaultByAddress") if isinstance(payload, dict) else None
+        )
         if not isinstance(vault, dict):
             raise ValueError(f"Vault not found for address={address}")
         return vault
@@ -580,7 +594,9 @@ class MorphoClient:
                 query=query,
                 variables={"first": int(page_size), "skip": int(skip), "where": where},
             )
-            page = (payload or {}).get("vaultV2s") if isinstance(payload, dict) else None
+            page = (
+                (payload or {}).get("vaultV2s") if isinstance(payload, dict) else None
+            )
             items = (page or {}).get("items") or []
             if not items:
                 break
@@ -629,7 +645,11 @@ class MorphoClient:
         payload = await self._post(
             query=query, variables={"address": str(address), "chainId": chain_id}
         )
-        vault = (payload or {}).get("vaultV2ByAddress") if isinstance(payload, dict) else None
+        vault = (
+            (payload or {}).get("vaultV2ByAddress")
+            if isinstance(payload, dict)
+            else None
+        )
         if not isinstance(vault, dict):
             raise ValueError(f"VaultV2 not found for address={address}")
         return vault
