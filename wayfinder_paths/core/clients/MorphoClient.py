@@ -57,7 +57,6 @@ class MorphoClient:
     ) -> Any:
         max_retries = 3
         delay_s = 0.25
-        last_exc: Exception | None = None
 
         for attempt in range(max_retries):
             try:
@@ -74,7 +73,6 @@ class MorphoClient:
                     raise ValueError(f"Morpho GraphQL errors: {data['errors']}")
                 return data.get("data", data)
             except httpx.HTTPStatusError as exc:
-                last_exc = exc
                 status = exc.response.status_code
                 retryable = status in (429, 500, 502, 503, 504)
                 if retryable and attempt < (max_retries - 1):
@@ -86,7 +84,6 @@ class MorphoClient:
                 httpx.TimeoutException,
                 json.JSONDecodeError,
             ) as exc:
-                last_exc = exc
                 if attempt < (max_retries - 1):
                     logger.warning(
                         "Morpho API request failed (attempt {}/{}): {}",
@@ -98,12 +95,9 @@ class MorphoClient:
                     await asyncio.sleep(delay_s * (2**attempt))
                     continue
                 raise
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
+            except Exception:  # noqa: BLE001
                 raise
 
-        if last_exc is not None:
-            raise last_exc
         raise RuntimeError("Morpho API request failed")
 
     async def get_morpho_by_chain(
