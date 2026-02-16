@@ -34,10 +34,38 @@ Adapter for Pendle API + Hosted SDK endpoints to support:
 
 ## Usage
 
+### get_full_user_state (positions snapshot)
+
+Fetch a user’s Pendle positions across supported chains (wrapper) or on a single chain.
+
+The per-chain snapshot (`get_full_user_state_per_chain`) is an **on-chain ERC20 balance scan** via Multicall:
+- fetch markets from Pendle API (market/pt/yt/sy addresses + expiry metadata)
+- multicall `balanceOf(account)` (+ `decimals()`) for PT/YT/LP/(SY)
+- optional `marketSnapshot` enrichment via Pendle API when `include_prices=True`
+
+```python
+from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
+
+adapter = PendleAdapter()
+
+# Single chain
+ok, state = await adapter.get_full_user_state_per_chain(
+    chain="arbitrum",
+    account="0x...",
+    include_zero_positions=False,
+    include_prices=True,
+)
+
+# All supported chains
+ok, state = await adapter.get_full_user_state(account="0x...", include_prices=False)
+```
+
+The per-chain result includes: `protocol`, `source`, `chainId`, `account`, `positions`.
+
 ### List active PT/YT markets (multi-chain)
 
 ```python
-from adapters.pendle_adapter.adapter import PendleAdapter
+from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
 adapter = PendleAdapter()
 

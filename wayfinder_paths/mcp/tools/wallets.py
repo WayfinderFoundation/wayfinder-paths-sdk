@@ -47,6 +47,16 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "account_param": "account",
         "extra_kwargs": {"include_zero_positions": False},
     },
+    "morpho": {
+        "module": "wayfinder_paths.adapters.morpho_adapter.adapter",
+        "class": "MorphoAdapter",
+        "init_kwargs": {},
+        "method": "get_full_user_state",
+        "method_per_chain": "get_full_user_state_per_chain",
+        "chain_param": "chain_id",
+        "account_param": "account",
+        "extra_kwargs": {"include_zero_positions": False},
+    },
     "boros": {
         "module": "wayfinder_paths.adapters.boros_adapter.adapter",
         "class": "BorosAdapter",
@@ -60,8 +70,10 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "class": "PendleAdapter",
         "init_kwargs": {},
         "method": "get_full_user_state",
+        "method_per_chain": "get_full_user_state_per_chain",
+        "chain_param": "chain",
         "account_param": "account",
-        "extra_kwargs": {"chain": 42161, "include_zero_positions": False},
+        "extra_kwargs": {"include_zero_positions": False},
     },
     "polymarket": {
         "module": "wayfinder_paths.adapters.polymarket_adapter.adapter",
@@ -70,6 +82,16 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "method": "get_full_user_state",
         "account_param": "account",
         "extra_kwargs": {"include_orders": False},
+    },
+    "aave": {
+        "module": "wayfinder_paths.adapters.aave_v3_adapter.adapter",
+        "class": "AaveV3Adapter",
+        "init_kwargs": {},
+        "method": "get_full_user_state",
+        "method_per_chain": "get_full_user_state_per_chain",
+        "chain_param": "chain_id",
+        "account_param": "account",
+        "extra_kwargs": {"include_zero_positions": False},
     },
 }
 
@@ -82,6 +104,7 @@ async def _query_adapter(
     protocol: str,
     address: str,
     include_zero_positions: bool = False,
+    chain_id: int | None = None,
 ) -> dict[str, Any]:
     config = PROTOCOL_ADAPTERS.get(protocol)
     if not config:
@@ -97,12 +120,24 @@ async def _query_adapter(
         adapter_class = getattr(module, config["class"])
         adapter = adapter_class(**config["init_kwargs"])
 
-        method = getattr(adapter, config["method"])
+        method_name = config["method"]
         kwargs = {config["account_param"]: address, **config["extra_kwargs"]}
 
         if "include_zero_positions" in config["extra_kwargs"]:
             kwargs["include_zero_positions"] = include_zero_positions
 
+        if chain_id is not None:
+            method_per_chain = config.get("method_per_chain")
+            chain_param = config.get("chain_param")
+            if method_per_chain and chain_param:
+                method_name = str(method_per_chain)
+                kwargs[str(chain_param)] = int(chain_id)
+            if "chain_id" in kwargs:
+                kwargs["chain_id"] = int(chain_id)
+            elif "chain" in kwargs:
+                kwargs["chain"] = int(chain_id)
+
+        method = getattr(adapter, method_name)
         success, data = await method(**kwargs)
         duration = time.time() - start
 
@@ -269,13 +304,20 @@ async def wallets(
 
         if parallel:
             tasks = [
-                _query_adapter(proto, address, include_zero_positions)
+                _query_adapter(
+                    proto, address, include_zero_positions, chain_id=chain_id
+                )
                 for proto in supported_protocols
             ]
             results = await asyncio.gather(*tasks)
         else:
             for proto in supported_protocols:
-                result = await _query_adapter(proto, address, include_zero_positions)
+                result = await _query_adapter(
+                    proto,
+                    address,
+                    include_zero_positions,
+                    chain_id=chain_id,
+                )
                 results.append(result)
 
         total_duration = time.time() - start

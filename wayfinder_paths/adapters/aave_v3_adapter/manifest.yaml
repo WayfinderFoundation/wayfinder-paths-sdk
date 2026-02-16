@@ -1,0 +1,13 @@
+schema_version: "0.1"
+entrypoint: "adapters.aave_v3_adapter.adapter.AaveV3Adapter"
+capabilities:
+  - "market.list"
+  - "position.read"
+  - "lending.lend"
+  - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "collateral.toggle"
+  - "rewards.claim"
+dependencies: []
+
