@@ -14,6 +14,7 @@ Changed
 3. Simplified `config.py` (redundant `isinstance` checks), `transaction.py` (defensive guards, bare `except`), and `projectx.py` (already-narrowed type checks).
 4. Moved inline import in `runner/daemon.py` to top-level.
 5. Removed self-documenting comments in pendle and boros_hype adapters/strategies.
+6. Polymarket CLOB URL switched from proxy to official endpoint (`clob.polymarket.com`).
 
 ## [0.6.0] - 2026-02-15 (262f633b8ea2d0b87fee83f0ed2b042b8ec4b0e2)
 
