@@ -45,6 +45,26 @@ adapter = MoonwellAdapter(config=config)
 
 ## Methods
 
+### get_full_user_state (positions snapshot)
+
+Fetch a user’s full Moonwell snapshot: supplied/borrowed positions across all markets, account liquidity, and (optionally) rewards + APY fields.
+
+```python
+ok, state = await adapter.get_full_user_state(
+    account="0x...",
+    include_rewards=True,
+    include_apy=True,
+    include_usd=False,
+    include_zero_positions=False,
+)
+```
+
+Returns a dict with keys like:
+- `protocol`, `chainId`, `account`
+- `accountLiquidity` (error/liquidity/shortfall)
+- `positions` (per-market position rows)
+- `rewards` (claimable WELL rewards if `include_rewards=True`)
+
 ### Lending
 
 ```python
@@ -126,6 +146,7 @@ success, amount = await adapter.get_borrowable_amount(account="0x...")
 
 Notes:
 - `get_all_markets()` returns all markets from the Comptroller (no user-position filtering).
+- Each market entry also includes protocol parameters from `MoonwellViews.getAllMarketsInfo()`, e.g. `borrowCap`, `supplyCap`, `mintPaused`, `borrowPaused`, `reserveFactor`, `borrowIndex`, `totalReserves`.
 - `baseSupplyApy/baseBorrowApy` are compounded APY values derived from the market interest rates.
 - `rewardSupplyApy/rewardBorrowApy` (and `incentives[*].supplyRewardsApy/borrowRewardsApy`) are *linear* reward APR values derived from on-chain emission speeds and Moonwell oracle prices. They are stored under `*Apy` keys for backward-compatibility, but they are **not** compounded.
 - `supplyApy/borrowApy` are computed as `base*` + the reward APR component, so treat these as an approximation for display; keep base + rewards separate if you need strictly consistent APY math.

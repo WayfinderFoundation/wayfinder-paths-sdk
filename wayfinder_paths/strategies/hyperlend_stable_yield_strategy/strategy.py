@@ -511,9 +511,9 @@ class HyperlendStableYieldStrategy(Strategy):
                 canonical = asset.get("symbol_canonical")
                 if not canonical:
                     canonical = (
-                        self._normalize_symbol(symbol_raw)
+                        normalize_symbol(symbol_raw)
                         if symbol_raw
-                        else self._normalize_symbol(checksum)
+                        else normalize_symbol(checksum)
                     )
                     asset["symbol_canonical"] = canonical
                 display_symbol = asset.get("symbol_display")
@@ -616,12 +616,6 @@ class HyperlendStableYieldStrategy(Strategy):
                 "asset": asset,
             }
         return positions
-
-    def _normalize_symbol(self, symbol: str) -> str:
-        return normalize_symbol(symbol)
-
-    def _is_stable_symbol(self, symbol: str) -> bool:
-        return is_stable_symbol(symbol)
 
     def _invalidate_assets_snapshot(self) -> None:
         self._assets_snapshot = None
@@ -1608,9 +1602,7 @@ class HyperlendStableYieldStrategy(Strategy):
             symbol_canonical = entry.get("symbol_canonical")
             if not symbol_canonical:
                 raw_symbol = entry.get("symbol") or entry.get("display_symbol")
-                symbol_canonical = (
-                    self._normalize_symbol(raw_symbol) if raw_symbol else None
-                )
+                symbol_canonical = normalize_symbol(raw_symbol) if raw_symbol else None
             if not symbol_canonical:
                 continue
             display_symbol = (
@@ -2104,7 +2096,7 @@ class HyperlendStableYieldStrategy(Strategy):
                     or (asset or {}).get("symbol_display")
                     or ""
                 )
-                if self._is_stable_symbol(symbol):
+                if is_stable_symbol(symbol):
                     include_balance = True
             if not include_balance:
                 continue

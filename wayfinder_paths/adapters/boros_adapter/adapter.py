@@ -1357,7 +1357,7 @@ class BorosAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str | None = None,
+        account: str,
         account_id: int | None = None,
         token_id: int = 3,
         token_decimals: int = 6,
@@ -1375,9 +1375,7 @@ class BorosAdapter(BaseAdapter):
           - Open limit orders (optional)
           - Withdrawal status (optional)
         """
-        addr = account or self.user_address
-        if not addr:
-            return False, "user_address not configured"
+        addr = account
 
         try:
             collaterals = await self.boros_client.get_collaterals(
