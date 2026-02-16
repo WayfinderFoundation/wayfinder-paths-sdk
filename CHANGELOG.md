@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0] - 2026-02-15 (262f633b8ea2d0b87fee83f0ed2b042b8ec4b0e2)
+
+Added
+
+1. Morpho Blue adapter with vault discovery, rewards, public allocator, and multi-chain fork simulation.
+2. Aave V3 adapter with lending/borrowing, collateral management, and fork simulation.
+3. Standardized user snapshot format across lending adapters.
+4. Market risk and supply cap fields surfaced in Moonwell and Hyperlend adapters.
+5. Merkl, Morpho, and MorphoRewards clients in core.
+6. Retry utilities for Gorlami fork RPC calls.
+
+Changed
+
+1. Hyperlend manifest updated with missing capabilities (borrow, repay, collateral toggles).
+2. Hyperlend stable yield strategy simplified — removed symbol wrapper methods.
+3. Gorlami testnet client refactored with unified retry logic and multi-chain support.
+
 ## [0.5.0] - 2026-02-14 (57cac507e8e00165f9027b30584e93ff2d7f596b)
 
 Added
