@@ -1,6 +1,7 @@
 schema_version: "0.1"
 entrypoint: "adapters.pendle_adapter.adapter.PendleAdapter"
 capabilities:
+  - "position.read"
   - "pendle.markets.read"
   - "pendle.market.snapshot"
   - "pendle.market.history"

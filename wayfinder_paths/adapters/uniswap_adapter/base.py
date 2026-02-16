@@ -298,7 +298,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str | None = None,
+        account: str,
     ) -> tuple[bool, dict[str, Any] | str]:
         """Return a best-effort snapshot of a user's Uniswap V3 positions."""
         ok, positions = await self.get_positions(owner=account)
@@ -306,7 +306,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
             return False, str(positions)
 
         protocol = (self.adapter_type or self.name).lower()
-        acct = to_checksum_address(account) if account else self.owner
+        acct = to_checksum_address(account)
         return (
             True,
             {

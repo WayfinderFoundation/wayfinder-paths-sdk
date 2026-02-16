@@ -15,7 +15,7 @@ from wayfinder_paths.core.clients.HyperlendClient import (
     MarketEntry,
     StableMarketsHeadroomResponse,
 )
-from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
+from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_HYPEREVM
 from wayfinder_paths.core.constants.contracts import (
     HYPEREVM_WHYPE,
@@ -31,24 +31,14 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     WETH_ABI,
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
+from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-RAY = 10**27
 VARIABLE_RATE_MODE = 2
 REFERRAL_CODE = 0
-
-
-def _ray_to_apr(ray: int) -> float:
-    if not ray:
-        return 0.0
-    return float(ray) / RAY
-
-
-def _apr_to_apy(apr: float) -> float:
-    return (1 + apr / SECONDS_PER_YEAR) ** SECONDS_PER_YEAR - 1
 
 
 def _reserve_to_dict(reserve: Any, reserve_keys: list[str]) -> dict[str, Any]:
@@ -258,8 +248,8 @@ class HyperlendAdapter(BaseAdapter):
                         price_market_ref_float = 0.0
                     price_usd = price_market_ref_float * ref_usd
 
-                    supply_apr = _ray_to_apr(liquidity_rate_ray)
-                    borrow_apr = _ray_to_apr(variable_borrow_rate_ray)
+                    supply_apr = ray_to_apr(liquidity_rate_ray)
+                    borrow_apr = ray_to_apr(variable_borrow_rate_ray)
 
                     available_liquidity = int(r.get("availableLiquidity") or 0)
                     scaled_variable_debt = int(r.get("totalScaledVariableDebt") or 0)
@@ -303,9 +293,9 @@ class HyperlendAdapter(BaseAdapter):
                             "borrow_cap": int(r.get("borrowCap") or 0),
                             "price_usd": float(price_usd),
                             "supply_apr": float(supply_apr),
-                            "supply_apy": float(_apr_to_apy(supply_apr)),
+                            "supply_apy": float(apr_to_apy(supply_apr)),
                             "variable_borrow_apr": float(borrow_apr),
-                            "variable_borrow_apy": float(_apr_to_apy(borrow_apr)),
+                            "variable_borrow_apy": float(apr_to_apy(borrow_apr)),
                             "available_liquidity": int(available_liquidity),
                             "total_variable_debt": int(total_variable_debt),
                             "tvl": int(tvl),
