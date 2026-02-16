@@ -95,8 +95,6 @@ class MorphoClient:
                     await asyncio.sleep(delay_s * (2**attempt))
                     continue
                 raise
-            except Exception:  # noqa: BLE001
-                raise
 
         raise RuntimeError("Morpho API request failed")
 

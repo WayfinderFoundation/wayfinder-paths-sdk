@@ -31,7 +31,7 @@ class HyperModule(Module):
 class _GorlamiProvider(AsyncHTTPProvider):
     async def make_request(self, method, params):  # type: ignore[override]
         # Gorlami's JSON-RPC responses omit `id`, which breaks web3.py.
-        # It can also intermittently return 502/503/504, so retry a bit.
+        # It can also intermittently return 429/502/503/504, so retry a bit.
         req = self.form_request(method, params)
         request_data = self.encode_rpc_dict(req)
 
@@ -46,7 +46,7 @@ class _GorlamiProvider(AsyncHTTPProvider):
                 return resp
             except Exception as exc:
                 status = getattr(exc, "status", None)
-                if status in (502, 503, 504) and attempt < (max_retries - 1):
+                if status in (429, 502, 503, 504) and attempt < (max_retries - 1):
                     await asyncio.sleep(delay_s * (2**attempt))
                     continue
                 raise

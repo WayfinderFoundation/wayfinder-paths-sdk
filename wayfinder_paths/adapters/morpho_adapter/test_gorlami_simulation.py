@@ -22,6 +22,13 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _liquidity_assets(market: dict) -> int:
+    try:
+        return int((market.get("state") or {}).get("liquidityAssets") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 @pytest.mark.asyncio
 async def test_gorlami_morpho_markets_and_borrow(gorlami):
     chain_id = CHAIN_ID_BASE
@@ -71,14 +78,8 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
     if not usdc_markets:
         pytest.skip("No USDC loan markets found on Base")
 
-    def _liq(m: dict) -> int:
-        try:
-            return int((m.get("state") or {}).get("liquidityAssets") or 0)
-        except (TypeError, ValueError):
-            return 0
-
     # Pick the deepest USDC market so withdraw-full doesn't fail due to low liquidity.
-    lend_market = max(usdc_markets, key=_liq)
+    lend_market = max(usdc_markets, key=_liquidity_assets)
     lend_key = str(lend_market["uniqueKey"])
 
     ok, tx = await adapter.lend(
@@ -123,7 +124,7 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
     if not usdc_weth:
         pytest.skip("No USDC/WETH market found on Base")
 
-    borrow_market = max(usdc_weth, key=_liq)
+    borrow_market = max(usdc_weth, key=_liquidity_assets)
     borrow_key = str(borrow_market["uniqueKey"])
 
     collateral_weth = int(0.05 * 10**18)
@@ -273,13 +274,7 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
     if not usdc_markets:
         pytest.skip("No USDC loan markets found on Arbitrum")
 
-    def _liq(m: dict) -> int:
-        try:
-            return int((m.get("state") or {}).get("liquidityAssets") or 0)
-        except (TypeError, ValueError):
-            return 0
-
-    lend_market = max(usdc_markets, key=_liq)
+    lend_market = max(usdc_markets, key=_liquidity_assets)
     lend_key = str(lend_market["uniqueKey"])
 
     ok, tx = await adapter.lend(
@@ -307,7 +302,7 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
     if not usdc_weth:
         pytest.skip("No USDC/WETH market found on Arbitrum")
 
-    borrow_market = max(usdc_weth, key=_liq)
+    borrow_market = max(usdc_weth, key=_liquidity_assets)
     borrow_key = str(borrow_market["uniqueKey"])
 
     collateral_weth = int(0.05 * 10**18)
