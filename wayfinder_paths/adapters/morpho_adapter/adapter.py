@@ -8,11 +8,15 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.MerklClient import MERKL_CLIENT
 from wayfinder_paths.core.clients.MorphoClient import MORPHO_CLIENT
 from wayfinder_paths.core.clients.MorphoRewardsClient import MORPHO_REWARDS_CLIENT
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import MANTISSA, MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.erc4626_abi import ERC4626_ABI
 from wayfinder_paths.core.constants.morpho_abi import MORPHO_BLUE_ABI
 from wayfinder_paths.core.constants.morpho_bundler_abi import BUNDLER3_ABI
+from wayfinder_paths.core.constants.morpho_constants import (
+    MERKL_DISTRIBUTOR_ADDRESS,
+    ORACLE_PRICE_SCALE,
+)
 from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
 from wayfinder_paths.core.constants.public_allocator_abi import PUBLIC_ALLOCATOR_ABI
 from wayfinder_paths.core.constants.rewards_abi import MERKL_DISTRIBUTOR_ABI
@@ -21,12 +25,6 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
 MarketParamsTuple = tuple[str, str, str, str, int]
-
-WAD = 10**18
-ORACLE_PRICE_SCALE = 10**36
-MERKL_DISTRIBUTOR_ADDRESS = to_checksum_address(
-    "0x3Ef3D8bA38EBe18DB133cEc108f4D14CE00Dd9Ae"
-)
 
 
 class MorphoAdapter(BaseAdapter):
@@ -55,26 +53,45 @@ class MorphoAdapter(BaseAdapter):
             to_checksum_address(str(bundler_addr)) if bundler_addr else None
         )
 
+        self._morpho_address_cache: dict[int, str] = {}
+        self._public_allocator_address_cache: dict[int, str] = {}
         self._market_cache: dict[tuple[int, str], dict[str, Any]] = {}
 
     async def _morpho_address(self, *, chain_id: int) -> str:
+        cid = int(chain_id)
+        if cached := self._morpho_address_cache.get(cid):
+            return cached
+
         entry = MORPHO_BY_CHAIN.get(int(chain_id))
         if entry and entry.get("morpho"):
-            return to_checksum_address(str(entry["morpho"]))
+            addr = to_checksum_address(str(entry["morpho"]))
+            self._morpho_address_cache[cid] = addr
+            return addr
 
         # Fallback to the Morpho API if constants are missing/out-of-date.
-        addr = await MORPHO_CLIENT.get_morpho_address(chain_id=int(chain_id))
-        return to_checksum_address(str(addr))
+        addr = to_checksum_address(
+            str(await MORPHO_CLIENT.get_morpho_address(chain_id=cid))
+        )
+        self._morpho_address_cache[cid] = addr
+        return addr
 
     async def _public_allocator_address(self, *, chain_id: int) -> str:
+        cid = int(chain_id)
+        if cached := self._public_allocator_address_cache.get(cid):
+            return cached
+
         entry = MORPHO_BY_CHAIN.get(int(chain_id))
         if entry and entry.get("public_allocator"):
-            return to_checksum_address(str(entry["public_allocator"]))
+            addr = to_checksum_address(str(entry["public_allocator"]))
+            self._public_allocator_address_cache[cid] = addr
+            return addr
 
         by_chain = await MORPHO_CLIENT.get_morpho_by_chain()
         api_entry = by_chain.get(int(chain_id)) if isinstance(by_chain, dict) else None
         if api_entry and api_entry.get("public_allocator"):
-            return to_checksum_address(str(api_entry["public_allocator"]))
+            addr = to_checksum_address(str(api_entry["public_allocator"]))
+            self._public_allocator_address_cache[cid] = addr
+            return addr
 
         raise ValueError(f"Public allocator not found for chain_id={chain_id}")
 
@@ -1139,7 +1156,7 @@ class MorphoAdapter(BaseAdapter):
 
         borrow_limit = 0
         if collateral_value_loan_assets > 0 and lltv > 0:
-            borrow_limit = (collateral_value_loan_assets * lltv) // WAD
+            borrow_limit = (collateral_value_loan_assets * lltv) // MANTISSA
 
         max_borrow = borrow_limit - borrow_assets
         if max_borrow < 0:
@@ -1152,9 +1169,9 @@ class MorphoAdapter(BaseAdapter):
         elif price <= 0 or lltv <= 0:
             max_withdraw_collateral = 0
         else:
-            # collateral_min = ceil(borrow_assets * ORACLE_PRICE_SCALE * WAD / (price * lltv))
+            # collateral_min = ceil(borrow_assets * ORACLE_PRICE_SCALE * MANTISSA / (price * lltv))
             denom = price * lltv
-            num = borrow_assets * ORACLE_PRICE_SCALE * WAD
+            num = borrow_assets * ORACLE_PRICE_SCALE * MANTISSA
             collateral_min = (num + denom - 1) // denom
             max_withdraw_collateral = collateral_assets - collateral_min
             if max_withdraw_collateral < 0:
