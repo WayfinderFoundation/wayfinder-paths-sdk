@@ -47,6 +47,8 @@ Each market entry includes:
 - Rates: `supply_apr`, `supply_apy`, `variable_borrow_apr`, `variable_borrow_apy`
 - Liquidity: `available_liquidity`, `total_variable_debt`, `tvl`
 - Caps: `supply_cap`, `supply_cap_headroom`
+- Risk: `ltv_bps`, `liquidation_threshold_bps`, `liquidation_bonus_bps`, `reserve_factor_bps`
+- Limits: `borrow_cap`, `debt_ceiling`, `debt_ceiling_decimals`
 
 ### get_stable_markets (backend)
 
