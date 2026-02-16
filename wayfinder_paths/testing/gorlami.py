@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from unittest.mock import patch
 
+import httpx
 import pytest
 from loguru import logger
 
@@ -34,7 +35,12 @@ async def gorlami():
         key = str(chain_id)
         if key in forks:
             return
-        fork = await client.create_fork(chain_id)
+        try:
+            fork = await client.create_fork(chain_id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response is not None and exc.response.status_code == 429:
+                pytest.skip(f"gorlami rate limited (HTTP 429) creating fork for {key}")
+            raise
         forks[key] = fork
         logger.info(f"[gorlami] Created fork {fork['fork_id']} for chain {chain_id}")
         _apply_rpc_overrides()

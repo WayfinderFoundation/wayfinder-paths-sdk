@@ -895,8 +895,8 @@ class MorphoAdapter(BaseAdapter):
             if isinstance(market, dict):
                 try:
                     chain_raw = (
-                        ((market.get("morphoBlue") or {}).get("chain") or {}).get("id")
-                    )
+                        (market.get("morphoBlue") or {}).get("chain") or {}
+                    ).get("id")
                     chain_id = int(chain_raw) if chain_raw is not None else None
                 except (TypeError, ValueError):
                     chain_id = None

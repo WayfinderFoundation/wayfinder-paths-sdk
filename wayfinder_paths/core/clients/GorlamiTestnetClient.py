@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
@@ -19,12 +20,63 @@ class GorlamiTestnetClient:
             headers=headers,
         )
 
+    async def _request_with_retry(
+        self, method: str, url: str, **kwargs: Any
+    ) -> httpx.Response:
+        max_retries = 3
+        delay_s = 0.25
+        retryable_statuses = {429, 500, 502, 503, 504}
+
+        for attempt in range(max_retries):
+            try:
+                resp = await self.client.request(method, url, **kwargs)
+
+                if resp.status_code in retryable_statuses and attempt < (
+                    max_retries - 1
+                ):
+                    retry_after = resp.headers.get("Retry-After")
+                    try:
+                        delay = float(retry_after) if retry_after is not None else None
+                    except ValueError:
+                        delay = None
+
+                    await resp.aread()
+                    sleep_s = delay if delay is not None else delay_s * (2**attempt)
+                    logger.warning(
+                        "Gorlami HTTP {} for {} {} (attempt {}/{}); retrying in {:.2f}s",
+                        resp.status_code,
+                        method,
+                        url,
+                        attempt + 1,
+                        max_retries,
+                        sleep_s,
+                    )
+                    await asyncio.sleep(sleep_s)
+                    continue
+
+                resp.raise_for_status()
+                return resp
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if attempt < (max_retries - 1):
+                    sleep_s = delay_s * (2**attempt)
+                    logger.warning(
+                        "Gorlami request failed ({}; attempt {}/{}); retrying in {:.2f}s",
+                        type(exc).__name__,
+                        attempt + 1,
+                        max_retries,
+                        sleep_s,
+                    )
+                    await asyncio.sleep(sleep_s)
+                    continue
+                raise
+
+        raise RuntimeError("Gorlami request failed")
+
     async def create_fork(self, chain_id: int) -> dict:
         url = f"{self.base_url}/fork"
         logger.debug(f"Creating fork for chain_id={chain_id}")
 
-        resp = await self.client.post(url, params={"chainId": chain_id})
-        resp.raise_for_status()
+        resp = await self._request_with_retry("POST", url, params={"chainId": chain_id})
 
         data = resp.json()
         fork_id = data.get("fork_id") or data.get("forkId")
@@ -60,8 +112,7 @@ class GorlamiTestnetClient:
             "params": params,
         }
 
-        resp = await self.client.post(url, json=payload)
-        resp.raise_for_status()
+        resp = await self._request_with_retry("POST", url, json=payload)
 
         data = resp.json()
         if "error" in data:
@@ -74,8 +125,7 @@ class GorlamiTestnetClient:
             "address": wallet,
             "balance": amount,
         }
-        resp = await self.client.post(url, json=payload)
-        resp.raise_for_status()
+        await self._request_with_retry("POST", url, json=payload)
         logger.debug(
             f"Set native balance for {wallet} to {amount} wei on fork {fork_id}"
         )
@@ -91,8 +141,7 @@ class GorlamiTestnetClient:
             "amount": amount,
         }
 
-        resp = await self.client.post(url, json=payload)
-        resp.raise_for_status()
+        await self._request_with_retry("POST", url, json=payload)
         logger.debug(
             f"Set ERC20 balance for {wallet} token {token} to {amount} on fork {fork_id}"
         )
