@@ -181,7 +181,8 @@ class PolymarketAdapter(BaseAdapter):
     def _normalize_market(market: dict[str, Any]) -> dict[str, Any]:
         out = dict(market)
         for key in ("outcomes", "outcomePrices", "clobTokenIds"):
-            out[key] = json.loads(out[key])
+            if key in out:
+                out[key] = json.loads(out[key])
         return out
 
     async def list_markets(
