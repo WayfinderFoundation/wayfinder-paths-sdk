@@ -839,6 +839,9 @@ class MorphoAdapter(BaseAdapter):
             )
 
             filtered = self._filter_positions(positions, include_zero_positions)
+            for p in filtered:
+                if isinstance(p, dict) and p.get("chainId") is None:
+                    p["chainId"] = int(chain_id)
 
             return (
                 True,
@@ -888,7 +891,18 @@ class MorphoAdapter(BaseAdapter):
                 except (TypeError, ValueError):
                     pass
 
+            chain_id: int | None = None
+            if isinstance(market, dict):
+                try:
+                    chain_raw = (
+                        (market.get("morphoBlue") or {}).get("chain") or {}
+                    ).get("id")
+                    chain_id = int(chain_raw) if chain_raw is not None else None
+                except (TypeError, ValueError):
+                    chain_id = None
+
             entry: dict[str, Any] = {
+                "chainId": chain_id,
                 "marketUniqueKey": market.get("uniqueKey"),
                 "healthFactor": p.get("healthFactor"),
                 "market": market,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Required, TypedDict
 
 import httpx
@@ -28,22 +30,72 @@ class PublicAllocatorItem(TypedDict):
 class MorphoClient:
     def __init__(self, *, graphql_url: str = MORPHO_GRAPHQL_URL) -> None:
         self.graphql_url = str(graphql_url)
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
+        self._timeout = httpx.Timeout(DEFAULT_HTTP_TIMEOUT)
+        self.client = httpx.AsyncClient(timeout=self._timeout)
         self.headers = {"Content-Type": "application/json"}
+        self._client_loop: asyncio.AbstractEventLoop | None = None
+
+    async def _reset_client(self) -> None:
+        try:
+            await self.client.aclose()
+        except Exception:  # noqa: BLE001
+            pass
+        self.client = httpx.AsyncClient(timeout=self._timeout)
+
+    async def _ensure_client(self) -> None:
+        loop = asyncio.get_running_loop()
+        if self._client_loop is None:
+            self._client_loop = loop
+            return
+        if self._client_loop is not loop or getattr(self.client, "is_closed", False):
+            await self._reset_client()
+            self._client_loop = loop
 
     async def _post(
         self, *, query: str, variables: dict[str, Any] | None = None
     ) -> Any:
-        resp = await self.client.post(
-            self.graphql_url,
-            headers=self.headers,
-            json={"query": query, "variables": variables or {}},
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if isinstance(data, dict) and data.get("errors"):
-            raise ValueError(f"Morpho GraphQL errors: {data['errors']}")
-        return data.get("data", data)
+        max_retries = 3
+        delay_s = 0.25
+
+        for attempt in range(max_retries):
+            try:
+                await self._ensure_client()
+
+                resp = await self.client.post(
+                    self.graphql_url,
+                    headers=self.headers,
+                    json={"query": query, "variables": variables or {}},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict) and data.get("errors"):
+                    raise ValueError(f"Morpho GraphQL errors: {data['errors']}")
+                return data.get("data", data)
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                retryable = status in (429, 500, 502, 503, 504)
+                if retryable and attempt < (max_retries - 1):
+                    await asyncio.sleep(delay_s * (2**attempt))
+                    continue
+                raise
+            except (
+                httpx.TransportError,
+                httpx.TimeoutException,
+                json.JSONDecodeError,
+            ) as exc:
+                if attempt < (max_retries - 1):
+                    logger.warning(
+                        "Morpho API request failed (attempt {}/{}): {}",
+                        attempt + 1,
+                        max_retries,
+                        type(exc).__name__,
+                    )
+                    await self._reset_client()
+                    await asyncio.sleep(delay_s * (2**attempt))
+                    continue
+                raise
+
+        raise RuntimeError("Morpho API request failed")
 
     async def get_morpho_by_chain(self) -> dict[int, dict[str, str]]:
         query = """
@@ -313,6 +365,7 @@ class MorphoClient:
                 lltv
                 irmAddress
                 listed
+                morphoBlue { chain { id network } }
                 loanAsset { address symbol name decimals priceUsd }
                 collateralAsset { address symbol name decimals priceUsd }
                 oracle { address }
@@ -391,6 +444,7 @@ class MorphoClient:
               lltv
               irmAddress
               listed
+              morphoBlue { chain { id network } }
               loanAsset { address symbol name decimals priceUsd }
               collateralAsset { address symbol name decimals priceUsd }
               oracle { address }

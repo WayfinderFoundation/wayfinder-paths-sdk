@@ -60,6 +60,7 @@ UNISWAP_V3_FACTORY: dict[int, str] = {
 }
 
 ARBITRUM_USDC = to_checksum_address("0xaf88d065e77c8cC2239327C5EDb3A432268e5831")
+ARBITRUM_WETH = to_checksum_address("0x82af49447d8a07e3bd95bd0d56f35241523fbab1")
 
 HYPERLIQUID_BRIDGE = to_checksum_address("0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7")
 

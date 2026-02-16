@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 
 from web3 import AsyncHTTPProvider, AsyncWeb3
@@ -15,6 +14,7 @@ from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_HYPEREVM,
     POA_MIDDLEWARE_CHAIN_IDS,
 )
+from wayfinder_paths.core.utils.retry import retry_async
 
 
 class HyperModule(Module):
@@ -31,25 +31,26 @@ class HyperModule(Module):
 class _GorlamiProvider(AsyncHTTPProvider):
     async def make_request(self, method, params):  # type: ignore[override]
         # Gorlami's JSON-RPC responses omit `id`, which breaks web3.py.
-        # It can also intermittently return 502/503/504, so retry a bit.
+        # It can also intermittently return 429/502/503/504, so retry a bit.
         req = self.form_request(method, params)
         request_data = self.encode_rpc_dict(req)
 
-        max_retries = 3
-        delay_s = 0.25
-        for attempt in range(max_retries):
-            try:
-                raw_response = await self._make_request(method, request_data)
-                resp = self.decode_rpc_response(raw_response)
-                if isinstance(resp, dict) and "id" not in resp:
-                    resp["id"] = req.get("id")
-                return resp
-            except Exception as exc:
-                status = getattr(exc, "status", None)
-                if status in (502, 503, 504) and attempt < (max_retries - 1):
-                    await asyncio.sleep(delay_s * (2**attempt))
-                    continue
-                raise
+        async def _attempt():
+            raw_response = await self._make_request(method, request_data)
+            resp = self.decode_rpc_response(raw_response)
+            if isinstance(resp, dict) and "id" not in resp:
+                resp["id"] = req.get("id")
+            return resp
+
+        def _should_retry(exc: Exception) -> bool:
+            return getattr(exc, "status", None) in (429, 502, 503, 504)
+
+        return await retry_async(
+            _attempt,
+            max_retries=3,
+            base_delay_s=0.25,
+            should_retry=_should_retry,
+        )
 
 
 def _is_wayfinder_rpc(rpc: str) -> bool:
