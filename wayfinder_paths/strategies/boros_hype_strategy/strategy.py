@@ -1228,7 +1228,6 @@ class BorosHypeStrategy(
             f"{spot_summary}\n{hl_summary}\n{boros_summary}\n{yield_summary}"
         )
 
-        # Fetch net deposit from ledger
         net_deposit = 0.0
         try:
             success, deposit_data = await self.ledger_adapter.get_strategy_net_deposit(

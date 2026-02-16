@@ -30,3 +30,12 @@ def to_erc20_raw(amount_tokens: str | int | float | Decimal, decimals: int) -> i
         raise ValueError("Amount must be non-negative")
     scale = Decimal(10) ** int(decimals)
     return int((amt * scale).to_integral_value(rounding=ROUND_DOWN))
+
+
+def from_erc20_raw(amount_raw: str | int | float | Decimal, decimals: int) -> float:
+    """Convert a raw/wei token amount to a human-readable float.
+
+    Inverse of ``to_erc20_raw``.
+    """
+    scale = Decimal(10) ** int(decimals)
+    return float(Decimal(str(amount_raw)) / scale)

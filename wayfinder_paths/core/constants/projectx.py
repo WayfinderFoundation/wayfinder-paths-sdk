@@ -59,7 +59,7 @@ PRJX_SUBGRAPH_URL = (
 def get_prjx_subgraph_url(config: dict[str, Any] | None = None) -> str:
     """Resolve the ProjectX subgraph URL (config/env override, else default)."""
 
-    if config and isinstance(config, dict):
+    if config:
         for key in ("prjx_subgraph_url", "projectx_subgraph_url", "subgraph_url"):
             value = config.get(key)
             if isinstance(value, str) and value.strip():

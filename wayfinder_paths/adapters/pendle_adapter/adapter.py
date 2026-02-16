@@ -1876,7 +1876,6 @@ class PendleAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, {"stage": "preflight", "error": str(exc)}
 
-        # Build convert plan
         try:
             convert_resp = await self.sdk_convert_v2(
                 chain=chain_id,

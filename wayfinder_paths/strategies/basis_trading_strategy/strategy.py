@@ -3829,24 +3829,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             return 0.5
         return 0.5 / max_lev
 
-    def _get_strategy_wallet_address(self) -> str:
-        strategy_wallet = self.config.get("strategy_wallet")
-        if not strategy_wallet or not isinstance(strategy_wallet, dict):
-            raise ValueError("strategy_wallet not configured")
-        address = strategy_wallet.get("address")
-        if not address:
-            raise ValueError("strategy_wallet address not found")
-        return str(address)
-
-    def _get_main_wallet_address(self) -> str:
-        main_wallet = self.config.get("main_wallet")
-        if not main_wallet or not isinstance(main_wallet, dict):
-            raise ValueError("main_wallet not configured")
-        address = main_wallet.get("address")
-        if not address:
-            raise ValueError("main_wallet address not found")
-        return str(address)
-
     @staticmethod
     async def policies() -> list[str]:
         return [
