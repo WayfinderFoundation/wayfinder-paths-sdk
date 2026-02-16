@@ -4,12 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.adapters.morpho_adapter.adapter import (
-    MERKL_DISTRIBUTOR_ADDRESS,
-    MorphoAdapter,
-)
+from wayfinder_paths.adapters.morpho_adapter.adapter import MorphoAdapter
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.morpho_constants import MERKL_DISTRIBUTOR_ADDRESS
 
 
 @pytest.fixture

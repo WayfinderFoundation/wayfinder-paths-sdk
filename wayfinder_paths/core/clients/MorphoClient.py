@@ -33,7 +33,6 @@ class MorphoClient:
         self._timeout = httpx.Timeout(DEFAULT_HTTP_TIMEOUT)
         self.client = httpx.AsyncClient(timeout=self._timeout)
         self.headers = {"Content-Type": "application/json"}
-        self._morpho_by_chain_cache: dict[int, dict[str, str]] | None = None
         self._client_loop: asyncio.AbstractEventLoop | None = None
 
     async def _reset_client(self) -> None:
@@ -98,12 +97,7 @@ class MorphoClient:
 
         raise RuntimeError("Morpho API request failed")
 
-    async def get_morpho_by_chain(
-        self, *, force_refresh: bool = False
-    ) -> dict[int, dict[str, str]]:
-        if self._morpho_by_chain_cache is not None and not force_refresh:
-            return self._morpho_by_chain_cache
-
+    async def get_morpho_by_chain(self) -> dict[int, dict[str, str]]:
         query = """
         query PublicAllocators($first: Int!) {
           publicAllocators(first: $first) {
@@ -148,13 +142,10 @@ class MorphoClient:
         if not by_chain:
             logger.warning("Morpho API returned no deployments")
 
-        self._morpho_by_chain_cache = by_chain
         return by_chain
 
-    async def get_morpho_address(
-        self, *, chain_id: int, force_refresh: bool = False
-    ) -> str:
-        by_chain = await self.get_morpho_by_chain(force_refresh=force_refresh)
+    async def get_morpho_address(self, *, chain_id: int) -> str:
+        by_chain = await self.get_morpho_by_chain()
         entry = by_chain.get(int(chain_id))
         if not entry:
             raise ValueError(f"Morpho deployment not found for chain_id={chain_id}")
