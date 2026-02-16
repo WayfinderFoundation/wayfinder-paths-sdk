@@ -11,6 +11,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.utils.collections import chunks
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -236,10 +237,6 @@ class PendleAdapter(BaseAdapter):
     # Multicall helpers
     # ---------------------------
 
-    @staticmethod
-    def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
-        return [seq[i : i + n] for i in range(0, len(seq), n)]
-
     async def _multicall_uint256_chunked(
         self,
         *,
@@ -254,7 +251,7 @@ class PendleAdapter(BaseAdapter):
         partial results (returning None for failed calls).
         """
         out: list[int | None] = []
-        for chunk in self._chunks(calls, max(1, int(chunk_size))):
+        for chunk in chunks(calls, max(1, int(chunk_size))):
             if not chunk:
                 continue
             try:
@@ -1876,7 +1873,6 @@ class PendleAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, {"stage": "preflight", "error": str(exc)}
 
-        # Build convert plan
         try:
             convert_resp = await self.sdk_convert_v2(
                 chain=chain_id,

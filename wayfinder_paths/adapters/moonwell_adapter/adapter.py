@@ -27,6 +27,7 @@ from wayfinder_paths.core.constants.moonwell_abi import (
     REWARD_DISTRIBUTOR_ABI,
     WETH_ABI,
 )
+from wayfinder_paths.core.utils.collections import chunks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -44,10 +45,6 @@ class MoonwellAdapter(BaseAdapter):
     # ---------------------------
     # Multicall decoding helpers
     # ---------------------------
-
-    @staticmethod
-    def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
-        return [seq[i : i + n] for i in range(0, len(seq), n)]
 
     @staticmethod
     def _fn_abi(
@@ -88,7 +85,7 @@ class MoonwellAdapter(BaseAdapter):
         partial results (returning b"" for failed calls).
         """
         out: list[bytes] = []
-        for chunk in self._chunks(calls, max(1, int(chunk_size))):
+        for chunk in chunks(calls, max(1, int(chunk_size))):
             if not chunk:
                 continue
             try:
