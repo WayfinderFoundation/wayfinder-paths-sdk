@@ -169,6 +169,8 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `TokenAdapter` (token metadata + pricing)
 - `PoolAdapter` (pool analytics)
 - `PolymarketAdapter` (Polymarket markets, orderbooks, history, and trading)
+- `MorphoAdapter` (Morpho Blue markets, MetaMorpho vaults, rewards, and public allocator)
+- `AaveV3Adapter` (Aave V3 lending/borrowing across Ethereum, Base, and Arbitrum)
 
 ## CLI Reference
 
