@@ -219,6 +219,10 @@ class TestHyperlendAdapter:
                 underlyingAsset="0x0000000000000000000000000000000000000011",
                 symbol="USDC",
                 decimals=6,
+                baseLTVasCollateral=8000,
+                reserveLiquidationThreshold=8500,
+                reserveLiquidationBonus=10500,
+                reserveFactor=1000,
                 liquidityRate=int(0.05 * 10**27),
                 variableBorrowRate=int(0.10 * 10**27),
                 priceInMarketReferenceCurrency=100000000,
@@ -231,13 +235,20 @@ class TestHyperlendAdapter:
                 underlyingAsset="0x0000000000000000000000000000000000000022",
                 symbol="uSOL",
                 decimals=6,
+                baseLTVasCollateral=6000,
+                reserveLiquidationThreshold=7500,
+                reserveLiquidationBonus=11000,
+                reserveFactor=2000,
                 liquidityRate=int(0.02 * 10**27),
                 variableBorrowRate=int(0.08 * 10**27),
                 priceInMarketReferenceCurrency=2000000000,
                 availableLiquidity=10000000,
                 totalScaledVariableDebt=5000000,
                 variableBorrowIndex=10**27,
+                borrowCap=500,
                 supplyCap=100,
+                debtCeiling=12345,
+                debtCeilingDecimals=2,
             ),
         ]
         base_currency = (100000000, 100000000, 0, 8)  # ref_unit=1e8, ref_usd=1.0
@@ -271,6 +282,13 @@ class TestHyperlendAdapter:
         assert usol["price_usd"] == 20.0
         assert usol["supply_cap"] == 100
         assert usol["supply_cap_headroom"] == 85000000
+        assert usol["ltv_bps"] == 6000
+        assert usol["liquidation_threshold_bps"] == 7500
+        assert usol["liquidation_bonus_bps"] == 11000
+        assert usol["reserve_factor_bps"] == 2000
+        assert usol["borrow_cap"] == 500
+        assert usol["debt_ceiling"] == 12345
+        assert usol["debt_ceiling_decimals"] == 2
 
     @pytest.mark.asyncio
     async def test_get_stable_markets_with_is_stable_symbol(

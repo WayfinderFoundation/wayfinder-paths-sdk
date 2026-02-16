@@ -867,12 +867,19 @@ class MoonwellAdapter(BaseAdapter):
 
                     try:
                         is_listed = bool(info[1])
+                        borrow_cap = int(info[2])
+                        supply_cap = int(info[3])
+                        mint_paused = bool(info[4])
+                        borrow_paused = bool(info[5])
                         collateral_factor = float(int(info[6])) / MANTISSA
                         underlying_price = int(info[7])
                         total_supply = int(info[8])
                         total_borrows = int(info[9])
+                        total_reserves = int(info[10])
                         cash = int(info[11])
                         exchange_rate = int(info[12])
+                        borrow_index = int(info[13])
+                        reserve_factor = float(int(info[14])) / MANTISSA
                         borrow_rate = int(info[15])
                         supply_rate = int(info[16])
                         incentives = info[17] or []
@@ -885,10 +892,18 @@ class MoonwellAdapter(BaseAdapter):
                         "underlying": underlying,
                         "mTokenDecimals": md.get("mTokenDecimals", 18),
                         "isListed": is_listed,
+                        "borrowCap": borrow_cap,
+                        "supplyCap": supply_cap,
+                        "mintPaused": mint_paused,
+                        "borrowPaused": borrow_paused,
                         "collateralFactor": collateral_factor,
+                        "underlyingPrice": underlying_price,
                         "exchangeRate": exchange_rate,
+                        "borrowIndex": borrow_index,
+                        "reserveFactor": reserve_factor,
                         "totalSupply": total_supply,
                         "totalBorrows": total_borrows,
+                        "totalReserves": total_reserves,
                         "cash": cash,
                     }
 

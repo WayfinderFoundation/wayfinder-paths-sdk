@@ -115,19 +115,19 @@ class TestMoonwellAdapter:
             (
                 m1,
                 True,  # isListed
-                0,
-                0,
-                False,
+                1234,  # borrowCap
+                5678,  # supplyCap
+                True,  # mintPaused
                 False,
                 int(0.5 * MANTISSA),  # collateralFactor
                 1,  # underlyingPrice (mantissa, simplified)
                 SECONDS_PER_YEAR,  # totalSupply
                 SECONDS_PER_YEAR,  # totalBorrows
-                0,
+                99,  # totalReserves
                 0,  # cash
                 MANTISSA,  # exchangeRate
-                0,
-                0,
+                42,  # borrowIndex
+                int(0.1 * MANTISSA),  # reserveFactor
                 0,  # borrowRate
                 0,  # supplyRate
                 [(MOONWELL_WELL_TOKEN, 1, 1)],  # incentives
@@ -235,6 +235,13 @@ class TestMoonwellAdapter:
         assert usdc["symbol"] == "mUSDC"
         assert usdc["totalSupply"] == SECONDS_PER_YEAR
         assert usdc["totalBorrows"] == SECONDS_PER_YEAR
+        assert usdc["borrowCap"] == 1234
+        assert usdc["supplyCap"] == 5678
+        assert usdc["mintPaused"] is True
+        assert usdc["borrowPaused"] is False
+        assert usdc["totalReserves"] == 99
+        assert usdc["borrowIndex"] == 42
+        assert usdc["reserveFactor"] == pytest.approx(0.1)
         assert "baseSupplyApy" in usdc
         assert "baseBorrowApy" in usdc
         assert "rewardSupplyApy" in usdc
