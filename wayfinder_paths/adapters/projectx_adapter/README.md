@@ -20,6 +20,7 @@ Notable helpers:
 - `pool_overview()`
 - `current_balances()`
 - `list_positions()`
+- `get_full_user_state(account, include_overview=True, include_balances=True, include_positions=True, include_points=True)` (standardized snapshot wrapper)
 - `mint_from_balances(tick_lower, tick_upper, slippage_bps=...)`
 - `increase_liquidity_balanced(token_id, tick_lower, tick_upper, slippage_bps=...)`
 - `burn_position(token_id)` (convenience wrapper over `remove_liquidity(..., collect=True, burn=True)`)

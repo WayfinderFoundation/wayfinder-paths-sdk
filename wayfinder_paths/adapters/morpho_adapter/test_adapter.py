@@ -283,7 +283,7 @@ async def test_get_health_computes_maxes(adapter):
 
 
 @pytest.mark.asyncio
-async def test_get_full_user_state_filters_zero_positions(adapter):
+async def test_get_full_user_state_per_chain_filters_zero_positions(adapter):
     positions = [
         {
             "market": {"uniqueKey": "0x" + "11" * 32},
@@ -299,8 +299,10 @@ async def test_get_full_user_state_filters_zero_positions(adapter):
         "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_all_market_positions",
         new=AsyncMock(return_value=positions),
     ):
-        ok, state = await adapter.get_full_user_state(
-            chain_id=CHAIN_ID_BASE, include_zero_positions=False
+        ok, state = await adapter.get_full_user_state_per_chain(
+            account="0x81830bC5f811aF86fF6f17Fb9a619088B09Dff43",
+            chain_id=CHAIN_ID_BASE,
+            include_zero_positions=False,
         )
 
     assert ok is True

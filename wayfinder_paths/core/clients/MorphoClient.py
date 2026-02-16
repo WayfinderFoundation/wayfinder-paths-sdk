@@ -325,6 +325,13 @@ class MorphoClient:
                 loanAsset { address symbol name decimals priceUsd }
                 collateralAsset { address symbol name decimals priceUsd }
                 oracle { address }
+                state {
+                  supplyApy
+                  netSupplyApy
+                  borrowApy
+                  netBorrowApy
+                  rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
+                }
               }
               state {
                 collateral
@@ -396,6 +403,13 @@ class MorphoClient:
               loanAsset { address symbol name decimals priceUsd }
               collateralAsset { address symbol name decimals priceUsd }
               oracle { address }
+              state {
+                supplyApy
+                netSupplyApy
+                borrowApy
+                netBorrowApy
+                rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
+              }
             }
             state {
               collateral

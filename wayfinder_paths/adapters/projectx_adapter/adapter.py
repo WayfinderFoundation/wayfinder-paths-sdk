@@ -342,13 +342,13 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str | None = None,
+        account: str,
         include_overview: bool = True,
         include_balances: bool = True,
         include_positions: bool = True,
         include_points: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account) if account else self.owner
+        acct = to_checksum_address(account)
 
         out: dict[str, Any] = {
             "protocol": (self.adapter_type or self.name).lower(),

@@ -443,7 +443,7 @@ class MoonwellAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str | None = None,
+        account: str,
         include_rewards: bool = True,
         include_usd: bool = False,
         include_apy: bool = False,
@@ -452,9 +452,7 @@ class MoonwellAdapter(BaseAdapter):
         block_identifier: int | str | None = None,  # multicall ignores block id
     ) -> tuple[bool, dict[str, Any] | str]:
         _ = block_identifier  # reserved for future per-call block pinning
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
-        if not acct:
-            return False, "strategy wallet address not configured"
+        acct = to_checksum_address(account)
 
         try:
             async with web3_from_chain_id(self.chain_id) as web3:

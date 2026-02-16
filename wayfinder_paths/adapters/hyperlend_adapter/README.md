@@ -43,6 +43,7 @@ Each market entry includes:
 - `underlying`, `symbol`, `symbol_canonical`, `decimals`
 - `a_token`, `variable_debt_token`
 - Flags: `is_active`, `is_frozen`, `is_paused`, `is_siloed_borrowing`
+- Flags: `usage_as_collateral_enabled`, `borrowing_enabled`
 - `is_stablecoin`
 - Rates: `supply_apr`, `supply_apy`, `variable_borrow_apr`, `variable_borrow_apy`
 - Liquidity: `available_liquidity`, `total_variable_debt`, `tvl`
@@ -66,6 +67,41 @@ Fetch a user’s HyperLend asset snapshot (supplies/borrows, prices, rates).
 
 ```python
 success, view = await adapter.get_assets_view(user_address="0x...")
+```
+
+### get_full_user_state (backend, positions snapshot)
+
+Convenience wrapper over `get_assets_view(...)` that returns a standardized snapshot:
+
+```python
+success, state = await adapter.get_full_user_state(
+    account="0x...",
+    include_zero_positions=False,
+)
+```
+
+Returns a dict with:
+- `protocol`, `account`
+- `positions` (filtered assets view entries by default)
+- `accountData` (summary health/account fields from the backend)
+- `assetsView` (raw backend response)
+
+### lend / unlend (on-chain)
+
+Supply/withdraw via the Pool contract.
+
+```python
+success, tx_hash = await adapter.lend(
+    underlying_token="0x...",
+    qty=123,
+    chain_id=999,
+)
+
+success, tx_hash = await adapter.unlend(
+    underlying_token="0x...",
+    qty=123,
+    chain_id=999,
+)
 ```
 
 ### borrow / repay (on-chain)

@@ -21,7 +21,27 @@ adapter = MorphoAdapter(config={})
 success, markets = await adapter.get_all_markets(chain_id=8453)
 ```
 
-Returns market snapshots including `uniqueKey`, loan/collateral assets, `lltv`, oracle/IRM addresses, and point-in-time `supply_apy` / `borrow_apy` from Morpho’s API.
+Returns market snapshots including `uniqueKey`, loan/collateral assets, `lltv`, oracle/IRM addresses, and point-in-time `supply_apy` / `borrow_apy` from Morpho's API.
+
+### get_full_user_state / get_full_user_state_per_chain
+
+Queries all Morpho chains (or a single chain) and returns the user's positions. Each position
+includes market-level APY and reward data from the Morpho API:
+
+| Field | Description |
+|-------|-------------|
+| `supply_apy` | Base supply APY |
+| `net_supply_apy` | Net supply APY (after protocol fees) |
+| `borrow_apy` | Base borrow APY |
+| `net_borrow_apy` | Net borrow APY |
+| `reward_supply_apr` | Total incentive APR on supply side |
+| `reward_borrow_apr` | Total incentive APR on borrow side |
+
+```python
+success, state = await adapter.get_full_user_state(account="0x...")
+for pos in state["positions"]:
+    print(pos["marketUniqueKey"], pos["supply_apy"], pos["reward_supply_apr"])
+```
 
 ### get_market_entry / get_market_state / get_market_historical_apy
 

@@ -783,43 +783,45 @@ class MorphoAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str | None = None,
+        account: str,
+        include_zero_positions: bool = False,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Query all Morpho chains and return merged positions."""
+        acct = to_checksum_address(account)
+
+        try:
+            positions = await MORPHO_CLIENT.get_all_market_positions(
+                user_address=acct, chain_id=None
+            )
+
+            filtered = self._filter_positions(positions, include_zero_positions)
+
+            return (
+                True,
+                {
+                    "protocol": "morpho",
+                    "account": acct,
+                    "positions": filtered,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_full_user_state_per_chain(
+        self,
+        *,
+        account: str,
         chain_id: int = CHAIN_ID_BASE,
         include_zero_positions: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
-        if not acct:
-            return False, "strategy wallet address not configured"
+        acct = to_checksum_address(account)
 
         try:
             positions = await MORPHO_CLIENT.get_all_market_positions(
                 user_address=acct, chain_id=int(chain_id)
             )
 
-            filtered: list[dict[str, Any]] = []
-            for p in positions:
-                market = p.get("market") or {}
-                state = p.get("state") or {}
-                try:
-                    supply_shares = int(state.get("supplyShares") or 0)
-                    borrow_shares = int(state.get("borrowShares") or 0)
-                    collateral = int(state.get("collateral") or 0)
-                except (TypeError, ValueError):
-                    supply_shares = borrow_shares = collateral = 0
-
-                if not include_zero_positions and not (
-                    supply_shares > 0 or borrow_shares > 0 or collateral > 0
-                ):
-                    continue
-
-                filtered.append(
-                    {
-                        "marketUniqueKey": market.get("uniqueKey"),
-                        "healthFactor": p.get("healthFactor"),
-                        "market": market,
-                        "state": state,
-                    }
-                )
+            filtered = self._filter_positions(positions, include_zero_positions)
 
             return (
                 True,
@@ -832,6 +834,57 @@ class MorphoAdapter(BaseAdapter):
             )
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
+
+    @staticmethod
+    def _filter_positions(
+        positions: list[dict[str, Any]], include_zero_positions: bool
+    ) -> list[dict[str, Any]]:
+        filtered: list[dict[str, Any]] = []
+        for p in positions:
+            market = p.get("market") or {}
+            state = p.get("state") or {}
+            try:
+                supply_shares = int(state.get("supplyShares") or 0)
+                borrow_shares = int(state.get("borrowShares") or 0)
+                collateral = int(state.get("collateral") or 0)
+            except (TypeError, ValueError):
+                supply_shares = borrow_shares = collateral = 0
+
+            if not include_zero_positions and not (
+                supply_shares > 0 or borrow_shares > 0 or collateral > 0
+            ):
+                continue
+
+            market_state = market.get("state") or {}
+            rewards = market_state.get("rewards") or []
+            reward_supply_apr = 0.0
+            reward_borrow_apr = 0.0
+            for r in rewards if isinstance(rewards, list) else []:
+                if not isinstance(r, dict):
+                    continue
+                try:
+                    reward_supply_apr += float(r.get("supplyApr") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    reward_borrow_apr += float(r.get("borrowApr") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+
+            entry: dict[str, Any] = {
+                "marketUniqueKey": market.get("uniqueKey"),
+                "healthFactor": p.get("healthFactor"),
+                "market": market,
+                "state": state,
+                "supply_apy": market_state.get("supplyApy"),
+                "net_supply_apy": market_state.get("netSupplyApy"),
+                "borrow_apy": market_state.get("borrowApy"),
+                "net_borrow_apy": market_state.get("netBorrowApy"),
+                "reward_supply_apr": reward_supply_apr,
+                "reward_borrow_apr": reward_borrow_apr,
+            }
+            filtered.append(entry)
+        return filtered
 
     async def get_claimable_rewards(
         self,

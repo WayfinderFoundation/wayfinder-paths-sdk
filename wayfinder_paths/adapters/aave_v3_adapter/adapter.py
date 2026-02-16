@@ -80,6 +80,71 @@ def _base_currency_to_ref(base_currency: Any) -> tuple[int, float]:
     return (ref_unit, float(ref_usd))
 
 
+def _reward_rows(rewards_info: Any) -> list[Any]:
+    try:
+        return list(rewards_info[2] or [])
+    except Exception:
+        return []
+
+
+def _compute_incentive_apr(
+    rewards_info: Any,
+    *,
+    denom: float,
+    side: str,
+    include_details: bool,
+) -> tuple[float, list[dict[str, Any]]]:
+    apr_total = 0.0
+    incentives: list[dict[str, Any]] = []
+
+    for reward in _reward_rows(rewards_info):
+        try:
+            reward_addr = to_checksum_address(str(reward[1]))
+            emission_per_second = int(reward[3] or 0)
+            end_ts = int(reward[6] or 0)
+            reward_price_feed = int(reward[7] or 0)
+            reward_token_decimals = int(reward[8] or 0)
+            price_feed_decimals = int(reward[10] or 0)
+        except Exception:  # noqa: BLE001
+            continue
+
+        price_usd_r = (
+            float(reward_price_feed) / (10**price_feed_decimals)
+            if price_feed_decimals and reward_price_feed
+            else 0.0
+        )
+
+        annual_rewards_usd = (
+            (float(emission_per_second) / (10**reward_token_decimals))
+            * SECONDS_PER_YEAR
+            * price_usd_r
+            if emission_per_second and reward_token_decimals >= 0 and price_usd_r
+            else 0.0
+        )
+        apr = (
+            float(annual_rewards_usd) / float(denom)
+            if denom and annual_rewards_usd
+            else 0.0
+        )
+        if apr:
+            apr_total += apr
+
+        if include_details:
+            incentives.append(
+                {
+                    "side": side,
+                    "token": reward_addr,
+                    "symbol": str(reward[0] or ""),
+                    "apr": float(apr),
+                    "emission_per_second": int(emission_per_second),
+                    "distribution_end": int(end_ts) or None,
+                    "price_usd": float(price_usd_r),
+                }
+            )
+
+    return float(apr_total), incentives
+
+
 class AaveV3Adapter(BaseAdapter):
     adapter_type = "AAVE_V3"
 
@@ -301,105 +366,22 @@ class AaveV3Adapter(BaseAdapter):
                             a_inc = inc_row[1] if len(inc_row) > 1 else None
                             v_inc = inc_row[2] if len(inc_row) > 2 else None
 
-                            def _reward_rows(rewards_info: Any) -> list[Any]:
-                                try:
-                                    return list(rewards_info[2] or [])
-                                except Exception:
-                                    return []
-
-                            for reward in _reward_rows(a_inc):
-                                try:
-                                    reward_addr = to_checksum_address(str(reward[1]))
-                                    emission_per_second = int(reward[3] or 0)
-                                    end_ts = int(reward[6] or 0)
-                                    reward_price_feed = int(reward[7] or 0)
-                                    reward_token_decimals = int(reward[8] or 0)
-                                    price_feed_decimals = int(reward[10] or 0)
-                                except Exception:  # noqa: BLE001
-                                    continue
-
-                                price_usd_r = (
-                                    float(reward_price_feed) / (10**price_feed_decimals)
-                                    if price_feed_decimals and reward_price_feed
-                                    else 0.0
-                                )
-                                annual_rewards_usd = (
-                                    (
-                                        float(emission_per_second)
-                                        / (10**reward_token_decimals)
-                                    )
-                                    * SECONDS_PER_YEAR
-                                    * price_usd_r
-                                    if emission_per_second
-                                    and reward_token_decimals >= 0
-                                    and price_usd_r
-                                    else 0.0
-                                )
-                                apr = (
-                                    float(annual_rewards_usd) / float(denom_supply)
-                                    if denom_supply and annual_rewards_usd
-                                    else 0.0
-                                )
-                                if apr:
-                                    reward_supply_apr += apr
-                                incentives_out.append(
-                                    {
-                                        "side": "supply",
-                                        "token": reward_addr,
-                                        "symbol": str(reward[0] or ""),
-                                        "apr": float(apr),
-                                        "emission_per_second": int(emission_per_second),
-                                        "distribution_end": int(end_ts) or None,
-                                        "price_usd": float(price_usd_r),
-                                    }
-                                )
-
-                            for reward in _reward_rows(v_inc):
-                                try:
-                                    reward_addr = to_checksum_address(str(reward[1]))
-                                    emission_per_second = int(reward[3] or 0)
-                                    end_ts = int(reward[6] or 0)
-                                    reward_price_feed = int(reward[7] or 0)
-                                    reward_token_decimals = int(reward[8] or 0)
-                                    price_feed_decimals = int(reward[10] or 0)
-                                except Exception:  # noqa: BLE001
-                                    continue
-
-                                price_usd_r = (
-                                    float(reward_price_feed) / (10**price_feed_decimals)
-                                    if price_feed_decimals and reward_price_feed
-                                    else 0.0
-                                )
-                                annual_rewards_usd = (
-                                    (
-                                        float(emission_per_second)
-                                        / (10**reward_token_decimals)
-                                    )
-                                    * SECONDS_PER_YEAR
-                                    * price_usd_r
-                                    if emission_per_second
-                                    and reward_token_decimals >= 0
-                                    and price_usd_r
-                                    else 0.0
-                                )
-                                apr = (
-                                    float(annual_rewards_usd) / float(denom_borrow)
-                                    if denom_borrow and annual_rewards_usd
-                                    else 0.0
-                                )
-                                if apr:
-                                    reward_borrow_apr += apr
-                                incentives_out.append(
-                                    {
-                                        "side": "borrow",
-                                        "token": reward_addr,
-                                        "symbol": str(reward[0] or ""),
-                                        "apr": float(apr),
-                                        "emission_per_second": int(emission_per_second),
-                                        "distribution_end": int(end_ts) or None,
-                                        "price_usd": float(price_usd_r),
-                                    }
-                                )
+                            supply_apr_inc, supply_incs = _compute_incentive_apr(
+                                a_inc,
+                                denom=float(denom_supply),
+                                side="supply",
+                                include_details=True,
+                            )
+                            borrow_apr_inc, borrow_incs = _compute_incentive_apr(
+                                v_inc,
+                                denom=float(denom_borrow),
+                                side="borrow",
+                                include_details=True,
+                            )
+                            reward_supply_apr += supply_apr_inc
+                            reward_borrow_apr += borrow_apr_inc
+                            incentives_out.extend(supply_incs)
+                            incentives_out.extend(borrow_incs)
 
                         market_row["reward_supply_apr"] = float(reward_supply_apr)
                         market_row["reward_borrow_apr"] = float(reward_borrow_apr)
@@ -418,6 +400,50 @@ class AaveV3Adapter(BaseAdapter):
             return False, str(exc)
 
     async def get_full_user_state(
+        self,
+        *,
+        account: str,
+        include_zero_positions: bool = False,
+        include_rewards: bool = True,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Query all supported Aave V3 chains and merge results."""
+        account = to_checksum_address(account)
+        all_positions: list[dict[str, Any]] = []
+        chains_queried: list[dict[str, Any]] = []
+        errors: list[str] = []
+
+        for cid in AAVE_V3_BY_CHAIN:
+            ok, result = await self.get_full_user_state_per_chain(
+                chain_id=cid,
+                account=account,
+                include_zero_positions=include_zero_positions,
+                include_rewards=include_rewards,
+            )
+            if ok:
+                chain_data = result  # type: ignore[assignment]
+                all_positions.extend(chain_data.get("positions", []))
+                chains_queried.append(
+                    {
+                        "chain_id": cid,
+                        "pool": chain_data.get("pool"),
+                        "userEmodeCategoryId": chain_data.get("userEmodeCategoryId", 0),
+                    }
+                )
+            else:
+                errors.append(f"chain {cid}: {result}")
+
+        if not chains_queried and errors:
+            return False, "; ".join(errors)
+
+        return True, {
+            "protocol": "aave_v3",
+            "account": account,
+            "chains": chains_queried,
+            "positions": all_positions,
+            "errors": errors,
+        }
+
+    async def get_full_user_state_per_chain(
         self,
         *,
         chain_id: int,
@@ -452,6 +478,7 @@ class AaveV3Adapter(BaseAdapter):
                     underlying = to_checksum_address(str(r.get("underlyingAsset")))
                     by_underlying[underlying.lower()] = r
 
+                reserves_incentives: dict[str, Any] = {}
                 user_rewards_by_underlying: dict[str, list[dict[str, Any]]] = {}
                 if include_rewards:
                     try:
@@ -462,6 +489,22 @@ class AaveV3Adapter(BaseAdapter):
                             address=ui_incentives_addr,
                             abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
                         )
+
+                        try:
+                            inc_rows = (
+                                await ui_incentives.functions.getReservesIncentivesData(
+                                    provider_addr
+                                ).call(block_identifier="pending")
+                            )
+                            for row in inc_rows or []:
+                                try:
+                                    underlying = to_checksum_address(str(row[0]))
+                                except Exception:  # noqa: BLE001
+                                    continue
+                                reserves_incentives[underlying.lower()] = row
+                        except Exception:  # noqa: BLE001
+                            reserves_incentives = {}
+
                         user_inc = (
                             await ui_incentives.functions.getUserReservesIncentivesData(
                                 provider_addr, account
@@ -511,6 +554,7 @@ class AaveV3Adapter(BaseAdapter):
                                         continue
                             user_rewards_by_underlying[underlying.lower()] = out_rewards
                     except Exception:
+                        reserves_incentives = {}
                         user_rewards_by_underlying = {}
 
             positions: list[dict[str, Any]] = []
@@ -572,8 +616,61 @@ class AaveV3Adapter(BaseAdapter):
                 ):
                     continue
 
+                liquidity_rate_ray = int(reserve.get("liquidityRate") or 0)
+                variable_borrow_rate_ray = int(reserve.get("variableBorrowRate") or 0)
+                supply_apy = float(apr_to_apy(ray_to_apr(liquidity_rate_ray)))
+                variable_borrow_apy = float(
+                    apr_to_apy(ray_to_apr(variable_borrow_rate_ray))
+                )
+
+                reward_supply_apr = 0.0
+                reward_borrow_apr = 0.0
+                if include_rewards:
+                    inc_row = reserves_incentives.get(underlying.lower())
+                    if inc_row:
+                        a_inc = inc_row[1] if len(inc_row) > 1 else None
+                        v_inc = inc_row[2] if len(inc_row) > 2 else None
+
+                        available_liquidity = int(
+                            reserve.get("availableLiquidity") or 0
+                        )
+                        scaled_variable_debt = int(
+                            reserve.get("totalScaledVariableDebt") or 0
+                        )
+                        variable_index = int(reserve.get("variableBorrowIndex") or 0)
+                        total_variable_debt = (
+                            scaled_variable_debt * variable_index
+                        ) // RAY
+                        denom_supply = (
+                            (available_liquidity + total_variable_debt)
+                            / (10**decimals)
+                            * price_usd
+                            if price_usd
+                            and (available_liquidity + total_variable_debt) > 0
+                            else 0.0
+                        )
+                        denom_borrow = (
+                            total_variable_debt / (10**decimals) * price_usd
+                            if price_usd and total_variable_debt > 0
+                            else 0.0
+                        )
+
+                        reward_supply_apr, _ = _compute_incentive_apr(
+                            a_inc,
+                            denom=float(denom_supply),
+                            side="supply",
+                            include_details=False,
+                        )
+                        reward_borrow_apr, _ = _compute_incentive_apr(
+                            v_inc,
+                            denom=float(denom_borrow),
+                            side="borrow",
+                            include_details=False,
+                        )
+
                 positions.append(
                     {
+                        "chain_id": int(chain_id),
                         "underlying": underlying,
                         "symbol": symbol_raw,
                         "symbol_canonical": normalize_symbol(symbol_raw)
@@ -592,6 +689,13 @@ class AaveV3Adapter(BaseAdapter):
                         "supply_usd": float(supply_usd),
                         "variable_borrow_usd": float(borrow_usd),
                         "price_usd": float(price_usd),
+                        "supply_apy": supply_apy,
+                        "variable_borrow_apy": variable_borrow_apy,
+                        "reward_supply_apr": reward_supply_apr,
+                        "reward_borrow_apr": reward_borrow_apr,
+                        "supply_apy_with_rewards": supply_apy + reward_supply_apr,
+                        "borrow_apy_with_rewards": variable_borrow_apy
+                        - reward_borrow_apr,
                         "rewards": user_rewards_by_underlying.get(underlying.lower())
                         or [],
                     }

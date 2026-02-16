@@ -45,6 +45,26 @@ adapter = MoonwellAdapter(config=config)
 
 ## Methods
 
+### get_full_user_state (positions snapshot)
+
+Fetch a user’s full Moonwell snapshot: supplied/borrowed positions across all markets, account liquidity, and (optionally) rewards + APY fields.
+
+```python
+ok, state = await adapter.get_full_user_state(
+    account="0x...",
+    include_rewards=True,
+    include_apy=True,
+    include_usd=False,
+    include_zero_positions=False,
+)
+```
+
+Returns a dict with keys like:
+- `protocol`, `chainId`, `account`
+- `accountLiquidity` (error/liquidity/shortfall)
+- `positions` (per-market position rows)
+- `rewards` (claimable WELL rewards if `include_rewards=True`)
+
 ### Lending
 
 ```python
