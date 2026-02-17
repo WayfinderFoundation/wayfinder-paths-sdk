@@ -5,13 +5,14 @@ from typing import Any
 
 from eth_utils import to_checksum_address
 
-from wayfinder_paths.core.adapters.models import EvmTxn
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.adapters.models import EvmTxn
 from wayfinder_paths.core.constants.aave_v3_pool_abi import (
     AAVE_V3_POOL_ABI,
     AAVE_V3_WRAPPED_GATEWAY_ABI,
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.contracts import HYPEREVM_WHYPE
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.transaction import (
     encode_call,
@@ -20,7 +21,6 @@ from wayfinder_paths.core.utils.transaction import (
     nonce_transaction,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-from wayfinder_paths.core.constants.contracts import HYPEREVM_WHYPE
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,7 @@ class AaveAdapter(BaseAdapter):
     ) -> str:
         pool_addr = to_checksum_address(pool_address)
         async with web3_from_chain_id(chain_id) as w3:
-            pool = w3.eth.contract(
-                address=pool_addr, abi=AAVE_V3_POOL_ABI
-            )
+            pool = w3.eth.contract(address=pool_addr, abi=AAVE_V3_POOL_ABI)
             reserve_data = await pool.functions.getReserveData(
                 w3.to_checksum_address(supply_token_address)
             ).call()
@@ -97,7 +95,9 @@ class AaveAdapter(BaseAdapter):
 
         if use_wrapped_gateway:
             return await self._build_hyperlend_gateway_supply(
-                amount=amount, pool_address=pool_address, chain_id=chain_id,
+                amount=amount,
+                pool_address=pool_address,
+                chain_id=chain_id,
             )
 
         return await self._build_pool_supply(
@@ -134,14 +134,12 @@ class AaveAdapter(BaseAdapter):
         self,
         *,
         amount: int,
-        pool_address: str,
         chain_id: int,
     ) -> EvmTxn:
         if not self.wrapped_token_gateway:
             raise ValueError("wrapped_token_gateway not configured for native supply")
 
         strategy_wallet = self.strategy_wallet_address
-        pool_addr = to_checksum_address(pool_address)
 
         transaction = await encode_call(
             target=self.wrapped_token_gateway,
@@ -176,7 +174,8 @@ class AaveAdapter(BaseAdapter):
 
         if use_wrapped_gateway:
             return await self._build_hyperlend_gateway_withdraw(
-                amount=amount, pool_address=pool_address, chain_id=chain_id,
+                amount=amount,
+                chain_id=chain_id,
             )
 
         return await self._build_pool_withdraw(
@@ -213,14 +212,12 @@ class AaveAdapter(BaseAdapter):
         self,
         *,
         amount: int,
-        pool_address: str,
         chain_id: int,
     ) -> EvmTxn:
         if not self.wrapped_token_gateway:
             raise ValueError("wrapped_token_gateway not configured for native withdraw")
 
         strategy_wallet = self.strategy_wallet_address
-        pool_addr = to_checksum_address(pool_address)
 
         transaction = await encode_call(
             target=self.wrapped_token_gateway,
@@ -305,7 +302,7 @@ class AaveAdapter(BaseAdapter):
             abi=AAVE_V3_WRAPPED_GATEWAY_ABI,
             fn_name="borrowETH",
             args=[
-                HYPEREVM_WHYPE, # asset address (wHYPE)
+                HYPEREVM_WHYPE,  # asset address (wHYPE)
                 amount,
                 interest_rate_mode,  # 2 = variable, 1 = stable (if enabled)
                 0,  # referral
@@ -433,9 +430,7 @@ class AaveAdapter(BaseAdapter):
         pool_addr = to_checksum_address(pool_address)
         try:
             async with web3_from_chain_id(chain_id) as w3:
-                pool = w3.eth.contract(
-                    address=pool_addr, abi=AAVE_V3_POOL_ABI
-                )
+                pool = w3.eth.contract(address=pool_addr, abi=AAVE_V3_POOL_ABI)
                 reserve_data = await pool.functions.getReserveData(
                     w3.to_checksum_address(borrow_token)
                 ).call()

@@ -49,6 +49,7 @@ Operation = SWAP | LEND | UNLEND
 class STRAT_OP(BaseModel):
     op_data: Annotated[Operation, Field(discriminator="type")]
 
+
 class FeeEstimation(BaseModel):
     fee_total_usd: float | None = None
     fee_breakdown: list[Any] = []
