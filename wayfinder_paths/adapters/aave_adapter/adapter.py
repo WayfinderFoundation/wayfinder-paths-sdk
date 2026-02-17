@@ -252,7 +252,6 @@ class AaveAdapter(BaseAdapter):
         if use_wrapped_gateway:
             return await self._build_hyperlend_gateway_borrow(
                 amount=amount,
-                pool_address=pool_address,
                 chain_id=chain_id,
                 interest_rate_mode=interest_rate_mode,
             )
