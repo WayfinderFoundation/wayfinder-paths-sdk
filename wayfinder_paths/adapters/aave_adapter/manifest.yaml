@@ -1,0 +1,9 @@
+schema_version: "0.1"
+entrypoint: "adapters.aave_adapter.adapter.AaveAdapter"
+capabilities:
+  - "lending.lend"
+  - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "market.reserve_data"
+dependencies: []

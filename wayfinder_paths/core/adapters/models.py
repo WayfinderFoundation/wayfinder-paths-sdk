@@ -48,3 +48,16 @@ Operation = SWAP | LEND | UNLEND
 
 class STRAT_OP(BaseModel):
     op_data: Annotated[Operation, Field(discriminator="type")]
+
+class FeeEstimation(BaseModel):
+    fee_total_usd: float | None = None
+    fee_breakdown: list[Any] = []
+
+
+class EvmTxn(BaseModel):
+    txn_type: Literal["evm"] = "evm"
+    txn: dict[str, Any]
+    gas_estimate: int
+    fee_estimate: FeeEstimation = FeeEstimation()
+    chain_id: int
+    quote: dict[str, Any] | None = None
