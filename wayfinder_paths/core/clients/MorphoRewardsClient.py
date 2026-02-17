@@ -11,7 +11,7 @@ MORPHO_REWARDS_API_BASE_URL = "https://rewards.morpho.org"
 
 class MorphoRewardsClient:
     def __init__(self, *, base_url: str = MORPHO_REWARDS_API_BASE_URL) -> None:
-        self.base_url = str(base_url).rstrip("/")
+        self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
 
     async def _get_json(
@@ -33,13 +33,13 @@ class MorphoRewardsClient:
     ) -> dict[str, Any]:
         params: dict[str, Any] = {"trusted": "true" if trusted else "false"}
         if chain_id is not None:
-            params["chain_id"] = int(chain_id)
+            params["chain_id"] = chain_id
         if exclude_merkl_programs is not None:
             params["exclude_merkl_programs"] = (
                 "true" if exclude_merkl_programs else "false"
             )
         if no_cache is not None:
-            params["noCache"] = int(no_cache)
+            params["noCache"] = no_cache
 
         data = await self._get_json(path=f"/v1/users/{user}/rewards", params=params)
         if not isinstance(data, dict):
@@ -57,9 +57,9 @@ class MorphoRewardsClient:
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"trusted": "true" if trusted else "false"}
         if chain_id is not None:
-            params["chain_id"] = int(chain_id)
+            params["chain_id"] = chain_id
         if no_cache is not None:
-            params["noCache"] = int(no_cache)
+            params["noCache"] = no_cache
 
         out: list[dict[str, Any]] = []
         url_path = f"/v1/users/{user}/distributions"

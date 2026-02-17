@@ -76,8 +76,6 @@ class ExecutionRequest(BaseModel):
             if str(self.token).strip().lower() == "native" and self.chain_id is None:
                 raise ValueError("send requires chain_id when token='native'")
         if self.kind == "hyperliquid_deposit":
-            # Hard-coded Bridge2 deposit: Arbitrum USDC -> Hyperliquid bridge address.
-            # Allow callers to omit token/recipient entirely; if provided, they must match.
             if self.recipient and _addr_lower(self.recipient) != _addr_lower(
                 HYPERLIQUID_BRIDGE_ADDRESS
             ):
@@ -104,8 +102,7 @@ class ExecutionRequest(BaseModel):
 def _addr_lower(addr: str | None) -> str | None:
     if not addr:
         return None
-    a = str(addr).strip()
-    return a.lower() if a else None
+    return addr.strip().lower() or None
 
 
 def _sanitize_for_json(obj: Any) -> Any:
@@ -124,10 +121,6 @@ def _compact_quote(
     quote_data: dict[str, Any], best_quote: dict[str, Any] | None
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
-
-    # Extract provider list from quotes. BRAP quotes may appear as either:
-    # 1) {"quotes": [...], "best_quote": {...}}
-    # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
     all_quotes: list[dict[str, Any]] = []
     raw_quotes = quote_data.get("quotes", [])
     quote_count = None
@@ -298,7 +291,6 @@ async def execute(
     try:
         req = ExecutionRequest.model_validate(request_data)
     except ValidationError as exc:
-        # Extract serializable error details (exc.errors() contains raw exception objects that can't be JSON-serialized)
         error_details = [
             {"loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()
         ]
@@ -390,9 +382,6 @@ async def execute(
             response = err("quote_error", str(exc))
             return response
 
-        # BRAP quote responses have historically appeared in two shapes:
-        # 1) {"quotes": [...], "best_quote": {...}}
-        # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
         best_quote = None
         if isinstance(quote_data, dict):
             if isinstance(quote_data.get("best_quote"), dict):
