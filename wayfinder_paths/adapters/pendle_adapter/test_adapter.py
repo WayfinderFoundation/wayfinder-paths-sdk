@@ -465,7 +465,9 @@ class TestPendleAdapter:
             mock_web3_ctx,
         )
 
-        ok, state = await adapter.get_full_user_state(chain=42161, account=user)
+        ok, state = await adapter.get_full_user_state_per_chain(
+            chain=42161, account=user
+        )
         assert ok is True
         assert state["protocol"] == "pendle"
         assert state["chainId"] == 42161

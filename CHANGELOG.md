@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.6.1] - 2026-02-16 (57da66ca33a10fd68d128c80970ac989d6addb7e)
+
+Added
+
+1. `from_erc20_raw()` utility in `units.py` — replaces manual `float(x) / (10 ** decimals)` patterns across adapters and strategies.
+2. GitHub Actions workflow for Claude Code.
+
+Changed
+
+1. Replaced duplicate raw-to-float conversions in balance, boros, and projectx adapters with `from_erc20_raw()`.
+2. Removed redundant `_get_strategy/main_wallet_address()` overrides in stablecoin_yield and basis_trading strategies (identical to base class).
+3. Simplified `config.py` (redundant `isinstance` checks), `transaction.py` (defensive guards, bare `except`), and `projectx.py` (already-narrowed type checks).
+4. Moved inline import in `runner/daemon.py` to top-level.
+5. Removed self-documenting comments in pendle and boros_hype adapters/strategies.
+6. Polymarket CLOB URL switched from proxy to official endpoint (`clob.polymarket.com`).
+
+## [0.6.0] - 2026-02-15 (262f633b8ea2d0b87fee83f0ed2b042b8ec4b0e2)
+
+Added
+
+1. Morpho Blue adapter with vault discovery, rewards, public allocator, and multi-chain fork simulation.
+2. Aave V3 adapter with lending/borrowing, collateral management, and fork simulation.
+3. Standardized user snapshot format across lending adapters.
+4. Market risk and supply cap fields surfaced in Moonwell and Hyperlend adapters.
+5. Merkl, Morpho, and MorphoRewards clients in core.
+6. Retry utilities for Gorlami fork RPC calls.
+
+Changed
+
+1. Hyperlend manifest updated with missing capabilities (borrow, repay, collateral toggles).
+2. Hyperlend stable yield strategy simplified — removed symbol wrapper methods.
+3. Gorlami testnet client refactored with unified retry logic and multi-chain support.
+
+## [0.5.0] - 2026-02-14 (57cac507e8e00165f9027b30584e93ff2d7f596b)
+
+Added
+
+1. Moonwell and Hyperlend market views, including expanded adapter support, constants/ABI coverage, and symbol utilities for market-level reads.
+2. Hyperlend borrow/repay flows, including ERC-20 and native-token paths, plus full-repay handling and test coverage.
+3. Polymarket bridge preflight checks with broader adapter test coverage.
+
+Changed
+
+1. Quote flow cleanup in MCP swap tooling, including corresponding quote test updates.
+2. Documentation updates across adapter READMEs, high-value read rules, and config/readme references for the new market view capabilities.
+
 ## [0.4.1] - 2026-02-13 (1277255355859b1d11a082bb445e23541fe2ca19)
 
 Added

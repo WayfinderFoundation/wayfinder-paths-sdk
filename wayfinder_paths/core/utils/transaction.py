@@ -53,16 +53,14 @@ def _raise_revert_error(
     transaction: dict[str, Any],
     cause: Exception | None = None,
 ) -> None:
-    gas_used = 0
     try:
         gas_used = int(receipt.get("gasUsed") or 0)
-    except Exception:
+    except (TypeError, ValueError):
         gas_used = 0
 
-    gas_limit = 0
     try:
         gas_limit = int(transaction.get("gas") or 0)
-    except Exception:
+    except (TypeError, ValueError):
         gas_limit = 0
 
     oogs = bool(gas_used and gas_limit and gas_used >= gas_limit)
@@ -160,6 +158,23 @@ async def gas_limit_transaction(transaction: dict):
 
     # prevents RPCs from taking this as a serious limit
     transaction.pop("gas", None)
+    chain_id = get_transaction_chain_id(transaction)
+
+    async def _get_block_gas_limit(web3: AsyncWeb3) -> int:
+        try:
+            block = await web3.eth.get_block("latest")
+            return int(block.get("gasLimit") or 0)
+        except Exception:
+            return 0
+
+    async def _gorlami_safe_gas_limit(web3s: list[AsyncWeb3]) -> int:
+        block_limits = await asyncio.gather(*[_get_block_gas_limit(w) for w in web3s])
+        block_limit = max([i for i in block_limits if i > 0], default=0)
+        # Cap to block gas limit, and keep a tiny margin to avoid edge rejects.
+        if block_limit > 1:
+            return min(5_000_000, block_limit - 1)
+        # Fallback if block gasLimit isn't available.
+        return 3_000_000
 
     async def _estimate_gas(web3: AsyncWeb3, transaction: dict) -> int:
         try:
@@ -170,19 +185,18 @@ async def gas_limit_transaction(transaction: dict):
             )
             return 0
 
-    async with web3s_from_chain_id(get_transaction_chain_id(transaction)) as web3s:
+    async with web3s_from_chain_id(chain_id) as web3s:
         gas_limits = await asyncio.gather(
             *[_estimate_gas(web3, transaction) for web3 in web3s]
         )
 
         gas_limit = max(gas_limits)
         if gas_limit == 0:
-            chain_id = get_transaction_chain_id(transaction)
             if _is_gorlami_fork_chain(chain_id):
                 # Gorlami forks sometimes fail `eth_estimateGas` for complex multicalls.
                 # For dry-runs, fall back to a generous gas limit so we can still
                 # execute and observe success/revert on-chain.
-                fallback_gas = 5_000_000
+                fallback_gas = await _gorlami_safe_gas_limit(web3s)
                 logger.warning(
                     f"Gas estimation failed on Gorlami fork; using fallback gas={fallback_gas}"
                 )
@@ -196,7 +210,15 @@ async def gas_limit_transaction(transaction: dict):
         # at execution time than at estimation time due to state changes between
         # estimation and inclusion.
         buffered_gas_limit = int(math.ceil(gas_limit * GAS_BUFFER_MULTIPLIER))
-        transaction["gas"] = buffered_gas_limit
+
+        if _is_gorlami_fork_chain(chain_id):
+            # Some Gorlami forks underestimate gas, which can lead to false revert
+            # signals due to out-of-gas. Use a generous limit (capped by block limit)
+            # to keep simulations reliable.
+            safe_gas = await _gorlami_safe_gas_limit(web3s)
+            transaction["gas"] = max(buffered_gas_limit, safe_gas)
+        else:
+            transaction["gas"] = buffered_gas_limit
 
     return transaction
 
@@ -276,18 +298,9 @@ async def send_transaction(
                 chain_id, txn_hash, confirmations=confirmations
             )
         except TransactionRevertedError as exc:
-            receipt = (
-                exc.receipt if isinstance(getattr(exc, "receipt", None), dict) else {}
-            )
-            _raise_revert_error(txn_hash, receipt, transaction, cause=exc)
+            _raise_revert_error(txn_hash, exc.receipt, transaction, cause=exc)
 
-        status = None
-        try:
-            status = receipt.get("status")
-        except Exception:
-            status = None
-
-        # Defensive: should have been raised inside wait_for_transaction_receipt.
+        status = receipt.get("status")
         if status is not None and int(status) == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash

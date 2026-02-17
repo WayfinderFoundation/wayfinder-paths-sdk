@@ -1,7 +1,6 @@
 import asyncio
 import math
 import time
-import unicodedata
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
@@ -27,6 +26,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.policies.enso import ENSO_ROUTER, enso_swap
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
 from wayfinder_paths.policies.hyper_evm import (
@@ -44,13 +44,6 @@ from wayfinder_paths.policies.hyperliquid import (
 from wayfinder_paths.policies.lifi import LIFI_ROUTERS, lifi_swap
 from wayfinder_paths.policies.prjx import PRJX_ROUTER, prjx_swap
 
-SYMBOL_TRANSLATION_TABLE = str.maketrans(
-    {
-        "₮": "T",
-        "₿": "B",
-        "Ξ": "X",
-    }
-)
 WRAPPED_HYPE_ADDRESS = HYPEREVM_WHYPE
 
 
@@ -518,9 +511,9 @@ class HyperlendStableYieldStrategy(Strategy):
                 canonical = asset.get("symbol_canonical")
                 if not canonical:
                     canonical = (
-                        self._normalize_symbol(symbol_raw)
+                        normalize_symbol(symbol_raw)
                         if symbol_raw
-                        else self._normalize_symbol(checksum)
+                        else normalize_symbol(checksum)
                     )
                     asset["symbol_canonical"] = canonical
                 display_symbol = asset.get("symbol_display")
@@ -623,26 +616,6 @@ class HyperlendStableYieldStrategy(Strategy):
                 "asset": asset,
             }
         return positions
-
-    def _normalize_symbol(self, symbol: str) -> str:
-        if symbol is None:
-            return ""
-
-        normalized = unicodedata.normalize("NFKD", str(symbol)).translate(
-            SYMBOL_TRANSLATION_TABLE
-        )
-        ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
-        filtered = "".join(ch for ch in ascii_only if ch.isalnum())
-        if filtered:
-            return filtered.lower()
-        return str(symbol).lower()
-
-    def _is_stable_symbol(self, symbol: str) -> bool:
-        if not symbol:
-            return False
-        symbol_upper = symbol.upper()
-        stable_keywords = ["USD", "USDC", "USDT", "USDP", "USDD", "USDS", "DAI", "USKB"]
-        return any(keyword in symbol_upper for keyword in stable_keywords)
 
     def _invalidate_assets_snapshot(self) -> None:
         self._assets_snapshot = None
@@ -1629,9 +1602,7 @@ class HyperlendStableYieldStrategy(Strategy):
             symbol_canonical = entry.get("symbol_canonical")
             if not symbol_canonical:
                 raw_symbol = entry.get("symbol") or entry.get("display_symbol")
-                symbol_canonical = (
-                    self._normalize_symbol(raw_symbol) if raw_symbol else None
-                )
+                symbol_canonical = normalize_symbol(raw_symbol) if raw_symbol else None
             if not symbol_canonical:
                 continue
             display_symbol = (
@@ -2125,7 +2096,7 @@ class HyperlendStableYieldStrategy(Strategy):
                     or (asset or {}).get("symbol_display")
                     or ""
                 )
-                if self._is_stable_symbol(symbol):
+                if is_stable_symbol(symbol):
                     include_balance = True
             if not include_balance:
                 continue

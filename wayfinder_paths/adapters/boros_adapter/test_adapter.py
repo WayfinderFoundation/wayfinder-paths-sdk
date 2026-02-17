@@ -392,7 +392,10 @@ class TestBorosAdapter:
             ]
         )
 
-        ok, state = await adapter.get_full_user_state(include_withdrawal_status=False)
+        ok, state = await adapter.get_full_user_state(
+            account="0x1234567890123456789012345678901234567890",
+            include_withdrawal_status=False,
+        )
         assert ok is True
         assert state["protocol"] == "boros"
         assert state["chainId"] == adapter.chain_id

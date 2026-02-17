@@ -7,6 +7,7 @@ from loguru import logger
 
 from wayfinder_paths.core.config import get_api_key, get_gorlami_base_url
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
+from wayfinder_paths.core.utils.retry import exponential_backoff_s, retry_async
 
 
 class GorlamiTestnetClient:
@@ -19,12 +20,66 @@ class GorlamiTestnetClient:
             headers=headers,
         )
 
+    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        retryable_statuses = {429, 500, 502, 503, 504}
+
+        async def _attempt() -> httpx.Response:
+            resp = await self.client.request(method, url, **kwargs)
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                if (
+                    exc.response is not None
+                    and exc.response.status_code in retryable_statuses
+                ):
+                    await exc.response.aread()
+                raise
+            return resp
+
+        def _should_retry(exc: Exception) -> bool:
+            if isinstance(exc, httpx.HTTPStatusError):
+                return (
+                    exc.response is not None
+                    and exc.response.status_code in retryable_statuses
+                )
+            return isinstance(exc, (httpx.TransportError, httpx.TimeoutException))
+
+        def _get_delay_s(attempt: int, exc: Exception) -> float:
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                retry_after = exc.response.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        return float(retry_after)
+                    except ValueError:
+                        pass
+            return exponential_backoff_s(attempt, base_delay_s=0.25)
+
+        def _on_retry(attempt: int, exc: Exception, delay_s: float) -> None:
+            status = None
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+                status = exc.response.status_code
+            logger.warning(
+                "Gorlami retry in {:.2f}s (attempt {}): {}{}",
+                delay_s,
+                attempt + 1,
+                f"HTTP {status} " if status is not None else "",
+                type(exc).__name__,
+            )
+
+        return await retry_async(
+            _attempt,
+            max_retries=3,
+            base_delay_s=0.25,
+            should_retry=_should_retry,
+            get_delay_s=_get_delay_s,
+            on_retry=_on_retry,
+        )
+
     async def create_fork(self, chain_id: int) -> dict:
         url = f"{self.base_url}/fork"
         logger.debug(f"Creating fork for chain_id={chain_id}")
 
-        resp = await self.client.post(url, params={"chainId": chain_id})
-        resp.raise_for_status()
+        resp = await self._request("POST", url, params={"chainId": chain_id})
 
         data = resp.json()
         fork_id = data.get("fork_id") or data.get("forkId")
@@ -60,8 +115,7 @@ class GorlamiTestnetClient:
             "params": params,
         }
 
-        resp = await self.client.post(url, json=payload)
-        resp.raise_for_status()
+        resp = await self._request("POST", url, json=payload)
 
         data = resp.json()
         if "error" in data:
@@ -74,8 +128,7 @@ class GorlamiTestnetClient:
             "address": wallet,
             "balance": amount,
         }
-        resp = await self.client.post(url, json=payload)
-        resp.raise_for_status()
+        await self._request("POST", url, json=payload)
         logger.debug(
             f"Set native balance for {wallet} to {amount} wei on fork {fork_id}"
         )
@@ -91,8 +144,7 @@ class GorlamiTestnetClient:
             "amount": amount,
         }
 
-        resp = await self.client.post(url, json=payload)
-        resp.raise_for_status()
+        await self._request("POST", url, json=payload)
         logger.debug(
             f"Set ERC20 balance for {wallet} token {token} to {amount} on fork {fork_id}"
         )

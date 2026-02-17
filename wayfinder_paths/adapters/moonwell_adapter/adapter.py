@@ -17,10 +17,12 @@ from wayfinder_paths.core.constants.contracts import (
     MOONWELL_COMPTROLLER,
     MOONWELL_M_USDC,
     MOONWELL_REWARD_DISTRIBUTOR,
+    MOONWELL_VIEWS,
     MOONWELL_WELL_TOKEN,
 )
 from wayfinder_paths.core.constants.moonwell_abi import (
     COMPTROLLER_ABI,
+    MOONWELL_VIEWS_ABI,
     MTOKEN_ABI,
     REWARD_DISTRIBUTOR_ABI,
     WETH_ABI,
@@ -118,8 +120,10 @@ class MoonwellAdapter(BaseAdapter):
         self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
         self.m_usdc = MOONWELL_M_USDC
 
-        strategy_wallet = cfg.get("strategy_wallet") or {}
-        self.strategy_wallet_address = to_checksum_address(strategy_wallet["address"])
+        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
+        self.strategy_wallet_address: str | None = (
+            to_checksum_address(strategy_addr) if strategy_addr else None
+        )
         self._cache = Cache(Cache.MEMORY)
 
     async def lend(
@@ -130,6 +134,8 @@ class MoonwellAdapter(BaseAdapter):
         amount: int,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -169,6 +175,8 @@ class MoonwellAdapter(BaseAdapter):
         amount: int,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -195,6 +203,8 @@ class MoonwellAdapter(BaseAdapter):
         amount: int,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -223,6 +233,8 @@ class MoonwellAdapter(BaseAdapter):
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -264,6 +276,8 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
 
         transaction = await encode_call(
@@ -313,6 +327,8 @@ class MoonwellAdapter(BaseAdapter):
                 if account
                 else self.strategy_wallet_address
             )
+            if not acct:
+                return False, "strategy wallet address not configured"
             mtoken = to_checksum_address(mtoken)
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -332,6 +348,8 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
 
         transaction = await encode_call(
@@ -353,6 +371,8 @@ class MoonwellAdapter(BaseAdapter):
         min_rewards_usd: float = 0.0,
     ) -> tuple[bool, dict[str, int] | str]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         rewards = await self._get_outstanding_rewards(strategy)
 
@@ -402,9 +422,16 @@ class MoonwellAdapter(BaseAdapter):
     async def _calculate_rewards_usd(self, rewards: dict[str, int]) -> float:
         total_usd = 0.0
         for token_key, amount in rewards.items():
-            token_data = await TOKEN_CLIENT.get_token_details(token_key)
+            token_data = await TOKEN_CLIENT.get_token_details(
+                token_key, market_data=True
+            )
             if token_data:
-                price = token_data.get("price_usd") or token_data.get("price", 0)
+                price = (
+                    token_data.get("price_usd")
+                    or token_data.get("price")
+                    or token_data.get("current_price")
+                    or 0
+                )
                 decimals = token_data.get("decimals", 18)
                 total_usd += (amount / (10**decimals)) * price
         return total_usd
@@ -416,7 +443,7 @@ class MoonwellAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str | None = None,
+        account: str,
         include_rewards: bool = True,
         include_usd: bool = False,
         include_apy: bool = False,
@@ -425,7 +452,7 @@ class MoonwellAdapter(BaseAdapter):
         block_identifier: int | str | None = None,  # multicall ignores block id
     ) -> tuple[bool, dict[str, Any] | str]:
         _ = block_identifier  # reserved for future per-call block pinning
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account)
 
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
@@ -698,10 +725,14 @@ class MoonwellAdapter(BaseAdapter):
                         if not u:
                             continue
                         key = f"{self.chain_name}_{u}"
-                        td = await TOKEN_CLIENT.get_token_details(key)
+                        td = await TOKEN_CLIENT.get_token_details(key, market_data=True)
                         if not td:
                             continue
-                        price = td.get("price_usd") or td.get("price")
+                        price = (
+                            td.get("price_usd")
+                            or td.get("price")
+                            or td.get("current_price")
+                        )
                         dec = int(td.get("decimals", 18))
                         if price is None:
                             continue
@@ -725,6 +756,264 @@ class MoonwellAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def get_all_markets(
+        self,
+        *,
+        include_apy: bool = True,
+        include_rewards: bool = True,
+        include_usd: bool = False,
+        multicall_chunk_size: int = 240,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        try:
+            async with web3_from_chain_id(self.chain_id) as web3:
+                multicall = MulticallAdapter(chain_id=self.chain_id, web3=web3)
+                views = web3.eth.contract(
+                    address=MOONWELL_VIEWS, abi=MOONWELL_VIEWS_ABI
+                )
+
+                markets_info = await views.functions.getAllMarketsInfo().call(
+                    block_identifier="pending"
+                )
+                if not markets_info:
+                    return True, []
+
+                # Build a filtered list of (market_info, market_address) pairs to ensure
+                # markets_info and market_addrs always have matching lengths.
+                filtered_markets = [
+                    (m, to_checksum_address(str(m[0])))
+                    for m in markets_info
+                    if m and len(m) > 0 and m[0]
+                ]
+                if not filtered_markets:
+                    return True, []
+
+                markets_info = [m for m, _ in filtered_markets]
+                market_addrs = [addr for _, addr in filtered_markets]
+                # Fetch market metadata (symbol/underlying/decimals) via multicall.
+                meta_calls: list[Any] = []
+                for mtoken in market_addrs:
+                    mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
+                    meta_calls.extend(
+                        [
+                            multicall.build_call(
+                                mtoken, mtoken_contract.encode_abi("symbol", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                mtoken_contract.encode_abi("underlying", args=[]),
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                mtoken_contract.encode_abi("decimals", args=[]),
+                            ),
+                        ]
+                    )
+
+                ret_meta = await self._multicall_chunked(
+                    multicall=multicall,
+                    calls=meta_calls,
+                    chunk_size=multicall_chunk_size,
+                )
+
+                sample_mtoken = web3.eth.contract(address=self.m_usdc, abi=MTOKEN_ABI)
+                abi_symbol = self._fn_abi(sample_mtoken, "symbol", inputs_len=0)
+                abi_under = self._fn_abi(sample_mtoken, "underlying", inputs_len=0)
+                abi_dec = self._fn_abi(sample_mtoken, "decimals", inputs_len=0)
+
+                meta_stride = 3
+                metadata: dict[str, dict[str, Any]] = {}
+                for i, mtoken in enumerate(market_addrs):
+                    base = i * meta_stride
+                    if base + (meta_stride - 1) >= len(ret_meta):
+                        break
+                    symbol = (
+                        str(self._decode(web3, abi_symbol, ret_meta[base + 0])[0])
+                        if ret_meta[base + 0]
+                        else ""
+                    )
+                    underlying = (
+                        to_checksum_address(
+                            str(self._decode(web3, abi_under, ret_meta[base + 1])[0])
+                        )
+                        if ret_meta[base + 1]
+                        else None
+                    )
+                    mdec = (
+                        int(self._decode(web3, abi_dec, ret_meta[base + 2])[0])
+                        if ret_meta[base + 2]
+                        else 18
+                    )
+                    metadata[mtoken.lower()] = {
+                        "symbol": symbol,
+                        "underlying": underlying,
+                        "mTokenDecimals": int(mdec),
+                    }
+
+                # Map underlying token -> oracle price mantissa (Comptroller style 1e(36 - decimals)).
+                token_price_mantissa: dict[str, int] = {}
+                for info, mtoken in zip(markets_info, market_addrs, strict=True):
+                    md = metadata.get(mtoken.lower()) or {}
+                    u = md.get("underlying")
+                    if isinstance(u, str):
+                        try:
+                            token_price_mantissa[u.lower()] = int(info[7])
+                        except Exception:  # noqa: BLE001
+                            continue
+
+                markets: list[dict[str, Any]] = []
+                for info, mtoken in zip(markets_info, market_addrs, strict=True):
+                    md = metadata.get(mtoken.lower()) or {}
+                    underlying = md.get("underlying")
+
+                    try:
+                        is_listed = bool(info[1])
+                        borrow_cap = int(info[2])
+                        supply_cap = int(info[3])
+                        mint_paused = bool(info[4])
+                        borrow_paused = bool(info[5])
+                        collateral_factor = float(int(info[6])) / MANTISSA
+                        underlying_price = int(info[7])
+                        total_supply = int(info[8])
+                        total_borrows = int(info[9])
+                        total_reserves = int(info[10])
+                        cash = int(info[11])
+                        exchange_rate = int(info[12])
+                        borrow_index = int(info[13])
+                        reserve_factor = float(int(info[14])) / MANTISSA
+                        borrow_rate = int(info[15])
+                        supply_rate = int(info[16])
+                        incentives = info[17] or []
+                    except Exception:  # noqa: BLE001 - skip malformed markets
+                        continue
+
+                    row: dict[str, Any] = {
+                        "mtoken": mtoken,
+                        "symbol": md.get("symbol", ""),
+                        "underlying": underlying,
+                        "mTokenDecimals": md.get("mTokenDecimals", 18),
+                        "isListed": is_listed,
+                        "borrowCap": borrow_cap,
+                        "supplyCap": supply_cap,
+                        "mintPaused": mint_paused,
+                        "borrowPaused": borrow_paused,
+                        "collateralFactor": collateral_factor,
+                        "underlyingPrice": underlying_price,
+                        "exchangeRate": exchange_rate,
+                        "borrowIndex": borrow_index,
+                        "reserveFactor": reserve_factor,
+                        "totalSupply": total_supply,
+                        "totalBorrows": total_borrows,
+                        "totalReserves": total_reserves,
+                        "cash": cash,
+                    }
+
+                    supply_underlying_raw = (
+                        (int(total_supply) * int(exchange_rate)) // MANTISSA
+                        if exchange_rate
+                        else 0
+                    )
+
+                    if include_apy:
+                        base_supply_apy = _timestamp_rate_to_apy(
+                            int(supply_rate) / MANTISSA
+                        )
+                        base_borrow_apy = _timestamp_rate_to_apy(
+                            int(borrow_rate) / MANTISSA
+                        )
+                        row["baseSupplyApy"] = base_supply_apy
+                        row["baseBorrowApy"] = base_borrow_apy
+
+                        supply_rewards_apr = 0.0
+                        borrow_rewards_apr = 0.0
+                        incentives_out: list[dict[str, Any]] = []
+
+                        if include_rewards and incentives:
+                            denom_supply = int(supply_underlying_raw) * int(
+                                underlying_price
+                            )
+                            denom_borrow = int(total_borrows) * int(underlying_price)
+
+                            for inc in incentives:
+                                try:
+                                    token = to_checksum_address(str(inc[0]))
+                                    supply_speed = int(inc[1])
+                                    borrow_speed = int(inc[2])
+                                except Exception:  # noqa: BLE001
+                                    continue
+
+                                token_price = token_price_mantissa.get(token.lower())
+
+                                inc_row: dict[str, Any] = {
+                                    "token": token,
+                                    "supplyEmissionsPerSec": supply_speed,
+                                    "borrowEmissionsPerSec": borrow_speed,
+                                }
+
+                                if (
+                                    token_price
+                                    and denom_supply > 0
+                                    and supply_speed > 0
+                                ):
+                                    inc_supply_apr = float(
+                                        (supply_speed * SECONDS_PER_YEAR * token_price)
+                                        / denom_supply
+                                    )
+                                    inc_row["supplyRewardsApy"] = inc_supply_apr
+                                    supply_rewards_apr += inc_supply_apr
+                                else:
+                                    inc_row["supplyRewardsApy"] = 0.0
+
+                                if (
+                                    token_price
+                                    and denom_borrow > 0
+                                    and borrow_speed > 0
+                                ):
+                                    inc_borrow_apr = float(
+                                        (borrow_speed * SECONDS_PER_YEAR * token_price)
+                                        / denom_borrow
+                                    )
+                                    # Borrow incentives reduce net borrow APY (cost)
+                                    inc_row["borrowRewardsApy"] = -inc_borrow_apr
+                                    borrow_rewards_apr += inc_borrow_apr
+                                else:
+                                    inc_row["borrowRewardsApy"] = 0.0
+
+                                incentives_out.append(inc_row)
+
+                        row["rewardSupplyApy"] = supply_rewards_apr
+                        row["rewardBorrowApy"] = -borrow_rewards_apr
+                        row["supplyApy"] = base_supply_apy + supply_rewards_apr
+                        row["borrowApy"] = base_borrow_apy - borrow_rewards_apr
+                        row["incentives"] = incentives_out
+
+                    if include_usd:
+                        try:
+                            row["totalSupplyUsd"] = (
+                                (
+                                    float(supply_underlying_raw)
+                                    * float(underlying_price)
+                                    / 1e36
+                                )
+                                if underlying_price
+                                else None
+                            )
+                        except Exception:  # noqa: BLE001
+                            row["totalSupplyUsd"] = None
+                        try:
+                            row["totalBorrowsUsd"] = (
+                                (float(total_borrows) * float(underlying_price) / 1e36)
+                                if underlying_price
+                                else None
+                            )
+                        except Exception:  # noqa: BLE001
+                            row["totalBorrowsUsd"] = None
+
+                    markets.append(row)
+
+                return True, markets
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     async def get_pos(
         self,
         *,
@@ -737,6 +1026,8 @@ class MoonwellAdapter(BaseAdapter):
         account = (
             to_checksum_address(account) if account else self.strategy_wallet_address
         )
+        if not account:
+            return False, "strategy wallet address not configured"
         block_id = block_identifier if block_identifier is not None else "pending"
 
         try:
@@ -811,14 +1102,18 @@ class MoonwellAdapter(BaseAdapter):
     ) -> dict[str, float | None]:
         tokens = list(set(balances.keys()) | {underlying_key})
         token_details = await asyncio.gather(
-            *[TOKEN_CLIENT.get_token_details(key) for key in tokens]
+            *[TOKEN_CLIENT.get_token_details(key, market_data=True) for key in tokens]
         )
         token_data = dict(zip(tokens, token_details, strict=True))
 
         usd_balances: dict[str, float | None] = {}
         for token_key, bal in balances.items():
             data = token_data.get(token_key)
-            if data and (price := data.get("price_usd") or data.get("price")):
+            if data and (
+                price := data.get("price_usd")
+                or data.get("price")
+                or data.get("current_price")
+            ):
                 usd_balances[token_key] = (
                     bal / (10 ** data.get("decimals", 18))
                 ) * price
@@ -883,24 +1178,47 @@ class MoonwellAdapter(BaseAdapter):
                             block_identifier="pending"
                         )
                     )
-                    mkt_config = await reward_distributor.functions.getAllMarketConfigs(
-                        mtoken
-                    ).call(block_identifier="pending")
-                    total_value = await mtoken_contract.functions.totalSupply().call(
-                        block_identifier="pending"
-                    )
+                    mkt_config = []
+                    total_value = 0
+                    if include_rewards:
+                        mkt_config = (
+                            await reward_distributor.functions.getAllMarketConfigs(
+                                mtoken
+                            ).call(block_identifier="pending")
+                        )
+                        total_supply = (
+                            await mtoken_contract.functions.totalSupply().call(
+                                block_identifier="pending"
+                            )
+                        )
+                        exch = (
+                            await mtoken_contract.functions.exchangeRateStored().call(
+                                block_identifier="pending"
+                            )
+                        )
+                        # Convert mToken supply -> underlying supply for rewards APR denominator
+                        total_value = (
+                            (int(total_supply) * int(exch)) // MANTISSA if exch else 0
+                        )
                 else:
                     rate_per_timestamp = (
                         await mtoken_contract.functions.borrowRatePerTimestamp().call(
                             block_identifier="pending"
                         )
                     )
-                    mkt_config = await reward_distributor.functions.getAllMarketConfigs(
-                        mtoken
-                    ).call(block_identifier="pending")
-                    total_value = await mtoken_contract.functions.totalBorrows().call(
-                        block_identifier="pending"
-                    )
+                    mkt_config = []
+                    total_value = 0
+                    if include_rewards:
+                        mkt_config = (
+                            await reward_distributor.functions.getAllMarketConfigs(
+                                mtoken
+                            ).call(block_identifier="pending")
+                        )
+                        total_value = (
+                            await mtoken_contract.functions.totalBorrows().call(
+                                block_identifier="pending"
+                            )
+                        )
 
                 apy = _timestamp_rate_to_apy(rate_per_timestamp / MANTISSA)
 
@@ -908,7 +1226,11 @@ class MoonwellAdapter(BaseAdapter):
                     rewards_apr = await self._calculate_rewards_apr(
                         mtoken, mkt_config, total_value, apy_type
                     )
-                    apy += rewards_apr
+                    if apy_type == "supply":
+                        apy += rewards_apr
+                    else:
+                        # Borrow incentives reduce net borrow APY (cost)
+                        apy -= rewards_apr
 
                 return True, apy
         except Exception as exc:
@@ -925,7 +1247,7 @@ class MoonwellAdapter(BaseAdapter):
             well_config = None
             for config in mkt_config:
                 if (
-                    len(config) >= 6
+                    len(config) >= 2
                     and config[1].lower() == MOONWELL_WELL_TOKEN.lower()
                 ):
                     well_config = config
@@ -934,14 +1256,14 @@ class MoonwellAdapter(BaseAdapter):
             if not well_config:
                 return 0.0
 
-            # Config format: (mToken, rewardToken, owner, emissionCap, supplyEmissionsPerSec, borrowEmissionsPerSec, ...)
+            # Moonwell Base Multi-Reward Distributor MarketConfig has
+            # supplyEmissionsPerSec and borrowEmissionsPerSec as the last 2 fields.
             if apy_type == "supply":
-                well_rate = well_config[4]
+                well_rate = int(well_config[-2])
             else:
-                well_rate = well_config[5]
-                # Borrow rewards are shown as negative in some implementations
-                if well_rate < 0:
-                    well_rate = -well_rate
+                well_rate = int(well_config[-1])
+            if well_rate < 0:
+                well_rate = -well_rate
 
             if well_rate == 0:
                 return 0.0
@@ -953,17 +1275,27 @@ class MoonwellAdapter(BaseAdapter):
                 )
 
             well_data, underlying_data = await asyncio.gather(
-                TOKEN_CLIENT.get_token_details(f"{CHAIN_NAME}_{MOONWELL_WELL_TOKEN}"),
-                TOKEN_CLIENT.get_token_details(f"{CHAIN_NAME}_{underlying_addr}"),
+                TOKEN_CLIENT.get_token_details(
+                    f"{CHAIN_NAME}_{MOONWELL_WELL_TOKEN}", market_data=True
+                ),
+                TOKEN_CLIENT.get_token_details(
+                    f"{CHAIN_NAME}_{underlying_addr}", market_data=True
+                ),
             )
 
             well_price = (
-                well_data.get("price_usd") or well_data.get("price", 0)
+                well_data.get("price_usd")
+                or well_data.get("price")
+                or well_data.get("current_price")
+                or 0
                 if well_data
                 else 0
             )
             underlying_price = (
-                underlying_data.get("price_usd") or underlying_data.get("price", 0)
+                underlying_data.get("price_usd")
+                or underlying_data.get("price")
+                or underlying_data.get("current_price")
+                or 0
                 if underlying_data
                 else 0
             )
@@ -998,6 +1330,8 @@ class MoonwellAdapter(BaseAdapter):
         account = (
             to_checksum_address(account) if account else self.strategy_wallet_address
         )
+        if not account:
+            return False, "strategy wallet address not configured"
 
         try:
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -1033,6 +1367,8 @@ class MoonwellAdapter(BaseAdapter):
         account = (
             to_checksum_address(account) if account else self.strategy_wallet_address
         )
+        if not account:
+            return False, "strategy wallet address not configured"
 
         try:
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -1127,6 +1463,8 @@ class MoonwellAdapter(BaseAdapter):
         amount: int,
     ) -> tuple[bool, Any]:
         strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"

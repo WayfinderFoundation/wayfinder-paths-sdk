@@ -1,8 +1,16 @@
-from unittest.mock import AsyncMock, patch
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from wayfinder_paths.adapters.hyperlend_adapter.adapter import HyperlendAdapter
+from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.contracts import (
+    HYPEREVM_WHYPE,
+    HYPERLEND_POOL,
+    HYPERLEND_WRAPPED_TOKEN_GATEWAY,
+)
+from wayfinder_paths.core.constants.hyperlend_abi import UI_POOL_RESERVE_KEYS
 
 
 class TestHyperlendAdapter:
@@ -171,6 +179,116 @@ class TestHyperlendAdapter:
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "HYPERLEND"
+
+    def test_strategy_address_optional(self):
+        adapter = HyperlendAdapter(config={})
+        assert adapter.strategy_wallet_address is None
+
+    @pytest.mark.asyncio
+    async def test_get_all_markets_success(self, adapter):
+        reserve_keys = UI_POOL_RESERVE_KEYS
+
+        def build_reserve(**overrides):
+            base = dict.fromkeys(reserve_keys, 0)
+            base.update(
+                {
+                    "underlyingAsset": "0x0000000000000000000000000000000000000001",
+                    "name": "",
+                    "symbol": "",
+                    "decimals": 18,
+                    "usageAsCollateralEnabled": True,
+                    "borrowingEnabled": True,
+                    "isActive": True,
+                    "isFrozen": False,
+                    "isPaused": False,
+                    "isSiloedBorrowing": False,
+                    "aTokenAddress": "0x0000000000000000000000000000000000000002",
+                    "variableDebtTokenAddress": "0x0000000000000000000000000000000000000003",
+                    "interestRateStrategyAddress": "0x0000000000000000000000000000000000000004",
+                    "priceOracle": "0x0000000000000000000000000000000000000005",
+                    "flashLoanEnabled": True,
+                    "borrowableInIsolation": False,
+                    "virtualAccActive": False,
+                }
+            )
+            base.update(overrides)
+            return tuple(base[k] for k in reserve_keys)
+
+        reserves = [
+            build_reserve(
+                underlyingAsset="0x0000000000000000000000000000000000000011",
+                symbol="USDC",
+                decimals=6,
+                baseLTVasCollateral=8000,
+                reserveLiquidationThreshold=8500,
+                reserveLiquidationBonus=10500,
+                reserveFactor=1000,
+                liquidityRate=int(0.05 * 10**27),
+                variableBorrowRate=int(0.10 * 10**27),
+                priceInMarketReferenceCurrency=100000000,
+                availableLiquidity=5000000,
+                totalScaledVariableDebt=0,
+                variableBorrowIndex=10**27,
+                supplyCap=0,
+            ),
+            build_reserve(
+                underlyingAsset="0x0000000000000000000000000000000000000022",
+                symbol="uSOL",
+                decimals=6,
+                baseLTVasCollateral=6000,
+                reserveLiquidationThreshold=7500,
+                reserveLiquidationBonus=11000,
+                reserveFactor=2000,
+                liquidityRate=int(0.02 * 10**27),
+                variableBorrowRate=int(0.08 * 10**27),
+                priceInMarketReferenceCurrency=2000000000,
+                availableLiquidity=10000000,
+                totalScaledVariableDebt=5000000,
+                variableBorrowIndex=10**27,
+                borrowCap=500,
+                supplyCap=100,
+                debtCeiling=12345,
+                debtCeilingDecimals=2,
+            ),
+        ]
+        base_currency = (100000000, 100000000, 0, 8)  # ref_unit=1e8, ref_usd=1.0
+
+        mock_ui_pool = MagicMock()
+        mock_ui_pool.functions.getReservesData = MagicMock(
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract = MagicMock(return_value=mock_ui_pool)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        with patch(
+            "wayfinder_paths.adapters.hyperlend_adapter.adapter.web3_from_chain_id",
+            mock_web3_ctx,
+        ):
+            ok, markets = await adapter.get_all_markets()
+
+        assert ok is True
+        assert isinstance(markets, list)
+        assert len(markets) == 2
+
+        usol = next(m for m in markets if m["symbol"].lower() == "usol")
+        assert usol["is_stablecoin"] is False
+        assert usol["price_usd"] == 20.0
+        assert usol["supply_cap"] == 100
+        assert usol["supply_cap_headroom"] == 85000000
+        assert usol["ltv_bps"] == 6000
+        assert usol["liquidation_threshold_bps"] == 7500
+        assert usol["liquidation_bonus_bps"] == 11000
+        assert usol["reserve_factor_bps"] == 2000
+        assert usol["borrow_cap"] == 500
+        assert usol["debt_ceiling"] == 12345
+        assert usol["debt_ceiling_decimals"] == 2
 
     @pytest.mark.asyncio
     async def test_get_stable_markets_with_is_stable_symbol(
@@ -411,3 +529,404 @@ class TestHyperlendAdapter:
             assert len(data.get("assets", [])) == 0
             # New API uses account_data; total_value may not be present
             assert data.get("account_data", {}).get("total_collateral_base") == 0
+
+    @pytest.mark.asyncio
+    async def test_lend_native_uses_whype(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch.object(
+                adapter, "_record_pool_op", new_callable=AsyncMock
+            ) as mock_record,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            mock_record.return_value = None
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.lend(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        mock_encode.assert_awaited_once()
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "depositETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+        assert kwargs["value"] == 123
+
+    @pytest.mark.asyncio
+    async def test_unlend_native_uses_whype(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+            patch.object(
+                adapter, "_record_pool_op", new_callable=AsyncMock
+            ) as mock_record,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            mock_record.return_value = None
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.unlend(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        mock_encode.assert_awaited_once()
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "withdrawETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+
+    @pytest.mark.asyncio
+    async def test_borrow_erc20_calls_pool_borrow(self, adapter):
+        token = "0x0000000000000000000000000000000000000011"
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.borrow(
+                underlying_token=token,
+                qty=123,
+                chain_id=999,
+                native=False,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_POOL
+        assert kwargs["fn_name"] == "borrow"
+        assert kwargs["args"][0].lower() == token.lower()
+        assert kwargs["args"][1] == 123
+        assert kwargs["args"][2] == 2  # variable rate mode
+        assert kwargs["args"][3] == 0  # referral code
+
+    @pytest.mark.asyncio
+    async def test_borrow_native_borrows_and_unwraps(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_encode.side_effect = [{"tx": "borrow"}, {"tx": "unwrap"}]
+            mock_send.side_effect = ["0xborrow", "0xunwrap"]
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, res = await adapter.borrow(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+            )
+
+        assert ok is True
+        assert res == {"borrow_tx": "0xborrow", "unwrap_tx": "0xunwrap"}
+
+        assert mock_encode.await_count == 2
+        first_kwargs = mock_encode.await_args_list[0].kwargs
+        assert first_kwargs["target"] == HYPERLEND_POOL
+        assert first_kwargs["fn_name"] == "borrow"
+        assert first_kwargs["args"][0] == HYPEREVM_WHYPE
+        assert first_kwargs["args"][1] == 123
+        assert first_kwargs["args"][2] == 2  # variable rate mode
+        assert first_kwargs["args"][3] == 0  # referral code
+        assert first_kwargs["args"][4] == adapter.strategy_wallet_address
+
+        second_kwargs = mock_encode.await_args_list[1].kwargs
+        assert second_kwargs["target"] == HYPEREVM_WHYPE
+        assert second_kwargs["fn_name"] == "withdraw"
+        assert second_kwargs["args"][0] == 123
+
+    @pytest.mark.asyncio
+    async def test_repay_erc20_approves_and_calls_pool_repay(self, adapter):
+        token = "0x0000000000000000000000000000000000000011"
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.ensure_allowance",
+                new_callable=AsyncMock,
+            ) as mock_allow,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_allow.return_value = (True, "ok")
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.repay(
+                underlying_token=token,
+                qty=123,
+                chain_id=999,
+                native=False,
+                repay_full=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        mock_allow.assert_awaited_once()
+        _, allow_kwargs = mock_allow.await_args
+        assert allow_kwargs["spender"] == HYPERLEND_POOL
+        assert allow_kwargs["approval_amount"] == MAX_UINT256
+
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_POOL
+        assert kwargs["fn_name"] == "repay"
+        assert kwargs["args"][0].lower() == token.lower()
+        assert kwargs["args"][1] == MAX_UINT256
+        assert kwargs["args"][2] == 2  # variable rate mode
+
+    @pytest.mark.asyncio
+    async def test_repay_native_calls_gateway_repayeth_with_value(self, adapter):
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.repay(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=123,
+                chain_id=999,
+                native=True,
+                repay_full=False,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "repayETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+        assert kwargs["args"][1] == 123
+        assert kwargs["args"][2] == adapter.strategy_wallet_address
+        assert kwargs["value"] == 123
+
+    @pytest.mark.asyncio
+    async def test_repay_native_full_repays_max_uint_with_buffer(self, adapter):
+        mock_ui_pool = MagicMock()
+        reserves = [
+            {
+                "underlyingAsset": HYPEREVM_WHYPE,
+                "variableDebtTokenAddress": "0x00000000000000000000000000000000000000dE",
+            }
+        ]
+        base_currency = (0, 0, 0, 0)
+        mock_ui_pool.functions.getReservesData = MagicMock(
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract = MagicMock(return_value=mock_ui_pool)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.web3_from_chain_id",
+                mock_web3_ctx,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.get_token_balance",
+                new_callable=AsyncMock,
+            ) as mock_bal,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_bal.side_effect = [1000, 10000]  # debt, native balance
+            mock_encode.return_value = {"tx": "data"}
+            mock_send.return_value = "0xabc"
+            adapter.strategy_wallet_signing_callback = AsyncMock()
+
+            ok, txn = await adapter.repay(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=0,
+                chain_id=999,
+                native=True,
+                repay_full=True,
+            )
+
+        assert ok is True
+        assert txn == "0xabc"
+        assert mock_bal.await_count == 2
+        _, kwargs = mock_encode.await_args
+        assert kwargs["target"] == HYPERLEND_WRAPPED_TOKEN_GATEWAY
+        assert kwargs["fn_name"] == "repayETH"
+        assert kwargs["args"][0] == HYPEREVM_WHYPE
+        assert kwargs["args"][1] == MAX_UINT256
+        assert kwargs["args"][2] == adapter.strategy_wallet_address
+        assert kwargs["value"] == 1001  # 1000 + 1 wei buffer
+
+    @pytest.mark.asyncio
+    async def test_repay_native_full_no_debt_is_noop(self, adapter):
+        mock_ui_pool = MagicMock()
+        reserves = [
+            {
+                "underlyingAsset": HYPEREVM_WHYPE,
+                "variableDebtTokenAddress": "0x00000000000000000000000000000000000000dE",
+            }
+        ]
+        base_currency = (0, 0, 0, 0)
+        mock_ui_pool.functions.getReservesData = MagicMock(
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract = MagicMock(return_value=mock_ui_pool)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.web3_from_chain_id",
+                mock_web3_ctx,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.get_token_balance",
+                new_callable=AsyncMock,
+            ) as mock_bal,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_bal.return_value = 0
+
+            ok, txn = await adapter.repay(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=0,
+                chain_id=999,
+                native=True,
+                repay_full=True,
+            )
+
+        assert ok is True
+        assert txn is None
+        mock_encode.assert_not_awaited()
+        mock_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_repay_native_full_requires_sufficient_balance(self, adapter):
+        mock_ui_pool = MagicMock()
+        reserves = [
+            {
+                "underlyingAsset": HYPEREVM_WHYPE,
+                "variableDebtTokenAddress": "0x00000000000000000000000000000000000000dE",
+            }
+        ]
+        base_currency = (0, 0, 0, 0)
+        mock_ui_pool.functions.getReservesData = MagicMock(
+            return_value=MagicMock(
+                call=AsyncMock(return_value=(reserves, base_currency))
+            )
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract = MagicMock(return_value=mock_ui_pool)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.web3_from_chain_id",
+                mock_web3_ctx,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.get_token_balance",
+                new_callable=AsyncMock,
+            ) as mock_bal,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_bal.side_effect = [1000, 999]  # debt, native balance
+
+            ok, err = await adapter.repay(
+                underlying_token="0x0000000000000000000000000000000000000000",
+                qty=0,
+                chain_id=999,
+                native=True,
+                repay_full=True,
+            )
+
+        assert ok is False
+        assert "insufficient HYPE balance for repay_full" in str(err)
+        mock_encode.assert_not_awaited()
+        mock_send.assert_not_awaited()

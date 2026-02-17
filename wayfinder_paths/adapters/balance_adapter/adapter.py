@@ -16,6 +16,7 @@ from wayfinder_paths.core.utils.tokens import (
     is_native_token,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
@@ -93,7 +94,7 @@ class BalanceAdapter(BaseAdapter):
             token_address_out = None if is_native else token_address
 
             balance_decimal = (
-                float(balance_raw) / (10 ** int(decimals))
+                from_erc20_raw(balance_raw, int(decimals))
                 if int(decimals) >= 0
                 else None
             )
@@ -415,7 +416,7 @@ class BalanceAdapter(BaseAdapter):
                             token_address_out = token
 
                         balance_decimal = (
-                            float(raw_balance) / (10**decimals)
+                            from_erc20_raw(raw_balance, decimals)
                             if decimals >= 0
                             else None
                         )

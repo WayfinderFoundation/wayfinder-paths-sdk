@@ -31,6 +31,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     sqrt_price_x96_from_tick,
     sqrt_price_x96_to_price,
 )
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
 from wayfinder_paths.policies.prjx import prjx_npm, prjx_swap
 
@@ -319,8 +320,8 @@ class ProjectXThbillUsdcStrategy(Strategy):
 
         dec0 = int(token0_meta.get("decimals", 18))
         dec1 = int(token1_meta.get("decimals", 18))
-        amt0_tokens = float(amt0) / (10**dec0)
-        amt1_tokens = float(amt1) / (10**dec1)
+        amt0_tokens = from_erc20_raw(amt0, dec0)
+        amt1_tokens = from_erc20_raw(amt1, dec1)
 
         price0 = await self._token_price_usd(
             token0_meta.get("token_id") or USDC_TOKEN_ID
@@ -340,8 +341,8 @@ class ProjectXThbillUsdcStrategy(Strategy):
         raw0 = int(balances.get(addr0, 0) or 0)
         raw1 = int(balances.get(addr1, 0) or 0)
 
-        amount0 = raw0 / (10 ** int(token0_meta["decimals"]))
-        amount1 = raw1 / (10 ** int(token1_meta["decimals"]))
+        amount0 = from_erc20_raw(raw0, int(token0_meta["decimals"]))
+        amount1 = from_erc20_raw(raw1, int(token1_meta["decimals"]))
 
         price0 = await self._token_price_usd(
             token0_meta.get("token_id") or USDC_TOKEN_ID
@@ -583,7 +584,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             return False, f"Failed to get main wallet USDC balance: {main_usdc_raw}"
 
         usdc_decimals = int(self.usdc_token_info.get("decimals", 6))
-        available_usdc = float(main_usdc_raw) / (10**usdc_decimals)
+        available_usdc = from_erc20_raw(main_usdc_raw, usdc_decimals)
         if main_token_amount > 0:
             main_token_amount = min(float(main_token_amount), available_usdc)
             if main_token_amount < self.MINIMUM_NET_DEPOSIT:
@@ -603,11 +604,11 @@ class ProjectXThbillUsdcStrategy(Strategy):
         )
         hype_decimals = int(self.hype_token_info.get("decimals", 18))
         strat_hype = (
-            float(strat_hype_raw) / (10**hype_decimals)
+            from_erc20_raw(strat_hype_raw, hype_decimals)
             if ok and isinstance(strat_hype_raw, int)
             else 0.0
         )
-        main_hype = float(main_hype_raw) / (10**hype_decimals)
+        main_hype = from_erc20_raw(main_hype_raw, hype_decimals)
 
         if gas_token_amount > 0:
             if main_hype < gas_token_amount:
@@ -879,7 +880,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
         if not ok or not isinstance(strat_usdc_raw, int) or strat_usdc_raw <= 0:
             return False, "No USDC in strategy wallet to transfer."
         usdc_decimals = int(self.usdc_token_info.get("decimals", 6))
-        usdc_tokens = float(strat_usdc_raw) / (10**usdc_decimals)
+        usdc_tokens = from_erc20_raw(strat_usdc_raw, usdc_decimals)
         ok, msg = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
             USDC_TOKEN_ID, usdc_tokens, strategy_name=self.name
         )
@@ -898,7 +899,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
             token_id=GAS_TOKEN_ID, wallet_address=self._get_strategy_wallet_address()
         )
         gas_amount = (
-            float(gas_raw) / (10 ** int(self.hype_token_info.get("decimals", 18)))
+            from_erc20_raw(gas_raw, int(self.hype_token_info.get("decimals", 18)))
             if ok and isinstance(gas_raw, int)
             else 0.0
         )
@@ -961,8 +962,8 @@ class ProjectXThbillUsdcStrategy(Strategy):
             amount0, amount1 = amounts_for_liq_inrange(
                 sqrt_p, sqrt_pl, sqrt_pu, int(pos.liquidity)
             )
-            amount0_tokens = float(amount0) / (10 ** int(token0_meta["decimals"]))
-            amount1_tokens = float(amount1) / (10 ** int(token1_meta["decimals"]))
+            amount0_tokens = from_erc20_raw(amount0, int(token0_meta["decimals"]))
+            amount1_tokens = from_erc20_raw(amount1, int(token1_meta["decimals"]))
             contribution = amount0_tokens * price_token0 + amount1_tokens * price_token1
 
             fee_usd = 0.0
