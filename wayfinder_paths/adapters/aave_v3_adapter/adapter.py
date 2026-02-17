@@ -386,10 +386,10 @@ class AaveV3Adapter(BaseAdapter):
                         market_row["reward_supply_apr"] = float(reward_supply_apr)
                         market_row["reward_borrow_apr"] = float(reward_borrow_apr)
                         market_row["supply_apy_with_rewards"] = float(
-                            base_supply_apy + reward_supply_apr
+                            base_supply_apy + apr_to_apy(reward_supply_apr)
                         )
                         market_row["borrow_apy_with_rewards"] = float(
-                            base_borrow_apy - reward_borrow_apr
+                            base_borrow_apy - apr_to_apy(reward_borrow_apr)
                         )
                         market_row["incentives"] = incentives_out
 
@@ -693,9 +693,10 @@ class AaveV3Adapter(BaseAdapter):
                         "variable_borrow_apy": variable_borrow_apy,
                         "reward_supply_apr": reward_supply_apr,
                         "reward_borrow_apr": reward_borrow_apr,
-                        "supply_apy_with_rewards": supply_apy + reward_supply_apr,
+                        "supply_apy_with_rewards": supply_apy
+                        + apr_to_apy(reward_supply_apr),
                         "borrow_apy_with_rewards": variable_borrow_apy
-                        - reward_borrow_apr,
+                        - apr_to_apy(reward_borrow_apr),
                         "rewards": user_rewards_by_underlying.get(underlying.lower())
                         or [],
                     }
@@ -885,7 +886,6 @@ class AaveV3Adapter(BaseAdapter):
 
         try:
             pool = await self._pool(chain_id=int(chain_id))
-            asset = to_checksum_address(underlying_token)
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 borrow_tx = await encode_call(
@@ -913,6 +913,7 @@ class AaveV3Adapter(BaseAdapter):
                 )
                 return True, {"borrow_tx": borrow_hash, "unwrap_tx": unwrap_hash}
 
+            asset = to_checksum_address(underlying_token)
             tx = await encode_call(
                 target=pool,
                 abi=POOL_ABI,
