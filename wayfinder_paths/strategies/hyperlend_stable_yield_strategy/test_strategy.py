@@ -1,5 +1,5 @@
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -388,3 +388,97 @@ async def test_error_cases(strategy):
                         f"Expected {example_name} update to "
                         f"{'succeed' if expected_success else 'fail'} but got opposite"
                     )
+
+
+# _swap_residual_balances_to_token: TODO said this section was untested
+
+USDC_CHECKSUM = "0x0000000000000000000000000000000000000099"
+
+
+def _make_balances(strategy, *, target_checksum: str):
+    """Return a balances dict with one non-target stablecoin entry."""
+    return {
+        USDC_CHECKSUM: {
+            "token": {
+                "symbol": "USDC",
+                "decimals": 6,
+                "address": USDC_CHECKSUM,
+                "token_id": "usd-coin-hyperevm",
+            },
+            "address": USDC_CHECKSUM,
+            "wei": 5_000_000,
+            "tokens": 5.0,
+            "usd": 5.0,
+            "asset": {"is_stablecoin": True},
+            "decimals": 6,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_swap_residual_fallback_transfers_to_main(strategy):
+    """When _execute_swap returns None, the fallback transfers tokens to main wallet."""
+    target = strategy.usdt_token_info
+    target_checksum = strategy._token_checksum(target)
+
+    strategy._get_assets_snapshot = AsyncMock(return_value={"assets": []})
+    strategy._wallet_balances_from_snapshot = AsyncMock(
+        return_value=_make_balances(strategy, target_checksum=target_checksum)
+    )
+    strategy._execute_swap = AsyncMock(return_value=None)
+    strategy.balance_adapter.move_from_strategy_wallet_to_main_wallet = AsyncMock(
+        return_value=(True, "ok")
+    )
+
+    actions = await strategy._swap_residual_balances_to_token(target)
+
+    strategy._execute_swap.assert_awaited_once()
+    strategy.balance_adapter.move_from_strategy_wallet_to_main_wallet.assert_awaited_once_with(
+        token_id=target.get("token_id"),
+        amount=5.0,
+        strategy_name=strategy.name,
+    )
+    assert len(actions) == 1
+    assert "Transferred" in actions[0]
+    assert "USDC" in actions[0]
+
+
+@pytest.mark.asyncio
+async def test_swap_residual_fallback_transfer_fails_no_action(strategy):
+    """When the fallback transfer returns (False, ...), no action is appended."""
+    target = strategy.usdt_token_info
+    target_checksum = strategy._token_checksum(target)
+
+    strategy._get_assets_snapshot = AsyncMock(return_value={"assets": []})
+    strategy._wallet_balances_from_snapshot = AsyncMock(
+        return_value=_make_balances(strategy, target_checksum=target_checksum)
+    )
+    strategy._execute_swap = AsyncMock(return_value=None)
+    strategy.balance_adapter.move_from_strategy_wallet_to_main_wallet = AsyncMock(
+        return_value=(False, "transfer failed")
+    )
+
+    actions = await strategy._swap_residual_balances_to_token(target)
+
+    strategy.balance_adapter.move_from_strategy_wallet_to_main_wallet.assert_awaited_once()
+    assert actions == []
+
+
+@pytest.mark.asyncio
+async def test_swap_residual_fallback_exception_continues(strategy):
+    """When the fallback transfer raises, the loop continues without crashing."""
+    target = strategy.usdt_token_info
+    target_checksum = strategy._token_checksum(target)
+
+    strategy._get_assets_snapshot = AsyncMock(return_value={"assets": []})
+    strategy._wallet_balances_from_snapshot = AsyncMock(
+        return_value=_make_balances(strategy, target_checksum=target_checksum)
+    )
+    strategy._execute_swap = AsyncMock(return_value=None)
+    strategy.balance_adapter.move_from_strategy_wallet_to_main_wallet = AsyncMock(
+        side_effect=Exception("network error")
+    )
+
+    actions = await strategy._swap_residual_balances_to_token(target)
+
+    assert actions == []
