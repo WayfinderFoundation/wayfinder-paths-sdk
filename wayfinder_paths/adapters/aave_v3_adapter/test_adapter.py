@@ -23,7 +23,7 @@ class TestAaveV3Adapter:
 
     def test_strategy_address_optional(self):
         adapter = AaveV3Adapter(config={})
-        assert adapter.strategy_wallet_address is None
+        assert adapter.wallet_address is None
 
     @pytest.mark.asyncio
     async def test_get_all_markets_basic(self, adapter):

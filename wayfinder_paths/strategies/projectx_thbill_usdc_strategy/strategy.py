@@ -158,12 +158,12 @@ class ProjectXThbillUsdcStrategy(Strategy):
         self.balance_adapter = BalanceAdapter(
             adapter_config,
             main_wallet_signing_callback=self.main_wallet_signing_callback,
-            strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+            signing_callback=self.strategy_wallet_signing_callback,
         )
         self.token_adapter = TokenAdapter()
         self.projectx = ProjectXLiquidityAdapter(
             adapter_config,
-            strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+            signing_callback=self.strategy_wallet_signing_callback,
         )
 
         self.usdc_token_info: dict[str, Any] = {}

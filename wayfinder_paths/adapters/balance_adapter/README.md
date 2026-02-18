@@ -20,7 +20,7 @@ from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 adapter = BalanceAdapter(
     config=config,
     main_wallet_signing_callback=main_signing_cb,
-    strategy_wallet_signing_callback=strategy_signing_cb,
+    signing_callback=strategy_signing_cb,
 )
 ```
 

@@ -18,7 +18,7 @@ FAKE_POS_RAW = (0, OWNER, TOKEN_A, TOKEN_B, 3000, -120, 120, 5000, 0, 0, 10, 20)
 def _make_adapter(chain_id: int = 8453) -> UniswapAdapter:
     return UniswapAdapter(
         {"chain_id": chain_id, "strategy_wallet": {"address": OWNER}},
-        strategy_wallet_signing_callback=AsyncMock(return_value=b"signed"),
+        signing_callback=AsyncMock(return_value=b"signed"),
     )
 
 

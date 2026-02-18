@@ -27,11 +27,11 @@ class BalanceAdapter(BaseAdapter):
         self,
         config: dict[str, Any],
         main_wallet_signing_callback=None,
-        strategy_wallet_signing_callback=None,
+        signing_callback=None,
     ):
         super().__init__("balance", config)
         self.main_wallet_signing_callback = main_wallet_signing_callback
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.signing_callback = signing_callback
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
 
@@ -209,7 +209,7 @@ class BalanceAdapter(BaseAdapter):
         callback = (
             self.main_wallet_signing_callback
             if from_wallet["address"].lower() == main_address
-            else self.strategy_wallet_signing_callback
+            else self.signing_callback
         )
         tx_hash = await send_transaction(transaction, callback)
 

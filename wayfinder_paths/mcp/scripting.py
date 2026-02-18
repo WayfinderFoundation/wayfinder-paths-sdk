@@ -11,9 +11,8 @@ from wayfinder_paths.mcp.utils import find_wallet_by_label
 # Known signing callback parameter names used by adapters
 _SIGNING_CALLBACK_PARAMS = frozenset(
     {
-        "strategy_wallet_signing_callback",
-        "sign_callback",
         "signing_callback",
+        "sign_callback",
     }
 )
 

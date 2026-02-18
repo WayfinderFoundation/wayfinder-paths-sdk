@@ -72,7 +72,7 @@ async def main() -> None:
     addr = to_checksum_address(str(addr))
 
     signing_cb = create_signing_callback(addr, cfg)
-    adapter = MorphoAdapter(config=cfg, strategy_wallet_signing_callback=signing_cb)
+    adapter = MorphoAdapter(config=cfg, signing_callback=signing_cb)
 
     chain_id = int(args.chain_id)
 

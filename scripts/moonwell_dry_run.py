@@ -55,7 +55,7 @@ async def _run(args: argparse.Namespace) -> None:
         strategy = MoonwellWstethLoopStrategy(
             config,
             main_wallet_signing_callback=signing_cb(str(main_addr)),
-            strategy_wallet_signing_callback=signing_cb(str(strat_addr)),
+            signing_callback=signing_cb(str(strat_addr)),
         )
         await strategy.setup()
 

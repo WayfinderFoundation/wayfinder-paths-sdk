@@ -1048,7 +1048,7 @@ class TestMoonwellAdapter:
 
     def test_strategy_address_missing(self):
         adapter = MoonwellAdapter(config={})
-        assert adapter.strategy_wallet_address is None
+        assert adapter.wallet_address is None
 
     @pytest.mark.asyncio
     async def test_max_withdrawable_mtoken_zero_balance(self, adapter):

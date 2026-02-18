@@ -221,16 +221,16 @@ class HyperlendStableYieldStrategy(Strategy):
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.strategy_wallet_signing_callback,
             )
             self.token_adapter = TokenAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.strategy_wallet_signing_callback,
             )
             self.hyperlend_adapter = HyperlendAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.strategy_wallet_signing_callback,
             )
 
             self._assets_snapshot = None

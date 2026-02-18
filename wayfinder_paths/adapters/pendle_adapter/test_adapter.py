@@ -283,7 +283,7 @@ class TestPendleAdapter:
 
         adapter = PendleAdapter(
             config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=signing_callback,
+            signing_callback=signing_callback,
         )
 
         adapter.sdk_convert_v2 = AsyncMock(
@@ -485,7 +485,7 @@ class TestPendleAdapter:
 
         adapter = PendleAdapter(
             config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=signing_callback,
+            signing_callback=signing_callback,
         )
 
         # Mock sdk_swap_v2 to return a valid quote
@@ -530,7 +530,7 @@ class TestPendleAdapter:
         """Test swap fails when quote returns invalid tx."""
         adapter = PendleAdapter(
             config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=AsyncMock(),
+            signing_callback=AsyncMock(),
         )
 
         adapter.sdk_swap_v2 = AsyncMock(
@@ -557,7 +557,7 @@ class TestPendleAdapter:
 
         adapter = PendleAdapter(
             config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=AsyncMock(return_value=b"\x00" * 65),
+            signing_callback=AsyncMock(return_value=b"\x00" * 65),
         )
 
         adapter.sdk_swap_v2 = AsyncMock(
@@ -616,14 +616,14 @@ class TestPendleAdapter:
 
         assert success is False
         assert result["stage"] == "approval"
-        assert "strategy_wallet_signing_callback" in result["details"]["error"]
+        assert "signing_callback" in result["details"]["error"]
 
     @pytest.mark.asyncio
     async def test_execute_swap_requires_strategy_wallet(self):
         """Test swap fails without strategy_wallet address."""
         adapter = PendleAdapter(
             config={},  # No strategy_wallet
-            strategy_wallet_signing_callback=AsyncMock(),
+            signing_callback=AsyncMock(),
         )
 
         with pytest.raises(ValueError, match="strategy_wallet address is required"):

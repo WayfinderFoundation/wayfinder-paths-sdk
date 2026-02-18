@@ -10,7 +10,7 @@ Adapter for cross-chain swaps and bridges via the BRAP (Bridge/Router/Adapter Pr
 ```python
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 
-adapter = BRAPAdapter(strategy_wallet_signing_callback=signing_callback)
+adapter = BRAPAdapter(signing_callback=signing_callback)
 ```
 
 ## Methods

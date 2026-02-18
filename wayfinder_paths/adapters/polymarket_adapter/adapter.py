@@ -142,7 +142,7 @@ class PolymarketAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        strategy_wallet_signing_callback=None,
+        signing_callback=None,
         private_key_hex: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
@@ -154,7 +154,7 @@ class PolymarketAdapter(BaseAdapter):
     ) -> None:
         super().__init__("polymarket_adapter", config)
 
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.signing_callback = signing_callback
         self._private_key_hex = private_key_hex
         self._funder_override = funder
         self._signature_type = signature_type
@@ -938,7 +938,7 @@ class PolymarketAdapter(BaseAdapter):
         wallet = self._resolve_wallet()
         from_address = to_checksum_address(str(wallet.get("address")))
 
-        sign_cb = self.strategy_wallet_signing_callback
+        sign_cb = self.signing_callback
         if sign_cb is None:
             pk = self._resolve_private_key()
             account = Account.from_key(pk)

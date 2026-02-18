@@ -152,7 +152,7 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
             },
             "pool_address": THBILL_USDC_POOL,
         },
-        strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
+        signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter._balance_for_band = AsyncMock(return_value=None)
     adapter._extract_token_id_from_receipt = AsyncMock(return_value=123)
@@ -236,7 +236,7 @@ async def test_burn_position_calls_remove_liquidity():
             },
             "pool_address": THBILL_USDC_POOL,
         },
-        strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
+        signing_callback=AsyncMock(return_value="0xsigned"),
     )
     adapter.remove_liquidity = AsyncMock(return_value=(True, "0xtx_burn"))
 

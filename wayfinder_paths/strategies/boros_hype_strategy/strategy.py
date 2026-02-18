@@ -282,11 +282,11 @@ class BorosHypeStrategy(
         self.balance_adapter = BalanceAdapter(
             config=self._config,
             main_wallet_signing_callback=main_sign_callback,
-            strategy_wallet_signing_callback=self._sign_callback,
+            signing_callback=self._sign_callback,
         )
         self.brap_adapter = BRAPAdapter(
             config=self._config,
-            strategy_wallet_signing_callback=self._sign_callback,
+            signing_callback=self._sign_callback,
         )
 
         logger.info("BorosHypeStrategy setup complete")

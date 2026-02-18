@@ -191,13 +191,13 @@ class StablecoinYieldStrategy(Strategy):
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.strategy_wallet_signing_callback,
             )
             self.token_adapter = TokenAdapter()
             self.pool_adapter = PoolAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.strategy_wallet_signing_callback,
             )
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")
