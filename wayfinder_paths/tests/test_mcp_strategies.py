@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -193,7 +192,9 @@ async def test_analyze_not_supported():
 @pytest.mark.asyncio
 async def test_snapshot_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="snapshot", amount_usdc=1000)
+        out = await run_strategy(
+            strategy="my_strat", action="snapshot", amount_usdc=1000
+        )
     assert out["ok"] is True
     assert out["result"]["action"] == "snapshot"
     assert out["result"]["output"] == {"score": 99}
@@ -235,7 +236,10 @@ async def test_quote_not_supported():
 async def test_deposit_success():
     with _patch_load(), _patch_config(), _patch_signing():
         out = await run_strategy(
-            strategy="my_strat", action="deposit", main_token_amount=100.0, gas_token_amount=0.01
+            strategy="my_strat",
+            action="deposit",
+            main_token_amount=100.0,
+            gas_token_amount=0.01,
         )
     assert out["ok"] is True
     assert out["result"]["action"] == "deposit"
@@ -351,7 +355,11 @@ async def test_constructor_fallback_config_only():
             self.status = AsyncMock(return_value={"mode": "config_only"})
             self.setup = AsyncMock()
 
-    with _patch_load(strategy_class=ConfigOnlyStrategy), _patch_config(), _patch_signing():
+    with (
+        _patch_load(strategy_class=ConfigOnlyStrategy),
+        _patch_config(),
+        _patch_signing(),
+    ):
         out = await run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
     assert out["result"]["output"]["mode"] == "config_only"
