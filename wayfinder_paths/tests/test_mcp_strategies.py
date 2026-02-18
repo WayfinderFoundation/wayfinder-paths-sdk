@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,7 +28,7 @@ def _make_strategy_class(
     """Build a fake strategy class whose instances are AsyncMock-powered."""
 
     class FakeStrategy:
-        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        def __init__(self, *_args: Any, **_kwargs: Any):
             self.status = AsyncMock(return_value={"portfolio": "ok"})
             self.deposit = AsyncMock(return_value=(True, "deposited"))
             self.update = AsyncMock(return_value=(True, "updated"))
@@ -324,8 +325,8 @@ async def test_action_exception_returns_strategy_error():
     # Override status to raise
     original_init = cls.__init__
 
-    def patched_init(self, *args, **kwargs):  # noqa: ANN002, ANN003
-        original_init(self, *args, **kwargs)
+    def patched_init(self, *_args: Any, **_kwargs: Any):
+        original_init(self, *_args, **_kwargs)
         self.status = AsyncMock(side_effect=RuntimeError("kaboom"))
 
     cls.__init__ = patched_init
@@ -348,7 +349,7 @@ async def test_constructor_fallback_config_only():
     call_log = []
 
     class ConfigOnlyStrategy:
-        def __init__(self, config=None, **kwargs):  # noqa: ANN003
+        def __init__(self, config: Any = None, **kwargs: Any):
             if "main_wallet_signing_callback" in kwargs:
                 raise TypeError("unexpected keyword argument")
             call_log.append("config_only")
@@ -391,8 +392,8 @@ async def test_setup_called_before_action():
     cls = _make_strategy_class()
     original_init = cls.__init__
 
-    def patched_init(self, *args, **kwargs):  # noqa: ANN002, ANN003
-        original_init(self, *args, **kwargs)
+    def patched_init(self, *_args: Any, **_kwargs: Any):
+        original_init(self, *_args, **_kwargs)
         self.setup = setup_mock
 
     cls.__init__ = patched_init
