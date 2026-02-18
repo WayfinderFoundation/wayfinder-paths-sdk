@@ -211,7 +211,6 @@ class HyperliquidAdapter(BaseAdapter):
             return True, cached
 
         try:
-            # Handle both callable and property access patterns
             spot_meta = get_info().spot_meta
             if callable(spot_meta):
                 data = spot_meta()

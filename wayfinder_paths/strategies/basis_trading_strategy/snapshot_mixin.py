@@ -500,8 +500,8 @@ class BasisSnapshotMixin:
 
                 # Ensure scoring uses a passing depth state. If it doesn't, shrink.
                 if not (
-                    bool((depth_checks.get("buy") or {}).get("pass"))
-                    and bool((depth_checks.get("sell") or {}).get("pass"))
+                    (depth_checks.get("buy") or {}).get("pass")
+                    and (depth_checks.get("sell") or {}).get("pass")
                 ):
                     # Fall back to a smaller, clearly safe order size.
                     order_usd = min(order_usd, max_order_usd * 0.5)
@@ -796,8 +796,8 @@ class BasisSnapshotMixin:
         )
 
         if not (
-            bool((depth_checks.get("buy") or {}).get("pass"))
-            and bool((depth_checks.get("sell") or {}).get("pass"))
+            (depth_checks.get("buy") or {}).get("pass")
+            and (depth_checks.get("sell") or {}).get("pass")
         ):
             return None
 

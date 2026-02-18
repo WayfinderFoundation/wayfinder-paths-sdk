@@ -210,10 +210,6 @@ class PendleAdapter(BaseAdapter):
             self.client = None
             self._owns_client = False
 
-    # ---------------------------
-    # Execution helpers
-    # ---------------------------
-
     def _strategy_address(self) -> str:
         addr = None
         if isinstance(self.strategy_wallet, dict):
@@ -231,10 +227,6 @@ class PendleAdapter(BaseAdapter):
             )
         txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
         return True, txn_hash
-
-    # ---------------------------
-    # Multicall helpers
-    # ---------------------------
 
     @staticmethod
     def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
@@ -1695,10 +1687,6 @@ class PendleAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    # ---------------------------------------
-    # Execute swap
-    # ---------------------------------------
-
     async def execute_swap(
         self,
         *,
@@ -1817,10 +1805,6 @@ class PendleAdapter(BaseAdapter):
             "quote": quote_result.get("data"),
             "tokenApprovals": token_approvals,
         }
-
-    # ---------------------------------------
-    # Execute universal convert
-    # ---------------------------------------
 
     async def execute_convert(
         self,

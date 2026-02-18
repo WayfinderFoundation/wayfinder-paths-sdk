@@ -40,11 +40,11 @@ def make_wallet_from_mnemonic(
 
 def generate_wallet_mnemonic(*, num_words: int = 12) -> str:
     _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
-    return " ".join(str(mnemonic).strip().split())
+    return " ".join(mnemonic.strip().split())
 
 
 def validate_wallet_mnemonic(mnemonic: str) -> str:
-    phrase = " ".join(str(mnemonic).strip().split())
+    phrase = " ".join(mnemonic.strip().split())
     if not phrase:
         raise ValueError("mnemonic is empty")
     # Raises if the phrase is not a valid mnemonic.

@@ -234,7 +234,7 @@ def parse_position_struct(raw: tuple) -> PositionData:
 
 
 async def read_position(npm_contract, token_id: int) -> PositionData:
-    raw = await npm_contract.functions.positions(int(token_id)).call(
+    raw = await npm_contract.functions.positions(token_id).call(
         block_identifier="latest"
     )
     return parse_position_struct(raw)

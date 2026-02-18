@@ -418,7 +418,7 @@ class RunnerDaemon:
             action = str(payload.get("action") or "update").strip()
             config_path = str(payload.get("config") or "config.json")
             wallet_label = payload.get("wallet_label") or payload.get("wallet") or None
-            debug = bool(payload.get("debug") or False)
+            debug = bool(payload.get("debug"))
 
             cmd = [
                 sys.executable,

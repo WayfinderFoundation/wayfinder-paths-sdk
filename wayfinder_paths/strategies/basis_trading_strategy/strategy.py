@@ -3473,7 +3473,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 book=book,
                 spot_symbol=spot_symbol,
             )
-            if bool(buy.get("pass")) and bool(sell.get("pass")):
+            if buy.get("pass") and sell.get("pass"):
                 best = float(order_usd)
                 best_checks = {"buy": buy, "sell": sell}
 
@@ -3535,7 +3535,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 book=book,
                 spot_symbol=spot_symbol,
             )
-            if not (bool(buy.get("pass")) and bool(sell.get("pass"))):
+            if not (buy.get("pass") and sell.get("pass")):
                 bracket_high = float(order_usd)
                 break
 
@@ -3563,7 +3563,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 book=book,
                 spot_symbol=spot_symbol,
             )
-            if bool(buy.get("pass")) and bool(sell.get("pass")):
+            if buy.get("pass") and sell.get("pass"):
                 low = float(mid)
                 best_checks = {"buy": buy, "sell": sell}
             else:

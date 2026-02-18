@@ -375,11 +375,9 @@ async def test_refresh_tracked_balances(strategy):
 
 @pytest.mark.asyncio
 async def test_deposit_tracks_usdc(strategy):
-    # Clear tracked state
     strategy.tracked_token_ids.clear()
     strategy.tracked_balances.clear()
 
-    # Perform deposit
     ok, _ = assert_status_tuple(await strategy.deposit(main_token_amount=100.0))
 
     # Verify USDC is tracked

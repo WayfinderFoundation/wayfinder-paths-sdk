@@ -7,9 +7,9 @@ from collections.abc import Awaitable, Callable
 def exponential_backoff_s(
     attempt: int, *, base_delay_s: float = 0.25, max_delay_s: float | None = None
 ) -> float:
-    delay_s = float(base_delay_s) * (2 ** int(attempt))
+    delay_s = base_delay_s * (2**attempt)
     if max_delay_s is not None:
-        delay_s = min(delay_s, float(max_delay_s))
+        delay_s = min(delay_s, max_delay_s)
     return delay_s
 
 
@@ -23,10 +23,10 @@ async def retry_async[T](
     get_delay_s: Callable[[int, Exception], float] | None = None,
     on_retry: Callable[[int, Exception, float], None] | None = None,
 ) -> T:
-    if int(max_retries) < 1:
+    if max_retries < 1:
         raise ValueError("max_retries must be >= 1")
 
-    retries = int(max_retries)
+    retries = max_retries
     for attempt in range(retries):
         try:
             return await fn()
@@ -37,7 +37,7 @@ async def retry_async[T](
                 raise
 
             delay_s = (
-                float(get_delay_s(attempt, exc))
+                get_delay_s(attempt, exc)
                 if get_delay_s is not None
                 else exponential_backoff_s(
                     attempt, base_delay_s=base_delay_s, max_delay_s=max_delay_s

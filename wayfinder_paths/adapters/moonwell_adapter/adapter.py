@@ -41,10 +41,6 @@ def _timestamp_rate_to_apy(rate: float) -> float:
 class MoonwellAdapter(BaseAdapter):
     adapter_type = "MOONWELL"
 
-    # ---------------------------
-    # Multicall decoding helpers
-    # ---------------------------
-
     @staticmethod
     def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
         return [seq[i : i + n] for i in range(0, len(seq), n)]
@@ -110,20 +106,14 @@ class MoonwellAdapter(BaseAdapter):
         strategy_wallet_signing_callback=None,
     ) -> None:
         super().__init__("moonwell_adapter", config)
-        cfg = config or {}
-
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self._init_strategy_wallet(config)
 
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
         self.comptroller_address = MOONWELL_COMPTROLLER
         self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
         self.m_usdc = MOONWELL_M_USDC
-
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
-        )
         self._cache = Cache(Cache.MEMORY)
 
     async def lend(
