@@ -742,9 +742,7 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=qty,
                 )
-                wrap_hash = await send_transaction(
-                    wrap_tx, self.signing_callback
-                )
+                wrap_hash = await send_transaction(wrap_tx, self.signing_callback)
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -766,9 +764,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                supply_hash = await send_transaction(
-                    supply_tx, self.signing_callback
-                )
+                supply_hash = await send_transaction(supply_tx, self.signing_callback)
                 return True, {"wrap_tx": wrap_hash, "supply_tx": supply_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -850,9 +846,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                unwrap_hash = await send_transaction(
-                    unwrap_tx, self.signing_callback
-                )
+                unwrap_hash = await send_transaction(unwrap_tx, self.signing_callback)
                 return True, {"withdraw_tx": withdraw_hash, "unwrap_tx": unwrap_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -896,9 +890,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                borrow_hash = await send_transaction(
-                    borrow_tx, self.signing_callback
-                )
+                borrow_hash = await send_transaction(borrow_tx, self.signing_callback)
 
                 unwrap_tx = await encode_call(
                     target=wrapped,
@@ -908,9 +900,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                unwrap_hash = await send_transaction(
-                    unwrap_tx, self.signing_callback
-                )
+                unwrap_hash = await send_transaction(unwrap_tx, self.signing_callback)
                 return True, {"borrow_tx": borrow_hash, "unwrap_tx": unwrap_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -1016,9 +1006,7 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=int(value),
                 )
-                wrap_hash = await send_transaction(
-                    wrap_tx, self.signing_callback
-                )
+                wrap_hash = await send_transaction(wrap_tx, self.signing_callback)
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -1040,9 +1028,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                repay_hash = await send_transaction(
-                    repay_tx, self.signing_callback
-                )
+                repay_hash = await send_transaction(repay_tx, self.signing_callback)
                 return True, {"wrap_tx": wrap_hash, "repay_tx": repay_hash}
 
             repay_amount = MAX_UINT256 if repay_full else qty

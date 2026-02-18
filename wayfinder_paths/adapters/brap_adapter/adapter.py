@@ -193,9 +193,7 @@ class BRAPAdapter(BaseAdapter):
                 signing_callback=self.signing_callback,
             )
 
-        txn_hash = await send_transaction(
-            transaction, self.signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.signing_callback)
         self.logger.info(f"Swap broadcast: tx={txn_hash}")
 
         try:
