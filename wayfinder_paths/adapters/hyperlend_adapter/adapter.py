@@ -79,11 +79,18 @@ class HyperlendAdapter(BaseAdapter):
         strategy_wallet_signing_callback=None,
     ) -> None:
         super().__init__("hyperlend_adapter", config)
+        config = config or {}
+
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
-        self._init_strategy_wallet(config)
 
         self.ledger_adapter = LedgerAdapter()
         self.token_adapter = TokenAdapter()
+        strategy_wallet = config.get("strategy_wallet") or {}
+        strategy_addr = strategy_wallet.get("address")
+
+        self.strategy_wallet_address: str | None = (
+            to_checksum_address(strategy_addr) if strategy_addr else None
+        )
         self._variable_debt_token_by_underlying: dict[str, str] = {}
 
     async def get_stable_markets(

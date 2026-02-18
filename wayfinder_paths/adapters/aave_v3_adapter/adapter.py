@@ -154,8 +154,13 @@ class AaveV3Adapter(BaseAdapter):
         strategy_wallet_signing_callback=None,
     ) -> None:
         super().__init__("aave_v3_adapter", config or {})
+        cfg = config or {}
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
-        self._init_strategy_wallet(config)
+
+        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
+        self.strategy_wallet_address: str | None = (
+            to_checksum_address(strategy_addr) if strategy_addr else None
+        )
 
         # Cache: (chain_id, underlying.lower()) -> variableDebtTokenAddress
         self._variable_debt_token_by_chain_underlying: dict[tuple[int, str], str] = {}

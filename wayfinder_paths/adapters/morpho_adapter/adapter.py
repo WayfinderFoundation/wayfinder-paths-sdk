@@ -37,9 +37,13 @@ class MorphoAdapter(BaseAdapter):
     ) -> None:
         super().__init__("morpho_adapter", config or {})
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
-        self._init_strategy_wallet(config)
 
         cfg = config or {}
+        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
+        self.strategy_wallet_address: str | None = (
+            to_checksum_address(strategy_addr) if strategy_addr else None
+        )
+
         bundler_addr = (
             cfg.get("bundler_address")
             or (cfg.get("bundler") or {}).get("address")
