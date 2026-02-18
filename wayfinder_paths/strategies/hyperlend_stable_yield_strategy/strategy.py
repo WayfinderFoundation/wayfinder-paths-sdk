@@ -968,7 +968,6 @@ class HyperlendStableYieldStrategy(Strategy):
             except Exception:
                 continue
 
-            # TODO: untested past this point
             try:
                 try:
                     decimals = int(token.get("decimals", 18))
@@ -988,7 +987,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
             if success:
                 actions.append(
-                    f"Transferred {amount_tokens:.4f} {token.symbol} to main wallet"
+                    f"Transferred {amount_tokens:.4f} {token.get('symbol', 'unknown')} to main wallet"
                 )
         if actions:
             self._invalidate_assets_snapshot()
