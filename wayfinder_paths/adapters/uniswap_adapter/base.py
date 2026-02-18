@@ -37,9 +37,12 @@ class UniswapV3BaseAdapter(BaseAdapter):
         factory_address: str,
         owner: str,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
         factory_abi: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(adapter_name, config)
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         self.signing_callback = signing_callback
         self.chain_id = int(chain_id)
         self.npm_address = to_checksum_address(str(npm_address))

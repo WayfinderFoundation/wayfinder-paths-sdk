@@ -25,11 +25,12 @@ class BRAPAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
     ):
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         super().__init__("brap_adapter", config)
         self.signing_callback = signing_callback
-        self.token_adapter = TokenAdapter()
-        self.ledger_adapter = LedgerAdapter()
 
     def _select_quote_by_provider(
         self,

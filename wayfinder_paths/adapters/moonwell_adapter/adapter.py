@@ -108,7 +108,10 @@ class MoonwellAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
     ) -> None:
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         super().__init__("moonwell_adapter", config)
         cfg = config or {}
 

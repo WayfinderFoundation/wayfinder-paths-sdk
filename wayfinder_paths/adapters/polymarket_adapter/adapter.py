@@ -143,6 +143,7 @@ class PolymarketAdapter(BaseAdapter):
         config: dict[str, Any] | None = None,
         *,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
         private_key_hex: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
@@ -154,6 +155,8 @@ class PolymarketAdapter(BaseAdapter):
     ) -> None:
         super().__init__("polymarket_adapter", config)
 
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         self.signing_callback = signing_callback
         self._private_key_hex = private_key_hex
         self._funder_override = funder

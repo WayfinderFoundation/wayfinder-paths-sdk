@@ -152,7 +152,10 @@ class AaveV3Adapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
     ) -> None:
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         super().__init__("aave_v3_adapter", config or {})
         cfg = config or {}
         self.signing_callback = signing_callback
@@ -162,9 +165,7 @@ class AaveV3Adapter(BaseAdapter):
             to_checksum_address(strategy_addr) if strategy_addr else None
         )
 
-        # Cache: (chain_id, underlying.lower()) -> variableDebtTokenAddress
         self._variable_debt_token_by_chain_underlying: dict[tuple[int, str], str] = {}
-        # Cache: chain_id -> wrapped native token address (WETH/WBNB/WMATIC/etc)
         self._wrapped_native_by_chain: dict[int, str] = {}
 
     def _entry(self, chain_id: int) -> dict[str, str]:

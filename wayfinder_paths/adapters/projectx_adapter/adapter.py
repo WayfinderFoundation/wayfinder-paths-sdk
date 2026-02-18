@@ -204,7 +204,10 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         config: dict[str, Any],
         *,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
     ) -> None:
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         wallet = (config or {}).get("strategy_wallet") or {}
         addr = wallet.get("address")
         if not addr:

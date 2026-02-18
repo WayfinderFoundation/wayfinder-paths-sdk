@@ -28,12 +28,13 @@ class BalanceAdapter(BaseAdapter):
         config: dict[str, Any],
         main_wallet_signing_callback=None,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
     ):
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         super().__init__("balance", config)
         self.main_wallet_signing_callback = main_wallet_signing_callback
         self.signing_callback = signing_callback
-        self.token_adapter = TokenAdapter()
-        self.ledger_adapter = LedgerAdapter()
 
     async def get_balance(
         self,

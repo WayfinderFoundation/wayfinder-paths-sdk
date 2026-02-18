@@ -180,8 +180,11 @@ class PendleAdapter(BaseAdapter):
         client: httpx.AsyncClient | None = None,
         timeout: float = 30.0,
         signing_callback: Callable | None = None,
+        strategy_wallet_signing_callback: Callable | None = None,
     ) -> None:
         super().__init__("pendle_adapter", config)
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         cfg = config or {}
         adapter_cfg = cfg.get("pendle_adapter") or {}
 

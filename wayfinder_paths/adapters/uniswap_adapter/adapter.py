@@ -18,7 +18,10 @@ class UniswapAdapter(UniswapV3BaseAdapter):
         config: dict[str, Any],
         *,
         signing_callback=None,
+        strategy_wallet_signing_callback=None,
     ) -> None:
+        if signing_callback is None:
+            signing_callback = strategy_wallet_signing_callback
         chain_id = int(config.get("chain_id", 8453))
         if chain_id not in SUPPORTED_CHAIN_IDS:
             raise ValueError(
