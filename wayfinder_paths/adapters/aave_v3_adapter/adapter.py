@@ -173,25 +173,6 @@ class AaveV3Adapter(BaseAdapter):
             raise ValueError(f"Unsupported Aave v3 chain_id={chain_id}")
         return entry
 
-    async def _pool(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["pool"])
-
-    async def _provider(self, *, chain_id: int) -> str:
-        return to_checksum_address(
-            self._entry(int(chain_id))["pool_addresses_provider"]
-        )
-
-    async def _ui_pool(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["ui_pool_data_provider"])
-
-    async def _ui_incentives(self, *, chain_id: int) -> str:
-        return to_checksum_address(
-            self._entry(int(chain_id))["ui_incentive_data_provider"]
-        )
-
-    async def _rewards_controller(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["rewards_controller"])
-
     async def _wrapped_native(self, *, chain_id: int) -> str:
         cached = self._wrapped_native_by_chain.get(int(chain_id))
         if cached:
@@ -729,7 +710,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = to_checksum_address(self._entry(int(chain_id))["pool"])
 
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
@@ -814,7 +795,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = to_checksum_address(self._entry(int(chain_id))["pool"])
             amount = MAX_UINT256 if withdraw_full else qty
 
             if native:
@@ -885,7 +866,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = to_checksum_address(self._entry(int(chain_id))["pool"])
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 borrow_tx = await encode_call(
@@ -944,7 +925,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = to_checksum_address(self._entry(int(chain_id))["pool"])
 
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
@@ -1085,7 +1066,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "strategy wallet address not configured"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = to_checksum_address(self._entry(int(chain_id))["pool"])
             asset = to_checksum_address(underlying_token)
             tx = await encode_call(
                 target=pool,
