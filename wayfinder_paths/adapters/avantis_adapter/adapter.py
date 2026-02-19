@@ -48,16 +48,9 @@ class AvantisAdapter(BaseAdapter):
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
 
-        avantis_cfg = cfg.get("avantis") or {}
-        vault_addr = (
-            avantis_cfg.get("vault") or avantis_cfg.get("avusdc") or AVANTIS_AVUSDC
-        )
-        manager_addr = avantis_cfg.get("vault_manager") or AVANTIS_VAULT_MANAGER
-        underlying_addr = avantis_cfg.get("underlying") or BASE_USDC
-
-        self.vault: str = to_checksum_address(str(vault_addr))
-        self.vault_manager: str = to_checksum_address(str(manager_addr))
-        self.underlying: str = to_checksum_address(str(underlying_addr))
+        self.vault: str = AVANTIS_AVUSDC
+        self.vault_manager: str = AVANTIS_VAULT_MANAGER
+        self.underlying: str = BASE_USDC
 
         strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
         self.strategy_wallet_address: str | None = (

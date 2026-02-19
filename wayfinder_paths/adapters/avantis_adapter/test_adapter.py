@@ -4,7 +4,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.avantis_adapter.adapter import AvantisAdapter
 from wayfinder_paths.core.constants.contracts import (
@@ -84,24 +83,6 @@ def test_default_addresses(adapter):
     assert adapter.vault == AVANTIS_AVUSDC
     assert adapter.vault_manager == AVANTIS_VAULT_MANAGER
     assert adapter.underlying == BASE_USDC
-
-
-def test_custom_config_overrides():
-    custom_vault = "0x000000000000000000000000000000000000aaaa"
-    custom_manager = "0x000000000000000000000000000000000000bbbb"
-    custom_underlying = "0x000000000000000000000000000000000000cccc"
-    adapter = AvantisAdapter(
-        config={
-            "avantis": {
-                "vault": custom_vault,
-                "vault_manager": custom_manager,
-                "underlying": custom_underlying,
-            },
-        }
-    )
-    assert adapter.vault == to_checksum_address(custom_vault)
-    assert adapter.vault_manager == to_checksum_address(custom_manager)
-    assert adapter.underlying == to_checksum_address(custom_underlying)
 
 
 def test_no_wallet_configured(adapter_no_wallet):
