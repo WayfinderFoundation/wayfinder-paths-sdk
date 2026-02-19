@@ -334,7 +334,6 @@ class BorosAdapter(BaseAdapter):
         if not self.user_address:
             return False, {"error": "user_address not configured", "calldata": calldata}
 
-        # Check for calldatas array format (multiple transactions)
         calldatas = calldata.get("calldatas")
         if isinstance(calldatas, list) and len(calldatas) > 1:
             results = []

@@ -69,7 +69,7 @@ def normalize_address(addr: str | None) -> str | None:
     if not addr:
         return None
     a = str(addr).strip()
-    return a if a else None
+    return a or None
 
 
 def resolve_wallet_address(

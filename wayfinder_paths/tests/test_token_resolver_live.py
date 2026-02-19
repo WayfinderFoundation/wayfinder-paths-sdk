@@ -8,6 +8,8 @@ import pytest
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
+from wayfinder_paths.mcp.tools.quotes import quote_swap
+from wayfinder_paths.mcp.utils import find_wallet_by_label
 
 
 @pytest.fixture(scope="module")
@@ -197,9 +199,6 @@ class TestCoingeckoIdQueries:
 class TestQuoteSwapLive:
     @pytest.mark.asyncio
     async def test_quote_usdc_to_eth_on_arbitrum(self):
-        from wayfinder_paths.mcp.tools.quotes import quote_swap
-        from wayfinder_paths.mcp.utils import find_wallet_by_label
-
         wallet = find_wallet_by_label("main")
         if not wallet:
             pytest.skip("No 'main' wallet configured")

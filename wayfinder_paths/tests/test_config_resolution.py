@@ -6,6 +6,12 @@ from pathlib import Path
 import pytest
 
 import wayfinder_paths.core.config as config
+from wayfinder_paths.core.constants.chains import (
+    CHAIN_ID_ARBITRUM,
+    CHAIN_ID_BASE,
+    CHAIN_ID_HYPEREVM,
+)
+from wayfinder_paths.core.utils.web3 import get_web3s_from_chain_id, web3s_from_chain_id
 
 
 @pytest.fixture
@@ -62,9 +68,6 @@ async def test_web3s_fallback_to_rpc_proxy(
         }
     )
 
-    from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE, CHAIN_ID_HYPEREVM
-    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
-
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
         uri = web3s[0].provider.endpoint_uri
         assert uri == "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/8453/"
@@ -89,9 +92,6 @@ async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
         }
     )
 
-    from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM, CHAIN_ID_BASE
-    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
-
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
         assert web3s[0].provider.endpoint_uri == "https://custom-rpc.example.com"
         assert "X-API-KEY" not in web3s[0].provider._request_kwargs.get("headers", {})
@@ -104,9 +104,6 @@ async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
 
 def test_web3s_accept_int_rpc_url_keys(restore_global_config: None) -> None:
     config.set_config({"strategy": {"rpc_urls": {8453: "https://example.invalid"}}})
-
-    from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-    from wayfinder_paths.core.utils.web3 import get_web3s_from_chain_id
 
     w3 = get_web3s_from_chain_id(CHAIN_ID_BASE)[0]
     assert w3.provider.endpoint_uri == "https://example.invalid"
