@@ -13,7 +13,9 @@ from wayfinder_paths.core.constants.contracts import (
 @pytest.fixture
 def adapter():
     return AvantisAdapter(
-        config={"strategy_wallet": {"address": "0x1234567890123456789012345678901234567890"}}
+        config={
+            "strategy_wallet": {"address": "0x1234567890123456789012345678901234567890"}
+        }
     )
 
 
@@ -44,4 +46,3 @@ async def test_lend_requires_signing_callback(adapter):
     ok, msg = await adapter.lend(amount=1)
     assert ok is False
     assert "signing callback" in str(msg).lower()
-

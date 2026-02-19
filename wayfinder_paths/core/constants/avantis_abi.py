@@ -180,4 +180,3 @@ AVANTIS_VAULT_MANAGER_ABI: list[dict] = [
         "outputs": [{"type": "uint256"}],
     },
 ]
-

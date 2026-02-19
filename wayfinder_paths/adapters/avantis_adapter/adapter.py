@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from eth_utils import to_checksum_address
+from web3.exceptions import ContractLogicError, Web3RPCError
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
@@ -37,7 +38,7 @@ class AvantisAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback=None,
+        strategy_wallet_signing_callback: Any | None = None,
     ) -> None:
         super().__init__("avantis_adapter", config)
         cfg = config or {}
@@ -48,13 +49,15 @@ class AvantisAdapter(BaseAdapter):
         self.chain_name = CHAIN_NAME
 
         avantis_cfg = cfg.get("avantis") or {}
-        vault_addr = avantis_cfg.get("vault") or avantis_cfg.get("avusdc") or AVANTIS_AVUSDC
+        vault_addr = (
+            avantis_cfg.get("vault") or avantis_cfg.get("avusdc") or AVANTIS_AVUSDC
+        )
         manager_addr = avantis_cfg.get("vault_manager") or AVANTIS_VAULT_MANAGER
         underlying_addr = avantis_cfg.get("underlying") or BASE_USDC
 
-        self.vault = to_checksum_address(str(vault_addr))
-        self.vault_manager = to_checksum_address(str(manager_addr))
-        self.underlying = to_checksum_address(str(underlying_addr))
+        self.vault: str = to_checksum_address(str(vault_addr))
+        self.vault_manager: str = to_checksum_address(str(manager_addr))
+        self.underlying: str = to_checksum_address(str(underlying_addr))
 
         strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
         self.strategy_wallet_address: str | None = (
@@ -78,15 +81,20 @@ class AvantisAdapter(BaseAdapter):
                     block_identifier="pending"
                 )
 
-                asset, decimals, symbol, name, total_assets, total_supply = (
-                    await asyncio.gather(
-                        asset_coro,
-                        decimals_coro,
-                        symbol_coro,
-                        name_coro,
-                        total_assets_coro,
-                        total_supply_coro,
-                    )
+                (
+                    asset,
+                    decimals,
+                    symbol,
+                    name,
+                    total_assets,
+                    total_supply,
+                ) = await asyncio.gather(
+                    asset_coro,
+                    decimals_coro,
+                    symbol_coro,
+                    name_coro,
+                    total_assets_coro,
+                    total_supply_coro,
                 )
 
                 share_decimals = int(decimals or 0)
@@ -99,7 +107,7 @@ class AvantisAdapter(BaseAdapter):
                         if unit_shares
                         else 0
                     )
-                except Exception:  # noqa: BLE001
+                except (ContractLogicError, Web3RPCError):
                     share_price = 0
 
                 market: dict[str, Any] = {
@@ -117,7 +125,7 @@ class AvantisAdapter(BaseAdapter):
                     "tvl": int(total_assets or 0),
                 }
                 return True, [market]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, str(exc)
 
     async def get_vault_manager_state(
@@ -169,7 +177,7 @@ class AvantisAdapter(BaseAdapter):
                         "lastRewardTime": int(last_reward_time or 0),
                     },
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, str(exc)
 
     async def lend(
@@ -221,7 +229,7 @@ class AvantisAdapter(BaseAdapter):
                 transaction, self.strategy_wallet_signing_callback
             )
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, str(exc)
 
     async def unlend(
@@ -249,14 +257,14 @@ class AvantisAdapter(BaseAdapter):
                         shares = await v.functions.maxRedeem(strategy).call(
                             block_identifier="pending"
                         )
-                    except Exception:  # noqa: BLE001
+                    except (ContractLogicError, Web3RPCError):
                         shares = await v.functions.balanceOf(strategy).call(
                             block_identifier="pending"
                         )
 
                 shares = int(shares or 0)
                 if shares <= 0:
-                    return True, None
+                    return True, "no shares to redeem"
             else:
                 if shares <= 0:
                     return False, "amount must be positive"
@@ -273,7 +281,7 @@ class AvantisAdapter(BaseAdapter):
                 transaction, self.strategy_wallet_signing_callback
             )
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, str(exc)
 
     async def borrow(self, **_kwargs: Any) -> tuple[bool, str]:
@@ -302,7 +310,9 @@ class AvantisAdapter(BaseAdapter):
 
                 decimals_coro = v.functions.decimals().call(block_identifier=block_id)
                 asset_coro = v.functions.asset().call(block_identifier=block_id)
-                shares_coro = v.functions.balanceOf(acct).call(block_identifier=block_id)
+                shares_coro = v.functions.balanceOf(acct).call(
+                    block_identifier=block_id
+                )
                 total_assets_coro = v.functions.totalAssets().call(
                     block_identifier=block_id
                 )
@@ -316,16 +326,22 @@ class AvantisAdapter(BaseAdapter):
                     block_identifier=block_id
                 )
 
-                decimals, asset, shares, total_assets, total_supply, max_redeem, max_withdraw = (
-                    await asyncio.gather(
-                        decimals_coro,
-                        asset_coro,
-                        shares_coro,
-                        total_assets_coro,
-                        total_supply_coro,
-                        max_redeem_coro,
-                        max_withdraw_coro,
-                    )
+                (
+                    decimals,
+                    asset,
+                    shares,
+                    total_assets,
+                    total_supply,
+                    max_redeem,
+                    max_withdraw,
+                ) = await asyncio.gather(
+                    decimals_coro,
+                    asset_coro,
+                    shares_coro,
+                    total_assets_coro,
+                    total_supply_coro,
+                    max_redeem_coro,
+                    max_withdraw_coro,
                 )
 
                 shares_i = int(shares or 0)
@@ -351,11 +367,11 @@ class AvantisAdapter(BaseAdapter):
                         if unit_shares
                         else 0
                     )
-                except Exception:  # noqa: BLE001
+                except (ContractLogicError, Web3RPCError):
                     share_price = 0
 
                 underlying = to_checksum_address(str(asset))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, str(exc)
 
         try:
@@ -388,7 +404,7 @@ class AvantisAdapter(BaseAdapter):
                 result["usd_value"] = usd_val
 
             return True, result
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(
@@ -443,14 +459,11 @@ class AvantisAdapter(BaseAdapter):
         try:
             data = await TOKEN_CLIENT.get_token_details(token_key, market_data=True)
             price = (
-                data.get("price_usd")
-                or data.get("price")
-                or data.get("current_price")
+                data.get("price_usd") or data.get("price") or data.get("current_price")
             )
             if not price:
                 return None
             decimals = int(data.get("decimals", 18))
             return (float(amount_raw) / (10**decimals)) * float(price)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
-

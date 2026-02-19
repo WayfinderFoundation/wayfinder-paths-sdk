@@ -73,4 +73,3 @@ async def test_gorlami_avantis_deposit_redeem_full(gorlami):
     assert int(pos_after.get("mtoken_balance") or 0) <= int(
         pos.get("mtoken_balance") or 0
     )
-
