@@ -321,9 +321,9 @@ class HyperlendAdapter(BaseAdapter):
         native: bool = False,
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         if qty <= 0:
             return False, "qty must be positive"
 
@@ -384,9 +384,9 @@ class HyperlendAdapter(BaseAdapter):
         native: bool = False,
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         if qty <= 0:
             return False, "qty must be positive"
 
@@ -434,9 +434,9 @@ class HyperlendAdapter(BaseAdapter):
         chain_id: int,
         native: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         if qty <= 0:
             return False, "qty must be positive"
 
@@ -491,9 +491,9 @@ class HyperlendAdapter(BaseAdapter):
         native: bool = False,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         if qty <= 0 and not repay_full:
             return False, "qty must be positive"
 
@@ -619,9 +619,9 @@ class HyperlendAdapter(BaseAdapter):
         underlying_token: str,
         chain_id: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         asset = to_checksum_address(underlying_token)
         transaction = await encode_call(
@@ -643,9 +643,9 @@ class HyperlendAdapter(BaseAdapter):
         underlying_token: str,
         chain_id: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         asset = to_checksum_address(underlying_token)
         transaction = await encode_call(

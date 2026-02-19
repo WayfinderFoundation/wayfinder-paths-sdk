@@ -133,9 +133,9 @@ class MoonwellAdapter(BaseAdapter):
         underlying_token: str,
         amount: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -174,9 +174,9 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
         amount: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -202,9 +202,9 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
         amount: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -232,9 +232,9 @@ class MoonwellAdapter(BaseAdapter):
         amount: int,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -275,9 +275,9 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
 
         transaction = await encode_call(
@@ -347,9 +347,9 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
 
         transaction = await encode_call(
@@ -370,9 +370,9 @@ class MoonwellAdapter(BaseAdapter):
         *,
         min_rewards_usd: float = 0.0,
     ) -> tuple[bool, dict[str, int] | str]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         rewards = await self._get_outstanding_rewards(strategy)
 
@@ -789,6 +789,7 @@ class MoonwellAdapter(BaseAdapter):
 
                 markets_info = [m for m, _ in filtered_markets]
                 market_addrs = [addr for _, addr in filtered_markets]
+                # Fetch market metadata (symbol/underlying/decimals) via multicall.
                 meta_calls: list[Any] = []
                 for mtoken in market_addrs:
                     mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
@@ -1461,9 +1462,9 @@ class MoonwellAdapter(BaseAdapter):
         *,
         amount: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"

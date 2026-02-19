@@ -134,9 +134,9 @@ class MorphoAdapter(BaseAdapter):
         authorized: str,
         is_authorized: bool = True,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         try:
             morpho = await self._morpho_address(chain_id=int(chain_id))
@@ -160,9 +160,9 @@ class MorphoAdapter(BaseAdapter):
         authorization: dict[str, Any] | tuple[Any, ...],
         signature: dict[str, Any] | tuple[Any, ...],
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         try:
             morpho = await self._morpho_address(chain_id=int(chain_id))
@@ -660,9 +660,9 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         assets: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         assets = int(assets)
         if assets <= 0:
             return False, "assets must be positive"
@@ -703,9 +703,9 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         assets: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         assets = int(assets)
         if assets <= 0:
             return False, "assets must be positive"
@@ -732,9 +732,9 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         shares: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         shares = int(shares)
         if shares <= 0:
             return False, "shares must be positive"
@@ -775,9 +775,9 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         shares: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         shares = int(shares)
         if shares <= 0:
             return False, "shares must be positive"
@@ -1326,9 +1326,9 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -1373,9 +1373,9 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -1407,9 +1407,9 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -1455,9 +1455,9 @@ class MorphoAdapter(BaseAdapter):
         qty: int,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0 and not withdraw_full:
             return False, "qty must be positive"
@@ -1508,9 +1508,9 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -1569,9 +1569,9 @@ class MorphoAdapter(BaseAdapter):
         public_allocator: str | None = None,
         value: int | None = None,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         try:
             allocator = (
@@ -1644,9 +1644,9 @@ class MorphoAdapter(BaseAdapter):
         bundler_address: str | None = None,
         value: int = 0,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         bundler = (
             to_checksum_address(bundler_address)
@@ -1708,9 +1708,9 @@ class MorphoAdapter(BaseAdapter):
         Borrow with optional Public Allocator JIT reallocation when market liquidity is insufficient.
         If `atomic=True` and a bundler address is configured/provided, attempts to bundle reallocate+borrow.
         """
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -1781,6 +1781,7 @@ class MorphoAdapter(BaseAdapter):
                     f"Insufficient reallocatable liquidity: needed={needed} available={best_total}",
                 )
 
+            # Build withdrawals.
             remaining = needed
             withdrawals: list[tuple[MarketParamsTuple, int]] = []
             for it in sorted(
@@ -1940,9 +1941,9 @@ class MorphoAdapter(BaseAdapter):
         qty: int,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0 and not repay_full:
             return False, "qty must be positive"

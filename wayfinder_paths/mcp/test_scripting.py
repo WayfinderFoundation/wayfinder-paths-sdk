@@ -108,6 +108,7 @@ class TestMakeSignCallback:
 
         callback = _make_sign_callback(test_pk)
 
+        # Create a minimal transaction
         tx = {
             "to": "0x" + "00" * 20,
             "value": 0,

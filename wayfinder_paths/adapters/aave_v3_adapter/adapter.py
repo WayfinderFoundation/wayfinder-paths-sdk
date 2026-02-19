@@ -696,9 +696,9 @@ class AaveV3Adapter(BaseAdapter):
         chain_id: int,
         native: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -781,9 +781,9 @@ class AaveV3Adapter(BaseAdapter):
         native: bool = False,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0 and not withdraw_full:
             return False, "qty must be positive"
@@ -852,9 +852,9 @@ class AaveV3Adapter(BaseAdapter):
         chain_id: int,
         native: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0:
             return False, "qty must be positive"
@@ -911,9 +911,9 @@ class AaveV3Adapter(BaseAdapter):
         native: bool = False,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
         qty = int(qty)
         if qty <= 0 and not repay_full:
             return False, "qty must be positive"
@@ -1055,9 +1055,9 @@ class AaveV3Adapter(BaseAdapter):
         chain_id: int,
         use_as_collateral: bool = True,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         try:
             pool = self._entry(int(chain_id))["pool"]
@@ -1094,9 +1094,9 @@ class AaveV3Adapter(BaseAdapter):
         assets: list[str] | None = None,
         to_address: str | None = None,
     ) -> tuple[bool, Any]:
-        ok, strategy = self._require_strategy_wallet()
-        if not ok:
-            return ok, strategy
+        strategy = self.strategy_wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
 
         try:
             entry = self._entry(int(chain_id))

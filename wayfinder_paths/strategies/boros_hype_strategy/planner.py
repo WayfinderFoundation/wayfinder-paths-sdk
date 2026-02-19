@@ -177,6 +177,7 @@ def build_plan(
         plan.messages.append(
             "[LIQUIDATION] HL short was liquidated - entering recovery mode"
         )
+        # Add close and redeploy step
         plan.add_step(
             PlanOp.CLOSE_AND_REDEPLOY,
             priority=0,

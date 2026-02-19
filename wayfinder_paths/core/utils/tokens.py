@@ -277,7 +277,7 @@ async def ensure_erc1155_approval(
         is_approved = await contract.functions.isApprovedForAll(owner, operator).call(
             block_identifier="pending"
         )
-        if is_approved == approved:
+        if bool(is_approved) == bool(approved):
             return True, "already-approved"
 
     tx = await encode_call(

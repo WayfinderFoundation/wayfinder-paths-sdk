@@ -53,8 +53,15 @@ def _raise_revert_error(
     transaction: dict[str, Any],
     cause: Exception | None = None,
 ) -> None:
-    gas_used = int(receipt.get("gasUsed") or 0)
-    gas_limit = int(transaction.get("gas") or 0)
+    try:
+        gas_used = int(receipt.get("gasUsed") or 0)
+    except (TypeError, ValueError):
+        gas_used = 0
+
+    try:
+        gas_limit = int(transaction.get("gas") or 0)
+    except (TypeError, ValueError):
+        gas_limit = 0
 
     oogs = bool(gas_used and gas_limit and gas_used >= gas_limit)
     suffix = (
