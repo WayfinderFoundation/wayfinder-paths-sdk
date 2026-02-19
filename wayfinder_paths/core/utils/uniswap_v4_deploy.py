@@ -269,6 +269,9 @@ async def ensure_permit2_allowance(
     permit2_expiration: int | None = None,
 ) -> None:
     """Ensure Permit2 can pull `token_address` from `owner` for `spender`."""
+    if int(min_amount) <= 0:
+        return
+
     owner = to_checksum_address(owner)
     token_address = to_checksum_address(token_address)
     permit2_address = to_checksum_address(permit2_address)

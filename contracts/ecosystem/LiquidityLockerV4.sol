@@ -46,6 +46,7 @@ contract LiquidityLockerV4 is Ownable, IERC721Receiver {
     error NativeNotSupported();
     error InvalidBps();
     error PositionNotOwnedByLocker(uint256 tokenId);
+    error PermanentLock(uint256 tokenId);
 
     constructor(address initialOwner, IUniswapV4PositionManager posm_, address feeVault_)
         Ownable(initialOwner)
@@ -116,6 +117,7 @@ contract LiquidityLockerV4 is Ownable, IERC721Receiver {
     function exitPosition(uint256 tokenId) external {
         LockInfo memory li = locks[tokenId];
         if (!li.initialized) revert LockNotInitialized();
+        if (li.unlockTime == type(uint64).max) revert PermanentLock(tokenId);
         if (msg.sender != li.beneficiary) revert NotBeneficiary();
 
         // Harvest any pending fees before exiting.
@@ -174,4 +176,3 @@ contract LiquidityLockerV4 is Ownable, IERC721Receiver {
         return IERC721Receiver.onERC721Received.selector;
     }
 }
-
