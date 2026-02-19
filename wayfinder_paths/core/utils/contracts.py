@@ -200,6 +200,7 @@ async def deploy_contract(
     *,
     source_code: str,
     contract_name: str,
+    source_filename: str = "Contract.sol",
     constructor_args: list[Any] | None = None,
     from_address: str,
     chain_id: int,
@@ -207,6 +208,7 @@ async def deploy_contract(
     verify: bool = True,
     escape_hatch: bool = False,
     etherscan_api_key: str | None = None,
+    project_root: str | None = None,
 ) -> dict[str, Any]:
     """Full deployment pipeline: compile -> deploy -> verify.
 
@@ -217,8 +219,14 @@ async def deploy_contract(
         code = add_escape_hatch(code, contract_name=contract_name)
 
     # Compile once using standard JSON input so verification can reuse the same input.
-    std_json = compile_solidity_standard_json(code)
-    contracts = (std_json.get("output") or {}).get("contracts", {}).get("Contract.sol", {})
+    std_json = compile_solidity_standard_json(
+        code,
+        source_filename=source_filename,
+        project_root=project_root,
+    )
+    contracts = (
+        (std_json.get("output") or {}).get("contracts", {}).get(source_filename, {})
+    )
     if not isinstance(contracts, dict) or contract_name not in contracts:
         available = list(contracts.keys()) if isinstance(contracts, dict) else []
         raise ValueError(
@@ -294,6 +302,7 @@ async def deploy_contract(
                 contract_address=contract_address,
                 standard_json_input=std_json["input"],
                 contract_name=contract_name,
+                source_filename=source_filename,
                 constructor_args_encoded=encoded_args,
                 etherscan_api_key=etherscan_api_key,
             )

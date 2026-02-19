@@ -129,6 +129,8 @@ async def compile_contract(
         artifacts = compile_solidity(
             source_code,
             contract_name=contract_name,
+            source_filename=display_path or "Contract.sol",
+            project_root=str(repo_root()),
         )
     except Exception as exc:
         return err("compilation_error", str(exc))
@@ -202,12 +204,14 @@ async def deploy_contract(
         result = await _deploy_contract(
             source_code=source_code,
             contract_name=contract_name,
+            source_filename=display_path or "Contract.sol",
             constructor_args=parsed_args,
             from_address=sender,
             chain_id=chain_id,
             sign_callback=sign_callback,
             verify=verify,
             escape_hatch=escape_hatch,
+            project_root=str(repo_root()),
         )
     except Exception as exc:
         logger.error(f"Contract deployment failed: {exc}")

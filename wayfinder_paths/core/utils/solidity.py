@@ -8,6 +8,7 @@ explorers can reproduce the exact bytecode without access to local files.
 
 from __future__ import annotations
 
+import posixpath
 import re
 import subprocess
 from pathlib import Path
@@ -108,6 +109,63 @@ def _load_dependency_source(*, node_modules: Path, key: str) -> str:
         raise FileNotFoundError(f"Import not found: {key} (looked for {path})")
     return path.read_text(encoding="utf-8", errors="replace")
 
+def _resolve_local_import_key(*, cur_key: str, dep_key: str) -> str:
+    """Resolve a Solidity import path to a stable, repo-relative key.
+
+    Supports:
+    - relative imports: ``./Foo.sol``, ``../Foo.sol`` (relative to the importing file key)
+    - repo-relative imports: ``contracts/Foo.sol``
+
+    Returns a normalized POSIX-style key suitable for standard-json-input.
+    """
+    cur_key_norm = str(cur_key).replace("\\", "/")
+    dep_key_norm = str(dep_key).strip().replace("\\", "/")
+
+    if not dep_key_norm:
+        raise RuntimeError(f"Invalid empty import in '{cur_key_norm}'")
+
+    # Disallow absolute filesystem paths (solc standard-json keys should be portable).
+    if dep_key_norm.startswith("/"):
+        raise RuntimeError(
+            f"Unsupported absolute import '{dep_key_norm}' in '{cur_key_norm}'"
+        )
+
+    if dep_key_norm.startswith("./") or dep_key_norm.startswith("../"):
+        base_dir = posixpath.dirname(cur_key_norm)
+        resolved = posixpath.normpath(posixpath.join(base_dir, dep_key_norm))
+    else:
+        resolved = posixpath.normpath(dep_key_norm)
+
+    # Prevent imports from escaping the project root.
+    if resolved == ".." or resolved.startswith("../"):
+        raise RuntimeError(
+            f"Unsupported import '{dep_key_norm}' in '{cur_key_norm}': "
+            "import resolves outside project root"
+        )
+
+    # Normalize away leading "./"
+    if resolved.startswith("./"):
+        resolved = resolved[2:]
+
+    return resolved
+
+
+def _load_local_dependency_source(*, root: Path, key: str, imported_from: str) -> str:
+    root_resolved = root.resolve(strict=False)
+    path = (root / key).resolve(strict=False)
+    try:
+        path.relative_to(root_resolved)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Import '{key}' (from '{imported_from}') resolves outside project root"
+        ) from exc
+
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Import not found: {key} (from '{imported_from}', looked for {path})"
+        )
+    return path.read_text(encoding="utf-8", errors="replace")
+
 
 def collect_sources(
     source_code: str,
@@ -146,10 +204,19 @@ def collect_sources(
                 queue.append(dep_key)
                 continue
 
-            raise RuntimeError(
-                f"Unsupported import '{imp}' in '{cur_key}'. "
-                "Only @openzeppelin/* imports are supported."
+            local_key = _resolve_local_import_key(cur_key=cur_key, dep_key=dep_key)
+            if local_key.startswith("@openzeppelin/"):
+                if node_modules is None:
+                    node_modules = Path(ensure_oz_installed(str(root)))
+                sources[local_key] = _load_dependency_source(
+                    node_modules=node_modules, key=local_key
+                )
+                queue.append(local_key)
+                continue
+            sources[local_key] = _load_local_dependency_source(
+                root=root, key=local_key, imported_from=cur_key
             )
+            queue.append(local_key)
 
     return sources
 
@@ -158,6 +225,7 @@ def compile_solidity(
     source_code: str,
     *,
     contract_name: str | None = None,
+    source_filename: str = _SOURCE_FILENAME,
     project_root: str | None = None,
     optimize: bool = True,
     optimize_runs: int = 200,
@@ -165,19 +233,19 @@ def compile_solidity(
     """Compile Solidity source code (root contracts only).
 
     Returns ``{contract_name: {"abi": [...], "bytecode": "0x..."}}`` for
-    contracts defined in the root ``source_filename`` (default: ``Contract.sol``).
+    contracts defined in the root ``source_filename``.
     If *contract_name* is given, validates it exists in the output.
     """
     compiled = compile_solidity_standard_json(
         source_code,
-        source_filename=_SOURCE_FILENAME,
+        source_filename=source_filename,
         project_root=project_root,
         optimize=optimize,
         optimize_runs=optimize_runs,
     )
 
     output = compiled["output"]
-    contracts = (output.get("contracts") or {}).get(_SOURCE_FILENAME) or {}
+    contracts = (output.get("contracts") or {}).get(source_filename) or {}
     if not isinstance(contracts, dict):
         contracts = {}
 

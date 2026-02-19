@@ -4,12 +4,15 @@
 
 `compile_solidity()` supports `@openzeppelin/...` imports by auto-installing **@openzeppelin/contracts@5.4.0** into an ignored cache directory (`.cache/solidity/openzeppelin-5.4.0/node_modules/`) on first use. This requires `npm` and `node` on the PATH, but does **not** create a repo-root `node_modules/`.
 
-## 2. Only `@openzeppelin/*` imports are supported
+## 2. Local imports are supported, but only from within this repo
 
-The compiler only resolves OpenZeppelin sources into the standard JSON input. Imports like these will fail:
+The compiler supports:
 
-- `import "./Foo.sol";`
-- `import "solmate/tokens/ERC20.sol";`
+- `@openzeppelin/*` imports (auto-installed into `.cache/solidity/...` on first use)
+- Relative imports (`./Foo.sol`, `../Foo.sol`) between Solidity files checked into this repo
+- Repo-relative imports (`contracts/Foo.sol`)
+
+Other npm packages are not auto-installed, so imports like `import "solmate/tokens/ERC20.sol";` will fail unless you vendor the sources into this repository.
 
 ## 3. solcx installs the solc binary on first use
 

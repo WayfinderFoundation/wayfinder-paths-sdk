@@ -57,4 +57,9 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 ```
 
-Currently, only `@openzeppelin/*` imports are supported. Relative imports (e.g. `import "./Foo.sol";`) and other packages will raise an error.
+The compiler also supports local imports from within this repo:
+
+- Relative imports: `import "./Foo.sol";`, `import "../Foo.sol";` (resolved relative to the importing file)
+- Repo-relative imports: `import "contracts/Foo.sol";`
+
+Other npm packages (e.g. `solmate/...`) are not auto-installed — those imports will fail unless the sources are checked into this repo.

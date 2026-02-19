@@ -59,6 +59,23 @@ UNISWAP_V3_FACTORY: dict[int, str] = {
     43114: to_checksum_address("0x740b1c1de25031C31FF4fC9A62f554A55cdC1baD"),
 }
 
+UNISWAP_V4_POOL_MANAGER: dict[int, str] = {
+    # Uniswap v4 singleton deployment addresses
+    8453: to_checksum_address("0x498581fF718922c3f8e6A244956aF099B2652b2b"),  # Base
+}
+
+UNISWAP_V4_POSITION_MANAGER: dict[int, str] = {
+    8453: to_checksum_address("0x7c5f5A4bbD8fD63184577525326123B519429bDc"),  # Base
+}
+
+UNISWAP_V4_STATE_VIEW: dict[int, str] = {
+    8453: to_checksum_address("0xa3c0c9b65bad0b08107aa264b0f3db444b867a71"),  # Base
+}
+
+UNISWAP_V4_QUOTER: dict[int, str] = {
+    8453: to_checksum_address("0x0d5e0f971ed27fbff6c2837bf31316121532048d"),  # Base
+}
+
 ARBITRUM_USDC = to_checksum_address("0xaf88d065e77c8cC2239327C5EDb3A432268e5831")
 ARBITRUM_WETH = to_checksum_address("0x82af49447d8a07e3bd95bd0d56f35241523fbab1")
 
