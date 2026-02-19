@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from eth_abi import encode as abi_encode
@@ -12,7 +13,11 @@ from wayfinder_paths.core.constants.uniswap_v4_abi import (
     POSITION_MANAGER_ABI,
     STATE_VIEW_ABI,
 )
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.transaction import (
+    encode_call,
+    send_transaction,
+    wait_for_transaction_receipt,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -22,6 +27,70 @@ PoolKeyTuple = tuple[str, str, int, int, str]
 # Uniswap v4-periphery Actions constants (v4-periphery/src/libraries/Actions.sol)
 ACTION_MINT_POSITION = 0x02
 ACTION_SETTLE_PAIR = 0x0D
+
+_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+_ERC721_TRANSFER_SIG = keccak(text="Transfer(address,address,uint256)")
+
+def _coerce_bytes(value: Any) -> bytes:
+    if value is None:
+        return b""
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value)
+    if isinstance(value, str):
+        text = value[2:] if value.startswith("0x") else value
+        try:
+            return bytes.fromhex(text)
+        except ValueError:
+            return value.encode("utf-8", errors="ignore")
+    try:
+        return bytes(value)
+    except TypeError:
+        return str(value).encode("utf-8", errors="ignore")
+
+
+def _topic_to_address(topic: Any) -> str:
+    raw = _coerce_bytes(topic)
+    if len(raw) < 20:
+        raw = raw.rjust(20, b"\x00")
+    return to_checksum_address("0x" + raw[-20:].hex())
+
+
+def _topic_to_uint256(topic: Any) -> int:
+    return int.from_bytes(_coerce_bytes(topic), "big")
+
+
+def _extract_posm_mints_from_receipt(
+    *, receipt: dict[str, Any], posm_address: str, recipient: str
+) -> list[int]:
+    token_ids: list[int] = []
+    posm_address = to_checksum_address(posm_address)
+    recipient = to_checksum_address(recipient)
+
+    logs = receipt.get("logs") or []
+    if not isinstance(logs, Sequence):
+        return token_ids
+
+    for log in logs:
+        if not isinstance(log, Mapping):
+            continue
+        log_address = str(log.get("address") or "").lower()
+        if log_address != posm_address.lower():
+            continue
+
+        topics = log.get("topics") or []
+        if not isinstance(topics, Sequence) or len(topics) < 4:
+            continue
+        if _coerce_bytes(topics[0]) != _ERC721_TRANSFER_SIG:
+            continue
+
+        from_addr = _topic_to_address(topics[1])
+        to_addr = _topic_to_address(topics[2])
+        if from_addr.lower() != _ZERO_ADDRESS or to_addr.lower() != recipient.lower():
+            continue
+
+        token_ids.append(_topic_to_uint256(topics[3]))
+
+    return token_ids
 
 
 def sort_currencies(currency_a: str, currency_b: str) -> tuple[str, str]:
@@ -169,7 +238,11 @@ async def posm_next_token_id(*, chain_id: int, position_manager_address: str) ->
 
 
 async def posm_get_position_liquidity(
-    *, chain_id: int, position_manager_address: str, token_id: int
+    *,
+    chain_id: int,
+    position_manager_address: str,
+    token_id: int,
+    block_identifier: str | int = "latest",
 ) -> int:
     async with web3_from_chain_id(int(chain_id)) as w3:
         posm = w3.eth.contract(
@@ -178,7 +251,7 @@ async def posm_get_position_liquidity(
         )
         return int(
             await posm.functions.getPositionLiquidity(int(token_id)).call(
-                block_identifier="latest"
+                block_identifier=block_identifier
             )
         )
 
@@ -284,11 +357,6 @@ async def posm_initialize_and_mint(
         sign_callback=sign_callback,
     )
 
-    token_id_before = await posm_next_token_id(
-        chain_id=int(chain_id),
-        position_manager_address=posm_address,
-    )
-
     unlock_data = build_mint_and_settle_pair_unlock_data(
         key=key,
         tick_lower=tick_lower,
@@ -328,22 +396,34 @@ async def posm_initialize_and_mint(
 
     tx_hash = await send_transaction(multicall_tx, sign_callback, wait_for_receipt=True)
 
-    token_id_after = await posm_next_token_id(
-        chain_id=int(chain_id),
-        position_manager_address=posm_address,
+    receipt = await wait_for_transaction_receipt(int(chain_id), tx_hash, confirmations=0)
+    pinned_block = receipt.get("blockNumber")
+    pinned_block_id: str | int = (
+        int(pinned_block) if pinned_block is not None else "latest"
     )
-    minted_token_id = token_id_before if token_id_after > token_id_before else None
-    minted_liquidity = (
-        await posm_get_position_liquidity(
+
+    minted_token_ids = _extract_posm_mints_from_receipt(
+        receipt=receipt,
+        posm_address=posm_address,
+        recipient=recipient,
+    )
+    minted_token_id = minted_token_ids[-1] if minted_token_ids else None
+
+    minted_liquidity = None
+    if minted_token_id is not None:
+        minted_liquidity = await posm_get_position_liquidity(
             chain_id=int(chain_id),
             position_manager_address=posm_address,
             token_id=int(minted_token_id),
+            block_identifier=pinned_block_id,
         )
-        if minted_token_id is not None
-        else None
-    )
 
-    return {"tx_hash": tx_hash, "token_id": minted_token_id, "liquidity": minted_liquidity}
+    return {
+        "tx_hash": tx_hash,
+        "block_number": pinned_block,
+        "token_id": minted_token_id,
+        "liquidity": minted_liquidity,
+    }
 
 
 async def get_slot0(
@@ -351,6 +431,7 @@ async def get_slot0(
     chain_id: int,
     state_view_address: str,
     pool_id_: str,
+    block_identifier: str | int = "latest",
 ) -> dict[str, Any]:
     async with web3_from_chain_id(chain_id) as w3:
         view = w3.eth.contract(
@@ -359,7 +440,7 @@ async def get_slot0(
         )
         sqrt_price_x96, tick, protocol_fee, lp_fee = await view.functions.getSlot0(
             pool_id_
-        ).call(block_identifier="latest")
+        ).call(block_identifier=block_identifier)
         return {
             "sqrtPriceX96": int(sqrt_price_x96),
             "tick": int(tick),

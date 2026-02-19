@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 import math
@@ -27,6 +28,7 @@ from wayfinder_paths.core.utils.tokens import (
     get_token_decimals,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.transaction import wait_for_transaction_receipt
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     liq_for_amounts,
     price_to_sqrt_price_x96,
@@ -96,6 +98,71 @@ def _sqrt_price_for_pair(
         dec0, dec1 = decimals_b, decimals_a
     return price_to_sqrt_price_x96(price_1_per_0, dec0, dec1)
 
+
+def _pinned_block(receipt: Any) -> int | None:
+    if not isinstance(receipt, Mapping):
+        return None
+    block_number = receipt.get("blockNumber")
+    if block_number is None:
+        return None
+    try:
+        if isinstance(block_number, str) and block_number.startswith("0x"):
+            return int(block_number, 16)
+        return int(block_number)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _balance_after_tx(
+    *,
+    token_address: str | None,
+    wallet_address: str,
+    pinned_block_number: int | None,
+    min_expected: int = 1,
+    attempts: int = 5,
+) -> int:
+    bal = 0
+    block_id: str | int = (
+        int(pinned_block_number) if pinned_block_number is not None else "pending"
+    )
+
+    for i in range(int(attempts)):
+        try:
+            bal = await get_token_balance(
+                token_address, CHAIN_ID_BASE, wallet_address, block_identifier=block_id
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Balance read failed for {token_address} at block {block_id}: {exc}"
+            )
+            bal = 0
+
+        if bal >= int(min_expected):
+            return int(bal)
+        await asyncio.sleep(1 + i)
+
+    if pinned_block_number is None:
+        return int(bal)
+
+    # Fallback (un-pinned).
+    for i in range(int(attempts)):
+        try:
+            bal = await get_token_balance(
+                token_address, CHAIN_ID_BASE, wallet_address, block_identifier="pending"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Balance read failed for {token_address} at pending: {exc}"
+            )
+            bal = 0
+
+        if bal >= int(min_expected):
+            return int(bal)
+        await asyncio.sleep(1 + i)
+
+    return int(bal)
+
+
 def _full_range_ticks(tick_spacing: int) -> tuple[int, int]:
     # Mirror Solidity's int24 division behavior (truncate toward 0).
     lower = math.trunc(MIN_TICK / tick_spacing) * tick_spacing
@@ -145,6 +212,7 @@ async def _deploy_from_file(
         address=to_checksum_address(result["contract_address"]),
         abi=result["abi"],
     )
+
 
 async def _run_flow(
     *,
@@ -226,13 +294,17 @@ async def _run_flow(
         chain_id=CHAIN_ID_BASE,
     )
     create_hash = await send_transaction(create_tx, sign_callback, wait_for_receipt=True)
+    receipt = await wait_for_transaction_receipt(
+        CHAIN_ID_BASE, create_hash, confirmations=0
+    )
     async with web3_from_chain_id(CHAIN_ID_BASE) as w3:
-        receipt = await w3.eth.get_transaction_receipt(create_hash)
-        factory_contract = w3.eth.contract(address=factory_ct.address, abi=factory_ct.abi)
+        factory_contract = w3.eth.contract(
+            address=factory_ct.address, abi=factory_ct.abi
+        )
         evs = factory_contract.events.AgentTokenCreated().process_receipt(receipt)
-        if not evs:
-            raise RuntimeError("AgentTokenCreated event not found in receipt")
-        agent_token = to_checksum_address(evs[0]["args"]["token"])
+    if not evs:
+        raise RuntimeError("AgentTokenCreated event not found in receipt")
+    agent_token = to_checksum_address(evs[0]["args"]["token"])
 
     logger.info(f"Agent token (A): {agent_token}")
 
@@ -255,13 +327,41 @@ async def _run_flow(
         from_address=wallet_address,
         chain_id=CHAIN_ID_BASE,
     )
-    await send_transaction(deposit_tx, sign_callback, wait_for_receipt=True)
+    deposit_hash = await send_transaction(deposit_tx, sign_callback, wait_for_receipt=True)
+    deposit_receipt = await wait_for_transaction_receipt(
+        CHAIN_ID_BASE, deposit_hash, confirmations=0
+    )
+    pinned = _pinned_block(deposit_receipt)
 
-    v_bal = await get_token_balance(vault.address, CHAIN_ID_BASE, wallet_address)
-    usdc_bal = await get_token_balance(BASE_USDC, CHAIN_ID_BASE, wallet_address)
-    prompt_bal = await get_token_balance(PROMPT_BASE, CHAIN_ID_BASE, wallet_address)
+    # Pin reads to the block that included the deposit, to avoid stale RPC reads.
+    v_needed_raw = _raw(
+        (seed_usdc_vu / price_usdc_per_v) + (seed_prompt * price_v_per_prompt) + (seed_agent * price_v_per_agent),
+        v_decimals,
+    )
+    v_bal = await _balance_after_tx(
+        token_address=vault.address,
+        wallet_address=wallet_address,
+        pinned_block_number=pinned,
+        min_expected=int(v_needed_raw),
+        attempts=6,
+    )
+    usdc_bal = await _balance_after_tx(
+        token_address=BASE_USDC,
+        wallet_address=wallet_address,
+        pinned_block_number=pinned,
+        min_expected=0,
+        attempts=3,
+    )
+    prompt_bal = await _balance_after_tx(
+        token_address=PROMPT_BASE,
+        wallet_address=wallet_address,
+        pinned_block_number=pinned,
+        min_expected=0,
+        attempts=3,
+    )
     logger.info(
-        f"Balances after deposit: V={v_bal} USDC={usdc_bal} PROMPT={prompt_bal}"
+        f"Balances after deposit (pinned_block={pinned}): "
+        f"V={v_bal} USDC={usdc_bal} PROMPT={prompt_bal}"
     )
 
     # --- Uniswap v4 pools (initialize + seed liquidity) ---
@@ -328,7 +428,12 @@ async def _run_flow(
         sign_callback=sign_callback,
     )
     vu_id = pool_id(vu_key)
-    vu_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=vu_id)
+    vu_slot0 = await get_slot0(
+        chain_id=CHAIN_ID_BASE,
+        state_view_address=state_view,
+        pool_id_=vu_id,
+        block_identifier=vu_mint.get("block_number") or "latest",
+    )
     logger.info(f"Seeded V/U poolId={vu_id} pos={vu_mint} slot0={vu_slot0}")
 
     # P/V: bootstrap at `price_v_per_prompt` V per 1 PROMPT.
@@ -374,7 +479,12 @@ async def _run_flow(
         sign_callback=sign_callback,
     )
     pv_id = pool_id(pv_key)
-    pv_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=pv_id)
+    pv_slot0 = await get_slot0(
+        chain_id=CHAIN_ID_BASE,
+        state_view_address=state_view,
+        pool_id_=pv_id,
+        block_identifier=pv_mint.get("block_number") or "latest",
+    )
     logger.info(f"Seeded P/V poolId={pv_id} pos={pv_mint} slot0={pv_slot0}")
 
     # A/V: bootstrap at `price_v_per_agent` V per 1 A.
@@ -421,7 +531,12 @@ async def _run_flow(
         sign_callback=sign_callback,
     )
     av_id = pool_id(av_key)
-    av_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=av_id)
+    av_slot0 = await get_slot0(
+        chain_id=CHAIN_ID_BASE,
+        state_view_address=state_view,
+        pool_id_=av_id,
+        block_identifier=av_mint.get("block_number") or "latest",
+    )
     logger.info(f"Seeded A/V poolId={av_id} pos={av_mint} slot0={av_slot0}")
 
     # Register canonical pools and the agent market in PoolRegistry.

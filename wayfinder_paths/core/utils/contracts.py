@@ -26,7 +26,7 @@ from wayfinder_paths.core.utils.solidity import (
     SOLC_VERSION,
     compile_solidity_standard_json,
 )
-from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.transaction import send_transaction, wait_for_transaction_receipt
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _ESCAPE_HATCH_SNIPPET = """
@@ -259,9 +259,8 @@ async def deploy_contract(
 
     tx_hash = await send_transaction(tx, sign_callback, wait_for_receipt=True)
 
-    # Get contract address from receipt
-    async with web3_from_chain_id(chain_id) as w3:
-        receipt = await w3.eth.get_transaction_receipt(tx_hash)
+    # Get contract address from receipt (best-effort across multiple RPCs).
+    receipt = await wait_for_transaction_receipt(chain_id, tx_hash, confirmations=0)
 
     contract_address = receipt.get("contractAddress")
     if not contract_address:

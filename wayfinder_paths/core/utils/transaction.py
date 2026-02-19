@@ -15,6 +15,7 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
+    CHAIN_ID_BASE,
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
@@ -24,7 +25,16 @@ from wayfinder_paths.core.utils.web3 import (
     web3s_from_chain_id,
 )
 
-_DEFAULT_CONFIRMATIONS = 3
+_DEFAULT_CONFIRMATIONS_FALLBACK = 3
+_DEFAULT_CONFIRMATIONS_BY_CHAIN: dict[int, int] = {
+    # Base can lag in indexers/RPC propagation; 2 confirmations is typically enough
+    # while keeping UX snappy.
+    CHAIN_ID_BASE: 2,
+}
+
+
+def default_confirmations_for_chain(chain_id: int) -> int:
+    return int(_DEFAULT_CONFIRMATIONS_BY_CHAIN.get(int(chain_id), _DEFAULT_CONFIRMATIONS_FALLBACK))
 
 
 def _is_gorlami_fork_chain(chain_id: int) -> bool:
@@ -282,7 +292,9 @@ async def send_transaction(
     chain_id = get_transaction_chain_id(transaction)
     if confirmations is None:
         confirmations = (
-            0 if _is_gorlami_fork_chain(chain_id) else _DEFAULT_CONFIRMATIONS
+            0
+            if _is_gorlami_fork_chain(chain_id)
+            else default_confirmations_for_chain(chain_id)
         )
     transaction = await gas_limit_transaction(transaction)
     transaction = await nonce_transaction(transaction)
