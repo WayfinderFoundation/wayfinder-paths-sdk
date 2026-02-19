@@ -1,0 +1,9 @@
+schema_version: "0.1"
+entrypoint: "adapters.avantis_adapter.adapter.AvantisAdapter"
+capabilities:
+  - "market.list"
+  - "position.read"
+  - "lending.lend"
+  - "lending.unlend"
+dependencies: []
+
