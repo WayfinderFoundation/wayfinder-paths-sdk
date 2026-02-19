@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from eth_utils import to_checksum_address
 
@@ -215,7 +218,7 @@ class EulerV2Adapter(BaseAdapter):
 
                 sem = asyncio.Semaphore(max(1, int(concurrency)))
 
-                async def _fetch(vault: str) -> dict[str, Any] | None:
+                async def _fetch(vault: str) -> tuple[bool, Any]:
                     async with sem:
                         try:
                             info_raw = await vault_lens.functions.getVaultInfoFull(
@@ -260,7 +263,7 @@ class EulerV2Adapter(BaseAdapter):
                                     }
                                 )
 
-                            return {
+                            return True, {
                                 "chain_id": int(chain_id),
                                 "evc": to_checksum_address(str(evc_addr)),
                                 "vault_lens": to_checksum_address(str(vault_lens_addr)),
@@ -289,16 +292,18 @@ class EulerV2Adapter(BaseAdapter):
                                 "collateral_ltv_info": ltv_info,
                                 "raw": info,
                             }
-                        except Exception:
-                            return None
+                        except Exception as exc:
+                            logger.warning("Euler vault %s fetch failed: %s", vault, exc)
+                            return False, f"{vault}: {exc}"
 
                 results = await asyncio.gather(
                     *[_fetch(v) for v in vaults_list], return_exceptions=False
                 )
 
-            markets = [m for m in results if isinstance(m, dict)]
+            markets = [data for ok, data in results if ok]
+            errors = [data for ok, data in results if not ok]
             if not markets:
-                return False, "No markets found (or all lens calls failed)"
+                return False, f"All vault fetches failed: {'; '.join(errors)}"
             return True, markets
         except Exception as exc:
             return False, str(exc)
