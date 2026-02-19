@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     liq_for_amounts,
     price_to_sqrt_price_x96,
     sqrt_price_x96_from_tick,
+    tick_from_sqrt_price_x96,
 )
 from wayfinder_paths.core.utils.uniswap_v4_deploy import (
     build_pool_key,
@@ -169,6 +171,55 @@ def _full_range_ticks(tick_spacing: int) -> tuple[int, int]:
     upper = math.trunc(MAX_TICK / tick_spacing) * tick_spacing
     return int(lower), int(upper)
 
+def _floor_to_spacing(tick: int, spacing: int) -> int:
+    if spacing <= 0:
+        return int(tick)
+    return int((int(tick) // int(spacing)) * int(spacing))
+
+
+def _ceil_to_spacing(tick: int, spacing: int) -> int:
+    if spacing <= 0:
+        return int(tick)
+    # ceil(tick/spacing) * spacing
+    return int((-(-int(tick) // int(spacing))) * int(spacing))
+
+
+def _concentrated_ticks(
+    *, sqrt_price_x96: int, tick_spacing: int, width_ticks: int
+) -> tuple[int, int]:
+    if width_ticks <= 0:
+        raise ValueError("width_ticks must be > 0")
+
+    current_tick = int(tick_from_sqrt_price_x96(float(sqrt_price_x96)))
+
+    tick_lower = _floor_to_spacing(
+        current_tick - int(width_ticks), int(tick_spacing)
+    )
+    tick_upper = _ceil_to_spacing(
+        current_tick + int(width_ticks), int(tick_spacing)
+    )
+
+    min_tick, max_tick = _full_range_ticks(int(tick_spacing))
+    tick_lower = max(int(tick_lower), int(min_tick))
+    tick_upper = min(int(tick_upper), int(max_tick))
+
+    if tick_lower >= tick_upper:
+        tick_lower = max(
+            int(min_tick),
+            _floor_to_spacing(current_tick - int(tick_spacing), int(tick_spacing)),
+        )
+        tick_upper = min(
+            int(max_tick),
+            _ceil_to_spacing(current_tick + int(tick_spacing), int(tick_spacing)),
+        )
+
+    if tick_lower >= tick_upper:
+        raise ValueError(
+            f"Invalid tick range: lower={tick_lower} upper={tick_upper} spacing={tick_spacing}"
+        )
+
+    return int(tick_lower), int(tick_upper)
+
 
 def _liq_for_full_range(
     *, sqrt_price_x96: int, tick_lower: int, tick_upper: int, amount0: int, amount1: int
@@ -182,6 +233,16 @@ def _liq_for_full_range(
 class DeployedContract:
     address: str
     abi: list[dict[str, Any]]
+
+
+async def _latest_timestamp(chain_id: int) -> int:
+    async with web3_from_chain_id(int(chain_id)) as w3:
+        blk = await w3.eth.get_block("latest")
+        ts = blk.get("timestamp") if isinstance(blk, Mapping) else None
+        try:
+            return int(ts) if ts is not None else int(time.time())
+        except (TypeError, ValueError):
+            return int(time.time())
 
 
 async def _deploy_from_file(
@@ -223,6 +284,11 @@ async def _run_flow(
     seed_usdc_vu: Decimal,
     seed_prompt: Decimal,
     seed_agent: Decimal,
+    av_width_ticks: int,
+    locker_unlock_days: int,
+    locker_fee_share_bps: int,
+    locker_early_exit_bps: int,
+    locker_beneficiary: str,
     price_v_per_prompt: Decimal,
     price_v_per_agent: Decimal,
     price_usdc_per_v: Decimal,
@@ -308,6 +374,16 @@ async def _run_flow(
 
     logger.info(f"Agent token (A): {agent_token}")
 
+    locker = await _deploy_from_file(
+        rel_path="contracts/ecosystem/LiquidityLockerV4.sol",
+        contract_name="LiquidityLockerV4",
+        constructor_args=[wallet_address, posm, fee_vault.address],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+        sign_callback=sign_callback,
+    )
+    logger.info(f"LiquidityLockerV4: {locker.address}")
+
     # Mint V shares by depositing USDC into the vault.
     deposit_usdc_raw = _raw(deposit_usdc, usdc_decimals)
     await ensure_allowance(
@@ -334,10 +410,14 @@ async def _run_flow(
     pinned = _pinned_block(deposit_receipt)
 
     # Pin reads to the block that included the deposit, to avoid stale RPC reads.
-    v_needed_raw = _raw(
-        (seed_usdc_vu / price_usdc_per_v) + (seed_prompt * price_v_per_prompt) + (seed_agent * price_v_per_agent),
-        v_decimals,
-    )
+    v_needed = Decimal(0)
+    if seed_usdc_vu > 0:
+        v_needed += seed_usdc_vu / price_usdc_per_v
+    if seed_prompt > 0:
+        v_needed += seed_prompt * price_v_per_prompt
+    if seed_agent > 0:
+        v_needed += seed_agent * price_v_per_agent
+    v_needed_raw = _raw(v_needed, v_decimals)
     v_bal = await _balance_after_tx(
         token_address=vault.address,
         wallet_address=wallet_address,
@@ -378,114 +458,136 @@ async def _run_flow(
     )
     logger.info(f"PoolRegistry: {registry.address}")
 
-    tick_lower, tick_upper = _full_range_ticks(tick_spacing)
+    full_tick_lower, full_tick_upper = _full_range_ticks(tick_spacing)
 
-    # V/U: `price_usdc_per_v` USDC per 1 V (V shares are ERC20 at the vault address)
-    sqrt_vu = _sqrt_price_for_pair(
-        token_a=vault.address,
-        token_b=BASE_USDC,
-        price_b_per_a=price_usdc_per_v,
-        decimals_a=v_decimals,
-        decimals_b=usdc_decimals,
-    )
-    vu_key = build_pool_key(
-        currency_a=vault.address,
-        currency_b=BASE_USDC,
-        fee=fee,
-        tick_spacing=tick_spacing,
-        hooks=hooks,
-    )
-    # Seed V/U: `seed_usdc_vu` USDC + matching V at `price_usdc_per_v`.
-    seed_u_raw = _raw(seed_usdc_vu, usdc_decimals)
-    seed_v_human = (
-        (Decimal(seed_usdc_vu) / Decimal(price_usdc_per_v))
-        if price_usdc_per_v != 0
-        else Decimal(0)
-    )
-    seed_v_raw = _raw(seed_v_human, v_decimals)
-    amount0_vu = seed_v_raw if vu_key[0].lower() == vault.address.lower() else seed_u_raw
-    amount1_vu = seed_u_raw if vu_key[1].lower() == BASE_USDC.lower() else seed_v_raw
-    liq_vu = _liq_for_full_range(
-        sqrt_price_x96=sqrt_vu,
-        tick_lower=tick_lower,
-        tick_upper=tick_upper,
-        amount0=amount0_vu,
-        amount1=amount1_vu,
-    )
-    vu_mint = await posm_initialize_and_mint(
-        chain_id=CHAIN_ID_BASE,
-        position_manager_address=posm,
-        permit2_address=permit2,
-        key=vu_key,
-        sqrt_price_x96=sqrt_vu,
-        tick_lower=tick_lower,
-        tick_upper=tick_upper,
-        liquidity=liq_vu,
-        amount0_max=amount0_vu,
-        amount1_max=amount1_vu,
-        recipient=wallet_address,
-        from_address=wallet_address,
-        sign_callback=sign_callback,
-    )
-    vu_id = pool_id(vu_key)
-    vu_slot0 = await get_slot0(
-        chain_id=CHAIN_ID_BASE,
-        state_view_address=state_view,
-        pool_id_=vu_id,
-        block_identifier=vu_mint.get("block_number") or "latest",
-    )
-    logger.info(f"Seeded V/U poolId={vu_id} pos={vu_mint} slot0={vu_slot0}")
+    vu_key = None
+    if seed_usdc_vu > 0:
+        # V/U: `price_usdc_per_v` USDC per 1 V (V shares are ERC20 at the vault address)
+        sqrt_vu = _sqrt_price_for_pair(
+            token_a=vault.address,
+            token_b=BASE_USDC,
+            price_b_per_a=price_usdc_per_v,
+            decimals_a=v_decimals,
+            decimals_b=usdc_decimals,
+        )
+        vu_key = build_pool_key(
+            currency_a=vault.address,
+            currency_b=BASE_USDC,
+            fee=fee,
+            tick_spacing=tick_spacing,
+            hooks=hooks,
+        )
+        # Seed V/U: `seed_usdc_vu` USDC + matching V at `price_usdc_per_v`.
+        seed_u_raw = _raw(seed_usdc_vu, usdc_decimals)
+        seed_v_human = (
+            (Decimal(seed_usdc_vu) / Decimal(price_usdc_per_v))
+            if price_usdc_per_v != 0
+            else Decimal(0)
+        )
+        seed_v_raw = _raw(seed_v_human, v_decimals)
+        amount0_vu = (
+            seed_v_raw
+            if vu_key[0].lower() == vault.address.lower()
+            else seed_u_raw
+        )
+        amount1_vu = (
+            seed_u_raw
+            if vu_key[1].lower() == BASE_USDC.lower()
+            else seed_v_raw
+        )
+        liq_vu = _liq_for_full_range(
+            sqrt_price_x96=sqrt_vu,
+            tick_lower=full_tick_lower,
+            tick_upper=full_tick_upper,
+            amount0=amount0_vu,
+            amount1=amount1_vu,
+        )
+        vu_mint = await posm_initialize_and_mint(
+            chain_id=CHAIN_ID_BASE,
+            position_manager_address=posm,
+            permit2_address=permit2,
+            key=vu_key,
+            sqrt_price_x96=sqrt_vu,
+            tick_lower=full_tick_lower,
+            tick_upper=full_tick_upper,
+            liquidity=liq_vu,
+            amount0_max=amount0_vu,
+            amount1_max=amount1_vu,
+            recipient=wallet_address,
+            from_address=wallet_address,
+            sign_callback=sign_callback,
+        )
+        vu_id = pool_id(vu_key)
+        vu_slot0 = await get_slot0(
+            chain_id=CHAIN_ID_BASE,
+            state_view_address=state_view,
+            pool_id_=vu_id,
+            block_identifier=vu_mint.get("block_number") or "latest",
+        )
+        logger.info(f"Seeded V/U poolId={vu_id} pos={vu_mint} slot0={vu_slot0}")
 
-    # P/V: bootstrap at `price_v_per_prompt` V per 1 PROMPT.
-    sqrt_pv = _sqrt_price_for_pair(
-        token_a=PROMPT_BASE,
-        token_b=vault.address,
-        price_b_per_a=price_v_per_prompt,
-        decimals_a=prompt_decimals,
-        decimals_b=v_decimals,
-    )
-    pv_key = build_pool_key(
-        currency_a=PROMPT_BASE,
-        currency_b=vault.address,
-        fee=fee,
-        tick_spacing=tick_spacing,
-        hooks=hooks,
-    )
-    # Seed P/V: `seed_prompt` PROMPT + matching V at `price_v_per_prompt`.
-    seed_p_raw = _raw(seed_prompt, prompt_decimals)
-    seed_v_pv_raw = _raw(Decimal(seed_prompt) * Decimal(price_v_per_prompt), v_decimals)
-    amount0_pv = seed_p_raw if pv_key[0].lower() == PROMPT_BASE.lower() else seed_v_pv_raw
-    amount1_pv = seed_v_pv_raw if pv_key[1].lower() == vault.address.lower() else seed_p_raw
-    liq_pv = _liq_for_full_range(
-        sqrt_price_x96=sqrt_pv,
-        tick_lower=tick_lower,
-        tick_upper=tick_upper,
-        amount0=amount0_pv,
-        amount1=amount1_pv,
-    )
-    pv_mint = await posm_initialize_and_mint(
-        chain_id=CHAIN_ID_BASE,
-        position_manager_address=posm,
-        permit2_address=permit2,
-        key=pv_key,
-        sqrt_price_x96=sqrt_pv,
-        tick_lower=tick_lower,
-        tick_upper=tick_upper,
-        liquidity=liq_pv,
-        amount0_max=amount0_pv,
-        amount1_max=amount1_pv,
-        recipient=wallet_address,
-        from_address=wallet_address,
-        sign_callback=sign_callback,
-    )
-    pv_id = pool_id(pv_key)
-    pv_slot0 = await get_slot0(
-        chain_id=CHAIN_ID_BASE,
-        state_view_address=state_view,
-        pool_id_=pv_id,
-        block_identifier=pv_mint.get("block_number") or "latest",
-    )
-    logger.info(f"Seeded P/V poolId={pv_id} pos={pv_mint} slot0={pv_slot0}")
+    pv_key = None
+    if seed_prompt > 0:
+        # P/V: bootstrap at `price_v_per_prompt` V per 1 PROMPT.
+        sqrt_pv = _sqrt_price_for_pair(
+            token_a=PROMPT_BASE,
+            token_b=vault.address,
+            price_b_per_a=price_v_per_prompt,
+            decimals_a=prompt_decimals,
+            decimals_b=v_decimals,
+        )
+        pv_key = build_pool_key(
+            currency_a=PROMPT_BASE,
+            currency_b=vault.address,
+            fee=fee,
+            tick_spacing=tick_spacing,
+            hooks=hooks,
+        )
+        # Seed P/V: `seed_prompt` PROMPT + matching V at `price_v_per_prompt`.
+        seed_p_raw = _raw(seed_prompt, prompt_decimals)
+        seed_v_pv_raw = _raw(
+            Decimal(seed_prompt) * Decimal(price_v_per_prompt), v_decimals
+        )
+        amount0_pv = (
+            seed_p_raw
+            if pv_key[0].lower() == PROMPT_BASE.lower()
+            else seed_v_pv_raw
+        )
+        amount1_pv = (
+            seed_v_pv_raw
+            if pv_key[1].lower() == vault.address.lower()
+            else seed_p_raw
+        )
+        liq_pv = _liq_for_full_range(
+            sqrt_price_x96=sqrt_pv,
+            tick_lower=full_tick_lower,
+            tick_upper=full_tick_upper,
+            amount0=amount0_pv,
+            amount1=amount1_pv,
+        )
+        pv_mint = await posm_initialize_and_mint(
+            chain_id=CHAIN_ID_BASE,
+            position_manager_address=posm,
+            permit2_address=permit2,
+            key=pv_key,
+            sqrt_price_x96=sqrt_pv,
+            tick_lower=full_tick_lower,
+            tick_upper=full_tick_upper,
+            liquidity=liq_pv,
+            amount0_max=amount0_pv,
+            amount1_max=amount1_pv,
+            recipient=wallet_address,
+            from_address=wallet_address,
+            sign_callback=sign_callback,
+        )
+        pv_id = pool_id(pv_key)
+        pv_slot0 = await get_slot0(
+            chain_id=CHAIN_ID_BASE,
+            state_view_address=state_view,
+            pool_id_=pv_id,
+            block_identifier=pv_mint.get("block_number") or "latest",
+        )
+        logger.info(f"Seeded P/V poolId={pv_id} pos={pv_mint} slot0={pv_slot0}")
 
     # A/V: bootstrap at `price_v_per_agent` V per 1 A.
     a_decimals = await get_token_decimals(agent_token, CHAIN_ID_BASE)
@@ -503,6 +605,11 @@ async def _run_flow(
         tick_spacing=tick_spacing,
         hooks=hooks,
     )
+    av_tick_lower, av_tick_upper = _concentrated_ticks(
+        sqrt_price_x96=sqrt_av,
+        tick_spacing=tick_spacing,
+        width_ticks=int(av_width_ticks),
+    )
     # Seed A/V: `seed_agent` A + matching V at `price_v_per_agent`.
     seed_a_raw = _raw(seed_agent, a_decimals)
     seed_v_av_raw = _raw(Decimal(seed_agent) * Decimal(price_v_per_agent), v_decimals)
@@ -510,8 +617,8 @@ async def _run_flow(
     amount1_av = seed_v_av_raw if av_key[1].lower() == vault.address.lower() else seed_a_raw
     liq_av = _liq_for_full_range(
         sqrt_price_x96=sqrt_av,
-        tick_lower=tick_lower,
-        tick_upper=tick_upper,
+        tick_lower=av_tick_lower,
+        tick_upper=av_tick_upper,
         amount0=amount0_av,
         amount1=amount1_av,
     )
@@ -521,12 +628,12 @@ async def _run_flow(
         permit2_address=permit2,
         key=av_key,
         sqrt_price_x96=sqrt_av,
-        tick_lower=tick_lower,
-        tick_upper=tick_upper,
+        tick_lower=av_tick_lower,
+        tick_upper=av_tick_upper,
         liquidity=liq_av,
         amount0_max=amount0_av,
         amount1_max=amount1_av,
-        recipient=wallet_address,
+        recipient=locker.address,
         from_address=wallet_address,
         sign_callback=sign_callback,
     )
@@ -539,16 +646,44 @@ async def _run_flow(
     )
     logger.info(f"Seeded A/V poolId={av_id} pos={av_mint} slot0={av_slot0}")
 
-    # Register canonical pools and the agent market in PoolRegistry.
-    set_base_tx = await encode_call(
-        target=registry.address,
-        abi=registry.abi,
-        fn_name="setBasePools",
-        args=[pv_key, vu_key],
+    token_id = av_mint.get("token_id")
+    if token_id is None:
+        raise RuntimeError("A/V mint did not return token_id")
+
+    unlock_time = await _latest_timestamp(CHAIN_ID_BASE) + int(locker_unlock_days) * 86_400
+    reg_lock_tx = await encode_call(
+        target=locker.address,
+        abi=locker.abi,
+        fn_name="registerLock",
+        args=[
+            int(token_id),
+            av_key[0],
+            av_key[1],
+            locker_beneficiary,
+            int(unlock_time),
+            int(locker_fee_share_bps),
+            int(locker_early_exit_bps),
+        ],
         from_address=wallet_address,
         chain_id=CHAIN_ID_BASE,
     )
-    await send_transaction(set_base_tx, sign_callback, wait_for_receipt=True)
+    await send_transaction(reg_lock_tx, sign_callback, wait_for_receipt=True)
+    logger.info(
+        f"Registered A/V lock: tokenId={token_id} beneficiary={locker_beneficiary} "
+        f"unlockTime={unlock_time} feeShareBps={locker_fee_share_bps} earlyExitBps={locker_early_exit_bps}"
+    )
+
+    # Register canonical pools and the agent market in PoolRegistry.
+    if pv_key is not None and vu_key is not None:
+        set_base_tx = await encode_call(
+            target=registry.address,
+            abi=registry.abi,
+            fn_name="setBasePools",
+            args=[pv_key, vu_key],
+            from_address=wallet_address,
+            chain_id=CHAIN_ID_BASE,
+        )
+        await send_transaction(set_base_tx, sign_callback, wait_for_receipt=True)
 
     reg_agent_tx = await encode_call(
         target=registry.address,
@@ -571,9 +706,18 @@ async def main() -> int:
     parser.add_argument("--wallet-label", default="main")
     parser.add_argument("--fee", type=int, default=3000, help="Uniswap v4 LP fee (pips)")
     parser.add_argument("--deposit-usdc", default="500", help="USDC amount to deposit into the vault (mints V)")
-    parser.add_argument("--seed-usdc-vu", default="100", help="USDC amount to seed in the V/USDC pool")
-    parser.add_argument("--seed-prompt", default="1000", help="PROMPT amount to seed in the PROMPT/V pool")
+    parser.add_argument("--seed-usdc-vu", default="0", help="USDC amount to seed in the V/USDC pool (optional)")
+    parser.add_argument("--seed-prompt", default="0", help="PROMPT amount to seed in the PROMPT/V pool (optional)")
     parser.add_argument("--seed-agent", default="1000", help="Agent token amount to seed in the A/V pool")
+    parser.add_argument(
+        "--av-width-ticks",
+        default="6000",
+        help="Half-width (in ticks) for concentrated A/V liquidity around initial price",
+    )
+    parser.add_argument("--locker-unlock-days", default="90", help="LP NFT lock duration in days")
+    parser.add_argument("--locker-fee-share-bps", default="3000", help="Fee share to beneficiary (bps); rest to FeeVault")
+    parser.add_argument("--locker-early-exit-bps", default="5000", help="Penalty to FeeVault if exit before unlock (bps)")
+    parser.add_argument("--locker-beneficiary", default="", help="Address to receive beneficiary share / principal (default: wallet)")
     parser.add_argument("--price-v-per-prompt", default="0.01", help="Bootstrap price: V per 1 PROMPT")
     parser.add_argument("--price-v-per-agent", default="0.1", help="Bootstrap price: V per 1 Agent token")
     parser.add_argument("--price-usdc-per-v", default="1", help="Bootstrap price: USDC per 1 V")
@@ -604,6 +748,15 @@ async def main() -> int:
     seed_usdc_vu = Decimal(str(args.seed_usdc_vu))
     seed_prompt = Decimal(str(args.seed_prompt))
     seed_agent = Decimal(str(args.seed_agent))
+    av_width_ticks = int(args.av_width_ticks)
+    locker_unlock_days = int(args.locker_unlock_days)
+    locker_fee_share_bps = int(args.locker_fee_share_bps)
+    locker_early_exit_bps = int(args.locker_early_exit_bps)
+    locker_beneficiary = (
+        to_checksum_address(args.locker_beneficiary)
+        if args.locker_beneficiary
+        else wallet_address
+    )
     price_v_per_prompt = Decimal(str(args.price_v_per_prompt))
     price_v_per_agent = Decimal(str(args.price_v_per_agent))
     price_usdc_per_v = Decimal(str(args.price_usdc_per_v))
@@ -614,14 +767,26 @@ async def main() -> int:
 
         if price_v_per_prompt <= 0 or price_v_per_agent <= 0 or price_usdc_per_v <= 0:
             raise SystemExit("All --price-* values must be > 0")
-        if deposit_usdc <= 0 or seed_usdc_vu <= 0 or seed_prompt <= 0 or seed_agent <= 0:
-            raise SystemExit("All --deposit/--seed amounts must be > 0")
+        if deposit_usdc <= 0 or seed_agent <= 0:
+            raise SystemExit("--deposit-usdc and --seed-agent must be > 0")
+        if seed_usdc_vu < 0 or seed_prompt < 0:
+            raise SystemExit("--seed-usdc-vu and --seed-prompt must be >= 0")
+        if av_width_ticks <= 0:
+            raise SystemExit("--av-width-ticks must be > 0")
+        if locker_unlock_days < 0:
+            raise SystemExit("--locker-unlock-days must be >= 0")
+        if not (0 <= locker_fee_share_bps <= 10_000):
+            raise SystemExit("--locker-fee-share-bps must be 0..10000")
+        if not (0 <= locker_early_exit_bps <= 10_000):
+            raise SystemExit("--locker-early-exit-bps must be 0..10000")
 
-        v_needed = (
-            (seed_usdc_vu / price_usdc_per_v)
-            + (seed_prompt * price_v_per_prompt)
-            + (seed_agent * price_v_per_agent)
-        )
+        v_needed = Decimal(0)
+        if seed_usdc_vu > 0:
+            v_needed += seed_usdc_vu / price_usdc_per_v
+        if seed_prompt > 0:
+            v_needed += seed_prompt * price_v_per_prompt
+        if seed_agent > 0:
+            v_needed += seed_agent * price_v_per_agent
         if deposit_usdc < v_needed:
             raise SystemExit(
                 f"--deposit-usdc too small: need at least {v_needed} USDC deposited to mint enough V for seeding"
@@ -633,7 +798,7 @@ async def main() -> int:
         prompt_bal_raw = await get_token_balance(PROMPT_BASE, CHAIN_ID_BASE, wallet_address)
 
         usdc_needed_raw = _raw(deposit_usdc + seed_usdc_vu, usdc_decimals)
-        prompt_needed_raw = _raw(seed_prompt, prompt_decimals)
+        prompt_needed_raw = _raw(seed_prompt, prompt_decimals) if seed_prompt > 0 else 0
 
         if usdc_bal_raw < usdc_needed_raw:
             raise SystemExit(
@@ -641,7 +806,7 @@ async def main() -> int:
                 f"(raw={usdc_needed_raw}), have {_human(usdc_bal_raw, usdc_decimals)} "
                 f"(raw={usdc_bal_raw})"
             )
-        if prompt_bal_raw < prompt_needed_raw:
+        if seed_prompt > 0 and prompt_bal_raw < prompt_needed_raw:
             raise SystemExit(
                 f"Insufficient PROMPT: need {seed_prompt} "
                 f"(raw={prompt_needed_raw}), have {_human(prompt_bal_raw, prompt_decimals)} "
@@ -656,6 +821,11 @@ async def main() -> int:
             seed_usdc_vu=seed_usdc_vu,
             seed_prompt=seed_prompt,
             seed_agent=seed_agent,
+            av_width_ticks=av_width_ticks,
+            locker_unlock_days=locker_unlock_days,
+            locker_fee_share_bps=locker_fee_share_bps,
+            locker_early_exit_bps=locker_early_exit_bps,
+            locker_beneficiary=locker_beneficiary,
             price_v_per_prompt=price_v_per_prompt,
             price_v_per_agent=price_v_per_agent,
             price_usdc_per_v=price_usdc_per_v,
@@ -680,6 +850,11 @@ async def main() -> int:
             seed_usdc_vu=seed_usdc_vu,
             seed_prompt=seed_prompt,
             seed_agent=seed_agent,
+            av_width_ticks=av_width_ticks,
+            locker_unlock_days=locker_unlock_days,
+            locker_fee_share_bps=locker_fee_share_bps,
+            locker_early_exit_bps=locker_early_exit_bps,
+            locker_beneficiary=locker_beneficiary,
             price_v_per_prompt=price_v_per_prompt,
             price_v_per_agent=price_v_per_agent,
             price_usdc_per_v=price_usdc_per_v,
