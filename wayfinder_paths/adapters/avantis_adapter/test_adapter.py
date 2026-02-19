@@ -17,9 +17,7 @@ FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 
 @pytest.fixture
 def adapter():
-    return AvantisAdapter(
-        config={"strategy_wallet": {"address": FAKE_WALLET}}
-    )
+    return AvantisAdapter(config={"strategy_wallet": {"address": FAKE_WALLET}})
 
 
 @pytest.fixture
