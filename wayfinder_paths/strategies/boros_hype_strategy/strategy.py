@@ -271,7 +271,7 @@ class BorosHypeStrategy(
         self.boros_adapter = BorosAdapter(
             config=self._config,
             sign_callback=self._sign_callback,
-            user_address=user_address,
+            wallet_address=user_address,
         )
 
         self.hyperliquid_adapter = HyperliquidAdapter(

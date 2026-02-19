@@ -69,7 +69,7 @@ class BorosAdapter(BaseAdapter):
         config: dict[str, Any] | None = None,
         *,
         sign_callback: Callable | None = None,
-        user_address: str | None = None,
+        wallet_address: str | None = None,
         account_id: int = 0,
         **kwargs: Any,
     ) -> None:
@@ -80,13 +80,15 @@ class BorosAdapter(BaseAdapter):
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
 
-        self.user_address = to_checksum_address(user_address) if user_address else None
+        self.wallet_address = (
+            to_checksum_address(wallet_address) if wallet_address else None
+        )
         self.account_id = boros_cfg.get("account_id", account_id)
 
         self.boros_client = BorosClient(
             base_url=boros_cfg.get("base_url", "https://api.boros.finance"),
             endpoints=boros_cfg.get("endpoints"),
-            user_address=user_address,
+            user_address=wallet_address,
             account_id=self.account_id,
         )
 
@@ -324,7 +326,7 @@ class BorosAdapter(BaseAdapter):
                 "error": "sign_callback not configured",
                 "calldata": calldata,
             }
-        if not self.user_address:
+        if not self.wallet_address:
             return False, {"error": "user_address not configured", "calldata": calldata}
 
         # Check for calldatas array format (multiple transactions)
@@ -334,7 +336,7 @@ class BorosAdapter(BaseAdapter):
             for i, data in enumerate(calldatas):
                 single_calldata = {"data": data, "to": BOROS_ROUTER}
                 tx = self._build_tx_from_calldata(
-                    single_calldata, from_address=self.user_address
+                    single_calldata, from_address=self.wallet_address
                 )
                 logger.debug(
                     f"Broadcasting calldata {i + 1}/{len(calldatas)} to {tx.get('to')}"
@@ -363,7 +365,9 @@ class BorosAdapter(BaseAdapter):
         # Single calldata (standard format) with retry logic
         last_error = None
         for attempt in range(max_retries + 1):
-            tx = self._build_tx_from_calldata(calldata, from_address=self.user_address)
+            tx = self._build_tx_from_calldata(
+                calldata, from_address=self.wallet_address
+            )
             try:
                 tx_hash = await send_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
@@ -1195,7 +1199,7 @@ class BorosAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any]]:
         try:
             data = await self.boros_client.get_collaterals(
-                user_address=self.user_address,
+                user_address=self.wallet_address,
                 account_id=account_id,
             )
             return True, data
@@ -1311,7 +1315,7 @@ class BorosAdapter(BaseAdapter):
     ) -> tuple[bool, list[BorosLimitOrder]]:
         try:
             orders_raw = await self.boros_client.get_open_orders(
-                user_address=self.user_address, limit=limit
+                user_address=self.wallet_address, limit=limit
             )
 
             orders: list[BorosLimitOrder] = []
@@ -1637,7 +1641,7 @@ class BorosAdapter(BaseAdapter):
 
             cooldown_seconds: int | None = None
             cooldown_source = "unknown"
-            if self.user_address:
+            if self.wallet_address:
                 try:
                     async with web3_from_chain_id(self.chain_id) as web3:
                         market_hub = web3.eth.contract(
@@ -1646,7 +1650,7 @@ class BorosAdapter(BaseAdapter):
                         )
                         cooldown_seconds = int(
                             await market_hub.functions.getPersonalCooldown(
-                                to_checksum_address(self.user_address)
+                                to_checksum_address(self.wallet_address)
                             ).call()
                         )
                         cooldown_source = "onchain"
@@ -1718,7 +1722,7 @@ class BorosAdapter(BaseAdapter):
             # the actual ERC20 balance avoids these off-by-wei failures.
             try:
                 bal_raw_i = await get_token_balance(
-                    collateral_address, self.chain_id, self.user_address
+                    collateral_address, self.chain_id, self.wallet_address
                 )
                 if int(amount_wei) > bal_raw_i:
                     logger.warning(
@@ -1738,11 +1742,11 @@ class BorosAdapter(BaseAdapter):
                 token_id=token_id,
                 amount_wei=amount_wei,
                 market_id=market_id,
-                user_address=self.user_address,
+                user_address=self.wallet_address,
                 account_id=0,  # Cross margin
             )
 
-            if not self.sign_callback or not self.user_address:
+            if not self.sign_callback or not self.wallet_address:
                 return False, {
                     "error": "sign_callback or user_address not configured",
                     "calldata": calldata,
@@ -1759,7 +1763,7 @@ class BorosAdapter(BaseAdapter):
 
             try:
                 approve_tx = await build_approve_transaction(
-                    from_address=to_checksum_address(self.user_address),
+                    from_address=to_checksum_address(self.wallet_address),
                     chain_id=int(self.chain_id),
                     token_address=to_checksum_address(collateral_address),
                     spender_address=to_checksum_address(spender),
@@ -1844,7 +1848,7 @@ class BorosAdapter(BaseAdapter):
             calldata = await self.boros_client.build_withdraw_calldata(
                 token_id=token_id,
                 amount_wei=amount_native,  # API expects native decimals despite param name
-                user_address=self.user_address,
+                user_address=self.wallet_address,
                 account_id=account_id,
             )
 
@@ -1915,8 +1919,8 @@ class BorosAdapter(BaseAdapter):
         if not self.sign_callback:
             return False, {"error": "sign_callback not configured"}
 
-        sender = from_address or self.user_address
-        recipient = to_address or self.user_address
+        sender = from_address or self.wallet_address
+        recipient = to_address or self.wallet_address
         if not sender or not recipient:
             return False, {"error": "from_address/to_address not configured"}
 
@@ -2042,8 +2046,8 @@ class BorosAdapter(BaseAdapter):
         if not self.sign_callback:
             return False, {"error": "sign_callback not configured"}
 
-        sender = from_address or self.user_address
-        recipient = to_address or self.user_address
+        sender = from_address or self.wallet_address
+        recipient = to_address or self.wallet_address
         if not sender or not recipient:
             return False, {"error": "from_address/to_address not configured"}
 
@@ -2436,7 +2440,7 @@ class BorosAdapter(BaseAdapter):
             Tuple of (success, transaction result).
         """
         try:
-            dest_address = root_address or self.user_address
+            dest_address = root_address or self.wallet_address
             if not dest_address:
                 return False, {"error": "No destination address configured"}
 
@@ -2455,7 +2459,7 @@ class BorosAdapter(BaseAdapter):
 
             tx = {
                 "chainId": self.chain_id,
-                "from": to_checksum_address(self.user_address),
+                "from": to_checksum_address(self.wallet_address),
                 "to": to_checksum_address(BOROS_MARKET_HUB),
                 "data": data,
                 "value": 0,
@@ -2510,7 +2514,7 @@ class BorosAdapter(BaseAdapter):
 
         Falls back to local construction if API doesn't return marketAcc.
         """
-        if not self.user_address:
+        if not self.wallet_address:
             raise ValueError("user_address not configured")
 
         # Try to get marketAcc from API (preferred)
@@ -2534,9 +2538,9 @@ class BorosAdapter(BaseAdapter):
         # Fallback: build locally
         # MarketAcc = address(20) | accountId(1) | tokenId(2) | marketId(3)
         addr = (
-            self.user_address[2:]
-            if self.user_address.startswith("0x")
-            else self.user_address
+            self.wallet_address[2:]
+            if self.wallet_address.startswith("0x")
+            else self.wallet_address
         )
         account_hex = format(self.account_id, "02x")
         token_hex = format(token_id, "04x")

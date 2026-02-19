@@ -35,7 +35,7 @@ class TestBorosAdapter:
         ):
             adapter = BorosAdapter(
                 config=mock_config,
-                user_address="0x1234567890123456789012345678901234567890",
+                wallet_address="0x1234567890123456789012345678901234567890",
             )
             adapter.boros_client = mock_boros_client
             return adapter
@@ -647,8 +647,8 @@ class TestBorosAdapter:
             ok, res = await adapter.bridge_hype_oft_hyperevm_to_arbitrum(
                 amount_wei=123,
                 max_value_wei=1000,
-                to_address=adapter.user_address,
-                from_address=adapter.user_address,
+                to_address=adapter.wallet_address,
+                from_address=adapter.wallet_address,
             )
 
         assert ok is True
@@ -705,8 +705,8 @@ class TestBorosAdapter:
             ok, res = await adapter.bridge_hype_oft_arbitrum_to_hyperevm(
                 amount_wei=123,
                 max_fee_wei=1000,
-                to_address=adapter.user_address,
-                from_address=adapter.user_address,
+                to_address=adapter.wallet_address,
+                from_address=adapter.wallet_address,
             )
 
         assert ok is True
