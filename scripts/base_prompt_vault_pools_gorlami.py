@@ -5,6 +5,7 @@ import argparse
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
+import math
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,8 @@ from loguru import logger
 
 from wayfinder_paths.core.constants.contracts import (
     BASE_USDC,
-    UNISWAP_V4_POOL_MANAGER,
+    PERMIT2,
+    UNISWAP_V4_POSITION_MANAGER,
     UNISWAP_V4_STATE_VIEW,
 )
 from wayfinder_paths.core.utils.contracts import deploy_contract
@@ -25,11 +27,15 @@ from wayfinder_paths.core.utils.tokens import (
     get_token_decimals,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.uniswap_v3_math import price_to_sqrt_price_x96
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    liq_for_amounts,
+    price_to_sqrt_price_x96,
+    sqrt_price_x96_from_tick,
+)
 from wayfinder_paths.core.utils.uniswap_v4_deploy import (
     build_pool_key,
     get_slot0,
-    initialize_pool,
+    posm_initialize_and_mint,
     pool_id,
     sort_currencies,
 )
@@ -39,10 +45,16 @@ from wayfinder_paths.mcp.utils import find_wallet_by_label
 CHAIN_ID_BASE = 8453
 PROMPT_BASE = to_checksum_address("0x30c7235866872213f68cb1f08c37cb9eccb93452")
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+MIN_TICK = -887272
+MAX_TICK = 887272
 
 
 def _raw(amount: str | int | Decimal, decimals: int) -> int:
     return int(Decimal(str(amount)) * (Decimal(10) ** int(decimals)))
+
+
+def _human(amount_raw: int, decimals: int) -> Decimal:
+    return Decimal(int(amount_raw)) / (Decimal(10) ** int(decimals))
 
 
 def _make_sign_callback(private_key: str):
@@ -84,6 +96,20 @@ def _sqrt_price_for_pair(
         dec0, dec1 = decimals_b, decimals_a
     return price_to_sqrt_price_x96(price_1_per_0, dec0, dec1)
 
+def _full_range_ticks(tick_spacing: int) -> tuple[int, int]:
+    # Mirror Solidity's int24 division behavior (truncate toward 0).
+    lower = math.trunc(MIN_TICK / tick_spacing) * tick_spacing
+    upper = math.trunc(MAX_TICK / tick_spacing) * tick_spacing
+    return int(lower), int(upper)
+
+
+def _liq_for_full_range(
+    *, sqrt_price_x96: int, tick_lower: int, tick_upper: int, amount0: int, amount1: int
+) -> int:
+    sqrt_a = sqrt_price_x96_from_tick(int(tick_lower))
+    sqrt_b = sqrt_price_x96_from_tick(int(tick_upper))
+    return int(liq_for_amounts(int(sqrt_price_x96), int(sqrt_a), int(sqrt_b), int(amount0), int(amount1)))
+
 
 @dataclass(frozen=True)
 class DeployedContract:
@@ -120,6 +146,308 @@ async def _deploy_from_file(
         abi=result["abi"],
     )
 
+async def _run_flow(
+    *,
+    wallet_address: str,
+    sign_callback,
+    fee: int,
+    deposit_usdc: Decimal,
+    seed_usdc_vu: Decimal,
+    seed_prompt: Decimal,
+    seed_agent: Decimal,
+    price_v_per_prompt: Decimal,
+    price_v_per_agent: Decimal,
+    price_usdc_per_v: Decimal,
+) -> int:
+    posm = UNISWAP_V4_POSITION_MANAGER[CHAIN_ID_BASE]
+    state_view = UNISWAP_V4_STATE_VIEW[CHAIN_ID_BASE]
+    permit2 = PERMIT2[CHAIN_ID_BASE]
+
+    async with web3_from_chain_id(CHAIN_ID_BASE) as w3:
+        code = await w3.eth.get_code(PROMPT_BASE)
+        if not code:
+            raise RuntimeError(f"PROMPT contract not found on Base: {PROMPT_BASE}")
+
+    prompt_decimals = await get_token_decimals(PROMPT_BASE, CHAIN_ID_BASE)
+    usdc_decimals = await get_token_decimals(BASE_USDC, CHAIN_ID_BASE)
+    logger.info(f"PROMPT decimals={prompt_decimals} USDC decimals={usdc_decimals}")
+
+    fee_vault = await _deploy_from_file(
+        rel_path="contracts/ecosystem/FeeVault.sol",
+        contract_name="FeeVault",
+        constructor_args=[wallet_address],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+        sign_callback=sign_callback,
+    )
+    logger.info(f"FeeVault: {fee_vault.address}")
+
+    vault = await _deploy_from_file(
+        rel_path="contracts/ecosystem/WayfinderVault4626.sol",
+        contract_name="WayfinderVault4626",
+        constructor_args=[
+            BASE_USDC,
+            "Wayfinder Vault Share",
+            "wfV",
+            wallet_address,
+        ],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+        sign_callback=sign_callback,
+    )
+    logger.info(f"Vault (V): {vault.address}")
+
+    v_decimals = await get_token_decimals(vault.address, CHAIN_ID_BASE)
+    logger.info(f"V decimals={v_decimals}")
+
+    factory_ct = await _deploy_from_file(
+        rel_path="contracts/agents/AgentTokenFactory.sol",
+        contract_name="AgentTokenFactory",
+        constructor_args=[wallet_address],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+        sign_callback=sign_callback,
+    )
+    logger.info(f"AgentTokenFactory: {factory_ct.address}")
+
+    agent_supply = _raw("1000000", 18)
+    create_tx = await encode_call(
+        target=factory_ct.address,
+        abi=factory_ct.abi,
+        fn_name="createAgentToken",
+        args=[
+            "Agent One",
+            "AG1",
+            wallet_address,
+            int(agent_supply),
+            wallet_address,
+        ],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+    )
+    create_hash = await send_transaction(create_tx, sign_callback, wait_for_receipt=True)
+    async with web3_from_chain_id(CHAIN_ID_BASE) as w3:
+        receipt = await w3.eth.get_transaction_receipt(create_hash)
+        factory_contract = w3.eth.contract(address=factory_ct.address, abi=factory_ct.abi)
+        evs = factory_contract.events.AgentTokenCreated().process_receipt(receipt)
+        if not evs:
+            raise RuntimeError("AgentTokenCreated event not found in receipt")
+        agent_token = to_checksum_address(evs[0]["args"]["token"])
+
+    logger.info(f"Agent token (A): {agent_token}")
+
+    # Mint V shares by depositing USDC into the vault.
+    deposit_usdc_raw = _raw(deposit_usdc, usdc_decimals)
+    await ensure_allowance(
+        token_address=BASE_USDC,
+        owner=wallet_address,
+        spender=vault.address,
+        amount=int(deposit_usdc_raw),
+        chain_id=CHAIN_ID_BASE,
+        signing_callback=sign_callback,
+        approval_amount=int(deposit_usdc_raw),
+    )
+    deposit_tx = await encode_call(
+        target=vault.address,
+        abi=vault.abi,
+        fn_name="deposit",
+        args=[int(deposit_usdc_raw), wallet_address],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+    )
+    await send_transaction(deposit_tx, sign_callback, wait_for_receipt=True)
+
+    v_bal = await get_token_balance(vault.address, CHAIN_ID_BASE, wallet_address)
+    usdc_bal = await get_token_balance(BASE_USDC, CHAIN_ID_BASE, wallet_address)
+    prompt_bal = await get_token_balance(PROMPT_BASE, CHAIN_ID_BASE, wallet_address)
+    logger.info(
+        f"Balances after deposit: V={v_bal} USDC={usdc_bal} PROMPT={prompt_bal}"
+    )
+
+    # --- Uniswap v4 pools (initialize + seed liquidity) ---
+    tick_spacing = 60
+    hooks = ZERO_ADDRESS
+
+    registry = await _deploy_from_file(
+        rel_path="contracts/ecosystem/PoolRegistry.sol",
+        contract_name="PoolRegistry",
+        constructor_args=[wallet_address, PROMPT_BASE, vault.address, BASE_USDC],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+        sign_callback=sign_callback,
+    )
+    logger.info(f"PoolRegistry: {registry.address}")
+
+    tick_lower, tick_upper = _full_range_ticks(tick_spacing)
+
+    # V/U: `price_usdc_per_v` USDC per 1 V (V shares are ERC20 at the vault address)
+    sqrt_vu = _sqrt_price_for_pair(
+        token_a=vault.address,
+        token_b=BASE_USDC,
+        price_b_per_a=price_usdc_per_v,
+        decimals_a=v_decimals,
+        decimals_b=usdc_decimals,
+    )
+    vu_key = build_pool_key(
+        currency_a=vault.address,
+        currency_b=BASE_USDC,
+        fee=fee,
+        tick_spacing=tick_spacing,
+        hooks=hooks,
+    )
+    # Seed V/U: `seed_usdc_vu` USDC + matching V at `price_usdc_per_v`.
+    seed_u_raw = _raw(seed_usdc_vu, usdc_decimals)
+    seed_v_human = (
+        (Decimal(seed_usdc_vu) / Decimal(price_usdc_per_v))
+        if price_usdc_per_v != 0
+        else Decimal(0)
+    )
+    seed_v_raw = _raw(seed_v_human, v_decimals)
+    amount0_vu = seed_v_raw if vu_key[0].lower() == vault.address.lower() else seed_u_raw
+    amount1_vu = seed_u_raw if vu_key[1].lower() == BASE_USDC.lower() else seed_v_raw
+    liq_vu = _liq_for_full_range(
+        sqrt_price_x96=sqrt_vu,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        amount0=amount0_vu,
+        amount1=amount1_vu,
+    )
+    vu_mint = await posm_initialize_and_mint(
+        chain_id=CHAIN_ID_BASE,
+        position_manager_address=posm,
+        permit2_address=permit2,
+        key=vu_key,
+        sqrt_price_x96=sqrt_vu,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        liquidity=liq_vu,
+        amount0_max=amount0_vu,
+        amount1_max=amount1_vu,
+        recipient=wallet_address,
+        from_address=wallet_address,
+        sign_callback=sign_callback,
+    )
+    vu_id = pool_id(vu_key)
+    vu_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=vu_id)
+    logger.info(f"Seeded V/U poolId={vu_id} pos={vu_mint} slot0={vu_slot0}")
+
+    # P/V: bootstrap at `price_v_per_prompt` V per 1 PROMPT.
+    sqrt_pv = _sqrt_price_for_pair(
+        token_a=PROMPT_BASE,
+        token_b=vault.address,
+        price_b_per_a=price_v_per_prompt,
+        decimals_a=prompt_decimals,
+        decimals_b=v_decimals,
+    )
+    pv_key = build_pool_key(
+        currency_a=PROMPT_BASE,
+        currency_b=vault.address,
+        fee=fee,
+        tick_spacing=tick_spacing,
+        hooks=hooks,
+    )
+    # Seed P/V: `seed_prompt` PROMPT + matching V at `price_v_per_prompt`.
+    seed_p_raw = _raw(seed_prompt, prompt_decimals)
+    seed_v_pv_raw = _raw(Decimal(seed_prompt) * Decimal(price_v_per_prompt), v_decimals)
+    amount0_pv = seed_p_raw if pv_key[0].lower() == PROMPT_BASE.lower() else seed_v_pv_raw
+    amount1_pv = seed_v_pv_raw if pv_key[1].lower() == vault.address.lower() else seed_p_raw
+    liq_pv = _liq_for_full_range(
+        sqrt_price_x96=sqrt_pv,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        amount0=amount0_pv,
+        amount1=amount1_pv,
+    )
+    pv_mint = await posm_initialize_and_mint(
+        chain_id=CHAIN_ID_BASE,
+        position_manager_address=posm,
+        permit2_address=permit2,
+        key=pv_key,
+        sqrt_price_x96=sqrt_pv,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        liquidity=liq_pv,
+        amount0_max=amount0_pv,
+        amount1_max=amount1_pv,
+        recipient=wallet_address,
+        from_address=wallet_address,
+        sign_callback=sign_callback,
+    )
+    pv_id = pool_id(pv_key)
+    pv_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=pv_id)
+    logger.info(f"Seeded P/V poolId={pv_id} pos={pv_mint} slot0={pv_slot0}")
+
+    # A/V: bootstrap at `price_v_per_agent` V per 1 A.
+    a_decimals = await get_token_decimals(agent_token, CHAIN_ID_BASE)
+    sqrt_av = _sqrt_price_for_pair(
+        token_a=agent_token,
+        token_b=vault.address,
+        price_b_per_a=price_v_per_agent,
+        decimals_a=a_decimals,
+        decimals_b=v_decimals,
+    )
+    av_key = build_pool_key(
+        currency_a=agent_token,
+        currency_b=vault.address,
+        fee=fee,
+        tick_spacing=tick_spacing,
+        hooks=hooks,
+    )
+    # Seed A/V: `seed_agent` A + matching V at `price_v_per_agent`.
+    seed_a_raw = _raw(seed_agent, a_decimals)
+    seed_v_av_raw = _raw(Decimal(seed_agent) * Decimal(price_v_per_agent), v_decimals)
+    amount0_av = seed_a_raw if av_key[0].lower() == agent_token.lower() else seed_v_av_raw
+    amount1_av = seed_v_av_raw if av_key[1].lower() == vault.address.lower() else seed_a_raw
+    liq_av = _liq_for_full_range(
+        sqrt_price_x96=sqrt_av,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        amount0=amount0_av,
+        amount1=amount1_av,
+    )
+    av_mint = await posm_initialize_and_mint(
+        chain_id=CHAIN_ID_BASE,
+        position_manager_address=posm,
+        permit2_address=permit2,
+        key=av_key,
+        sqrt_price_x96=sqrt_av,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        liquidity=liq_av,
+        amount0_max=amount0_av,
+        amount1_max=amount1_av,
+        recipient=wallet_address,
+        from_address=wallet_address,
+        sign_callback=sign_callback,
+    )
+    av_id = pool_id(av_key)
+    av_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=av_id)
+    logger.info(f"Seeded A/V poolId={av_id} pos={av_mint} slot0={av_slot0}")
+
+    # Register canonical pools and the agent market in PoolRegistry.
+    set_base_tx = await encode_call(
+        target=registry.address,
+        abi=registry.abi,
+        fn_name="setBasePools",
+        args=[pv_key, vu_key],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+    )
+    await send_transaction(set_base_tx, sign_callback, wait_for_receipt=True)
+
+    reg_agent_tx = await encode_call(
+        target=registry.address,
+        abi=registry.abi,
+        fn_name="registerAgentPool",
+        args=[agent_token, av_key],
+        from_address=wallet_address,
+        chain_id=CHAIN_ID_BASE,
+    )
+    await send_transaction(reg_agent_tx, sign_callback, wait_for_receipt=True)
+
+    logger.info("Dry-run complete.")
+    return 0
+
 
 async def main() -> int:
     parser = argparse.ArgumentParser(
@@ -127,6 +455,23 @@ async def main() -> int:
     )
     parser.add_argument("--wallet-label", default="main")
     parser.add_argument("--fee", type=int, default=3000, help="Uniswap v4 LP fee (pips)")
+    parser.add_argument("--deposit-usdc", default="500", help="USDC amount to deposit into the vault (mints V)")
+    parser.add_argument("--seed-usdc-vu", default="100", help="USDC amount to seed in the V/USDC pool")
+    parser.add_argument("--seed-prompt", default="1000", help="PROMPT amount to seed in the PROMPT/V pool")
+    parser.add_argument("--seed-agent", default="1000", help="Agent token amount to seed in the A/V pool")
+    parser.add_argument("--price-v-per-prompt", default="0.01", help="Bootstrap price: V per 1 PROMPT")
+    parser.add_argument("--price-v-per-agent", default="0.1", help="Bootstrap price: V per 1 Agent token")
+    parser.add_argument("--price-usdc-per-v", default="1", help="Bootstrap price: USDC per 1 V")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="Deploy to Base mainnet (no fork). Requires real funds.",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Required with --live to confirm you want to broadcast real transactions.",
+    )
     args = parser.parse_args()
 
     wallet = find_wallet_by_label(args.wallet_label)
@@ -140,8 +485,66 @@ async def main() -> int:
 
     sign_callback = _make_sign_callback(private_key)
 
-    pool_manager = UNISWAP_V4_POOL_MANAGER[CHAIN_ID_BASE]
-    state_view = UNISWAP_V4_STATE_VIEW[CHAIN_ID_BASE]
+    deposit_usdc = Decimal(str(args.deposit_usdc))
+    seed_usdc_vu = Decimal(str(args.seed_usdc_vu))
+    seed_prompt = Decimal(str(args.seed_prompt))
+    seed_agent = Decimal(str(args.seed_agent))
+    price_v_per_prompt = Decimal(str(args.price_v_per_prompt))
+    price_v_per_agent = Decimal(str(args.price_v_per_agent))
+    price_usdc_per_v = Decimal(str(args.price_usdc_per_v))
+
+    if args.live:
+        if not args.yes:
+            raise SystemExit("--live requires --yes to confirm broadcasting real transactions")
+
+        if price_v_per_prompt <= 0 or price_v_per_agent <= 0 or price_usdc_per_v <= 0:
+            raise SystemExit("All --price-* values must be > 0")
+        if deposit_usdc <= 0 or seed_usdc_vu <= 0 or seed_prompt <= 0 or seed_agent <= 0:
+            raise SystemExit("All --deposit/--seed amounts must be > 0")
+
+        v_needed = (
+            (seed_usdc_vu / price_usdc_per_v)
+            + (seed_prompt * price_v_per_prompt)
+            + (seed_agent * price_v_per_agent)
+        )
+        if deposit_usdc < v_needed:
+            raise SystemExit(
+                f"--deposit-usdc too small: need at least {v_needed} USDC deposited to mint enough V for seeding"
+            )
+
+        usdc_decimals = await get_token_decimals(BASE_USDC, CHAIN_ID_BASE)
+        prompt_decimals = await get_token_decimals(PROMPT_BASE, CHAIN_ID_BASE)
+        usdc_bal_raw = await get_token_balance(BASE_USDC, CHAIN_ID_BASE, wallet_address)
+        prompt_bal_raw = await get_token_balance(PROMPT_BASE, CHAIN_ID_BASE, wallet_address)
+
+        usdc_needed_raw = _raw(deposit_usdc + seed_usdc_vu, usdc_decimals)
+        prompt_needed_raw = _raw(seed_prompt, prompt_decimals)
+
+        if usdc_bal_raw < usdc_needed_raw:
+            raise SystemExit(
+                f"Insufficient USDC: need {deposit_usdc + seed_usdc_vu} "
+                f"(raw={usdc_needed_raw}), have {_human(usdc_bal_raw, usdc_decimals)} "
+                f"(raw={usdc_bal_raw})"
+            )
+        if prompt_bal_raw < prompt_needed_raw:
+            raise SystemExit(
+                f"Insufficient PROMPT: need {seed_prompt} "
+                f"(raw={prompt_needed_raw}), have {_human(prompt_bal_raw, prompt_decimals)} "
+                f"(raw={prompt_bal_raw})"
+            )
+
+        return await _run_flow(
+            wallet_address=wallet_address,
+            sign_callback=sign_callback,
+            fee=int(args.fee),
+            deposit_usdc=deposit_usdc,
+            seed_usdc_vu=seed_usdc_vu,
+            seed_prompt=seed_prompt,
+            seed_agent=seed_agent,
+            price_v_per_prompt=price_v_per_prompt,
+            price_v_per_agent=price_v_per_agent,
+            price_usdc_per_v=price_usdc_per_v,
+        )
 
     logger.info("Creating Base fork (Gorlami)...")
     async with gorlami_fork(
@@ -154,234 +557,18 @@ async def main() -> int:
         ],
     ) as (_client, fork_info):
         logger.info(f"Fork RPC: {fork_info.get('rpc_url')}")
-
-        async with web3_from_chain_id(CHAIN_ID_BASE) as w3:
-            code = await w3.eth.get_code(PROMPT_BASE)
-            if not code:
-                raise RuntimeError(
-                    f"PROMPT contract not found on Base: {PROMPT_BASE}"
-                )
-
-        prompt_decimals = await get_token_decimals(PROMPT_BASE, CHAIN_ID_BASE)
-        usdc_decimals = await get_token_decimals(BASE_USDC, CHAIN_ID_BASE)
-
-        logger.info(f"PROMPT decimals={prompt_decimals} USDC decimals={usdc_decimals}")
-
-        fee_vault = await _deploy_from_file(
-            rel_path="contracts/ecosystem/FeeVault.sol",
-            contract_name="FeeVault",
-            constructor_args=[wallet_address],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
+        return await _run_flow(
+            wallet_address=wallet_address,
             sign_callback=sign_callback,
+            fee=int(args.fee),
+            deposit_usdc=deposit_usdc,
+            seed_usdc_vu=seed_usdc_vu,
+            seed_prompt=seed_prompt,
+            seed_agent=seed_agent,
+            price_v_per_prompt=price_v_per_prompt,
+            price_v_per_agent=price_v_per_agent,
+            price_usdc_per_v=price_usdc_per_v,
         )
-        logger.info(f"FeeVault: {fee_vault.address}")
-
-        vault = await _deploy_from_file(
-            rel_path="contracts/ecosystem/WayfinderVault4626.sol",
-            contract_name="WayfinderVault4626",
-            constructor_args=[
-                BASE_USDC,
-                "Wayfinder Vault Share",
-                "wfV",
-                wallet_address,
-            ],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-            sign_callback=sign_callback,
-        )
-        logger.info(f"Vault (V): {vault.address}")
-
-        v_decimals = await get_token_decimals(vault.address, CHAIN_ID_BASE)
-        logger.info(f"V decimals={v_decimals}")
-
-        factory_ct = await _deploy_from_file(
-            rel_path="contracts/agents/AgentTokenFactory.sol",
-            contract_name="AgentTokenFactory",
-            constructor_args=[wallet_address],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-            sign_callback=sign_callback,
-        )
-        logger.info(f"AgentTokenFactory: {factory_ct.address}")
-
-        agent_supply = _raw("1000000", 18)
-        create_tx = await encode_call(
-            target=factory_ct.address,
-            abi=factory_ct.abi,
-            fn_name="createAgentToken",
-            args=[
-                "Agent One",
-                "AG1",
-                wallet_address,
-                int(agent_supply),
-                wallet_address,
-            ],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-        )
-        create_hash = await send_transaction(create_tx, sign_callback, wait_for_receipt=True)
-        async with web3_from_chain_id(CHAIN_ID_BASE) as w3:
-            receipt = await w3.eth.get_transaction_receipt(create_hash)
-            factory_contract = w3.eth.contract(address=factory_ct.address, abi=factory_ct.abi)
-            evs = factory_contract.events.AgentTokenCreated().process_receipt(receipt)
-            if not evs:
-                raise RuntimeError("AgentTokenCreated event not found in receipt")
-            agent_token = to_checksum_address(evs[0]["args"]["token"])
-
-        logger.info(f"Agent token (A): {agent_token}")
-
-        # Mint V shares by depositing USDC into the vault.
-        deposit_usdc = _raw("500000", usdc_decimals)
-        await ensure_allowance(
-            token_address=BASE_USDC,
-            owner=wallet_address,
-            spender=vault.address,
-            amount=int(deposit_usdc),
-            chain_id=CHAIN_ID_BASE,
-            signing_callback=sign_callback,
-            approval_amount=int(deposit_usdc),
-        )
-        deposit_tx = await encode_call(
-            target=vault.address,
-            abi=vault.abi,
-            fn_name="deposit",
-            args=[int(deposit_usdc), wallet_address],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-        )
-        await send_transaction(deposit_tx, sign_callback, wait_for_receipt=True)
-
-        v_bal = await get_token_balance(vault.address, CHAIN_ID_BASE, wallet_address)
-        usdc_bal = await get_token_balance(BASE_USDC, CHAIN_ID_BASE, wallet_address)
-        prompt_bal = await get_token_balance(PROMPT_BASE, CHAIN_ID_BASE, wallet_address)
-        logger.info(
-            f"Balances after deposit: V={v_bal} USDC={usdc_bal} PROMPT={prompt_bal}"
-        )
-
-        # --- Uniswap v4 pools (initialize only) ---
-        fee = int(args.fee)
-        tick_spacing = 60
-        hooks = ZERO_ADDRESS
-
-        if CHAIN_ID_BASE not in UNISWAP_V4_POOL_MANAGER or CHAIN_ID_BASE not in UNISWAP_V4_STATE_VIEW:
-            raise RuntimeError("Missing Uniswap v4 addresses for Base in constants")
-
-        registry = await _deploy_from_file(
-            rel_path="contracts/ecosystem/PoolRegistry.sol",
-            contract_name="PoolRegistry",
-            constructor_args=[wallet_address, PROMPT_BASE, vault.address, BASE_USDC],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-            sign_callback=sign_callback,
-        )
-        logger.info(f"PoolRegistry: {registry.address}")
-
-        # V/U: 1 V ~= 1 USDC (V shares are ERC20 at the vault address)
-        sqrt_vu = _sqrt_price_for_pair(
-            token_a=vault.address,
-            token_b=BASE_USDC,
-            price_b_per_a=Decimal(1),
-            decimals_a=v_decimals,
-            decimals_b=usdc_decimals,
-        )
-        vu_key = build_pool_key(
-            currency_a=vault.address,
-            currency_b=BASE_USDC,
-            fee=fee,
-            tick_spacing=tick_spacing,
-            hooks=hooks,
-        )
-        vu_hash = await initialize_pool(
-            chain_id=CHAIN_ID_BASE,
-            pool_manager_address=pool_manager,
-            key=vu_key,
-            sqrt_price_x96=sqrt_vu,
-            from_address=wallet_address,
-            sign_callback=sign_callback,
-        )
-        vu_id = pool_id(vu_key)
-        vu_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=vu_id)
-        logger.info(f"Initialized V/U poolId={vu_id} tx={vu_hash} slot0={vu_slot0}")
-
-        # P/V: set 1 PROMPT = 0.01 V for bootstrap
-        sqrt_pv = _sqrt_price_for_pair(
-            token_a=PROMPT_BASE,
-            token_b=vault.address,
-            price_b_per_a=Decimal("0.01"),
-            decimals_a=prompt_decimals,
-            decimals_b=v_decimals,
-        )
-        pv_key = build_pool_key(
-            currency_a=PROMPT_BASE,
-            currency_b=vault.address,
-            fee=fee,
-            tick_spacing=tick_spacing,
-            hooks=hooks,
-        )
-        pv_hash = await initialize_pool(
-            chain_id=CHAIN_ID_BASE,
-            pool_manager_address=pool_manager,
-            key=pv_key,
-            sqrt_price_x96=sqrt_pv,
-            from_address=wallet_address,
-            sign_callback=sign_callback,
-        )
-        pv_id = pool_id(pv_key)
-        pv_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=pv_id)
-        logger.info(f"Initialized P/V poolId={pv_id} tx={pv_hash} slot0={pv_slot0}")
-
-        # A/V: set 1 A = 0.1 V for bootstrap
-        a_decimals = await get_token_decimals(agent_token, CHAIN_ID_BASE)
-        sqrt_av = _sqrt_price_for_pair(
-            token_a=agent_token,
-            token_b=vault.address,
-            price_b_per_a=Decimal("0.1"),
-            decimals_a=a_decimals,
-            decimals_b=v_decimals,
-        )
-        av_key = build_pool_key(
-            currency_a=agent_token,
-            currency_b=vault.address,
-            fee=fee,
-            tick_spacing=tick_spacing,
-            hooks=hooks,
-        )
-        av_hash = await initialize_pool(
-            chain_id=CHAIN_ID_BASE,
-            pool_manager_address=pool_manager,
-            key=av_key,
-            sqrt_price_x96=sqrt_av,
-            from_address=wallet_address,
-            sign_callback=sign_callback,
-        )
-        av_id = pool_id(av_key)
-        av_slot0 = await get_slot0(chain_id=CHAIN_ID_BASE, state_view_address=state_view, pool_id_=av_id)
-        logger.info(f"Initialized A/V poolId={av_id} tx={av_hash} slot0={av_slot0}")
-
-        # Register canonical pools and the agent market in PoolRegistry.
-        set_base_tx = await encode_call(
-            target=registry.address,
-            abi=registry.abi,
-            fn_name="setBasePools",
-            args=[pv_key, vu_key],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-        )
-        await send_transaction(set_base_tx, sign_callback, wait_for_receipt=True)
-
-        reg_agent_tx = await encode_call(
-            target=registry.address,
-            abi=registry.abi,
-            fn_name="registerAgentPool",
-            args=[agent_token, av_key],
-            from_address=wallet_address,
-            chain_id=CHAIN_ID_BASE,
-        )
-        await send_transaction(reg_agent_tx, sign_callback, wait_for_receipt=True)
-
-        logger.info("Dry-run complete.")
-        return 0
 
 
 if __name__ == "__main__":

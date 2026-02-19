@@ -76,6 +76,11 @@ UNISWAP_V4_QUOTER: dict[int, str] = {
     8453: to_checksum_address("0x0d5e0f971ed27fbff6c2837bf31316121532048d"),  # Base
 }
 
+# Permit2 (Uniswap) - typically deployed at the same address on many EVM chains
+PERMIT2: dict[int, str] = {
+    8453: to_checksum_address("0x000000000022D473030F116dDEE9F6B43aC78BA3"),  # Base
+}
+
 ARBITRUM_USDC = to_checksum_address("0xaf88d065e77c8cC2239327C5EDb3A432268e5831")
 ARBITRUM_WETH = to_checksum_address("0x82af49447d8a07e3bd95bd0d56f35241523fbab1")
 
