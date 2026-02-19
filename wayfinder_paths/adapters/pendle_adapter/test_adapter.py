@@ -206,7 +206,7 @@ class TestPendleAdapter:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         adapter = PendleAdapter(
-            config={"strategy_wallet": {"address": "0x" + "a" * 40}},
+            config={}, wallet_address="0x" + "a" * 40,
             client=client,
             base_url="https://api-v2.pendle.finance/core",
         )
@@ -282,8 +282,8 @@ class TestPendleAdapter:
         signing_callback = AsyncMock(return_value=b"\x00" * 65)
 
         adapter = PendleAdapter(
-            config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=signing_callback,
+            config={}, wallet_address="0x" + "a" * 40,
+            sign_callback=signing_callback,
         )
 
         adapter.sdk_convert_v2 = AsyncMock(
@@ -484,8 +484,8 @@ class TestPendleAdapter:
         token_in_addr = "0x" + "c" * 40
 
         adapter = PendleAdapter(
-            config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=signing_callback,
+            config={}, wallet_address="0x" + "a" * 40,
+            sign_callback=signing_callback,
         )
 
         # Mock sdk_swap_v2 to return a valid quote
@@ -529,8 +529,8 @@ class TestPendleAdapter:
     async def test_execute_swap_quote_fails(self):
         """Test swap fails when quote returns invalid tx."""
         adapter = PendleAdapter(
-            config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=AsyncMock(),
+            config={}, wallet_address="0x" + "a" * 40,
+            sign_callback=AsyncMock(),
         )
 
         adapter.sdk_swap_v2 = AsyncMock(
@@ -556,8 +556,8 @@ class TestPendleAdapter:
         token_in_addr = "0x" + "c" * 40
 
         adapter = PendleAdapter(
-            config={"strategy_wallet": {"address": "0x" + "a" * 40}},
-            strategy_wallet_signing_callback=AsyncMock(return_value=b"\x00" * 65),
+            config={}, wallet_address="0x" + "a" * 40,
+            sign_callback=AsyncMock(return_value=b"\x00" * 65),
         )
 
         adapter.sdk_swap_v2 = AsyncMock(
@@ -593,7 +593,7 @@ class TestPendleAdapter:
         token_in_addr = "0x" + "c" * 40
 
         adapter = PendleAdapter(
-            config={"strategy_wallet": {"address": "0x" + "a" * 40}},
+            config={}, wallet_address="0x" + "a" * 40,
             # No signing callback
         )
 
@@ -616,17 +616,17 @@ class TestPendleAdapter:
 
         assert success is False
         assert result["stage"] == "approval"
-        assert "strategy_wallet_signing_callback" in result["details"]["error"]
+        assert "sign_callback" in result["details"]["error"]
 
     @pytest.mark.asyncio
     async def test_execute_swap_requires_strategy_wallet(self):
         """Test swap fails without strategy_wallet address."""
         adapter = PendleAdapter(
             config={},  # No strategy_wallet
-            strategy_wallet_signing_callback=AsyncMock(),
+            sign_callback=AsyncMock(),
         )
 
-        with pytest.raises(ValueError, match="strategy_wallet address is required"):
+        with pytest.raises(ValueError, match="wallet_address is required"):
             await adapter.execute_swap(
                 chain="arbitrum",
                 market_address="0xMarket",

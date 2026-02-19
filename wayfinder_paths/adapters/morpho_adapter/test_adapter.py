@@ -13,12 +13,9 @@ from wayfinder_paths.core.constants.morpho_constants import MERKL_DISTRIBUTOR_AD
 @pytest.fixture
 def adapter():
     return MorphoAdapter(
-        config={
-            "strategy_wallet": {
-                "address": "0x81830bC5f811aF86fF6f17Fb9a619088B09Dff43",
-            }
-        },
-        strategy_wallet_signing_callback=AsyncMock(return_value=b"\x00" * 65),
+        config={},
+        sign_callback=AsyncMock(return_value=b"\x00" * 65),
+        wallet_address="0x81830bC5f811aF86fF6f17Fb9a619088B09Dff43",
     )
 
 
@@ -66,7 +63,7 @@ def test_adapter_type(adapter):
 
 def test_strategy_address_optional():
     a = MorphoAdapter(config={})
-    assert a.strategy_wallet_address is None
+    assert a.wallet_address is None
 
 
 @pytest.mark.asyncio
@@ -387,7 +384,7 @@ async def test_claim_merkl_rewards_encodes_claim(adapter):
     assert kwargs["fn_name"] == "claim"
 
     users, tokens, amounts, proofs = kwargs["args"]
-    assert users == [adapter.strategy_wallet_address]
+    assert users == [adapter.wallet_address]
     assert tokens == [token_b]
     assert amounts == [101]
     assert proofs == [["0x" + "22" * 32, "0x" + "33" * 32]]

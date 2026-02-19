@@ -221,10 +221,15 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 config=adapter_config,
                 sign_callback=strategy_sign_typed_data,
             )
+            strat_addr = (self.config.get("strategy_wallet") or {}).get("address")
+            main_addr = (self.config.get("main_wallet") or {}).get("address")
+
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
-                main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                main_sign_callback=self.main_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                main_wallet_address=main_addr,
+                wallet_address=strat_addr,
             )
             self.token_adapter = TokenAdapter()
         except Exception as e:

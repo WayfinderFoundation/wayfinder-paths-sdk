@@ -20,16 +20,6 @@ from wayfinder_paths.mcp.scripting import (
 class TestDetectCallbackParams:
     """Tests for _detect_callback_params function."""
 
-    def test_detects_strategy_wallet_signing_callback(self):
-        """Should detect strategy_wallet_signing_callback parameter."""
-
-        class MockAdapter:
-            def __init__(self, config=None, strategy_wallet_signing_callback=None):
-                pass
-
-        result = _detect_callback_params(MockAdapter)
-        assert "strategy_wallet_signing_callback" in result
-
     def test_detects_sign_callback(self):
         """Should detect sign_callback parameter."""
 
@@ -40,15 +30,25 @@ class TestDetectCallbackParams:
         result = _detect_callback_params(MockAdapter)
         assert "sign_callback" in result
 
-    def test_detects_custom_signing_callback_suffix(self):
-        """Should detect params ending with _signing_callback."""
+    def test_detects_main_sign_callback(self):
+        """Should detect main_sign_callback parameter."""
 
         class MockAdapter:
-            def __init__(self, config=None, custom_signing_callback=None):
+            def __init__(self, config=None, main_sign_callback=None):
                 pass
 
         result = _detect_callback_params(MockAdapter)
-        assert "custom_signing_callback" in result
+        assert "main_sign_callback" in result
+
+    def test_does_not_detect_old_style_callback(self):
+        """Should NOT detect strategy_wallet_signing_callback (removed)."""
+
+        class MockAdapter:
+            def __init__(self, config=None, strategy_wallet_signing_callback=None):
+                pass
+
+        result = _detect_callback_params(MockAdapter)
+        assert "strategy_wallet_signing_callback" not in result
 
     def test_returns_empty_for_no_callback_params(self):
         """Should return empty set when no callback params found."""
@@ -61,25 +61,25 @@ class TestDetectCallbackParams:
         assert result == set()
 
     def test_detects_multiple_callback_params(self):
-        """Should detect all matching callback params."""
+        """Should detect both main_sign_callback and sign_callback."""
 
         class MockAdapter:
             def __init__(
                 self,
                 config=None,
-                strategy_wallet_signing_callback=None,
+                main_sign_callback=None,
                 sign_callback=None,
             ):
                 pass
 
         result = _detect_callback_params(MockAdapter)
-        assert "strategy_wallet_signing_callback" in result
+        assert "main_sign_callback" in result
         assert "sign_callback" in result
 
     def test_real_moonwell_adapter(self):
         """Should detect callback param from MoonwellAdapter."""
         result = _detect_callback_params(MoonwellAdapter)
-        assert "strategy_wallet_signing_callback" in result
+        assert "sign_callback" in result
 
     def test_real_boros_adapter(self):
         """Should detect callback param from BorosAdapter."""
@@ -89,12 +89,12 @@ class TestDetectCallbackParams:
     def test_real_hyperlend_adapter(self):
         """Should detect callback param from HyperlendAdapter."""
         result = _detect_callback_params(HyperlendAdapter)
-        assert "strategy_wallet_signing_callback" in result
+        assert "sign_callback" in result
 
     def test_real_pendle_adapter(self):
         """Should detect callback param from PendleAdapter."""
         result = _detect_callback_params(PendleAdapter)
-        assert "strategy_wallet_signing_callback" in result
+        assert "sign_callback" in result
 
 
 class TestMakeSignCallback:
@@ -165,13 +165,14 @@ class TestGetAdapter:
             adapter = get_adapter(MockAdapter)
             assert adapter.config == {"foo": "bar"}
 
-    def test_wires_strategy_wallet_into_config(self):
-        """Should wire wallet into config['strategy_wallet']."""
+    def test_wires_sign_callback_and_wallet(self):
+        """Should wire sign_callback and wallet_address into adapter."""
 
         class MockAdapter:
-            def __init__(self, config=None, strategy_wallet_signing_callback=None):
+            def __init__(self, config=None, sign_callback=None, wallet_address=None):
                 self.config = config
-                self.callback = strategy_wallet_signing_callback
+                self.callback = sign_callback
+                self.wallet_address = wallet_address
 
         wallet = {
             "label": "main",
@@ -186,6 +187,7 @@ class TestGetAdapter:
                 adapter = get_adapter(MockAdapter, "main")
                 assert adapter.config["strategy_wallet"] == wallet
                 assert adapter.callback is not None
+                assert adapter.wallet_address == wallet["address"]
 
     def test_applies_config_overrides(self):
         """Should merge config_overrides into loaded config."""
@@ -215,8 +217,8 @@ class TestGetAdapter:
         """Should allow caller to override auto-wired signing callback."""
 
         class MockAdapter:
-            def __init__(self, config=None, strategy_wallet_signing_callback=None):
-                self.callback = strategy_wallet_signing_callback
+            def __init__(self, config=None, sign_callback=None):
+                self.callback = sign_callback
 
         wallet = {
             "label": "main",
@@ -233,7 +235,7 @@ class TestGetAdapter:
                 adapter = get_adapter(
                     MockAdapter,
                     "main",
-                    strategy_wallet_signing_callback=custom_callback,
+                    sign_callback=custom_callback,
                 )
                 assert adapter.callback is custom_callback
 
@@ -251,5 +253,5 @@ class TestGetAdapter:
             with patch("wayfinder_paths.mcp.scripting.CONFIG", {}):
                 adapter = get_adapter(MoonwellAdapter, "main")
                 assert isinstance(adapter, MoonwellAdapter)
-                assert adapter.strategy_wallet_signing_callback is not None
-                assert adapter.strategy_wallet_address == wallet["address"]
+                assert adapter.sign_callback is not None
+                assert adapter.wallet_address == wallet["address"]

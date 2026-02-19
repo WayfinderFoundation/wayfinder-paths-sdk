@@ -179,7 +179,8 @@ class PendleAdapter(BaseAdapter):
         base_url: str | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float = 30.0,
-        strategy_wallet_signing_callback: Callable | None = None,
+        sign_callback: Callable | None = None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("pendle_adapter", config)
         cfg = config or {}
@@ -192,8 +193,10 @@ class PendleAdapter(BaseAdapter):
         self.timeout = float(adapter_cfg.get("timeout", timeout))
 
         self._owns_client = False
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
-        self.strategy_wallet = cfg.get("strategy_wallet") or {}
+        self.sign_callback = sign_callback
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
+        )
         self.max_retries = int(adapter_cfg.get("max_retries", 3))
         self.retry_backoff_seconds = float(
             adapter_cfg.get("retry_backoff_seconds", 0.75)
@@ -215,21 +218,16 @@ class PendleAdapter(BaseAdapter):
     # ---------------------------
 
     def _strategy_address(self) -> str:
-        addr = None
-        if isinstance(self.strategy_wallet, dict):
-            addr = self.strategy_wallet.get("address")
-        elif isinstance(self.strategy_wallet, str):
-            addr = self.strategy_wallet
-        if not addr:
-            raise ValueError("strategy_wallet address is required for Pendle execution")
-        return to_checksum_address(addr)
+        if not self.wallet_address:
+            raise ValueError("wallet_address is required for Pendle execution")
+        return self.wallet_address
 
     async def _send_tx(self, tx: dict[str, Any]) -> tuple[bool, Any]:
-        if self.strategy_wallet_signing_callback is None:
+        if self.sign_callback is None:
             raise ValueError(
-                "strategy_wallet_signing_callback is required for tx execution"
+                "sign_callback is required for tx execution"
             )
-        txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+        txn_hash = await send_transaction(tx, self.sign_callback)
         return True, txn_hash
 
     # ---------------------------
@@ -1770,12 +1768,12 @@ class PendleAdapter(BaseAdapter):
             amount = approval.get("amount")
             if not token or not amount:
                 continue
-            if not self.strategy_wallet_signing_callback:
+            if not self.sign_callback:
                 return False, {
-                    "error": "strategy_wallet_signing_callback is required",
+                    "error": "sign_callback is required",
                     "stage": "approval",
                     "details": {
-                        "error": "strategy_wallet_signing_callback is required"
+                        "error": "sign_callback is required"
                     },
                 }
             approved, result = await ensure_allowance(
@@ -1784,7 +1782,7 @@ class PendleAdapter(BaseAdapter):
                 owner=sender,
                 spender=spender,
                 amount=int(amount),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
             )
             if not approved:
                 return False, {
@@ -1905,10 +1903,10 @@ class PendleAdapter(BaseAdapter):
             amount = approval.get("amount")
             if not (isinstance(token, str) and token and amount is not None):
                 continue
-            if not self.strategy_wallet_signing_callback:
+            if not self.sign_callback:
                 return False, {
                     "stage": "approval",
-                    "error": "strategy_wallet_signing_callback is required",
+                    "error": "sign_callback is required",
                     "token": token,
                 }
             try:
@@ -1918,7 +1916,7 @@ class PendleAdapter(BaseAdapter):
                     owner=sender,
                     spender=spender,
                     amount=int(str(amount)),
-                    signing_callback=self.strategy_wallet_signing_callback,
+                    signing_callback=self.sign_callback,
                 )
             except Exception as exc:  # noqa: BLE001
                 return False, {

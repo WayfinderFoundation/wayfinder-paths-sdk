@@ -76,20 +76,17 @@ class HyperlendAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("hyperlend_adapter", config)
-        config = config or {}
-
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
 
         self.ledger_adapter = LedgerAdapter()
         self.token_adapter = TokenAdapter()
-        strategy_wallet = config.get("strategy_wallet") or {}
-        strategy_addr = strategy_wallet.get("address")
 
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
         )
         self._variable_debt_token_by_underlying: dict[str, str] = {}
 
@@ -321,7 +318,7 @@ class HyperlendAdapter(BaseAdapter):
         native: bool = False,
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         if qty <= 0:
@@ -346,7 +343,7 @@ class HyperlendAdapter(BaseAdapter):
                 spender=HYPERLEND_POOL,
                 amount=qty,
                 chain_id=chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
             )
             if not approved[0]:
                 return approved
@@ -360,7 +357,7 @@ class HyperlendAdapter(BaseAdapter):
             )
 
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
 
         await self._record_pool_op(
@@ -384,7 +381,7 @@ class HyperlendAdapter(BaseAdapter):
         native: bool = False,
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         if qty <= 0:
@@ -412,7 +409,7 @@ class HyperlendAdapter(BaseAdapter):
             )
 
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
         await self._record_pool_op(
             token_address=token_addr,
@@ -434,7 +431,7 @@ class HyperlendAdapter(BaseAdapter):
         chain_id: int,
         native: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         if qty <= 0:
@@ -451,7 +448,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
             borrow_tx_hash = await send_transaction(
-                borrow_tx, self.strategy_wallet_signing_callback
+                borrow_tx, self.sign_callback
             )
 
             unwrap_tx = await encode_call(
@@ -463,7 +460,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
             unwrap_tx_hash = await send_transaction(
-                unwrap_tx, self.strategy_wallet_signing_callback
+                unwrap_tx, self.sign_callback
             )
             return True, {"borrow_tx": borrow_tx_hash, "unwrap_tx": unwrap_tx_hash}
         else:
@@ -478,7 +475,7 @@ class HyperlendAdapter(BaseAdapter):
             )
 
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
         return True, txn_hash
 
@@ -491,7 +488,7 @@ class HyperlendAdapter(BaseAdapter):
         native: bool = False,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         if qty <= 0 and not repay_full:
@@ -593,7 +590,7 @@ class HyperlendAdapter(BaseAdapter):
                 spender=HYPERLEND_POOL,
                 amount=allowance_target,
                 chain_id=chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -609,7 +606,7 @@ class HyperlendAdapter(BaseAdapter):
             )
 
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
         return True, txn_hash
 
@@ -619,7 +616,7 @@ class HyperlendAdapter(BaseAdapter):
         underlying_token: str,
         chain_id: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -633,7 +630,7 @@ class HyperlendAdapter(BaseAdapter):
             chain_id=chain_id,
         )
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
         return True, txn_hash
 
@@ -643,7 +640,7 @@ class HyperlendAdapter(BaseAdapter):
         underlying_token: str,
         chain_id: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -657,7 +654,7 @@ class HyperlendAdapter(BaseAdapter):
             chain_id=chain_id,
         )
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
         return True, txn_hash
 

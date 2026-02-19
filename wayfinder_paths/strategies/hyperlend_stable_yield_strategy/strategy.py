@@ -218,19 +218,26 @@ class HyperlendStableYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
+            strat_addr = strategy_wallet_cfg["address"]
+            main_addr = (main_wallet_cfg or {}).get("address")
+
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
-                main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                main_sign_callback=self.main_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                main_wallet_address=main_addr,
+                wallet_address=strat_addr,
             )
             self.token_adapter = TokenAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
             self.hyperlend_adapter = HyperlendAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
 
             self._assets_snapshot = None

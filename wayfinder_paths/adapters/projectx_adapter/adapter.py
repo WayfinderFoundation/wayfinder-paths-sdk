@@ -203,13 +203,12 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         self,
         config: dict[str, Any],
         *,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ) -> None:
-        wallet = (config or {}).get("strategy_wallet") or {}
-        addr = wallet.get("address")
-        if not addr:
-            raise ValueError("strategy_wallet.address is required for ProjectX adapter")
-        owner = to_checksum_address(str(addr))
+        if not wallet_address:
+            raise ValueError("wallet_address is required for ProjectX adapter")
+        owner = to_checksum_address(str(wallet_address))
 
         pool_address = _resolve_pool_address(config)
         self.pool_address: str | None = (
@@ -223,7 +222,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             npm_address=PRJX_NPM,
             factory_address=PRJX_FACTORY,
             owner=owner,
-            strategy_wallet_signing_callback=strategy_wallet_signing_callback,
+            sign_callback=sign_callback,
             factory_abi=PROJECTX_FACTORY_ABI,
         )
 
@@ -773,7 +772,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 spender=PRJX_ROUTER,
                 amount=int(amount_in),
                 chain_id=PROJECTX_CHAIN_ID,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=int(amount_in * 2),
             )
 
@@ -848,7 +847,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 from_address=self.owner,
                 chain_id=PROJECTX_CHAIN_ID,
             )
-            tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            tx_hash = await send_transaction(tx, self.sign_callback)
             return True, str(tx_hash)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

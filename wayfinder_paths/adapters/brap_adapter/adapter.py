@@ -24,10 +24,12 @@ class BRAPAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ):
         super().__init__("brap_adapter", config)
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
+        self.wallet_address: str | None = wallet_address
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
 
@@ -190,11 +192,11 @@ class BRAPAdapter(BaseAdapter):
                 spender=spender,
                 amount=int(approve_amount),
                 chain_id=chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
             )
 
         txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
+            transaction, self.sign_callback
         )
         self.logger.info(f"Swap broadcast: tx={txn_hash}")
 

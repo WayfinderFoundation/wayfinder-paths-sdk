@@ -33,17 +33,17 @@ class MorphoAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("morpho_adapter", config or {})
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
 
-        cfg = config or {}
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
         )
 
+        cfg = config or {}
         bundler_addr = (
             cfg.get("bundler_address")
             or (cfg.get("bundler") or {}).get("address")
@@ -134,7 +134,7 @@ class MorphoAdapter(BaseAdapter):
         authorized: str,
         is_authorized: bool = True,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -148,7 +148,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -160,7 +160,7 @@ class MorphoAdapter(BaseAdapter):
         authorization: dict[str, Any] | tuple[Any, ...],
         signature: dict[str, Any] | tuple[Any, ...],
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -195,7 +195,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -660,7 +660,7 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         assets: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         assets = int(assets)
@@ -677,7 +677,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=vault,
                 amount=int(assets),
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -691,7 +691,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -703,7 +703,7 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         assets: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         assets = int(assets)
@@ -720,7 +720,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -732,7 +732,7 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         shares: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         shares = int(shares)
@@ -749,7 +749,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=vault,
                 amount=MAX_UINT256,
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -763,7 +763,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -775,7 +775,7 @@ class MorphoAdapter(BaseAdapter):
         vault_address: str,
         shares: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         shares = int(shares)
@@ -792,7 +792,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -927,7 +927,7 @@ class MorphoAdapter(BaseAdapter):
         trusted: bool = True,
         claimable_only: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
 
@@ -983,7 +983,7 @@ class MorphoAdapter(BaseAdapter):
         min_claim_amount: int = 0,
         claimable_only: bool = True,
     ) -> tuple[bool, str | None]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
 
@@ -1039,7 +1039,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=acct,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1053,7 +1053,7 @@ class MorphoAdapter(BaseAdapter):
         max_claims: int = 50,
         min_claimable: int = 0,
     ) -> tuple[bool, list[str] | str]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
 
@@ -1090,7 +1090,7 @@ class MorphoAdapter(BaseAdapter):
                     "value": 0,
                 }
                 txn_hash = await send_transaction(
-                    tx, self.strategy_wallet_signing_callback
+                    tx, self.sign_callback
                 )
                 tx_hashes.append(str(txn_hash))
 
@@ -1107,7 +1107,7 @@ class MorphoAdapter(BaseAdapter):
         claim_urd: bool = True,
         trusted: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
 
@@ -1144,7 +1144,7 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         account: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
 
@@ -1178,7 +1178,7 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         account: str | None = None,
     ) -> dict[str, Any]:
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             raise ValueError("strategy wallet address not configured")
 
@@ -1326,7 +1326,7 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1347,7 +1347,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=morpho,
                 amount=qty,
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1361,7 +1361,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1373,7 +1373,7 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1395,7 +1395,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1407,7 +1407,7 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1428,7 +1428,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=morpho,
                 amount=qty,
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1442,7 +1442,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1455,7 +1455,7 @@ class MorphoAdapter(BaseAdapter):
         qty: int,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1496,7 +1496,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1508,7 +1508,7 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         qty: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1530,7 +1530,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1569,7 +1569,7 @@ class MorphoAdapter(BaseAdapter):
         public_allocator: str | None = None,
         value: int | None = None,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -1631,7 +1631,7 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(fee_value),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1644,7 +1644,7 @@ class MorphoAdapter(BaseAdapter):
         bundler_address: str | None = None,
         value: int = 0,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -1690,7 +1690,7 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(value),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1708,7 +1708,7 @@ class MorphoAdapter(BaseAdapter):
         Borrow with optional Public Allocator JIT reallocation when market liquidity is insufficient.
         If `atomic=True` and a bundler address is configured/provided, attempts to bundle reallocate+borrow.
         """
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1873,7 +1873,7 @@ class MorphoAdapter(BaseAdapter):
                 value=int(fee_value),
             )
             realloc_hash = await send_transaction(
-                tx, self.strategy_wallet_signing_callback
+                tx, self.sign_callback
             )
 
             ok2, borrow_tx = await self.borrow(
@@ -1941,7 +1941,7 @@ class MorphoAdapter(BaseAdapter):
         qty: int,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -1978,7 +1978,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=morpho,
                 amount=allowance_target,
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1998,7 +1998,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

@@ -279,14 +279,20 @@ class BorosHypeStrategy(
             sign_callback=self.strategy_sign_typed_data,
         )
 
+        strat_addr = (strategy_wallet or {}).get("address")
+        main_addr = (main_wallet or {}).get("address")
+
         self.balance_adapter = BalanceAdapter(
             config=self._config,
-            main_wallet_signing_callback=main_sign_callback,
-            strategy_wallet_signing_callback=self._sign_callback,
+            main_sign_callback=main_sign_callback,
+            sign_callback=self._sign_callback,
+            main_wallet_address=main_addr,
+            wallet_address=strat_addr,
         )
         self.brap_adapter = BRAPAdapter(
             config=self._config,
-            strategy_wallet_signing_callback=self._sign_callback,
+            sign_callback=self._sign_callback,
+            wallet_address=strat_addr,
         )
 
         logger.info("BorosHypeStrategy setup complete")

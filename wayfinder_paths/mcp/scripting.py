@@ -11,9 +11,8 @@ from wayfinder_paths.mcp.utils import find_wallet_by_label
 # Known signing callback parameter names used by adapters
 _SIGNING_CALLBACK_PARAMS = frozenset(
     {
-        "strategy_wallet_signing_callback",
         "sign_callback",
-        "signing_callback",
+        "main_sign_callback",
     }
 )
 
@@ -37,7 +36,7 @@ def _detect_callback_params(adapter_class: type) -> set[str]:
     return {
         name
         for name in sig.parameters
-        if name in _SIGNING_CALLBACK_PARAMS or name.endswith("_signing_callback")
+        if name in _SIGNING_CALLBACK_PARAMS
     }
 
 
@@ -54,6 +53,7 @@ def get_adapter[T](
         config.update(config_overrides)
 
     sign_callback = None
+    wallet_address = None
     if wallet_label:
         wallet = find_wallet_by_label(wallet_label)
         if not wallet:
@@ -69,6 +69,8 @@ def get_adapter[T](
                 "Local signing requires a private key."
             )
 
+        wallet_address = wallet.get("address")
+        # boros + hyperliquid adapters still read config["strategy_wallet"]
         config["strategy_wallet"] = wallet
         sign_callback = _make_sign_callback(private_key)
 
@@ -79,6 +81,11 @@ def get_adapter[T](
         for param_name in callback_params:
             if param_name not in kwargs:
                 adapter_kwargs[param_name] = sign_callback
+
+    if wallet_address and "wallet_address" not in kwargs:
+        sig = inspect.signature(adapter_class.__init__)
+        if "wallet_address" in sig.parameters:
+            adapter_kwargs["wallet_address"] = wallet_address
 
     adapter_kwargs.update(kwargs)
 
