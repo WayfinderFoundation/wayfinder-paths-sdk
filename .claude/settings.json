@@ -8,14 +8,16 @@
       "mcp__wayfinder__balances",
       "mcp__wayfinder__quote_swap",
       "mcp__wayfinder__hyperliquid",
-      "mcp__wayfinder__polymarket"
+      "mcp__wayfinder__polymarket",
+      "mcp__wayfinder__compile_contract"
     ],
     "ask": [
       "mcp__wayfinder__execute",
       "mcp__wayfinder__run_script",
       "mcp__wayfinder__hyperliquid_execute",
       "mcp__wayfinder__polymarket_execute",
-      "mcp__wayfinder__run_strategy"
+      "mcp__wayfinder__run_strategy",
+      "mcp__wayfinder__deploy_contract"
     ]
   },
   "hooks": {
@@ -82,6 +84,15 @@
           {
             "type": "command",
             "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_strategy_review.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__wayfinder__deploy_contract",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_deploy_contract_review.py\""
           }
         ]
       }

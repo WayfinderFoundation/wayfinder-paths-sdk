@@ -36,6 +36,7 @@ from wayfinder_paths.mcp.resources.wallets import (
     get_wallet_balances,
     list_wallets,
 )
+from wayfinder_paths.mcp.tools.contracts import compile_contract, deploy_contract
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
@@ -78,6 +79,8 @@ mcp.tool()(run_script)
 mcp.tool()(execute)
 mcp.tool()(wallets)
 mcp.tool()(runner)
+mcp.tool()(compile_contract)
+mcp.tool()(deploy_contract)
 
 
 def main() -> None:
