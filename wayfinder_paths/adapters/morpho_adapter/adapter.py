@@ -1089,9 +1089,7 @@ class MorphoAdapter(BaseAdapter):
                     "data": str(tx_data),
                     "value": 0,
                 }
-                txn_hash = await send_transaction(
-                    tx, self.sign_callback
-                )
+                txn_hash = await send_transaction(tx, self.sign_callback)
                 tx_hashes.append(str(txn_hash))
 
             return True, tx_hashes
@@ -1872,9 +1870,7 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(fee_value),
             )
-            realloc_hash = await send_transaction(
-                tx, self.sign_callback
-            )
+            realloc_hash = await send_transaction(tx, self.sign_callback)
 
             ok2, borrow_tx = await self.borrow(
                 chain_id=int(chain_id),

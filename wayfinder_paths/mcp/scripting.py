@@ -33,11 +33,7 @@ def _detect_callback_params(adapter_class: type) -> set[str]:
     except (ValueError, TypeError):
         return set()
 
-    return {
-        name
-        for name in sig.parameters
-        if name in _SIGNING_CALLBACK_PARAMS
-    }
+    return {name for name in sig.parameters if name in _SIGNING_CALLBACK_PARAMS}
 
 
 def get_adapter[T](

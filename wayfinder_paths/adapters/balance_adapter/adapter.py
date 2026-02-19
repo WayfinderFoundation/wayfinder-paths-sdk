@@ -121,7 +121,9 @@ class BalanceAdapter(BaseAdapter):
     async def get_vault_wallet_balance(self, token_id: str) -> tuple[bool, int | str]:
         if not self.wallet_address:
             return False, "No wallet_address configured"
-        return await self.get_balance(wallet_address=self.wallet_address, token_id=token_id)
+        return await self.get_balance(
+            wallet_address=self.wallet_address, token_id=token_id
+        )
 
     async def move_from_main_wallet_to_strategy_wallet(
         self,
@@ -222,9 +224,7 @@ class BalanceAdapter(BaseAdapter):
         tx_hash = await send_transaction(transaction, callback)
 
         if ledger_method:
-            wallet_for_ledger = (
-                from_address if ledger_wallet == "from" else to_address
-            )
+            wallet_for_ledger = from_address if ledger_wallet == "from" else to_address
             await self._record_ledger_entry(
                 ledger_method, wallet_for_ledger, token_info, amount, strategy_name
             )

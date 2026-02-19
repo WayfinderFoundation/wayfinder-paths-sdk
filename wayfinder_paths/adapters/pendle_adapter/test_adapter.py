@@ -206,7 +206,8 @@ class TestPendleAdapter:
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         adapter = PendleAdapter(
-            config={}, wallet_address="0x" + "a" * 40,
+            config={},
+            wallet_address="0x" + "a" * 40,
             client=client,
             base_url="https://api-v2.pendle.finance/core",
         )
@@ -282,7 +283,8 @@ class TestPendleAdapter:
         signing_callback = AsyncMock(return_value=b"\x00" * 65)
 
         adapter = PendleAdapter(
-            config={}, wallet_address="0x" + "a" * 40,
+            config={},
+            wallet_address="0x" + "a" * 40,
             sign_callback=signing_callback,
         )
 
@@ -484,7 +486,8 @@ class TestPendleAdapter:
         token_in_addr = "0x" + "c" * 40
 
         adapter = PendleAdapter(
-            config={}, wallet_address="0x" + "a" * 40,
+            config={},
+            wallet_address="0x" + "a" * 40,
             sign_callback=signing_callback,
         )
 
@@ -529,7 +532,8 @@ class TestPendleAdapter:
     async def test_execute_swap_quote_fails(self):
         """Test swap fails when quote returns invalid tx."""
         adapter = PendleAdapter(
-            config={}, wallet_address="0x" + "a" * 40,
+            config={},
+            wallet_address="0x" + "a" * 40,
             sign_callback=AsyncMock(),
         )
 
@@ -556,7 +560,8 @@ class TestPendleAdapter:
         token_in_addr = "0x" + "c" * 40
 
         adapter = PendleAdapter(
-            config={}, wallet_address="0x" + "a" * 40,
+            config={},
+            wallet_address="0x" + "a" * 40,
             sign_callback=AsyncMock(return_value=b"\x00" * 65),
         )
 
@@ -593,7 +598,8 @@ class TestPendleAdapter:
         token_in_addr = "0x" + "c" * 40
 
         adapter = PendleAdapter(
-            config={}, wallet_address="0x" + "a" * 40,
+            config={},
+            wallet_address="0x" + "a" * 40,
             # No signing callback
         )
 

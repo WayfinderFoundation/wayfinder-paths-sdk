@@ -224,9 +224,7 @@ class PendleAdapter(BaseAdapter):
 
     async def _send_tx(self, tx: dict[str, Any]) -> tuple[bool, Any]:
         if self.sign_callback is None:
-            raise ValueError(
-                "sign_callback is required for tx execution"
-            )
+            raise ValueError("sign_callback is required for tx execution")
         txn_hash = await send_transaction(tx, self.sign_callback)
         return True, txn_hash
 
@@ -1772,9 +1770,7 @@ class PendleAdapter(BaseAdapter):
                 return False, {
                     "error": "sign_callback is required",
                     "stage": "approval",
-                    "details": {
-                        "error": "sign_callback is required"
-                    },
+                    "details": {"error": "sign_callback is required"},
                 }
             approved, result = await ensure_allowance(
                 chain_id=chain_id,
