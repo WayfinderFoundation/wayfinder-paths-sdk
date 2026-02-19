@@ -185,7 +185,7 @@ class TestGetAdapter:
         ):
             with patch("wayfinder_paths.mcp.scripting.CONFIG", {}):
                 adapter = get_adapter(MockAdapter, "main")
-                assert adapter.config["strategy_wallet"] == wallet
+                assert "strategy_wallet" not in adapter.config
                 assert adapter.callback is not None
                 assert adapter.wallet_address == wallet["address"]
 

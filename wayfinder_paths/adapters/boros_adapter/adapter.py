@@ -80,14 +80,7 @@ class BorosAdapter(BaseAdapter):
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
 
-        if not user_address:
-            wallet = (config or {}).get("strategy_wallet") or (config or {}).get(
-                "main_wallet"
-            )
-            if wallet and isinstance(wallet, dict):
-                user_address = wallet.get("address")
-
-        self.user_address = user_address
+        self.user_address = to_checksum_address(user_address) if user_address else None
         self.account_id = boros_cfg.get("account_id", account_id)
 
         self.boros_client = BorosClient(

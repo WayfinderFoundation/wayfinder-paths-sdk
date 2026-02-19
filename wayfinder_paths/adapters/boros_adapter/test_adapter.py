@@ -27,9 +27,6 @@ class TestBorosAdapter:
     def adapter(self, mock_boros_client):
         """Create a BorosAdapter instance with mocked client for testing."""
         mock_config = {
-            "strategy_wallet": {
-                "address": "0x1234567890123456789012345678901234567890"
-            },
             "boros_adapter": {},
         }
         with patch(
@@ -38,6 +35,7 @@ class TestBorosAdapter:
         ):
             adapter = BorosAdapter(
                 config=mock_config,
+                user_address="0x1234567890123456789012345678901234567890",
             )
             adapter.boros_client = mock_boros_client
             return adapter

@@ -27,16 +27,16 @@ class BalanceAdapter(BaseAdapter):
         self,
         config: dict[str, Any],
         main_sign_callback=None,
-        sign_callback=None,
+        strategy_sign_callback=None,
         *,
         main_wallet_address: str | None = None,
-        wallet_address: str | None = None,
+        strategy_wallet_address: str | None = None,
     ):
         super().__init__("balance", config)
         self.main_sign_callback = main_sign_callback
-        self.sign_callback = sign_callback
+        self.strategy_sign_callback = strategy_sign_callback
         self.main_wallet_address: str | None = main_wallet_address
-        self.wallet_address: str | None = wallet_address
+        self.strategy_wallet_address: str | None = strategy_wallet_address
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
 
@@ -119,10 +119,10 @@ class BalanceAdapter(BaseAdapter):
             return False, str(exc)
 
     async def get_vault_wallet_balance(self, token_id: str) -> tuple[bool, int | str]:
-        if not self.wallet_address:
-            return False, "No wallet_address configured"
+        if not self.strategy_wallet_address:
+            return False, "No strategy_wallet_address configured"
         return await self.get_balance(
-            wallet_address=self.wallet_address, token_id=token_id
+            wallet_address=self.strategy_wallet_address, token_id=token_id
         )
 
     async def move_from_main_wallet_to_strategy_wallet(
@@ -132,13 +132,13 @@ class BalanceAdapter(BaseAdapter):
         strategy_name: str = "unknown",
         skip_ledger: bool = False,
     ) -> tuple[bool, str]:
-        if not self.main_wallet_address or not self.wallet_address:
-            return False, "main_wallet_address and wallet_address are required"
+        if not self.main_wallet_address or not self.strategy_wallet_address:
+            return False, "main_wallet_address and strategy_wallet_address are required"
         return await self._move_between_wallets(
             token_id=token_id,
             amount=amount,
             from_address=self.main_wallet_address,
-            to_address=self.wallet_address,
+            to_address=self.strategy_wallet_address,
             ledger_method=self.ledger_adapter.record_deposit
             if not skip_ledger
             else None,
@@ -153,12 +153,12 @@ class BalanceAdapter(BaseAdapter):
         strategy_name: str = "unknown",
         skip_ledger: bool = False,
     ) -> tuple[bool, str]:
-        if not self.main_wallet_address or not self.wallet_address:
-            return False, "main_wallet_address and wallet_address are required"
+        if not self.main_wallet_address or not self.strategy_wallet_address:
+            return False, "main_wallet_address and strategy_wallet_address are required"
         return await self._move_between_wallets(
             token_id=token_id,
             amount=amount,
-            from_address=self.wallet_address,
+            from_address=self.strategy_wallet_address,
             to_address=self.main_wallet_address,
             ledger_method=self.ledger_adapter.record_withdrawal
             if not skip_ledger
@@ -219,7 +219,7 @@ class BalanceAdapter(BaseAdapter):
             self.main_sign_callback
             if self.main_wallet_address
             and from_address.lower() == self.main_wallet_address.lower()
-            else self.sign_callback
+            else self.strategy_sign_callback
         )
         tx_hash = await send_transaction(transaction, callback)
 
@@ -274,7 +274,7 @@ class BalanceAdapter(BaseAdapter):
         if not assets:
             return True, []
 
-        base_wallet = wallet_address or self.wallet_address
+        base_wallet = wallet_address or self.strategy_wallet_address
 
         results: list[dict[str, Any]] = [{"success": False} for _ in assets]
         all_success = True

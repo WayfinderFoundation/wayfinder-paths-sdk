@@ -285,9 +285,9 @@ class BorosHypeStrategy(
         self.balance_adapter = BalanceAdapter(
             config=self._config,
             main_sign_callback=main_sign_callback,
-            sign_callback=self._sign_callback,
+            strategy_sign_callback=self._sign_callback,
             main_wallet_address=main_addr,
-            wallet_address=strat_addr,
+            strategy_wallet_address=strat_addr,
         )
         self.brap_adapter = BRAPAdapter(
             config=self._config,

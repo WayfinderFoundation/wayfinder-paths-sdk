@@ -227,9 +227,9 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
                 main_sign_callback=self.main_wallet_signing_callback,
-                sign_callback=self.strategy_wallet_signing_callback,
+                strategy_sign_callback=self.strategy_wallet_signing_callback,
                 main_wallet_address=main_addr,
-                wallet_address=strat_addr,
+                strategy_wallet_address=strat_addr,
             )
             self.token_adapter = TokenAdapter()
         except Exception as e:
