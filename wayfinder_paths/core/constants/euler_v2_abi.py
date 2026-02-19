@@ -637,3 +637,8 @@ ACCOUNT_LENS_ABI = [
         "stateMutability": "view",
     },
 ]
+
+# Helper keys for decoding `VaultLens.getVaultInfoFull` tuple output into a dict.
+VAULT_INFO_FULL_KEYS = [
+    c["name"] for c in VAULT_LENS_ABI[0]["outputs"][0]["components"]
+]

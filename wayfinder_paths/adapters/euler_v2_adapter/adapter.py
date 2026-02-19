@@ -6,6 +6,7 @@ from typing import Any
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.euler_v2_abi import (
     ACCOUNT_LENS_ABI,
@@ -13,6 +14,7 @@ from wayfinder_paths.core.constants.euler_v2_abi import (
     EVC_ABI,
     PERSPECTIVE_ABI,
     UTILS_LENS_ABI,
+    VAULT_INFO_FULL_KEYS,
     VAULT_LENS_ABI,
 )
 from wayfinder_paths.core.constants.euler_v2_contracts import EULER_V2_BY_CHAIN
@@ -20,12 +22,6 @@ from wayfinder_paths.core.utils.interest import RAY
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
-
-_VAULT_INFO_FULL_KEYS = [
-    c.get("name", "") for c in (VAULT_LENS_ABI[0].get("outputs") or [])[0].get("components") or []  # type: ignore[index]
-]
 
 
 def _tuple_to_dict(value: Any, keys: list[str]) -> dict[str, Any]:
@@ -77,7 +73,6 @@ class EulerV2Adapter(BaseAdapter):
 
         # Cache: (chain_id, vault.lower()) -> address
         self._asset_by_chain_vault: dict[tuple[int, str], str] = {}
-        self._dtoken_by_chain_vault: dict[tuple[int, str], str] = {}
 
     @staticmethod
     def _entry(chain_id: int) -> dict[str, Any]:
@@ -130,22 +125,6 @@ class EulerV2Adapter(BaseAdapter):
             self._asset_by_chain_vault[key] = asset
             return asset
 
-    async def _vault_dtoken(self, *, chain_id: int, vault: str) -> str:
-        key = (int(chain_id), str(vault).lower())
-        cached = self._dtoken_by_chain_vault.get(key)
-        if cached:
-            return cached
-
-        async with web3_from_chain_id(int(chain_id)) as web3:
-            v = web3.eth.contract(
-                address=web3.to_checksum_address(vault),
-                abi=EVAULT_ABI,
-            )
-            dtoken = await v.functions.dToken().call(block_identifier="pending")
-            dtoken = to_checksum_address(str(dtoken))
-            self._dtoken_by_chain_vault[key] = dtoken
-            return dtoken
-
     async def get_verified_vaults(
         self,
         *,
@@ -170,7 +149,7 @@ class EulerV2Adapter(BaseAdapter):
             if limit is not None:
                 out = out[: max(0, int(limit))]
             return True, out
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_vault_info_full(
@@ -193,8 +172,8 @@ class EulerV2Adapter(BaseAdapter):
                     block_identifier="pending"
                 )
 
-            return True, _tuple_to_dict(info, _VAULT_INFO_FULL_KEYS)
-        except Exception as exc:  
+            return True, _tuple_to_dict(info, VAULT_INFO_FULL_KEYS)
+        except Exception as exc:
             return False, str(exc)
 
     async def get_all_markets(
@@ -242,7 +221,7 @@ class EulerV2Adapter(BaseAdapter):
                             info_raw = await vault_lens.functions.getVaultInfoFull(
                                 vault
                             ).call(block_identifier="pending")
-                            info = _tuple_to_dict(info_raw, _VAULT_INFO_FULL_KEYS)
+                            info = _tuple_to_dict(info_raw, VAULT_INFO_FULL_KEYS)
 
                             borrow_apy_ray, supply_apy_ray = (
                                 await utils_lens.functions.getAPYs(vault).call(
@@ -267,7 +246,7 @@ class EulerV2Adapter(BaseAdapter):
                                         borrow_ltv = int(row[1] or 0)
                                         liq_ltv = int(row[2] or 0)
                                         init_liq = int(row[3] or 0)
-                                except Exception:  
+                                except Exception:
                                     continue
 
                                 if borrow_ltv <= 0:
@@ -310,7 +289,7 @@ class EulerV2Adapter(BaseAdapter):
                                 "collateral_ltv_info": ltv_info,
                                 "raw": info,
                             }
-                        except Exception:  
+                        except Exception:
                             return None
 
                 results = await asyncio.gather(
@@ -321,7 +300,7 @@ class EulerV2Adapter(BaseAdapter):
             if not markets:
                 return False, "No markets found (or all lens calls failed)"
             return True, markets
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(
@@ -376,7 +355,7 @@ class EulerV2Adapter(BaseAdapter):
                         if not isinstance(vi, dict)
                         else vi.get("isCollateral")  # type: ignore[index]
                     )
-                except Exception:  
+                except Exception:
                     continue
 
                 if not include_zero_positions and not (shares or assets or borrowed):
@@ -405,7 +384,7 @@ class EulerV2Adapter(BaseAdapter):
                 "rewards": reward_infos,
                 "raw": out,
             }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def _evc_batch(
@@ -479,7 +458,7 @@ class EulerV2Adapter(BaseAdapter):
             )
             items = [(vault_addr, strategy, 0, data)]
             return await self._evc_batch(chain_id=int(chain_id), items=items)
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def unlend(
@@ -522,9 +501,8 @@ class EulerV2Adapter(BaseAdapter):
                 )
                 items = [(vault_addr, strategy, 0, data)]
                 return await self._evc_batch(chain_id=int(chain_id), items=items)
-            else:
-                qty = int(amount)
 
+            qty = int(amount)
             if qty <= 0:
                 return False, "withdraw amount must be positive"
 
@@ -538,7 +516,7 @@ class EulerV2Adapter(BaseAdapter):
             )
             items = [(vault_addr, strategy, 0, data)]
             return await self._evc_batch(chain_id=int(chain_id), items=items)
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def set_collateral(
@@ -570,7 +548,7 @@ class EulerV2Adapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def remove_collateral(
@@ -646,7 +624,7 @@ class EulerV2Adapter(BaseAdapter):
             items.append((vault_addr, strategy, 0, borrow_data))
 
             return await self._evc_batch(chain_id=int(chain_id), items=items)
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def repay(
@@ -695,5 +673,5 @@ class EulerV2Adapter(BaseAdapter):
             )
             items = [(vault_addr, strategy, 0, data)]
             return await self._evc_batch(chain_id=int(chain_id), items=items)
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
