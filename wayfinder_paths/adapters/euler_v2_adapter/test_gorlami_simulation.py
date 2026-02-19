@@ -88,13 +88,17 @@ async def test_gorlami_euler_v2_deposit_borrow_repay_withdraw(gorlami):
                 collateral_decimals = int(cinfo.get("assetDecimals") or 18)
                 desired_deposit = 100 * 10**collateral_decimals
                 qty_deposit = _headroom_amount(
-                    supply_cap=supply_cap, total_assets=total_assets, desired=desired_deposit
+                    supply_cap=supply_cap,
+                    total_assets=total_assets,
+                    desired=desired_deposit,
                 )
                 if qty_deposit <= 0:
                     continue
 
                 # Borrow a small amount to avoid price/ltv edge cases.
-                qty_borrow = min(max(1, 10**borrow_decimals // 1000), max(1, cash // 100))
+                qty_borrow = min(
+                    max(1, 10**borrow_decimals // 1000), max(1, cash // 100)
+                )
                 if qty_borrow <= 0:
                     continue
 
@@ -184,4 +188,3 @@ async def test_gorlami_euler_v2_deposit_borrow_repay_withdraw(gorlami):
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
-

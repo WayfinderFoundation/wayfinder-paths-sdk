@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
 from eth_utils import to_checksum_address
+from loguru import logger
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
@@ -226,10 +224,11 @@ class EulerV2Adapter(BaseAdapter):
                             ).call(block_identifier="pending")
                             info = _tuple_to_dict(info_raw, VAULT_INFO_FULL_KEYS)
 
-                            borrow_apy_ray, supply_apy_ray = (
-                                await utils_lens.functions.getAPYs(vault).call(
-                                    block_identifier="pending"
-                                )
+                            (
+                                borrow_apy_ray,
+                                supply_apy_ray,
+                            ) = await utils_lens.functions.getAPYs(vault).call(
+                                block_identifier="pending"
                             )
 
                             ltv_info: list[dict[str, Any]] = []
@@ -271,11 +270,17 @@ class EulerV2Adapter(BaseAdapter):
                                     str(account_lens_addr)
                                 ),
                                 "utils_lens": to_checksum_address(str(utils_lens_addr)),
-                                "perspective": to_checksum_address(str(perspective_addr)),
+                                "perspective": to_checksum_address(
+                                    str(perspective_addr)
+                                ),
                                 "vault": vault,
-                                "underlying": to_checksum_address(str(info.get("asset"))),
+                                "underlying": to_checksum_address(
+                                    str(info.get("asset"))
+                                ),
                                 "share_token": vault,
-                                "debt_token": to_checksum_address(str(info.get("dToken"))),
+                                "debt_token": to_checksum_address(
+                                    str(info.get("dToken"))
+                                ),
                                 "supply_apy": float(int(supply_apy_ray or 0)) / RAY,
                                 "borrow_apy": float(int(borrow_apy_ray or 0)) / RAY,
                                 "supply_cap": int(info.get("supplyCap") or 0),
@@ -293,7 +298,9 @@ class EulerV2Adapter(BaseAdapter):
                                 "raw": info,
                             }
                         except Exception as exc:
-                            logger.warning("Euler vault %s fetch failed: %s", vault, exc)
+                            logger.warning(
+                                "Euler vault %s fetch failed: %s", vault, exc
+                            )
                             return False, f"{vault}: {exc}"
 
                 results = await asyncio.gather(
@@ -318,7 +325,9 @@ class EulerV2Adapter(BaseAdapter):
         try:
             entry = self._entry(int(chain_id))
             evc_addr = to_checksum_address(str(entry["evc"]))
-            account_lens_addr = to_checksum_address(str(entry["lenses"]["account_lens"]))
+            account_lens_addr = to_checksum_address(
+                str(entry["lenses"]["account_lens"])
+            )
 
             acct = to_checksum_address(account)
 
@@ -343,22 +352,26 @@ class EulerV2Adapter(BaseAdapter):
             positions: list[dict[str, Any]] = []
             for vi in vault_infos or []:
                 try:
-                    vault_addr = to_checksum_address(str(vi[2] if not isinstance(vi, dict) else vi.get("vault")))  # type: ignore[index]
-                    asset_addr = to_checksum_address(str(vi[3] if not isinstance(vi, dict) else vi.get("asset")))  # type: ignore[index]
-                    shares = int(vi[5] if not isinstance(vi, dict) else vi.get("shares") or 0)  # type: ignore[index]
-                    assets = int(vi[6] if not isinstance(vi, dict) else vi.get("assets") or 0)  # type: ignore[index]
+                    vault_addr = to_checksum_address(
+                        str(vi[2] if not isinstance(vi, dict) else vi.get("vault"))
+                    )  # type: ignore[index]
+                    asset_addr = to_checksum_address(
+                        str(vi[3] if not isinstance(vi, dict) else vi.get("asset"))
+                    )  # type: ignore[index]
+                    shares = int(
+                        vi[5] if not isinstance(vi, dict) else vi.get("shares") or 0
+                    )  # type: ignore[index]
+                    assets = int(
+                        vi[6] if not isinstance(vi, dict) else vi.get("assets") or 0
+                    )  # type: ignore[index]
                     borrowed = int(
                         vi[7] if not isinstance(vi, dict) else vi.get("borrowed") or 0  # type: ignore[index]
                     )
                     is_controller = bool(
-                        vi[13]
-                        if not isinstance(vi, dict)
-                        else vi.get("isController")  # type: ignore[index]
+                        vi[13] if not isinstance(vi, dict) else vi.get("isController")  # type: ignore[index]
                     )
                     is_collateral = bool(
-                        vi[14]
-                        if not isinstance(vi, dict)
-                        else vi.get("isCollateral")  # type: ignore[index]
+                        vi[14] if not isinstance(vi, dict) else vi.get("isCollateral")  # type: ignore[index]
                     )
                 except Exception:
                     continue

@@ -642,4 +642,3 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         ),
     },
 }
-

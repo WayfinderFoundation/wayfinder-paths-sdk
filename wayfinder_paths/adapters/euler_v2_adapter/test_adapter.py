@@ -17,4 +17,3 @@ class TestEulerV2Adapter:
         ok, err = await adapter.get_verified_vaults(chain_id=0)
         assert ok is False
         assert isinstance(err, str) and err
-
