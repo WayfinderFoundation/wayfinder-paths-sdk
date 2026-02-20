@@ -236,7 +236,9 @@ async def adapter_execute(
         )
 
     if adapter_init_kwargs:
-        bad_init_keys = sorted(k for k in adapter_init_kwargs.keys() if str(k) in _FORBIDDEN_KWARGS)
+        bad_init_keys = sorted(
+            k for k in adapter_init_kwargs.keys() if str(k) in _FORBIDDEN_KWARGS
+        )
         if bad_init_keys:
             return err(
                 "invalid_request",
