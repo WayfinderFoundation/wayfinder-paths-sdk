@@ -96,47 +96,36 @@ When answering questions about **rates/APYs/funding**:
 
 ## Delta Lab MCP resources (yield discovery)
 
-**Default approach:** Use MCP resources (instant, no script needed). Only write scripts for custom `lookback_days`.
+**Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
 
-**Available resources:**
+**⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
 
-1. **`wayfinder://delta-lab/symbols`** - List all basis symbols with opportunity counts
+**MCP resources (quick queries):**
+- `wayfinder://delta-lab/symbols` - List basis symbols
+- `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
+- `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
+- `wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LOOKBACK}/{LIMIT}` - Delta-neutral pairs for symbol
+- `wayfinder://delta-lab/assets/{asset_id}` - Asset metadata by ID
+- `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
+- `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
+- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Historical data (snapshots only)
 
-2. **`wayfinder://delta-lab/{SYMBOL}/apy-sources/{LIMIT}`** - Get top N yield opportunities
-   - `{SYMBOL}` - Uppercase (e.g., `WSTETH`, `BTC`, `ETH`)
-   - `{LIMIT}` - Results to return (default: `10`, max: `1000`)
-   - Fixed: `lookback_days=7`
-
-3. **`wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LIMIT}`** - Get top N delta-neutral pairs
-   - `{SYMBOL}` - Uppercase basis symbol
-   - `{LIMIT}` - Pairs to return (default: `5`, max: `100`)
-   - Fixed: `lookback_days=7`
-
-4. **`wayfinder://delta-lab/assets/{asset_id}`** - Get asset metadata by internal ID
-
-**When to use MCP vs script:**
-
-| User Request | Use This |
-|--------------|----------|
-| "Best rates" / "Show rates" | MCP with `/10` (default) |
-| "Get more" / "Show 50" | MCP with `/50` (adjust limit) |
-| "30-day lookback" | Script (MCP fixed at 7 days) |
+**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
 **Examples:**
-
 ```
-# Default: top 10 results
-uri="wayfinder://delta-lab/WSTETH/apy-sources/10"
+# Quick queries via MCP
+uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
+uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
+uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
 
-# Need more: change the limit
-uri="wayfinder://delta-lab/WSTETH/apy-sources/50"
+# Serious analysis via client
+data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
+# If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
+print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
 
-# Custom lookback (script required)
-data = await DELTA_LAB_CLIENT.get_basis_apy_sources(
-    basis_symbol="WSTETH",
-    lookback_days=30,
-    limit=100
-)
+data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=30)
+data["price"]["price_usd"].plot()
 ```
 
 ## Running strategies via MCP

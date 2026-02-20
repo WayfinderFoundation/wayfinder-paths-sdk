@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+import pandas as pd
+
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
 
@@ -119,6 +121,168 @@ class DeltaLabClient(WayfinderClient):
         params: dict[str, str | int] = {
             "lookback_days": lookback_days,
             "limit": limit,
+        }
+        if as_of:
+            params["as_of"] = as_of.isoformat()
+        response = await self._authed_request("GET", url, params=params)
+        return response.json()
+
+    async def get_assets_by_address(
+        self,
+        *,
+        address: str,
+        chain_id: int | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get assets by contract address.
+
+        Args:
+            address: Contract address to search for
+            chain_id: Optional chain ID to filter results
+
+        Returns:
+            Response with assets list:
+            {
+                "assets": [{"asset_id": 1, "symbol": "WETH", ...}, ...]
+            }
+
+        Raises:
+            httpx.HTTPStatusError: For 400 (invalid params) or 500 (server error)
+        """
+        url = f"{get_api_base_url()}/delta-lab/assets/by-address"
+        params: dict[str, str | int] = {"address": address}
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        response = await self._authed_request("GET", url, params=params)
+        return response.json()
+
+    async def get_asset_basis(self, *, symbol: str) -> dict[str, Any]:
+        """
+        Get basis group information for an asset.
+
+        Args:
+            symbol: Asset symbol (e.g., "ETH", "BTC")
+
+        Returns:
+            AssetBasisResponse with basis group information:
+            {
+                "asset_id": 1,
+                "symbol": "ETH",
+                "basis": {
+                    "basis_group_id": 1,
+                    "root_asset_id": 1,
+                    "root_symbol": "ETH",
+                    "role": "ROOT"
+                } or None if not in a basis group
+            }
+
+        Raises:
+            httpx.HTTPStatusError: For 404 (not found) or 500 (server error)
+        """
+        url = f"{get_api_base_url()}/delta-lab/assets/{symbol}/basis"
+        response = await self._authed_request("GET", url)
+        return response.json()
+
+    async def get_asset_timeseries(
+        self,
+        *,
+        symbol: str,
+        lookback_days: int = 30,
+        limit: int = 500,
+        as_of: datetime | None = None,
+        series: str | None = None,
+    ) -> dict[str, pd.DataFrame]:
+        """
+        Get timeseries data for an asset.
+
+        Args:
+            symbol: Asset symbol (e.g., "ETH", "BTC")
+            lookback_days: Number of days to look back (default: 30)
+            limit: Maximum number of data points per series (default: 500, max: 10000)
+            as_of: Query timestamp (default: now)
+            series: Comma-separated list of series to fetch (price, yield, lending,
+                   funding, pendle, boros) or alias "rates" for all rate series.
+                   If None, returns all series.
+
+        Returns:
+            Dict mapping series names to DataFrames:
+            {
+                "price": DataFrame(columns=[price_usd], index=DatetimeIndex),
+                "lending": DataFrame(columns=[market_id, venue, supply_apr, ...], index=DatetimeIndex),
+                ...
+            }
+            Each DataFrame has 'ts' as the index (DatetimeIndex).
+            Note: The backend returns 'yield_' but we normalize it to 'yield' in the returned dict.
+
+        Raises:
+            httpx.HTTPStatusError: For 400 (invalid params), 404 (not found), or 500 (server error)
+        """
+        url = f"{get_api_base_url()}/delta-lab/assets/{symbol}/timeseries"
+        params: dict[str, str | int] = {
+            "lookback_days": lookback_days,
+            "limit": limit,
+        }
+        if as_of:
+            params["as_of"] = as_of.isoformat()
+        if series is not None:
+            params["series"] = series
+
+        response = await self._authed_request("GET", url, params=params)
+        data = response.json()
+
+        # Convert each series to DataFrame
+        result: dict[str, pd.DataFrame] = {}
+        for key, records in data.items():
+            # Skip non-series keys (asset_id, symbol)
+            if key in ("asset_id", "symbol"):
+                continue
+            # Handle yield_ -> yield normalization
+            normalized_key = "yield" if key == "yield_" else key
+            # Convert to DataFrame if we have data
+            if records and isinstance(records, list):
+                df = pd.DataFrame(records)
+                # Convert ts to datetime and set as index
+                if "ts" in df.columns:
+                    df["ts"] = pd.to_datetime(df["ts"])
+                    df.set_index("ts", inplace=True)
+                result[normalized_key] = df
+
+        return result
+
+    async def get_top_apy(
+        self,
+        *,
+        limit: int = 50,
+        lookback_days: int = 7,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get top APY opportunities across all basis symbols.
+
+        Returns top N LONG opportunities by APY across all protocols and venues:
+        perps, Pendle PTs, Boros IRS, yield-bearing tokens, and lending.
+
+        Args:
+            limit: Maximum number of opportunities (default: 50, max: 500)
+            lookback_days: Number of days to look back (default: 7, min: 1)
+            as_of: Query timestamp (default: now)
+
+        Returns:
+            TopApyResponse with opportunities sorted by APY:
+            {
+                "opportunities": [...],  # Top N opportunities sorted by APY
+                "as_of": "2024-02-20T...",
+                "lookback_days": 7,
+                "total_count": 50
+            }
+
+        Raises:
+            httpx.HTTPStatusError: For 400 (invalid params) or 500 (server error)
+        """
+        url = f"{get_api_base_url()}/delta-lab/top-apy"
+        params: dict[str, str | int] = {
+            "limit": limit,
+            "lookback_days": lookback_days,
         }
         if as_of:
             params["as_of"] = as_of.isoformat()
