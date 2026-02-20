@@ -115,12 +115,8 @@ async def test_find_pool_for_pair_picks_first_nonzero_fee(monkeypatch):
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     ok, out = await adapter.find_pool_for_pair(
         "0x1111111111111111111111111111111111111111",
@@ -146,13 +142,9 @@ class _FakeNpmContract:
 @pytest.mark.asyncio
 async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeypatch):
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        },
-        strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
+        {"pool_address": THBILL_USDC_POOL},
+        sign_callback=AsyncMock(return_value="0xsigned"),
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter._balance_for_band = AsyncMock(return_value=None)
     adapter._extract_token_id_from_receipt = AsyncMock(return_value=123)
@@ -230,13 +222,9 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
 @pytest.mark.asyncio
 async def test_burn_position_calls_remove_liquidity():
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        },
-        strategy_wallet_signing_callback=AsyncMock(return_value="0xsigned"),
+        {"pool_address": THBILL_USDC_POOL},
+        sign_callback=AsyncMock(return_value="0xsigned"),
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter.remove_liquidity = AsyncMock(return_value=(True, "0xtx_burn"))
 
@@ -249,12 +237,8 @@ async def test_burn_position_calls_remove_liquidity():
 @pytest.mark.asyncio
 async def test_get_full_user_state_serializes_positions():
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter.pool_overview = AsyncMock(return_value=(True, {"pool": "ok"}))
     adapter.current_balances = AsyncMock(return_value=(True, {"token": 123}))
@@ -295,12 +279,8 @@ async def test_get_full_user_state_serializes_positions():
 @pytest.mark.asyncio
 async def test_get_full_user_state_returns_false_when_everything_fails():
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter.pool_overview = AsyncMock(return_value=(False, "no overview"))
     adapter.current_balances = AsyncMock(return_value=(False, "no balances"))
@@ -327,12 +307,8 @@ async def test_poll_for_any_position_id_destructures_list_positions_tuple(monkey
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     position = projectx_adapter_module.PositionSnapshot(
         token_id=321,
@@ -353,12 +329,8 @@ async def test_poll_for_any_position_id_destructures_list_positions_tuple(monkey
 @pytest.mark.asyncio
 async def test_list_all_positions_returns_positions_across_pools(monkeypatch):
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
 
     pool_a_token0 = "0x1111111111111111111111111111111111111111"
@@ -452,12 +424,8 @@ async def test_swap_once_to_band_ratio_returns_false_on_no_prjx_route(monkeypatc
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter._pool_meta = AsyncMock(
         return_value={
@@ -488,12 +456,8 @@ async def test_swap_once_to_band_ratio_raises_on_swap_failure(monkeypatch):
     )
 
     adapter = ProjectXLiquidityAdapter(
-        {
-            "strategy_wallet": {
-                "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            },
-            "pool_address": THBILL_USDC_POOL,
-        }
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter._pool_meta = AsyncMock(
         return_value={
@@ -516,7 +480,7 @@ async def test_swap_once_to_band_ratio_raises_on_swap_failure(monkeypatch):
 
 def test_init_without_pool_address():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {}, wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     assert adapter.pool_address is None
 
@@ -524,7 +488,7 @@ def test_init_without_pool_address():
 @pytest.mark.asyncio
 async def test_pool_overview_fails_without_pool():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {}, wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     ok, err = await adapter.pool_overview()
     assert ok is False
@@ -534,7 +498,7 @@ async def test_pool_overview_fails_without_pool():
 @pytest.mark.asyncio
 async def test_current_balances_fails_without_pool():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {}, wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     ok, err = await adapter.current_balances()
     assert ok is False
@@ -544,7 +508,7 @@ async def test_current_balances_fails_without_pool():
 @pytest.mark.asyncio
 async def test_list_positions_fails_without_pool():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {}, wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     ok, err = await adapter.list_positions()
     assert ok is False
@@ -554,7 +518,7 @@ async def test_list_positions_fails_without_pool():
 @pytest.mark.asyncio
 async def test_fetch_swaps_raises_without_pool():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {}, wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     ok, err = await adapter.fetch_swaps()
     assert ok is False
@@ -564,7 +528,7 @@ async def test_fetch_swaps_raises_without_pool():
 @pytest.mark.asyncio
 async def test_get_full_user_state_without_pool_skips_overview_and_balances():
     adapter = ProjectXLiquidityAdapter(
-        {"strategy_wallet": {"address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+        {}, wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
     adapter._list_all_positions = AsyncMock(
         return_value=(

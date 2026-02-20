@@ -142,7 +142,8 @@ class PolymarketAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
         private_key_hex: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
@@ -154,7 +155,10 @@ class PolymarketAdapter(BaseAdapter):
     ) -> None:
         super().__init__("polymarket_adapter", config)
 
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
+        )
         self._private_key_hex = private_key_hex
         self._funder_override = funder
         self._signature_type = signature_type
@@ -928,6 +932,8 @@ class PolymarketAdapter(BaseAdapter):
     def _resolve_funder(self) -> str:
         if self._funder_override:
             return to_checksum_address(self._funder_override)
+        if self.wallet_address:
+            return self.wallet_address
         wallet = self._resolve_wallet()
         addr = wallet.get("address")
         if not addr:
@@ -935,10 +941,11 @@ class PolymarketAdapter(BaseAdapter):
         return to_checksum_address(str(addr))
 
     def _resolve_wallet_signer(self) -> tuple[str, Any]:
-        wallet = self._resolve_wallet()
-        from_address = to_checksum_address(str(wallet.get("address")))
+        from_address = self.wallet_address or to_checksum_address(
+            str(self._resolve_wallet().get("address"))
+        )
 
-        sign_cb = self.strategy_wallet_signing_callback
+        sign_cb = self.sign_callback
         if sign_cb is None:
             pk = self._resolve_private_key()
             account = Account.from_key(pk)

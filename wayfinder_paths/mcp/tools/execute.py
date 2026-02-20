@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from eth_account import Account
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -20,6 +19,7 @@ from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -191,16 +191,6 @@ def _compact_quote(
     return result
 
 
-def _make_sign_callback(private_key: str):
-    account = Account.from_key(private_key)
-
-    async def sign_callback(transaction: dict) -> bytes:
-        signed = account.sign_transaction(transaction)
-        return signed.raw_transaction
-
-    return sign_callback
-
-
 async def _broadcast(
     sign_callback,
     tx: dict[str, Any],
@@ -330,7 +320,7 @@ async def execute(
         )
         return response
 
-    sign_callback = _make_sign_callback(pk)
+    sign_callback = make_sign_callback(pk)
 
     if req.kind == "swap":
         rcpt = normalize_address(req.recipient) or sender

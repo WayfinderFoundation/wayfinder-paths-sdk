@@ -155,15 +155,21 @@ class ProjectXThbillUsdcStrategy(Strategy):
             "strategy": self.config,
             "pool_address": str(THBILL_USDC_METADATA["pool"]),
         }
+        strat_addr = (self.config.get("strategy_wallet") or {}).get("address")
+        main_addr = (self.config.get("main_wallet") or {}).get("address")
+
         self.balance_adapter = BalanceAdapter(
             adapter_config,
-            main_wallet_signing_callback=self.main_wallet_signing_callback,
-            strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+            main_sign_callback=self.main_wallet_signing_callback,
+            strategy_sign_callback=self.strategy_wallet_signing_callback,
+            main_wallet_address=main_addr,
+            strategy_wallet_address=strat_addr,
         )
         self.token_adapter = TokenAdapter()
         self.projectx = ProjectXLiquidityAdapter(
             adapter_config,
-            strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+            sign_callback=self.strategy_wallet_signing_callback,
+            wallet_address=strat_addr,
         )
 
         self.usdc_token_info: dict[str, Any] = {}
