@@ -108,3 +108,19 @@ def parse_amount_to_raw(amount: str, decimals: int) -> int:
 def sha256_json(obj: Any) -> str:
     payload = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """Recursively convert common web3 types into JSON-serializable forms."""
+    if hasattr(obj, "hex") and callable(obj.hex):
+        try:
+            return obj.hex()
+        except Exception:
+            pass
+    if isinstance(obj, bytes):
+        return obj.hex()
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [sanitize_for_json(v) for v in obj]
+    return obj

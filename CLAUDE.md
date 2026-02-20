@@ -51,9 +51,13 @@ Simulation / scenario testing (vnet only):
 Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
+- Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
+  - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
+  - To fetch an ABI directly (without making a call), use MCP `contract_get_abi(...)`.
 - Hyperliquid perp writes: use MCP `hyperliquid_execute(...)` (orders/leverage). Also gated by a review prompt.
 - Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
 - Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
+  - Deployments (and other contract actions) are recorded in wallet profiles. Read `wayfinder://wallets/{label}` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.
 
 Transaction outcome rules (don’t assume a tx hash means success):
