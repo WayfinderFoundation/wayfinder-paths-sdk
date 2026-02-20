@@ -32,7 +32,6 @@ def _tuple_to_dict(value: Any, keys: list[str]) -> dict[str, Any]:
         return dict(value)
     if isinstance(value, (list, tuple)):
         return dict(zip(keys, list(value), strict=False))
-    # web3.py can return AttributeDict-like objects which are dict subclasses
     try:
         return dict(value)
     except Exception:
@@ -72,7 +71,6 @@ class EulerV2Adapter(BaseAdapter):
             to_checksum_address(strategy_addr) if strategy_addr else None
         )
 
-        # Cache: (chain_id, vault.lower()) -> address
         self._asset_by_chain_vault: dict[tuple[int, str], str] = {}
 
     @staticmethod
@@ -309,6 +307,13 @@ class EulerV2Adapter(BaseAdapter):
 
             markets = [data for ok, data in results if ok]
             errors = [data for ok, data in results if not ok]
+            if errors:
+                logger.warning(
+                    "Euler get_all_markets: %d/%d vaults failed: %s",
+                    len(errors),
+                    len(vaults_list),
+                    "; ".join(errors),
+                )
             if not markets:
                 return False, f"All vault fetches failed: {'; '.join(errors)}"
             return True, markets
@@ -354,24 +359,24 @@ class EulerV2Adapter(BaseAdapter):
                 try:
                     vault_addr = to_checksum_address(
                         str(vi[2] if not isinstance(vi, dict) else vi.get("vault"))
-                    )  # type: ignore[index]
+                    )
                     asset_addr = to_checksum_address(
                         str(vi[3] if not isinstance(vi, dict) else vi.get("asset"))
-                    )  # type: ignore[index]
+                    )
                     shares = int(
                         vi[5] if not isinstance(vi, dict) else vi.get("shares") or 0
-                    )  # type: ignore[index]
+                    )
                     assets = int(
                         vi[6] if not isinstance(vi, dict) else vi.get("assets") or 0
-                    )  # type: ignore[index]
+                    )
                     borrowed = int(
-                        vi[7] if not isinstance(vi, dict) else vi.get("borrowed") or 0  # type: ignore[index]
+                        vi[7] if not isinstance(vi, dict) else vi.get("borrowed") or 0
                     )
                     is_controller = bool(
-                        vi[13] if not isinstance(vi, dict) else vi.get("isController")  # type: ignore[index]
+                        vi[13] if not isinstance(vi, dict) else vi.get("isController")
                     )
                     is_collateral = bool(
-                        vi[14] if not isinstance(vi, dict) else vi.get("isCollateral")  # type: ignore[index]
+                        vi[14] if not isinstance(vi, dict) else vi.get("isCollateral")
                     )
                 except Exception:
                     continue
@@ -397,7 +402,7 @@ class EulerV2Adapter(BaseAdapter):
                 "chain_id": int(chain_id),
                 "evc": evc_addr,
                 "account": acct,
-                "evcAccountInfo": evc_info,
+                "evc_account_info": evc_info,
                 "positions": positions,
                 "rewards": reward_infos,
                 "raw": out,
@@ -418,20 +423,23 @@ class EulerV2Adapter(BaseAdapter):
         if not items:
             return False, "no batch items provided"
 
-        entry = self._entry(int(chain_id))
-        evc = to_checksum_address(str(entry["evc"]))
+        try:
+            entry = self._entry(int(chain_id))
+            evc = to_checksum_address(str(entry["evc"]))
 
-        total_value = int(value) if value is not None else sum(int(i[2]) for i in items)
-        tx = await encode_call(
-            target=evc,
-            abi=EVC_ABI,
-            fn_name="batch",
-            args=[items],
-            from_address=strategy,
-            chain_id=int(chain_id),
-            value=total_value,
-        )
-        txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            total_value = int(value) if value is not None else sum(int(i[2]) for i in items)
+            tx = await encode_call(
+                target=evc,
+                abi=EVC_ABI,
+                fn_name="batch",
+                args=[items],
+                from_address=strategy,
+                chain_id=int(chain_id),
+                value=total_value,
+            )
+            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+        except Exception as e:
+            return False, str(e)
         return True, txn_hash
 
     async def lend(
@@ -484,7 +492,7 @@ class EulerV2Adapter(BaseAdapter):
         *,
         chain_id: int,
         vault: str,
-        amount: int,
+        amount: int = 0,
         receiver: str | None = None,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
