@@ -204,6 +204,49 @@ class TestGasPriceTransaction:
                 assert result["maxPriorityFeePerGas"] > 0
 
     @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_pre_eip1559_strips_eip1559_fields(self, mock_web3s_context):
+        mock_web3 = MagicMock()
+        mock_web3.eth = MagicMock()
+        mock_web3.eth.gas_price = AsyncMock(return_value=5_000_000_000)()
+        mock_web3.provider.disconnect = AsyncMock()
+        mock_web3s_context.return_value.__aenter__.return_value = [mock_web3]
+
+        transaction = {
+            "chainId": 56,
+            "maxFeePerGas": 1,
+            "maxPriorityFeePerGas": 1,
+        }
+
+        result = await gas_price_transaction(transaction)
+
+        assert "maxFeePerGas" not in result
+        assert "maxPriorityFeePerGas" not in result
+        assert result["gasPrice"] > 0
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_eip1559_strips_legacy_gas_price(self, mock_web3s_context):
+        mock_block = {"baseFeePerGas": 10_000_000_000}
+        mock_fee_history = {"reward": [[1_000_000_000] for _ in range(10)]}
+
+        mock_web3 = MagicMock()
+        mock_web3.eth = MagicMock()
+        mock_web3.eth.get_block = AsyncMock(return_value=mock_block)
+        mock_web3.eth.fee_history = AsyncMock(return_value=mock_fee_history)
+        mock_web3.provider.disconnect = AsyncMock()
+        mock_web3s_context.return_value.__aenter__.return_value = [mock_web3]
+
+        transaction = {
+            "chainId": 1,
+            "gasPrice": 1,
+        }
+
+        result = await gas_price_transaction(transaction)
+
+        assert "gasPrice" not in result
+        assert result["maxFeePerGas"] > 0
+        assert result["maxPriorityFeePerGas"] > 0
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
     async def test_eip1559_max_aggregation(self, mock_web3s_context):
         # Mock multiple web3 instances with different base fees and priority fees
         mock_block_1 = {"baseFeePerGas": 30_000_000_000}

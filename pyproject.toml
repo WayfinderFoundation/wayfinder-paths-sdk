@@ -24,6 +24,7 @@ aiocache = "^0.12.3"
 ccxt = "^4.0"
 click = "^8.1.7"
 py-clob-client = "^0.34.5"
+py-solc-x = "^2.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
