@@ -1,0 +1,14 @@
+schema_version: "0.1"
+entrypoint: "adapters.euler_v2_adapter.adapter.EulerV2Adapter"
+capabilities:
+  - "market.list"
+  - "market.read"
+  - "position.read"
+  - "lending.lend"
+  - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "collateral.set"
+  - "collateral.remove"
+dependencies: []
+
