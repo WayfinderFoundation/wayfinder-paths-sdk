@@ -42,8 +42,7 @@ def main() -> None:
     tool_input = _tool_input(payload)
     preview = build_adapter_execute_preview(tool_input)
     summary = (
-        str(preview.get("summary") or "").strip()
-        or "Review adapter_execute() request."
+        str(preview.get("summary") or "").strip() or "Review adapter_execute() request."
     )
 
     out = {
@@ -58,4 +57,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

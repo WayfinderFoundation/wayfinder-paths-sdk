@@ -9,7 +9,9 @@ from wayfinder_paths.mcp.tools.adapter_execute import adapter_execute
 
 
 @pytest.mark.asyncio
-async def test_adapter_execute_rejects_non_allowlisted_method(tmp_path: Path, monkeypatch):
+async def test_adapter_execute_rejects_non_allowlisted_method(
+    tmp_path: Path, monkeypatch
+):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 
     wallet = {
@@ -88,4 +90,3 @@ async def test_adapter_execute_forbids_sensitive_kwargs(tmp_path: Path, monkeypa
 
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
-

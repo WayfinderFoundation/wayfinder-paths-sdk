@@ -9,8 +9,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
     HYPE_FEE_WALLET,
     HYPERLIQUID_BRIDGE_ADDRESS,
 )
-from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-from wayfinder_paths.core.constants.contracts import AVANTIS_AVUSDC, BASE_USDC
 from wayfinder_paths.core.constants.polymarket import (
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,

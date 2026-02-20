@@ -11,7 +11,13 @@ from eth_account import Account
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.mcp.preview import build_adapter_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
-from wayfinder_paths.mcp.utils import err, find_wallet_by_label, ok, read_yaml, repo_root
+from wayfinder_paths.mcp.utils import (
+    err,
+    find_wallet_by_label,
+    ok,
+    read_yaml,
+    repo_root,
+)
 
 _FORBIDDEN_KWARGS = frozenset(
     {
@@ -50,7 +56,7 @@ def _import_entrypoint(entrypoint: str) -> type:
             if not isinstance(obj, type):
                 raise TypeError(f"Entry point {entrypoint} is not a class")
             return obj
-        except Exception as exc:  
+        except Exception as exc:
             last_exc = exc
     raise ImportError(f"Failed to import entrypoint: {entrypoint}") from last_exc
 
@@ -175,7 +181,10 @@ def _init_kwargs_for_adapter(
         if name in kwargs:
             continue
 
-        if name.endswith("_signing_callback") or name in {"sign_callback", "signing_callback"}:
+        if name.endswith("_signing_callback") or name in {
+            "sign_callback",
+            "signing_callback",
+        }:
             if name.startswith("main_"):
                 cb = main_sign_cb
             elif name.startswith("strategy_"):
@@ -286,7 +295,7 @@ async def adapter_execute(
 
     try:
         adapter_class = _import_entrypoint(str(entrypoint))
-    except Exception as exc:  
+    except Exception as exc:
         return err("import_error", str(exc))
 
     init_kwargs = _init_kwargs_for_adapter(
@@ -304,7 +313,7 @@ async def adapter_execute(
         # Best-effort fallback for adapters with non-standard init signatures.
         try:
             adapter_obj = adapter_class(config=cfg)
-        except Exception as exc:  
+        except Exception as exc:
             return err("adapter_error", f"Failed to instantiate adapter: {exc}")
 
     chain_id = getattr(adapter_obj, "chain_id", None)
@@ -331,7 +340,9 @@ async def adapter_execute(
         if isinstance(res, tuple) and len(res) == 2 and isinstance(res[0], bool):
             success, output = res
 
-        status = "confirmed" if success is True else "failed" if success is False else "ok"
+        status = (
+            "confirmed" if success is True else "failed" if success is False else "ok"
+        )
         if strat_wallet and isinstance(strat_wallet.get("address"), str):
             _annotate(
                 address=str(strat_wallet["address"]),
@@ -355,7 +366,7 @@ async def adapter_execute(
                 "output": output,
             }
         )
-    except Exception as exc:  
+    except Exception as exc:
         if strat_wallet and isinstance(strat_wallet.get("address"), str):
             _annotate(
                 address=str(strat_wallet["address"]),
@@ -376,4 +387,3 @@ async def adapter_execute(
                     await maybe
             except Exception:
                 pass
-
