@@ -10,4 +10,21 @@ capabilities:
   - "collateral.toggle"
   - "rewards.claim"
 dependencies: []
-
+mcp_methods:
+  - name: "get_all_markets"
+  - name: "get_full_user_state"
+  - name: "get_full_user_state_per_chain"
+  - name: "lend"
+    write: true
+  - name: "unlend"
+    write: true
+  - name: "borrow"
+    write: true
+  - name: "repay"
+    write: true
+  - name: "set_collateral"
+    write: true
+  - name: "remove_collateral"
+    write: true
+  - name: "claim_all_rewards"
+    write: true

@@ -20,12 +20,25 @@ async def list_adapters() -> str:
         if not manifest_path.exists():
             continue
         manifest = read_yaml(manifest_path)
+        raw_methods = manifest.get("mcp_methods")
+        if raw_methods is None and isinstance(manifest.get("mcp"), dict):
+            raw_methods = (manifest.get("mcp") or {}).get("methods")
+        mcp_methods: list[str] = []
+        if isinstance(raw_methods, list):
+            for m in raw_methods:
+                if isinstance(m, str) and m.strip():
+                    mcp_methods.append(m.strip())
+                elif isinstance(m, dict):
+                    name = m.get("name")
+                    if isinstance(name, str) and name.strip():
+                        mcp_methods.append(name.strip())
         items.append(
             {
                 "name": child.name,
                 "entrypoint": manifest.get("entrypoint"),
                 "capabilities": manifest.get("capabilities", []),
                 "dependencies": manifest.get("dependencies", []),
+                "mcp_methods": mcp_methods,
             }
         )
 

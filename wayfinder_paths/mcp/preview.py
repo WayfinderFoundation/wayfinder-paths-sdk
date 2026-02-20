@@ -193,6 +193,45 @@ def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, A
     return {"summary": header + base}
 
 
+def build_adapter_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+    req = tool_input if isinstance(tool_input, dict) else {}
+    if not req:
+        return {"summary": "ADAPTER_EXECUTE missing parameters."}
+
+    adapter = str(req.get("adapter") or "").strip()
+    method = str(req.get("method") or "").strip()
+    wallet_label = req.get("wallet_label")
+    main_wallet_label = req.get("main_wallet_label")
+    strategy_wallet_label = req.get("strategy_wallet_label")
+
+    label_for_address = None
+    if isinstance(strategy_wallet_label, str) and strategy_wallet_label.strip():
+        label_for_address = strategy_wallet_label.strip()
+    elif isinstance(main_wallet_label, str) and main_wallet_label.strip():
+        label_for_address = main_wallet_label.strip()
+    elif isinstance(wallet_label, str) and wallet_label.strip():
+        label_for_address = wallet_label.strip()
+
+    w = find_wallet_by_label(label_for_address) if label_for_address else None
+    sender = normalize_address((w or {}).get("address")) if w else None
+
+    args = req.get("args")
+    kwargs = req.get("kwargs")
+
+    header = "ADAPTER_EXECUTE\n"
+    base = (
+        f"adapter: {adapter or '(missing)'}\n"
+        f"method: {method or '(missing)'}\n"
+        f"wallet_label: {wallet_label}\n"
+        f"main_wallet_label: {main_wallet_label}\n"
+        f"strategy_wallet_label: {strategy_wallet_label}\n"
+        f"address: {sender or '(unknown)'}\n"
+        f"args: {args}\n"
+        f"kwargs: {kwargs}"
+    )
+    return {"summary": header + base}
+
+
 def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     req = tool_input if isinstance(tool_input, dict) else {}
     if not req:
