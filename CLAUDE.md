@@ -51,6 +51,7 @@ Simulation / scenario testing (vnet only):
 Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
+- Adapter method calls: use MCP `adapter_execute(...)` (only methods allowlisted in each adapter's `manifest.yaml`). Also gated by a review prompt.
 - Hyperliquid perp writes: use MCP `hyperliquid_execute(...)` (orders/leverage). Also gated by a review prompt.
 - Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.

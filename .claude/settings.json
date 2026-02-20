@@ -12,6 +12,7 @@
     ],
     "ask": [
       "mcp__wayfinder__execute",
+      "mcp__wayfinder__adapter_execute",
       "mcp__wayfinder__run_script",
       "mcp__wayfinder__hyperliquid_execute",
       "mcp__wayfinder__polymarket_execute",
@@ -46,6 +47,15 @@
           {
             "type": "command",
             "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_execute_review.py\""
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__wayfinder__adapter_execute",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_adapter_execute_review.py\""
           }
         ]
       },

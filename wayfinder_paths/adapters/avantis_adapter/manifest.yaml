@@ -6,4 +6,12 @@ capabilities:
   - "vault.deposit"
   - "vault.withdraw"
 dependencies: []
-
+mcp_methods:
+  - name: "get_all_markets"
+  - name: "get_vault_manager_state"
+  - name: "get_pos"
+  - name: "get_full_user_state"
+  - name: "deposit"
+    write: true
+  - name: "withdraw"
+    write: true
