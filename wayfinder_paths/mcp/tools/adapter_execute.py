@@ -235,6 +235,15 @@ async def adapter_execute(
             {"forbidden_keys": bad_keys},
         )
 
+    if adapter_init_kwargs:
+        bad_init_keys = sorted(k for k in adapter_init_kwargs.keys() if str(k) in _FORBIDDEN_KWARGS)
+        if bad_init_keys:
+            return err(
+                "invalid_request",
+                "adapter_init_kwargs contains forbidden keys",
+                {"forbidden_keys": bad_init_keys},
+            )
+
     target = _adapter_dir(adapter_name)
     if not target.exists():
         return err("not_found", f"Unknown adapter: {adapter_name}")
@@ -315,6 +324,8 @@ async def adapter_execute(
             adapter_obj = adapter_class(config=cfg)
         except Exception as exc:
             return err("adapter_error", f"Failed to instantiate adapter: {exc}")
+    except Exception as exc:
+        return err("adapter_error", f"Failed to instantiate adapter: {exc}")
 
     chain_id = getattr(adapter_obj, "chain_id", None)
     try:
