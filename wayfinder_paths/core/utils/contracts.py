@@ -57,11 +57,6 @@ async def build_deploy_transaction(
             }
         )
 
-    # Remove fields that send_transaction() will set
-    tx.pop("gas", None)
-    tx.pop("gasPrice", None)
-    tx.pop("nonce", None)
-
     return dict(tx)
 
 

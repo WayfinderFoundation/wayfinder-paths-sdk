@@ -129,11 +129,20 @@ async def gas_price_transaction(transaction: dict):
     chain_id = get_transaction_chain_id(transaction)
     async with web3s_from_chain_id(chain_id) as web3s:
         if chain_id in PRE_EIP_1559_CHAIN_IDS:
+            # Ensure the tx does not contain EIP-1559 fields; some builders may
+            # populate both legacy and dynamic fee keys.
+            transaction.pop("maxFeePerGas", None)
+            transaction.pop("maxPriorityFeePerGas", None)
+
             gas_prices = await asyncio.gather(*[_get_gas_price(web3) for web3 in web3s])
             gas_price = max(gas_prices)
 
             transaction["gasPrice"] = int(gas_price * SUGGESTED_GAS_PRICE_MULTIPLIER)
         else:
+            # Ensure the tx does not contain legacy gasPrice when building a
+            # dynamic-fee (EIP-1559) transaction.
+            transaction.pop("gasPrice", None)
+
             base_fees = await asyncio.gather(*[_get_base_fee(web3) for web3 in web3s])
             priority_fees = await asyncio.gather(
                 *[_get_priority_fee(web3) for web3 in web3s]
