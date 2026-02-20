@@ -42,9 +42,9 @@ class UniswapV3BaseAdapter(BaseAdapter):
         super().__init__(adapter_name, config)
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         self.chain_id = int(chain_id)
-        self.npm_address = to_checksum_address(str(npm_address))
-        self.factory_address = to_checksum_address(str(factory_address))
-        self.owner = to_checksum_address(str(owner))
+        self.npm_address = to_checksum_address(npm_address)
+        self.factory_address = to_checksum_address(factory_address)
+        self.owner = to_checksum_address(owner)
         self._factory_abi = factory_abi or UNISWAP_V3_FACTORY_ABI
 
     def _tick_spacing_for_fee(self, fee: int) -> int:

@@ -50,7 +50,7 @@ class MorphoAdapter(BaseAdapter):
             or (cfg.get("bundler3") or {}).get("address")
         )
         self.bundler_address: str | None = (
-            to_checksum_address(str(bundler_addr)) if bundler_addr else None
+            to_checksum_address(bundler_addr) if bundler_addr else None
         )
 
         self._morpho_address_cache: dict[int, str] = {}
@@ -64,14 +64,12 @@ class MorphoAdapter(BaseAdapter):
 
         entry = MORPHO_BY_CHAIN.get(int(chain_id))
         if entry and entry.get("morpho"):
-            addr = to_checksum_address(str(entry["morpho"]))
+            addr = to_checksum_address(entry["morpho"])
             self._morpho_address_cache[cid] = addr
             return addr
 
         # Fallback to the Morpho API if constants are missing/out-of-date.
-        addr = to_checksum_address(
-            str(await MORPHO_CLIENT.get_morpho_address(chain_id=cid))
-        )
+        addr = to_checksum_address(await MORPHO_CLIENT.get_morpho_address(chain_id=cid))
         self._morpho_address_cache[cid] = addr
         return addr
 
@@ -82,14 +80,14 @@ class MorphoAdapter(BaseAdapter):
 
         entry = MORPHO_BY_CHAIN.get(int(chain_id))
         if entry and entry.get("public_allocator"):
-            addr = to_checksum_address(str(entry["public_allocator"]))
+            addr = to_checksum_address(entry["public_allocator"])
             self._public_allocator_address_cache[cid] = addr
             return addr
 
         by_chain = await MORPHO_CLIENT.get_morpho_by_chain()
         api_entry = by_chain.get(int(chain_id)) if isinstance(by_chain, dict) else None
         if api_entry and api_entry.get("public_allocator"):
-            addr = to_checksum_address(str(api_entry["public_allocator"]))
+            addr = to_checksum_address(api_entry["public_allocator"])
             self._public_allocator_address_cache[cid] = addr
             return addr
 
@@ -144,7 +142,7 @@ class MorphoAdapter(BaseAdapter):
                 target=morpho,
                 abi=MORPHO_BLUE_ABI,
                 fn_name="setAuthorization",
-                args=[to_checksum_address(str(authorized)), bool(is_authorized)],
+                args=[to_checksum_address(authorized), is_authorized],
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
@@ -169,8 +167,8 @@ class MorphoAdapter(BaseAdapter):
 
             if isinstance(authorization, dict):
                 authorization_tuple = (
-                    to_checksum_address(str(authorization["authorizer"])),
-                    to_checksum_address(str(authorization["authorized"])),
+                    to_checksum_address(authorization["authorizer"]),
+                    to_checksum_address(authorization["authorized"]),
                     bool(authorization["isAuthorized"]),
                     int(authorization["nonce"]),
                     int(authorization["deadline"]),
@@ -223,10 +221,10 @@ class MorphoAdapter(BaseAdapter):
             raise ValueError(f"Invalid market.lltv: {lltv_raw}") from exc
 
         return (
-            to_checksum_address(str(loan_addr)),
-            to_checksum_address(str(collateral_addr)),
-            to_checksum_address(str(oracle_addr)),
-            to_checksum_address(str(irm_addr)),
+            to_checksum_address(loan_addr),
+            to_checksum_address(collateral_addr),
+            to_checksum_address(oracle_addr),
+            to_checksum_address(irm_addr),
             int(lltv),
         )
 
@@ -618,7 +616,7 @@ class MorphoAdapter(BaseAdapter):
         version: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            addr = to_checksum_address(str(vault_address))
+            addr = to_checksum_address(vault_address)
             v = (version or "").lower()
             if v in ("v2", "2", "vaultv2"):
                 vault = await MORPHO_CLIENT.get_vault_v2_by_address(
@@ -648,10 +646,10 @@ class MorphoAdapter(BaseAdapter):
     async def _vault_asset(self, *, chain_id: int, vault_address: str) -> str:
         async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
             contract = web3.eth.contract(
-                address=to_checksum_address(str(vault_address)), abi=ERC4626_ABI
+                address=to_checksum_address(vault_address), abi=ERC4626_ABI
             )
             asset = await contract.functions.asset().call(block_identifier="pending")
-            return to_checksum_address(str(asset))
+            return to_checksum_address(asset)
 
     async def vault_deposit(
         self,
@@ -668,7 +666,7 @@ class MorphoAdapter(BaseAdapter):
             return False, "assets must be positive"
 
         try:
-            vault = to_checksum_address(str(vault_address))
+            vault = to_checksum_address(vault_address)
             asset = await self._vault_asset(chain_id=int(chain_id), vault_address=vault)
 
             approved = await ensure_allowance(
@@ -711,7 +709,7 @@ class MorphoAdapter(BaseAdapter):
             return False, "assets must be positive"
 
         try:
-            vault = to_checksum_address(str(vault_address))
+            vault = to_checksum_address(vault_address)
             tx = await encode_call(
                 target=vault,
                 abi=ERC4626_ABI,
@@ -740,7 +738,7 @@ class MorphoAdapter(BaseAdapter):
             return False, "shares must be positive"
 
         try:
-            vault = to_checksum_address(str(vault_address))
+            vault = to_checksum_address(vault_address)
             asset = await self._vault_asset(chain_id=int(chain_id), vault_address=vault)
 
             approved = await ensure_allowance(
@@ -783,7 +781,7 @@ class MorphoAdapter(BaseAdapter):
             return False, "shares must be positive"
 
         try:
-            vault = to_checksum_address(str(vault_address))
+            vault = to_checksum_address(vault_address)
             tx = await encode_call(
                 target=vault,
                 abi=ERC4626_ABI,
@@ -1024,7 +1022,7 @@ class MorphoAdapter(BaseAdapter):
                 if amt <= int(min_claim_amount):
                     continue
                 users.append(acct)
-                tokens.append(to_checksum_address(str(token)))
+                tokens.append(to_checksum_address(token))
                 amounts.append(int(amt))
                 proofs.append([str(p) for p in prf if isinstance(p, str)])
 
@@ -1085,7 +1083,7 @@ class MorphoAdapter(BaseAdapter):
                 tx = {
                     "chainId": int(chain_id),
                     "from": acct,
-                    "to": to_checksum_address(str(distributor)),
+                    "to": to_checksum_address(distributor),
                     "data": str(tx_data),
                     "value": 0,
                 }
@@ -1552,9 +1550,9 @@ class MorphoAdapter(BaseAdapter):
                 contract = web3.eth.contract(
                     address=allocator, abi=PUBLIC_ALLOCATOR_ABI
                 )
-                fee = await contract.functions.fee(
-                    to_checksum_address(str(vault))
-                ).call(block_identifier="pending")
+                fee = await contract.functions.fee(to_checksum_address(vault)).call(
+                    block_identifier="pending"
+                )
                 return True, int(fee or 0)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1623,7 +1621,7 @@ class MorphoAdapter(BaseAdapter):
                 abi=PUBLIC_ALLOCATOR_ABI,
                 fn_name="reallocateTo",
                 args=[
-                    to_checksum_address(str(vault)),
+                    to_checksum_address(vault),
                     withdrawal_tuples,
                     supply_market_params,
                 ],
@@ -1781,7 +1779,6 @@ class MorphoAdapter(BaseAdapter):
                     f"Insufficient reallocatable liquidity: needed={needed} available={best_total}",
                 )
 
-            # Build withdrawals.
             remaining = needed
             withdrawals: list[tuple[MarketParamsTuple, int]] = []
             for it in sorted(
@@ -1826,7 +1823,6 @@ class MorphoAdapter(BaseAdapter):
                     if bundler_address
                     else to_checksum_address(self.bundler_address)
                 )
-                # Build bundler calls.
                 call1 = await self._encode_data(
                     chain_id=int(chain_id),
                     target=bundler,

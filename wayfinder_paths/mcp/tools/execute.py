@@ -451,7 +451,7 @@ async def execute(
                 chain_id=int(from_chain_id),
                 token_address=token_addr,
                 owner=to_checksum_address(sender),
-                spender=to_checksum_address(str(spender)),
+                spender=to_checksum_address(spender),
                 amount=need,
             )
             if approval_tx:

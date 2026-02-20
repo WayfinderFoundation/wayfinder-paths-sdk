@@ -559,7 +559,7 @@ class MoonwellAdapter(BaseAdapter):
                 market_meta: list[str] = []
 
                 for m in all_markets or []:
-                    mtoken = to_checksum_address(str(m))
+                    mtoken = to_checksum_address(m)
                     mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
                     market_meta.append(mtoken)
 
@@ -780,7 +780,7 @@ class MoonwellAdapter(BaseAdapter):
                 # Build a filtered list of (market_info, market_address) pairs to ensure
                 # markets_info and market_addrs always have matching lengths.
                 filtered_markets = [
-                    (m, to_checksum_address(str(m[0])))
+                    (m, to_checksum_address(m[0]))
                     for m in markets_info
                     if m and len(m) > 0 and m[0]
                 ]
@@ -935,7 +935,7 @@ class MoonwellAdapter(BaseAdapter):
 
                             for inc in incentives:
                                 try:
-                                    token = to_checksum_address(str(inc[0]))
+                                    token = to_checksum_address(inc[0])
                                     supply_speed = int(inc[1])
                                     borrow_speed = int(inc[2])
                                 except Exception:  # noqa: BLE001
