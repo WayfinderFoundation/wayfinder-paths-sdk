@@ -108,7 +108,7 @@ async def get_token_balance(
         if token_address is None:
             raise ValueError("token_address is required for ERC20 balance reads")
 
-        checksum_token = w3.to_checksum_address(str(token_address))
+        checksum_token = w3.to_checksum_address(token_address)
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
         balance = await contract.functions.balanceOf(checksum_wallet).call(
             block_identifier=block_identifier
@@ -136,7 +136,7 @@ async def get_token_decimals(
         if token_address is None:
             raise ValueError("token_address is required for ERC20 decimals reads")
 
-        checksum_token = w3.to_checksum_address(str(token_address))
+        checksum_token = w3.to_checksum_address(token_address)
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
         decimals = await contract.functions.decimals().call(
             block_identifier=block_identifier
@@ -172,7 +172,7 @@ async def get_token_balance_with_decimals(
         if token_address is None:
             raise ValueError("token_address is required for ERC20 balance reads")
 
-        checksum_token = w3.to_checksum_address(str(token_address))
+        checksum_token = w3.to_checksum_address(token_address)
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
         balance_coro = contract.functions.balanceOf(checksum_wallet).call(
             block_identifier=balance_block_identifier

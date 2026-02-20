@@ -209,11 +209,11 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         addr = wallet.get("address")
         if not addr:
             raise ValueError("strategy_wallet.address is required for ProjectX adapter")
-        owner = to_checksum_address(str(addr))
+        owner = to_checksum_address(addr)
 
         pool_address = _resolve_pool_address(config)
         self.pool_address: str | None = (
-            to_checksum_address(str(pool_address)) if pool_address else None
+            to_checksum_address(pool_address) if pool_address else None
         )
 
         super().__init__(

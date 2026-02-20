@@ -277,7 +277,6 @@ class StablecoinYieldStrategy(Strategy):
             logger.error(f"Error fetching USDC token info: {e}")
             self.usdc_token_info = {}
 
-        # Always track USDC as baseline token
         if self.usdc_token_info.get("token_id"):
             self._track_token(self.usdc_token_info.get("token_id"))
 
@@ -304,7 +303,6 @@ class StablecoinYieldStrategy(Strategy):
                 logger.info(
                     f"Gas token loaded: {gas_token_data.get('symbol', 'Unknown')}"
                 )
-                # Track gas token (but don't count it as a strategy asset)
                 if self.gas_token.get("token_id"):
                     self._track_token(self.gas_token.get("token_id"))
             else:
@@ -393,7 +391,6 @@ class StablecoinYieldStrategy(Strategy):
             )
             if success and isinstance(pool_list_response, dict):
                 pools = pool_list_response.get("pools", [])
-                # Search for matching pool by id or constructed identifier
                 for identifier in pool_ids:
                     if not isinstance(identifier, str):
                         continue
@@ -1136,7 +1133,6 @@ class StablecoinYieldStrategy(Strategy):
             strategy_name=self.name,
         )
 
-        # Track the new target pool token
         if target_pool and target_pool.get("token_id"):
             self._track_token(target_pool.get("token_id"))
 
@@ -1235,7 +1231,6 @@ class StablecoinYieldStrategy(Strategy):
             except Exception:
                 continue
 
-            # Construct target token ID for swap
             target_token_id_for_swap = f"{target_chain}_{target_address}"
 
             try:
@@ -1545,7 +1540,6 @@ class StablecoinYieldStrategy(Strategy):
                 gassed_up=gas_balance >= self.GAS_MAXIMUM * self.GAS_SAFETY_FRACTION,
             )
 
-        # Refresh tracked balances
         await self._refresh_tracked_balances()
 
         total_value = 0.0
@@ -1699,7 +1693,6 @@ class StablecoinYieldStrategy(Strategy):
                 logger.error(f"Error liquidating {token_id}: {e}")
                 continue
 
-        # Refresh USDC balance after swaps
         success, usdc_wei = await self.balance_adapter.get_balance(
             token_id=usdc_token_id,
             wallet_address=self._get_strategy_wallet_address(),

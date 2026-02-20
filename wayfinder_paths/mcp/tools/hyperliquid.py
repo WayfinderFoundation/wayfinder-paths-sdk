@@ -161,37 +161,37 @@ async def hyperliquid(
         ok_dep, final_bal = await adapter.wait_for_deposit(
             addr,
             inc,
-            timeout_s=int(timeout_s),
-            poll_interval_s=int(poll_interval_s),
+            timeout_s=timeout_s,
+            poll_interval_s=poll_interval_s,
         )
         return ok(
             {
                 "wallet_address": addr,
                 "action": action,
                 "expected_increase": inc,
-                "confirmed": bool(ok_dep),
+                "confirmed": ok_dep,
                 "final_balance_usd": float(final_bal),
-                "timeout_s": int(timeout_s),
-                "poll_interval_s": int(poll_interval_s),
+                "timeout_s": timeout_s,
+                "poll_interval_s": poll_interval_s,
             }
         )
 
     if action == "wait_for_withdrawal":
         ok_wd, withdrawals = await adapter.wait_for_withdrawal(
             addr,
-            lookback_s=int(lookback_s),
-            max_poll_time_s=int(max_poll_time_s),
-            poll_interval_s=int(poll_interval_s),
+            lookback_s=lookback_s,
+            max_poll_time_s=max_poll_time_s,
+            poll_interval_s=poll_interval_s,
         )
         return ok(
             {
                 "wallet_address": addr,
                 "action": action,
-                "confirmed": bool(ok_wd),
+                "confirmed": ok_wd,
                 "withdrawals": withdrawals,
-                "lookback_s": int(lookback_s),
-                "max_poll_time_s": int(max_poll_time_s),
-                "poll_interval_s": int(poll_interval_s),
+                "lookback_s": lookback_s,
+                "max_poll_time_s": max_poll_time_s,
+                "poll_interval_s": poll_interval_s,
             }
         )
 
@@ -430,13 +430,20 @@ async def hyperliquid_execute(
             return response
 
         ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
+            resolved_asset_id, lev, is_cross, sender
         )
         effects.append(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
         )
         status = "confirmed" if ok_lev else "failed"
-        response = ok(
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="update_leverage",
+            status=status,
+            details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
+        )
+        return ok(
             {
                 "status": status,
                 "action": action,
@@ -448,15 +455,6 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="update_leverage",
-            status=status,
-            details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
-        )
-
-        return response
 
     if action == "cancel_order":
         if cancel_cloid:
@@ -694,7 +692,7 @@ async def hyperliquid_execute(
             response = err("invalid_request", "leverage must be positive")
             return response
         ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
+            resolved_asset_id, lev, is_cross, sender
         )
         effects.append(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
@@ -761,11 +759,11 @@ async def hyperliquid_execute(
     if order_type == "limit":
         ok_order, res = await adapter.place_limit_order(
             resolved_asset_id,
-            bool(is_buy),
+            is_buy,
             float(price),
             float(sz_valid),
             sender,
-            reduce_only=bool(reduce_only),
+            reduce_only=reduce_only,
             builder=builder,
         )
         effects.append(
@@ -774,11 +772,11 @@ async def hyperliquid_execute(
     else:
         ok_order, res = await adapter.place_market_order(
             resolved_asset_id,
-            bool(is_buy),
+            is_buy,
             float(slippage),
             float(sz_valid),
             sender,
-            reduce_only=bool(reduce_only),
+            reduce_only=reduce_only,
             cloid=cloid,
             builder=builder,
         )
@@ -798,12 +796,12 @@ async def hyperliquid_execute(
             "coin": coin,
             "order": {
                 "order_type": order_type,
-                "is_buy": bool(is_buy),
+                "is_buy": is_buy,
                 "size_requested": float(sz),
                 "size_valid": float(sz_valid),
                 "price": float(price) if price is not None else None,
                 "slippage": float(slippage),
-                "reduce_only": bool(reduce_only),
+                "reduce_only": reduce_only,
                 "cloid": cloid,
                 "builder": builder,
                 "sizing": sizing,
@@ -821,7 +819,7 @@ async def hyperliquid_execute(
             "asset_id": resolved_asset_id,
             "coin": coin,
             "order_type": order_type,
-            "is_buy": bool(is_buy),
+            "is_buy": is_buy,
             "size": float(sz_valid),
         },
     )

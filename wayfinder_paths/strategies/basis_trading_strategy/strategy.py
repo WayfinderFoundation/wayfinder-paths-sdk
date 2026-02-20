@@ -268,7 +268,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             self.logger.info("No existing perp positions found")
             return
 
-        # Find SHORT perp position (basis trading uses short perp)
         perp_position = None
         for pos_wrapper in asset_positions:
             pos = pos_wrapper.get("position", {})
@@ -536,8 +535,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                     f"Found ${strategy_usdc:.2f} USDC in strategy wallet, bridging to Hyperliquid"
                 )
 
-                # Convert USDC to raw units (6 decimals)
-                usdc_raw = int(strategy_usdc * self.TOKEN_DECIMALS)
+                usdc_raw = int(strategy_usdc * self.TOKEN_DECIMALS)  # 6 decimals
                 success, result = await self.balance_adapter.send_to_address(
                     token_id=USDC_ARBITRUM_TOKEN_ID,
                     amount=usdc_raw,

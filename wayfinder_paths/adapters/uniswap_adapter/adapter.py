@@ -30,7 +30,7 @@ class UniswapAdapter(UniswapV3BaseAdapter):
         addr = wallet.get("address")
         if not addr:
             raise ValueError("strategy_wallet.address is required for UniswapAdapter")
-        owner = to_checksum_address(str(addr))
+        owner = to_checksum_address(addr)
 
         super().__init__(
             "uniswap_adapter",

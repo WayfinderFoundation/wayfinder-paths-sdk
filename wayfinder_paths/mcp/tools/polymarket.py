@@ -218,13 +218,13 @@ async def polymarket(
         if action == "status":
             ok_state, state = await adapter.get_full_user_state(
                 account=str(acct),
-                include_orders=bool(include_orders),
-                include_activity=bool(include_activity),
-                activity_limit=int(activity_limit),
-                include_trades=bool(include_trades),
-                trades_limit=int(trades_limit),
-                positions_limit=int(positions_limit),
-                max_positions_pages=int(max_positions_pages),
+                include_orders=include_orders,
+                include_activity=include_activity,
+                activity_limit=activity_limit,
+                include_trades=include_trades,
+                trades_limit=trades_limit,
+                positions_limit=positions_limit,
+                max_positions_pages=max_positions_pages,
             )
             return ok(
                 {
@@ -248,12 +248,12 @@ async def polymarket(
 
             ok_rows, rows = await adapter.search_markets_fuzzy(
                 query=q,
-                limit=int(limit),
-                page=int(page),
-                keep_closed_markets=bool(keep_closed_markets),
+                limit=limit,
+                page=page,
+                keep_closed_markets=keep_closed_markets,
                 events_status=events_status,
                 end_date_min=end_date_min,
-                rerank=bool(rerank),
+                rerank=rerank,
             )
             if not ok_rows:
                 return err("error", str(rows))
@@ -268,8 +268,8 @@ async def polymarket(
         if action == "trending":
             ok_rows, rows = await adapter.list_markets(
                 closed=False,
-                limit=int(limit),
-                offset=int(offset),
+                limit=limit,
+                offset=offset,
                 order="volume24hr",
                 ascending=False,
             )
@@ -463,11 +463,11 @@ async def polymarket_execute(
                 return err("invalid_request", "amount is required for bridge_deposit")
             rcpt = normalize_address(recipient_address) or sender
             ok_dep, res = await adapter.bridge_deposit(
-                from_chain_id=int(from_chain_id),
-                from_token_address=str(from_token_address),
+                from_chain_id=from_chain_id,
+                from_token_address=from_token_address,
                 amount=float(amount),
-                recipient_address=str(rcpt),
-                token_decimals=int(token_decimals),
+                recipient_address=rcpt,
+                token_decimals=token_decimals,
             )
             effects.append(
                 {
@@ -486,8 +486,8 @@ async def polymarket_execute(
                 chain_id=int(from_chain_id),
                 details={
                     "amount": float(amount),
-                    "from_token_address": str(from_token_address),
-                    "recipient_address": str(rcpt),
+                    "from_token_address": from_token_address,
+                    "recipient_address": rcpt,
                 },
             )
             return _done(status)
@@ -500,10 +500,10 @@ async def polymarket_execute(
             rcpt = normalize_address(recipient_addr) or sender
             ok_wd, res = await adapter.bridge_withdraw(
                 amount_usdce=float(amount_usdce),
-                to_chain_id=int(to_chain_id),
-                to_token_address=str(to_token_address),
-                recipient_addr=str(rcpt),
-                token_decimals=int(token_decimals),
+                to_chain_id=to_chain_id,
+                to_token_address=to_token_address,
+                recipient_addr=rcpt,
+                token_decimals=token_decimals,
             )
             effects.append(
                 {
@@ -519,12 +519,12 @@ async def polymarket_execute(
                 label=want,
                 action="bridge_withdraw",
                 status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 details={
                     "amount_usdce": float(amount_usdce),
-                    "to_chain_id": int(to_chain_id),
-                    "to_token_address": str(to_token_address),
-                    "recipient_addr": str(rcpt),
+                    "to_chain_id": to_chain_id,
+                    "to_token_address": to_token_address,
+                    "recipient_addr": rcpt,
                 },
             )
             return _done(status)
@@ -577,7 +577,7 @@ async def polymarket_execute(
                 label=want,
                 action=action,
                 status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 details={
                     "market_slug": str(market_slug) if market_slug else None,
                     "token_id": str(token_id) if token_id else None,
@@ -673,7 +673,7 @@ async def polymarket_execute(
                 label=want,
                 action="close_position",
                 status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 details={"token_id": str(tid), "shares": float(sell_shares)},
             )
             return _done(status)
@@ -694,7 +694,7 @@ async def polymarket_execute(
                 side=side,
                 price=float(price),
                 size=float(size),
-                post_only=bool(post_only),
+                post_only=post_only,
             )
             effects.append(
                 {
@@ -710,13 +710,13 @@ async def polymarket_execute(
                 label=want,
                 action="place_limit_order",
                 status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 details={
                     "token_id": tid,
                     "side": side,
                     "price": float(price),
                     "size": float(size),
-                    "post_only": bool(post_only),
+                    "post_only": post_only,
                 },
             )
             return _done(status)
@@ -740,7 +740,7 @@ async def polymarket_execute(
                 label=want,
                 action="cancel_order",
                 status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 details={"order_id": oid},
             )
             return _done(status)
@@ -766,7 +766,7 @@ async def polymarket_execute(
                 label=want,
                 action="redeem_positions",
                 status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
+                chain_id=POLYGON_CHAIN_ID,
                 details={"condition_id": cid},
             )
             return _done(status)

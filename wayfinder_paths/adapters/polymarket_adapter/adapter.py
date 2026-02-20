@@ -177,6 +177,29 @@ class PolymarketAdapter(BaseAdapter):
             return_exceptions=True,
         )
 
+    async def _request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        *,
+        expected_type: type = dict,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | list[dict[str, Any]] | None = None,
+    ) -> tuple[bool, Any]:
+        try:
+            if method == "GET":
+                res = await client.get(path, params=params)
+            else:
+                res = await client.post(path, json=json_body, params=params)
+            res.raise_for_status()
+            data = res.json()
+            if not isinstance(data, expected_type):
+                return False, f"Unexpected {path} response: {type(data).__name__}"
+            return True, data
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     @staticmethod
     def _normalize_market(market: dict[str, Any]) -> dict[str, Any]:
         out = dict(market)
@@ -204,16 +227,12 @@ class PolymarketAdapter(BaseAdapter):
             params["ascending"] = str(ascending).lower()
         params.update({k: v for k, v in filters.items() if v is not None})
 
-        try:
-            res = await self._gamma_http.get("/markets", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /markets response: {type(data).__name__}"
-            normalized = [self._normalize_market(m) for m in data]
-            return True, normalized
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        ok_req, data = await self._request(
+            self._gamma_http, "GET", "/markets", params=params, expected_type=list
+        )
+        if not ok_req:
+            return False, data
+        return True, [self._normalize_market(m) for m in data]
 
     async def list_events(
         self,
@@ -234,43 +253,28 @@ class PolymarketAdapter(BaseAdapter):
             params["ascending"] = str(ascending).lower()
         params.update({k: v for k, v in filters.items() if v is not None})
 
-        try:
-            res = await self._gamma_http.get("/events", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /events response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._gamma_http, "GET", "/events", params=params, expected_type=list
+        )
 
     async def get_market_by_slug(self, slug: str) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._gamma_http.get(f"/markets/slug/{slug}")
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /markets/slug response: {type(data).__name__}",
-                )
-            return True, self._normalize_market(data)
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        ok_req, data = await self._request(
+            self._gamma_http, "GET", f"/markets/slug/{slug}"
+        )
+        if not ok_req:
+            return False, data
+        return True, self._normalize_market(data)
 
     async def get_event_by_slug(self, slug: str) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._gamma_http.get(f"/events/slug/{slug}")
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /events/slug response: {type(data).__name__}"
-            if "markets" in data:
-                data = dict(data)
-                data["markets"] = [self._normalize_market(m) for m in data["markets"]]
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        ok_req, data = await self._request(
+            self._gamma_http, "GET", f"/events/slug/{slug}"
+        )
+        if not ok_req:
+            return False, data
+        if "markets" in data:
+            data = dict(data)
+            data["markets"] = [self._normalize_market(m) for m in data["markets"]]
+        return True, data
 
     async def public_search(
         self,
@@ -289,18 +293,9 @@ class PolymarketAdapter(BaseAdapter):
         }
         params.update({k: v for k, v in kwargs.items() if v is not None})
 
-        try:
-            res = await self._gamma_http.get("/public-search", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /public-search response: {type(data).__name__}",
-                )
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._gamma_http, "GET", "/public-search", params=params
+        )
 
     async def search_markets_fuzzy(
         self,
@@ -360,17 +355,18 @@ class PolymarketAdapter(BaseAdapter):
     async def get_market_by_condition_id(
         self, *, condition_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._gamma_http.get(
-                "/markets", params={"condition_ids": condition_id}
-            )
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list) or not data or not isinstance(data[0], dict):
-                return False, "Market not found"
-            return True, self._normalize_market(data[0])
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        ok_req, data = await self._request(
+            self._gamma_http,
+            "GET",
+            "/markets",
+            params={"condition_ids": condition_id},
+            expected_type=list,
+        )
+        if not ok_req:
+            return False, data
+        if not data or not isinstance(data[0], dict):
+            return False, "Market not found"
+        return True, self._normalize_market(data[0])
 
     def resolve_clob_token_id(
         self,
@@ -488,45 +484,30 @@ class PolymarketAdapter(BaseAdapter):
         token_id: str,
         side: Literal["BUY", "SELL"] = "BUY",
     ) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._clob_http.get(
-                "/price",
-                params={"token_id": token_id, "side": side},
-            )
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /price response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._clob_http,
+            "GET",
+            "/price",
+            params={"token_id": token_id, "side": side},
+        )
 
     async def get_order_book(
         self, *, token_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._clob_http.get("/book", params={"token_id": token_id})
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /book response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._clob_http, "GET", "/book", params={"token_id": token_id}
+        )
 
     async def get_order_books(
         self, *, token_ids: list[str]
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        try:
-            payload = [{"token_id": t} for t in token_ids]
-            res = await self._clob_http.post("/books", json=payload)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /books response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._clob_http,
+            "POST",
+            "/books",
+            json_body=[{"token_id": t} for t in token_ids],
+            expected_type=list,
+        )
 
     async def get_prices_history(
         self,
@@ -547,18 +528,9 @@ class PolymarketAdapter(BaseAdapter):
         if fidelity is not None:
             params["fidelity"] = fidelity
 
-        try:
-            res = await self._clob_http.get("/prices-history", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /prices-history response: {type(data).__name__}",
-                )
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._clob_http, "GET", "/prices-history", params=params
+        )
 
     async def get_positions(
         self,
@@ -574,15 +546,9 @@ class PolymarketAdapter(BaseAdapter):
             "offset": offset,
             **{k: v for k, v in filters.items() if v is not None},
         }
-        try:
-            res = await self._data_http.get("/positions", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /positions response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._data_http, "GET", "/positions", params=params, expected_type=list
+        )
 
     async def get_activity(
         self,
@@ -598,15 +564,9 @@ class PolymarketAdapter(BaseAdapter):
             "offset": offset,
             **{k: v for k, v in filters.items() if v is not None},
         }
-        try:
-            res = await self._data_http.get("/activity", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /activity response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._data_http, "GET", "/activity", params=params, expected_type=list
+        )
 
     async def get_trades(
         self,
@@ -621,29 +581,12 @@ class PolymarketAdapter(BaseAdapter):
             params["user"] = to_checksum_address(user)
         params.update({k: v for k, v in filters.items() if v is not None})
 
-        try:
-            res = await self._data_http.get("/trades", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, list):
-                return False, f"Unexpected /trades response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._data_http, "GET", "/trades", params=params, expected_type=list
+        )
 
     async def bridge_supported_assets(self) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._bridge_http.get("/supported-assets")
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /supported-assets response: {type(data).__name__}",
-                )
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(self._bridge_http, "GET", "/supported-assets")
 
     async def bridge_quote(
         self,
@@ -663,29 +606,17 @@ class PolymarketAdapter(BaseAdapter):
             "toChainId": str(to_chain_id),
             "toTokenAddress": to_token_address,
         }
-        try:
-            res = await self._bridge_http.post("/quote", json=body)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /quote response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(self._bridge_http, "POST", "/quote", json_body=body)
 
     async def bridge_deposit_addresses(
         self, *, address: str
     ) -> tuple[bool, dict[str, Any] | str]:
-        body = {"address": to_checksum_address(address)}
-        try:
-            res = await self._bridge_http.post("/deposit", json=body)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /deposit response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._bridge_http,
+            "POST",
+            "/deposit",
+            json_body={"address": to_checksum_address(address)},
+        )
 
     async def bridge_withdraw_addresses(
         self,
@@ -701,26 +632,16 @@ class PolymarketAdapter(BaseAdapter):
             "toTokenAddress": to_token_address,
             "recipientAddr": to_checksum_address(recipient_addr),
         }
-        try:
-            res = await self._bridge_http.post("/withdraw", json=body)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /withdraw response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._bridge_http, "POST", "/withdraw", json_body=body
+        )
 
     async def bridge_status(self, *, address: str) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._bridge_http.get(f"/status/{to_checksum_address(address)}")
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return False, f"Unexpected /status response: {type(data).__name__}"
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+        return await self._request(
+            self._bridge_http,
+            "GET",
+            f"/status/{to_checksum_address(address)}",
+        )
 
     async def bridge_deposit(
         self,
@@ -932,11 +853,11 @@ class PolymarketAdapter(BaseAdapter):
         addr = wallet.get("address")
         if not addr:
             raise ValueError("Wallet missing address")
-        return to_checksum_address(str(addr))
+        return to_checksum_address(addr)
 
     def _resolve_wallet_signer(self) -> tuple[str, Any]:
         wallet = self._resolve_wallet()
-        from_address = to_checksum_address(str(wallet.get("address")))
+        from_address = to_checksum_address(wallet.get("address"))
 
         sign_cb = self.strategy_wallet_signing_callback
         if sign_cb is None:
