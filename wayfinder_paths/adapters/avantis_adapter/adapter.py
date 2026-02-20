@@ -8,10 +8,7 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-from wayfinder_paths.core.constants.avantis_abi import (
-    AVANTIS_ERC4626_ABI,
-    AVANTIS_VAULT_MANAGER_ABI,
-)
+from wayfinder_paths.core.constants.avantis_abi import AVANTIS_VAULT_MANAGER_ABI
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import (
@@ -19,6 +16,7 @@ from wayfinder_paths.core.constants.contracts import (
     AVANTIS_VAULT_MANAGER,
     BASE_USDC,
 )
+from wayfinder_paths.core.constants.erc4626_abi import ERC4626_ABI
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -61,7 +59,7 @@ class AvantisAdapter(BaseAdapter):
         """Return the configured Avantis vault as a single-market list."""
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
-                v = web3.eth.contract(address=self.vault, abi=AVANTIS_ERC4626_ABI)
+                v = web3.eth.contract(address=self.vault, abi=ERC4626_ABI)
 
                 asset_coro = v.functions.asset().call(block_identifier="pending")
                 decimals_coro = v.functions.decimals().call(block_identifier="pending")
@@ -212,7 +210,7 @@ class AvantisAdapter(BaseAdapter):
 
             transaction = await encode_call(
                 target=vault,
-                abi=AVANTIS_ERC4626_ABI,
+                abi=ERC4626_ABI,
                 fn_name="deposit",
                 args=[assets, strategy],
                 from_address=strategy,
@@ -245,7 +243,7 @@ class AvantisAdapter(BaseAdapter):
 
             if redeem_full:
                 async with web3_from_chain_id(self.chain_id) as web3:
-                    v = web3.eth.contract(address=vault, abi=AVANTIS_ERC4626_ABI)
+                    v = web3.eth.contract(address=vault, abi=ERC4626_ABI)
                     try:
                         shares = await v.functions.maxRedeem(strategy).call(
                             block_identifier="pending"
@@ -264,7 +262,7 @@ class AvantisAdapter(BaseAdapter):
 
             transaction = await encode_call(
                 target=vault,
-                abi=AVANTIS_ERC4626_ABI,
+                abi=ERC4626_ABI,
                 fn_name="redeem",
                 args=[shares, strategy, strategy],
                 from_address=strategy,
@@ -299,7 +297,7 @@ class AvantisAdapter(BaseAdapter):
 
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
-                v = web3.eth.contract(address=vault, abi=AVANTIS_ERC4626_ABI)
+                v = web3.eth.contract(address=vault, abi=ERC4626_ABI)
 
                 decimals_coro = v.functions.decimals().call(block_identifier=block_id)
                 asset_coro = v.functions.asset().call(block_identifier=block_id)
