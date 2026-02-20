@@ -40,7 +40,6 @@ def main() -> None:
     contract_name = ti.get("contract_name", "(unknown)")
     chain_id = ti.get("chain_id", "(unknown)")
     verify = ti.get("verify", True)
-    escape_hatch = ti.get("escape_hatch", True)
 
     source_line = f"source_path: {source_path}" if source_path else "source_path: (inline source_code)"
 
@@ -50,8 +49,7 @@ def main() -> None:
         f"{source_line}\n"
         f"contract_name: {contract_name}\n"
         f"chain_id: {chain_id}\n"
-        f"verify: {verify}\n"
-        f"escape_hatch: {escape_hatch}"
+        f"verify: {verify}"
     )
 
     out = {

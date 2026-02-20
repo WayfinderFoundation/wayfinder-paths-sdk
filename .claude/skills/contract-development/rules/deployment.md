@@ -11,16 +11,15 @@ mcp__wayfinder__deploy_contract(
     contract_name="MyToken",
     chain_id=8453,
     constructor_args=["0xabc...", 1000000],
-    verify=true,
-    escape_hatch=true
+    verify=true
 )
 ```
 
 - **Gated by safety review hook** — shows contract name, chain, wallet before confirming
 - `source_path` points at the Solidity file (avoid passing giant inline strings)
 - `constructor_args` can be a JSON array (preferred) or a JSON-encoded array string; args are auto-cast to ABI types
-- `escape_hatch=true` (default) injects an `onlyOwner` fund recovery function
 - `verify=true` (default) submits to Etherscan V2 after deploy (API key only needed for verification; deploy works without it — set `verify=false` to skip)
+- The SDK compiles and deploys your Solidity source **as-is** (no automatic source mutation).
 - Deployments are tracked in wallet profiles under protocol `contracts` (query `wayfinder://wallets/{label}`)
 - Returns: `{tx_hash, contract_address, abi, bytecode, verified, explorer_url}`
 
@@ -60,7 +59,6 @@ async def main():
         chain_id=8453,
         sign_callback=sign_callback,
         verify=True,
-        escape_hatch=True,
     )
     print(f"Deployed: {result['contract_address']}")
     print(f"Tx: {result['tx_hash']}")
@@ -80,13 +78,3 @@ Constructor arguments are automatically cast to their ABI types:
 | `string` | `"hello"` | `str` |
 | `bytes32` | `"0xab..."` | `bytes` |
 | `tuple(...)` | `[val1, val2]` or `{name: val}` | Cast recursively |
-
-## Escape hatch
-
-When `escape_hatch=True`, the source is modified before compilation to add:
-
-1. `import "@openzeppelin/contracts/access/Ownable.sol"` + `Ownable(msg.sender)` inheritance (deployer becomes owner)
-2. `import "@openzeppelin/contracts/token/ERC20/IERC20.sol"`
-3. An `escapeHatch(address token, uint256 amount)` function gated by `onlyOwner`
-
-This is a safety net for recovering funds accidentally sent to the contract.

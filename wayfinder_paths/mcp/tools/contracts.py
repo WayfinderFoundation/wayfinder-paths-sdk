@@ -157,7 +157,6 @@ async def deploy_contract(
     chain_id: int,
     constructor_args: list[Any] | str | None = None,
     verify: bool = True,
-    escape_hatch: bool = True,
 ) -> dict[str, Any]:
     """Compile, deploy, and optionally verify a Solidity contract.
 
@@ -207,7 +206,6 @@ async def deploy_contract(
             chain_id=chain_id,
             sign_callback=sign_callback,
             verify=verify,
-            escape_hatch=escape_hatch,
         )
     except Exception as exc:
         logger.error(f"Contract deployment failed: {exc}")
@@ -229,7 +227,6 @@ async def deploy_contract(
             "explorer_url": result.get("explorer_url"),
             "verified": result.get("verified"),
             "verification_error": result.get("verification_error"),
-            "escape_hatch": bool(escape_hatch),
         },
     )
     return ok(result)

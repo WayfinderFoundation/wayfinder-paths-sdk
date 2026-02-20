@@ -19,7 +19,7 @@ mcp__wayfinder__compile_contract(source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol
 Deploy:
 
 ```
-mcp__wayfinder__deploy_contract(wallet_label="main", source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol", contract_name="Counter", chain_id=8453, constructor_args=[], verify=false, escape_hatch=true)
+mcp__wayfinder__deploy_contract(wallet_label="main", source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol", contract_name="Counter", chain_id=8453, constructor_args=[], verify=false)
 ```
 
 ## Minimal Ownable counter
@@ -93,13 +93,3 @@ contract TokenVault is Ownable(msg.sender), ReentrancyGuard {
     }
 }
 ```
-
-## Using `escape_hatch=true` instead of hand-writing rescue logic
-
-If you deploy via the SDK’s `deploy_contract(..., escape_hatch=true)`, it injects:
-
-- `Ownable(msg.sender)` inheritance (if missing)
-- `IERC20` import (if missing)
-- `escapeHatch(address token, uint256 amount)` guarded by `onlyOwner`
-
-So you usually should **not** include a custom rescue function unless you need special behavior.

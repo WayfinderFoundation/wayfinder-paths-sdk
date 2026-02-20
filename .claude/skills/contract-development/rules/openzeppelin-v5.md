@@ -33,8 +33,6 @@ contract MyContract is Ownable {
 }
 ```
 
-The SDK’s `escape_hatch=true` injection uses `Ownable(msg.sender)` so deployer becomes owner.
-
 ## Common import path changes (v4 -> v5)
 
 - `ReentrancyGuard`
@@ -58,4 +56,3 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 If you need authoritative context (e.g. constructor signatures, modifiers), read the cached sources:
 
 - `Ownable`: `.cache/solidity/openzeppelin-5.4.0/node_modules/@openzeppelin/contracts/access/Ownable.sol`
-

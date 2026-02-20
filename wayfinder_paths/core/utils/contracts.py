@@ -1,4 +1,4 @@
-"""Contract deployment, escape-hatch injection, and Etherscan verification.
+"""Contract deployment and Etherscan verification.
 
 Uses the SDK's existing transaction infrastructure (``send_transaction``,
 ``web3_from_chain_id``) so nonce management, gas pricing, broadcast, receipt
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Callable
 from typing import Any
 
@@ -28,136 +27,6 @@ from wayfinder_paths.core.utils.solidity import (
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-_ESCAPE_HATCH_SNIPPET = """
-    // --- Escape Hatch (injected) ---
-    function escapeHatch(address token, uint256 amount) external onlyOwner {
-        if (token == address(0)) {
-            payable(owner()).transfer(amount);
-        } else {
-            IERC20(token).transfer(owner(), amount);
-        }
-    }
-"""
-
-_IERC20_IMPORT = 'import "@openzeppelin/contracts/token/ERC20/IERC20.sol";'
-_OWNABLE_IMPORT = 'import "@openzeppelin/contracts/access/Ownable.sol";'
-
-
-_IMPORT_STMT_RE = re.compile(r'^\s*import\s+[^;]+;\s*$', re.MULTILINE)
-_PRAGMA_STMT_RE = re.compile(r"^\s*pragma\s+solidity\b[^;]*;\s*$", re.MULTILINE)
-
-
-def _find_contract_body_span(source_code: str, *, contract_name: str) -> tuple[int, int]:
-    """Return ``(open_brace_index, close_brace_index)`` for *contract_name*."""
-    m = re.search(
-        rf"^\s*contract\s+{re.escape(contract_name)}\b", source_code, flags=re.MULTILINE
-    )
-    if not m:
-        raise ValueError(f"Contract '{contract_name}' not found in source")
-
-    open_brace = source_code.find("{", m.end())
-    if open_brace == -1:
-        raise ValueError(f"Could not find '{{' for contract '{contract_name}'")
-
-    depth = 0
-    for idx in range(open_brace, len(source_code)):
-        ch = source_code[idx]
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return open_brace, idx
-
-    raise ValueError(f"Could not find matching '}}' for contract '{contract_name}'")
-
-
-def add_escape_hatch(source_code: str, *, contract_name: str) -> str:
-    """Inject an ``onlyOwner`` escape-hatch function for fund recovery.
-
-    Adds ``Ownable`` inheritance and an ``IERC20`` import if not already
-    present, then inserts the ``escapeHatch()`` function before the last
-    closing brace of the specified contract.
-    """
-    code = source_code
-
-    open_brace, close_brace = _find_contract_body_span(code, contract_name=contract_name)
-
-    # Insert required imports (after last import if present, else after pragma).
-    insert_at = 0
-    imports = list(_IMPORT_STMT_RE.finditer(code))
-    if imports:
-        insert_at = imports[-1].end()
-    else:
-        pragma = _PRAGMA_STMT_RE.search(code)
-        if pragma:
-            insert_at = pragma.end()
-
-    to_insert: list[str] = []
-    if _IERC20_IMPORT not in code:
-        to_insert.append(_IERC20_IMPORT)
-    if _OWNABLE_IMPORT not in code:
-        to_insert.append(_OWNABLE_IMPORT)
-    if to_insert:
-        insert_block = "\n" + "\n".join(to_insert) + "\n"
-        code = code[:insert_at] + insert_block + code[insert_at:]
-        # Adjust spans if we inserted before the contract.
-        if insert_at <= open_brace:
-            delta = len(insert_block)
-            open_brace += delta
-            close_brace += delta
-
-    # Add Ownable inheritance to the target contract header if missing.
-    header = code[:open_brace]
-    m = re.search(
-        rf"(^\s*contract\s+{re.escape(contract_name)}\b)([^{{\n]*?)$",
-        header,
-        flags=re.MULTILINE,
-    )
-    if not m:
-        raise ValueError(f"Could not locate contract header for '{contract_name}'")
-
-    header_line = m.group(0)
-    if re.search(r"\bOwnable\b", header_line) and not re.search(
-        r"\bOwnable\s*\(", header_line
-    ):
-        # OZ v5 Ownable requires an initial owner argument. If the contract
-        # already inherits Ownable but doesn't pass args, default to deployer.
-        new_header_line = re.sub(
-            r"\bOwnable\b", "Ownable(msg.sender)", header_line, count=1
-        )
-        header = header[: m.start()] + new_header_line + header[m.end() :]
-        code = header + code[open_brace:]
-        open_brace, close_brace = _find_contract_body_span(
-            code, contract_name=contract_name
-        )
-    elif "Ownable" not in header_line:
-        if re.search(r"\bis\b", header_line):
-            new_header_line = re.sub(
-                r"\bis\b\s*",
-                "is Ownable(msg.sender), ",
-                header_line,
-                count=1,
-            )
-        else:
-            new_header_line = header_line.rstrip() + " is Ownable(msg.sender)"
-        header = header[: m.start()] + new_header_line + header[m.end() :]
-        code = header + code[open_brace:]
-        # Recompute spans (header length changed).
-        open_brace, close_brace = _find_contract_body_span(
-            code, contract_name=contract_name
-        )
-
-    # Insert escapeHatch before the contract's closing brace (idempotent).
-    body = code[open_brace:close_brace]
-    if re.search(r"\bfunction\s+escapeHatch\s*\(", body):
-        return code
-
-    code = code[:close_brace] + _ESCAPE_HATCH_SNIPPET + "\n" + code[close_brace:]
-
-    return code
-
 
 async def build_deploy_transaction(
     *,
@@ -205,7 +74,6 @@ async def deploy_contract(
     chain_id: int,
     sign_callback: Callable[..., Any],
     verify: bool = True,
-    escape_hatch: bool = False,
     etherscan_api_key: str | None = None,
 ) -> dict[str, Any]:
     """Full deployment pipeline: compile -> deploy -> verify.
@@ -213,8 +81,6 @@ async def deploy_contract(
     Returns ``{"tx_hash", "contract_address", "abi", "bytecode"}``.
     """
     code = source_code
-    if escape_hatch:
-        code = add_escape_hatch(code, contract_name=contract_name)
 
     # Compile once using standard JSON input so verification can reuse the same input.
     std_json = compile_solidity_standard_json(code)

@@ -38,9 +38,7 @@ def ensure_oz_installed(project_root: str | None = None) -> str:
     """Ensure ``@openzeppelin/contracts`` is available in an ignored cache dir.
 
     We pin to an exact OpenZeppelin Contracts version so compilation and
-    Etherscan verification are deterministic. The SDK's optional escape-hatch
-    injection is compatible with OZ v5 (it passes the required ``initialOwner``
-    argument when adding ``Ownable``).
+    Etherscan verification are deterministic.
 
     We intentionally **do not** install into the repository root, because that
     would create an unignored ``node_modules/`` tree and potentially a

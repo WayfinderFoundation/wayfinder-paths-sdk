@@ -32,13 +32,13 @@ If you're passing args via the MCP tool, pass a JSON array (preferred): `["0xadd
 
 Use `source_path` to point at a `.sol` file inside this repo (committed or under `$WAYFINDER_SCRATCH_DIR`). Avoid passing giant `source_code` strings.
 
-## 7. Escape hatch adds Ownable dependency
+## 7. Deploy compiles source as-is
 
-When `escape_hatch=True`, the source is modified to inherit `Ownable(msg.sender)` (deployer becomes owner). If your contract already uses a custom ownership pattern, this may conflict. Disable with `escape_hatch=False`.
+`deploy_contract` compiles and deploys your Solidity source exactly as provided — it does not inject helper functions or ownership patterns. If you need token rescue/sweep logic, implement it in your Solidity contract.
 
 ## 8. Ownable v5 requires an initial owner argument
 
-If you inherit `Ownable` directly in your contract (not via `escape_hatch` injection), you must pass the base constructor arg:
+If you inherit `Ownable` in your contract, you must pass the base constructor arg:
 
 - `contract X is Ownable(msg.sender) { ... }`, or
 - `constructor(address initialOwner) Ownable(initialOwner) { ... }`
