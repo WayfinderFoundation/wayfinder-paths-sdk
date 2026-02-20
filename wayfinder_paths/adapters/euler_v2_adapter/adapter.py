@@ -119,7 +119,7 @@ class EulerV2Adapter(BaseAdapter):
                 address=web3.to_checksum_address(vault),
                 abi=EVAULT_ABI,
             )
-            asset = await v.functions.asset().call(block_identifier="pending")
+            asset = await v.functions.asset().call(block_identifier="latest")
             asset = to_checksum_address(str(asset))
             self._asset_by_chain_vault[key] = asset
             return asset
@@ -141,7 +141,7 @@ class EulerV2Adapter(BaseAdapter):
                     abi=PERSPECTIVE_ABI,
                 )
                 vaults = await p.functions.verifiedArray().call(
-                    block_identifier="pending"
+                    block_identifier="latest"
                 )
 
             out = [to_checksum_address(str(v)) for v in (vaults or [])]
@@ -168,7 +168,7 @@ class EulerV2Adapter(BaseAdapter):
                     abi=VAULT_LENS_ABI,
                 )
                 info = await lens.functions.getVaultInfoFull(vault).call(
-                    block_identifier="pending"
+                    block_identifier="latest"
                 )
 
             return True, _tuple_to_dict(info, VAULT_INFO_FULL_KEYS)
@@ -197,7 +197,7 @@ class EulerV2Adapter(BaseAdapter):
                     abi=PERSPECTIVE_ABI,
                 )
                 vaults = await perspective_c.functions.verifiedArray().call(
-                    block_identifier="pending"
+                    block_identifier="latest"
                 )
                 vaults_list = [to_checksum_address(str(v)) for v in (vaults or [])]
                 if limit is not None:
@@ -219,14 +219,14 @@ class EulerV2Adapter(BaseAdapter):
                         try:
                             info_raw = await vault_lens.functions.getVaultInfoFull(
                                 vault
-                            ).call(block_identifier="pending")
+                            ).call(block_identifier="latest")
                             info = _tuple_to_dict(info_raw, VAULT_INFO_FULL_KEYS)
 
                             (
                                 borrow_apy_ray,
                                 supply_apy_ray,
                             ) = await utils_lens.functions.getAPYs(vault).call(
-                                block_identifier="pending"
+                                block_identifier="latest"
                             )
 
                             ltv_info: list[dict[str, Any]] = []
@@ -343,7 +343,7 @@ class EulerV2Adapter(BaseAdapter):
                 )
                 out = await lens.functions.getAccountEnabledVaultsInfo(
                     evc_addr, acct
-                ).call(block_identifier="pending")
+                ).call(block_identifier="latest")
 
             # out: (evcAccountInfo, vaultAccountInfo[], accountRewardInfo[])
             evc_info = out[0] if isinstance(out, (list, tuple)) and len(out) > 0 else {}
@@ -511,7 +511,7 @@ class EulerV2Adapter(BaseAdapter):
                         abi=EVAULT_ABI,
                     )
                     shares = await v.functions.balanceOf(strategy).call(
-                        block_identifier="pending"
+                        block_identifier="latest"
                     )
                 shares = int(shares or 0)
                 if shares <= 0:
@@ -564,16 +564,16 @@ class EulerV2Adapter(BaseAdapter):
             vault_addr = to_checksum_address(vault)
 
             fn_name = "enableCollateral" if use_as_collateral else "disableCollateral"
-            tx = await encode_call(
+            data = await self._encode_data(
+                chain_id=int(chain_id),
                 target=evc,
                 abi=EVC_ABI,
                 fn_name=fn_name,
                 args=[acct, vault_addr],
                 from_address=strategy,
-                chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
-            return True, txn_hash
+            items = [(evc, ZERO_ADDRESS, 0, data)]
+            return await self._evc_batch(chain_id=int(chain_id), items=items)
         except Exception as exc:
             return False, str(exc)
 
