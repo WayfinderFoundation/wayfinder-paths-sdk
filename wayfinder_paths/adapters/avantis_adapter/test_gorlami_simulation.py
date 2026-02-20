@@ -16,7 +16,7 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.asyncio
-async def test_gorlami_avantis_deposit_redeem_full(gorlami):
+async def test_gorlami_avantis_deposit_withdraw_full(gorlami):
     chain_id = CHAIN_ID_BASE
 
     acct = Account.create()
@@ -49,27 +49,31 @@ async def test_gorlami_avantis_deposit_redeem_full(gorlami):
     ok, markets = await adapter.get_all_markets()
     assert ok is True, markets
     assert isinstance(markets, list) and markets
-    assert str(markets[0].get("mtoken", "")).lower() == AVANTIS_AVUSDC.lower()
+    assert str(markets[0].get("vault", "")).lower() == AVANTIS_AVUSDC.lower()
 
-    ok, tx = await adapter.lend(
-        mtoken=AVANTIS_AVUSDC, underlying_token=BASE_USDC, amount=10 * 10**6
+    ok, tx = await adapter.deposit(
+        vault_address=AVANTIS_AVUSDC, underlying_token=BASE_USDC, amount=10 * 10**6
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, pos = await adapter.get_pos(mtoken=AVANTIS_AVUSDC, account=acct.address)
+    ok, pos = await adapter.get_pos(vault_address=AVANTIS_AVUSDC, account=acct.address)
     assert ok is True, pos
     assert isinstance(pos, dict)
-    assert int(pos.get("mtoken_balance") or 0) > 0
-    assert int(pos.get("underlying_balance") or 0) > 0
+    assert int(pos.get("shares_balance") or 0) > 0
+    assert int(pos.get("assets_balance") or 0) > 0
 
-    ok, tx = await adapter.unlend(mtoken=AVANTIS_AVUSDC, amount=0, redeem_full=True)
+    ok, tx = await adapter.withdraw(
+        vault_address=AVANTIS_AVUSDC, amount=0, redeem_full=True
+    )
     assert ok is True, tx
-    assert tx is None or (isinstance(tx, str) and tx.startswith("0x"))
+    assert tx == "no shares to redeem" or (isinstance(tx, str) and tx.startswith("0x"))
 
-    ok, pos_after = await adapter.get_pos(mtoken=AVANTIS_AVUSDC, account=acct.address)
+    ok, pos_after = await adapter.get_pos(
+        vault_address=AVANTIS_AVUSDC, account=acct.address
+    )
     assert ok is True, pos_after
     assert isinstance(pos_after, dict)
-    assert int(pos_after.get("mtoken_balance") or 0) <= int(
-        pos.get("mtoken_balance") or 0
+    assert int(pos_after.get("shares_balance") or 0) <= int(
+        pos.get("shares_balance") or 0
     )

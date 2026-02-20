@@ -104,71 +104,71 @@ async def test_borrow_and_repay_unsupported(adapter):
 
 
 # ---------------------------------------------------------------------------
-# lend guards
+# deposit guards
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_lend_requires_signing_callback(adapter):
-    ok, msg = await adapter.lend(amount=1)
+async def test_deposit_requires_signing_callback(adapter):
+    ok, msg = await adapter.deposit(amount=1)
     assert ok is False
     assert "signing callback" in str(msg).lower()
 
 
 @pytest.mark.asyncio
-async def test_lend_requires_wallet(adapter_no_wallet):
-    ok, msg = await adapter_no_wallet.lend(amount=1)
+async def test_deposit_requires_wallet(adapter_no_wallet):
+    ok, msg = await adapter_no_wallet.deposit(amount=1)
     assert ok is False
     assert "wallet address" in str(msg).lower()
 
 
 @pytest.mark.asyncio
-async def test_lend_rejects_zero_amount(adapter_with_signer):
-    ok, msg = await adapter_with_signer.lend(amount=0)
+async def test_deposit_rejects_zero_amount(adapter_with_signer):
+    ok, msg = await adapter_with_signer.deposit(amount=0)
     assert ok is False
     assert "positive" in str(msg).lower()
 
 
 @pytest.mark.asyncio
-async def test_lend_rejects_negative_amount(adapter_with_signer):
-    ok, msg = await adapter_with_signer.lend(amount=-5)
+async def test_deposit_rejects_negative_amount(adapter_with_signer):
+    ok, msg = await adapter_with_signer.deposit(amount=-5)
     assert ok is False
     assert "positive" in str(msg).lower()
 
 
 # ---------------------------------------------------------------------------
-# unlend guards
+# withdraw guards
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_unlend_requires_wallet(adapter_no_wallet):
-    ok, msg = await adapter_no_wallet.unlend(amount=1)
+async def test_withdraw_requires_wallet(adapter_no_wallet):
+    ok, msg = await adapter_no_wallet.withdraw(amount=1)
     assert ok is False
     assert "wallet address" in str(msg).lower()
 
 
 @pytest.mark.asyncio
-async def test_unlend_requires_signing_callback(adapter):
-    ok, msg = await adapter.unlend(amount=1)
+async def test_withdraw_requires_signing_callback(adapter):
+    ok, msg = await adapter.withdraw(amount=1)
     assert ok is False
     assert "signing callback" in str(msg).lower()
 
 
 @pytest.mark.asyncio
-async def test_unlend_rejects_zero_amount(adapter_with_signer):
-    ok, msg = await adapter_with_signer.unlend(amount=0)
+async def test_withdraw_rejects_zero_amount(adapter_with_signer):
+    ok, msg = await adapter_with_signer.withdraw(amount=0)
     assert ok is False
     assert "positive" in str(msg).lower()
 
 
 # ---------------------------------------------------------------------------
-# unlend redeem_full with zero shares
+# withdraw full with zero shares
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_unlend_redeem_full_zero_shares(adapter_with_signer):
+async def test_withdraw_full_zero_shares(adapter_with_signer):
     mock_contract = _make_erc4626_contract(max_redeem=0, balance_of=0)
     mock_web3 = MagicMock()
     mock_web3.eth.contract = MagicMock(return_value=mock_contract)
@@ -181,7 +181,7 @@ async def test_unlend_redeem_full_zero_shares(adapter_with_signer):
         "wayfinder_paths.adapters.avantis_adapter.adapter.web3_from_chain_id",
         mock_web3_ctx,
     ):
-        ok, msg = await adapter_with_signer.unlend(amount=0, redeem_full=True)
+        ok, msg = await adapter_with_signer.withdraw(amount=0, redeem_full=True)
 
     assert ok is True
     assert msg == "no shares to redeem"
@@ -217,9 +217,8 @@ async def test_get_pos_happy_path(adapter):
 
     assert ok is True
     assert isinstance(data, dict)
-    assert data["mtoken_balance"] == 500_000
-    assert data["underlying_balance"] == 520_000
-    assert data["borrow_balance"] == 0
+    assert data["shares_balance"] == 500_000
+    assert data["assets_balance"] == 520_000
     assert data["decimals"] == 6
     assert data["max_redeem"] == 500_000
     assert data["max_withdraw"] == 520_000
@@ -270,8 +269,8 @@ async def test_get_all_markets_happy_path(adapter):
 @pytest.mark.asyncio
 async def test_get_full_user_state_with_position(adapter):
     pos_data = {
-        "mtoken_balance": 500_000,
-        "underlying_balance": 520_000,
+        "shares_balance": 500_000,
+        "assets_balance": 520_000,
         "share_price": 1_040_000,
         "max_redeem": 500_000,
         "max_withdraw": 520_000,
@@ -287,16 +286,15 @@ async def test_get_full_user_state_with_position(adapter):
     assert state["chainId"] == 8453
     assert len(state["positions"]) == 1
     pos = state["positions"][0]
-    assert pos["mTokenBalance"] == 500_000
-    assert pos["suppliedUnderlying"] == 520_000
-    assert pos["borrowedUnderlying"] == 0
+    assert pos["shares"] == 500_000
+    assert pos["assets"] == 520_000
 
 
 @pytest.mark.asyncio
 async def test_get_full_user_state_zero_positions_excluded(adapter):
     pos_data = {
-        "mtoken_balance": 0,
-        "underlying_balance": 0,
+        "shares_balance": 0,
+        "assets_balance": 0,
         "share_price": 0,
         "max_redeem": 0,
         "max_withdraw": 0,
@@ -315,8 +313,8 @@ async def test_get_full_user_state_zero_positions_excluded(adapter):
 @pytest.mark.asyncio
 async def test_get_full_user_state_zero_positions_included(adapter):
     pos_data = {
-        "mtoken_balance": 0,
-        "underlying_balance": 0,
+        "shares_balance": 0,
+        "assets_balance": 0,
         "share_price": 0,
         "max_redeem": 0,
         "max_withdraw": 0,

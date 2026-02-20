@@ -27,8 +27,8 @@ CHAIN_NAME = "base"
 class AvantisAdapter(BaseAdapter):
     """Adapter for the Avantis avUSDC (ERC-4626) LP vault on Base.
 
-    - `lend()` maps to ERC-4626 `deposit(assets, receiver)` (assets = USDC base units).
-    - `unlend()` maps to ERC-4626 `redeem(shares, receiver, owner)` (shares = avUSDC base units).
+    - `deposit(amount)` — ERC-4626 `deposit(assets, receiver)` (assets = USDC base units).
+    - `withdraw(amount)` — ERC-4626 `redeem(shares, receiver, owner)` (shares = avUSDC base units).
     """
 
     adapter_type = "AVANTIS"
@@ -104,7 +104,6 @@ class AvantisAdapter(BaseAdapter):
                 market: dict[str, Any] = {
                     "chain_id": int(self.chain_id),
                     "vault": self.vault,
-                    "mtoken": self.vault,
                     "underlying": to_checksum_address(str(asset)),
                     "symbol": str(symbol or ""),
                     "name": str(name or ""),
@@ -171,10 +170,10 @@ class AvantisAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    async def lend(
+    async def deposit(
         self,
         *,
-        mtoken: str | None = None,
+        vault_address: str | None = None,
         underlying_token: str | None = None,
         amount: int,
     ) -> tuple[bool, Any]:
@@ -188,7 +187,7 @@ class AvantisAdapter(BaseAdapter):
         if assets <= 0:
             return False, "amount must be positive"
 
-        vault = to_checksum_address(mtoken) if mtoken else self.vault
+        vault = to_checksum_address(vault_address) if vault_address else self.vault
         asset = (
             to_checksum_address(underlying_token)
             if underlying_token
@@ -223,10 +222,10 @@ class AvantisAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    async def unlend(
+    async def withdraw(
         self,
         *,
-        mtoken: str | None = None,
+        vault_address: str | None = None,
         amount: int,
         redeem_full: bool = False,
     ) -> tuple[bool, Any]:
@@ -236,7 +235,7 @@ class AvantisAdapter(BaseAdapter):
         if not self.strategy_wallet_signing_callback:
             return False, "strategy wallet signing callback not configured"
 
-        vault = to_checksum_address(mtoken) if mtoken else self.vault
+        vault = to_checksum_address(vault_address) if vault_address else self.vault
 
         try:
             shares = int(amount)
@@ -284,12 +283,12 @@ class AvantisAdapter(BaseAdapter):
     async def get_pos(
         self,
         *,
-        mtoken: str | None = None,
+        vault_address: str | None = None,
         account: str | None = None,
         include_usd: bool = False,
         block_identifier: int | str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
-        vault = to_checksum_address(mtoken) if mtoken else self.vault
+        vault = to_checksum_address(vault_address) if vault_address else self.vault
         acct = to_checksum_address(account) if account else self.strategy_wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
@@ -372,9 +371,8 @@ class AvantisAdapter(BaseAdapter):
             balances: dict[str, int] = {vault_key: int(shares_i)}
             result: dict[str, Any] = {
                 "balances": balances,
-                "mtoken_balance": int(shares_i),
-                "underlying_balance": int(assets_i),
-                "borrow_balance": 0,
+                "shares_balance": int(shares_i),
+                "assets_balance": int(assets_i),
                 "underlying_token": underlying,
                 "share_price": int(share_price),
                 "max_redeem": int(max_redeem or 0),
@@ -409,7 +407,7 @@ class AvantisAdapter(BaseAdapter):
         acct = to_checksum_address(account)
 
         ok, pos = await self.get_pos(
-            mtoken=self.vault,
+            vault_address=self.vault,
             account=acct,
             include_usd=include_usd,
             block_identifier=block_identifier,
@@ -418,21 +416,20 @@ class AvantisAdapter(BaseAdapter):
             return False, str(pos)
         assert isinstance(pos, dict)
 
-        shares = int(pos.get("mtoken_balance") or 0)
-        assets = int(pos.get("underlying_balance") or 0)
+        shares = int(pos.get("shares_balance") or 0)
+        assets = int(pos.get("assets_balance") or 0)
         if not include_zero_positions and shares <= 0 and assets <= 0:
             positions: list[dict[str, Any]] = []
         else:
             positions = [
                 {
-                    "mtoken": self.vault,
+                    "vault": self.vault,
                     "underlying": self.underlying,
-                    "mTokenBalance": shares,
-                    "suppliedUnderlying": assets,
-                    "sharePrice": int(pos.get("share_price") or 0),
-                    "borrowedUnderlying": 0,
-                    "maxRedeem": int(pos.get("max_redeem") or 0),
-                    "maxWithdraw": int(pos.get("max_withdraw") or 0),
+                    "shares": shares,
+                    "assets": assets,
+                    "share_price": int(pos.get("share_price") or 0),
+                    "max_redeem": int(pos.get("max_redeem") or 0),
+                    "max_withdraw": int(pos.get("max_withdraw") or 0),
                 }
             ]
 
