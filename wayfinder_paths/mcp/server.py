@@ -37,7 +37,6 @@ from wayfinder_paths.mcp.resources.wallets import (
     list_wallets,
 )
 from wayfinder_paths.mcp.tools.execute import execute
-from wayfinder_paths.mcp.tools.avantis import avantis_execute
 from wayfinder_paths.mcp.tools.adapter_execute import adapter_execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
