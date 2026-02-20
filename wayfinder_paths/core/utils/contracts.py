@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
+from eth_utils import remove_0x_prefix
 from loguru import logger
 from web3 import AsyncWeb3
 
@@ -139,16 +140,31 @@ async def deploy_contract(
             # Encode constructor args for verification
             encoded_args = None
             if constructor_args:
-                async with web3_from_chain_id(chain_id) as w3:
-                    contract = w3.eth.contract(abi=abi, bytecode=bytecode)
-                    ctor_inputs = get_constructor_inputs(abi)
-                    args = cast_args(constructor_args, ctor_inputs) if ctor_inputs else constructor_args
-                    # The constructor data = bytecode + encoded args
-                    # So encoded args = full data - bytecode
-                    full_data = contract.constructor(*args).data_in_transaction
-                    encoded_args = full_data[len(bytecode) :]
-                    if encoded_args.startswith("0x"):
-                        encoded_args = encoded_args[2:]
+                bytecode_hex = remove_0x_prefix(bytecode)
+
+                deploy_data = tx.get("data") or tx.get("input")
+                if isinstance(deploy_data, (bytes, bytearray)):
+                    deploy_data_hex = deploy_data.hex()
+                else:
+                    deploy_data_hex = remove_0x_prefix(str(deploy_data or ""))
+
+                if deploy_data_hex.startswith(bytecode_hex):
+                    encoded_args = deploy_data_hex[len(bytecode_hex) :] or None
+                else:
+                    # Fallback: reconstruct constructor calldata if the tx builder
+                    # produced unexpected formatting.
+                    async with web3_from_chain_id(chain_id) as w3:
+                        contract = w3.eth.contract(abi=abi, bytecode=bytecode)
+                        ctor_inputs = get_constructor_inputs(abi)
+                        args = (
+                            cast_args(constructor_args, ctor_inputs)
+                            if ctor_inputs
+                            else constructor_args
+                        )
+                        full_data_hex = remove_0x_prefix(
+                            contract.constructor(*args).data_in_transaction
+                        )
+                        encoded_args = full_data_hex[len(bytecode_hex) :] or None
 
             verified = await verify_on_etherscan(
                 chain_id=chain_id,

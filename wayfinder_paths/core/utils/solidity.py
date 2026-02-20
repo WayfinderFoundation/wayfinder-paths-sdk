@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
+from posixpath import normpath
 from typing import Any
 
 from loguru import logger
@@ -132,6 +133,12 @@ def collect_sources(
 
         for imp in _find_imports(cur_source):
             dep_key = imp.strip()
+
+            # Resolve relative imports (e.g. "../IERC20.sol") within OZ files
+            if dep_key.startswith(".") and cur_key.startswith("@openzeppelin/"):
+                parent = "/".join(cur_key.split("/")[:-1])
+                dep_key = normpath(f"{parent}/{dep_key}")
+
             if dep_key in sources:
                 continue
 
