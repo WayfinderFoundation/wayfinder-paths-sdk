@@ -37,33 +37,40 @@ from .constants import (
 from .types import Inventory
 
 
-async def fetch_lhype_apy() -> float | None:
+async def _fetch_apy_from_url(
+    url: str,
+    extractor: Any,
+    *,
+    label: str = "",
+) -> float | None:
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(LHYPE_API_URL, timeout=10) as resp:
+            async with session.get(url, timeout=10) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if data.get("success") and data.get("result"):
-                        reward_rate = data["result"].get("reward_rate")
-                        if reward_rate is not None:
-                            return float(reward_rate) / 100.0
+                    return extractor(data)
     except Exception as e:
-        logger.warning(f"Failed to fetch lHYPE APY: {e}")
+        logger.warning(f"Failed to fetch {label} APY: {e}")
     return None
+
+
+async def fetch_lhype_apy() -> float | None:
+    def _extract(data: dict) -> float | None:
+        if data.get("success") and data.get("result"):
+            rate = data["result"].get("reward_rate")
+            if rate is not None:
+                return float(rate) / 100.0
+        return None
+
+    return await _fetch_apy_from_url(LHYPE_API_URL, _extract, label="lHYPE")
 
 
 async def fetch_khype_apy() -> float | None:
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(KHYPE_API_URL, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    apy_14d = data.get("apy_14d")
-                    if apy_14d is not None:
-                        return float(apy_14d)
-    except Exception as e:
-        logger.warning(f"Failed to fetch kHYPE APY: {e}")
-    return None
+    def _extract(data: dict) -> float | None:
+        val = data.get("apy_14d")
+        return float(val) if val is not None else None
+
+    return await _fetch_apy_from_url(KHYPE_API_URL, _extract, label="kHYPE")
 
 
 class BorosHypeSnapshotMixin:
