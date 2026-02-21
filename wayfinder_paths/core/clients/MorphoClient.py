@@ -97,6 +97,42 @@ class MorphoClient:
 
         raise RuntimeError("Morpho API request failed")
 
+    async def _paginate_graphql(
+        self,
+        *,
+        query: str,
+        top_key: str,
+        where: dict[str, Any],
+        page_size: int = 50,
+        max_pages: int = 50,
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        skip = 0
+        for _ in range(max_pages):
+            payload = await self._post(
+                query=query,
+                variables={"first": page_size, "skip": skip, "where": where},
+            )
+            page = (payload or {}).get(top_key) if isinstance(payload, dict) else None
+            items = (page or {}).get("items") or []
+            if not items:
+                break
+            out.extend(i for i in items if isinstance(i, dict))
+
+            page_info = (page or {}).get("pageInfo") or {}
+            try:
+                count = int(page_info.get("count") or len(items))
+                total = int(page_info.get("countTotal") or 0)
+            except (TypeError, ValueError):
+                count = len(items)
+                total = 0
+
+            skip += count
+            if total and skip >= total:
+                break
+
+        return out
+
     async def get_morpho_by_chain(self) -> dict[int, dict[str, str]]:
         query = """
         query PublicAllocators($first: Int!) {
@@ -201,32 +237,13 @@ class MorphoClient:
         if not include_idle:
             where["isIdle"] = False
 
-        items_out: list[dict[str, Any]] = []
-        skip = 0
-        for _ in range(max_pages):
-            payload = await self._post(
-                query=query,
-                variables={"first": int(page_size), "skip": int(skip), "where": where},
-            )
-            page = (payload or {}).get("markets") if isinstance(payload, dict) else None
-            items = (page or {}).get("items") or []
-            if not items:
-                break
-            items_out.extend([i for i in items if isinstance(i, dict)])
-
-            page_info = (page or {}).get("pageInfo") or {}
-            try:
-                count = int(page_info.get("count") or len(items))
-                total = int(page_info.get("countTotal") or 0)
-            except (TypeError, ValueError):
-                count = len(items)
-                total = 0
-
-            skip += count
-            if total and skip >= total:
-                break
-
-        return items_out
+        return await self._paginate_graphql(
+            query=query,
+            top_key="markets",
+            where=where,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def get_market_by_unique_key(
         self, *, unique_key: str, chain_id: int | None = None
@@ -396,35 +413,13 @@ class MorphoClient:
         if chain_id is not None:
             where["chainId_in"] = [int(chain_id)]
 
-        out: list[dict[str, Any]] = []
-        skip = 0
-        for _ in range(max_pages):
-            payload = await self._post(
-                query=query,
-                variables={"first": int(page_size), "skip": int(skip), "where": where},
-            )
-            page = (
-                (payload or {}).get("marketPositions")
-                if isinstance(payload, dict)
-                else None
-            )
-            items = (page or {}).get("items") or []
-            if not items:
-                break
-            out.extend([i for i in items if isinstance(i, dict)])
-
-            page_info = (page or {}).get("pageInfo") or {}
-            try:
-                count = int(page_info.get("count") or len(items))
-                total = int(page_info.get("countTotal") or 0)
-            except (TypeError, ValueError):
-                count = len(items)
-                total = 0
-            skip += count
-            if total and skip >= total:
-                break
-
-        return out
+        return await self._paginate_graphql(
+            query=query,
+            top_key="marketPositions",
+            where=where,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def get_market_position(
         self,
@@ -534,32 +529,13 @@ class MorphoClient:
         if listed is not None:
             where["listed"] = bool(listed)
 
-        out: list[dict[str, Any]] = []
-        skip = 0
-        for _ in range(max_pages):
-            payload = await self._post(
-                query=query,
-                variables={"first": int(page_size), "skip": int(skip), "where": where},
-            )
-            page = (payload or {}).get("vaults") if isinstance(payload, dict) else None
-            items = (page or {}).get("items") or []
-            if not items:
-                break
-            out.extend([i for i in items if isinstance(i, dict)])
-
-            page_info = (page or {}).get("pageInfo") or {}
-            try:
-                count = int(page_info.get("count") or len(items))
-                total = int(page_info.get("countTotal") or 0)
-            except (TypeError, ValueError):
-                count = len(items)
-                total = 0
-
-            skip += count
-            if total and skip >= total:
-                break
-
-        return out
+        return await self._paginate_graphql(
+            query=query,
+            top_key="vaults",
+            where=where,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def get_vault_by_address(
         self, *, address: str, chain_id: int | None = None
@@ -646,34 +622,13 @@ class MorphoClient:
         if listed is not None:
             where["listed"] = bool(listed)
 
-        out: list[dict[str, Any]] = []
-        skip = 0
-        for _ in range(max_pages):
-            payload = await self._post(
-                query=query,
-                variables={"first": int(page_size), "skip": int(skip), "where": where},
-            )
-            page = (
-                (payload or {}).get("vaultV2s") if isinstance(payload, dict) else None
-            )
-            items = (page or {}).get("items") or []
-            if not items:
-                break
-            out.extend([i for i in items if isinstance(i, dict)])
-
-            page_info = (page or {}).get("pageInfo") or {}
-            try:
-                count = int(page_info.get("count") or len(items))
-                total = int(page_info.get("countTotal") or 0)
-            except (TypeError, ValueError):
-                count = len(items)
-                total = 0
-
-            skip += count
-            if total and skip >= total:
-                break
-
-        return out
+        return await self._paginate_graphql(
+            query=query,
+            top_key="vaultV2s",
+            where=where,
+            page_size=page_size,
+            max_pages=max_pages,
+        )
 
     async def get_vault_v2_by_address(
         self, *, address: str, chain_id: int | None = None

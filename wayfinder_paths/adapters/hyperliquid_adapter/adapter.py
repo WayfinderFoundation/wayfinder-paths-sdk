@@ -188,8 +188,8 @@ class HyperliquidAdapter(BaseAdapter):
             merged_universe: list[dict[str, Any]] = []
             merged_ctxs: list[dict[str, Any]] = []
             for pair in results:
-                meta_part = pair[0] if len(pair) > 0 else {}
-                ctxs_part = pair[1] if len(pair) > 1 else []
+                meta_part = pair[0]
+                ctxs_part = pair[1]
                 merged_universe.extend(meta_part.get("universe", []))
                 merged_ctxs.extend(ctxs_part)
             return [{"universe": merged_universe}, merged_ctxs]

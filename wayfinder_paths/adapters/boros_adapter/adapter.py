@@ -198,14 +198,12 @@ class BorosAdapter(BaseAdapter):
             return False, {"error": f"Failed to read Boros balances: {balances}"}
 
         isolated_positions = balances.get("isolated_positions") or []
-        if not isinstance(isolated_positions, list):
-            isolated_positions = []
 
         moved: list[dict[str, Any]] = []
         for iso in isolated_positions:
             try:
                 iso_market_id = int(iso.get("market_id"))
-                if market_id is not None and iso_market_id != int(market_id):
+                if market_id is not None and iso_market_id != market_id:
                     continue
                 balance_wei = int(iso.get("balance_wei") or 0)
                 if balance_wei <= 0:
@@ -259,11 +257,10 @@ class BorosAdapter(BaseAdapter):
 
         to_addr = tx_src.get("to") or calldata.get("to")
 
-        # Handle v3 API format that returns {'calldatas': ['0x...']} without 'to' address
         data_val = tx_src.get("data") or calldata.get("data")
         if not data_val:
             calldatas = calldata.get("calldatas") or tx_src.get("calldatas")
-            if isinstance(calldatas, list) and len(calldatas) > 0:
+            if isinstance(calldatas, list) and calldatas:
                 data_val = calldatas[0]
                 # Use Router address when calldatas format is used (for calldata execution)
                 if not to_addr:
@@ -334,7 +331,6 @@ class BorosAdapter(BaseAdapter):
         if not self.user_address:
             return False, {"error": "user_address not configured", "calldata": calldata}
 
-        # Check for calldatas array format (multiple transactions)
         calldatas = calldata.get("calldatas")
         if isinstance(calldatas, list) and len(calldatas) > 1:
             results = []
@@ -501,22 +497,10 @@ class BorosAdapter(BaseAdapter):
         - max_pages is reached (if provided)
         """
         try:
-            try:
-                page_size = int(page_size)
-            except (TypeError, ValueError):
-                page_size = 100
-            if page_size <= 0:
-                page_size = 100
-            if page_size > 100:
-                page_size = 100
+            page_size = min(max(page_size, 1), 100)
 
-            if max_pages is not None:
-                try:
-                    max_pages = int(max_pages)
-                except (TypeError, ValueError):
-                    max_pages = None
-                if max_pages is not None and max_pages <= 0:
-                    max_pages = None
+            if max_pages is not None and max_pages <= 0:
+                max_pages = None
 
             markets: list[dict[str, Any]] = []
             skip = 0
@@ -1938,9 +1922,7 @@ class BorosAdapter(BaseAdapter):
                     await contract.functions.decimalConversionRate().call()
                 )
                 if conversion_rate > 0:
-                    amount_wei = (int(amount_wei) // conversion_rate) * conversion_rate
-                else:
-                    amount_wei = int(amount_wei)
+                    amount_wei = (amount_wei // conversion_rate) * conversion_rate
 
                 if amount_wei <= 0:
                     return True, {"status": "no_op", "amount_wei": 0}
@@ -1949,49 +1931,49 @@ class BorosAdapter(BaseAdapter):
 
                 def _send_params(amount_ld: int) -> tuple[Any, ...]:
                     return (
-                        int(dst_eid),
+                        dst_eid,
                         to_bytes32,
-                        int(amount_ld),
-                        int(min_amount_wei),
+                        amount_ld,
+                        min_amount_wei,
                         b"",
                         b"",
                         b"",
                     )
 
-                send_params = _send_params(int(amount_wei))
+                send_params = _send_params(amount_wei)
                 fee = await contract.functions.quoteSend(send_params, False).call()
                 native_fee_wei = int(fee[0])
                 lz_token_fee_wei = int(fee[1])
 
                 if max_value_wei is not None:
-                    max_send_amount_wei = max(0, int(max_value_wei) - native_fee_wei)
+                    max_send_amount_wei = max(0, max_value_wei - native_fee_wei)
                     if conversion_rate > 0:
                         max_send_amount_wei = (
                             max_send_amount_wei // conversion_rate
                         ) * conversion_rate
                     if amount_wei > max_send_amount_wei:
-                        amount_wei = int(max_send_amount_wei)
+                        amount_wei = max_send_amount_wei
                         if amount_wei <= 0:
                             return False, {
                                 "error": "Insufficient balance to cover OFT fee",
                                 "native_fee_wei": native_fee_wei,
-                                "max_value_wei": int(max_value_wei),
+                                "max_value_wei": max_value_wei,
                             }
-                        send_params = _send_params(int(amount_wei))
+                        send_params = _send_params(amount_wei)
                         fee = await contract.functions.quoteSend(
                             send_params, False
                         ).call()
                         native_fee_wei = int(fee[0])
                         lz_token_fee_wei = int(fee[1])
 
-                total_value_wei = int(amount_wei) + int(native_fee_wei)
-                if max_value_wei is not None and total_value_wei > int(max_value_wei):
+                total_value_wei = amount_wei + native_fee_wei
+                if max_value_wei is not None and total_value_wei > max_value_wei:
                     return False, {
                         "error": "Insufficient balance after fee quote",
-                        "amount_wei": int(amount_wei),
-                        "native_fee_wei": int(native_fee_wei),
-                        "total_value_wei": int(total_value_wei),
-                        "max_value_wei": int(max_value_wei),
+                        "amount_wei": amount_wei,
+                        "native_fee_wei": native_fee_wei,
+                        "total_value_wei": total_value_wei,
+                        "max_value_wei": max_value_wei,
                     }
 
             tx = await encode_call(
@@ -2000,12 +1982,12 @@ class BorosAdapter(BaseAdapter):
                 fn_name="send",
                 args=[
                     send_params,
-                    (int(native_fee_wei), int(lz_token_fee_wei)),
+                    (native_fee_wei, lz_token_fee_wei),
                     to_checksum_address(sender),
                 ],
                 from_address=sender,
                 chain_id=CHAIN_ID_HYPEREVM,
-                value=int(total_value_wei),
+                value=total_value_wei,
             )
             tx_hash = await send_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
@@ -2013,11 +1995,11 @@ class BorosAdapter(BaseAdapter):
             return True, {
                 "status": "ok",
                 "tx_hash": tx_hash,
-                "amount_wei": int(amount_wei),
-                "native_fee_wei": int(native_fee_wei),
-                "lz_token_fee_wei": int(lz_token_fee_wei),
-                "total_value_wei": int(total_value_wei),
-                "dst_eid": int(dst_eid),
+                "amount_wei": amount_wei,
+                "native_fee_wei": native_fee_wei,
+                "lz_token_fee_wei": lz_token_fee_wei,
+                "total_value_wei": total_value_wei,
+                "dst_eid": dst_eid,
                 "to": recipient,
                 "from": sender,
                 "layerzeroscan": f"https://layerzeroscan.com/tx/{tx_hash}",
@@ -2069,9 +2051,7 @@ class BorosAdapter(BaseAdapter):
                     await contract.functions.decimalConversionRate().call()
                 )
                 if conversion_rate > 0:
-                    amount_wei = (int(amount_wei) // conversion_rate) * conversion_rate
-                else:
-                    amount_wei = int(amount_wei)
+                    amount_wei = (amount_wei // conversion_rate) * conversion_rate
 
                 if amount_wei <= 0:
                     return True, {"status": "no_op", "amount_wei": 0}
@@ -2079,27 +2059,26 @@ class BorosAdapter(BaseAdapter):
                 to_bytes32 = self._pad_address_bytes32(recipient)
 
                 def _send_params(amount_ld: int) -> tuple[Any, ...]:
-                    # Match the `SendParam` tuple shape from `HYPE_OFT_ABI`.
                     return (
-                        int(dst_eid),
+                        dst_eid,
                         to_bytes32,
-                        int(amount_ld),
-                        int(min_amount_wei),
+                        amount_ld,
+                        min_amount_wei,
                         b"",
                         b"",
                         b"",
                     )
 
-                send_params = _send_params(int(amount_wei))
+                send_params = _send_params(amount_wei)
                 fee = await contract.functions.quoteSend(send_params, False).call()
                 native_fee_wei = int(fee[0])
                 lz_token_fee_wei = int(fee[1])
 
-                if max_fee_wei is not None and native_fee_wei > int(max_fee_wei):
+                if max_fee_wei is not None and native_fee_wei > max_fee_wei:
                     return False, {
                         "error": "LayerZero fee exceeds max_fee_wei",
                         "native_fee_wei": native_fee_wei,
-                        "max_fee_wei": int(max_fee_wei),
+                        "max_fee_wei": max_fee_wei,
                     }
 
             tx = await encode_call(
@@ -2108,12 +2087,12 @@ class BorosAdapter(BaseAdapter):
                 fn_name="send",
                 args=[
                     send_params,
-                    (int(native_fee_wei), int(lz_token_fee_wei)),
+                    (native_fee_wei, lz_token_fee_wei),
                     to_checksum_address(sender),
                 ],
                 from_address=sender,
-                chain_id=int(self.chain_id),
-                value=int(native_fee_wei),
+                chain_id=self.chain_id,
+                value=native_fee_wei,
             )
             tx_hash = await send_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
@@ -2121,11 +2100,11 @@ class BorosAdapter(BaseAdapter):
             return True, {
                 "status": "ok",
                 "tx_hash": tx_hash,
-                "amount_wei": int(amount_wei),
-                "native_fee_wei": int(native_fee_wei),
-                "lz_token_fee_wei": int(lz_token_fee_wei),
-                "total_value_wei": int(native_fee_wei),
-                "dst_eid": int(dst_eid),
+                "amount_wei": amount_wei,
+                "native_fee_wei": native_fee_wei,
+                "lz_token_fee_wei": lz_token_fee_wei,
+                "total_value_wei": native_fee_wei,
+                "dst_eid": dst_eid,
                 "to": recipient,
                 "from": sender,
                 "layerzeroscan": f"https://layerzeroscan.com/tx/{tx_hash}",

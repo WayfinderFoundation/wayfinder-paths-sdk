@@ -50,7 +50,7 @@ class MorphoAdapter(BaseAdapter):
             or (cfg.get("bundler3") or {}).get("address")
         )
         self.bundler_address: str | None = (
-            to_checksum_address(str(bundler_addr)) if bundler_addr else None
+            to_checksum_address(bundler_addr) if bundler_addr else None
         )
 
         self._morpho_address_cache: dict[int, str] = {}
@@ -58,49 +58,47 @@ class MorphoAdapter(BaseAdapter):
         self._market_cache: dict[tuple[int, str], dict[str, Any]] = {}
 
     async def _morpho_address(self, *, chain_id: int) -> str:
-        cid = int(chain_id)
-        if cached := self._morpho_address_cache.get(cid):
+        if cached := self._morpho_address_cache.get(chain_id):
             return cached
 
-        entry = MORPHO_BY_CHAIN.get(int(chain_id))
+        entry = MORPHO_BY_CHAIN.get(chain_id)
         if entry and entry.get("morpho"):
-            addr = to_checksum_address(str(entry["morpho"]))
-            self._morpho_address_cache[cid] = addr
+            addr = to_checksum_address(entry["morpho"])
+            self._morpho_address_cache[chain_id] = addr
             return addr
 
         # Fallback to the Morpho API if constants are missing/out-of-date.
         addr = to_checksum_address(
-            str(await MORPHO_CLIENT.get_morpho_address(chain_id=cid))
+            await MORPHO_CLIENT.get_morpho_address(chain_id=chain_id)
         )
-        self._morpho_address_cache[cid] = addr
+        self._morpho_address_cache[chain_id] = addr
         return addr
 
     async def _public_allocator_address(self, *, chain_id: int) -> str:
-        cid = int(chain_id)
-        if cached := self._public_allocator_address_cache.get(cid):
+        if cached := self._public_allocator_address_cache.get(chain_id):
             return cached
 
-        entry = MORPHO_BY_CHAIN.get(int(chain_id))
+        entry = MORPHO_BY_CHAIN.get(chain_id)
         if entry and entry.get("public_allocator"):
-            addr = to_checksum_address(str(entry["public_allocator"]))
-            self._public_allocator_address_cache[cid] = addr
+            addr = to_checksum_address(entry["public_allocator"])
+            self._public_allocator_address_cache[chain_id] = addr
             return addr
 
         by_chain = await MORPHO_CLIENT.get_morpho_by_chain()
-        api_entry = by_chain.get(int(chain_id)) if isinstance(by_chain, dict) else None
+        api_entry = by_chain.get(chain_id) if isinstance(by_chain, dict) else None
         if api_entry and api_entry.get("public_allocator"):
-            addr = to_checksum_address(str(api_entry["public_allocator"]))
-            self._public_allocator_address_cache[cid] = addr
+            addr = to_checksum_address(api_entry["public_allocator"])
+            self._public_allocator_address_cache[chain_id] = addr
             return addr
 
         raise ValueError(f"Public allocator not found for chain_id={chain_id}")
 
     async def _get_market(self, *, chain_id: int, unique_key: str) -> dict[str, Any]:
-        cache_key = (int(chain_id), str(unique_key).lower())
+        cache_key = (chain_id, unique_key.lower())
         if cached := self._market_cache.get(cache_key):
             return cached
         market = await MORPHO_CLIENT.get_market_by_unique_key(
-            unique_key=str(unique_key), chain_id=int(chain_id)
+            unique_key=unique_key, chain_id=chain_id
         )
         if not isinstance(market, dict):
             raise ValueError(f"Invalid market response for uniqueKey={unique_key}")
@@ -123,7 +121,7 @@ class MorphoAdapter(BaseAdapter):
             fn_name=fn_name,
             args=args,
             from_address=from_address,
-            chain_id=int(chain_id),
+            chain_id=chain_id,
         )
         return str(tx.get("data") or "0x")
 
@@ -139,14 +137,14 @@ class MorphoAdapter(BaseAdapter):
             return False, "strategy wallet address not configured"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             tx = await encode_call(
                 target=morpho,
                 abi=MORPHO_BLUE_ABI,
                 fn_name="setAuthorization",
                 args=[to_checksum_address(str(authorized)), bool(is_authorized)],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -165,7 +163,7 @@ class MorphoAdapter(BaseAdapter):
             return False, "strategy wallet address not configured"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
 
             if isinstance(authorization, dict):
                 authorization_tuple = (
@@ -193,7 +191,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="setAuthorizationWithSig",
                 args=[authorization_tuple, signature_tuple],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -223,11 +221,11 @@ class MorphoAdapter(BaseAdapter):
             raise ValueError(f"Invalid market.lltv: {lltv_raw}") from exc
 
         return (
-            to_checksum_address(str(loan_addr)),
-            to_checksum_address(str(collateral_addr)),
-            to_checksum_address(str(oracle_addr)),
-            to_checksum_address(str(irm_addr)),
-            int(lltv),
+            to_checksum_address(loan_addr),
+            to_checksum_address(collateral_addr),
+            to_checksum_address(oracle_addr),
+            to_checksum_address(irm_addr),
+            lltv,
         )
 
     @staticmethod
@@ -273,7 +271,7 @@ class MorphoAdapter(BaseAdapter):
 
         out: dict[str, Any] = {
             "uniqueKey": market.get("uniqueKey"),
-            "chainId": int(chain_id),
+            "chainId": chain_id,
             "morpho": morpho,
             "listed": bool(market.get("listed")),
             "lltv": int(market.get("lltv") or 0),
@@ -331,13 +329,13 @@ class MorphoAdapter(BaseAdapter):
         include_idle: bool = False,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             markets = await MORPHO_CLIENT.get_all_markets(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 listed=listed,
                 include_idle=include_idle,
             )
-            out = [self._format_market(int(chain_id), morpho, m) for m in markets]
+            out = [self._format_market(chain_id, morpho, m) for m in markets]
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -349,11 +347,11 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
-            return True, self._format_market(int(chain_id), morpho, market)
+            return True, self._format_market(chain_id, morpho, market)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -364,11 +362,11 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
-            out = self._format_market(int(chain_id), morpho, market)
+            out = self._format_market(chain_id, morpho, market)
             out["publicAllocatorSharedLiquidity"] = (
                 market.get("publicAllocatorSharedLiquidity") or []
             )
@@ -425,8 +423,8 @@ class MorphoAdapter(BaseAdapter):
 
         try:
             history = await MORPHO_CLIENT.get_market_history(
-                unique_key=str(market_unique_key),
-                chain_id=int(chain_id),
+                unique_key=market_unique_key,
+                chain_id=chain_id,
             )
 
             def k(name: str) -> str:
@@ -458,8 +456,8 @@ class MorphoAdapter(BaseAdapter):
             return (
                 True,
                 {
-                    "uniqueKey": str(market_unique_key),
-                    "chainId": int(chain_id),
+                    "uniqueKey": market_unique_key,
+                    "chainId": chain_id,
                     "interval": interval_norm,
                     "series": {
                         "supplyApy": supply,
@@ -514,7 +512,7 @@ class MorphoAdapter(BaseAdapter):
         return {
             "type": "vault",
             "version": "v1",
-            "chainId": int(chain_id),
+            "chainId": chain_id,
             "address": vault.get("address"),
             "symbol": vault.get("symbol"),
             "name": vault.get("name"),
@@ -553,7 +551,7 @@ class MorphoAdapter(BaseAdapter):
         return {
             "type": "vault",
             "version": "v2",
-            "chainId": int(chain_id),
+            "chainId": chain_id,
             "address": vault.get("address"),
             "symbol": vault.get("symbol"),
             "name": vault.get("name"),
@@ -593,18 +591,14 @@ class MorphoAdapter(BaseAdapter):
         include_v2: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
-            v1 = await MORPHO_CLIENT.get_all_vaults(
-                chain_id=int(chain_id), listed=listed
-            )
-            out: list[dict[str, Any]] = [
-                self._format_vault_v1(int(chain_id), v) for v in v1
-            ]
+            v1 = await MORPHO_CLIENT.get_all_vaults(chain_id=chain_id, listed=listed)
+            out: list[dict[str, Any]] = [self._format_vault_v1(chain_id, v) for v in v1]
 
             if include_v2:
                 v2 = await MORPHO_CLIENT.get_all_vault_v2s(
-                    chain_id=int(chain_id), listed=listed
+                    chain_id=chain_id, listed=listed
                 )
-                out.extend([self._format_vault_v2(int(chain_id), v) for v in v2])
+                out.extend([self._format_vault_v2(chain_id, v) for v in v2])
 
             return True, out
         except Exception as exc:  # noqa: BLE001
@@ -622,36 +616,36 @@ class MorphoAdapter(BaseAdapter):
             v = (version or "").lower()
             if v in ("v2", "2", "vaultv2"):
                 vault = await MORPHO_CLIENT.get_vault_v2_by_address(
-                    address=addr, chain_id=int(chain_id)
+                    address=addr, chain_id=chain_id
                 )
-                return True, self._format_vault_v2(int(chain_id), vault)
+                return True, self._format_vault_v2(chain_id, vault)
             if v in ("v1", "1", "vault"):
                 vault = await MORPHO_CLIENT.get_vault_by_address(
-                    address=addr, chain_id=int(chain_id)
+                    address=addr, chain_id=chain_id
                 )
-                return True, self._format_vault_v1(int(chain_id), vault)
+                return True, self._format_vault_v1(chain_id, vault)
 
             # Auto-detect: try v2 first, then v1.
             try:
                 vault = await MORPHO_CLIENT.get_vault_v2_by_address(
-                    address=addr, chain_id=int(chain_id)
+                    address=addr, chain_id=chain_id
                 )
-                return True, self._format_vault_v2(int(chain_id), vault)
+                return True, self._format_vault_v2(chain_id, vault)
             except Exception:
                 vault = await MORPHO_CLIENT.get_vault_by_address(
-                    address=addr, chain_id=int(chain_id)
+                    address=addr, chain_id=chain_id
                 )
-                return True, self._format_vault_v1(int(chain_id), vault)
+                return True, self._format_vault_v1(chain_id, vault)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
     async def _vault_asset(self, *, chain_id: int, vault_address: str) -> str:
-        async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_utils.web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(
-                address=to_checksum_address(str(vault_address)), abi=ERC4626_ABI
+                address=to_checksum_address(vault_address), abi=ERC4626_ABI
             )
             asset = await contract.functions.asset().call(block_identifier="pending")
-            return to_checksum_address(str(asset))
+            return to_checksum_address(asset)
 
     async def vault_deposit(
         self,
@@ -663,20 +657,19 @@ class MorphoAdapter(BaseAdapter):
         strategy = self.strategy_wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
-        assets = int(assets)
         if assets <= 0:
             return False, "assets must be positive"
 
         try:
-            vault = to_checksum_address(str(vault_address))
-            asset = await self._vault_asset(chain_id=int(chain_id), vault_address=vault)
+            vault = to_checksum_address(vault_address)
+            asset = await self._vault_asset(chain_id=chain_id, vault_address=vault)
 
             approved = await ensure_allowance(
                 token_address=asset,
                 owner=strategy,
                 spender=vault,
-                amount=int(assets),
-                chain_id=int(chain_id),
+                amount=assets,
+                chain_id=chain_id,
                 signing_callback=self.strategy_wallet_signing_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -689,7 +682,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="deposit",
                 args=[int(assets), strategy],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -718,7 +711,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="withdraw",
                 args=[int(assets), strategy, strategy],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -741,14 +734,14 @@ class MorphoAdapter(BaseAdapter):
 
         try:
             vault = to_checksum_address(str(vault_address))
-            asset = await self._vault_asset(chain_id=int(chain_id), vault_address=vault)
+            asset = await self._vault_asset(chain_id=chain_id, vault_address=vault)
 
             approved = await ensure_allowance(
                 token_address=asset,
                 owner=strategy,
                 spender=vault,
                 amount=MAX_UINT256,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 signing_callback=self.strategy_wallet_signing_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -761,7 +754,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="mint",
                 args=[int(shares), strategy],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -790,7 +783,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="redeem",
                 args=[int(shares), strategy, strategy],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -835,19 +828,19 @@ class MorphoAdapter(BaseAdapter):
 
         try:
             positions = await MORPHO_CLIENT.get_all_market_positions(
-                user_address=acct, chain_id=int(chain_id)
+                user_address=acct, chain_id=chain_id
             )
 
             filtered = self._filter_positions(positions, include_zero_positions)
             for p in filtered:
                 if isinstance(p, dict) and p.get("chainId") is None:
-                    p["chainId"] = int(chain_id)
+                    p["chainId"] = chain_id
 
             return (
                 True,
                 {
                     "protocol": "morpho",
-                    "chainId": int(chain_id),
+                    "chainId": chain_id,
                     "account": acct,
                     "positions": filtered,
                 },
@@ -934,14 +927,14 @@ class MorphoAdapter(BaseAdapter):
         try:
             out: dict[str, Any] = {
                 "protocol": "morpho",
-                "chainId": int(chain_id),
+                "chainId": chain_id,
                 "account": acct,
             }
 
             if include_merkl:
                 merkl = await MERKL_CLIENT.get_user_rewards(
                     address=acct,
-                    chain_ids=[int(chain_id)],
+                    chain_ids=[chain_id],
                     breakdown_page=0,
                     claimable_only=bool(claimable_only),
                     reward_type="TOKEN",
@@ -950,7 +943,7 @@ class MorphoAdapter(BaseAdapter):
                 for item in merkl:
                     chain = item.get("chain") or {}
                     try:
-                        if int(chain.get("id")) != int(chain_id):
+                        if int(chain.get("id")) != chain_id:
                             continue
                     except (TypeError, ValueError):
                         continue
@@ -966,7 +959,7 @@ class MorphoAdapter(BaseAdapter):
             if include_urd:
                 dists = await MORPHO_REWARDS_CLIENT.get_user_distributions(
                     user=acct,
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     trusted=bool(trusted),
                 )
                 out["urd"] = {"distributions": dists}
@@ -989,7 +982,7 @@ class MorphoAdapter(BaseAdapter):
 
         try:
             ok, data = await self.get_claimable_rewards(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 account=acct,
                 include_merkl=True,
                 include_urd=False,
@@ -1037,7 +1030,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="claim",
                 args=[users, tokens, amounts, proofs],
                 from_address=acct,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -1060,7 +1053,7 @@ class MorphoAdapter(BaseAdapter):
         try:
             dists = await MORPHO_REWARDS_CLIENT.get_user_distributions(
                 user=acct,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 trusted=bool(trusted),
             )
 
@@ -1083,7 +1076,7 @@ class MorphoAdapter(BaseAdapter):
                     continue
 
                 tx = {
-                    "chainId": int(chain_id),
+                    "chainId": chain_id,
                     "from": acct,
                     "to": to_checksum_address(str(distributor)),
                     "data": str(tx_data),
@@ -1112,11 +1105,11 @@ class MorphoAdapter(BaseAdapter):
             return False, "strategy wallet address not configured"
 
         try:
-            out: dict[str, Any] = {"chainId": int(chain_id), "account": acct}
+            out: dict[str, Any] = {"chainId": chain_id, "account": acct}
 
             if claim_merkl:
                 ok, tx = await self.claim_merkl_rewards(
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     account=acct,
                 )
                 if not ok:
@@ -1125,7 +1118,7 @@ class MorphoAdapter(BaseAdapter):
 
             if claim_urd:
                 ok, txs = await self.claim_urd_rewards(
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     account=acct,
                     trusted=bool(trusted),
                 )
@@ -1151,8 +1144,8 @@ class MorphoAdapter(BaseAdapter):
         try:
             pos = await MORPHO_CLIENT.get_market_position(
                 user_address=acct,
-                market_unique_key=str(market_unique_key),
-                chain_id=int(chain_id),
+                market_unique_key=market_unique_key,
+                chain_id=chain_id,
             )
             return True, pos
         except Exception as exc:  # noqa: BLE001
@@ -1166,8 +1159,8 @@ class MorphoAdapter(BaseAdapter):
         account: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         return await self.get_pos(
-            chain_id=int(chain_id),
-            market_unique_key=str(market_unique_key),
+            chain_id=chain_id,
+            market_unique_key=market_unique_key,
             account=account,
         )
 
@@ -1184,12 +1177,10 @@ class MorphoAdapter(BaseAdapter):
 
         pos = await MORPHO_CLIENT.get_market_position(
             user_address=acct,
-            market_unique_key=str(market_unique_key),
-            chain_id=int(chain_id),
+            market_unique_key=market_unique_key,
+            chain_id=chain_id,
         )
-        market = await self._get_market(
-            chain_id=int(chain_id), unique_key=str(market_unique_key)
-        )
+        market = await self._get_market(chain_id=chain_id, unique_key=market_unique_key)
         state = (market.get("state") or {}) if isinstance(market, dict) else {}
 
         try:
@@ -1251,7 +1242,7 @@ class MorphoAdapter(BaseAdapter):
         hf = pos.get("healthFactor")
         return {
             "account": acct,
-            "marketUniqueKey": str(market_unique_key),
+            "marketUniqueKey": market_unique_key,
             "lltv": lltv,
             "price": state.get("price"),
             "collateral_assets": collateral_assets,
@@ -1277,8 +1268,8 @@ class MorphoAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             metrics = await self._risk_metrics(
-                chain_id=int(chain_id),
-                market_unique_key=str(market_unique_key),
+                chain_id=chain_id,
+                market_unique_key=market_unique_key,
                 account=account,
             )
             return True, metrics
@@ -1294,8 +1285,8 @@ class MorphoAdapter(BaseAdapter):
     ) -> tuple[bool, int | str]:
         try:
             metrics = await self._risk_metrics(
-                chain_id=int(chain_id),
-                market_unique_key=str(market_unique_key),
+                chain_id=chain_id,
+                market_unique_key=market_unique_key,
                 account=account,
             )
             return True, int(metrics.get("max_borrow_assets") or 0)
@@ -1311,8 +1302,8 @@ class MorphoAdapter(BaseAdapter):
     ) -> tuple[bool, int | str]:
         try:
             metrics = await self._risk_metrics(
-                chain_id=int(chain_id),
-                market_unique_key=str(market_unique_key),
+                chain_id=chain_id,
+                market_unique_key=market_unique_key,
                 account=account,
             )
             return True, int(metrics.get("max_withdraw_collateral_assets") or 0)
@@ -1334,9 +1325,9 @@ class MorphoAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             market_params = self._market_params_from_market(market)
             collateral_token = market_params[1]
@@ -1346,7 +1337,7 @@ class MorphoAdapter(BaseAdapter):
                 owner=strategy,
                 spender=morpho,
                 amount=qty,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 signing_callback=self.strategy_wallet_signing_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1359,7 +1350,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="supplyCollateral",
                 args=[market_params, qty, strategy, b""],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -1381,9 +1372,9 @@ class MorphoAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             market_params = self._market_params_from_market(market)
 
@@ -1393,7 +1384,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="withdrawCollateral",
                 args=[market_params, qty, strategy, strategy],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -1415,9 +1406,9 @@ class MorphoAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             market_params = self._market_params_from_market(market)
             loan_token = market_params[0]
@@ -1427,7 +1418,7 @@ class MorphoAdapter(BaseAdapter):
                 owner=strategy,
                 spender=morpho,
                 amount=qty,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 signing_callback=self.strategy_wallet_signing_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1440,7 +1431,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="supply",
                 args=[market_params, qty, 0, strategy, b""],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -1463,9 +1454,9 @@ class MorphoAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             market_params = self._market_params_from_market(market)
 
@@ -1473,8 +1464,8 @@ class MorphoAdapter(BaseAdapter):
             withdraw_shares = 0
             if withdraw_full:
                 supply_shares, _borrow_shares, _coll = await self._position(
-                    chain_id=int(chain_id),
-                    market_unique_key=str(market_unique_key),
+                    chain_id=chain_id,
+                    market_unique_key=market_unique_key,
                     account=strategy,
                 )
                 if supply_shares <= 0:
@@ -1494,7 +1485,7 @@ class MorphoAdapter(BaseAdapter):
                     strategy,
                 ],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -1516,9 +1507,9 @@ class MorphoAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             market_params = self._market_params_from_market(market)
 
@@ -1528,7 +1519,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="borrow",
                 args=[market_params, qty, 0, strategy, strategy],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
@@ -1546,9 +1537,9 @@ class MorphoAdapter(BaseAdapter):
             allocator = (
                 to_checksum_address(public_allocator)
                 if public_allocator
-                else await self._public_allocator_address(chain_id=int(chain_id))
+                else await self._public_allocator_address(chain_id=chain_id)
             )
-            async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_utils.web3_from_chain_id(chain_id) as web3:
                 contract = web3.eth.contract(
                     address=allocator, abi=PUBLIC_ALLOCATOR_ABI
                 )
@@ -1577,11 +1568,11 @@ class MorphoAdapter(BaseAdapter):
             allocator = (
                 to_checksum_address(public_allocator)
                 if public_allocator
-                else await self._public_allocator_address(chain_id=int(chain_id))
+                else await self._public_allocator_address(chain_id=chain_id)
             )
 
             supply_market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(supply_market_unique_key)
+                chain_id=chain_id, unique_key=supply_market_unique_key
             )
             supply_market_params = self._market_params_from_market(supply_market)
 
@@ -1599,9 +1590,9 @@ class MorphoAdapter(BaseAdapter):
                     continue
                 if amount_int <= 0:
                     continue
-                wm = await self._get_market(chain_id=int(chain_id), unique_key=str(wk))
+                wm = await self._get_market(chain_id=chain_id, unique_key=str(wk))
                 wm_params = self._market_params_from_market(wm)
-                withdrawal_tuples.append((wm_params, int(amount_int)))
+                withdrawal_tuples.append((wm_params, amount_int))
 
             if not withdrawal_tuples:
                 return False, "No valid withdrawals provided"
@@ -1609,7 +1600,7 @@ class MorphoAdapter(BaseAdapter):
             fee_value = 0
             if value is None:
                 ok, fee_or_err = await self.get_public_allocator_fee(
-                    chain_id=int(chain_id), vault=str(vault), public_allocator=allocator
+                    chain_id=chain_id, vault=str(vault), public_allocator=allocator
                 )
                 if ok:
                     fee_value = int(fee_or_err or 0)
@@ -1628,7 +1619,7 @@ class MorphoAdapter(BaseAdapter):
                     supply_market_params,
                 ],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 value=int(fee_value),
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
@@ -1667,7 +1658,7 @@ class MorphoAdapter(BaseAdapter):
                     if not fn_name:
                         continue
                     data = await self._encode_data(
-                        chain_id=int(chain_id),
+                        chain_id=chain_id,
                         target=bundler,
                         abi=BUNDLER3_ABI,
                         fn_name=str(fn_name),
@@ -1687,7 +1678,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="multicall",
                 args=[datas],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 value=int(value),
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
@@ -1717,7 +1708,7 @@ class MorphoAdapter(BaseAdapter):
 
         try:
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             state = market.get("state") or {}
             try:
@@ -1727,8 +1718,8 @@ class MorphoAdapter(BaseAdapter):
 
             if liquidity_assets >= qty:
                 return await self.borrow(
-                    chain_id=int(chain_id),
-                    market_unique_key=str(market_unique_key),
+                    chain_id=chain_id,
+                    market_unique_key=market_unique_key,
                     qty=int(qty),
                 )
 
@@ -1802,10 +1793,10 @@ class MorphoAdapter(BaseAdapter):
                     continue
                 amount = available if available <= remaining else remaining
                 wm = await self._get_market(
-                    chain_id=int(chain_id), unique_key=str(withdraw_market)
+                    chain_id=chain_id, unique_key=str(withdraw_market)
                 )
                 wm_params = self._market_params_from_market(wm)
-                withdrawals.append((wm_params, int(amount)))
+                withdrawals.append((wm_params, amount))
                 remaining -= amount
 
             if remaining > 0:
@@ -1814,7 +1805,7 @@ class MorphoAdapter(BaseAdapter):
             supply_market_params = self._market_params_from_market(market)
 
             ok, fee_or_err = await self.get_public_allocator_fee(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 vault=vault_addr,
                 public_allocator=allocator_addr,
             )
@@ -1828,7 +1819,7 @@ class MorphoAdapter(BaseAdapter):
                 )
                 # Build bundler calls.
                 call1 = await self._encode_data(
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     target=bundler,
                     abi=BUNDLER3_ABI,
                     fn_name="reallocateTo",
@@ -1842,7 +1833,7 @@ class MorphoAdapter(BaseAdapter):
                     from_address=strategy,
                 )
                 call2 = await self._encode_data(
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     target=bundler,
                     abi=BUNDLER3_ABI,
                     fn_name="morphoBorrow",
@@ -1856,7 +1847,7 @@ class MorphoAdapter(BaseAdapter):
                     from_address=strategy,
                 )
                 return await self.bundler_multicall(
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     bundler_address=bundler,
                     calls=[call1, call2],
                     value=int(fee_value),
@@ -1869,7 +1860,7 @@ class MorphoAdapter(BaseAdapter):
                 fn_name="reallocateTo",
                 args=[vault_addr, withdrawals, supply_market_params],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 value=int(fee_value),
             )
             realloc_hash = await send_transaction(
@@ -1877,8 +1868,8 @@ class MorphoAdapter(BaseAdapter):
             )
 
             ok2, borrow_tx = await self.borrow(
-                chain_id=int(chain_id),
-                market_unique_key=str(market_unique_key),
+                chain_id=chain_id,
+                market_unique_key=market_unique_key,
                 qty=int(qty),
             )
             if not ok2:
@@ -1895,8 +1886,8 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
     ) -> tuple[bool, Any]:
         return await self.unlend(
-            chain_id=int(chain_id),
-            market_unique_key=str(market_unique_key),
+            chain_id=chain_id,
+            market_unique_key=market_unique_key,
             qty=0,
             withdraw_full=True,
         )
@@ -1908,8 +1899,8 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
         account: str,
     ) -> tuple[int, int, int]:
-        morpho = await self._morpho_address(chain_id=int(chain_id))
-        async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
+        morpho = await self._morpho_address(chain_id=chain_id)
+        async with web3_utils.web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(address=morpho, abi=MORPHO_BLUE_ABI)
             (
                 supply_shares,
@@ -1927,8 +1918,8 @@ class MorphoAdapter(BaseAdapter):
         market_unique_key: str,
     ) -> tuple[bool, Any]:
         return await self.repay(
-            chain_id=int(chain_id),
-            market_unique_key=str(market_unique_key),
+            chain_id=chain_id,
+            market_unique_key=market_unique_key,
             qty=0,
             repay_full=True,
         )
@@ -1949,9 +1940,9 @@ class MorphoAdapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            morpho = await self._morpho_address(chain_id=int(chain_id))
+            morpho = await self._morpho_address(chain_id=chain_id)
             market = await self._get_market(
-                chain_id=int(chain_id), unique_key=str(market_unique_key)
+                chain_id=chain_id, unique_key=market_unique_key
             )
             market_params = self._market_params_from_market(market)
             loan_token = market_params[0]
@@ -1962,8 +1953,8 @@ class MorphoAdapter(BaseAdapter):
 
             if repay_full:
                 _supply_shares, borrow_shares, _coll = await self._position(
-                    chain_id=int(chain_id),
-                    market_unique_key=str(market_unique_key),
+                    chain_id=chain_id,
+                    market_unique_key=market_unique_key,
                     account=strategy,
                 )
                 if borrow_shares <= 0:
@@ -1977,7 +1968,7 @@ class MorphoAdapter(BaseAdapter):
                 owner=strategy,
                 spender=morpho,
                 amount=allowance_target,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 signing_callback=self.strategy_wallet_signing_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1996,7 +1987,7 @@ class MorphoAdapter(BaseAdapter):
                     b"",
                 ],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
             return True, txn_hash
