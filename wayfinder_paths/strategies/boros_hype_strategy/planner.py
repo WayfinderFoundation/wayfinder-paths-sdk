@@ -161,7 +161,6 @@ def build_plan(
         )
         return plan  # Skip all other operations
 
-    # Check for HL liquidation detection
     if inv.hl_liquidation_detected:
         # Log the liquidation alert in plan messages
         plan = Plan(
@@ -177,7 +176,6 @@ def build_plan(
         plan.messages.append(
             "[LIQUIDATION] HL short was liquidated - entering recovery mode"
         )
-        # Add close and redeploy step
         plan.add_step(
             PlanOp.CLOSE_AND_REDEPLOY,
             priority=0,

@@ -74,7 +74,6 @@ class BorosHypeSnapshotMixin:
         if not ok_addr:
             user_address = None
 
-        # Default values
         hype_price_usd = 0.0
         hl_perp_margin = 0.0
         hl_spot_usdc = 0.0

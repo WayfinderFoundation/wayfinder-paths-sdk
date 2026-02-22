@@ -120,10 +120,7 @@ class MoonwellAdapter(BaseAdapter):
         self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
         self.m_usdc = MOONWELL_M_USDC
 
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
-        )
+        self.strategy_wallet_address = self._resolve_strategy_wallet_address(cfg)
         self._cache = Cache(Cache.MEMORY)
 
     async def lend(

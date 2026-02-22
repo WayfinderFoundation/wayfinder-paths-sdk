@@ -50,10 +50,7 @@ class AvantisAdapter(BaseAdapter):
         self.vault_manager: str = AVANTIS_VAULT_MANAGER
         self.underlying: str = BASE_USDC
 
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
-        )
+        self.strategy_wallet_address = self._resolve_strategy_wallet_address(cfg)
 
     async def get_all_markets(self) -> tuple[bool, list[dict[str, Any]] | str]:
         """Return the configured Avantis vault as a single-market list."""

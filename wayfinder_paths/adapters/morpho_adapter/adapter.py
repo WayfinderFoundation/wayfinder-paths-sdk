@@ -39,10 +39,7 @@ class MorphoAdapter(BaseAdapter):
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
 
         cfg = config or {}
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
-        )
+        self.strategy_wallet_address = self._resolve_strategy_wallet_address(cfg)
 
         bundler_addr = (
             cfg.get("bundler_address")
@@ -1826,7 +1823,6 @@ class MorphoAdapter(BaseAdapter):
                     if bundler_address
                     else to_checksum_address(self.bundler_address)
                 )
-                # Build bundler calls.
                 call1 = await self._encode_data(
                     chain_id=int(chain_id),
                     target=bundler,

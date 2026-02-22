@@ -983,15 +983,14 @@ class PendleAdapter(BaseAdapter):
                 days_to_expiry = (expiry_dt - now).total_seconds() / 86400.0
 
                 try:
-                    liquidity = float(details.get("liquidity", 0.0) or 0.0)
-                    volume = float(details.get("tradingVolume", 0.0) or 0.0)
-                    total_tvl = float(details.get("totalTvl", 0.0) or 0.0)
+                    liquidity = float(details.get("liquidity") or 0)
+                    volume = float(details.get("tradingVolume") or 0)
+                    total_tvl = float(details.get("totalTvl") or 0)
                 except Exception:
-                    # If a market has unexpected formatting, skip it.
                     continue
 
-                implied_apy = float(details.get("impliedApy", 0.0) or 0.0)
-                underlying_apy = float(details.get("underlyingApy", 0.0) or 0.0)
+                implied_apy = float(details.get("impliedApy") or 0)
+                underlying_apy = float(details.get("underlyingApy") or 0)
                 floating_apy = underlying_apy - implied_apy
 
                 if liquidity < min_liquidity_usd:
@@ -1029,10 +1028,10 @@ class PendleAdapter(BaseAdapter):
                     "volumeUsd24h": volume,
                     "totalTvlUsd": total_tvl,
                     # Extra details if you want them for decision making
-                    "swapFeeApy": float(details.get("swapFeeApy", 0.0) or 0.0),
-                    "pendleApy": float(details.get("pendleApy", 0.0) or 0.0),
-                    "aggregatedApy": float(details.get("aggregatedApy", 0.0) or 0.0),
-                    "maxBoostedApy": float(details.get("maxBoostedApy", 0.0) or 0.0),
+                    "swapFeeApy": float(details.get("swapFeeApy") or 0),
+                    "pendleApy": float(details.get("pendleApy") or 0),
+                    "aggregatedApy": float(details.get("aggregatedApy") or 0),
+                    "maxBoostedApy": float(details.get("maxBoostedApy") or 0),
                 }
                 rows.append(row)
 
@@ -1167,7 +1166,7 @@ class PendleAdapter(BaseAdapter):
         def extract_price_impact(bundle: dict[str, Any]) -> float:
             data = (bundle.get("swap") or {}).get("data") or {}
             try:
-                return float(data.get("priceImpact", 0.0) or 0.0)
+                return float(data.get("priceImpact") or 0)
             except Exception:
                 return 0.0
 
@@ -1189,7 +1188,7 @@ class PendleAdapter(BaseAdapter):
             m = bundle["market"]
             eff = extract_effective_apy(bundle)
             imp_after = extract_implied_after(bundle)
-            fixed = float(m.get("fixedApy", 0.0) or 0.0)
+            fixed = float(m.get("fixedApy") or 0)
 
             if prefer == "effective_apy":
                 primary = (
@@ -1201,8 +1200,8 @@ class PendleAdapter(BaseAdapter):
                 primary = fixed
 
             pi = extract_price_impact(bundle)
-            liq = float(m.get("liquidityUsd", 0.0) or 0.0)
-            vol = float(m.get("volumeUsd24h", 0.0) or 0.0)
+            liq = float(m.get("liquidityUsd") or 0)
+            vol = float(m.get("volumeUsd24h") or 0)
 
             # Max primary, min price impact, max liquidity, max volume
             return (primary, -pi, liq, vol)
@@ -1317,7 +1316,7 @@ class PendleAdapter(BaseAdapter):
         def extract_price_impact(bundle: dict[str, Any]) -> float:
             data = ((bundle.get("plan") or {}).get("route") or {}).get("data") or {}
             try:
-                return float(data.get("priceImpact", 0.0) or 0.0)
+                return float(data.get("priceImpact") or 0)
             except Exception:
                 return 0.0
 
@@ -1376,7 +1375,7 @@ class PendleAdapter(BaseAdapter):
             m = bundle["market"]
             eff = extract_effective_apy(bundle)
             imp_after = extract_implied_after(bundle)
-            fixed = float(m.get("fixedApy", 0.0) or 0.0)
+            fixed = float(m.get("fixedApy") or 0)
 
             if prefer == "effective_apy":
                 primary = (
@@ -1388,8 +1387,8 @@ class PendleAdapter(BaseAdapter):
                 primary = fixed
 
             pi = extract_price_impact(bundle)
-            liq = float(m.get("liquidityUsd", 0.0) or 0.0)
-            vol = float(m.get("volumeUsd24h", 0.0) or 0.0)
+            liq = float(m.get("liquidityUsd") or 0)
+            vol = float(m.get("volumeUsd24h") or 0)
             return (primary, -pi, liq, vol)
 
         best = max(valid, key=score)
