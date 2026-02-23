@@ -8,3 +8,52 @@ capabilities:
   - "collateral.deposit"
   - "collateral.withdraw"
 dependencies: []
+mcp_methods:
+  - name: "list_markets"
+  - name: "list_markets_all"
+  - name: "get_market"
+  - name: "quote_market_by_id"
+  - name: "get_orderbook"
+  - name: "quote_market"
+  - name: "quote_markets_for_underlying"
+  - name: "list_tenor_quotes"
+  - name: "get_assets"
+  - name: "get_asset_by_token_id"
+  - name: "get_market_history"
+  - name: "list_available_underlyings"
+  - name: "list_available_platforms"
+  - name: "list_markets_by_collateral"
+  - name: "search_markets"
+  - name: "get_enriched_market"
+  - name: "get_collaterals"
+  - name: "get_account_balances"
+  - name: "get_active_positions"
+  - name: "get_open_limit_orders"
+  - name: "get_full_user_state"
+  - name: "get_pending_withdrawal_amount"
+  - name: "get_withdrawal_status"
+  - name: "get_cash_fee_data"
+  - name: "deposit_to_cross_margin"
+    write: true
+  - name: "withdraw_collateral"
+    write: true
+  - name: "cash_transfer"
+    write: true
+  - name: "sweep_isolated_to_cross"
+    write: true
+  - name: "place_rate_order"
+    write: true
+  - name: "close_positions_market"
+    write: true
+  - name: "close_positions_except"
+    write: true
+  - name: "cancel_orders"
+    write: true
+  - name: "ensure_position_size_yu"
+    write: true
+  - name: "bridge_hype_oft_hyperevm_to_arbitrum"
+    write: true
+  - name: "bridge_hype_oft_arbitrum_to_hyperevm"
+    write: true
+  - name: "finalize_vault_withdrawal"
+    write: true

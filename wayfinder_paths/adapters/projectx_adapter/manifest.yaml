@@ -11,3 +11,22 @@ capabilities:
   - "projectx.position.burn"
   - "projectx.swap.exact_in"
 dependencies: []
+mcp_methods:
+  - name: "pool_overview"
+  - name: "current_balances"
+  - name: "list_positions"
+  - name: "get_full_user_state"
+  - name: "fetch_swaps"
+  - name: "recent_swaps"
+  - name: "price_band_for_ticks"
+  - name: "find_pool_for_pair"
+  - name: "live_fee_snapshot"
+  - name: "fetch_prjx_points"
+  - name: "mint_from_balances"
+    write: true
+  - name: "burn_position"
+    write: true
+  - name: "increase_liquidity_balanced"
+    write: true
+  - name: "swap_exact_in"
+    write: true

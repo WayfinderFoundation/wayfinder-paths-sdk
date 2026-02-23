@@ -5,3 +5,9 @@ capabilities:
   - "token.price"
   - "token.gas"
 dependencies: []
+mcp_methods:
+  - name: "get_token"
+  - name: "get_token_onchain"
+  - name: "get_token_price"
+  - name: "get_amount_usd"
+  - name: "get_gas_token"

@@ -14,3 +14,22 @@ capabilities:
   - "collateral.set"
   - "collateral.remove"
 dependencies: []
+mcp_methods:
+  - name: "get_all_markets"
+  - name: "get_stable_markets"
+  - name: "get_assets_view"
+  - name: "get_full_user_state"
+  - name: "get_market_entry"
+  - name: "get_lend_rate_history"
+  - name: "lend"
+    write: true
+  - name: "unlend"
+    write: true
+  - name: "borrow"
+    write: true
+  - name: "repay"
+    write: true
+  - name: "set_collateral"
+    write: true
+  - name: "remove_collateral"
+    write: true

@@ -7,3 +7,9 @@ capabilities:
   - "bridge.quote"
   - "gas.estimate"
 dependencies: []
+mcp_methods:
+  - name: "best_quote"
+  - name: "swap_from_quote"
+    write: true
+  - name: "swap_from_token_ids"
+    write: true

@@ -13,3 +13,28 @@ capabilities:
   - "market.apy"
   - "market.collateral_factor"
 dependencies: []
+mcp_methods:
+  - name: "get_all_markets"
+  - name: "get_full_user_state"
+  - name: "get_pos"
+  - name: "get_collateral_factor"
+  - name: "get_apy"
+  - name: "get_borrowable_amount"
+  - name: "max_withdrawable_mtoken"
+  - name: "is_market_entered"
+  - name: "lend"
+    write: true
+  - name: "unlend"
+    write: true
+  - name: "borrow"
+    write: true
+  - name: "repay"
+    write: true
+  - name: "set_collateral"
+    write: true
+  - name: "remove_collateral"
+    write: true
+  - name: "claim_rewards"
+    write: true
+  - name: "wrap_eth"
+    write: true
