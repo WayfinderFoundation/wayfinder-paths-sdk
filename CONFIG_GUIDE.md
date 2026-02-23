@@ -61,8 +61,11 @@ The `config.json` file has three main sections:
 |-------|----------|-------------|
 | `api_key` | Yes | Wayfinder API key (sent as `X-API-KEY` header) |
 | `api_base_url` | No | API endpoint (default: `https://wayfinder.ai/api`) |
+| `etherscan_api_key` | No | Etherscan V2 API key (used for Solidity contract verification) |
 
 The API key is automatically loaded and included in all API requests (including Gorlami dry-runs). You don't need to pass it explicitly to strategies or clients.
+
+`system.etherscan_api_key` is optional — it is only used when deploying contracts with `verify=true` (deploy still succeeds without it).
 
 ## Strategy Configuration
 

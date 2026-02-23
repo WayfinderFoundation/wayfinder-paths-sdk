@@ -10,6 +10,10 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.mcp.resources.contracts import (
+    get_contract,
+    list_contracts,
+)
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
     describe_strategy,
@@ -35,6 +39,12 @@ from wayfinder_paths.mcp.resources.wallets import (
     get_wallet_activity,
     get_wallet_balances,
     list_wallets,
+)
+from wayfinder_paths.mcp.tools.contracts import compile_contract, deploy_contract
+from wayfinder_paths.mcp.tools.evm_contract import (
+    contract_call,
+    contract_execute,
+    contract_get_abi,
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
@@ -66,6 +76,8 @@ mcp.resource("wayfinder://hyperliquid/prices/{coin}")(get_mid_price)
 mcp.resource("wayfinder://hyperliquid/markets")(get_markets)
 mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
+mcp.resource("wayfinder://contracts")(list_contracts)
+mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)
@@ -78,6 +90,11 @@ mcp.tool()(run_script)
 mcp.tool()(execute)
 mcp.tool()(wallets)
 mcp.tool()(runner)
+mcp.tool()(compile_contract)
+mcp.tool()(deploy_contract)
+mcp.tool()(contract_get_abi)
+mcp.tool()(contract_call)
+mcp.tool()(contract_execute)
 
 
 def main() -> None:
