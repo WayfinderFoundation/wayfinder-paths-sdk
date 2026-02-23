@@ -161,9 +161,7 @@ def build_plan(
         )
         return plan  # Skip all other operations
 
-    # Check for HL liquidation detection
     if inv.hl_liquidation_detected:
-        # Log the liquidation alert in plan messages
         plan = Plan(
             desired_state=DesiredState(
                 mode=Mode.REDEPLOY,
@@ -177,7 +175,6 @@ def build_plan(
         plan.messages.append(
             "[LIQUIDATION] HL short was liquidated - entering recovery mode"
         )
-        # Add close and redeploy step
         plan.add_step(
             PlanOp.CLOSE_AND_REDEPLOY,
             priority=0,
@@ -294,8 +291,7 @@ def build_plan(
         return plan
 
     if mode == Mode.TRIM:
-        # Calculate margin shortfall instead of blunt 25% trim
-        # This prevents the whipsaw of "trim → deploy excess margin back"
+        # Margin shortfall prevents the whipsaw of "trim → deploy excess margin back"
         short_notional = inv.hl_short_size_hype * inv.hype_price_usd
         required_margin = short_notional * config.hl_target_margin_ratio  # 50% for 2x
         buffer_margin = short_notional * config.hl_margin_buffer_ratio  # 15% buffer
@@ -306,7 +302,6 @@ def build_plan(
         trim_amount_usd = margin_shortfall * 1.05 if margin_shortfall > 5 else 0
 
         if trim_amount_usd > 0 and inv.spot_value_usd > 0:
-            # Convert to percentage of spot value, capped at 50%
             trim_pct = min(trim_amount_usd / inv.spot_value_usd, 0.50)
             if trim_pct > 0.02:  # Only trim if > 2%
                 plan.add_step(
@@ -330,9 +325,6 @@ def build_plan(
     # Gap 4: Priority 10 - Capital routing with virtual ledger
     # Use runtime.available_usdc_arb() to avoid double-spending within a tick
 
-    # Fund Boros (via HyperEVM HYPE -> Arbitrum OFT -> Boros cross margin)
-    # Check funded_boros_this_tick to prevent repeated funding in same tick.
-    #
     # IMPORTANT: Use the Boros target (includes minimum+buffer) instead of pct-based allocation,
     # otherwise small deposits get skipped (Boros min deposit).
     boros_shortfall = 0.0

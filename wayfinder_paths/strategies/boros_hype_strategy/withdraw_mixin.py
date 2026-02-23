@@ -86,7 +86,6 @@ class BorosHypeWithdrawMixin:
             else:
                 logger.info(f"Builder fee status: {msg}")
 
-        # Get inventory once - use it for initial decisions/logging.
         inv = await self.observe()
         isolated_usd = float(inv.boros_idle_collateral_isolated or 0.0) * float(
             inv.hype_price_usd or 0.0
@@ -554,7 +553,6 @@ class BorosHypeWithdrawMixin:
                 LOOPED_HYPE
             )
 
-            # Calculate total HYPE-equivalent value on HyperEVM (above gas reserve)
             native_hype = (float(hype_raw) / 1e18) if ok_hype and hype_raw > 0 else 0.0
             whype_bal = (float(whype_raw) / 1e18) if ok_whype and whype_raw > 0 else 0.0
             khype_bal = (float(khype_raw) / 1e18) if ok_khype and khype_raw > 0 else 0.0
@@ -1043,7 +1041,6 @@ class BorosHypeWithdrawMixin:
                 )
 
                 if perp_balance > 1.0:
-                    # Check for remaining open positions that require margin
                     positions = user_state.get("assetPositions", [])
                     has_dust_position = False
                     dust_position_margin = 0.0
@@ -1067,7 +1064,6 @@ class BorosHypeWithdrawMixin:
                                 f"reserving ~${dust_position_margin:.2f} margin"
                             )
 
-                    # Calculate withdrawable amount
                     if has_dust_position:
                         # Leave buffer for dust position margin (minimum $2, or estimated margin + $1 buffer)
                         margin_buffer = max(2.0, dust_position_margin + 1.0)

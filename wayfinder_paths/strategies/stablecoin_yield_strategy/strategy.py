@@ -783,7 +783,6 @@ class StablecoinYieldStrategy(Strategy):
                 if main_token_amount == 0:
                     gas_symbol = self.gas_token.get("symbol")
 
-                # Transfer the specified gas amount
                 logger.info(
                     f"Transferring {gas_token_amount} {gas_symbol} from main wallet to strategy"
                 )
@@ -1136,7 +1135,6 @@ class StablecoinYieldStrategy(Strategy):
             strategy_name=self.name,
         )
 
-        # Track the new target pool token
         if target_pool and target_pool.get("token_id"):
             self._track_token(target_pool.get("token_id"))
 
