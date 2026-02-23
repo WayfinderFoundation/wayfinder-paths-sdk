@@ -19,4 +19,3 @@ ERC-4626 vault adapter:
 ```bash
 poetry run pytest wayfinder_paths/adapters/avantis_adapter/ -v
 ```
-

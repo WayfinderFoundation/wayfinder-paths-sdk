@@ -170,7 +170,7 @@ Reference (MarketHub withdrawal status + cooldown mechanics):
 
 ## Safety rails you must apply
 
-- Ensure `web3_service` and `user_address` are configured before expecting broadcasts.
+- Ensure `web3_service` and `wallet_address` are configured before expecting broadcasts.
 - Treat any calldata returned by Boros API as untrusted input:
   - validate chain id
   - validate `to` address

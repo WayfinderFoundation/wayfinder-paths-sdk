@@ -36,12 +36,12 @@ class AvantisAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback: Any | None = None,
+        sign_callback: Any | None = None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("avantis_adapter", config)
-        cfg = config or {}
 
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
 
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
@@ -50,9 +50,8 @@ class AvantisAdapter(BaseAdapter):
         self.vault_manager: str = AVANTIS_VAULT_MANAGER
         self.underlying: str = BASE_USDC
 
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
         )
 
     async def get_all_markets(self) -> tuple[bool, list[dict[str, Any]] | str]:
@@ -177,11 +176,11 @@ class AvantisAdapter(BaseAdapter):
         underlying_token: str | None = None,
         amount: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-        if not self.strategy_wallet_signing_callback:
-            return False, "strategy wallet signing callback not configured"
+        wallet = self.wallet_address
+        if not wallet:
+            return False, "wallet_address is required"
+        if not self.sign_callback:
+            return False, "sign_callback is required"
 
         assets = int(amount)
         if assets <= 0:
@@ -197,11 +196,11 @@ class AvantisAdapter(BaseAdapter):
         try:
             approved = await ensure_allowance(
                 token_address=asset,
-                owner=strategy,
+                owner=wallet,
                 spender=vault,
                 amount=assets,
                 chain_id=self.chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -211,13 +210,11 @@ class AvantisAdapter(BaseAdapter):
                 target=vault,
                 abi=ERC4626_ABI,
                 fn_name="deposit",
-                args=[assets, strategy],
-                from_address=strategy,
+                args=[assets, wallet],
+                from_address=wallet,
                 chain_id=self.chain_id,
             )
-            txn_hash = await send_transaction(
-                transaction, self.strategy_wallet_signing_callback
-            )
+            txn_hash = await send_transaction(transaction, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -229,11 +226,11 @@ class AvantisAdapter(BaseAdapter):
         amount: int,
         redeem_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-        if not self.strategy_wallet_signing_callback:
-            return False, "strategy wallet signing callback not configured"
+        wallet = self.wallet_address
+        if not wallet:
+            return False, "wallet_address is required"
+        if not self.sign_callback:
+            return False, "sign_callback is required"
 
         vault = to_checksum_address(vault_address) if vault_address else self.vault
 
@@ -244,11 +241,11 @@ class AvantisAdapter(BaseAdapter):
                 async with web3_from_chain_id(self.chain_id) as web3:
                     v = web3.eth.contract(address=vault, abi=ERC4626_ABI)
                     try:
-                        shares = await v.functions.maxRedeem(strategy).call(
+                        shares = await v.functions.maxRedeem(wallet).call(
                             block_identifier="pending"
                         )
                     except (ContractLogicError, Web3RPCError):
-                        shares = await v.functions.balanceOf(strategy).call(
+                        shares = await v.functions.balanceOf(wallet).call(
                             block_identifier="pending"
                         )
 
@@ -263,13 +260,11 @@ class AvantisAdapter(BaseAdapter):
                 target=vault,
                 abi=ERC4626_ABI,
                 fn_name="redeem",
-                args=[shares, strategy, strategy],
-                from_address=strategy,
+                args=[shares, wallet, wallet],
+                from_address=wallet,
                 chain_id=self.chain_id,
             )
-            txn_hash = await send_transaction(
-                transaction, self.strategy_wallet_signing_callback
-            )
+            txn_hash = await send_transaction(transaction, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -289,9 +284,9 @@ class AvantisAdapter(BaseAdapter):
         block_identifier: int | str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         vault = to_checksum_address(vault_address) if vault_address else self.vault
-        acct = to_checksum_address(account) if account else self.strategy_wallet_address
+        acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
-            return False, "strategy wallet address not configured"
+            return False, "wallet_address is required"
         block_id = block_identifier if block_identifier is not None else "pending"
 
         try:

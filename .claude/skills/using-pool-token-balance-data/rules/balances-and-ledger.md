@@ -26,7 +26,7 @@ High-value reads:
   - Output: raw balance in base units (int).
 
 - `BalanceAdapter.get_vault_wallet_balance(token_id)`
-  - Source: on-chain read (uses configured `strategy_wallet` from `config.json`).
+  - Source: on-chain read (uses `strategy_wallet_address` passed to the adapter).
   - Input: `token_id` is a Wayfinder token identifier (e.g. `usd-coin-arbitrum`).
   - Output: raw balance in base units (int).
 
