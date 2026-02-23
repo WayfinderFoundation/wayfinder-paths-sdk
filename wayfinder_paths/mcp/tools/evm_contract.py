@@ -382,6 +382,7 @@ def _annotate(
         details=details,
     )
 
+
 async def contract_get_abi(
     *,
     chain_id: int,

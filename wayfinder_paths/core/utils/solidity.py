@@ -245,7 +245,11 @@ def compile_solidity(
         if not isinstance(artifact, dict):
             continue
         abi_raw = artifact.get("abi", [])
-        abi = [i for i in abi_raw if isinstance(i, dict)] if isinstance(abi_raw, list) else []
+        abi = (
+            [i for i in abi_raw if isinstance(i, dict)]
+            if isinstance(abi_raw, list)
+            else []
+        )
         bytecode = _extract_bytecode_from_artifact(artifact)
         results[str(name)] = {"abi": abi, "bytecode": bytecode}
 

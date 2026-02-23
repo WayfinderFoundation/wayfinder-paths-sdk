@@ -17,4 +17,3 @@ def runs_root() -> Path:
     if not p.is_absolute():
         p = repo_root() / p
     return p.resolve(strict=False)
-
