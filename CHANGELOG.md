@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.7.0] - 2026-02-23 (742b2b88d68fea5fecffeb0036e64c1b97c4ed8b)
+
+Breaking
+
+1. **Adapter constructor parameters renamed.** All single-wallet adapters: `strategy_wallet_signing_callback` → `sign_callback`, and wallet address is now an explicit `wallet_address` parameter instead of being extracted from `config`. BalanceAdapter: `main_wallet_signing_callback` / `strategy_wallet_signing_callback` → `main_sign_callback` / `strategy_sign_callback`, with explicit `main_wallet_address` / `strategy_wallet_address`. BorosAdapter: `user_address` → `wallet_address`.
+2. **`get_adapter()` for dual-wallet adapters now requires two labels.** `get_adapter(BalanceAdapter, "main")` → `get_adapter(BalanceAdapter, "main", "my_strategy")`.
+3. **Internal adapter attributes renamed** to match new constructor params (`self.strategy_wallet_signing_callback` → `self.sign_callback`, `self.strategy_wallet_address` → `self.wallet_address`, etc.).
+
+Added
+
+1. Avantis adapter with deposit, withdraw, staking rewards, and ERC-4626 vault support.
+2. MCP strategy smoke tests.
+3. Hyperlend stable yield strategy todo/integration test.
+
+Changed
+
+1. Aave V3: convert APR to APY before applying reward rate adjustments.
+2. Aave V3: store addresses as lowercase, remove redundant checksum helpers and dead code.
+3. Slippage parameter now correctly forwarded in MCP swap quote flow.
+4. Polymarket `_normalize_market` guards against missing keys instead of raising on absent fields.
+5. Avantis adapter README updated to reflect `deposit`/`withdraw` naming.
+6. `make_sign_callback` moved from `mcp/scripting.py` to `core/utils/wallets.py`.
+
 ## [0.6.1] - 2026-02-16 (57da66ca33a10fd68d128c80970ac989d6addb7e)
 
 Added
