@@ -7,16 +7,15 @@ Adapter for the Avantis **avUSDC** ERC-4626 LP vault on **Base**.
 
 ## Overview
 
-Maps Wayfinder-style lending primitives onto ERC-4626:
+ERC-4626 vault adapter:
 
-- `lend()` → `deposit(assets, receiver)` (USDC → avUSDC shares)
-- `unlend()` → `redeem(shares, receiver, owner)` (avUSDC shares → USDC)
+- `deposit(amount)` — calls ERC-4626 `deposit(assets, receiver)` (USDC → avUSDC shares)
+- `withdraw(amount)` — calls ERC-4626 `redeem(shares, receiver, owner)` (avUSDC shares → USDC)
 
-`borrow()` / `repay()` are intentionally unsupported for this vault.
+`borrow()` / `repay()` are intentionally unsupported (LP vault, not a lending market).
 
 ## Testing
 
 ```bash
 poetry run pytest wayfinder_paths/adapters/avantis_adapter/ -v
 ```
-
