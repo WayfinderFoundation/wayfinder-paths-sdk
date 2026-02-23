@@ -402,7 +402,9 @@ async def test_contract_get_abi_fetches_from_etherscan():
         "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
         new=AsyncMock(return_value=fetched_abi),
     ):
-        out = await contract_get_abi(chain_id=1, contract_address=addr, resolve_proxy=False)
+        out = await contract_get_abi(
+            chain_id=1, contract_address=addr, resolve_proxy=False
+        )
 
     assert out["ok"] is True, out
     result = out["result"]
@@ -432,14 +434,18 @@ async def test_contract_get_abi_prefers_proxy_implementation():
     with (
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.resolve_proxy_implementation",
-            new=AsyncMock(return_value=(AsyncWeb3.to_checksum_address(impl_addr), "EIP1967")),
+            new=AsyncMock(
+                return_value=(AsyncWeb3.to_checksum_address(impl_addr), "EIP1967")
+            ),
         ),
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = await contract_get_abi(chain_id=1, contract_address=proxy_addr, resolve_proxy=True)
+        out = await contract_get_abi(
+            chain_id=1, contract_address=proxy_addr, resolve_proxy=True
+        )
 
     assert out["ok"] is True, out
     result = out["result"]
@@ -473,14 +479,18 @@ async def test_contract_get_abi_falls_back_to_proxy_abi_when_impl_fetch_fails():
     with (
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.resolve_proxy_implementation",
-            new=AsyncMock(return_value=(AsyncWeb3.to_checksum_address(impl_addr), "EIP1967")),
+            new=AsyncMock(
+                return_value=(AsyncWeb3.to_checksum_address(impl_addr), "EIP1967")
+            ),
         ),
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = await contract_get_abi(chain_id=1, contract_address=proxy_addr, resolve_proxy=True)
+        out = await contract_get_abi(
+            chain_id=1, contract_address=proxy_addr, resolve_proxy=True
+        )
 
     assert out["ok"] is True, out
     result = out["result"]

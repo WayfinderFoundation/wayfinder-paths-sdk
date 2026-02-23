@@ -163,4 +163,3 @@ async def test_deploy_contract_verification_failure_is_nonfatal():
     assert out["contract_address"] == contract_address
     assert out["verified"] is False
     assert "verification_error" in out and "boom" in str(out["verification_error"])
-

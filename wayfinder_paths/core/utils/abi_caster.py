@@ -56,8 +56,7 @@ def cast_args(args: list[Any], abi_inputs: list[dict[str, Any]]) -> list[Any]:
 
     if len(args) != len(abi_inputs):
         raise ValueError(
-            f"Argument count mismatch: got {len(args)}, "
-            f"expected {len(abi_inputs)}"
+            f"Argument count mismatch: got {len(args)}, expected {len(abi_inputs)}"
         )
 
     result: list[Any] = []
@@ -84,11 +83,15 @@ def _cast_value(arg: Any, inp: dict[str, Any]) -> Any:
     # Tuple/struct types
     if t == "tuple" and components:
         if isinstance(arg, dict):
-            ordered = [arg.get(c["name"], arg.get(str(i))) for i, c in enumerate(components)]
+            ordered = [
+                arg.get(c["name"], arg.get(str(i))) for i, c in enumerate(components)
+            ]
             return tuple(cast_args(ordered, components))
         if isinstance(arg, (list, tuple)):
             return tuple(cast_args(list(arg), components))
-        raise TypeError(f"Expected dict/list/tuple for tuple type, got {type(arg).__name__}")
+        raise TypeError(
+            f"Expected dict/list/tuple for tuple type, got {type(arg).__name__}"
+        )
 
     return cast_single(arg, t)
 

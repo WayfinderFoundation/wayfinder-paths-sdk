@@ -35,12 +35,15 @@ interface IERC20 {}
     def _mock_load_dependency_source(*, node_modules, key: str) -> str:
         return deps[key]
 
-    with patch(
-        "wayfinder_paths.core.utils.solidity.ensure_oz_installed",
-        return_value="/tmp/node_modules",
-    ), patch(
-        "wayfinder_paths.core.utils.solidity._load_dependency_source",
-        side_effect=_mock_load_dependency_source,
+    with (
+        patch(
+            "wayfinder_paths.core.utils.solidity.ensure_oz_installed",
+            return_value="/tmp/node_modules",
+        ),
+        patch(
+            "wayfinder_paths.core.utils.solidity._load_dependency_source",
+            side_effect=_mock_load_dependency_source,
+        ),
     ):
         sources = collect_sources(source)
 

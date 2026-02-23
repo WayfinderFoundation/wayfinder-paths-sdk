@@ -7,6 +7,7 @@ from typing import Any
 from loguru import logger
 from web3 import AsyncWeb3
 
+from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.abi_caster import cast_args
 from wayfinder_paths.core.utils.etherscan import (
     fetch_contract_abi,
@@ -14,8 +15,7 @@ from wayfinder_paths.core.utils.etherscan import (
 )
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils import web3 as web3_utils
-from wayfinder_paths.mcp.scripting import _make_sign_callback
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
@@ -37,7 +37,9 @@ def _safe_checksum_address(addr: str) -> str:
 
 
 def _abi_error_code(message: str) -> str:
-    return "missing_api_key" if "api key" in str(message).lower() else "abi_fetch_failed"
+    return (
+        "missing_api_key" if "api key" in str(message).lower() else "abi_fetch_failed"
+    )
 
 
 def _normalize_signature(sig: str) -> str:
@@ -61,7 +63,9 @@ def _select_function_abi(
     fns = [
         item
         for item in abi
-        if isinstance(item, dict) and item.get("type") == "function" and item.get("name")
+        if isinstance(item, dict)
+        and item.get("type") == "function"
+        and item.get("name")
     ]
 
     if function_signature:
@@ -85,7 +89,9 @@ def _select_function_abi(
 
     matches = [fn for fn in fns if str(fn.get("name") or "").strip() == name]
     if not matches:
-        available = sorted({str(fn.get("name") or "").strip() for fn in fns if fn.get("name")})
+        available = sorted(
+            {str(fn.get("name") or "").strip() for fn in fns if fn.get("name")}
+        )
         return err(
             "not_found",
             f"Function '{name}' not found in ABI.",
@@ -202,7 +208,9 @@ def _extract_abi(obj: Any) -> list[dict[str, Any]] | dict[str, Any]:
         return [i for i in obj if isinstance(i, dict)]
     if isinstance(obj, dict) and isinstance(obj.get("abi"), list):
         return [i for i in obj["abi"] if isinstance(i, dict)]
-    return err("invalid_abi", "ABI must be a JSON array, or a JSON object with an 'abi' array")
+    return err(
+        "invalid_abi", "ABI must be a JSON array, or a JSON object with an 'abi' array"
+    )
 
 
 def _load_abi(
@@ -628,7 +636,11 @@ async def contract_execute(
         return err("not_found", f"Unknown wallet_label: {wallet_label}")
 
     sender = normalize_address(w.get("address"))
-    pk = (w.get("private_key") or w.get("private_key_hex")) if isinstance(w, dict) else None
+    pk = (
+        (w.get("private_key") or w.get("private_key_hex"))
+        if isinstance(w, dict)
+        else None
+    )
     if not sender or not pk:
         return err(
             "invalid_wallet",
@@ -682,7 +694,7 @@ async def contract_execute(
     except Exception as exc:
         return err("invalid_args", str(exc))
 
-    sign_callback = _make_sign_callback(pk)
+    sign_callback = make_sign_callback(pk)
 
     try:
         tx = await encode_call(

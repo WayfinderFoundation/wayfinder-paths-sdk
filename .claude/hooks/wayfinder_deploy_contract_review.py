@@ -41,7 +41,11 @@ def main() -> None:
     chain_id = ti.get("chain_id", "(unknown)")
     verify = ti.get("verify", True)
 
-    source_line = f"source_path: {source_path}" if source_path else "source_path: (inline source_code)"
+    source_line = (
+        f"source_path: {source_path}"
+        if source_path
+        else "source_path: (inline source_code)"
+    )
 
     summary = (
         "DEPLOY CONTRACT\n"

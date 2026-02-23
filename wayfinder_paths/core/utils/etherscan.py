@@ -6,7 +6,10 @@ from typing import Any
 import httpx
 
 from wayfinder_paths.core.config import get_etherscan_api_key
-from wayfinder_paths.core.constants.chains import CHAIN_EXPLORER_URLS, ETHERSCAN_V2_API_URL
+from wayfinder_paths.core.constants.chains import (
+    CHAIN_EXPLORER_URLS,
+    ETHERSCAN_V2_API_URL,
+)
 
 
 def get_etherscan_transaction_link(chain_id: int, tx_hash: str) -> str | None:

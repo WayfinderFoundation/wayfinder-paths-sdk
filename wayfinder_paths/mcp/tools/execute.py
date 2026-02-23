@@ -21,7 +21,6 @@ from wayfinder_paths.core.utils.tokens import (
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.preview import build_execution_preview
-from wayfinder_paths.mcp.scripting import _make_sign_callback
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,

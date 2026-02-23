@@ -167,7 +167,11 @@ async def deploy_contract(
         return err("not_found", f"Unknown wallet_label: {wallet_label}")
 
     sender = normalize_address(w.get("address"))
-    pk = (w.get("private_key") or w.get("private_key_hex")) if isinstance(w, dict) else None
+    pk = (
+        (w.get("private_key") or w.get("private_key_hex"))
+        if isinstance(w, dict)
+        else None
+    )
     if not sender or not pk:
         return err(
             "invalid_wallet",
@@ -193,9 +197,13 @@ async def deploy_contract(
                 try:
                     parsed_args = json.loads(raw)
                     if not isinstance(parsed_args, list):
-                        return err("invalid_args", "constructor_args must be a JSON array")
+                        return err(
+                            "invalid_args", "constructor_args must be a JSON array"
+                        )
                 except json.JSONDecodeError as exc:
-                    return err("invalid_args", f"Invalid JSON in constructor_args: {exc}")
+                    return err(
+                        "invalid_args", f"Invalid JSON in constructor_args: {exc}"
+                    )
 
     try:
         result = await _deploy_contract(

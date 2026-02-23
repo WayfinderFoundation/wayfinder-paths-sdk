@@ -49,7 +49,9 @@ def ensure_oz_installed(project_root: str | None = None) -> str:
 
     Returns the cached ``node_modules/`` directory path.
     """
-    root = Path(project_root) if project_root else (_config_project_root() or Path.cwd())
+    root = (
+        Path(project_root) if project_root else (_config_project_root() or Path.cwd())
+    )
     cache_root = root / ".cache" / "solidity" / f"openzeppelin-{OZ_CONTRACTS_VERSION}"
     node_modules = cache_root / "node_modules"
     oz_path = node_modules / "@openzeppelin" / "contracts"
@@ -95,6 +97,7 @@ def _strip_solidity_comments(source: str) -> str:
     no_block = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
     return re.sub(r"//.*?$", "", no_block, flags=re.MULTILINE)
 
+
 def _find_imports(source: str) -> list[str]:
     stripped = _strip_solidity_comments(source)
     return [m.group(1).strip() for m in _IMPORT_RE.finditer(stripped) if m.group(1)]
@@ -120,7 +123,9 @@ def collect_sources(
     ``@openzeppelin/contracts/...``), so the resulting compiler input can be
     sent to Etherscan for verification.
     """
-    root = Path(project_root) if project_root else (_config_project_root() or Path.cwd())
+    root = (
+        Path(project_root) if project_root else (_config_project_root() or Path.cwd())
+    )
 
     sources: dict[str, str] = {source_filename: source_code}
     queue: list[str] = [source_filename]

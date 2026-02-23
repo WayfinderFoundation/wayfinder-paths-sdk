@@ -46,4 +46,3 @@ async def test_resolve_proxy_implementation_eip1967_slot():
 
     assert got_impl == AsyncWeb3.to_checksum_address(impl_addr)
     assert flavour == "EIP1967"
-

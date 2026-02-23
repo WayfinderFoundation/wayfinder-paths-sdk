@@ -29,6 +29,7 @@ from wayfinder_paths.core.utils.solidity import (
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
+
 async def build_deploy_transaction(
     *,
     abi: list[dict[str, Any]],
@@ -48,7 +49,11 @@ async def build_deploy_transaction(
         args: list[Any] = []
         if constructor_args:
             ctor_inputs = get_constructor_inputs(abi)
-            args = cast_args(constructor_args, ctor_inputs) if ctor_inputs else constructor_args
+            args = (
+                cast_args(constructor_args, ctor_inputs)
+                if ctor_inputs
+                else constructor_args
+            )
 
         tx = await contract.constructor(*args).build_transaction(
             {
@@ -80,7 +85,9 @@ async def deploy_contract(
 
     # Compile once using standard JSON input so verification can reuse the same input.
     std_json = compile_solidity_standard_json(code)
-    contracts = (std_json.get("output") or {}).get("contracts", {}).get("Contract.sol", {})
+    contracts = (
+        (std_json.get("output") or {}).get("contracts", {}).get("Contract.sol", {})
+    )
     if not isinstance(contracts, dict) or contract_name not in contracts:
         available = list(contracts.keys()) if isinstance(contracts, dict) else []
         raise ValueError(
@@ -222,7 +229,9 @@ async def verify_on_etherscan(
     }
 
     if constructor_args_encoded:
-        payload["constructorArguements"] = constructor_args_encoded  # Etherscan's typo is intentional
+        payload["constructorArguements"] = (
+            constructor_args_encoded  # Etherscan's typo is intentional
+        )
 
     # Etherscan V2 requires chainid as a query parameter (not only in form data).
     # Submission can race explorer indexing, so retry a few times if contract code

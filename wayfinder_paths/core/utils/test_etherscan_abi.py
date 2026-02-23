@@ -11,7 +11,9 @@ from wayfinder_paths.core.utils.etherscan import fetch_contract_abi
 
 @pytest.mark.asyncio
 async def test_fetch_contract_abi_requires_api_key():
-    with patch("wayfinder_paths.core.utils.etherscan.get_etherscan_api_key", return_value=None):
+    with patch(
+        "wayfinder_paths.core.utils.etherscan.get_etherscan_api_key", return_value=None
+    ):
         with pytest.raises(ValueError, match="Etherscan API key required"):
             await fetch_contract_abi(1, "0x" + "11" * 20)
 
