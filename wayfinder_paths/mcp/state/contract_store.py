@@ -1,33 +1,14 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.mcp.utils import repo_root
+from wayfinder_paths.mcp.state.runs import now_iso, runs_root
+from wayfinder_paths.mcp.utils import repo_root, sha256_json
 
 logger = logging.getLogger(__name__)
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _runs_root() -> Path:
-    candidate = (os.getenv("WAYFINDER_RUNS_DIR") or ".wayfinder_runs").strip()
-    p = Path(candidate)
-    if not p.is_absolute():
-        p = repo_root() / p
-    return p.resolve(strict=False)
-
-
-def _sha256_json(obj: Any) -> str:
-    raw = json.dumps(obj, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 class ContractArtifactStore:
@@ -35,7 +16,7 @@ class ContractArtifactStore:
 
     def __init__(self, root: Path | None = None):
         if root is None:
-            root = _runs_root() / "contracts"
+            root = runs_root() / "contracts"
         self.root = root
 
     @staticmethod
@@ -88,7 +69,8 @@ class ContractArtifactStore:
         artifact_dir = self._artifact_dir(chain_id, addr)
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        now = _now_iso()
+        now = now_iso()
+        bytecode_hex = bytecode[2:] if bytecode.startswith("0x") else bytecode
 
         # Write individual files
         (artifact_dir / "source.sol").write_text(source_code, encoding="utf-8")
@@ -110,10 +92,8 @@ class ContractArtifactStore:
             "wallet_label": wallet_label,
             "tx_hash": tx_hash,
             "deployed_at": now,
-            "abi_sha256": _sha256_json(abi),
-            "bytecode_size": len(bytecode) // 2
-            if bytecode.startswith("0x")
-            else len(bytecode) // 2,
+            "abi_sha256": sha256_json(abi),
+            "bytecode_size": len(bytecode_hex) // 2,
         }
         if constructor_args is not None:
             metadata["constructor_args"] = constructor_args

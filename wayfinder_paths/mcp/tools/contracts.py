@@ -20,7 +20,8 @@ from wayfinder_paths.mcp.utils import (
     find_wallet_by_label,
     normalize_address,
     ok,
-    repo_root,
+    resolve_path_inside_repo,
+    summarize_abi,
 )
 
 
@@ -30,33 +31,14 @@ def _load_solidity_source(source_path: str) -> tuple[Path, str, str] | dict[str,
     Returns ``(resolved_path, display_path, source_code)`` or an MCP-style
     ``err(...)`` response dict.
     """
-    raw = str(source_path).strip()
-    if not raw:
-        return err("invalid_request", "source_path is required")
-
-    root = repo_root()
-    root_resolved = root.resolve(strict=False)
-
-    p = Path(raw)
-    if not p.is_absolute():
-        p = root / p
-    resolved = p.resolve(strict=False)
-
-    try:
-        resolved.relative_to(root_resolved)
-    except ValueError:
-        return err(
-            "invalid_request",
-            "source_path must be inside the repository",
-            {"repo_root": str(root_resolved), "source_path": str(resolved)},
-        )
-
-    if not resolved.exists():
-        return err(
-            "not_found",
-            "Solidity source file not found",
-            {"source_path": str(resolved)},
-        )
+    resolved_path = resolve_path_inside_repo(
+        source_path,
+        field_name="source_path",
+        not_found_message="Solidity source file not found",
+    )
+    if isinstance(resolved_path, dict):
+        return resolved_path
+    resolved, display_path = resolved_path
 
     if resolved.suffix.lower() != ".sol":
         return err(
@@ -80,12 +62,6 @@ def _load_solidity_source(source_path: str) -> tuple[Path, str, str] | dict[str,
             "Source file is empty",
             {"source_path": str(resolved)},
         )
-
-    display_path = str(resolved)
-    try:
-        display_path = str(resolved.relative_to(root_resolved))
-    except ValueError:
-        pass
 
     return resolved, display_path, text
 
@@ -141,7 +117,7 @@ async def compile_contract(
         result["contracts"][name] = {
             "abi": artifact["abi"],
             "bytecode": artifact["bytecode"],
-            "abi_summary": _abi_summary(artifact["abi"]),
+            "abi_summary": summarize_abi(artifact["abi"]),
         }
 
     if contract_name and contract_name in result["contracts"]:
@@ -262,22 +238,3 @@ async def deploy_contract(
         result["artifact_dir"] = artifact_dir
 
     return ok(result)
-
-
-def _abi_summary(abi: list[dict[str, Any]]) -> list[str]:
-    """Produce a concise summary of ABI entries for display."""
-    entries: list[str] = []
-    for item in abi:
-        kind = item.get("type", "")
-        name = item.get("name", "")
-        if kind == "function":
-            inputs = ", ".join(i.get("type", "?") for i in item.get("inputs", []))
-            outputs = ", ".join(o.get("type", "?") for o in item.get("outputs", []))
-            entries.append(f"{name}({inputs}) -> ({outputs})")
-        elif kind == "event":
-            inputs = ", ".join(i.get("type", "?") for i in item.get("inputs", []))
-            entries.append(f"event {name}({inputs})")
-        elif kind == "constructor":
-            inputs = ", ".join(i.get("type", "?") for i in item.get("inputs", []))
-            entries.append(f"constructor({inputs})")
-    return entries

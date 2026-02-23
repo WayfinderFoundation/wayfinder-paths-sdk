@@ -25,6 +25,7 @@ from wayfinder_paths.core.utils.retry import exponential_backoff_s
 from wayfinder_paths.core.utils.solidity import (
     SOLC_VERSION,
     compile_solidity_standard_json,
+    extract_abi_and_bytecode,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -81,31 +82,10 @@ async def deploy_contract(
 
     Returns ``{"tx_hash", "contract_address", "abi", "bytecode"}``.
     """
-    code = source_code
-
     # Compile once using standard JSON input so verification can reuse the same input.
-    std_json = compile_solidity_standard_json(code)
-    contracts = (
-        (std_json.get("output") or {}).get("contracts", {}).get("Contract.sol", {})
-    )
-    if not isinstance(contracts, dict) or contract_name not in contracts:
-        available = list(contracts.keys()) if isinstance(contracts, dict) else []
-        raise ValueError(
-            f"Contract '{contract_name}' not found in compilation output. "
-            f"Available: {available}"
-        )
-
-    contract_artifact = contracts[contract_name]
-    abi = contract_artifact.get("abi", [])
-    evm = contract_artifact.get("evm", {})
-    bytecode_obj = ""
-    if isinstance(evm, dict):
-        bc = evm.get("bytecode", {})
-        if isinstance(bc, dict):
-            bytecode_obj = bc.get("object") or ""
-    bytecode = str(bytecode_obj)
-    if bytecode and not bytecode.startswith("0x"):
-        bytecode = "0x" + bytecode
+    std_json = compile_solidity_standard_json(source_code)
+    output = std_json.get("output") if isinstance(std_json.get("output"), dict) else {}
+    abi, bytecode = extract_abi_and_bytecode(output, contract_name=contract_name)
     if not bytecode or bytecode == "0x":
         raise RuntimeError(f"Compiled bytecode for '{contract_name}' is empty")
 

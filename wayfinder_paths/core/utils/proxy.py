@@ -46,17 +46,14 @@ async def _impl_from_storage_slot(
     if not storage or int.from_bytes(storage, "big") == 0:
         return None
 
-    impl = "0x" + storage[-20:].hex()
-    try:
-        if int(impl, 16) == 0:
-            return None
-    except ValueError:
+    if len(storage) < 20:
         return None
 
-    try:
-        return AsyncWeb3.to_checksum_address(impl)
-    except Exception:
+    impl_bytes = storage[-20:]
+    if int.from_bytes(impl_bytes, "big") == 0:
         return None
+
+    return AsyncWeb3.to_checksum_address("0x" + impl_bytes.hex())
 
 
 async def resolve_proxy_implementation_with_web3(
@@ -86,14 +83,10 @@ async def resolve_proxy_implementation_with_web3(
         if int(proxy_type) not in (1, 2):
             return None, None
         implementation_address = await contract.functions.implementation().call()
-        if not implementation_address:
-            return None, None
-        impl_addr = str(implementation_address).strip()
-        if not impl_addr:
-            return None, None
+        impl_addr = AsyncWeb3.to_checksum_address(implementation_address)
         if int(impl_addr, 16) == 0:
             return None, None
-        return AsyncWeb3.to_checksum_address(impl_addr), "EIP897"
+        return impl_addr, "EIP897"
     except Exception:
         return None, None
 

@@ -164,6 +164,57 @@ def collect_sources(
     return sources
 
 
+def _extract_bytecode_from_artifact(artifact: dict[str, Any]) -> str:
+    evm = artifact.get("evm", {})
+    if not isinstance(evm, dict):
+        return ""
+    bytecode = evm.get("bytecode", {})
+    if not isinstance(bytecode, dict):
+        return ""
+    obj = bytecode.get("object") or ""
+    result = str(obj)
+    if result and not result.startswith("0x"):
+        result = "0x" + result
+    return result
+
+
+def _contracts_from_output(
+    output: dict[str, Any],
+    *,
+    source_filename: str = _SOURCE_FILENAME,
+) -> dict[str, Any]:
+    contracts = (output.get("contracts") or {}).get(source_filename) or {}
+    return contracts if isinstance(contracts, dict) else {}
+
+
+def extract_abi_and_bytecode(
+    output: dict[str, Any],
+    *,
+    contract_name: str,
+    source_filename: str = _SOURCE_FILENAME,
+) -> tuple[list[dict[str, Any]], str]:
+    """Extract ABI + bytecode for a compiled contract from solc standard output."""
+    contracts = _contracts_from_output(output, source_filename=source_filename)
+    if contract_name not in contracts:
+        available = list(contracts.keys())
+        raise ValueError(
+            f"Contract '{contract_name}' not found in compilation output. "
+            f"Available: {available}"
+        )
+
+    artifact = contracts[contract_name]
+    if not isinstance(artifact, dict):
+        raise ValueError(f"Contract '{contract_name}' artifact is not a dict")
+
+    abi_raw = artifact.get("abi", [])
+    abi: list[dict[str, Any]] = (
+        [i for i in abi_raw if isinstance(i, dict)] if isinstance(abi_raw, list) else []
+    )
+
+    bytecode = _extract_bytecode_from_artifact(artifact)
+    return abi, bytecode
+
+
 def compile_solidity(
     source_code: str,
     *,
@@ -187,24 +238,15 @@ def compile_solidity(
     )
 
     output = compiled["output"]
-    contracts = (output.get("contracts") or {}).get(_SOURCE_FILENAME) or {}
-    if not isinstance(contracts, dict):
-        contracts = {}
+    contracts = _contracts_from_output(output, source_filename=_SOURCE_FILENAME)
 
     results: dict[str, dict[str, Any]] = {}
     for name, artifact in contracts.items():
         if not isinstance(artifact, dict):
             continue
-        abi = artifact.get("abi", [])
-        evm = artifact.get("evm", {})
-        bytecode_obj = ""
-        if isinstance(evm, dict):
-            bc = evm.get("bytecode", {})
-            if isinstance(bc, dict):
-                bytecode_obj = bc.get("object") or ""
-        bytecode = str(bytecode_obj)
-        if bytecode and not bytecode.startswith("0x"):
-            bytecode = "0x" + bytecode
+        abi_raw = artifact.get("abi", [])
+        abi = [i for i in abi_raw if isinstance(i, dict)] if isinstance(abi_raw, list) else []
+        bytecode = _extract_bytecode_from_artifact(artifact)
         results[str(name)] = {"abi": abi, "bytecode": bytecode}
 
     if contract_name and contract_name not in results:

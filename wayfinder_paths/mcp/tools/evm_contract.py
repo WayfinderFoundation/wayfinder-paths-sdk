@@ -19,14 +19,16 @@ from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    abi_function_signature,
     err,
     find_wallet_by_label,
     normalize_address,
     ok,
-    repo_root,
+    resolve_path_inside_repo,
     resolve_wallet_address,
     sanitize_for_json,
     sha256_json,
+    summarize_abi,
 )
 
 
@@ -48,13 +50,6 @@ def _normalize_signature(sig: str) -> str:
     return "".join(str(sig).split())
 
 
-def _function_signature(fn_abi: dict[str, Any]) -> str:
-    name = str(fn_abi.get("name") or "").strip()
-    inputs = fn_abi.get("inputs") if isinstance(fn_abi.get("inputs"), list) else []
-    types = [str(i.get("type") or "").strip() for i in inputs if isinstance(i, dict)]
-    return f"{name}({','.join(types)})"
-
-
 def _select_function_abi(
     abi: list[dict[str, Any]],
     *,
@@ -71,9 +66,9 @@ def _select_function_abi(
 
     if function_signature:
         want = _normalize_signature(function_signature)
-        matches = [fn for fn in fns if _function_signature(fn) == want]
+        matches = [fn for fn in fns if abi_function_signature(fn) == want]
         if len(matches) != 1:
-            candidates = sorted({_function_signature(fn) for fn in fns})
+            candidates = sorted({abi_function_signature(fn) for fn in fns})
             return err(
                 "not_found",
                 f"Function signature '{want}' not found in ABI.",
@@ -99,14 +94,14 @@ def _select_function_abi(
             {"available_functions": available},
         )
     if len(matches) > 1:
-        candidates = sorted({_function_signature(fn) for fn in matches})
+        candidates = sorted({abi_function_signature(fn) for fn in matches})
         return err(
             "ambiguous_function",
             f"Function '{name}' is overloaded; provide function_signature.",
             {"candidates": candidates},
         )
     fn_abi = matches[0]
-    return fn_abi, _function_signature(fn_abi)
+    return fn_abi, abi_function_signature(fn_abi)
 
 
 def _parse_json_list(raw: str, *, field_name: str) -> list[Any] | dict[str, Any]:
@@ -145,29 +140,14 @@ def _parse_value_wei(value_wei: Any) -> int | dict[str, Any]:
 
 
 def _load_json_inside_repo(path_raw: str) -> tuple[Path, str, Any] | dict[str, Any]:
-    raw = str(path_raw).strip()
-    if not raw:
-        return err("invalid_request", "abi_path is required")
-
-    root = repo_root()
-    root_resolved = root.resolve(strict=False)
-
-    p = Path(raw)
-    if not p.is_absolute():
-        p = root / p
-    resolved = p.resolve(strict=False)
-
-    try:
-        resolved.relative_to(root_resolved)
-    except ValueError:
-        return err(
-            "invalid_request",
-            "abi_path must be inside the repository",
-            {"repo_root": str(root_resolved), "abi_path": str(resolved)},
-        )
-
-    if not resolved.exists():
-        return err("not_found", "ABI file not found", {"abi_path": str(resolved)})
+    resolved_path = resolve_path_inside_repo(
+        path_raw,
+        field_name="abi_path",
+        not_found_message="ABI file not found",
+    )
+    if isinstance(resolved_path, dict):
+        return resolved_path
+    resolved, display_path = resolved_path
 
     if resolved.suffix.lower() != ".json":
         return err(
@@ -193,12 +173,6 @@ def _load_json_inside_repo(path_raw: str) -> tuple[Path, str, Any] | dict[str, A
             f"ABI JSON parse failed: {exc}",
             {"abi_path": str(resolved)},
         )
-
-    display_path = str(resolved)
-    try:
-        display_path = str(resolved.relative_to(root_resolved))
-    except ValueError:
-        pass
 
     return resolved, display_path, obj
 
@@ -408,28 +382,6 @@ def _annotate(
         details=details,
     )
 
-
-def _abi_summary(abi: list[dict[str, Any]]) -> list[str]:
-    entries: list[str] = []
-    for item in abi:
-        kind = str(item.get("type") or "").strip()
-        name = str(item.get("name") or "").strip()
-        inputs = item.get("inputs") if isinstance(item.get("inputs"), list) else []
-        input_types = ", ".join(
-            str(i.get("type") or "?") for i in inputs if isinstance(i, dict)
-        )
-        if kind == "function":
-            sig = _function_signature(item)
-            mut = str(item.get("stateMutability") or "").strip()
-            suffix = f" [{mut}]" if mut else ""
-            entries.append(f"{sig}{suffix}")
-        elif kind == "event":
-            entries.append(f"event {name}({input_types})")
-        elif kind == "constructor":
-            entries.append(f"constructor({input_types})")
-    return entries
-
-
 async def contract_get_abi(
     *,
     chain_id: int,
@@ -480,7 +432,7 @@ async def contract_get_abi(
                         "chain_id": int(chain_id),
                         "contract_address": _safe_checksum_address(addr),
                         "abi": impl_abi,
-                        "abi_summary": _abi_summary(impl_abi),
+                        "abi_summary": summarize_abi(impl_abi),
                         **meta,
                     }
                 )
@@ -512,7 +464,7 @@ async def contract_get_abi(
             "chain_id": int(chain_id),
             "contract_address": _safe_checksum_address(addr),
             "abi": abi_list,
-            "abi_summary": _abi_summary(abi_list),
+            "abi_summary": summarize_abi(abi_list),
             **meta,
         }
     )
