@@ -1,27 +1,29 @@
 # Changelog
 
-## [0.7.0] - 2026-02-23 (742b2b88d68fea5fecffeb0036e64c1b97c4ed8b)
+## [0.7.0] - 2026-02-23 (5919548c8b95964e89854a51f68cef92168710b1)
 
-Breaking
+**Breaking Changes**
 
-1. **Adapter constructor parameters renamed.** All single-wallet adapters: `strategy_wallet_signing_callback` → `sign_callback`, and wallet address is now an explicit `wallet_address` parameter instead of being extracted from `config`. BalanceAdapter: `main_wallet_signing_callback` / `strategy_wallet_signing_callback` → `main_sign_callback` / `strategy_sign_callback`, with explicit `main_wallet_address` / `strategy_wallet_address`. BorosAdapter: `user_address` → `wallet_address`.
-2. **`get_adapter()` for dual-wallet adapters now requires two labels.** `get_adapter(BalanceAdapter, "main")` → `get_adapter(BalanceAdapter, "main", "my_strategy")`.
-3. **Internal adapter attributes renamed** to match new constructor params (`self.strategy_wallet_signing_callback` → `self.sign_callback`, `self.strategy_wallet_address` → `self.wallet_address`, etc.).
+1. Adapter constructor signatures standardized (#101): `strategy_wallet_signing_callback` → `sign_callback`, with explicit `wallet_address` parameter. Config-based wallet resolution removed from adapter constructors.
+2. BalanceAdapter now takes `main_sign_callback`/`main_wallet_address` + `strategy_sign_callback`/`strategy_wallet_address` (previously `main_wallet_signing_callback`/`strategy_wallet_signing_callback`).
+3. `get_adapter()` in `mcp/scripting.py` refactored to introspect adapter `__init__` signatures — direct adapter instantiation now requires explicit parameters with no config fallback.
 
 Added
 
-1. Avantis adapter with deposit, withdraw, staking rewards, and ERC-4626 vault support.
-2. MCP strategy smoke tests.
-3. Hyperlend stable yield strategy todo/integration test.
+1. Solidity contract tooling (#106): compilation via solcx (solc 0.8.26, OpenZeppelin v5), MCP tools (`compile_contract`, `deploy_contract`, `contract_execute`, `contract_get_abi`), Etherscan V2 verification, proxy ABI support, artifact persistence, and `/contract-development` skill.
+2. Avantis adapter (#103): ERC-4626 avUSDC LP vault on Base with `deposit()`/`withdraw()` flows.
+3. MCP strategy integration tests (#97) and hyperlend_stable_yield strategy smoke test (#98).
 
 Changed
 
-1. Aave V3: convert APR to APY before applying reward rate adjustments.
-2. Aave V3: store addresses as lowercase, remove redundant checksum helpers and dead code.
-3. Slippage parameter now correctly forwarded in MCP swap quote flow.
-4. Polymarket `_normalize_market` guards against missing keys instead of raising on absent fields.
-5. Avantis adapter README updated to reflect `deposit`/`withdraw` naming.
-6. `make_sign_callback` moved from `mcp/scripting.py` to `core/utils/wallets.py`.
+1. Aave V3 contract addresses stored lowercase; removed redundant checksumming helpers (#100).
+2. Avantis README updated to reflect `deposit()`/`withdraw()` naming (#108).
+
+Fixed
+
+1. Reward APR now converted to APY before combining with base APY in Aave V3 `get_all_markets()`/`get_user_state()` (#95).
+2. Slippage parameter now passed through to BRAP quote calls (#76).
+3. Polymarket `_normalize_market()` no longer crashes on markets missing `outcomes`/`outcomePrices`/`clobTokenIds` fields (#92).
 
 ## [0.6.1] - 2026-02-16 (57da66ca33a10fd68d128c80970ac989d6addb7e)
 
