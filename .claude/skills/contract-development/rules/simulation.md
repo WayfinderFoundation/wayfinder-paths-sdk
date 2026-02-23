@@ -18,7 +18,7 @@ from wayfinder_paths.core.config import set_rpc_urls
 from wayfinder_paths.core.utils.contracts import deploy_contract
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from wayfinder_paths.mcp.utils import find_wallet_by_label
-from wayfinder_paths.mcp.scripting import _make_sign_callback
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 
 SOURCE = '''
 // SPDX-License-Identifier: MIT
@@ -34,7 +34,7 @@ async def main():
     set_rpc_urls({"8453": ["https://virtual.base.rpc.tenderly.co/YOUR_FORK_ID"]})
 
     wallet = find_wallet_by_label("main")
-    sign_callback = _make_sign_callback(wallet["private_key_hex"])
+    sign_callback = make_sign_callback(wallet["private_key_hex"])
 
     # 2. Deploy on fork
     result = await deploy_contract(

@@ -11,8 +11,9 @@ from loguru import logger
 from wayfinder_paths.core.utils.contracts import (
     deploy_contract as _deploy_contract,
 )
-from wayfinder_paths.core.utils.solidity import compile_solidity
-from wayfinder_paths.mcp.scripting import _make_sign_callback
+from wayfinder_paths.core.utils.solidity import SOLC_VERSION, compile_solidity
+from wayfinder_paths.core.utils.wallets import make_sign_callback
+from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
@@ -178,7 +179,7 @@ async def deploy_contract(
             "Wallet must include address and private_key_hex in config.json",
         )
 
-    sign_callback = _make_sign_callback(pk)
+    sign_callback = make_sign_callback(pk)
 
     loaded = _load_solidity_source(source_path)
     if isinstance(loaded, dict):
@@ -237,6 +238,29 @@ async def deploy_contract(
             "verification_error": result.get("verification_error"),
         },
     )
+
+    # Persist deployment artifacts (best-effort)
+    store = ContractArtifactStore.default()
+    artifact_dir = store.save_safe(
+        chain_id=chain_id,
+        contract_address=result["contract_address"],
+        contract_name=contract_name,
+        deployer_address=sender,
+        wallet_label=wallet_label,
+        tx_hash=result["tx_hash"],
+        source_code=source_code,
+        abi=result["abi"],
+        bytecode=result["bytecode"],
+        standard_json_input=result.get("standard_json_input"),
+        constructor_args=parsed_args,
+        solc_version=SOLC_VERSION,
+        source_path_original=display_path,
+        verified=result.get("verified"),
+        explorer_url=result.get("explorer_url"),
+    )
+    if artifact_dir:
+        result["artifact_dir"] = artifact_dir
+
     return ok(result)
 
 

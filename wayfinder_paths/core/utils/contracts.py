@@ -135,6 +135,7 @@ async def deploy_contract(
         "contract_address": contract_address,
         "abi": abi,
         "bytecode": bytecode,
+        "standard_json_input": std_json["input"],
     }
 
     explorer_link = get_etherscan_transaction_link(chain_id, tx_hash)

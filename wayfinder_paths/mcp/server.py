@@ -10,6 +10,10 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.mcp.resources.contracts import (
+    get_contract,
+    list_contracts,
+)
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
     describe_strategy,
@@ -72,6 +76,8 @@ mcp.resource("wayfinder://hyperliquid/prices/{coin}")(get_mid_price)
 mcp.resource("wayfinder://hyperliquid/markets")(get_markets)
 mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
+mcp.resource("wayfinder://contracts")(list_contracts)
+mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)

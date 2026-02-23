@@ -23,6 +23,31 @@ mcp__wayfinder__deploy_contract(
 - Deployments are tracked in wallet profiles under protocol `contracts` (query `wayfinder://wallets/{label}`)
 - Returns: `{tx_hash, contract_address, abi, bytecode, verified, explorer_url}`
 
+## Artifact persistence
+
+Every deployment automatically saves source code, ABI, metadata, and compiler input to:
+
+```
+.wayfinder_runs/contracts/{chain_id}/{address_lowercase}/
+  source.sol           # Original Solidity source
+  abi.json             # Contract ABI
+  metadata.json        # Deploy metadata (tx_hash, constructor_args, deployer, etc.)
+  standard_input.json  # Solidity standard JSON input (for verification)
+```
+
+An index of all deployments is maintained at `.wayfinder_runs/contracts/index.json`.
+
+**Browse deployed contracts via MCP resources:**
+
+- `wayfinder://contracts` -- list all locally-deployed contracts
+- `wayfinder://contracts/{chain_id}/{address}` -- get full metadata + ABI for a specific contract
+
+This means source code survives scratch directory cleanup -- even if the session scratch dir is deleted, the artifact store retains the deployment artifacts permanently.
+
+**Using stored ABIs for interactions:**
+
+When calling `contract_call` or `contract_execute` on a previously deployed contract, the tools will check the local artifact store for the ABI before falling back to Etherscan. No need to pass `abi` or `abi_path` for your own contracts.
+
 ## Script-based deployment
 
 For more control, write a script under `$WAYFINDER_SCRATCH_DIR`:
@@ -46,10 +71,10 @@ contract MyToken is ERC20 {
 
 async def main():
     from wayfinder_paths.mcp.utils import find_wallet_by_label
-    from wayfinder_paths.mcp.scripting import _make_sign_callback
+    from wayfinder_paths.core.utils.wallets import make_sign_callback
 
     wallet = find_wallet_by_label("main")
-    sign_callback = _make_sign_callback(wallet["private_key_hex"])
+    sign_callback = make_sign_callback(wallet["private_key_hex"])
 
     result = await deploy_contract(
         source_code=SOURCE,

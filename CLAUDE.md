@@ -58,6 +58,7 @@ Safety defaults:
 - Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
 - Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
   - Deployments (and other contract actions) are recorded in wallet profiles. Read `wayfinder://wallets/{label}` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
+  - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `wayfinder://contracts` (list all) or `wayfinder://contracts/{chain_id}/{address}` (specific contract).
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.
 
 Transaction outcome rules (don’t assume a tx hash means success):
@@ -654,6 +655,8 @@ Read-only wallet information is exposed via MCP resources, and fund-moving / tra
 - `wayfinder://wallets/{label}` - full profile for a wallet (protocol interactions, transactions)
 - `wayfinder://balances/{label}` - enriched token balances
 - `wayfinder://activity/{label}` - recent wallet activity (best-effort)
+- `wayfinder://contracts` - list all locally-deployed contracts (name, address, chain, verification status)
+- `wayfinder://contracts/{chain_id}/{address}` - full metadata + ABI for a deployed contract
 
 **Tool actions (`mcp__wayfinder__wallets`):**
 

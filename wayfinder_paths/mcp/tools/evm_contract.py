@@ -16,6 +16,7 @@ from wayfinder_paths.core.utils.etherscan import (
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.wallets import make_sign_callback
+from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
@@ -270,8 +271,19 @@ async def _resolve_abi(
     abi: list[dict[str, Any]] | str | None,
     abi_path: str | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None] | dict[str, Any]:
-    """Resolve ABI from inline input, repo file, or Etherscan V2 (fallback)."""
+    """Resolve ABI from inline input, repo file, local artifacts, or Etherscan V2 (fallback)."""
     if abi is None and not abi_path:
+        # Check local artifact store first (deployed via deploy_contract)
+        local_store = ContractArtifactStore.default()
+        local_abi = local_store.get_abi(int(chain_id), contract_address)
+        if local_abi:
+            meta = {
+                "abi_source": "local_artifacts",
+                "abi_sha256": sha256_json(local_abi),
+                "abi_address": _safe_checksum_address(contract_address),
+            }
+            return local_abi, meta
+
         try:
             fetched = await fetch_contract_abi(int(chain_id), contract_address)
         except ValueError as exc:

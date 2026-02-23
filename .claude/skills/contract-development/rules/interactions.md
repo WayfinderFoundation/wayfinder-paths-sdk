@@ -38,7 +38,7 @@ mcp__wayfinder__contract_call(
 
 Notes:
 - Pass a **minimal ABI** (only the function(s) you need).
-- If you omit `abi` and `abi_path`, the tool will try to fetch the ABI from **Etherscan V2**
+- If you omit `abi` and `abi_path`, the tool checks the **local artifact store** first (`.wayfinder_runs/contracts/{chain_id}/{address}/abi.json`) for contracts you deployed, then falls back to **Etherscan V2**
   (requires `system.etherscan_api_key` in `config.json` or `ETHERSCAN_API_KEY`, and the contract must be verified).
 - If the target address is a common proxy type (EIP-1967 / ZeppelinOS / EIP-897), the tool will attempt to fetch the
   **implementation** ABI automatically.
