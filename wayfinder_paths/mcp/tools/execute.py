@@ -28,6 +28,7 @@ from wayfinder_paths.mcp.utils import (
     normalize_address,
     ok,
     parse_amount_to_raw,
+    sanitize_for_json,
 )
 
 
@@ -106,18 +107,6 @@ def _addr_lower(addr: str | None) -> str | None:
         return None
     a = str(addr).strip()
     return a.lower() if a else None
-
-
-def _sanitize_for_json(obj: Any) -> Any:
-    if hasattr(obj, "hex") and callable(obj.hex):
-        return obj.hex()
-    if isinstance(obj, bytes):
-        return obj.hex()
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(v) for v in obj]
-    return obj
 
 
 def _compact_quote(
@@ -205,7 +194,7 @@ async def _broadcast(
             result["explorer_url"] = explorer_link
         return True, result
     except Exception as e:
-        return False, {"error": _sanitize_for_json(str(e)), "chain_id": chain_id}
+        return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
 
 
 async def _ensure_allowance(

@@ -10,20 +10,13 @@ from typing import Any
 
 from wayfinder_paths.mcp.preview import build_run_script_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.state.runs import runs_root
 from wayfinder_paths.mcp.utils import (
     err,
     find_wallet_by_label,
     ok,
     repo_root,
 )
-
-
-def _runs_root() -> Path:
-    candidate = (os.getenv("WAYFINDER_RUNS_DIR") or ".wayfinder_runs").strip()
-    p = Path(candidate)
-    if not p.is_absolute():
-        p = repo_root() / p
-    return p.resolve(strict=False)
 
 
 def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]:
@@ -36,9 +29,9 @@ def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]
         p = repo_root() / p
     resolved = p.resolve(strict=False)
 
-    runs_root = _runs_root()
+    runs_root_path = runs_root()
     try:
-        resolved.relative_to(runs_root)
+        resolved.relative_to(runs_root_path)
     except ValueError:
         return (
             False,
@@ -46,7 +39,7 @@ def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]
                 "code": "invalid_request",
                 "message": "script_path must be inside the local runs directory",
                 "details": {
-                    "runs_root": str(runs_root),
+                    "runs_root": str(runs_root_path),
                     "script_path": str(resolved),
                 },
             },

@@ -51,8 +51,14 @@ Simulation / scenario testing (vnet only):
 Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
+- Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
+  - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
+  - To fetch an ABI directly (without making a call), use MCP `contract_get_abi(...)`.
 - Hyperliquid perp writes: use MCP `hyperliquid_execute(...)` (orders/leverage). Also gated by a review prompt.
 - Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
+- Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
+  - Deployments (and other contract actions) are recorded in wallet profiles. Read `wayfinder://wallets/{label}` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
+  - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `wayfinder://contracts` (list all) or `wayfinder://contracts/{chain_id}/{address}` (specific contract).
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.
 
 Transaction outcome rules (don’t assume a tx hash means success):
@@ -81,8 +87,11 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
+| Contract Dev          | `/contract-development`          |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
+
+Before writing or deploying Solidity contracts, invoke `/contract-development`.
 
 ## Data accuracy (no guessing)
 
@@ -646,6 +655,8 @@ Read-only wallet information is exposed via MCP resources, and fund-moving / tra
 - `wayfinder://wallets/{label}` - full profile for a wallet (protocol interactions, transactions)
 - `wayfinder://balances/{label}` - enriched token balances
 - `wayfinder://activity/{label}` - recent wallet activity (best-effort)
+- `wayfinder://contracts` - list all locally-deployed contracts (name, address, chain, verification status)
+- `wayfinder://contracts/{chain_id}/{address}` - full metadata + ABI for a deployed contract
 
 **Tool actions (`mcp__wayfinder__wallets`):**
 
