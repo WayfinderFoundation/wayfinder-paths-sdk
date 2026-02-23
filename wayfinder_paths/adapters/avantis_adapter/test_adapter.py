@@ -17,24 +17,23 @@ FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 
 @pytest.fixture
 def adapter():
-    return AvantisAdapter(config={"strategy_wallet": {"address": FAKE_WALLET}})
+    return AvantisAdapter(wallet_address=FAKE_WALLET)
 
 
 @pytest.fixture
 def adapter_with_signer():
     return AvantisAdapter(
-        config={"strategy_wallet": {"address": FAKE_WALLET}},
-        strategy_wallet_signing_callback=AsyncMock(return_value="0xdeadbeef"),
+        sign_callback=AsyncMock(return_value="0xdeadbeef"),
+        wallet_address=FAKE_WALLET,
     )
 
 
 @pytest.fixture
 def adapter_no_wallet():
-    return AvantisAdapter(config={})
+    return AvantisAdapter()
 
 
 def _mock_call(return_value):
-    """Shorthand: MagicMock whose .call() is an AsyncMock returning *return_value*."""
     return MagicMock(call=AsyncMock(return_value=return_value))
 
 
@@ -67,11 +66,6 @@ def _make_erc4626_contract(
     return contract
 
 
-# ---------------------------------------------------------------------------
-# Config / init
-# ---------------------------------------------------------------------------
-
-
 def test_adapter_type(adapter):
     assert adapter.adapter_type == "AVANTIS"
 
@@ -84,12 +78,7 @@ def test_default_addresses(adapter):
 
 
 def test_no_wallet_configured(adapter_no_wallet):
-    assert adapter_no_wallet.strategy_wallet_address is None
-
-
-# ---------------------------------------------------------------------------
-# borrow / repay (unsupported)
-# ---------------------------------------------------------------------------
+    assert adapter_no_wallet.wallet_address is None
 
 
 @pytest.mark.asyncio
@@ -103,23 +92,18 @@ async def test_borrow_and_repay_unsupported(adapter):
     assert "does not support" in msg.lower()
 
 
-# ---------------------------------------------------------------------------
-# deposit guards
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_deposit_requires_signing_callback(adapter):
     ok, msg = await adapter.deposit(amount=1)
     assert ok is False
-    assert "signing callback" in str(msg).lower()
+    assert "sign_callback" in str(msg).lower()
 
 
 @pytest.mark.asyncio
 async def test_deposit_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.deposit(amount=1)
     assert ok is False
-    assert "wallet address" in str(msg).lower()
+    assert "wallet_address" in str(msg).lower()
 
 
 @pytest.mark.asyncio
@@ -136,23 +120,18 @@ async def test_deposit_rejects_negative_amount(adapter_with_signer):
     assert "positive" in str(msg).lower()
 
 
-# ---------------------------------------------------------------------------
-# withdraw guards
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_withdraw_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.withdraw(amount=1)
     assert ok is False
-    assert "wallet address" in str(msg).lower()
+    assert "wallet_address" in str(msg).lower()
 
 
 @pytest.mark.asyncio
 async def test_withdraw_requires_signing_callback(adapter):
     ok, msg = await adapter.withdraw(amount=1)
     assert ok is False
-    assert "signing callback" in str(msg).lower()
+    assert "sign_callback" in str(msg).lower()
 
 
 @pytest.mark.asyncio
@@ -160,11 +139,6 @@ async def test_withdraw_rejects_zero_amount(adapter_with_signer):
     ok, msg = await adapter_with_signer.withdraw(amount=0)
     assert ok is False
     assert "positive" in str(msg).lower()
-
-
-# ---------------------------------------------------------------------------
-# withdraw full with zero shares
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -187,16 +161,11 @@ async def test_withdraw_full_zero_shares(adapter_with_signer):
     assert msg == "no shares to redeem"
 
 
-# ---------------------------------------------------------------------------
-# get_pos
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.asyncio
 async def test_get_pos_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.get_pos()
     assert ok is False
-    assert "wallet address" in str(msg).lower()
+    assert "wallet_address" in str(msg).lower()
 
 
 @pytest.mark.asyncio
@@ -224,11 +193,6 @@ async def test_get_pos_happy_path(adapter):
     assert data["max_withdraw"] == 520_000
     assert data["total_assets"] == 1_000_000_000
     assert data["total_supply"] == 950_000_000
-
-
-# ---------------------------------------------------------------------------
-# get_all_markets
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -259,11 +223,6 @@ async def test_get_all_markets_happy_path(adapter):
     assert market["total_assets"] == 1_000_000_000
     assert market["total_supply"] == 950_000_000
     assert market["tvl"] == 1_000_000_000
-
-
-# ---------------------------------------------------------------------------
-# get_full_user_state
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio

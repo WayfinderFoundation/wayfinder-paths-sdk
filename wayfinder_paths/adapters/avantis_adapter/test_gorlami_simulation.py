@@ -42,8 +42,8 @@ async def test_gorlami_avantis_deposit_withdraw_full(gorlami):
     )
 
     adapter = AvantisAdapter(
-        config={"strategy_wallet": {"address": acct.address}},
-        strategy_wallet_signing_callback=sign_cb,
+        sign_callback=sign_cb,
+        wallet_address=acct.address,
     )
 
     ok, markets = await adapter.get_all_markets()
