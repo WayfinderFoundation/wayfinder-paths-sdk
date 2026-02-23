@@ -26,12 +26,17 @@ class BalanceAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any],
-        main_wallet_signing_callback=None,
-        strategy_wallet_signing_callback=None,
+        main_sign_callback=None,
+        strategy_sign_callback=None,
+        *,
+        main_wallet_address: str | None = None,
+        strategy_wallet_address: str | None = None,
     ):
         super().__init__("balance", config)
-        self.main_wallet_signing_callback = main_wallet_signing_callback
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.main_sign_callback = main_sign_callback
+        self.strategy_sign_callback = strategy_sign_callback
+        self.main_wallet_address: str | None = main_wallet_address
+        self.strategy_wallet_address: str | None = strategy_wallet_address
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
 
@@ -114,10 +119,11 @@ class BalanceAdapter(BaseAdapter):
             return False, str(exc)
 
     async def get_vault_wallet_balance(self, token_id: str) -> tuple[bool, int | str]:
-        addr = self._wallet_address(self.config.get("strategy_wallet", {}))
-        if not addr:
-            return False, "No strategy_wallet configured"
-        return await self.get_balance(wallet_address=addr, token_id=token_id)
+        if not self.strategy_wallet_address:
+            return False, "No strategy_wallet_address configured"
+        return await self.get_balance(
+            wallet_address=self.strategy_wallet_address, token_id=token_id
+        )
 
     async def move_from_main_wallet_to_strategy_wallet(
         self,
@@ -126,11 +132,13 @@ class BalanceAdapter(BaseAdapter):
         strategy_name: str = "unknown",
         skip_ledger: bool = False,
     ) -> tuple[bool, str]:
+        if not self.main_wallet_address or not self.strategy_wallet_address:
+            return False, "main_wallet_address and strategy_wallet_address are required"
         return await self._move_between_wallets(
             token_id=token_id,
             amount=amount,
-            from_wallet=self.config["main_wallet"],
-            to_wallet=self.config["strategy_wallet"],
+            from_address=self.main_wallet_address,
+            to_address=self.strategy_wallet_address,
             ledger_method=self.ledger_adapter.record_deposit
             if not skip_ledger
             else None,
@@ -145,11 +153,13 @@ class BalanceAdapter(BaseAdapter):
         strategy_name: str = "unknown",
         skip_ledger: bool = False,
     ) -> tuple[bool, str]:
+        if not self.main_wallet_address or not self.strategy_wallet_address:
+            return False, "main_wallet_address and strategy_wallet_address are required"
         return await self._move_between_wallets(
             token_id=token_id,
             amount=amount,
-            from_wallet=self.config["strategy_wallet"],
-            to_wallet=self.config["main_wallet"],
+            from_address=self.strategy_wallet_address,
+            to_address=self.main_wallet_address,
             ledger_method=self.ledger_adapter.record_withdrawal
             if not skip_ledger
             else None,
@@ -184,8 +194,8 @@ class BalanceAdapter(BaseAdapter):
         *,
         token_id: str,
         amount: float,
-        from_wallet: dict[str, Any],
-        to_wallet: dict[str, Any],
+        from_address: str,
+        to_address: str,
         ledger_method,
         ledger_wallet: str,
         strategy_name: str,
@@ -198,27 +208,23 @@ class BalanceAdapter(BaseAdapter):
         raw_amount = int(amount * (10**decimals))
 
         transaction = await build_send_transaction(
-            from_address=from_wallet["address"],
-            to_address=to_wallet["address"],
+            from_address=from_address,
+            to_address=to_address,
             token_address=token_info["address"],
             chain_id=chain_id,
             amount=raw_amount,
         )
 
-        main_address = self.config.get("main_wallet", {}).get("address", "").lower()
         callback = (
-            self.main_wallet_signing_callback
-            if from_wallet["address"].lower() == main_address
-            else self.strategy_wallet_signing_callback
+            self.main_sign_callback
+            if self.main_wallet_address
+            and from_address.lower() == self.main_wallet_address.lower()
+            else self.strategy_sign_callback
         )
         tx_hash = await send_transaction(transaction, callback)
 
         if ledger_method:
-            wallet_for_ledger = (
-                from_wallet["address"]
-                if ledger_wallet == "from"
-                else to_wallet["address"]
-            )
+            wallet_for_ledger = from_address if ledger_wallet == "from" else to_address
             await self._record_ledger_entry(
                 ledger_method, wallet_for_ledger, token_info, amount, strategy_name
             )
@@ -258,12 +264,6 @@ class BalanceAdapter(BaseAdapter):
         except Exception as exc:
             self.logger.warning(f"Ledger entry failed: {exc}", wallet=wallet_address)
 
-    @staticmethod
-    def _wallet_address(wallet: dict[str, Any] | None) -> str | None:
-        if wallet and isinstance(wallet, dict):
-            return wallet.get("address")
-        return None
-
     async def get_wallet_balances_multicall(
         self,
         *,
@@ -274,10 +274,7 @@ class BalanceAdapter(BaseAdapter):
         if not assets:
             return True, []
 
-        base_wallet = wallet_address
-        if base_wallet is None:
-            strategy_wallet = self.config.get("strategy_wallet", {})
-            base_wallet = self._wallet_address(strategy_wallet)
+        base_wallet = wallet_address or self.strategy_wallet_address
 
         results: list[dict[str, Any]] = [{"success": False} for _ in assets]
         all_success = True
@@ -292,7 +289,7 @@ class BalanceAdapter(BaseAdapter):
             if not req_wallet:
                 results[idx] = {
                     "success": False,
-                    "error": "wallet_address not provided and no strategy_wallet configured",
+                    "error": "wallet_address not provided",
                     "token_id": token_id,
                     "token_address": token_address,
                     "chain_id": chain_id,

@@ -222,11 +222,21 @@ When writing scripts under `.wayfinder_runs/`, use `get_adapter()` to simplify s
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
-adapter = get_adapter(MoonwellAdapter, "main")  # Auto-wires config + signing
+# Single-wallet adapter (sign_callback + wallet_address)
+adapter = get_adapter(MoonwellAdapter, "main")
 await adapter.set_collateral(mtoken=USDC_MTOKEN)
+
+# Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
+from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
+adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
+
+# Read-only (no wallet needed)
+adapter = get_adapter(PendleAdapter)
 ```
 
-This auto-loads `config.json`, looks up the wallet by label, creates a signing callback, and wires everything together. For read-only adapters (e.g., PendleAdapter), omit the wallet label.
+`get_adapter()` auto-loads `config.json`, looks up wallets by label, creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
+- `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
+- `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
 
 For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_chain_id(chain_id)` from `wayfinder_paths.core.utils.web3` — it's an **async context manager** (see gotchas below):
 
@@ -255,6 +265,9 @@ adapter = MoonwellAdapter(config=config, ...)
 # RIGHT — get_adapter() handles config + wallet + signing internally
 from wayfinder_paths.mcp.scripting import get_adapter
 adapter = get_adapter(MoonwellAdapter, "main")
+
+# Dual-wallet adapters (e.g. BalanceAdapter) take two wallet labels:
+adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
 
 # For read-only adapters, omit the wallet label:
 adapter = get_adapter(HyperliquidAdapter)

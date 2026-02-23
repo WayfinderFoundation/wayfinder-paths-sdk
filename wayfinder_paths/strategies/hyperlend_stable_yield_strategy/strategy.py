@@ -218,19 +218,26 @@ class HyperlendStableYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
+            strat_addr = strategy_wallet_cfg["address"]
+            main_addr = (main_wallet_cfg or {}).get("address")
+
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
-                main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                main_sign_callback=self.main_wallet_signing_callback,
+                strategy_sign_callback=self.strategy_wallet_signing_callback,
+                main_wallet_address=main_addr,
+                strategy_wallet_address=strat_addr,
             )
             self.token_adapter = TokenAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
             self.hyperlend_adapter = HyperlendAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
 
             self._assets_snapshot = None
@@ -968,7 +975,6 @@ class HyperlendStableYieldStrategy(Strategy):
             except Exception:
                 continue
 
-            # TODO: untested past this point
             try:
                 try:
                     decimals = int(token.get("decimals", 18))
@@ -988,7 +994,7 @@ class HyperlendStableYieldStrategy(Strategy):
 
             if success:
                 actions.append(
-                    f"Transferred {amount_tokens:.4f} {token.symbol} to main wallet"
+                    f"Transferred {amount_tokens:.4f} {token.get('symbol', 'unknown')} to main wallet"
                 )
         if actions:
             self._invalidate_assets_snapshot()

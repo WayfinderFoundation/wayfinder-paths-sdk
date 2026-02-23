@@ -45,7 +45,7 @@ async def main() -> None:
     addr = to_checksum_address(str(addr))
 
     signing_cb = create_signing_callback(addr, cfg)
-    adapter = AaveV3Adapter(config=cfg, strategy_wallet_signing_callback=signing_cb)
+    adapter = AaveV3Adapter(config=cfg, sign_callback=signing_cb, wallet_address=addr)
 
     chain_id = int(args.chain_id)
     usdc_addr = (

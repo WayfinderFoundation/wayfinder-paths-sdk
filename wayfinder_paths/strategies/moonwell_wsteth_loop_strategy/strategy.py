@@ -214,19 +214,26 @@ class MoonwellWstethLoopStrategy(Strategy):
                 "strategy": self.config,
             }
 
+            strat_addr = strategy_wallet_cfg["address"]
+            main_addr = (main_wallet_cfg or {}).get("address")
+
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
-                main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                main_sign_callback=self.main_wallet_signing_callback,
+                strategy_sign_callback=self.strategy_wallet_signing_callback,
+                main_wallet_address=main_addr,
+                strategy_wallet_address=strat_addr,
             )
             self.token_adapter = TokenAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
             self.moonwell_adapter = MoonwellAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")

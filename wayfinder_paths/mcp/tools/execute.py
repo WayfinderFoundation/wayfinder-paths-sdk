@@ -19,6 +19,7 @@ from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.scripting import _make_sign_callback
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
@@ -309,7 +310,7 @@ async def execute(
         )
         return response
 
-    sign_callback = _make_sign_callback(pk)
+    sign_callback = make_sign_callback(pk)
 
     if req.kind == "swap":
         rcpt = normalize_address(req.recipient) or sender

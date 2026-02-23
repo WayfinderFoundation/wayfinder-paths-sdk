@@ -151,15 +151,14 @@ class AaveV3Adapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("aave_v3_adapter", config or {})
-        cfg = config or {}
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
 
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
         )
 
         # Cache: (chain_id, underlying.lower()) -> variableDebtTokenAddress
@@ -172,25 +171,6 @@ class AaveV3Adapter(BaseAdapter):
         if not entry:
             raise ValueError(f"Unsupported Aave v3 chain_id={chain_id}")
         return entry
-
-    async def _pool(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["pool"])
-
-    async def _provider(self, *, chain_id: int) -> str:
-        return to_checksum_address(
-            self._entry(int(chain_id))["pool_addresses_provider"]
-        )
-
-    async def _ui_pool(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["ui_pool_data_provider"])
-
-    async def _ui_incentives(self, *, chain_id: int) -> str:
-        return to_checksum_address(
-            self._entry(int(chain_id))["ui_incentive_data_provider"]
-        )
-
-    async def _rewards_controller(self, *, chain_id: int) -> str:
-        return to_checksum_address(self._entry(int(chain_id))["rewards_controller"])
 
     async def _wrapped_native(self, *, chain_id: int) -> str:
         cached = self._wrapped_native_by_chain.get(int(chain_id))
@@ -205,7 +185,7 @@ class AaveV3Adapter(BaseAdapter):
 
         async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
             gw = web3.eth.contract(
-                address=to_checksum_address(gateway),
+                address=gateway,
                 abi=WRAPPED_TOKEN_GATEWAY_V3_ABI,
             )
             wrapped = await gw.functions.getWETHAddress().call(
@@ -223,18 +203,15 @@ class AaveV3Adapter(BaseAdapter):
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             entry = self._entry(int(chain_id))
-            ui_pool_addr = to_checksum_address(entry["ui_pool_data_provider"])
-            provider_addr = to_checksum_address(entry["pool_addresses_provider"])
+            ui_pool_addr = entry["ui_pool_data_provider"]
+            provider_addr = entry["pool_addresses_provider"]
 
             reserves_incentives: dict[str, Any] = {}
             async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
                 if include_rewards:
                     try:
-                        ui_incentives_addr = to_checksum_address(
-                            entry["ui_incentive_data_provider"]
-                        )
                         ui_incentives = web3.eth.contract(
-                            address=ui_incentives_addr,
+                            address=entry["ui_incentive_data_provider"],
                             abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
                         )
                         inc_rows = (
@@ -309,7 +286,7 @@ class AaveV3Adapter(BaseAdapter):
 
                     market_row: dict[str, Any] = {
                         "chain_id": int(chain_id),
-                        "pool": to_checksum_address(entry["pool"]),
+                        "pool": entry["pool"],
                         "underlying": underlying,
                         "symbol": symbol_raw,
                         "symbol_canonical": symbol_canonical,
@@ -453,8 +430,8 @@ class AaveV3Adapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             entry = self._entry(int(chain_id))
-            ui_pool_addr = to_checksum_address(entry["ui_pool_data_provider"])
-            provider_addr = to_checksum_address(entry["pool_addresses_provider"])
+            ui_pool_addr = entry["ui_pool_data_provider"]
+            provider_addr = entry["pool_addresses_provider"]
 
             account = to_checksum_address(account)
 
@@ -482,11 +459,8 @@ class AaveV3Adapter(BaseAdapter):
                 user_rewards_by_underlying: dict[str, list[dict[str, Any]]] = {}
                 if include_rewards:
                     try:
-                        ui_incentives_addr = to_checksum_address(
-                            entry["ui_incentive_data_provider"]
-                        )
                         ui_incentives = web3.eth.contract(
-                            address=ui_incentives_addr,
+                            address=entry["ui_incentive_data_provider"],
                             abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
                         )
 
@@ -721,7 +695,7 @@ class AaveV3Adapter(BaseAdapter):
         chain_id: int,
         native: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -729,7 +703,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = self._entry(int(chain_id))["pool"]
 
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
@@ -742,9 +716,7 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=qty,
                 )
-                wrap_hash = await send_transaction(
-                    wrap_tx, self.strategy_wallet_signing_callback
-                )
+                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -752,7 +724,7 @@ class AaveV3Adapter(BaseAdapter):
                     spender=pool,
                     amount=qty,
                     chain_id=int(chain_id),
-                    signing_callback=self.strategy_wallet_signing_callback,
+                    signing_callback=self.sign_callback,
                     approval_amount=MAX_UINT256,
                 )
                 if not approved[0]:
@@ -766,9 +738,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                supply_hash = await send_transaction(
-                    supply_tx, self.strategy_wallet_signing_callback
-                )
+                supply_hash = await send_transaction(supply_tx, self.sign_callback)
                 return True, {"wrap_tx": wrap_hash, "supply_tx": supply_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -778,7 +748,7 @@ class AaveV3Adapter(BaseAdapter):
                 spender=pool,
                 amount=qty,
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -792,7 +762,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -806,7 +776,7 @@ class AaveV3Adapter(BaseAdapter):
         native: bool = False,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -814,7 +784,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = self._entry(int(chain_id))["pool"]
             amount = MAX_UINT256 if withdraw_full else qty
 
             if native:
@@ -831,9 +801,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                withdraw_hash = await send_transaction(
-                    withdraw_tx, self.strategy_wallet_signing_callback
-                )
+                withdraw_hash = await send_transaction(withdraw_tx, self.sign_callback)
 
                 after = await get_token_balance(
                     wrapped, int(chain_id), strategy, block_identifier="pending"
@@ -850,9 +818,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                unwrap_hash = await send_transaction(
-                    unwrap_tx, self.strategy_wallet_signing_callback
-                )
+                unwrap_hash = await send_transaction(unwrap_tx, self.sign_callback)
                 return True, {"withdraw_tx": withdraw_hash, "unwrap_tx": unwrap_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -864,7 +830,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -877,7 +843,7 @@ class AaveV3Adapter(BaseAdapter):
         chain_id: int,
         native: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -885,7 +851,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = self._entry(int(chain_id))["pool"]
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 borrow_tx = await encode_call(
@@ -896,9 +862,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                borrow_hash = await send_transaction(
-                    borrow_tx, self.strategy_wallet_signing_callback
-                )
+                borrow_hash = await send_transaction(borrow_tx, self.sign_callback)
 
                 unwrap_tx = await encode_call(
                     target=wrapped,
@@ -908,9 +872,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                unwrap_hash = await send_transaction(
-                    unwrap_tx, self.strategy_wallet_signing_callback
-                )
+                unwrap_hash = await send_transaction(unwrap_tx, self.sign_callback)
                 return True, {"borrow_tx": borrow_hash, "unwrap_tx": unwrap_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -922,7 +884,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -936,7 +898,7 @@ class AaveV3Adapter(BaseAdapter):
         native: bool = False,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         qty = int(qty)
@@ -944,7 +906,7 @@ class AaveV3Adapter(BaseAdapter):
             return False, "qty must be positive"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = self._entry(int(chain_id))["pool"]
 
             if native:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
@@ -1016,9 +978,7 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=int(value),
                 )
-                wrap_hash = await send_transaction(
-                    wrap_tx, self.strategy_wallet_signing_callback
-                )
+                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -1026,7 +986,7 @@ class AaveV3Adapter(BaseAdapter):
                     spender=pool,
                     amount=MAX_UINT256 if repay_full else int(value),
                     chain_id=int(chain_id),
-                    signing_callback=self.strategy_wallet_signing_callback,
+                    signing_callback=self.sign_callback,
                     approval_amount=MAX_UINT256,
                 )
                 if not approved[0]:
@@ -1040,9 +1000,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                repay_hash = await send_transaction(
-                    repay_tx, self.strategy_wallet_signing_callback
-                )
+                repay_hash = await send_transaction(repay_tx, self.sign_callback)
                 return True, {"wrap_tx": wrap_hash, "repay_tx": repay_hash}
 
             repay_amount = MAX_UINT256 if repay_full else qty
@@ -1054,7 +1012,7 @@ class AaveV3Adapter(BaseAdapter):
                 spender=pool,
                 amount=allowance_target,
                 chain_id=int(chain_id),
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1068,7 +1026,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1080,12 +1038,12 @@ class AaveV3Adapter(BaseAdapter):
         chain_id: int,
         use_as_collateral: bool = True,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
         try:
-            pool = await self._pool(chain_id=int(chain_id))
+            pool = self._entry(int(chain_id))["pool"]
             asset = to_checksum_address(underlying_token)
             tx = await encode_call(
                 target=pool,
@@ -1095,7 +1053,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1119,24 +1077,21 @@ class AaveV3Adapter(BaseAdapter):
         assets: list[str] | None = None,
         to_address: str | None = None,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
         try:
             entry = self._entry(int(chain_id))
-            rewards_controller = to_checksum_address(entry["rewards_controller"])
-            provider_addr = to_checksum_address(entry["pool_addresses_provider"])
+            rewards_controller = entry["rewards_controller"]
+            provider_addr = entry["pool_addresses_provider"]
             to_addr = to_checksum_address(to_address) if to_address else strategy
 
             if not assets:
                 # Derive incentivized token addresses from the incentives data provider.
-                ui_incentives_addr = to_checksum_address(
-                    entry["ui_incentive_data_provider"]
-                )
                 async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
                     ui_incentives = web3.eth.contract(
-                        address=ui_incentives_addr,
+                        address=entry["ui_incentive_data_provider"],
                         abi=UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
                     )
                     inc_rows = await ui_incentives.functions.getReservesIncentivesData(
@@ -1169,7 +1124,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
