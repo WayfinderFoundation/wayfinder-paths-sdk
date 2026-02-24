@@ -21,7 +21,7 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 VESTING_PERIOD_S = 8 * 60 * 60  # 8 hours
-
+ 
 
 class EthenaVaultAdapter(BaseAdapter):
     """
@@ -29,7 +29,6 @@ class EthenaVaultAdapter(BaseAdapter):
 
     - Deposit: ERC-4626 `deposit` (stake USDe -> receive sUSDe shares)
     - Withdraw: two-step cooldown (`cooldownShares`/`cooldownAssets`) then `unstake`
-    - Borrow/repay: unsupported (not a money market)
     """
 
     adapter_type = "ETHENA"
@@ -45,10 +44,6 @@ class EthenaVaultAdapter(BaseAdapter):
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
-
-    # ------------------------------------------------------------------ #
-    # APY (spot)                                                          #
-    # ------------------------------------------------------------------ #
 
     async def get_spot_apy_supply(self) -> tuple[bool, float | str]:
         """
@@ -95,13 +90,12 @@ class EthenaVaultAdapter(BaseAdapter):
                     return True, 0.0
 
                 vesting_rate_assets_per_s = unvested_i / float(remaining)
-                # Convert per-second growth -> APR, then APR -> APY.
                 apr = (vesting_rate_assets_per_s / float(total_assets_i)) * float(
                     SECONDS_PER_YEAR
                 )
                 apy = apr_to_apy(apr)
                 return True, float(apy)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_apy(
@@ -112,10 +106,6 @@ class EthenaVaultAdapter(BaseAdapter):
         if apy_type != "supply":
             return False, "Ethena sUSDe vault does not support borrow APY"
         return await self.get_spot_apy_supply()
-
-    # ------------------------------------------------------------------ #
-    # Reads                                                               #
-    # ------------------------------------------------------------------ #
 
     async def get_cooldown(
         self,
@@ -136,7 +126,7 @@ class EthenaVaultAdapter(BaseAdapter):
                     "cooldownEnd": int(cooldown_end or 0),
                     "underlyingAmount": int(underlying_amount or 0),
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_full_user_state(
@@ -220,7 +210,6 @@ class EthenaVaultAdapter(BaseAdapter):
 
                 shares = int(susde_balance or 0)
 
-                # Cooldown + convertToAssets in one mainnet context.
                 async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3_hub:
                     vault = web3_hub.eth.contract(
                         address=ETHENA_SUSDE_VAULT_MAINNET,
@@ -281,12 +270,8 @@ class EthenaVaultAdapter(BaseAdapter):
                     "positions": positions,
                 },
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
-
-    # ------------------------------------------------------------------ #
-    # Transactions (mainnet only)                                         #
-    # ------------------------------------------------------------------ #
 
     async def deposit_usde(
         self,
@@ -297,7 +282,6 @@ class EthenaVaultAdapter(BaseAdapter):
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
-        amount_assets = int(amount_assets)
         if amount_assets <= 0:
             return False, "amount_assets must be positive"
 
@@ -326,7 +310,7 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def request_withdraw_by_shares(
@@ -337,7 +321,6 @@ class EthenaVaultAdapter(BaseAdapter):
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
-        shares = int(shares)
         if shares <= 0:
             return False, "shares must be positive"
 
@@ -352,7 +335,7 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def request_withdraw_by_assets(
@@ -363,7 +346,6 @@ class EthenaVaultAdapter(BaseAdapter):
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
-        assets = int(assets)
         if assets <= 0:
             return False, "assets must be positive"
 
@@ -378,7 +360,7 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def claim_withdraw(
@@ -425,23 +407,5 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
-
-    # ------------------------------------------------------------------ #
-    # Compatibility wrappers                                              #
-    # ------------------------------------------------------------------ #
-
-    async def lend(
-        self, *, amount: int, receiver: str | None = None
-    ) -> tuple[bool, Any]:
-        return await self.deposit_usde(amount_assets=int(amount), receiver=receiver)
-
-    async def unlend(self, *, shares: int) -> tuple[bool, Any]:
-        return await self.request_withdraw_by_shares(shares=int(shares))
-
-    async def borrow(self, **_: Any) -> tuple[bool, Any]:
-        return False, "Ethena sUSDe vault does not support borrowing"
-
-    async def repay(self, **_: Any) -> tuple[bool, Any]:
-        return False, "Ethena sUSDe vault does not support repayment"
