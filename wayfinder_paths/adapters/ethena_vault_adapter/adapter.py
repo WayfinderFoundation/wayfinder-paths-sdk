@@ -21,7 +21,7 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 VESTING_PERIOD_S = 8 * 60 * 60  # 8 hours
- 
+
 
 class EthenaVaultAdapter(BaseAdapter):
     """
@@ -117,7 +117,7 @@ class EthenaVaultAdapter(BaseAdapter):
                     "cooldownEnd": int(cooldown_end or 0),
                     "underlyingAmount": int(underlying_amount or 0),
                 }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(
@@ -261,7 +261,7 @@ class EthenaVaultAdapter(BaseAdapter):
                     "positions": positions,
                 },
             )
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def deposit_usde(
@@ -301,7 +301,7 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def request_withdraw_by_shares(
@@ -326,7 +326,7 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def request_withdraw_by_assets(
@@ -351,7 +351,7 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def claim_withdraw(
@@ -398,5 +398,5 @@ class EthenaVaultAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
