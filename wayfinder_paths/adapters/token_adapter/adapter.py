@@ -4,6 +4,7 @@ import httpx
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.adapters.decorators import status_tuple
 from wayfinder_paths.core.clients.TokenClient import (
     TOKEN_CLIENT,
     GasToken,
@@ -26,17 +27,15 @@ class TokenAdapter(BaseAdapter):
         self, token_address: str, *, chain_id: int
     ) -> tuple[bool, TokenDetails | str]:
         try:
-            symbol, name, decimals = await get_erc20_metadata(
-                token_address, int(chain_id)
-            )
-            chain_code = CHAIN_ID_TO_CODE.get(int(chain_id), str(chain_id))
+            symbol, name, decimals = await get_erc20_metadata(token_address, chain_id)
+            chain_code = CHAIN_ID_TO_CODE.get(chain_id, str(chain_id))
             data: dict[str, Any] = {
                 "token_id": f"{chain_code}_{token_address}",
                 "address": token_address,
                 "symbol": symbol,
                 "name": name,
-                "decimals": int(decimals),
-                "chain": {"id": int(chain_id)},
+                "decimals": decimals,
+                "chain": {"id": chain_id},
                 "metadata": {"source": "onchain"},
             }
             return True, data  # type: ignore[return-value]
@@ -62,7 +61,7 @@ class TokenAdapter(BaseAdapter):
         # API miss — try on-chain as last resort
         if chain_id is not None and query.startswith("0x"):
             return await self.get_token_onchain(
-                to_checksum_address(query), chain_id=int(chain_id)
+                to_checksum_address(query), chain_id=chain_id
             )
         return (False, f"No token found for: {query}")
 
@@ -106,14 +105,11 @@ class TokenAdapter(BaseAdapter):
         if not success or not isinstance(price_data, dict):
             return None
         price = price_data.get("current_price", 0.0)
-        return price * float(raw_amount) / 10 ** int(decimals)
+        return price * float(raw_amount) / 10**decimals
 
-    async def get_gas_token(self, chain_code: str) -> tuple[bool, GasToken | str]:
-        try:
-            data = await TOKEN_CLIENT.get_gas_token(chain_code)
-            if not data:
-                return (False, f"No gas token found for chain: {chain_code}")
-            return (True, data)
-        except Exception as e:
-            self.logger.error(f"Error getting gas token for chain {chain_code}: {e}")
-            return (False, str(e))
+    @status_tuple
+    async def get_gas_token(self, chain_code: str) -> GasToken:
+        data = await TOKEN_CLIENT.get_gas_token(chain_code)
+        if not data:
+            raise ValueError(f"No gas token found for chain: {chain_code}")
+        return data

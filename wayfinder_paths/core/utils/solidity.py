@@ -93,7 +93,6 @@ _IMPORT_RE = re.compile(
 
 
 def _strip_solidity_comments(source: str) -> str:
-    # Remove /* ... */ then // ...
     no_block = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
     return re.sub(r"//.*?$", "", no_block, flags=re.MULTILINE)
 

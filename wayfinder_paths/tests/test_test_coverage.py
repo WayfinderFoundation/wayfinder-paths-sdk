@@ -12,7 +12,6 @@ def test_all_adapters_have_tests():
 
     missing_tests = []
 
-    # Find all adapter directories (directories containing adapter.py)
     for adapter_dir in adapters_dir.iterdir():
         if not adapter_dir.is_dir() or adapter_dir.name.startswith("_"):
             continue
@@ -20,7 +19,6 @@ def test_all_adapters_have_tests():
         adapter_py = adapter_dir / "adapter.py"
         test_adapter_py = adapter_dir / "test_adapter.py"
 
-        # If adapter.py exists, test_adapter_py must exist
         if adapter_py.exists() and not test_adapter_py.exists():
             missing_tests.append(adapter_dir.name)
 
@@ -40,7 +38,6 @@ def test_all_strategies_have_tests():
 
     missing_tests = []
 
-    # Find all strategy directories (directories containing strategy.py)
     for strategy_dir in strategies_dir.iterdir():
         if not strategy_dir.is_dir() or strategy_dir.name.startswith("_"):
             continue
@@ -48,7 +45,6 @@ def test_all_strategies_have_tests():
         strategy_py = strategy_dir / "strategy.py"
         test_strategy_py = strategy_dir / "test_strategy.py"
 
-        # If strategy.py exists, test_strategy.py must exist
         if strategy_py.exists() and not test_strategy_py.exists():
             missing_tests.append(strategy_dir.name)
 
@@ -68,7 +64,6 @@ def test_all_strategies_have_examples_json():
 
     missing_examples = []
 
-    # Find all strategy directories (directories containing strategy.py)
     for strategy_dir in strategies_dir.iterdir():
         if not strategy_dir.is_dir() or strategy_dir.name.startswith("_"):
             continue
@@ -76,7 +71,6 @@ def test_all_strategies_have_examples_json():
         strategy_py = strategy_dir / "strategy.py"
         examples_json = strategy_dir / "examples.json"
 
-        # If strategy.py exists, examples.json must exist
         if strategy_py.exists() and not examples_json.exists():
             missing_examples.append(strategy_dir.name)
 
@@ -97,7 +91,6 @@ def test_strategy_tests_use_examples_json():
 
     violations = []
 
-    # Find all strategy test files
     for strategy_dir in strategies_dir.iterdir():
         if not strategy_dir.is_dir() or strategy_dir.name.startswith("_"):
             continue
@@ -164,7 +157,6 @@ def test_strategy_examples_have_smoke():
 
     missing_smoke = []
 
-    # Find all strategy directories
     for strategy_dir in strategies_dir.iterdir():
         if not strategy_dir.is_dir() or strategy_dir.name.startswith("_"):
             continue

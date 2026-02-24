@@ -1925,7 +1925,6 @@ class MoonwellWstethLoopStrategy(Strategy):
             ),
         )
 
-        # Get token data (prices cached from _aggregate_positions)
         token_data = await asyncio.gather(
             self._get_token_data(WETH_TOKEN_ID),
             self._get_token_data(USDC_TOKEN_ID),

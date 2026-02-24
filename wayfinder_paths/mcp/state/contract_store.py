@@ -72,7 +72,6 @@ class ContractArtifactStore:
         now = now_iso()
         bytecode_hex = bytecode[2:] if bytecode.startswith("0x") else bytecode
 
-        # Write individual files
         (artifact_dir / "source.sol").write_text(source_code, encoding="utf-8")
         (artifact_dir / "abi.json").write_text(
             json.dumps(abi, indent=2), encoding="utf-8"
@@ -83,7 +82,6 @@ class ContractArtifactStore:
                 json.dumps(standard_json_input, indent=2), encoding="utf-8"
             )
 
-        # Build metadata
         metadata: dict[str, Any] = {
             "chain_id": chain_id,
             "contract_address": addr,
@@ -110,7 +108,6 @@ class ContractArtifactStore:
             json.dumps(metadata, indent=2), encoding="utf-8"
         )
 
-        # Update index
         index = self._load_index()
         # Remove existing entry for same chain+address (redeploy to same address on fork)
         index = [

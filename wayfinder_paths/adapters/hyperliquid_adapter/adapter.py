@@ -901,7 +901,6 @@ class HyperliquidAdapter(BaseAdapter):
             data = get_info().user_fills_by_time(address, since_ms, now_ms)
             fills = data if isinstance(data, list) else []
 
-            # Filter for liquidation fills where we were the liquidated user
             liquidation_fills = [
                 f
                 for f in fills

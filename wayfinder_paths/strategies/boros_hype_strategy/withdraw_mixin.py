@@ -1043,7 +1043,6 @@ class BorosHypeWithdrawMixin:
                 )
 
                 if perp_balance > 1.0:
-                    # Check for remaining open positions that require margin
                     positions = user_state.get("assetPositions", [])
                     has_dust_position = False
                     dust_position_margin = 0.0
@@ -1067,7 +1066,6 @@ class BorosHypeWithdrawMixin:
                                 f"reserving ~${dust_position_margin:.2f} margin"
                             )
 
-                    # Calculate withdrawable amount
                     if has_dust_position:
                         # Leave buffer for dust position margin (minimum $2, or estimated margin + $1 buffer)
                         margin_buffer = max(2.0, dust_position_margin + 1.0)

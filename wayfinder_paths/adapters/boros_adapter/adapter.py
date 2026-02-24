@@ -2622,7 +2622,6 @@ class BorosAdapter(BaseAdapter):
             chosen_ia = best_ia
 
             for ia_bps, size_str in levels:
-                # Check if we've deviated too far from best price
                 if is_short:
                     if best_ia - ia_bps > max_ia_deviation:
                         break

@@ -771,7 +771,6 @@ class MoonwellAdapter(BaseAdapter):
 
                 markets_info = [m for m, _ in filtered_markets]
                 market_addrs = [addr for _, addr in filtered_markets]
-                # Fetch market metadata (symbol/underlying/decimals) via multicall.
                 meta_calls: list[Any] = []
                 for mtoken in market_addrs:
                     mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)

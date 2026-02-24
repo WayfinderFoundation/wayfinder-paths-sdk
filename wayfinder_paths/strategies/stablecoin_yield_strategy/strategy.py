@@ -399,7 +399,6 @@ class StablecoinYieldStrategy(Strategy):
             )
             if success and isinstance(pool_list_response, dict):
                 pools = pool_list_response.get("pools", [])
-                # Search for matching pool by id or constructed identifier
                 for identifier in pool_ids:
                     if not isinstance(identifier, str):
                         continue
