@@ -396,7 +396,10 @@ class TestEthenaVaultAdapter:
             ) as mock_send,
         ):
             mock_allowance.return_value = (True, {})
-            mock_encode.return_value = {"data": "0x1234", "to": ETHENA_SUSDE_VAULT_MAINNET}
+            mock_encode.return_value = {
+                "data": "0x1234",
+                "to": ETHENA_SUSDE_VAULT_MAINNET,
+            }
             mock_send.return_value = mock_tx_hash
 
             ok, result = await adapter.deposit_usde(amount_assets=100 * 10**18)
@@ -439,10 +442,17 @@ class TestEthenaVaultAdapter:
     async def test_request_withdraw_by_shares(self, adapter):
         mock_tx_hash = "0xdef456"
         with (
-            patch(f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock) as mock_encode,
-            patch(f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock) as mock_send,
+            patch(
+                f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock
+            ) as mock_encode,
+            patch(
+                f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock
+            ) as mock_send,
         ):
-            mock_encode.return_value = {"data": "0x1234", "to": ETHENA_SUSDE_VAULT_MAINNET}
+            mock_encode.return_value = {
+                "data": "0x1234",
+                "to": ETHENA_SUSDE_VAULT_MAINNET,
+            }
             mock_send.return_value = mock_tx_hash
 
             ok, result = await adapter.request_withdraw_by_shares(shares=50 * 10**18)
@@ -468,10 +478,17 @@ class TestEthenaVaultAdapter:
     async def test_request_withdraw_by_assets(self, adapter):
         mock_tx_hash = "0x789abc"
         with (
-            patch(f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock) as mock_encode,
-            patch(f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock) as mock_send,
+            patch(
+                f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock
+            ) as mock_encode,
+            patch(
+                f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock
+            ) as mock_send,
         ):
-            mock_encode.return_value = {"data": "0x1234", "to": ETHENA_SUSDE_VAULT_MAINNET}
+            mock_encode.return_value = {
+                "data": "0x1234",
+                "to": ETHENA_SUSDE_VAULT_MAINNET,
+            }
             mock_send.return_value = mock_tx_hash
 
             ok, result = await adapter.request_withdraw_by_assets(assets=100 * 10**18)
@@ -492,9 +509,7 @@ class TestEthenaVaultAdapter:
         mock_tx_hash = "0xclaim1"
 
         mock_web3 = MagicMock()
-        mock_web3.eth.get_block = AsyncMock(
-            return_value={"timestamp": 1_700_200_000}
-        )
+        mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": 1_700_200_000})
 
         @asynccontextmanager
         async def mock_web3_ctx(_chain_id):
@@ -511,10 +526,17 @@ class TestEthenaVaultAdapter:
                 ),
             ),
             patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx),
-            patch(f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock) as mock_encode,
-            patch(f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock) as mock_send,
+            patch(
+                f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock
+            ) as mock_encode,
+            patch(
+                f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock
+            ) as mock_send,
         ):
-            mock_encode.return_value = {"data": "0x1234", "to": ETHENA_SUSDE_VAULT_MAINNET}
+            mock_encode.return_value = {
+                "data": "0x1234",
+                "to": ETHENA_SUSDE_VAULT_MAINNET,
+            }
             mock_send.return_value = mock_tx_hash
 
             ok, result = await adapter.claim_withdraw()
@@ -525,9 +547,7 @@ class TestEthenaVaultAdapter:
     @pytest.mark.asyncio
     async def test_claim_withdraw_not_matured(self, adapter):
         mock_web3 = MagicMock()
-        mock_web3.eth.get_block = AsyncMock(
-            return_value={"timestamp": 1_700_000_000}
-        )
+        mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": 1_700_000_000})
 
         @asynccontextmanager
         async def mock_web3_ctx(_chain_id):
