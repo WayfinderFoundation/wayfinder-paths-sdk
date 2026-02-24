@@ -251,7 +251,7 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
     else:
         result = await _run()
 
-    print(
+    logger.info(
         json.dumps(result, indent=2)
         if isinstance(result, dict)
         else f"{action}: {result}"

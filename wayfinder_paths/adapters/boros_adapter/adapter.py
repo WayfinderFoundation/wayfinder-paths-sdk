@@ -473,7 +473,7 @@ class BorosAdapter(BaseAdapter):
         is_whitelisted: bool | None = True,
         skip: int = 0,
         limit: int = 100,
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             markets = await self.boros_client.list_markets(
                 is_whitelisted=is_whitelisted, skip=skip, limit=limit
@@ -481,7 +481,7 @@ class BorosAdapter(BaseAdapter):
             return True, markets
         except Exception as e:
             logger.error(f"Failed to list markets: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def list_markets_all(
         self,
@@ -489,7 +489,7 @@ class BorosAdapter(BaseAdapter):
         is_whitelisted: bool | None = True,
         page_size: int = 100,
         max_pages: int | None = None,
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         """List all markets, automatically paginating `skip/limit`.
 
         Boros enforces `limit <= 100`. This helper keeps requesting pages until:
@@ -551,15 +551,15 @@ class BorosAdapter(BaseAdapter):
             return True, unique
         except Exception as e:
             logger.error(f"Failed to list all markets: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
-    async def get_market(self, market_id: int) -> tuple[bool, dict[str, Any]]:
+    async def get_market(self, market_id: int) -> tuple[bool, dict[str, Any] | str]:
         try:
             market = await self.boros_client.get_market(market_id)
             return True, market
         except Exception as e:
             logger.error(f"Failed to get market {market_id}: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def quote_market_by_id(
         self,
@@ -567,11 +567,11 @@ class BorosAdapter(BaseAdapter):
         *,
         tick_size: float = 0.001,
         prefer_market_data: bool = True,
-    ) -> tuple[bool, BorosMarketQuote]:
+    ) -> tuple[bool, BorosMarketQuote | str]:
         """Convenience helper: get_market() + quote_market()."""
         ok, market = await self.get_market(int(market_id))
         if not ok:
-            return False, market  # type: ignore
+            return False, str(market)
         return await self.quote_market(
             market,
             tick_size=tick_size,
@@ -580,7 +580,7 @@ class BorosAdapter(BaseAdapter):
 
     async def get_orderbook(
         self, market_id: int, *, tick_size: float = 0.001
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         try:
             book = await self.boros_client.get_order_book(
                 market_id, tick_size=tick_size
@@ -588,7 +588,7 @@ class BorosAdapter(BaseAdapter):
             return True, book
         except Exception as e:
             logger.error(f"Failed to get orderbook for market {market_id}: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def quote_market(
         self,
@@ -596,7 +596,7 @@ class BorosAdapter(BaseAdapter):
         *,
         tick_size: float = 0.001,
         prefer_market_data: bool = True,
-    ) -> tuple[bool, BorosMarketQuote]:
+    ) -> tuple[bool, BorosMarketQuote | str]:
         try:
             market_id = int(market.get("marketId") or market.get("id") or 0)
             market_address = market.get("address") or market.get("marketAddress") or ""
@@ -688,7 +688,7 @@ class BorosAdapter(BaseAdapter):
             return True, quote
         except Exception as e:
             logger.error(f"Failed to quote market: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def quote_markets_for_underlying(
         self,
@@ -699,13 +699,13 @@ class BorosAdapter(BaseAdapter):
         page_size: int = 100,
         tick_size: float = 0.001,
         prefer_market_data: bool = True,
-    ) -> tuple[bool, list[BorosMarketQuote]]:
+    ) -> tuple[bool, list[BorosMarketQuote] | str]:
         try:
             ok, markets = await self.list_markets_all(
                 is_whitelisted=True, page_size=page_size
             )
             if not ok:
-                return False, markets  # type: ignore
+                return False, str(markets)
             target = underlying_symbol.upper()
             platform_filter = platform.upper() if platform else None
 
@@ -751,7 +751,7 @@ class BorosAdapter(BaseAdapter):
             return True, quotes
         except Exception as e:
             logger.error(f"Failed to quote markets for {underlying_symbol}: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def list_tenor_quotes(
         self,
@@ -761,7 +761,7 @@ class BorosAdapter(BaseAdapter):
         is_whitelisted: bool | None = True,
         page_size: int = 100,
         max_pages: int | None = None,
-    ) -> tuple[bool, list[BorosTenorQuote]]:
+    ) -> tuple[bool, list[BorosTenorQuote] | str]:
         """Fast market+rate snapshot using only the `/markets` endpoint (no orderbooks).
 
         Useful for quickly answering questions like:
@@ -772,7 +772,7 @@ class BorosAdapter(BaseAdapter):
             is_whitelisted=is_whitelisted, page_size=page_size, max_pages=max_pages
         )
         if not ok:
-            return False, markets  # type: ignore
+            return False, str(markets)
 
         target = underlying_symbol.upper() if underlying_symbol else None
         platform_filter = platform.upper() if platform else None
@@ -1196,7 +1196,7 @@ class BorosAdapter(BaseAdapter):
 
     async def get_collaterals(
         self, *, account_id: int | None = None
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         try:
             data = await self.boros_client.get_collaterals(
                 user_address=self.wallet_address,
@@ -1205,11 +1205,11 @@ class BorosAdapter(BaseAdapter):
             return True, data
         except Exception as e:
             logger.error(f"Failed to get collaterals: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_account_balances(
         self, token_id: int = 3, *, account_id: int | None = None
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         result: dict[str, Any] = {
             "isolated": 0.0,
             "cross": 0.0,
@@ -1223,7 +1223,7 @@ class BorosAdapter(BaseAdapter):
         try:
             success, summary = await self.get_collaterals(account_id=account_id)
             if not success:
-                return False, str(summary)  # type: ignore
+                return False, str(summary)
 
             collaterals = summary.get("collaterals", [])
             for coll in collaterals:
@@ -1270,11 +1270,11 @@ class BorosAdapter(BaseAdapter):
             return True, result
         except Exception as e:
             logger.error(f"Failed to get account balances: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_active_positions(
         self, market_id: int | None = None
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             success, collaterals = await self.get_collaterals()
             if not success:
@@ -1308,11 +1308,11 @@ class BorosAdapter(BaseAdapter):
             return True, positions
         except Exception as e:
             logger.error(f"Failed to get active positions: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_open_limit_orders(
         self, *, limit: int = 50
-    ) -> tuple[bool, list[BorosLimitOrder]]:
+    ) -> tuple[bool, list[BorosLimitOrder] | str]:
         try:
             orders_raw = await self.boros_client.get_open_orders(
                 user_address=self.wallet_address, limit=limit
@@ -1349,7 +1349,7 @@ class BorosAdapter(BaseAdapter):
             return True, orders
         except Exception as e:
             logger.error(f"Failed to get open orders: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_full_user_state(
         self,
