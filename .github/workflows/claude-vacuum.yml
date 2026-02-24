@@ -73,6 +73,19 @@ jobs:
           claude_args: |
             --model claude-opus-4-6 --verbose --allowedTools "Read,Write,Edit,Bash(*),WebSearch,WebFetch"
 
+      - name: Trigger test pipeline on cleanup branch
+        if: success()
+        run: |
+          BRANCH="maintenance/daily-cleanup-${{ github.run_id }}"
+          if git ls-remote --heads origin "$BRANCH" | grep -q "$BRANCH"; then
+            gh workflow run test-pipeline.yml --ref "$BRANCH"
+            echo "Triggered test pipeline on $BRANCH"
+          else
+            echo "No cleanup branch created, skipping CI trigger"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Print execution log
         if: always()
         run: |
