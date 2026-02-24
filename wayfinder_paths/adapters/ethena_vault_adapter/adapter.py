@@ -77,20 +77,17 @@ class EthenaVaultAdapter(BaseAdapter):
                     unvested_coro, last_dist_coro, total_assets_coro, block_coro
                 )
 
-                unvested_i = int(unvested or 0)
-                total_assets_i = int(total_assets or 0)
-                if unvested_i <= 0 or total_assets_i <= 0:
+                if unvested <= 0 or total_assets <= 0:
                     return True, 0.0
 
-                now_ts = int(block.get("timestamp") or 0)
-                last_ts = int(last_dist or 0)
-                elapsed = max(0, now_ts - last_ts)
+                now_ts = block.get("timestamp") or 0
+                elapsed = max(0, now_ts - last_dist)
                 remaining = max(0, VESTING_PERIOD_S - elapsed)
                 if remaining <= 0:
                     return True, 0.0
 
-                vesting_rate_assets_per_s = unvested_i / float(remaining)
-                apr = (vesting_rate_assets_per_s / float(total_assets_i)) * float(
+                vesting_rate_assets_per_s = unvested / float(remaining)
+                apr = (vesting_rate_assets_per_s / float(total_assets)) * float(
                     SECONDS_PER_YEAR
                 )
                 apy = apr_to_apy(apr)
@@ -114,8 +111,8 @@ class EthenaVaultAdapter(BaseAdapter):
                     acct
                 ).call(block_identifier="pending")
                 return True, {
-                    "cooldownEnd": int(cooldown_end or 0),
-                    "underlyingAmount": int(underlying_amount or 0),
+                    "cooldownEnd": cooldown_end or 0,
+                    "underlyingAmount": underlying_amount or 0,
                 }
         except Exception as exc:
             return False, str(exc)
@@ -167,13 +164,13 @@ class EthenaVaultAdapter(BaseAdapter):
                         ),
                     )
                     cooldown = {
-                        "cooldownEnd": int(cooldown_raw[0] or 0),
-                        "underlyingAmount": int(cooldown_raw[1] or 0),
+                        "cooldownEnd": cooldown_raw[0] or 0,
+                        "underlyingAmount": cooldown_raw[1] or 0,
                     }
-                    shares = int(susde_balance or 0)
+                    shares = susde_balance or 0
                     usde_equivalent = 0
                     if shares > 0:
-                        usde_equivalent = int(
+                        usde_equivalent = (
                             await vault.functions.convertToAssets(shares).call(
                                 block_identifier="pending"
                             )
@@ -199,7 +196,7 @@ class EthenaVaultAdapter(BaseAdapter):
                         ),
                     )
 
-                shares = int(susde_balance or 0)
+                shares = susde_balance or 0
 
                 async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3_hub:
                     vault = web3_hub.eth.contract(
@@ -220,10 +217,10 @@ class EthenaVaultAdapter(BaseAdapter):
                     results = await asyncio.gather(*coros)
                     cooldown_raw = results[0]
                     cooldown = {
-                        "cooldownEnd": int(cooldown_raw[0] or 0),
-                        "underlyingAmount": int(cooldown_raw[1] or 0),
+                        "cooldownEnd": cooldown_raw[0] or 0,
+                        "underlyingAmount": cooldown_raw[1] or 0,
                     }
-                    usde_equivalent = int(results[1] or 0) if shares > 0 else 0
+                    usde_equivalent = (results[1] or 0) if shares > 0 else 0
 
             cd_underlying = cooldown.get("underlyingAmount", 0)
 
@@ -242,7 +239,7 @@ class EthenaVaultAdapter(BaseAdapter):
                         "chainId": cid,
                         "usde": usde_addr,
                         "susde": susde_addr,
-                        "usdeBalance": int(usde_balance or 0),
+                        "usdeBalance": usde_balance or 0,
                         "susdeBalance": shares,
                         "usdeEquivalent": usde_equivalent,
                         "cooldown": cooldown,
@@ -373,15 +370,15 @@ class EthenaVaultAdapter(BaseAdapter):
             if not isinstance(cd, dict):
                 return False, "unexpected cooldown payload"
 
-            cooldown_end = int(cd.get("cooldownEnd") or 0)
-            underlying_amount = int(cd.get("underlyingAmount") or 0)
+            cooldown_end = cd.get("cooldownEnd") or 0
+            underlying_amount = cd.get("underlyingAmount") or 0
             if underlying_amount <= 0:
                 return True, "no pending cooldown"
 
             if require_matured and cooldown_end > 0:
                 async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                     block = await web3.eth.get_block("latest")
-                    now_ts = int(block.get("timestamp") or 0)
+                    now_ts = block.get("timestamp") or 0
                 if now_ts < cooldown_end:
                     return (
                         False,
