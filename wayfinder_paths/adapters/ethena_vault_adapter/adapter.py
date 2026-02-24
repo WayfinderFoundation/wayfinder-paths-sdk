@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 from collections.abc import Callable
 from typing import Any
 
@@ -21,6 +22,18 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 VESTING_PERIOD_S = 8 * 60 * 60  # 8 hours
+
+
+def _require_wallet(fn: Callable) -> Callable:
+    """Return (False, ...) early if wallet_address is not set."""
+
+    @functools.wraps(fn)
+    async def wrapper(self: EthenaVaultAdapter, *args: Any, **kwargs: Any) -> Any:
+        if not self.wallet_address:
+            return False, "strategy wallet address not configured"
+        return await fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class EthenaVaultAdapter(BaseAdapter):
@@ -259,24 +272,22 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def deposit_usde(
         self,
         *,
         amount_assets: int,
         receiver: str | None = None,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         if amount_assets <= 0:
             return False, "amount_assets must be positive"
 
-        recv = to_checksum_address(receiver) if receiver else strategy
+        recv = to_checksum_address(receiver) if receiver else self.wallet_address
 
         try:
             approved = await ensure_allowance(
                 token_address=ETHENA_USDE_MAINNET,
-                owner=strategy,
+                owner=self.wallet_address,
                 spender=ETHENA_SUSDE_VAULT_MAINNET,
                 amount=amount_assets,
                 chain_id=CHAIN_ID_ETHEREUM,
@@ -291,7 +302,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 abi=ETHENA_SUSDE_VAULT_ABI,
                 fn_name="deposit",
                 args=[amount_assets, recv],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -299,14 +310,12 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def request_withdraw_by_shares(
         self,
         *,
         shares: int,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         if shares <= 0:
             return False, "shares must be positive"
 
@@ -316,7 +325,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 abi=ETHENA_SUSDE_VAULT_ABI,
                 fn_name="cooldownShares",
                 args=[shares],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -324,14 +333,12 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def request_withdraw_by_assets(
         self,
         *,
         assets: int,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         if assets <= 0:
             return False, "assets must be positive"
 
@@ -341,7 +348,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 abi=ETHENA_SUSDE_VAULT_ABI,
                 fn_name="cooldownAssets",
                 args=[assets],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -349,20 +356,17 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def claim_withdraw(
         self,
         *,
         receiver: str | None = None,
         require_matured: bool = True,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
-        recv = to_checksum_address(receiver) if receiver else strategy
+        recv = to_checksum_address(receiver) if receiver else self.wallet_address
 
         try:
-            ok_cd, cd = await self.get_cooldown(account=strategy)
+            ok_cd, cd = await self.get_cooldown(account=self.wallet_address)
             if not ok_cd:
                 return False, str(cd)
             if not isinstance(cd, dict):
@@ -388,7 +392,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 abi=ETHENA_SUSDE_VAULT_ABI,
                 fn_name="unstake",
                 args=[recv],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
