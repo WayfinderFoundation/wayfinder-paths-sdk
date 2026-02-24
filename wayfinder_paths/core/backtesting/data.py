@@ -304,8 +304,6 @@ def convert_to_spot(prices: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     spot_prices = prices.copy()
 
     # Spot assets have zero funding (no periodic payments)
-    zero_funding = pd.DataFrame(
-        0.0, index=prices.index, columns=prices.columns
-    )
+    zero_funding = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
 
     return spot_prices, zero_funding

@@ -224,11 +224,13 @@ def run_backtest(
     # Align funding rates with prices safely (no lookahead bias)
     if config.funding_rates is not None:
         # Join funding rates with prices, forward fill, then slice out just funding
-        combined = prices.join(config.funding_rates, rsuffix='_funding')
-        funding_cols = [col for col in combined.columns if col.endswith('_funding')]
+        combined = prices.join(config.funding_rates, rsuffix="_funding")
+        funding_cols = [col for col in combined.columns if col.endswith("_funding")]
         funding_aligned = combined[funding_cols].ffill()
         # Remove the '_funding' suffix to restore original column names
-        funding_aligned.columns = [col.replace('_funding', '') for col in funding_aligned.columns]
+        funding_aligned.columns = [
+            col.replace("_funding", "") for col in funding_aligned.columns
+        ]
         config.funding_rates = funding_aligned
 
     cash_balance = config.initial_capital
@@ -481,7 +483,9 @@ def _calculate_stats(
 
     # Exposure time (% of time with non-zero positions)
     exposure_count = sum(1 for t in turnover_series if t > 0)
-    exposure_time_pct = exposure_count / len(turnover_series) if turnover_series else 0.0
+    exposure_time_pct = (
+        exposure_count / len(turnover_series) if turnover_series else 0.0
+    )
 
     # Equity metrics
     equity_final = float(equity_curve.iloc[-1])
@@ -544,12 +548,18 @@ def _calculate_stats(
     if start_dd is not None:
         drawdown_periods.append((start_dd, equity_curve.index[-1]))
 
-    avg_drawdown = float(drawdowns[drawdowns < 0].mean()) if len(drawdowns[drawdowns < 0]) > 0 else 0.0
+    avg_drawdown = (
+        float(drawdowns[drawdowns < 0].mean())
+        if len(drawdowns[drawdowns < 0]) > 0
+        else 0.0
+    )
 
     if drawdown_periods:
         drawdown_durations = [(end - start) for start, end in drawdown_periods]
         max_drawdown_duration = max(drawdown_durations)
-        avg_drawdown_duration = sum(drawdown_durations, pd.Timedelta(0)) / len(drawdown_durations)
+        avg_drawdown_duration = sum(drawdown_durations, pd.Timedelta(0)) / len(
+            drawdown_durations
+        )
     else:
         max_drawdown_duration = pd.Timedelta(0)
         avg_drawdown_duration = pd.Timedelta(0)
@@ -570,9 +580,12 @@ def _calculate_stats(
 
         # Trade durations (time between rebalance events)
         if trade_count > 1:
-            trade_times = sorted({trade['timestamp'] for trade in trades})
+            trade_times = sorted({trade["timestamp"] for trade in trades})
             if len(trade_times) > 1:
-                durations = [trade_times[i+1] - trade_times[i] for i in range(len(trade_times)-1)]
+                durations = [
+                    trade_times[i + 1] - trade_times[i]
+                    for i in range(len(trade_times) - 1)
+                ]
                 max_trade_duration = max(durations)
                 avg_trade_duration = sum(durations, pd.Timedelta(0)) / len(durations)
             else:
@@ -608,7 +621,9 @@ def _calculate_stats(
         avg_win = float(wins.mean())
         avg_loss = float(abs(losses.mean()))
         win_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
-        kelly = win_rate - ((1 - win_rate) / win_loss_ratio) if win_loss_ratio > 0 else 0.0
+        kelly = (
+            win_rate - ((1 - win_rate) / win_loss_ratio) if win_loss_ratio > 0 else 0.0
+        )
     else:
         kelly = 0.0
 
@@ -626,7 +641,9 @@ def _calculate_stats(
         "equity_final": round(equity_final, 4),
         "equity_peak": round(equity_peak, 4),
         "total_return": round(total_return, 4),
-        "buy_hold_return": round(buy_hold_return, 4) if buy_hold_return is not None else None,
+        "buy_hold_return": round(buy_hold_return, 4)
+        if buy_hold_return is not None
+        else None,
         "return_ann": round(return_ann, 4),
         "volatility_ann": round(volatility_ann, 4),
         "cagr": round(cagr, 4),

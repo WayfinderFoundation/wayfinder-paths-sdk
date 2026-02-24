@@ -57,7 +57,6 @@ from wayfinder_paths.core.backtesting.helpers import (
     quick_backtest,
 )
 
-
 __all__ = [
     # Core functions
     "run_backtest",
