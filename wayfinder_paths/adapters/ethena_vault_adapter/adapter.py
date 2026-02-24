@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
 from eth_utils import to_checksum_address
 
@@ -45,7 +45,7 @@ class EthenaVaultAdapter(BaseAdapter):
             to_checksum_address(wallet_address) if wallet_address else None
         )
 
-    async def get_spot_apy_supply(self) -> tuple[bool, float | str]:
+    async def get_apy(self) -> tuple[bool, float | str]:
         """
         Compute a "spot" supply APY from Ethena's linear vesting model.
 
@@ -95,17 +95,8 @@ class EthenaVaultAdapter(BaseAdapter):
                 )
                 apy = apr_to_apy(apr)
                 return True, float(apy)
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
-
-    async def get_apy(
-        self,
-        *,
-        apy_type: Literal["supply", "borrow"] = "supply",
-    ) -> tuple[bool, float | str]:
-        if apy_type != "supply":
-            return False, "Ethena sUSDe vault does not support borrow APY"
-        return await self.get_spot_apy_supply()
 
     async def get_cooldown(
         self,
@@ -238,7 +229,7 @@ class EthenaVaultAdapter(BaseAdapter):
 
             apy_supply: float | None = None
             if include_apy:
-                ok_apy, apy_val = await self.get_apy(apy_type="supply")
+                ok_apy, apy_val = await self.get_apy()
                 if ok_apy and isinstance(apy_val, (float, int)):
                     apy_supply = float(apy_val)
 
