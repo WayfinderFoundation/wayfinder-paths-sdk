@@ -7,12 +7,72 @@ in backtest-ready DataFrame format.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
 from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
+
+
+def get_available_date_range() -> tuple[datetime, datetime]:
+    """
+    Get the available data retention window.
+
+    Returns:
+        (oldest_date, newest_date) tuple
+
+    Note:
+        Both Delta Lab and Hyperliquid retain approximately 7 months (~211 days)
+        of historical data. Data older than this will return empty results.
+    """
+    # ~7 months of retention (conservative estimate)
+    retention_days = 211
+    newest = datetime.now()
+    oldest = newest - timedelta(days=retention_days)
+    return oldest, newest
+
+
+def validate_date_range(start_date: str, end_date: str) -> tuple[bool, str | None]:
+    """
+    Validate that requested dates are within data retention window.
+
+    Args:
+        start_date: Start date in ISO format ("2025-01-01")
+        end_date: End date in ISO format ("2025-02-01")
+
+    Returns:
+        (is_valid, error_message) tuple. error_message is None if valid.
+
+    Example:
+        >>> valid, error = validate_date_range("2025-01-01", "2025-02-01")
+        >>> if not valid:
+        ...     raise ValueError(error)
+    """
+    oldest, newest = get_available_date_range()
+
+    try:
+        start = datetime.fromisoformat(start_date)
+        end = datetime.fromisoformat(end_date)
+    except ValueError as e:
+        return False, f"Invalid date format: {e}"
+
+    if start < oldest:
+        return False, (
+            f"Start date {start_date} is outside retention window. "
+            f"Data only available from {oldest.date().isoformat()} onwards. "
+            f"Delta Lab and Hyperliquid retain ~7 months of history."
+        )
+
+    if end > newest + timedelta(
+        days=1
+    ):  # Allow small future buffer for timezone issues
+        return False, f"End date {end_date} is in the future"
+
+    if start >= end:
+        return False, "Start date must be before end date"
+
+    return True, None
 
 
 async def fetch_prices(
@@ -35,10 +95,18 @@ async def fetch_prices(
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=prices
 
+    Raises:
+        ValueError: If date range is invalid or outside retention window
+
     Example:
         >>> prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01")
         >>> print(prices.head())
     """
+    # Validate date range
+    valid, error = validate_date_range(start_date, end_date)
+    if not valid:
+        raise ValueError(error)
+
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
     lookback_days = (end - start).days
@@ -118,6 +186,19 @@ async def fetch_funding_rates(
     """
     Fetch funding rates for perpetual futures.
 
+    **CRITICAL: Funding Rate Sign Convention**
+        - **Positive funding (+)**: Longs PAY shorts → Good for shorts (receive funding)
+        - **Negative funding (-)**: Shorts PAY longs → Bad for shorts (pay funding)
+
+        This is backwards from intuition for many traders!
+
+        Example:
+            funding_rate = 0.08  # +8% annually
+            # Longs pay shorts → collect funding by shorting
+
+            funding_rate = -0.08  # -8% annually
+            # Shorts pay longs → you PAY funding if short (bad!)
+
     Args:
         symbols: List of perp symbols (e.g., ["BTC", "ETH"])
         start_date: Start date (ISO format: "2025-01-01")
@@ -126,10 +207,18 @@ async def fetch_funding_rates(
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=funding_rates
 
+    Raises:
+        ValueError: If date range is invalid or outside retention window
+
     Example:
         >>> funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
         >>> print(funding.head())
     """
+    # Validate date range
+    valid, error = validate_date_range(start_date, end_date)
+    if not valid:
+        raise ValueError(error)
+
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
     lookback_days = (end - start).days
@@ -177,10 +266,18 @@ async def fetch_borrow_rates(
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=borrow_rates
 
+    Raises:
+        ValueError: If date range is invalid or outside retention window
+
     Example:
         >>> rates = await fetch_borrow_rates(["USDC", "ETH"], "2025-01-01", "2025-02-01")
         >>> print(rates.head())
     """
+    # Validate date range
+    valid, error = validate_date_range(start_date, end_date)
+    if not valid:
+        raise ValueError(error)
+
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
     lookback_days = (end - start).days

@@ -52,6 +52,8 @@ from wayfinder_paths.core.backtesting.data import (
     fetch_borrow_rates,
     fetch_funding_rates,
     fetch_prices,
+    get_available_date_range,
+    validate_date_range,
 )
 from wayfinder_paths.core.backtesting.helpers import (
     backtest_with_rates,
@@ -68,6 +70,8 @@ __all__ = [
     "fetch_prices",
     "fetch_funding_rates",
     "fetch_borrow_rates",
+    "get_available_date_range",
+    "validate_date_range",
     # Delta neutral helpers  ← NEW SECTION
     "convert_to_spot",  # For spot/perp hedging strategies
     # Utilities

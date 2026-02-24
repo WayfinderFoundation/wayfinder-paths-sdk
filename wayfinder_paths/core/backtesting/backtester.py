@@ -34,6 +34,7 @@ class BacktestStats(TypedDict, total=False):
         - profit_factor: NaN if no losing trades
         Use np.isnan() to check, or format will show "nan"
     """
+
     # Time metrics
     start: pd.Timestamp
     end: pd.Timestamp
@@ -81,6 +82,7 @@ class BacktestStats(TypedDict, total=False):
     final_equity: float
     total_fees: float
     total_funding: float
+
 
 DEFAULT_MAINTENANCE_MARGINS = {
     "HYPE/USDC:USDC": 1 / 20.0,
@@ -170,7 +172,8 @@ class BacktestResult:
         >>> print(f"Max DD: {stats['max_drawdown']:.2%}")  # "-25.30%"
         >>> # Handle NaN values
         >>> pf = stats['profit_factor']
-        >>> print(f"PF: {pf:.2f if not np.isnan(pf) else 'N/A'}")  # "N/A" or "2.35"
+        >>> pf_str = f"{pf:.2f}" if not np.isnan(pf) else "N/A"
+        >>> print(f"PF: {pf_str}")  # "N/A" or "2.35"
     """
 
     equity_curve: pd.Series
@@ -452,6 +455,12 @@ def run_backtest(
 
                 remaining = len(timestamps) - idx - 1
                 portfolio_values.append(0.0)
+                turnover_series.append(0.0)
+                cost_series.append(0.0)
+                exposure_series.append(0.0)
+                fee_series.append(0.0)
+                funding_series.append(0.0)
+                position_snapshots.append(dict.fromkeys(symbols, 0.0))
                 if remaining > 0:
                     portfolio_values.extend([0.0] * remaining)
                     turnover_series.extend([0.0] * remaining)
@@ -459,9 +468,7 @@ def run_backtest(
                     exposure_series.extend([0.0] * remaining)
                     fee_series.extend([0.0] * remaining)
                     funding_series.extend([0.0] * remaining)
-                    position_snapshots.extend(
-                        [dict.fromkeys(symbols, 0.0)] * (remaining + 1)
-                    )
+                    position_snapshots.extend([dict.fromkeys(symbols, 0.0)] * remaining)
                 break
 
         portfolio_values.append(portfolio_value)
