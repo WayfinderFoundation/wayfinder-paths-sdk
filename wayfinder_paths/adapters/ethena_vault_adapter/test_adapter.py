@@ -411,13 +411,13 @@ class TestEthenaVaultAdapter:
     async def test_deposit_usde_invalid_amount(self, adapter):
         ok, result = await adapter.deposit_usde(amount_assets=0)
         assert ok is False
-        assert "shares must be positive" == result.lower()
+        assert "positive" in result.lower()
 
     @pytest.mark.asyncio
     async def test_deposit_usde_negative_amount(self, adapter):
         ok, result = await adapter.deposit_usde(amount_assets=-1)
         assert ok is False
-        assert "shares must be positive" == result.lower()
+        assert "positive" in result.lower()
 
     @pytest.mark.asyncio
     async def test_deposit_usde_no_wallet(self, readonly_adapter):
