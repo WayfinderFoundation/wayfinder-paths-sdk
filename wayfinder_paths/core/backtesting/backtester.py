@@ -14,10 +14,73 @@ Basic usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 import numpy as np
 import pandas as pd
+
+
+class BacktestStats(TypedDict, total=False):
+    """
+    Type-safe schema for backtest statistics.
+    All rate/return values in decimal format (0-1 scale).
+
+    Use this for IDE autocomplete and type safety:
+        stats: BacktestStats = result.stats
+        print(stats['sharpe'])  # IDE knows this exists
+
+    Note: Some stats may be NaN (not None) when not applicable:
+        - buy_hold_return: NaN if prices not available
+        - profit_factor: NaN if no losing trades
+        Use np.isnan() to check, or format will show "nan"
+    """
+    # Time metrics
+    start: pd.Timestamp
+    end: pd.Timestamp
+    duration: pd.Timedelta
+    exposure_time_pct: float
+
+    # Equity metrics
+    equity_final: float
+    equity_peak: float
+    total_return: float
+    buy_hold_return: float  # NaN if prices not available
+
+    # Return metrics
+    return_ann: float  # Same as cagr
+    volatility_ann: float
+    cagr: float
+
+    # Risk-adjusted metrics
+    sharpe: float
+    sortino: float
+    calmar: float
+
+    # Drawdown metrics
+    max_drawdown: float
+    avg_drawdown: float
+    max_drawdown_duration: pd.Timedelta
+    avg_drawdown_duration: pd.Timedelta
+
+    # Trade metrics
+    trade_count: int
+    win_rate: float
+    best_trade: float
+    worst_trade: float
+    avg_trade: float
+    max_trade_duration: pd.Timedelta
+    avg_trade_duration: pd.Timedelta
+    profit_factor: float  # NaN if no losing trades
+    expectancy: float
+    sqn: float
+    kelly_criterion: float
+
+    # Cost metrics
+    avg_turnover: float
+    avg_cost: float
+    final_equity: float
+    total_fees: float
+    total_funding: float
 
 DEFAULT_MAINTENANCE_MARGINS = {
     "HYPE/USDC:USDC": 1 / 20.0,
@@ -81,59 +144,38 @@ class BacktestResult:
     Attributes:
         equity_curve: Portfolio value over time (pd.Series, index=timestamps)
         returns: Period-over-period returns (pd.Series, index=timestamps)
-        stats: Performance statistics dict (see schema below)
+        stats: Performance statistics (BacktestStats TypedDict for IDE autocomplete)
         trades: List of trade events with timestamps, symbols, costs
         metrics_by_period: DataFrame with equity, turnover, cost, exposure per period
         positions_over_time: DataFrame of position sizes per symbol over time
         liquidated: Whether the strategy was liquidated
         liquidation_timestamp: Timestamp of liquidation (if occurred)
 
-    Stats Schema (all values in decimal format, 0-1 scale unless noted):
-        start: pd.Timestamp - Backtest start time
-        end: pd.Timestamp - Backtest end time
-        duration: pd.Timedelta - Backtest duration
-        exposure_time_pct: float - % of time with non-zero exposure (0.95 = 95%)
-        equity_final: float - Final portfolio value
-        equity_peak: float - Peak portfolio value
-        total_return: float - Cumulative return (0.45 = 45%)
-        buy_hold_return: float | None - Equal-weight buy & hold return
-        return_ann: float - Annualized return (same as cagr)
-        volatility_ann: float - Annualized volatility (0.15 = 15%)
-        cagr: float - Compound annual growth rate (0.12 = 12%)
-        sharpe: float - Sharpe ratio (>1.0 good, >2.0 excellent)
-        sortino: float - Sortino ratio (like Sharpe, downside-only)
-        calmar: float - Calmar ratio (CAGR / abs(max_drawdown))
-        max_drawdown: float - Peak-to-trough decline (-0.25 = -25%)
-        avg_drawdown: float - Average drawdown across all periods
-        max_drawdown_duration: pd.Timedelta - Longest drawdown duration
-        avg_drawdown_duration: pd.Timedelta - Average drawdown duration
-        trade_count: int - Number of rebalance events
-        win_rate: float - Fraction of winning periods (0.55 = 55%)
-        best_trade: float - Best single trade return
-        worst_trade: float - Worst single trade return
-        avg_trade: float - Average trade return
-        max_trade_duration: pd.Timedelta - Longest time between trades
-        avg_trade_duration: pd.Timedelta - Average time between trades
-        profit_factor: float | None - Gross profit / gross loss (>1.5 good)
-        expectancy: float - Expected value per trade
-        sqn: float - System Quality Number
-        kelly_criterion: float - Kelly criterion for optimal position sizing
-        avg_turnover: float - Average portfolio turnover per period
-        avg_cost: float - Average transaction cost per period
-        final_equity: float - Ending portfolio value
-        total_fees: float - Total transaction fees paid
-        total_funding: float - Total funding costs/income
+    Stats Schema: See BacktestStats TypedDict for complete schema.
+        All rate/return values in decimal format (0-1 scale):
+        - total_return: 0.45 = 45%
+        - max_drawdown: -0.25 = -25%
+        - win_rate: 0.55 = 55%
+
+    Note: Some stats may be NaN when not applicable (buy_hold_return, profit_factor).
+        Format directly: f"{stats['profit_factor']:.2f}" → "nan"
+        Or check: if not np.isnan(stats['profit_factor']): ...
 
     Example:
+        >>> import numpy as np
         >>> result = run_backtest(prices, positions, config)
-        >>> print(f"Return: {result.stats['total_return']:.2%}")  # "45.20%"
-        >>> print(f"Sharpe: {result.stats['sharpe']:.2f}")  # "3.31"
-        >>> print(f"Max DD: {result.stats['max_drawdown']:.2%}")  # "-25.30%"
+        >>> stats: BacktestStats = result.stats  # Type hint for IDE autocomplete
+        >>> print(f"Return: {stats['total_return']:.2%}")  # "45.20%"
+        >>> print(f"Sharpe: {stats['sharpe']:.2f}")  # "3.31"
+        >>> print(f"Max DD: {stats['max_drawdown']:.2%}")  # "-25.30%"
+        >>> # Handle NaN values
+        >>> pf = stats['profit_factor']
+        >>> print(f"PF: {pf:.2f if not np.isnan(pf) else 'N/A'}")  # "N/A" or "2.35"
     """
 
     equity_curve: pd.Series
     returns: pd.Series
-    stats: dict[str, float]
+    stats: BacktestStats
     trades: list[dict[str, Any]]
     metrics_by_period: pd.DataFrame
     positions_over_time: pd.DataFrame
@@ -148,6 +190,56 @@ def _get_maintenance_margin_rate(symbol: str, config: BacktestConfig) -> float:
     return config.maintenance_margin_by_symbol.get(
         symbol, config.maintenance_margin_rate
     )
+
+
+def _validate_target_positions(
+    target_positions: pd.DataFrame, prices: pd.DataFrame
+) -> list[str]:
+    """
+    Validate target_positions DataFrame and return warning messages.
+
+    Returns:
+        List of warning strings (empty if no issues)
+    """
+    warnings: list[str] = []
+
+    # Check for all-NaN rows
+    all_nan_rows = target_positions.isna().all(axis=1)
+    if all_nan_rows.any():
+        nan_count = all_nan_rows.sum()
+        total = len(target_positions)
+        warnings.append(
+            f"⚠️ Target positions has {nan_count}/{total} rows that are all NaN. "
+            "Signal generation may be broken."
+        )
+
+    # Check for all-zero positions
+    non_nan_positions = target_positions.fillna(0)
+    all_zero_rows = (non_nan_positions == 0).all(axis=1)
+    if all_zero_rows.all():
+        warnings.append(
+            "⚠️ All target positions are zero. Strategy will do nothing. "
+            "Check signal generation logic."
+        )
+
+    # Check for inf values
+    has_inf = np.isinf(target_positions.values).any()
+    if has_inf:
+        warnings.append(
+            "⚠️ Target positions contains inf values. This will cause errors. "
+            "Check for division by zero in signal generation."
+        )
+
+    # Check if positions are wildly outside [-1, 1] before clipping
+    max_abs = target_positions.abs().max().max()
+    if max_abs > 10:
+        warnings.append(
+            f"⚠️ Target positions has values up to ±{max_abs:.1f}. "
+            f"Expected range is [-1, 1]. Values will be clipped. "
+            "Check if you forgot to normalize weights."
+        )
+
+    return warnings
 
 
 def run_backtest(
@@ -193,6 +285,11 @@ def run_backtest(
     symbols = list(prices.columns)
     if not all(sym in target_positions.columns for sym in symbols):
         raise ValueError("target_positions must have all symbols from prices")
+
+    # Validate target_positions and warn about common issues
+    validation_warnings = _validate_target_positions(target_positions, prices)
+    for warning in validation_warnings:
+        print(warning)  # Print to stderr/stdout so user sees them immediately
 
     timestamps = prices.index
 
@@ -432,7 +529,7 @@ def _calculate_stats(
     funding_series: list[float],
     periods_per_year: int,
     prices: pd.DataFrame | None = None,
-) -> dict[str, float | None]:
+) -> BacktestStats:
     """
     Calculate comprehensive performance statistics.
 
@@ -493,7 +590,7 @@ def _calculate_stats(
     total_return = equity_final - 1.0
 
     # Buy & Hold return (equal-weight buy and hold of all assets)
-    buy_hold_return = None
+    buy_hold_return = np.nan
     if prices is not None and not prices.empty:
         initial_prices = prices.iloc[0]
         final_prices = prices.iloc[-1]
@@ -611,7 +708,7 @@ def _calculate_stats(
     profit_factor = (
         float(positive_returns / abs(negative_returns))
         if negative_returns < 0
-        else None
+        else np.nan
     )
 
     # Kelly Criterion = win_rate - (1 - win_rate) / (avg_win / abs(avg_loss))
@@ -642,8 +739,8 @@ def _calculate_stats(
         "equity_peak": round(equity_peak, 4),
         "total_return": round(total_return, 4),
         "buy_hold_return": round(buy_hold_return, 4)
-        if buy_hold_return is not None
-        else None,
+        if not np.isnan(buy_hold_return)
+        else np.nan,
         "return_ann": round(return_ann, 4),
         "volatility_ann": round(volatility_ann, 4),
         "cagr": round(cagr, 4),
@@ -661,7 +758,9 @@ def _calculate_stats(
         "avg_trade": round(avg_trade, 4),
         "max_trade_duration": max_trade_duration,
         "avg_trade_duration": avg_trade_duration,
-        "profit_factor": round(profit_factor, 2) if profit_factor is not None else None,
+        "profit_factor": round(profit_factor, 2)
+        if not np.isnan(profit_factor)
+        else np.nan,
         "expectancy": round(expectancy, 4),
         "sqn": round(sqn, 3),
         "kelly_criterion": round(kelly, 4),
@@ -673,7 +772,7 @@ def _calculate_stats(
     }
 
 
-def _empty_stats() -> dict[str, float | None]:
+def _empty_stats() -> BacktestStats:
     """
     Return empty statistics dict for edge cases.
 
@@ -690,7 +789,7 @@ def _empty_stats() -> dict[str, float | None]:
         "equity_final": 1.0,
         "equity_peak": 1.0,
         "total_return": 0.0,
-        "buy_hold_return": None,
+        "buy_hold_return": np.nan,
         "return_ann": 0.0,
         "volatility_ann": 0.0,
         "cagr": 0.0,
@@ -708,7 +807,7 @@ def _empty_stats() -> dict[str, float | None]:
         "avg_trade": 0.0,
         "max_trade_duration": None,
         "avg_trade_duration": None,
-        "profit_factor": None,
+        "profit_factor": np.nan,
         "expectancy": 0.0,
         "sqn": 0.0,
         "kelly_criterion": 0.0,

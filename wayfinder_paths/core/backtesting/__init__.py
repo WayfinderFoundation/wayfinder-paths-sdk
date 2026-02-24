@@ -42,6 +42,7 @@ Manual workflow:
 from wayfinder_paths.core.backtesting.backtester import (
     BacktestConfig,
     BacktestResult,
+    BacktestStats,
     run_backtest,
     run_multi_leverage_backtest,
 )
@@ -62,6 +63,7 @@ __all__ = [
     "run_backtest",
     "BacktestConfig",
     "BacktestResult",
+    "BacktestStats",  # Type hints for IDE autocomplete
     # Data fetching
     "fetch_prices",
     "fetch_funding_rates",
