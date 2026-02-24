@@ -47,6 +47,7 @@ from wayfinder_paths.core.backtesting.backtester import (
 )
 from wayfinder_paths.core.backtesting.data import (
     align_dataframes,
+    convert_to_spot,
     fetch_borrow_rates,
     fetch_funding_rates,
     fetch_prices,
@@ -56,14 +57,19 @@ from wayfinder_paths.core.backtesting.helpers import (
     quick_backtest,
 )
 
+
 __all__ = [
+    # Core functions
+    "run_backtest",
     "BacktestConfig",
     "BacktestResult",
-    "run_backtest",
-    "run_multi_leverage_backtest",
+    # Data fetching
     "fetch_prices",
     "fetch_funding_rates",
     "fetch_borrow_rates",
+    # Delta neutral helpers  ← NEW SECTION
+    "convert_to_spot",  # For spot/perp hedging strategies
+    # Utilities
     "align_dataframes",
     "quick_backtest",
     "backtest_with_rates",

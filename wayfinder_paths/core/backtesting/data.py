@@ -259,3 +259,53 @@ async def align_dataframes(
         aligned.append(reindexed)
 
     return tuple(aligned)
+
+
+def convert_to_spot(prices: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Convert price data to spot representation with zero funding rates.
+
+    Spot assets trade without funding rates (unlike perpetual futures which have
+    periodic funding payments). This function is useful for creating the spot leg
+    of delta-neutral strategies where you need matching price data but no funding.
+
+    In reality, spot prices and perp mark prices converge due to arbitrage and
+    funding mechanisms. For backtesting purposes, using the same price series for
+    both spot and perp is a reasonable approximation - the key difference is that
+    only perp positions receive/pay funding.
+
+    Args:
+        prices: Price DataFrame with index=timestamps, columns=symbols
+
+    Returns:
+        Tuple of (prices_df, funding_rates_df):
+        - prices_df: Same as input (spot prices ≈ perp prices in practice)
+        - funding_rates_df: Zero funding rates with same shape as prices
+
+    Example:
+        >>> perp_prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01")
+        >>> perp_funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
+        >>>
+        >>> # Create spot leg (no funding)
+        >>> spot_prices, spot_funding = convert_to_spot(perp_prices)
+        >>>
+        >>> # For delta-neutral: combine both legs
+        >>> # Perp: short to collect funding, Spot: long to hedge
+        >>> all_prices = pd.concat([
+        ...     perp_prices.add_suffix("_PERP"),
+        ...     spot_prices.add_suffix("_SPOT")
+        ... ], axis=1)
+        >>> all_funding = pd.concat([
+        ...     perp_funding.add_suffix("_PERP"),
+        ...     spot_funding.add_suffix("_SPOT")
+        ... ], axis=1)
+    """
+    # Spot prices are the same as input (spot ≈ perp prices converge in reality)
+    spot_prices = prices.copy()
+
+    # Spot assets have zero funding (no periodic payments)
+    zero_funding = pd.DataFrame(
+        0.0, index=prices.index, columns=prices.columns
+    )
+
+    return spot_prices, zero_funding
