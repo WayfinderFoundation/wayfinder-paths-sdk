@@ -168,11 +168,17 @@ class EthenaVaultAdapter(BaseAdapter):
                         cooldown_raw,
                     ) = await asyncio.gather(
                         get_token_balance(
-                            usde_addr, cid, acct, web3=web3,
+                            usde_addr,
+                            cid,
+                            acct,
+                            web3=web3,
                             block_identifier=block_identifier,
                         ),
                         get_token_balance(
-                            susde_addr, cid, acct, web3=web3,
+                            susde_addr,
+                            cid,
+                            acct,
+                            web3=web3,
                             block_identifier=block_identifier,
                         ),
                         vault.functions.cooldowns(acct).call(
@@ -197,11 +203,17 @@ class EthenaVaultAdapter(BaseAdapter):
                 async with web3_from_chain_id(cid) as web3:
                     usde_balance, susde_balance = await asyncio.gather(
                         get_token_balance(
-                            usde_addr, cid, acct, web3=web3,
+                            usde_addr,
+                            cid,
+                            acct,
+                            web3=web3,
                             block_identifier=block_identifier,
                         ),
                         get_token_balance(
-                            susde_addr, cid, acct, web3=web3,
+                            susde_addr,
+                            cid,
+                            acct,
+                            web3=web3,
                             block_identifier=block_identifier,
                         ),
                     )
