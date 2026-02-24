@@ -176,6 +176,16 @@ def run_backtest(
     prices = prices[symbols].ffill()
     target_positions = target_positions[symbols].ffill().fillna(0.0).clip(-1.0, 1.0)
 
+    # Align funding rates with prices safely (no lookahead bias)
+    if config.funding_rates is not None:
+        # Join funding rates with prices, forward fill, then slice out just funding
+        combined = prices.join(config.funding_rates, rsuffix='_funding')
+        funding_cols = [col for col in combined.columns if col.endswith('_funding')]
+        funding_aligned = combined[funding_cols].ffill()
+        # Remove the '_funding' suffix to restore original column names
+        funding_aligned.columns = [col.replace('_funding', '') for col in funding_aligned.columns]
+        config.funding_rates = funding_aligned
+
     cash_balance = config.initial_capital
     position_units = pd.Series(0.0, index=symbols, dtype=float)
 
@@ -185,6 +195,8 @@ def run_backtest(
     turnover_series: list[float] = []
     cost_series: list[float] = []
     exposure_series: list[float] = []
+    fee_series: list[float] = []
+    funding_series: list[float] = []
 
     liquidated = False
     liquidation_timestamp: pd.Timestamp | None = None
@@ -199,6 +211,8 @@ def run_backtest(
 
         total_turnover = 0.0
         total_cost = 0.0
+        period_fees = 0.0
+        period_funding = 0.0
 
         for sym in symbols:
             price = float(current_prices[sym])
@@ -236,6 +250,7 @@ def run_backtest(
 
             total_turnover += trade_notional
             total_cost += transaction_cost
+            period_fees += transaction_cost
 
             trades.append(
                 {
@@ -250,7 +265,8 @@ def run_backtest(
                 }
             )
 
-        if config.funding_rates is not None and ts in config.funding_rates.index:
+        # Apply funding rates (now guaranteed to have matching timestamps)
+        if config.funding_rates is not None:
             funding_row = config.funding_rates.loc[ts]
             funding_charge = 0.0
             for sym in symbols:
@@ -262,6 +278,7 @@ def run_backtest(
                     )
             cash_balance -= funding_charge
             total_cost += funding_charge
+            period_funding += funding_charge
 
         gross_notional = sum(
             abs(float(position_units[sym]) * float(current_prices[sym]))
@@ -296,6 +313,8 @@ def run_backtest(
                     turnover_series.extend([0.0] * remaining)
                     cost_series.extend([0.0] * remaining)
                     exposure_series.extend([0.0] * remaining)
+                    fee_series.extend([0.0] * remaining)
+                    funding_series.extend([0.0] * remaining)
                     position_snapshots.extend(
                         [dict.fromkeys(symbols, 0.0)] * (remaining + 1)
                     )
@@ -311,6 +330,8 @@ def run_backtest(
         exposure_series.append(
             gross_notional / portfolio_value if portfolio_value > 0 else 0.0
         )
+        fee_series.append(period_fees)
+        funding_series.append(period_funding)
         position_snapshots.append({sym: float(position_units[sym]) for sym in symbols})
 
     equity_curve = pd.Series(portfolio_values[: len(timestamps)], index=timestamps)
@@ -336,6 +357,8 @@ def run_backtest(
         trades=trades,
         turnover_series=turnover_series,
         cost_series=cost_series,
+        fee_series=fee_series,
+        funding_series=funding_series,
         periods_per_year=config.periods_per_year,
     )
 
@@ -357,6 +380,8 @@ def _calculate_stats(
     trades: list[dict[str, Any]],
     turnover_series: list[float],
     cost_series: list[float],
+    fee_series: list[float],
+    funding_series: list[float],
     periods_per_year: int,
 ) -> dict[str, float | None]:
     """
@@ -376,6 +401,8 @@ def _calculate_stats(
         - avg_cost: Average transaction cost per period
         - trade_count: Number of rebalance events
         - final_equity: Ending portfolio value
+        - total_fees: Total transaction fees paid (absolute value)
+        - total_funding: Total funding costs/income (negative = income received)
     """
     if len(returns) == 0 or len(equity_curve) == 0:
         return _empty_stats()
@@ -421,6 +448,10 @@ def _calculate_stats(
     avg_turnover = float(np.mean(turnover_series)) if turnover_series else 0.0
     avg_cost = float(np.mean(cost_series)) if cost_series else 0.0
 
+    # Calculate total fees and funding (absolute values, not averaged)
+    total_fees = float(sum(fee_series)) if fee_series else 0.0
+    total_funding = float(sum(funding_series)) if funding_series else 0.0
+
     trade_count = len(trades)
 
     return {
@@ -436,6 +467,8 @@ def _calculate_stats(
         "total_return": round(equity_curve.iloc[-1] - 1.0, 4),
         "trade_count": trade_count,
         "final_equity": round(float(equity_curve.iloc[-1]), 4),
+        "total_fees": round(total_fees, 4),
+        "total_funding": round(total_funding, 4),
     }
 
 
@@ -461,6 +494,8 @@ def _empty_stats() -> dict[str, float | None]:
         "total_return": 0.0,
         "trade_count": 0,
         "final_equity": 1.0,
+        "total_fees": 0.0,
+        "total_funding": 0.0,
     }
 
 
