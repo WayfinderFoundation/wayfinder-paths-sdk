@@ -460,7 +460,7 @@ class StablecoinYieldStrategy(Strategy):
                 )
                 self.current_pool_balance = current_pool_balance_raw if success else 0
             except Exception as e:
-                print(f"Warning: Failed to get pool balance: {e}")
+                logger.warning(f"Warning: Failed to get pool balance: {e}")
                 self.current_pool_balance = 0
         else:
             self.current_pool_balance = 0
