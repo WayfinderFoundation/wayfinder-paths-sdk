@@ -131,8 +131,6 @@ class EthenaVaultAdapter(BaseAdapter):
 
         try:
             token_addrs = ethena_tokens_by_chain_id(cid)
-            usde_addr = token_addrs["usde"]
-            susde_addr = token_addrs["susde"]
 
             if cid == CHAIN_ID_ETHEREUM:
                 async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
@@ -146,14 +144,14 @@ class EthenaVaultAdapter(BaseAdapter):
                         cooldown_raw,
                     ) = await asyncio.gather(
                         get_token_balance(
-                            usde_addr,
+                            token_addrs["usde"],
                             cid,
                             acct,
                             web3=web3,
                             block_identifier=block_identifier,
                         ),
                         get_token_balance(
-                            susde_addr,
+                            token_addrs["susde"],
                             cid,
                             acct,
                             web3=web3,
@@ -181,14 +179,14 @@ class EthenaVaultAdapter(BaseAdapter):
                 async with web3_from_chain_id(cid) as web3:
                     usde_balance, susde_balance = await asyncio.gather(
                         get_token_balance(
-                            usde_addr,
+                            token_addrs["usde"],
                             cid,
                             acct,
                             web3=web3,
                             block_identifier=block_identifier,
                         ),
                         get_token_balance(
-                            susde_addr,
+                            token_addrs["susde"],
                             cid,
                             acct,
                             web3=web3,
@@ -237,8 +235,8 @@ class EthenaVaultAdapter(BaseAdapter):
                 positions.append(
                     {
                         "chainId": cid,
-                        "usde": usde_addr,
-                        "susde": susde_addr,
+                        "usde": token_addrs["usde"],
+                        "susde": token_addrs["susde"],
                         "usdeBalance": usde_balance or 0,
                         "susdeBalance": shares,
                         "usdeEquivalent": usde_equivalent,
