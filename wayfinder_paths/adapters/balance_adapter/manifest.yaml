@@ -6,3 +6,14 @@ capabilities:
   - "transfer.strategy_to_main"
   - "transfer.send"
 dependencies: []
+mcp_methods:
+  - name: "get_balance"
+  - name: "get_balance_details"
+  - name: "get_vault_wallet_balance"
+  - name: "get_wallet_balances_multicall"
+  - name: "move_from_main_wallet_to_strategy_wallet"
+    write: true
+  - name: "move_from_strategy_wallet_to_main_wallet"
+    write: true
+  - name: "send_to_address"
+    write: true

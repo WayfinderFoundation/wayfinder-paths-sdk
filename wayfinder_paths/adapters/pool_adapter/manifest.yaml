@@ -4,3 +4,6 @@ capabilities:
   - "pool.read"
   - "pool.discover"
 dependencies: []
+mcp_methods:
+  - name: "get_pools"
+  - name: "get_pools_by_ids"

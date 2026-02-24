@@ -23,3 +23,59 @@ capabilities:
   - "operator.authorize"
   - "allocator.reallocate"
 dependencies: []
+mcp_methods:
+  - name: "get_all_markets"
+  - name: "get_market_entry"
+  - name: "get_market_state"
+  - name: "get_market_historical_apy"
+  - name: "get_all_vaults"
+  - name: "get_vault_entry"
+  - name: "get_full_user_state"
+  - name: "get_full_user_state_per_chain"
+  - name: "get_pos"
+  - name: "get_user_position"
+  - name: "get_health"
+  - name: "max_borrow"
+  - name: "max_withdraw_collateral"
+  - name: "get_claimable_rewards"
+  - name: "get_public_allocator_fee"
+  - name: "lend"
+    write: true
+  - name: "unlend"
+    write: true
+  - name: "borrow"
+    write: true
+  - name: "repay"
+    write: true
+  - name: "repay_full"
+    write: true
+  - name: "supply_collateral"
+    write: true
+  - name: "withdraw_collateral"
+    write: true
+  - name: "withdraw_full"
+    write: true
+  - name: "vault_deposit"
+    write: true
+  - name: "vault_withdraw"
+    write: true
+  - name: "vault_mint"
+    write: true
+  - name: "vault_redeem"
+    write: true
+  - name: "claim_rewards"
+    write: true
+  - name: "claim_merkl_rewards"
+    write: true
+  - name: "claim_urd_rewards"
+    write: true
+  - name: "set_authorization"
+    write: true
+  - name: "set_authorization_with_sig"
+    write: true
+  - name: "public_allocator_reallocate_to"
+    write: true
+  - name: "borrow_with_jit_liquidity"
+    write: true
+  - name: "bundler_multicall"
+    write: true

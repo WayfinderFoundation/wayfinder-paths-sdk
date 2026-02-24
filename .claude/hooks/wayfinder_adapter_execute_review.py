@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Add repo root to path for wayfinder_paths imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from wayfinder_paths.mcp.preview import build_adapter_execute_preview

@@ -12,3 +12,59 @@ capabilities:
   - "transfer"
   - "withdraw"
 dependencies: []
+mcp_methods:
+  - name: "get_meta_and_asset_ctxs"
+  - name: "get_spot_meta"
+  - name: "get_spot_assets"
+  - name: "get_spot_asset_id"
+  - name: "get_l2_book"
+  - name: "get_spot_l2_book"
+  - name: "get_user_state"
+  - name: "get_spot_user_state"
+  - name: "get_full_user_state"
+  - name: "get_margin_table"
+  - name: "get_all_mid_prices"
+  - name: "get_user_fills"
+  - name: "get_order_status"
+  - name: "get_open_orders"
+  - name: "get_frontend_open_orders"
+  - name: "get_user_deposits"
+  - name: "get_user_withdrawals"
+  - name: "get_max_builder_fee"
+  - name: "check_recent_liquidations"
+  - name: "wait_for_deposit"
+  - name: "wait_for_withdrawal"
+  - name: "place_market_order"
+    write: true
+  - name: "place_limit_order"
+    write: true
+  - name: "place_trigger_order"
+    write: true
+  - name: "place_stop_loss"
+    write: true
+  - name: "cancel_order"
+    write: true
+  - name: "cancel_order_by_cloid"
+    write: true
+  - name: "update_leverage"
+    write: true
+  - name: "update_isolated_margin"
+    write: true
+  - name: "spot_transfer"
+    write: true
+  - name: "transfer_spot_to_perp"
+    write: true
+  - name: "transfer_perp_to_spot"
+    write: true
+  - name: "withdraw"
+    write: true
+  - name: "approve_builder_fee"
+    write: true
+  - name: "ensure_builder_fee_approved"
+    write: true
+  - name: "set_dex_abstraction"
+    write: true
+  - name: "ensure_dex_abstraction"
+    write: true
+  - name: "hypercore_to_hyperevm"
+    write: true

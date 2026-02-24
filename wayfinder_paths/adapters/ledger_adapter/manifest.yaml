@@ -5,3 +5,16 @@ capabilities:
   - "ledger.record"
   - "ledger.snapshot"
 dependencies: []
+mcp_methods:
+  - name: "get_strategy_transactions"
+  - name: "get_strategy_net_deposit"
+  - name: "get_strategy_latest_transactions"
+  - name: "get_transaction_summary"
+  - name: "record_deposit"
+    write: true
+  - name: "record_withdrawal"
+    write: true
+  - name: "record_operation"
+    write: true
+  - name: "record_strategy_snapshot"
+    write: true

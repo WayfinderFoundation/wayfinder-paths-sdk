@@ -10,3 +10,17 @@ capabilities:
   - "uniswap.fees.uncollected"
   - "uniswap.pool.get"
 dependencies: []
+mcp_methods:
+  - name: "get_pool"
+  - name: "get_position"
+  - name: "get_positions"
+  - name: "get_full_user_state"
+  - name: "get_uncollected_fees"
+  - name: "add_liquidity"
+    write: true
+  - name: "increase_liquidity"
+    write: true
+  - name: "remove_liquidity"
+    write: true
+  - name: "collect_fees"
+    write: true

@@ -12,4 +12,47 @@ capabilities:
   - "bridge.withdraw"
 dependencies:
   - "py-clob-client"
-
+mcp_methods:
+  - name: "list_markets"
+  - name: "list_events"
+  - name: "get_market_by_slug"
+  - name: "get_event_by_slug"
+  - name: "public_search"
+  - name: "search_markets_fuzzy"
+  - name: "get_market_by_condition_id"
+  - name: "get_market_prices_history"
+  - name: "get_price"
+  - name: "get_order_book"
+  - name: "get_order_books"
+  - name: "get_prices_history"
+  - name: "get_positions"
+  - name: "get_activity"
+  - name: "get_trades"
+  - name: "get_full_user_state"
+  - name: "list_open_orders"
+  - name: "bridge_supported_assets"
+  - name: "bridge_quote"
+  - name: "bridge_deposit_addresses"
+  - name: "bridge_withdraw_addresses"
+  - name: "bridge_status"
+  - name: "preflight_redeem"
+  - name: "place_prediction"
+    write: true
+  - name: "cash_out_prediction"
+    write: true
+  - name: "place_market_order"
+    write: true
+  - name: "place_limit_order"
+    write: true
+  - name: "cancel_order"
+    write: true
+  - name: "bridge_deposit"
+    write: true
+  - name: "bridge_withdraw"
+    write: true
+  - name: "ensure_api_creds"
+    write: true
+  - name: "ensure_onchain_approvals"
+    write: true
+  - name: "redeem_positions"
+    write: true
