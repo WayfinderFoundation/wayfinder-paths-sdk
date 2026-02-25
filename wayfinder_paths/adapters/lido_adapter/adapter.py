@@ -20,6 +20,7 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balanc
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
+from loguru import logger
 
 def _safe_checksum(value: Any) -> str:
     if value is None:
@@ -395,8 +396,6 @@ class LidoAdapter(BaseAdapter):
         if not request_ids:
             return False, "request_ids cannot be empty"
 
-        chain_id = int(chain_id)
-
         try:
             strategy = self._require_wallet()
             entry = self._entry(chain_id)
@@ -458,7 +457,6 @@ class LidoAdapter(BaseAdapter):
         if not request_ids:
             return True, []
 
-        chain_id = int(chain_id)
         try:
             entry = self._entry(chain_id)
 
@@ -493,7 +491,6 @@ class LidoAdapter(BaseAdapter):
         *,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, dict[str, Any] | str]:
-        chain_id = int(chain_id)
         try:
             entry = self._entry(chain_id)
             async with web3_from_chain_id(chain_id) as web3:
@@ -520,7 +517,6 @@ class LidoAdapter(BaseAdapter):
         include_claimable: bool = False,
         include_usd: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
-        chain_id = int(chain_id)
         try:
             acct = to_checksum_address(account)
             entry = self._entry(chain_id)
@@ -585,8 +581,8 @@ class LidoAdapter(BaseAdapter):
                             "wsteth_value": wsteth_price
                             * (int(wsteth_balance) / 10**18),
                         }
-                    except Exception:  
-                        pass
+                    except Exception as e:  
+                        logger.warning(f"Failed to fetch USD data: {e}")
 
                 if not include_withdrawals:
                     return True, out
