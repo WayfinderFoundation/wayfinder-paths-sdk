@@ -91,6 +91,11 @@ class LidoAdapter(BaseAdapter):
             to_checksum_address(wallet_address) if wallet_address else None
         )
 
+    def _require_wallet(self) -> str:
+        if not self.wallet_address:
+            raise ValueError("strategy wallet address not configured")
+        return self.wallet_address
+
     def _entry(self, chain_id: int) -> dict[str, str]:
         entry = LIDO_BY_CHAIN.get(int(chain_id))
         if not entry:
@@ -124,16 +129,11 @@ class LidoAdapter(BaseAdapter):
         - wstETH receive is implemented as submit + wrap (2 tx; approvals handled internally).
         """
 
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
-        amount_wei = int(amount_wei)
-        chain_id = int(chain_id)
         if amount_wei <= 0:
             return False, "amount_wei must be positive"
 
         try:
+            strategy = self._require_wallet()
             entry = self._entry(chain_id)
             steth_addr = entry["steth"]
             wsteth_addr = entry["wsteth"]
@@ -232,15 +232,13 @@ class LidoAdapter(BaseAdapter):
         amount_steth_wei: int,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         amount_steth_wei = int(amount_steth_wei)
         chain_id = int(chain_id)
         if amount_steth_wei <= 0:
             return False, "amount_steth_wei must be positive"
 
         try:
+            strategy = self._require_wallet()
             entry = self._entry(chain_id)
             steth_addr = entry["steth"]
             wsteth_addr = entry["wsteth"]
@@ -276,15 +274,13 @@ class LidoAdapter(BaseAdapter):
         amount_wsteth_wei: int,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         amount_wsteth_wei = int(amount_wsteth_wei)
         chain_id = int(chain_id)
         if amount_wsteth_wei <= 0:
             return False, "amount_wsteth_wei must be positive"
 
         try:
+            strategy = self._require_wallet()
             entry = self._entry(chain_id)
             wsteth_addr = entry["wsteth"]
             tx = await encode_call(
@@ -314,16 +310,13 @@ class LidoAdapter(BaseAdapter):
         This transfers stETH or wstETH to the WithdrawalQueue and mints an unstETH NFT.
         """
 
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount_wei = int(amount_wei)
         chain_id = int(chain_id)
         if amount_wei <= 0:
             return False, "amount_wei must be positive"
 
         try:
+            strategy = self._require_wallet()
             entry = self._entry(chain_id)
 
             owner_addr = to_checksum_address(owner) if owner else strategy
@@ -410,15 +403,13 @@ class LidoAdapter(BaseAdapter):
         recipient: str | None = None,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         if not request_ids:
             return False, "request_ids cannot be empty"
 
         chain_id = int(chain_id)
 
         try:
+            strategy = self._require_wallet()
             entry = self._entry(chain_id)
             queue_addr = entry["withdrawal_queue"]
 
