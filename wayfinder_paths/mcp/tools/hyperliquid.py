@@ -430,7 +430,7 @@ async def hyperliquid_execute(
             return response
 
         ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
+            resolved_asset_id, lev, is_cross, sender
         )
         effects.append(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
@@ -694,7 +694,7 @@ async def hyperliquid_execute(
             response = err("invalid_request", "leverage must be positive")
             return response
         ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
+            resolved_asset_id, lev, is_cross, sender
         )
         effects.append(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}

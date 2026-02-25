@@ -80,9 +80,7 @@ def parse_market_position(
         "markApr": mkt_pos.get("markApr"),
         "impliedApr": mkt_pos.get("impliedApr"),
         "lastTradedApr": mkt_pos.get("lastTradedApr"),
-        # PnL fields
         "unrealizedPnl": float(Decimal(str(unrealized_pnl_wei)) / Decimal(1e18)),
         "settledPnl": float(Decimal(str(settled_pnl_wei)) / Decimal(1e18)),
-        # Progress
         "settledProgressPercentage": mkt_pos.get("settledProgressPercentage"),
     }

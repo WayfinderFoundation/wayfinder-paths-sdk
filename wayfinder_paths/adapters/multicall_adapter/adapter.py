@@ -1,14 +1,17 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from hexbytes import HexBytes
+from loguru import logger
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.contracts import MULTICALL3_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+
+_T = TypeVar("_T")
 
 MULTICALL3_ABI = [
     {
@@ -122,6 +125,48 @@ class MulticallAdapter(BaseAdapter):
         erc20 = self.web3.eth.contract(address=addr, abi=ERC20_ABI)
         calldata = erc20.encode_abi("balanceOf", args=[account])
         return self.build_call(addr, calldata)
+
+    @staticmethod
+    def chunks(seq: list[Any], n: int) -> list[list[Any]]:
+        return [seq[i : i + n] for i in range(0, len(seq), n)]
+
+    async def aggregate_chunked(
+        self,
+        *,
+        calls: list[Any],
+        chunk_size: int,
+        decode: Callable[[bytes], _T] | None = None,
+        default: _T | bytes = b"",  # type: ignore[assignment]
+    ) -> list[_T] | list[bytes]:
+        """Execute multicall in chunks with per-call fallback on revert.
+
+        If *decode* is provided each return datum is passed through it;
+        otherwise raw ``bytes`` are returned.  When a chunk reverts the
+        calls are retried individually and failures produce *default*.
+        """
+        out: list[Any] = []
+        for chunk in self.chunks(calls, max(1, int(chunk_size))):
+            if not chunk:
+                continue
+            try:
+                res = await self.aggregate(chunk)
+                if decode is not None:
+                    out.extend(decode(b) for b in res.return_data)
+                else:
+                    out.extend(res.return_data)
+            except Exception:  # noqa: BLE001 - fall back to individual calls
+                for call in chunk:
+                    try:
+                        r = await self.aggregate([call])
+                        if r.return_data:
+                            datum = r.return_data[0]
+                            out.append(decode(datum) if decode is not None else datum)
+                        else:
+                            out.append(default)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("multicall individual call failed, using default")
+                        out.append(default)
+        return out
 
     @staticmethod
     def decode_uint256(data: bytes | str) -> int:

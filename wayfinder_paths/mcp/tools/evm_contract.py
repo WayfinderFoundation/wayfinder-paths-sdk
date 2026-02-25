@@ -677,7 +677,7 @@ async def contract_execute(
 
     try:
         txn_hash = await send_transaction(
-            tx, sign_callback, wait_for_receipt=bool(wait_for_receipt)
+            tx, sign_callback, wait_for_receipt=wait_for_receipt
         )
     except Exception as exc:
         logger.error(f"Contract execution failed: {exc}")
@@ -717,7 +717,7 @@ async def contract_execute(
     _annotate(
         address=sender,
         label=wallet_label,
-        status="confirmed" if bool(wait_for_receipt) else "broadcast",
+        status="confirmed" if wait_for_receipt else "broadcast",
         chain_id=int(chain_id),
         details=result,
         tool="contract_execute",

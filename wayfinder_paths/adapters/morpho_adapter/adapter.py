@@ -1599,7 +1599,7 @@ class MorphoAdapter(BaseAdapter):
                     continue
                 wm = await self._get_market(chain_id=int(chain_id), unique_key=str(wk))
                 wm_params = self._market_params_from_market(wm)
-                withdrawal_tuples.append((wm_params, int(amount_int)))
+                withdrawal_tuples.append((wm_params, amount_int))
 
             if not withdrawal_tuples:
                 return False, "No valid withdrawals provided"

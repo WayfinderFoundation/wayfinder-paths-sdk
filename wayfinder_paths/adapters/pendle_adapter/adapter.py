@@ -213,10 +213,6 @@ class PendleAdapter(BaseAdapter):
             self.client = None
             self._owns_client = False
 
-    # ---------------------------
-    # Execution helpers
-    # ---------------------------
-
     def _strategy_address(self) -> str:
         if not self.wallet_address:
             raise ValueError("wallet_address is required for Pendle execution")
@@ -227,46 +223,6 @@ class PendleAdapter(BaseAdapter):
             raise ValueError("sign_callback is required for tx execution")
         txn_hash = await send_transaction(tx, self.sign_callback)
         return True, txn_hash
-
-    # ---------------------------
-    # Multicall helpers
-    # ---------------------------
-
-    @staticmethod
-    def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
-        return [seq[i : i + n] for i in range(0, len(seq), n)]
-
-    async def _multicall_uint256_chunked(
-        self,
-        *,
-        multicall: MulticallAdapter,
-        calls: list[Any],
-        chunk_size: int,
-    ) -> list[int | None]:
-        """
-        Execute multicall and decode each return as uint256.
-
-        If a chunk reverts, fall back to executing calls one-by-one so we can salvage
-        partial results (returning None for failed calls).
-        """
-        out: list[int | None] = []
-        for chunk in self._chunks(calls, max(1, int(chunk_size))):
-            if not chunk:
-                continue
-            try:
-                res = await multicall.aggregate(chunk)
-                out.extend([multicall.decode_uint256(b) for b in res.return_data])
-            except Exception:  # noqa: BLE001 - fall back to individual calls
-                for call in chunk:
-                    try:
-                        r = await multicall.aggregate([call])
-                        if r.return_data:
-                            out.append(multicall.decode_uint256(r.return_data[0]))
-                        else:
-                            out.append(None)
-                    except Exception:  # noqa: BLE001
-                        out.append(None)
-        return out
 
     @staticmethod
     def _rate_limit_from_headers(headers: httpx.Headers) -> dict[str, int | None]:
@@ -1617,10 +1573,11 @@ class PendleAdapter(BaseAdapter):
                     if include_sy:
                         add_token_calls(i, "sy", m["sy"])
 
-                decoded = await self._multicall_uint256_chunked(
-                    multicall=multicall,
+                decoded = await multicall.aggregate_chunked(
                     calls=calls,
                     chunk_size=multicall_chunk_size,
+                    decode=multicall.decode_uint256,
+                    default=None,
                 )
 
                 per_market: list[dict[str, Any]] = [
@@ -1690,10 +1647,6 @@ class PendleAdapter(BaseAdapter):
             )
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
-
-    # ---------------------------------------
-    # Execute swap
-    # ---------------------------------------
 
     async def execute_swap(
         self,
@@ -1811,10 +1764,6 @@ class PendleAdapter(BaseAdapter):
             "quote": quote_result.get("data"),
             "tokenApprovals": token_approvals,
         }
-
-    # ---------------------------------------
-    # Execute universal convert
-    # ---------------------------------------
 
     async def execute_convert(
         self,

@@ -25,10 +25,7 @@ def _parse_chain_part(value: str) -> int | None:
     if not raw:
         return None
     if raw.isdigit():
-        try:
-            parsed = int(raw)
-        except Exception:
-            return None
+        parsed = int(raw)
         return parsed if parsed > 0 else None
     return CHAIN_CODE_TO_ID.get(raw)
 

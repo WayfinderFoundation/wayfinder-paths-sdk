@@ -83,10 +83,8 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
     mapping = get_rpc_urls()
     rpcs = mapping.get(str(chain_id))
     if rpcs is None:
-        # User overrides
         rpcs = mapping.get(chain_id)
     if rpcs is None:
-        # WF proxy RPCs
         rpcs = [f"{get_api_base_url()}/blockchain/rpc/{chain_id}/"]
 
     if isinstance(rpcs, str):

@@ -297,11 +297,11 @@ class BorosAdapter(BaseAdapter):
             value_int = 0
 
         return {
-            "chainId": int(chain_id_int),
+            "chainId": chain_id_int,
             "from": to_checksum_address(from_address),
             "to": to_checksum_address(to_addr),
             "data": data_val if data_val.startswith("0x") else f"0x{data_val}",
-            "value": int(value_int),
+            "value": value_int,
         }
 
     async def _broadcast_calldata(
@@ -1145,12 +1145,10 @@ class BorosAdapter(BaseAdapter):
         now_ts = int(time.time())
         tenor_days = self._time_to_maturity_days(maturity_ts) if maturity_ts else 0.0
 
-        # Platform
         metadata = market.get("metadata") or {}
         plat = market.get("platform") or {}
         platform = metadata.get("platformName") or plat.get("name") or "Unknown"
 
-        # Collateral info
         token_id = market.get("tokenId")
         collateral = None
         if token_id is not None and token_id in assets_by_id:
@@ -1162,16 +1160,13 @@ class BorosAdapter(BaseAdapter):
                 "decimals": asset.get("decimals") or 18,
             }
 
-        # Margin type
         im_data = market.get("imData") or {}
         is_isolated_only = bool(im_data.get("isIsolatedOnly", False))
         max_leverage = im_data.get("maxLeverage") or im_data.get("leverage")
 
-        # Status
         state = market.get("state") or ""
         is_active = state.lower() == "normal" and maturity_ts > now_ts
 
-        # Current rates from data field
         data = market.get("data") or {}
         mid_apr = self.normalize_apr(data.get("midApr"))
         floating_apr = self.normalize_apr(data.get("floatingApr"))
@@ -1230,7 +1225,6 @@ class BorosAdapter(BaseAdapter):
                 if coll.get("tokenId") != token_id:
                     continue
 
-                # Isolated positions
                 for iso in coll.get("isolatedPositions", []):
                     net_raw = iso.get("availableBalance") or iso.get("netBalance")
                     if net_raw:
@@ -1254,7 +1248,6 @@ class BorosAdapter(BaseAdapter):
                         except Exception:
                             pass
 
-                # Cross position
                 cross = coll.get("crossPosition", {})
                 cross_raw = cross.get("availableBalance") or cross.get("netBalance")
                 if cross_raw:
@@ -1286,14 +1279,12 @@ class BorosAdapter(BaseAdapter):
             for entry in coll_list:
                 token_id = entry.get("tokenId")
 
-                # Cross position
                 cross_pos = entry.get("crossPosition", {})
                 for mkt_pos in cross_pos.get("marketPositions", []):
                     pos = self._parse_market_position(mkt_pos, token_id, is_cross=True)
                     if pos:
                         positions.append(pos)
 
-                # Isolated positions
                 for iso_pos in entry.get("isolatedPositions", []):
                     for mkt_pos in iso_pos.get("marketPositions", []):
                         pos = self._parse_market_position(

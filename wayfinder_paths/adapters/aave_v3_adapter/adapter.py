@@ -17,40 +17,20 @@ from wayfinder_paths.core.constants.aave_v3_abi import (
 from wayfinder_paths.core.constants.aave_v3_contracts import AAVE_V3_BY_CHAIN
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils.aave_shared import (
+    REFERRAL_CODE,
+    VARIABLE_RATE_MODE,
+)
+from wayfinder_paths.core.utils.aave_shared import (
+    compute_supply_cap_headroom as _compute_supply_cap_headroom,
+)
+from wayfinder_paths.core.utils.aave_shared import (
+    reserve_to_dict as _reserve_to_dict,
+)
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-
-VARIABLE_RATE_MODE = 2
-REFERRAL_CODE = 0
-
-
-def _reserve_to_dict(reserve: Any, reserve_keys: list[str]) -> dict[str, Any]:
-    if isinstance(reserve, dict):
-        return dict(reserve)
-    return dict(zip(reserve_keys, reserve, strict=False))
-
-
-def _compute_supply_cap_headroom(
-    reserve: dict[str, Any], decimals: int
-) -> tuple[int | None, int | None]:
-    supply_cap_tokens = int(reserve.get("supplyCap") or 0)
-    if supply_cap_tokens <= 0:
-        return (None, None)
-    unit = 10 ** max(0, int(decimals))
-    supply_cap_wei = supply_cap_tokens * unit
-
-    available = int(reserve.get("availableLiquidity") or 0)
-    scaled_variable_debt = int(reserve.get("totalScaledVariableDebt") or 0)
-    variable_index = int(reserve.get("variableBorrowIndex") or 0)
-    current_variable_debt = (scaled_variable_debt * variable_index) // RAY
-
-    total_supplied = available + current_variable_debt
-    headroom = supply_cap_wei - total_supplied
-    if headroom < 0:
-        headroom = 0
-    return (headroom, supply_cap_tokens)
 
 
 def _base_currency_to_ref(base_currency: Any) -> tuple[int, float]:
@@ -262,7 +242,7 @@ class AaveV3Adapter(BaseAdapter):
                         )
                     except ZeroDivisionError:
                         price_market_ref_float = 0.0
-                    price_usd = float(price_market_ref_float) * float(ref_usd)
+                    price_usd = price_market_ref_float * ref_usd
 
                     supply_apr = ray_to_apr(liquidity_rate_ray)
                     borrow_apr = ray_to_apr(variable_borrow_rate_ray)
@@ -281,8 +261,8 @@ class AaveV3Adapter(BaseAdapter):
                         r, decimals
                     )
 
-                    base_supply_apy = float(apr_to_apy(supply_apr))
-                    base_borrow_apy = float(apr_to_apy(borrow_apr))
+                    base_supply_apy = apr_to_apy(supply_apr)
+                    base_borrow_apy = apr_to_apy(borrow_apr)
 
                     market_row: dict[str, Any] = {
                         "chain_id": int(chain_id),

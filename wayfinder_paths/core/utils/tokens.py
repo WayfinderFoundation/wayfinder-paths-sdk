@@ -277,14 +277,14 @@ async def ensure_erc1155_approval(
         is_approved = await contract.functions.isApprovedForAll(owner, operator).call(
             block_identifier="pending"
         )
-        if bool(is_approved) == bool(approved):
+        if is_approved == approved:
             return True, "already-approved"
 
     tx = await encode_call(
         target=token_address,
         abi=ERC1155_APPROVAL_ABI,
         fn_name="setApprovalForAll",
-        args=[operator, bool(approved)],
+        args=[operator, approved],
         from_address=owner,
         chain_id=chain_id,
     )

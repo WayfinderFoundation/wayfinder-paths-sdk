@@ -202,7 +202,7 @@ def add_job_cmd(
     debug: bool,
 ) -> None:
     paths = get_runner_paths()
-    jt = str(job_type).lower().strip()
+    jt = job_type.lower().strip()
 
     env_payload: dict[str, Any] | None = None
     if env_json is not None:
@@ -216,15 +216,15 @@ def add_job_cmd(
         if not strategy:
             raise click.UsageError("--strategy is required for type=strategy")
         payload = {
-            "strategy": str(strategy),
-            "action": str(action),
-            "config": str(config_path),
-            "debug": bool(debug),
+            "strategy": strategy,
+            "action": action,
+            "config": config_path,
+            "debug": debug,
         }
         if wallet_label:
-            payload["wallet_label"] = str(wallet_label)
+            payload["wallet_label"] = wallet_label
         if timeout_seconds is not None:
-            payload["timeout_seconds"] = int(timeout_seconds)
+            payload["timeout_seconds"] = timeout_seconds
         if env_payload is not None:
             payload["env"] = env_payload
     elif jt == JOB_TYPE_SCRIPT:
@@ -232,14 +232,14 @@ def add_job_cmd(
             raise click.UsageError("--script-path is required for type=script")
         args_list = [str(a) for a in script_args if str(a).strip()]
         payload = {
-            "script_path": str(script_path),
+            "script_path": script_path,
             "args": args_list,
-            "debug": bool(debug),
+            "debug": debug,
         }
         if wallet_label:
-            payload["wallet_label"] = str(wallet_label)
+            payload["wallet_label"] = wallet_label
         if timeout_seconds is not None:
-            payload["timeout_seconds"] = int(timeout_seconds)
+            payload["timeout_seconds"] = timeout_seconds
         if env_payload is not None:
             payload["env"] = env_payload
     else:

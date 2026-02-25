@@ -207,7 +207,7 @@ class BasisSnapshotMixin:
             await self._get_margin_table_tiers(int(best["margin_table_id"]))
 
         ms_now = int(time.time() * 1000)
-        start_ms = ms_now - int(int(lookback_days) * 24 * 3600 * 1000)
+        start_ms = ms_now - int(lookback_days * 24 * 3600 * 1000)
 
         client = self._get_hyperliquid_data_client()
         try:
@@ -805,7 +805,7 @@ class BasisSnapshotMixin:
             await self._get_margin_table_tiers(int(margin_table_id))
 
         ms_now = int(time.time() * 1000)
-        start_ms = ms_now - int(int(lookback_days) * 24 * 3600 * 1000)
+        start_ms = ms_now - int(lookback_days * 24 * 3600 * 1000)
 
         client = self._get_hyperliquid_data_client()
         try:

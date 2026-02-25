@@ -99,10 +99,10 @@ class RunnerDaemon:
     ) -> None:
         self._paths = paths
         self._tick_seconds = float(tick_seconds)
-        self._max_workers = int(max_workers)
-        self._max_failures = int(max_failures)
-        self._default_timeout_seconds = int(default_timeout_seconds)
-        self._log_level = str(log_level).upper()
+        self._max_workers = max_workers
+        self._max_failures = max_failures
+        self._default_timeout_seconds = default_timeout_seconds
+        self._log_level = log_level.upper()
 
         self._db = RunnerDB(paths.db_path)
         self._started_at = _utc_epoch_s()
@@ -432,7 +432,7 @@ class RunnerDaemon:
                 config_path,
             ]
             if wallet_label:
-                cmd.extend(["--wallet-label", str(wallet_label)])
+                cmd.extend(["--wallet-label", wallet_label])
             if debug:
                 cmd.append("--debug")
             return cmd

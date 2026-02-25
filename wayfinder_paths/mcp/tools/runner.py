@@ -290,9 +290,9 @@ async def runner(
             if job_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
                 return err("invalid_request", f"unsupported job type: {job_type}")
 
-            job_payload: dict[str, Any] = {"debug": bool(debug)}
+            job_payload: dict[str, Any] = {"debug": debug}
             if wallet_label:
-                job_payload["wallet_label"] = str(wallet_label).strip()
+                job_payload["wallet_label"] = wallet_label.strip()
             if timeout_seconds is not None:
                 job_payload["timeout_seconds"] = int(timeout_seconds)
             if env is not None:

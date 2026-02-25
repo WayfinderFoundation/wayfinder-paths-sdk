@@ -41,14 +41,6 @@ def _timestamp_rate_to_apy(rate: float) -> float:
 class MoonwellAdapter(BaseAdapter):
     adapter_type = "MOONWELL"
 
-    # ---------------------------
-    # Multicall decoding helpers
-    # ---------------------------
-
-    @staticmethod
-    def _chunks(seq: list[Any], n: int) -> list[list[Any]]:
-        return [seq[i : i + n] for i in range(0, len(seq), n)]
-
     @staticmethod
     def _fn_abi(
         contract: Any, fn_name: str, *, inputs_len: int | None = None
@@ -73,36 +65,6 @@ class MoonwellAdapter(BaseAdapter):
         if not output_types:
             return ()
         return tuple(web3.codec.decode(output_types, data))
-
-    async def _multicall_chunked(
-        self,
-        *,
-        multicall: MulticallAdapter,
-        calls: list[Any],
-        chunk_size: int,
-    ) -> list[bytes]:
-        """
-        Execute multicall in chunks.
-
-        If a chunk reverts, fall back to executing calls one-by-one so we can salvage
-        partial results (returning b"" for failed calls).
-        """
-        out: list[bytes] = []
-        for chunk in self._chunks(calls, max(1, int(chunk_size))):
-            if not chunk:
-                continue
-            try:
-                res = await multicall.aggregate(chunk)
-                out.extend(list(res.return_data))
-                continue
-            except Exception:  # noqa: BLE001 - fall back to individual calls
-                for call in chunk:
-                    try:
-                        r = await multicall.aggregate([call])
-                        out.append(r.return_data[0] if r.return_data else b"")
-                    except Exception:  # noqa: BLE001
-                        out.append(b"")
-        return out
 
     def __init__(
         self,
@@ -473,8 +435,7 @@ class MoonwellAdapter(BaseAdapter):
                         )
                     )
 
-                ret1 = await self._multicall_chunked(
-                    multicall=multicall,
+                ret1 = await multicall.aggregate_chunked(
                     calls=calls_stage1,
                     chunk_size=multicall_chunk_size,
                 )
@@ -578,8 +539,7 @@ class MoonwellAdapter(BaseAdapter):
                         ]
                     )
 
-                ret2 = await self._multicall_chunked(
-                    multicall=multicall,
+                ret2 = await multicall.aggregate_chunked(
                     calls=market_calls,
                     chunk_size=multicall_chunk_size,
                 )
@@ -791,8 +751,7 @@ class MoonwellAdapter(BaseAdapter):
                         ]
                     )
 
-                ret_meta = await self._multicall_chunked(
-                    multicall=multicall,
+                ret_meta = await multicall.aggregate_chunked(
                     calls=meta_calls,
                     chunk_size=multicall_chunk_size,
                 )

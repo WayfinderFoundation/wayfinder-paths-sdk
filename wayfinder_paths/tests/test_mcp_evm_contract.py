@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from web3 import AsyncWeb3
 
+from wayfinder_paths.core.utils.proxy import EIP1967_IMPLEMENTATION_SLOT
 from wayfinder_paths.mcp.tools.evm_contract import (
     contract_call,
     contract_execute,
@@ -182,8 +183,6 @@ async def test_contract_call_falls_back_to_etherscan_abi_when_missing():
 
 @pytest.mark.asyncio
 async def test_contract_call_uses_proxy_implementation_abi_when_missing_function():
-    from wayfinder_paths.core.utils.proxy import EIP1967_IMPLEMENTATION_SLOT
-
     proxy_addr = "0x" + "12" * 20
     impl_addr = "0x" + "56" * 20
     user_addr = "0x" + "34" * 20

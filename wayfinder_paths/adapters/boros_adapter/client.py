@@ -224,7 +224,6 @@ class BorosClient:
             if isinstance(candidates, list):
                 return next((m for m in candidates if _matches(m)), None)
 
-        # Raw list.
         if isinstance(payload, list):
             return next((m for m in payload if _matches(m)), None)
 

@@ -721,20 +721,6 @@ class BorosHypeStrategy(
 
         return ok, f"diff≈${diff_usd:.2f} (current={current_position_yu:.4f} YU)"
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # Step Handlers
-    # ─────────────────────────────────────────────────────────────────────────
-
-    # Implemented in mixins:
-    # - boros_ops_mixin.py
-    # - hyperliquid_ops_mixin.py
-    # - hyperevm_ops_mixin.py
-    # - risk_ops_mixin.py
-
-    # ─────────────────────────────────────────────────────────────────────────
-    # Strategy Interface
-    # ─────────────────────────────────────────────────────────────────────────
-
     async def deposit(
         self,
         main_token_amount: float = 0.0,
