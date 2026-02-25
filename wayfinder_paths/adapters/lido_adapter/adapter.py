@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-from eth_utils import to_checksum_address
+from eth_utils import to_checksum_address, is_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
@@ -19,6 +19,18 @@ from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+
+def _safe_checksum(value: Any) -> str:
+    if value is None:
+        return ""
+
+    value_str = str(value)
+
+    if is_address(value_str):
+        return to_checksum_address(value_str)
+
+    return value_str
 
 WITHDRAWAL_MIN_WEI = 100
 WITHDRAWAL_MAX_WEI = 1000 * 10**18
@@ -168,39 +180,47 @@ class LidoAdapter(BaseAdapter):
             )
             stake_hash = await send_transaction(stake_tx, self.sign_callback)
 
-            after = await get_token_balance(
-                steth_addr, int(chain_id), strategy, block_identifier="pending"
-            )
-            wrap_amount = max(0, int(after) - int(before))
-            if wrap_amount <= 0:
-                return True, {"stake_tx": stake_hash, "wrap_tx": None}
+            try:
+                after = await get_token_balance(
+                    steth_addr, int(chain_id), strategy, block_identifier="pending"
+                )
+                wrap_amount = max(0, int(after) - int(before))
+                if wrap_amount <= 0:
+                    return True, {"stake_tx": stake_hash, "wrap_tx": None}
 
-            approved = await ensure_allowance(
-                token_address=steth_addr,
-                owner=strategy,
-                spender=wsteth_addr,
-                amount=int(wrap_amount),
-                chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
-                approval_amount=MAX_UINT256,
-            )
-            if not approved[0]:
-                return approved
+                approved = await ensure_allowance(
+                    token_address=steth_addr,
+                    owner=strategy,
+                    spender=wsteth_addr,
+                    amount=int(wrap_amount),
+                    chain_id=int(chain_id),
+                    signing_callback=self.sign_callback,
+                    approval_amount=MAX_UINT256,
+                )
+                if not approved[0]:
+                    return False, (
+                        f"Stake succeeded (tx={stake_hash}) but wstETH approval"
+                        f" failed: {approved[1]}"
+                    )
 
-            wrap_tx = await encode_call(
-                target=wsteth_addr,
-                abi=WSTETH_ABI,
-                fn_name="wrap",
-                args=[int(wrap_amount)],
-                from_address=strategy,
-                chain_id=int(chain_id),
-            )
-            wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
-            return True, {
-                "stake_tx": stake_hash,
-                "wrap_tx": wrap_hash,
-                "steth_wrapped": int(wrap_amount),
-            }
+                wrap_tx = await encode_call(
+                    target=wsteth_addr,
+                    abi=WSTETH_ABI,
+                    fn_name="wrap",
+                    args=[int(wrap_amount)],
+                    from_address=strategy,
+                    chain_id=int(chain_id),
+                )
+                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
+                return True, {
+                    "stake_tx": stake_hash,
+                    "wrap_tx": wrap_hash,
+                    "steth_wrapped": int(wrap_amount),
+                }
+            except Exception as wrap_exc:  # noqa: BLE001
+                return False, (
+                    f"Stake succeeded (tx={stake_hash}) but wrap failed: {wrap_exc}"
+                )
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -352,6 +372,7 @@ class LidoAdapter(BaseAdapter):
         *,
         chain_id: int,
         request_ids: list[int],
+        web3=None,
     ) -> list[int]:
         if not request_ids:
             return []
@@ -361,8 +382,8 @@ class LidoAdapter(BaseAdapter):
 
         sorted_ids = sorted({int(i) for i in request_ids})
 
-        async with web3_from_chain_id(int(chain_id)) as web3:
-            queue = web3.eth.contract(address=queue_addr, abi=WITHDRAWAL_QUEUE_ABI)
+        async def _query(w3):
+            queue = w3.eth.contract(address=queue_addr, abi=WITHDRAWAL_QUEUE_ABI)
             last = await queue.functions.getLastCheckpointIndex().call(
                 block_identifier="pending"
             )
@@ -374,6 +395,11 @@ class LidoAdapter(BaseAdapter):
                 sorted_ids, 1, last_i
             ).call(block_identifier="pending")
             return [int(h) for h in (hints or [])]
+
+        if web3:
+            return await _query(web3)
+        async with web3_from_chain_id(int(chain_id)) as w3:
+            return await _query(w3)
 
     async def claim_withdrawals(
         self,
@@ -461,20 +487,12 @@ class LidoAdapter(BaseAdapter):
             out: list[dict[str, Any]] = []
             for request_id, s in zip(ids, statuses or [], strict=False):
                 # (amountOfStETH, amountOfShares, owner, timestamp, isFinalized, isClaimed)
-                try:
-                    owner = to_checksum_address(str(s[2]))
-                except Exception:  # noqa: BLE001
-                    owner = (
-                        str(s[2])
-                        if isinstance(s, (list, tuple)) and len(s) > 2
-                        else ""
-                    )
                 out.append(
                     {
                         "request_id": int(request_id),
                         "amount_of_steth": int(s[0]),
                         "amount_of_shares": int(s[1]),
-                        "owner": owner,
+                        "owner": _safe_checksum(s[2]),
                         "timestamp": int(s[3]),
                         "is_finalized": bool(s[4]),
                         "is_claimed": bool(s[5]),
@@ -516,9 +534,8 @@ class LidoAdapter(BaseAdapter):
         include_claimable: bool = False,
         include_usd: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account)
-
         try:
+            acct = to_checksum_address(account)
             entry = self._entry(int(chain_id))
             steth_addr = entry["steth"]
             wsteth_addr = entry["wsteth"]
@@ -613,7 +630,7 @@ class LidoAdapter(BaseAdapter):
                             "request_id": int(rid),
                             "amount_of_steth": int(s[0]),
                             "amount_of_shares": int(s[1]),
-                            "owner": to_checksum_address(str(s[2])),
+                            "owner": _safe_checksum(s[2]),
                             "timestamp": int(s[3]),
                             "is_finalized": bool(s[4]),
                             "is_claimed": bool(s[5]),
@@ -624,7 +641,7 @@ class LidoAdapter(BaseAdapter):
                 if include_claimable:
                     sorted_ids = sorted({int(i) for i in ids_list})
                     hints = await self._find_checkpoint_hints(
-                        chain_id=int(chain_id), request_ids=sorted_ids
+                        chain_id=int(chain_id), request_ids=sorted_ids, web3=web3
                     )
                     claimable = await queue.functions.getClaimableEther(
                         sorted_ids, hints
