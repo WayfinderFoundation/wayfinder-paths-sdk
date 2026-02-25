@@ -4,6 +4,7 @@ import asyncio
 from typing import Any, Literal
 
 from eth_utils import is_address, to_checksum_address
+from loguru import logger
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
@@ -20,7 +21,6 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balanc
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-from loguru import logger
 
 def _safe_checksum(value: Any) -> str:
     if value is None:
@@ -218,11 +218,11 @@ class LidoAdapter(BaseAdapter):
                     "wrap_tx": wrap_hash,
                     "steth_wrapped": wrap_amount,
                 }
-            except Exception as wrap_exc:  
+            except Exception as wrap_exc:
                 return False, (
                     f"Stake succeeded (tx={stake_hash}) but wrap failed: {wrap_exc}"
                 )
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def wrap_steth(
@@ -260,7 +260,7 @@ class LidoAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def unwrap_wsteth(
@@ -285,7 +285,7 @@ class LidoAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def request_withdrawal(
@@ -349,7 +349,7 @@ class LidoAdapter(BaseAdapter):
                 "amounts": amounts,
                 "owner": owner_addr,
             }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def _find_checkpoint_hints(
@@ -423,7 +423,7 @@ class LidoAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_withdrawal_requests(
@@ -444,7 +444,7 @@ class LidoAdapter(BaseAdapter):
                     block_identifier="pending"
                 )
                 return True, [int(i) for i in (ids or [])]
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_withdrawal_status(
@@ -482,7 +482,7 @@ class LidoAdapter(BaseAdapter):
                     }
                 )
             return True, out
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_rates(
@@ -504,7 +504,7 @@ class LidoAdapter(BaseAdapter):
                     "steth_per_wsteth": int(steth_per),
                     "wsteth_per_steth": int(wsteth_per),
                 }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(
@@ -526,13 +526,21 @@ class LidoAdapter(BaseAdapter):
                 wsteth = web3.eth.contract(address=entry["wsteth"], abi=WSTETH_ABI)
 
                 steth_balance_coro = get_token_balance(
-                    entry["steth"], chain_id, acct, web3=web3, block_identifier="pending"
+                    entry["steth"],
+                    chain_id,
+                    acct,
+                    web3=web3,
+                    block_identifier="pending",
                 )
                 steth_shares_coro = steth.functions.sharesOf(acct).call(
                     block_identifier="pending"
                 )
                 wsteth_balance_coro = get_token_balance(
-                    entry["wsteth"], chain_id, acct, web3=web3, block_identifier="pending"
+                    entry["wsteth"],
+                    chain_id,
+                    acct,
+                    web3=web3,
+                    block_identifier="pending",
                 )
 
                 steth_balance, steth_shares, wsteth_balance = await asyncio.gather(
@@ -581,7 +589,7 @@ class LidoAdapter(BaseAdapter):
                             "wsteth_value": wsteth_price
                             * (int(wsteth_balance) / 10**18),
                         }
-                    except Exception as e:  
+                    except Exception as e:
                         logger.warning(f"Failed to fetch USD data: {e}")
 
                 if not include_withdrawals:
@@ -634,6 +642,6 @@ class LidoAdapter(BaseAdapter):
                     }
 
             return True, out
-        except Exception as exc:  
+        except Exception as exc:
             out["error"] = exc
             return False, out
