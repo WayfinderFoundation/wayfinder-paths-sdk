@@ -30,7 +30,10 @@ def test_split_withdrawal_amount_below_min_raises():
 
 def test_split_withdrawal_amount_adjusts_small_tail():
     amount = WITHDRAWAL_MAX_WEI + 50
-    assert _split_withdrawal_amount(amount) == [WITHDRAWAL_MAX_WEI - 50, WITHDRAWAL_MIN_WEI]
+    assert _split_withdrawal_amount(amount) == [
+        WITHDRAWAL_MAX_WEI - 50,
+        WITHDRAWAL_MIN_WEI,
+    ]
 
 
 def test_split_withdrawal_amount_multi_chunk_adjusts_small_tail():
@@ -79,7 +82,9 @@ async def test_stake_eth_receive_steth_calls_submit():
     assert kwargs["fn_name"] == "submit"
     assert kwargs["args"] == [ZERO_ADDRESS]
     assert kwargs["value"] == 123
-    mock_send.assert_awaited_once_with({"to": entry["steth"], "data": "0x"}, adapter.sign_callback)
+    mock_send.assert_awaited_once_with(
+        {"to": entry["steth"], "data": "0x"}, adapter.sign_callback
+    )
 
 
 @pytest.mark.asyncio

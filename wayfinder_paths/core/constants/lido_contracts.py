@@ -20,4 +20,3 @@ LIDO_BY_CHAIN: dict[int, dict[str, str]] = {
         ),
     }
 }
-

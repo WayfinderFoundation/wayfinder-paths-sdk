@@ -192,4 +192,3 @@ WITHDRAWAL_QUEUE_ABI: list[dict[str, Any]] = [
         "outputs": [],
     },
 ]
-
