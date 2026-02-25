@@ -82,8 +82,91 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
+| Backtesting           | `/backtest-strategy`             |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
+
+## Backtesting Framework
+
+Use the backtesting framework to **validate strategy ideas before production deployment**. The framework provides:
+
+- Automatic data fetching from Delta Lab and Hyperliquid
+- Realistic transaction costs (fees, slippage, funding)
+- Comprehensive performance metrics (Sharpe, max drawdown, etc.)
+- Liquidation simulation
+- Multi-leverage testing
+
+**Load `/backtest-strategy` skill** before using the framework for full documentation.
+
+### Quick Start
+
+```python
+from wayfinder_paths.core.backtesting import quick_backtest
+
+def my_strategy(prices, ctx):
+    """Define your signal logic."""
+    returns = prices.pct_change(24)  # 24-period momentum
+    ranks = returns.rank(axis=1, pct=True)
+    target = (ranks > 0.5).astype(float) - (ranks < 0.5).astype(float)
+    return target / target.abs().sum(axis=1).fillna(1)
+
+# Run backtest with automatic data fetching
+result = await quick_backtest(
+    strategy_fn=my_strategy,
+    symbols=["BTC", "ETH"],
+    start_date="2025-01-01",
+    end_date="2025-02-01",
+    leverage=2.0
+)
+
+print(result.stats)  # Sharpe, max_drawdown, CAGR, etc.
+```
+
+### Manual Workflow (Full Control)
+
+```python
+from wayfinder_paths.core.backtesting import (
+    fetch_prices,
+    fetch_funding_rates,
+    run_backtest,
+    BacktestConfig,
+)
+
+# Fetch data
+prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01", interval="1h")
+funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
+
+# Generate signals
+target_positions = my_strategy(prices, {"symbols": ["BTC", "ETH"]})
+
+# Configure and run
+config = BacktestConfig(
+    leverage=2.0,
+    fee_rate=0.0004,
+    funding_rates=funding,
+    enable_liquidation=True
+)
+result = run_backtest(prices, target_positions, config)
+```
+
+### Key Metrics
+
+- **`sharpe`** - Risk-adjusted returns (>1.0 good, >2.0 excellent)
+- **`sortino`** - Like Sharpe but only penalizes downside volatility
+- **`cagr`** - Annualized return (%)
+- **`max_drawdown`** - Largest peak-to-trough decline (%)
+- **`profit_factor`** - Gross profit / gross loss (>1.5 good)
+
+### From Backtest to Production
+
+Once validated:
+1. Create strategy class: `just create-strategy "Strategy Name"`
+2. Implement Strategy interface (deposit, update, withdraw, exit)
+3. Add adapters and manifest
+4. Write smoke tests
+5. Deploy with small capital first
+
+See `/backtest-strategy` skill for full guide, common patterns, and gotchas.
 
 ## Data accuracy (no guessing)
 
