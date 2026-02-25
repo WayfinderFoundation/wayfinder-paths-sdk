@@ -217,11 +217,11 @@ class LidoAdapter(BaseAdapter):
                     "wrap_tx": wrap_hash,
                     "steth_wrapped": wrap_amount,
                 }
-            except Exception as wrap_exc:  # noqa: BLE001
+            except Exception as wrap_exc:  
                 return False, (
                     f"Stake succeeded (tx={stake_hash}) but wrap failed: {wrap_exc}"
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def wrap_steth(
@@ -230,8 +230,6 @@ class LidoAdapter(BaseAdapter):
         amount_steth_wei: int,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, Any]:
-        amount_steth_wei = int(amount_steth_wei)
-        chain_id = int(chain_id)
         if amount_steth_wei <= 0:
             return False, "amount_steth_wei must be positive"
 
@@ -261,7 +259,7 @@ class LidoAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def unwrap_wsteth(
@@ -270,8 +268,6 @@ class LidoAdapter(BaseAdapter):
         amount_wsteth_wei: int,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, Any]:
-        amount_wsteth_wei = int(amount_wsteth_wei)
-        chain_id = int(chain_id)
         if amount_wsteth_wei <= 0:
             return False, "amount_wsteth_wei must be positive"
 
@@ -288,7 +284,7 @@ class LidoAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def request_withdrawal(
@@ -305,8 +301,6 @@ class LidoAdapter(BaseAdapter):
         This transfers stETH or wstETH to the WithdrawalQueue and mints an unstETH NFT.
         """
 
-        amount_wei = int(amount_wei)
-        chain_id = int(chain_id)
         if amount_wei <= 0:
             return False, "amount_wei must be positive"
 
@@ -354,7 +348,7 @@ class LidoAdapter(BaseAdapter):
                 "amounts": amounts,
                 "owner": owner_addr,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def _find_checkpoint_hints(
@@ -368,7 +362,7 @@ class LidoAdapter(BaseAdapter):
             return []
 
         entry = self._entry(chain_id)
-        sorted_ids = sorted({int(i) for i in request_ids})
+        sorted_ids = sorted(set(request_ids))
 
         async def _query(w3):
             queue = w3.eth.contract(
@@ -407,7 +401,7 @@ class LidoAdapter(BaseAdapter):
             strategy = self._require_wallet()
             entry = self._entry(chain_id)
 
-            sorted_ids = sorted({int(i) for i in request_ids})
+            sorted_ids = sorted(set(request_ids))
             hints = await self._find_checkpoint_hints(
                 chain_id=chain_id, request_ids=sorted_ids
             )
@@ -430,7 +424,7 @@ class LidoAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_withdrawal_requests(
@@ -452,7 +446,7 @@ class LidoAdapter(BaseAdapter):
                     block_identifier="pending"
                 )
                 return True, [int(i) for i in (ids or [])]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_withdrawal_status(
@@ -467,18 +461,17 @@ class LidoAdapter(BaseAdapter):
         chain_id = int(chain_id)
         try:
             entry = self._entry(chain_id)
-            ids = [int(i) for i in request_ids]
 
             async with web3_from_chain_id(chain_id) as web3:
                 queue = web3.eth.contract(
                     address=entry["withdrawal_queue"], abi=WITHDRAWAL_QUEUE_ABI
                 )
-                statuses = await queue.functions.getWithdrawalStatus(ids).call(
+                statuses = await queue.functions.getWithdrawalStatus(request_ids).call(
                     block_identifier="pending"
                 )
 
             out: list[dict[str, Any]] = []
-            for request_id, s in zip(ids, statuses or [], strict=False):
+            for request_id, s in zip(request_ids, statuses or [], strict=False):
                 # (amountOfStETH, amountOfShares, owner, timestamp, isFinalized, isClaimed)
                 out.append(
                     {
@@ -492,7 +485,7 @@ class LidoAdapter(BaseAdapter):
                     }
                 )
             return True, out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_rates(
@@ -515,7 +508,7 @@ class LidoAdapter(BaseAdapter):
                     "steth_per_wsteth": int(steth_per),
                     "wsteth_per_steth": int(wsteth_per),
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_full_user_state(
@@ -592,7 +585,7 @@ class LidoAdapter(BaseAdapter):
                             "wsteth_value": wsteth_price
                             * (int(wsteth_balance) / 10**18),
                         }
-                    except Exception:  # noqa: BLE001
+                    except Exception:  
                         pass
 
                 if not include_withdrawals:
@@ -632,7 +625,7 @@ class LidoAdapter(BaseAdapter):
                 out["withdrawals"]["statuses"] = status_rows
 
                 if include_claimable:
-                    sorted_ids = sorted({int(i) for i in ids_list})
+                    sorted_ids = sorted(set(ids_list))
                     hints = await self._find_checkpoint_hints(
                         chain_id=chain_id, request_ids=sorted_ids, web3=web3
                     )
@@ -645,5 +638,5 @@ class LidoAdapter(BaseAdapter):
                     }
 
             return True, out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
