@@ -1007,7 +1007,14 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         pool_addr = self._require_pool_address()
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool = web3.eth.contract(address=pool_addr, abi=PROJECTX_POOL_ABI)
-            slot0, tick_spacing, fee, liquidity, token0, token1 = await batch_web3_calls(
+            (
+                slot0,
+                tick_spacing,
+                fee,
+                liquidity,
+                token0,
+                token1,
+            ) = await batch_web3_calls(
                 web3,
                 lambda: pool.functions.slot0().call(block_identifier="latest"),
                 lambda: pool.functions.tickSpacing().call(block_identifier="latest"),

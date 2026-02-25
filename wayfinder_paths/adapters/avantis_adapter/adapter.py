@@ -138,10 +138,16 @@ class AvantisAdapter(BaseAdapter):
                     lambda: mgr.functions.currentAdjustedBalanceUSDC().call(
                         block_identifier=block_id
                     ),
-                    lambda: mgr.functions.getBufferRatio().call(block_identifier=block_id),
-                    lambda: mgr.functions.totalRewards().call(block_identifier=block_id),
+                    lambda: mgr.functions.getBufferRatio().call(
+                        block_identifier=block_id
+                    ),
+                    lambda: mgr.functions.totalRewards().call(
+                        block_identifier=block_id
+                    ),
                     lambda: mgr.functions.pnlRewards().call(block_identifier=block_id),
-                    lambda: mgr.functions.rewardPeriod().call(block_identifier=block_id),
+                    lambda: mgr.functions.rewardPeriod().call(
+                        block_identifier=block_id
+                    ),
                     lambda: mgr.functions.lastRewardTime().call(
                         block_identifier=block_id
                     ),

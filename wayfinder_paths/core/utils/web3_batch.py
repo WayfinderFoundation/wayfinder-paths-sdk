@@ -52,4 +52,3 @@ async def batch_web3_calls(
             return tuple(results)
         except Exception as gather_exc:
             raise gather_exc from batch_exc
-

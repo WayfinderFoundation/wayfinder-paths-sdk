@@ -67,7 +67,9 @@ class TestBatchWeb3Calls:
 
     async def test_returns_tuple(self, mock_web3):
         mock_web3.batch_requests().async_execute = AsyncMock(return_value=["a"])
-        result = await batch_web3_calls(mock_web3, lambda: AsyncMock(return_value="a")())
+        result = await batch_web3_calls(
+            mock_web3, lambda: AsyncMock(return_value="a")()
+        )
         assert isinstance(result, tuple)
 
     async def test_batch_fails_fallback_to_gather(self, mock_web3):
