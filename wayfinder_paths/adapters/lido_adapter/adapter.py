@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-from eth_utils import to_checksum_address, is_address
+from eth_utils import is_address, to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
@@ -32,6 +32,7 @@ def _safe_checksum(value: Any) -> str:
 
     return value_str
 
+
 WITHDRAWAL_MIN_WEI = 100
 WITHDRAWAL_MAX_WEI = 1000 * 10**18
 
@@ -49,7 +50,7 @@ def _split_withdrawal_amount(amount_wei: int) -> list[int]:
     remaining = amount_wei
     while remaining > 0:
         chunk = min(remaining, WITHDRAWAL_MAX_WEI)
-        parts.append(int(chunk))
+        parts.append(chunk)
         remaining -= chunk
 
     if len(parts) >= 2 and parts[-1] < WITHDRAWAL_MIN_WEI:
@@ -97,8 +98,8 @@ class LidoAdapter(BaseAdapter):
         return entry
 
     async def _get_staking_state(self, *, chain_id: int) -> tuple[bool, int]:
-        entry = self._entry(int(chain_id))
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        entry = self._entry(chain_id)
+        async with web3_from_chain_id(chain_id) as web3:
             steth = web3.eth.contract(address=entry["steth"], abi=STETH_LIDO_ABI)
             paused, limit = await asyncio.gather(
                 steth.functions.isStakingPaused().call(block_identifier="pending"),
@@ -128,25 +129,26 @@ class LidoAdapter(BaseAdapter):
             return False, "strategy wallet address not configured"
 
         amount_wei = int(amount_wei)
+        chain_id = int(chain_id)
         if amount_wei <= 0:
             return False, "amount_wei must be positive"
 
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             steth_addr = entry["steth"]
             wsteth_addr = entry["wsteth"]
-            referral = to_checksum_address(str(referral or ZERO_ADDRESS))
+            referral = to_checksum_address(referral or ZERO_ADDRESS)
 
             if check_limits:
-                paused, limit = await self._get_staking_state(chain_id=int(chain_id))
+                paused, limit = await self._get_staking_state(chain_id=chain_id)
                 if paused:
                     return False, "Lido staking is paused"
-                if int(limit) == 0:
+                if limit == 0:
                     return False, "Lido stake limit is 0 (paused or exhausted)"
-                if int(limit) != MAX_UINT256 and amount_wei > int(limit):
+                if limit != MAX_UINT256 and amount_wei > limit:
                     return (
                         False,
-                        f"amount_wei exceeds current stake limit (limit={int(limit)})",
+                        f"amount_wei exceeds current stake limit (limit={limit})",
                     )
 
             if receive == "stETH":
@@ -156,8 +158,8 @@ class LidoAdapter(BaseAdapter):
                     fn_name="submit",
                     args=[referral],
                     from_address=strategy,
-                    chain_id=int(chain_id),
-                    value=int(amount_wei),
+                    chain_id=chain_id,
+                    value=amount_wei,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
                 return True, tx_hash
@@ -166,7 +168,7 @@ class LidoAdapter(BaseAdapter):
                 return False, f"Unsupported receive asset: {receive}"
 
             before = await get_token_balance(
-                steth_addr, int(chain_id), strategy, block_identifier="pending"
+                steth_addr, chain_id, strategy, block_identifier="pending"
             )
 
             stake_tx = await encode_call(
@@ -175,14 +177,14 @@ class LidoAdapter(BaseAdapter):
                 fn_name="submit",
                 args=[referral],
                 from_address=strategy,
-                chain_id=int(chain_id),
-                value=int(amount_wei),
+                chain_id=chain_id,
+                value=amount_wei,
             )
             stake_hash = await send_transaction(stake_tx, self.sign_callback)
 
             try:
                 after = await get_token_balance(
-                    steth_addr, int(chain_id), strategy, block_identifier="pending"
+                    steth_addr, chain_id, strategy, block_identifier="pending"
                 )
                 wrap_amount = max(0, int(after) - int(before))
                 if wrap_amount <= 0:
@@ -192,8 +194,8 @@ class LidoAdapter(BaseAdapter):
                     token_address=steth_addr,
                     owner=strategy,
                     spender=wsteth_addr,
-                    amount=int(wrap_amount),
-                    chain_id=int(chain_id),
+                    amount=wrap_amount,
+                    chain_id=chain_id,
                     signing_callback=self.sign_callback,
                     approval_amount=MAX_UINT256,
                 )
@@ -207,15 +209,15 @@ class LidoAdapter(BaseAdapter):
                     target=wsteth_addr,
                     abi=WSTETH_ABI,
                     fn_name="wrap",
-                    args=[int(wrap_amount)],
+                    args=[wrap_amount],
                     from_address=strategy,
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                 )
                 wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
                 return True, {
                     "stake_tx": stake_hash,
                     "wrap_tx": wrap_hash,
-                    "steth_wrapped": int(wrap_amount),
+                    "steth_wrapped": wrap_amount,
                 }
             except Exception as wrap_exc:  # noqa: BLE001
                 return False, (
@@ -234,11 +236,12 @@ class LidoAdapter(BaseAdapter):
         if not strategy:
             return False, "strategy wallet address not configured"
         amount_steth_wei = int(amount_steth_wei)
+        chain_id = int(chain_id)
         if amount_steth_wei <= 0:
             return False, "amount_steth_wei must be positive"
 
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             steth_addr = entry["steth"]
             wsteth_addr = entry["wsteth"]
 
@@ -246,8 +249,8 @@ class LidoAdapter(BaseAdapter):
                 token_address=steth_addr,
                 owner=strategy,
                 spender=wsteth_addr,
-                amount=int(amount_steth_wei),
-                chain_id=int(chain_id),
+                amount=amount_steth_wei,
+                chain_id=chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -258,9 +261,9 @@ class LidoAdapter(BaseAdapter):
                 target=wsteth_addr,
                 abi=WSTETH_ABI,
                 fn_name="wrap",
-                args=[int(amount_steth_wei)],
+                args=[amount_steth_wei],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -277,19 +280,20 @@ class LidoAdapter(BaseAdapter):
         if not strategy:
             return False, "strategy wallet address not configured"
         amount_wsteth_wei = int(amount_wsteth_wei)
+        chain_id = int(chain_id)
         if amount_wsteth_wei <= 0:
             return False, "amount_wsteth_wei must be positive"
 
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             wsteth_addr = entry["wsteth"]
             tx = await encode_call(
                 target=wsteth_addr,
                 abi=WSTETH_ABI,
                 fn_name="unwrap",
-                args=[int(amount_wsteth_wei)],
+                args=[amount_wsteth_wei],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -315,24 +319,22 @@ class LidoAdapter(BaseAdapter):
             return False, "strategy wallet address not configured"
 
         amount_wei = int(amount_wei)
+        chain_id = int(chain_id)
         if amount_wei <= 0:
             return False, "amount_wei must be positive"
 
         try:
-            entry = self._entry(int(chain_id))
-            steth_addr = entry["steth"]
-            wsteth_addr = entry["wsteth"]
-            queue_addr = entry["withdrawal_queue"]
+            entry = self._entry(chain_id)
 
             owner_addr = to_checksum_address(owner) if owner else strategy
 
-            amounts = _split_withdrawal_amount(int(amount_wei))
+            amounts = _split_withdrawal_amount(amount_wei)
 
             if asset == "stETH":
-                token = steth_addr
+                token = entry["steth"]
                 fn_name = "requestWithdrawals"
             elif asset == "wstETH":
-                token = wsteth_addr
+                token = entry["wsteth"]
                 fn_name = "requestWithdrawalsWstETH"
             else:
                 return False, f"Unsupported asset: {asset}"
@@ -340,9 +342,9 @@ class LidoAdapter(BaseAdapter):
             approved = await ensure_allowance(
                 token_address=token,
                 owner=strategy,
-                spender=queue_addr,
-                amount=int(amount_wei),
-                chain_id=int(chain_id),
+                spender=entry["withdrawal_queue"],
+                amount=amount_wei,
+                chain_id=chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -350,12 +352,12 @@ class LidoAdapter(BaseAdapter):
                 return approved
 
             tx = await encode_call(
-                target=queue_addr,
+                target=entry["withdrawal_queue"],
                 abi=WITHDRAWAL_QUEUE_ABI,
                 fn_name=fn_name,
                 args=[amounts, owner_addr],
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {
@@ -377,7 +379,7 @@ class LidoAdapter(BaseAdapter):
         if not request_ids:
             return []
 
-        entry = self._entry(int(chain_id))
+        entry = self._entry(chain_id)
         queue_addr = entry["withdrawal_queue"]
 
         sorted_ids = sorted({int(i) for i in request_ids})
@@ -398,7 +400,7 @@ class LidoAdapter(BaseAdapter):
 
         if web3:
             return await _query(web3)
-        async with web3_from_chain_id(int(chain_id)) as w3:
+        async with web3_from_chain_id(chain_id) as w3:
             return await _query(w3)
 
     async def claim_withdrawals(
@@ -414,13 +416,15 @@ class LidoAdapter(BaseAdapter):
         if not request_ids:
             return False, "request_ids cannot be empty"
 
+        chain_id = int(chain_id)
+
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             queue_addr = entry["withdrawal_queue"]
 
             sorted_ids = sorted({int(i) for i in request_ids})
             hints = await self._find_checkpoint_hints(
-                chain_id=int(chain_id), request_ids=sorted_ids
+                chain_id=chain_id, request_ids=sorted_ids
             )
 
             if recipient:
@@ -437,7 +441,7 @@ class LidoAdapter(BaseAdapter):
                 fn_name=fn_name,
                 args=args,
                 from_address=strategy,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -450,12 +454,13 @@ class LidoAdapter(BaseAdapter):
         account: str,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, list[int] | str]:
+        chain_id = int(chain_id)
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             queue_addr = entry["withdrawal_queue"]
             acct = to_checksum_address(account)
 
-            async with web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_from_chain_id(chain_id) as web3:
                 queue = web3.eth.contract(address=queue_addr, abi=WITHDRAWAL_QUEUE_ABI)
                 ids = await queue.functions.getWithdrawalRequests(acct).call(
                     block_identifier="pending"
@@ -473,12 +478,13 @@ class LidoAdapter(BaseAdapter):
         if not request_ids:
             return True, []
 
+        chain_id = int(chain_id)
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             queue_addr = entry["withdrawal_queue"]
             ids = [int(i) for i in request_ids]
 
-            async with web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_from_chain_id(chain_id) as web3:
                 queue = web3.eth.contract(address=queue_addr, abi=WITHDRAWAL_QUEUE_ABI)
                 statuses = await queue.functions.getWithdrawalStatus(ids).call(
                     block_identifier="pending"
@@ -489,7 +495,7 @@ class LidoAdapter(BaseAdapter):
                 # (amountOfStETH, amountOfShares, owner, timestamp, isFinalized, isClaimed)
                 out.append(
                     {
-                        "request_id": int(request_id),
+                        "request_id": request_id,
                         "amount_of_steth": int(s[0]),
                         "amount_of_shares": int(s[1]),
                         "owner": _safe_checksum(s[2]),
@@ -507,17 +513,18 @@ class LidoAdapter(BaseAdapter):
         *,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, dict[str, Any] | str]:
+        chain_id = int(chain_id)
         try:
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             wsteth_addr = entry["wsteth"]
-            async with web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_from_chain_id(chain_id) as web3:
                 wsteth = web3.eth.contract(address=wsteth_addr, abi=WSTETH_ABI)
                 steth_per, wsteth_per = await asyncio.gather(
                     wsteth.functions.stEthPerToken().call(block_identifier="pending"),
                     wsteth.functions.tokensPerStEth().call(block_identifier="pending"),
                 )
                 return True, {
-                    "chain_id": int(chain_id),
+                    "chain_id": chain_id,
                     "wsteth": wsteth_addr,
                     "steth_per_wsteth": int(steth_per),
                     "wsteth_per_steth": int(wsteth_per),
@@ -534,25 +541,26 @@ class LidoAdapter(BaseAdapter):
         include_claimable: bool = False,
         include_usd: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
+        chain_id = int(chain_id)
         try:
             acct = to_checksum_address(account)
-            entry = self._entry(int(chain_id))
+            entry = self._entry(chain_id)
             steth_addr = entry["steth"]
             wsteth_addr = entry["wsteth"]
             queue_addr = entry["withdrawal_queue"]
 
-            async with web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_from_chain_id(chain_id) as web3:
                 steth = web3.eth.contract(address=steth_addr, abi=STETH_LIDO_ABI)
                 wsteth = web3.eth.contract(address=wsteth_addr, abi=WSTETH_ABI)
 
                 steth_balance_coro = get_token_balance(
-                    steth_addr, int(chain_id), acct, web3=web3, block_identifier="pending"
+                    steth_addr, chain_id, acct, web3=web3, block_identifier="pending"
                 )
                 steth_shares_coro = steth.functions.sharesOf(acct).call(
                     block_identifier="pending"
                 )
                 wsteth_balance_coro = get_token_balance(
-                    wsteth_addr, int(chain_id), acct, web3=web3, block_identifier="pending"
+                    wsteth_addr, chain_id, acct, web3=web3, block_identifier="pending"
                 )
 
                 steth_balance, steth_shares, wsteth_balance = await asyncio.gather(
@@ -568,7 +576,7 @@ class LidoAdapter(BaseAdapter):
 
                 out: dict[str, Any] = {
                     "protocol": "lido",
-                    "chain_id": int(chain_id),
+                    "chain_id": chain_id,
                     "account": acct,
                     "steth": {
                         "address": steth_addr,
@@ -587,10 +595,10 @@ class LidoAdapter(BaseAdapter):
                     out["usd"] = {}
                     try:
                         steth_details = await TOKEN_CLIENT.get_token_details(
-                            steth_addr, market_data=True, chain_id=int(chain_id)
+                            steth_addr, market_data=True, chain_id=chain_id
                         )
                         wsteth_details = await TOKEN_CLIENT.get_token_details(
-                            wsteth_addr, market_data=True, chain_id=int(chain_id)
+                            wsteth_addr, market_data=True, chain_id=chain_id
                         )
                         steth_price = float(steth_details.get("current_price") or 0.0)
                         wsteth_price = float(wsteth_details.get("current_price") or 0.0)
@@ -627,7 +635,7 @@ class LidoAdapter(BaseAdapter):
                 for rid, s in zip(ids_list, statuses or [], strict=False):
                     status_rows.append(
                         {
-                            "request_id": int(rid),
+                            "request_id": rid,
                             "amount_of_steth": int(s[0]),
                             "amount_of_shares": int(s[1]),
                             "owner": _safe_checksum(s[2]),
@@ -641,7 +649,7 @@ class LidoAdapter(BaseAdapter):
                 if include_claimable:
                     sorted_ids = sorted({int(i) for i in ids_list})
                     hints = await self._find_checkpoint_hints(
-                        chain_id=int(chain_id), request_ids=sorted_ids, web3=web3
+                        chain_id=chain_id, request_ids=sorted_ids, web3=web3
                     )
                     claimable = await queue.functions.getClaimableEther(
                         sorted_ids, hints
