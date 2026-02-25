@@ -432,7 +432,6 @@ class LidoAdapter(BaseAdapter):
         account: str,
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, list[int] | str]:
-        chain_id = int(chain_id)
         try:
             entry = self._entry(chain_id)
             acct = to_checksum_address(account)
@@ -518,6 +517,7 @@ class LidoAdapter(BaseAdapter):
         include_usd: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
+            out: dict[str, Any] = {}
             acct = to_checksum_address(account)
             entry = self._entry(chain_id)
 
@@ -546,7 +546,7 @@ class LidoAdapter(BaseAdapter):
                     block_identifier="pending"
                 )
 
-                out: dict[str, Any] = {
+                out = {
                     "protocol": "lido",
                     "chain_id": chain_id,
                     "account": acct,
@@ -635,4 +635,5 @@ class LidoAdapter(BaseAdapter):
 
             return True, out
         except Exception as exc:  
-            return False, str(exc)
+            out["error"] = exc
+            return False, out
