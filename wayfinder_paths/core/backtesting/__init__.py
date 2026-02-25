@@ -39,13 +39,7 @@ Manual workflow:
     >>> result = run_backtest(prices, target_positions, config)
 """
 
-from wayfinder_paths.core.backtesting.backtester import (
-    BacktestConfig,
-    BacktestResult,
-    BacktestStats,
-    run_backtest,
-    run_multi_leverage_backtest,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
 from wayfinder_paths.core.backtesting.data import (
     align_dataframes,
     convert_to_spot,
@@ -59,10 +53,17 @@ from wayfinder_paths.core.backtesting.helpers import (
     backtest_with_rates,
     quick_backtest,
 )
+from wayfinder_paths.core.backtesting.multi import run_multi_leverage_backtest
+from wayfinder_paths.core.backtesting.types import (
+    BacktestConfig,
+    BacktestResult,
+    BacktestStats,
+)
 
 __all__ = [
     # Core functions
     "run_backtest",
+    "run_multi_leverage_backtest",
     "BacktestConfig",
     "BacktestResult",
     "BacktestStats",  # Type hints for IDE autocomplete

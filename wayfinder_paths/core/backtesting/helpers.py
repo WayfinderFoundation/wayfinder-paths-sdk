@@ -11,16 +11,13 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.core.backtesting.backtester import (
-    BacktestConfig,
-    BacktestResult,
-    run_backtest,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
 from wayfinder_paths.core.backtesting.data import (
     align_dataframes,
     fetch_funding_rates,
     fetch_prices,
 )
+from wayfinder_paths.core.backtesting.types import BacktestConfig, BacktestResult
 
 
 async def quick_backtest(
