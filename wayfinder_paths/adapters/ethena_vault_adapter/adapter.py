@@ -28,7 +28,7 @@ def _require_wallet(fn: Callable) -> Callable:
     """Return (False, ...) early if wallet_address is not set."""
 
     @functools.wraps(fn)
-    async def wrapper(self: EthenaVaultAdapter, *args: Any, **kwargs: Any) -> Any:
+    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         if not self.wallet_address:
             return False, "strategy wallet address not configured"
         return await fn(self, *args, **kwargs)

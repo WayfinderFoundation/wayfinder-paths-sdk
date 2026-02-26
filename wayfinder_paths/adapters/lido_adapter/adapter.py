@@ -6,6 +6,7 @@ from typing import Any, Literal
 from eth_utils import to_checksum_address
 from loguru import logger
 
+from wayfinder_paths.adapters.ethena_vault_adapter.adapter import _require_wallet
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
@@ -80,11 +81,6 @@ class LidoAdapter(BaseAdapter):
             to_checksum_address(wallet_address) if wallet_address else None
         )
 
-    def _require_wallet(self) -> str:
-        if not self.wallet_address:
-            raise ValueError("strategy wallet address not configured")
-        return self.wallet_address
-
     def _entry(self, chain_id: int) -> dict[str, str]:
         entry = LIDO_BY_CHAIN.get(int(chain_id))
         if not entry:
@@ -101,6 +97,7 @@ class LidoAdapter(BaseAdapter):
             )
             return bool(paused), int(limit)
 
+    @_require_wallet
     async def stake_eth(
         self,
         *,
@@ -122,7 +119,6 @@ class LidoAdapter(BaseAdapter):
             return False, "amount_wei must be positive"
 
         try:
-            strategy = self._require_wallet()
             entry = self._entry(chain_id)
             referral = to_checksum_address(referral or ZERO_ADDRESS)
 
@@ -144,7 +140,7 @@ class LidoAdapter(BaseAdapter):
                     abi=STETH_LIDO_ABI,
                     fn_name="submit",
                     args=[referral],
-                    from_address=strategy,
+                    from_address=self.wallet_address,
                     chain_id=chain_id,
                     value=amount_wei,
                 )
@@ -155,7 +151,7 @@ class LidoAdapter(BaseAdapter):
                 return False, f"Unsupported receive asset: {receive}"
 
             before = await get_token_balance(
-                entry["steth"], chain_id, strategy, block_identifier="pending"
+                entry["steth"], chain_id, self.wallet_address, block_identifier="pending"
             )
 
             stake_tx = await encode_call(
@@ -163,7 +159,7 @@ class LidoAdapter(BaseAdapter):
                 abi=STETH_LIDO_ABI,
                 fn_name="submit",
                 args=[referral],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
                 value=amount_wei,
             )
@@ -171,7 +167,7 @@ class LidoAdapter(BaseAdapter):
 
             try:
                 after = await get_token_balance(
-                    entry["steth"], chain_id, strategy, block_identifier="pending"
+                    entry["steth"], chain_id, self.wallet_address, block_identifier="pending"
                 )
                 wrap_amount = max(0, int(after) - int(before))
                 if wrap_amount <= 0:
@@ -179,7 +175,7 @@ class LidoAdapter(BaseAdapter):
 
                 approved = await ensure_allowance(
                     token_address=entry["steth"],
-                    owner=strategy,
+                    owner=self.wallet_address,
                     spender=entry["wsteth"],
                     amount=wrap_amount,
                     chain_id=chain_id,
@@ -197,7 +193,7 @@ class LidoAdapter(BaseAdapter):
                     abi=WSTETH_ABI,
                     fn_name="wrap",
                     args=[wrap_amount],
-                    from_address=strategy,
+                    from_address=self.wallet_address,
                     chain_id=chain_id,
                 )
                 wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
@@ -213,6 +209,7 @@ class LidoAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def wrap_steth(
         self,
         *,
@@ -223,12 +220,11 @@ class LidoAdapter(BaseAdapter):
             return False, "amount_steth_wei must be positive"
 
         try:
-            strategy = self._require_wallet()
             entry = self._entry(chain_id)
 
             approved = await ensure_allowance(
                 token_address=entry["steth"],
-                owner=strategy,
+                owner=self.wallet_address,
                 spender=entry["wsteth"],
                 amount=amount_steth_wei,
                 chain_id=chain_id,
@@ -243,7 +239,7 @@ class LidoAdapter(BaseAdapter):
                 abi=WSTETH_ABI,
                 fn_name="wrap",
                 args=[amount_steth_wei],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -251,6 +247,7 @@ class LidoAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def unwrap_wsteth(
         self,
         *,
@@ -261,14 +258,13 @@ class LidoAdapter(BaseAdapter):
             return False, "amount_wsteth_wei must be positive"
 
         try:
-            strategy = self._require_wallet()
             entry = self._entry(chain_id)
             tx = await encode_call(
                 target=entry["wsteth"],
                 abi=WSTETH_ABI,
                 fn_name="unwrap",
                 args=[amount_wsteth_wei],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -276,6 +272,7 @@ class LidoAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @_require_wallet
     async def request_withdrawal(
         self,
         *,
@@ -294,10 +291,9 @@ class LidoAdapter(BaseAdapter):
             return False, "amount_wei must be positive"
 
         try:
-            strategy = self._require_wallet()
             entry = self._entry(chain_id)
 
-            owner_addr = to_checksum_address(owner) if owner else strategy
+            owner_addr = to_checksum_address(owner) if owner else self.wallet_address
 
             amounts = _split_withdrawal_amount(amount_wei)
 
@@ -312,7 +308,7 @@ class LidoAdapter(BaseAdapter):
 
             approved = await ensure_allowance(
                 token_address=token,
-                owner=strategy,
+                owner=self.wallet_address,
                 spender=entry["withdrawal_queue"],
                 amount=amount_wei,
                 chain_id=chain_id,
@@ -327,7 +323,7 @@ class LidoAdapter(BaseAdapter):
                 abi=WITHDRAWAL_QUEUE_ABI,
                 fn_name=fn_name,
                 args=[amounts, owner_addr],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -374,6 +370,7 @@ class LidoAdapter(BaseAdapter):
         async with web3_from_chain_id(chain_id) as w3:
             return await _query(w3)
 
+    @_require_wallet
     async def claim_withdrawals(
         self,
         *,
@@ -385,7 +382,6 @@ class LidoAdapter(BaseAdapter):
             return False, "request_ids cannot be empty"
 
         try:
-            strategy = self._require_wallet()
             entry = self._entry(chain_id)
 
             sorted_ids = sorted(set(request_ids))
@@ -406,7 +402,7 @@ class LidoAdapter(BaseAdapter):
                 abi=WITHDRAWAL_QUEUE_ABI,
                 fn_name=fn_name,
                 args=args,
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
