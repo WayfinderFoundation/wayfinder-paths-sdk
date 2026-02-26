@@ -22,7 +22,6 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balanc
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-
 WITHDRAWAL_MIN_WEI = 100
 WITHDRAWAL_MAX_WEI = 1000 * 10**18
 
@@ -151,7 +150,10 @@ class LidoAdapter(BaseAdapter):
                 return False, f"Unsupported receive asset: {receive}"
 
             before = await get_token_balance(
-                entry["steth"], chain_id, self.wallet_address, block_identifier="pending"
+                entry["steth"],
+                chain_id,
+                self.wallet_address,
+                block_identifier="pending",
             )
 
             stake_tx = await encode_call(
@@ -167,7 +169,10 @@ class LidoAdapter(BaseAdapter):
 
             try:
                 after = await get_token_balance(
-                    entry["steth"], chain_id, self.wallet_address, block_identifier="pending"
+                    entry["steth"],
+                    chain_id,
+                    self.wallet_address,
+                    block_identifier="pending",
                 )
                 wrap_amount = max(0, int(after) - int(before))
                 if wrap_amount <= 0:
