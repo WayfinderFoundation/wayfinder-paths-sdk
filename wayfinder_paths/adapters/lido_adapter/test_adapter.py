@@ -19,6 +19,24 @@ def test_adapter_type():
     assert adapter.adapter_type == "LIDO"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,kwargs",
+    [
+        ("stake_eth", {"amount_wei": 100}),
+        ("wrap_steth", {"amount_steth_wei": 100}),
+        ("unwrap_wsteth", {"amount_wsteth_wei": 100}),
+        ("request_withdrawal", {"asset": "stETH", "amount_wei": 100}),
+        ("claim_withdrawals", {"request_ids": [1]}),
+    ],
+)
+async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
+    adapter = LidoAdapter(config={})
+    ok, msg = await getattr(adapter, method)(**kwargs)
+    assert ok is False
+    assert msg == "strategy wallet address not configured"
+
+
 def test_split_withdrawal_amount_min():
     assert _split_withdrawal_amount(WITHDRAWAL_MIN_WEI) == [WITHDRAWAL_MIN_WEI]
 
