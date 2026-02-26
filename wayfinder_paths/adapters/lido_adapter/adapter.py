@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Literal
 
-from eth_utils import is_address, to_checksum_address
+from eth_utils import to_checksum_address
 from loguru import logger
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
@@ -20,18 +20,6 @@ from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-
-def _safe_checksum(value: Any) -> str:
-    if value is None:
-        return ""
-
-    value_str = str(value)
-
-    if is_address(value_str):
-        return to_checksum_address(value_str)
-
-    return value_str
 
 
 WITHDRAWAL_MIN_WEI = 100
@@ -475,7 +463,7 @@ class LidoAdapter(BaseAdapter):
                         "request_id": request_id,
                         "amount_of_steth": int(s[0]),
                         "amount_of_shares": int(s[1]),
-                        "owner": _safe_checksum(s[2]),
+                        "owner": to_checksum_address(s[2]),
                         "timestamp": int(s[3]),
                         "is_finalized": bool(s[4]),
                         "is_claimed": bool(s[5]),
@@ -620,7 +608,7 @@ class LidoAdapter(BaseAdapter):
                             "request_id": rid,
                             "amount_of_steth": int(s[0]),
                             "amount_of_shares": int(s[1]),
-                            "owner": _safe_checksum(s[2]),
+                            "owner": to_checksum_address(s[2]),
                             "timestamp": int(s[3]),
                             "is_finalized": bool(s[4]),
                             "is_claimed": bool(s[5]),
