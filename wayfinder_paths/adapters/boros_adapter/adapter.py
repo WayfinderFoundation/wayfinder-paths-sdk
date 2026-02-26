@@ -17,6 +17,7 @@ from wayfinder_paths.core.constants.contracts import (
     HYPE_OFT_ADDRESS,
 )
 from wayfinder_paths.core.constants.hype_oft_abi import HYPE_OFT_ABI
+from wayfinder_paths.core.utils.evm_helpers import maybe_checksum
 from wayfinder_paths.core.utils.tokens import (
     build_approve_transaction,
     get_token_balance,
@@ -80,9 +81,7 @@ class BorosAdapter(BaseAdapter):
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
 
-        self.wallet_address = (
-            to_checksum_address(wallet_address) if wallet_address else None
-        )
+        self.wallet_address = maybe_checksum(wallet_address)
         self.account_id = boros_cfg.get("account_id", account_id)
 
         self.boros_client = BorosClient(

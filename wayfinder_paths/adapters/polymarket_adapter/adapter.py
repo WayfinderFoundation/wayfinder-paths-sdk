@@ -37,6 +37,7 @@ from wayfinder_paths.core.constants.polymarket import (
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
 )
+from wayfinder_paths.core.utils.evm_helpers import maybe_checksum
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
@@ -156,9 +157,7 @@ class PolymarketAdapter(BaseAdapter):
         super().__init__("polymarket_adapter", config)
 
         self.sign_callback = sign_callback
-        self.wallet_address: str | None = (
-            to_checksum_address(wallet_address) if wallet_address else None
-        )
+        self.wallet_address: str | None = maybe_checksum(wallet_address)
         self._private_key_hex = private_key_hex
         self._funder_override = funder
         self._signature_type = signature_type

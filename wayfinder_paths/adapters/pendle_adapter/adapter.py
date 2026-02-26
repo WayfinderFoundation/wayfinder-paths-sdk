@@ -11,6 +11,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.utils.evm_helpers import maybe_checksum
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -194,9 +195,7 @@ class PendleAdapter(BaseAdapter):
 
         self._owns_client = False
         self.sign_callback = sign_callback
-        self.wallet_address: str | None = (
-            to_checksum_address(wallet_address) if wallet_address else None
-        )
+        self.wallet_address: str | None = maybe_checksum(wallet_address)
         self.max_retries = int(adapter_cfg.get("max_retries", 3))
         self.retry_backoff_seconds = float(
             adapter_cfg.get("retry_backoff_seconds", 0.75)

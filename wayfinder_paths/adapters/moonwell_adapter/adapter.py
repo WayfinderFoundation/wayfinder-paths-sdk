@@ -27,6 +27,7 @@ from wayfinder_paths.core.constants.moonwell_abi import (
     REWARD_DISTRIBUTOR_ABI,
     WETH_ABI,
 )
+from wayfinder_paths.core.utils.evm_helpers import maybe_checksum
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -119,9 +120,7 @@ class MoonwellAdapter(BaseAdapter):
         self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
         self.m_usdc = MOONWELL_M_USDC
 
-        self.wallet_address: str | None = (
-            to_checksum_address(wallet_address) if wallet_address else None
-        )
+        self.wallet_address: str | None = maybe_checksum(wallet_address)
         self._cache = Cache(Cache.MEMORY)
 
     async def lend(

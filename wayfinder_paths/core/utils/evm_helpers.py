@@ -2,9 +2,15 @@ import json
 import os
 from typing import Any
 
+from eth_utils import to_checksum_address
 from loguru import logger
 
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+
+
+def maybe_checksum(address: str | None) -> str | None:
+    """Checksum an address if non-empty, otherwise return None."""
+    return to_checksum_address(address) if address else None
 
 
 def resolve_chain_id(token_info: dict[str, Any]) -> int | None:

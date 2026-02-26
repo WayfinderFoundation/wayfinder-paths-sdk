@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from wayfinder_paths.core.config import CONFIG
-
-getcontext().prec = 78
+from wayfinder_paths.core.utils.units import to_erc20_raw
 
 
 def ok(result: Any) -> dict[str, Any]:
@@ -131,17 +129,10 @@ def resolve_wallet_address(
 
 
 def parse_amount_to_raw(amount: str, decimals: int) -> int:
-    try:
-        d = Decimal(str(amount).strip())
-    except (InvalidOperation, ValueError) as exc:
-        raise ValueError(f"Invalid amount: {amount}") from exc
-    if d <= 0:
-        raise ValueError("Amount must be positive")
-    scale = Decimal(10) ** int(decimals)
-    raw = (d * scale).to_integral_value(rounding=ROUND_DOWN)
+    raw = to_erc20_raw(amount, decimals)
     if raw <= 0:
-        raise ValueError("Amount is too small after decimal scaling")
-    return int(raw)
+        raise ValueError("Amount must be positive")
+    return raw
 
 
 def sha256_json(obj: Any) -> str:

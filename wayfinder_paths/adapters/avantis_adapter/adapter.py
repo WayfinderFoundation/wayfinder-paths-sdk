@@ -17,6 +17,7 @@ from wayfinder_paths.core.constants.contracts import (
     BASE_USDC,
 )
 from wayfinder_paths.core.constants.erc4626_abi import ERC4626_ABI
+from wayfinder_paths.core.utils.evm_helpers import maybe_checksum
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -50,9 +51,7 @@ class AvantisAdapter(BaseAdapter):
         self.vault_manager: str = AVANTIS_VAULT_MANAGER
         self.underlying: str = BASE_USDC
 
-        self.wallet_address: str | None = (
-            to_checksum_address(wallet_address) if wallet_address else None
-        )
+        self.wallet_address: str | None = maybe_checksum(wallet_address)
 
     async def get_all_markets(self) -> tuple[bool, list[dict[str, Any]] | str]:
         """Return the configured Avantis vault as a single-market list."""
