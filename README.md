@@ -171,6 +171,12 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `PolymarketAdapter` (Polymarket markets, orderbooks, history, and trading)
 - `MorphoAdapter` (Morpho Blue markets, MetaMorpho vaults, rewards, and public allocator)
 - `AaveV3Adapter` (Aave V3 lending/borrowing across Ethereum, Base, and Arbitrum)
+- `AvantisAdapter` (Avantis avUSDC ERC-4626 vault on Base)
+- `CCXTAdapter` (multi-exchange CEX trading via CCXT)
+- `EthenaVaultAdapter` (Ethena sUSDe staking vault with cooldown withdrawals)
+- `LidoAdapter` (Lido ETH staking, wrapping/unwrapping stETH/wstETH, and withdrawal queue)
+- `ProjectXLiquidityAdapter` (ProjectX V3 concentrated liquidity on HyperEVM)
+- `UniswapAdapter` (Uniswap V3 concentrated liquidity management)
 
 ## CLI Reference
 
