@@ -17,8 +17,9 @@ FAKE_POS_RAW = (0, OWNER, TOKEN_A, TOKEN_B, 3000, -120, 120, 5000, 0, 0, 10, 20)
 
 def _make_adapter(chain_id: int = 8453) -> UniswapAdapter:
     return UniswapAdapter(
-        {"chain_id": chain_id, "strategy_wallet": {"address": OWNER}},
-        strategy_wallet_signing_callback=AsyncMock(return_value=b"signed"),
+        {"chain_id": chain_id},
+        sign_callback=AsyncMock(return_value=b"signed"),
+        wallet_address=OWNER,
     )
 
 
@@ -111,7 +112,7 @@ class TestConstruction:
             _make_adapter(chain_id=999)
 
     def test_missing_wallet(self):
-        with pytest.raises(ValueError, match="strategy_wallet.address"):
+        with pytest.raises(ValueError, match="wallet_address is required"):
             UniswapAdapter({"chain_id": 8453})
 
 

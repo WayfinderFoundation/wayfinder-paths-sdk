@@ -12,8 +12,8 @@ Public methods follow the repo convention: `async def ... -> tuple[bool, data | 
 
 Configuration:
 
-- `strategy_wallet.address` (required)
-- `pool_address` (required; also accepts `pool`, `projectx_pool_address`, `projectx_pool`, and checks nested `strategy` config)
+- `wallet_address` (required, passed directly to constructor)
+- `pool_address` (required in config; also accepts `pool`, `projectx_pool_address`, `projectx_pool`, and checks nested `strategy` config)
 
 Notable helpers:
 

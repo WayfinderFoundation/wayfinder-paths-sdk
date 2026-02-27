@@ -36,11 +36,11 @@ class UniswapV3BaseAdapter(BaseAdapter):
         npm_address: str,
         factory_address: str,
         owner: str,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
         factory_abi: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(adapter_name, config)
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
         self.chain_id = int(chain_id)
         self.npm_address = to_checksum_address(str(npm_address))
         self.factory_address = to_checksum_address(str(factory_address))
@@ -90,7 +90,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount0_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=int(amount0_desired * 2),
             )
             await ensure_allowance(
@@ -99,7 +99,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount1_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=int(amount1_desired * 2),
             )
 
@@ -125,7 +125,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -152,7 +152,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount0_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=int(amount0_desired * 2),
             )
             await ensure_allowance(
@@ -161,7 +161,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount1_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.strategy_wallet_signing_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=int(amount1_desired * 2),
             )
 
@@ -182,7 +182,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -241,7 +241,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -256,7 +256,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

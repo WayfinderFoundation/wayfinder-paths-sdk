@@ -2,26 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.mcp.utils import repo_root
+from wayfinder_paths.mcp.state.runs import now_iso, runs_root
 
 logger = logging.getLogger(__name__)
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _runs_root() -> Path:
-    candidate = (os.getenv("WAYFINDER_RUNS_DIR") or ".wayfinder_runs").strip()
-    p = Path(candidate)
-    if not p.is_absolute():
-        p = repo_root() / p
-    return p.resolve(strict=False)
 
 
 class WalletProfileStore:
@@ -30,7 +16,7 @@ class WalletProfileStore:
 
     def __init__(self, path: Path | None = None):
         if path is None:
-            path = _runs_root() / "wallet_profiles.json"
+            path = runs_root() / "wallet_profiles.json"
         self.path = path
 
     @staticmethod
@@ -60,10 +46,7 @@ class WalletProfileStore:
         self.path.write_text(json.dumps(data, indent=2, sort_keys=False))
 
     def _normalize_address(self, address: str) -> str:
-        addr = str(address).strip().lower()
-        if addr.startswith("0x"):
-            return addr
-        return addr
+        return str(address).strip().lower()
 
     def get_profile(self, address: str) -> dict[str, Any] | None:
         data = self._load()
@@ -111,7 +94,7 @@ class WalletProfileStore:
     ) -> None:
         data = self._load()
         norm = self._normalize_address(address)
-        now = _now_iso()
+        now = now_iso()
 
         if norm not in data["profiles"]:
             data["profiles"][norm] = {

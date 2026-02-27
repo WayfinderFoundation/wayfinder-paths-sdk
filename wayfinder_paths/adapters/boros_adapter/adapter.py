@@ -69,7 +69,7 @@ class BorosAdapter(BaseAdapter):
         config: dict[str, Any] | None = None,
         *,
         sign_callback: Callable | None = None,
-        user_address: str | None = None,
+        wallet_address: str | None = None,
         account_id: int = 0,
         **kwargs: Any,
     ) -> None:
@@ -80,20 +80,15 @@ class BorosAdapter(BaseAdapter):
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
 
-        if not user_address:
-            wallet = (config or {}).get("strategy_wallet") or (config or {}).get(
-                "main_wallet"
-            )
-            if wallet and isinstance(wallet, dict):
-                user_address = wallet.get("address")
-
-        self.user_address = user_address
+        self.wallet_address = (
+            to_checksum_address(wallet_address) if wallet_address else None
+        )
         self.account_id = boros_cfg.get("account_id", account_id)
 
         self.boros_client = BorosClient(
             base_url=boros_cfg.get("base_url", "https://api.boros.finance"),
             endpoints=boros_cfg.get("endpoints"),
-            user_address=user_address,
+            user_address=wallet_address,
             account_id=self.account_id,
         )
 
@@ -331,7 +326,7 @@ class BorosAdapter(BaseAdapter):
                 "error": "sign_callback not configured",
                 "calldata": calldata,
             }
-        if not self.user_address:
+        if not self.wallet_address:
             return False, {"error": "user_address not configured", "calldata": calldata}
 
         # Check for calldatas array format (multiple transactions)
@@ -341,7 +336,7 @@ class BorosAdapter(BaseAdapter):
             for i, data in enumerate(calldatas):
                 single_calldata = {"data": data, "to": BOROS_ROUTER}
                 tx = self._build_tx_from_calldata(
-                    single_calldata, from_address=self.user_address
+                    single_calldata, from_address=self.wallet_address
                 )
                 logger.debug(
                     f"Broadcasting calldata {i + 1}/{len(calldatas)} to {tx.get('to')}"
@@ -370,7 +365,9 @@ class BorosAdapter(BaseAdapter):
         # Single calldata (standard format) with retry logic
         last_error = None
         for attempt in range(max_retries + 1):
-            tx = self._build_tx_from_calldata(calldata, from_address=self.user_address)
+            tx = self._build_tx_from_calldata(
+                calldata, from_address=self.wallet_address
+            )
             try:
                 tx_hash = await send_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
@@ -476,7 +473,7 @@ class BorosAdapter(BaseAdapter):
         is_whitelisted: bool | None = True,
         skip: int = 0,
         limit: int = 100,
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             markets = await self.boros_client.list_markets(
                 is_whitelisted=is_whitelisted, skip=skip, limit=limit
@@ -484,7 +481,7 @@ class BorosAdapter(BaseAdapter):
             return True, markets
         except Exception as e:
             logger.error(f"Failed to list markets: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def list_markets_all(
         self,
@@ -492,7 +489,7 @@ class BorosAdapter(BaseAdapter):
         is_whitelisted: bool | None = True,
         page_size: int = 100,
         max_pages: int | None = None,
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         """List all markets, automatically paginating `skip/limit`.
 
         Boros enforces `limit <= 100`. This helper keeps requesting pages until:
@@ -554,15 +551,15 @@ class BorosAdapter(BaseAdapter):
             return True, unique
         except Exception as e:
             logger.error(f"Failed to list all markets: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
-    async def get_market(self, market_id: int) -> tuple[bool, dict[str, Any]]:
+    async def get_market(self, market_id: int) -> tuple[bool, dict[str, Any] | str]:
         try:
             market = await self.boros_client.get_market(market_id)
             return True, market
         except Exception as e:
             logger.error(f"Failed to get market {market_id}: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def quote_market_by_id(
         self,
@@ -570,11 +567,11 @@ class BorosAdapter(BaseAdapter):
         *,
         tick_size: float = 0.001,
         prefer_market_data: bool = True,
-    ) -> tuple[bool, BorosMarketQuote]:
+    ) -> tuple[bool, BorosMarketQuote | str]:
         """Convenience helper: get_market() + quote_market()."""
         ok, market = await self.get_market(int(market_id))
         if not ok:
-            return False, market  # type: ignore
+            return False, str(market)
         return await self.quote_market(
             market,
             tick_size=tick_size,
@@ -583,7 +580,7 @@ class BorosAdapter(BaseAdapter):
 
     async def get_orderbook(
         self, market_id: int, *, tick_size: float = 0.001
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         try:
             book = await self.boros_client.get_order_book(
                 market_id, tick_size=tick_size
@@ -591,7 +588,7 @@ class BorosAdapter(BaseAdapter):
             return True, book
         except Exception as e:
             logger.error(f"Failed to get orderbook for market {market_id}: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def quote_market(
         self,
@@ -599,7 +596,7 @@ class BorosAdapter(BaseAdapter):
         *,
         tick_size: float = 0.001,
         prefer_market_data: bool = True,
-    ) -> tuple[bool, BorosMarketQuote]:
+    ) -> tuple[bool, BorosMarketQuote | str]:
         try:
             market_id = int(market.get("marketId") or market.get("id") or 0)
             market_address = market.get("address") or market.get("marketAddress") or ""
@@ -691,7 +688,7 @@ class BorosAdapter(BaseAdapter):
             return True, quote
         except Exception as e:
             logger.error(f"Failed to quote market: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def quote_markets_for_underlying(
         self,
@@ -702,13 +699,13 @@ class BorosAdapter(BaseAdapter):
         page_size: int = 100,
         tick_size: float = 0.001,
         prefer_market_data: bool = True,
-    ) -> tuple[bool, list[BorosMarketQuote]]:
+    ) -> tuple[bool, list[BorosMarketQuote] | str]:
         try:
             ok, markets = await self.list_markets_all(
                 is_whitelisted=True, page_size=page_size
             )
             if not ok:
-                return False, markets  # type: ignore
+                return False, str(markets)
             target = underlying_symbol.upper()
             platform_filter = platform.upper() if platform else None
 
@@ -754,7 +751,7 @@ class BorosAdapter(BaseAdapter):
             return True, quotes
         except Exception as e:
             logger.error(f"Failed to quote markets for {underlying_symbol}: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def list_tenor_quotes(
         self,
@@ -764,7 +761,7 @@ class BorosAdapter(BaseAdapter):
         is_whitelisted: bool | None = True,
         page_size: int = 100,
         max_pages: int | None = None,
-    ) -> tuple[bool, list[BorosTenorQuote]]:
+    ) -> tuple[bool, list[BorosTenorQuote] | str]:
         """Fast market+rate snapshot using only the `/markets` endpoint (no orderbooks).
 
         Useful for quickly answering questions like:
@@ -775,7 +772,7 @@ class BorosAdapter(BaseAdapter):
             is_whitelisted=is_whitelisted, page_size=page_size, max_pages=max_pages
         )
         if not ok:
-            return False, markets  # type: ignore
+            return False, str(markets)
 
         target = underlying_symbol.upper() if underlying_symbol else None
         platform_filter = platform.upper() if platform else None
@@ -1199,20 +1196,20 @@ class BorosAdapter(BaseAdapter):
 
     async def get_collaterals(
         self, *, account_id: int | None = None
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         try:
             data = await self.boros_client.get_collaterals(
-                user_address=self.user_address,
+                user_address=self.wallet_address,
                 account_id=account_id,
             )
             return True, data
         except Exception as e:
             logger.error(f"Failed to get collaterals: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_account_balances(
         self, token_id: int = 3, *, account_id: int | None = None
-    ) -> tuple[bool, dict[str, Any]]:
+    ) -> tuple[bool, dict[str, Any] | str]:
         result: dict[str, Any] = {
             "isolated": 0.0,
             "cross": 0.0,
@@ -1226,7 +1223,7 @@ class BorosAdapter(BaseAdapter):
         try:
             success, summary = await self.get_collaterals(account_id=account_id)
             if not success:
-                return False, str(summary)  # type: ignore
+                return False, str(summary)
 
             collaterals = summary.get("collaterals", [])
             for coll in collaterals:
@@ -1273,11 +1270,11 @@ class BorosAdapter(BaseAdapter):
             return True, result
         except Exception as e:
             logger.error(f"Failed to get account balances: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_active_positions(
         self, market_id: int | None = None
-    ) -> tuple[bool, list[dict[str, Any]]]:
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             success, collaterals = await self.get_collaterals()
             if not success:
@@ -1311,14 +1308,14 @@ class BorosAdapter(BaseAdapter):
             return True, positions
         except Exception as e:
             logger.error(f"Failed to get active positions: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_open_limit_orders(
         self, *, limit: int = 50
-    ) -> tuple[bool, list[BorosLimitOrder]]:
+    ) -> tuple[bool, list[BorosLimitOrder] | str]:
         try:
             orders_raw = await self.boros_client.get_open_orders(
-                user_address=self.user_address, limit=limit
+                user_address=self.wallet_address, limit=limit
             )
 
             orders: list[BorosLimitOrder] = []
@@ -1352,7 +1349,7 @@ class BorosAdapter(BaseAdapter):
             return True, orders
         except Exception as e:
             logger.error(f"Failed to get open orders: {e}")
-            return False, str(e)  # type: ignore
+            return False, str(e)
 
     async def get_full_user_state(
         self,
@@ -1644,7 +1641,7 @@ class BorosAdapter(BaseAdapter):
 
             cooldown_seconds: int | None = None
             cooldown_source = "unknown"
-            if self.user_address:
+            if self.wallet_address:
                 try:
                     async with web3_from_chain_id(self.chain_id) as web3:
                         market_hub = web3.eth.contract(
@@ -1653,7 +1650,7 @@ class BorosAdapter(BaseAdapter):
                         )
                         cooldown_seconds = int(
                             await market_hub.functions.getPersonalCooldown(
-                                to_checksum_address(self.user_address)
+                                to_checksum_address(self.wallet_address)
                             ).call()
                         )
                         cooldown_source = "onchain"
@@ -1725,7 +1722,7 @@ class BorosAdapter(BaseAdapter):
             # the actual ERC20 balance avoids these off-by-wei failures.
             try:
                 bal_raw_i = await get_token_balance(
-                    collateral_address, self.chain_id, self.user_address
+                    collateral_address, self.chain_id, self.wallet_address
                 )
                 if int(amount_wei) > bal_raw_i:
                     logger.warning(
@@ -1745,11 +1742,11 @@ class BorosAdapter(BaseAdapter):
                 token_id=token_id,
                 amount_wei=amount_wei,
                 market_id=market_id,
-                user_address=self.user_address,
+                user_address=self.wallet_address,
                 account_id=0,  # Cross margin
             )
 
-            if not self.sign_callback or not self.user_address:
+            if not self.sign_callback or not self.wallet_address:
                 return False, {
                     "error": "sign_callback or user_address not configured",
                     "calldata": calldata,
@@ -1766,7 +1763,7 @@ class BorosAdapter(BaseAdapter):
 
             try:
                 approve_tx = await build_approve_transaction(
-                    from_address=to_checksum_address(self.user_address),
+                    from_address=to_checksum_address(self.wallet_address),
                     chain_id=int(self.chain_id),
                     token_address=to_checksum_address(collateral_address),
                     spender_address=to_checksum_address(spender),
@@ -1851,7 +1848,7 @@ class BorosAdapter(BaseAdapter):
             calldata = await self.boros_client.build_withdraw_calldata(
                 token_id=token_id,
                 amount_wei=amount_native,  # API expects native decimals despite param name
-                user_address=self.user_address,
+                user_address=self.wallet_address,
                 account_id=account_id,
             )
 
@@ -1922,8 +1919,8 @@ class BorosAdapter(BaseAdapter):
         if not self.sign_callback:
             return False, {"error": "sign_callback not configured"}
 
-        sender = from_address or self.user_address
-        recipient = to_address or self.user_address
+        sender = from_address or self.wallet_address
+        recipient = to_address or self.wallet_address
         if not sender or not recipient:
             return False, {"error": "from_address/to_address not configured"}
 
@@ -2049,8 +2046,8 @@ class BorosAdapter(BaseAdapter):
         if not self.sign_callback:
             return False, {"error": "sign_callback not configured"}
 
-        sender = from_address or self.user_address
-        recipient = to_address or self.user_address
+        sender = from_address or self.wallet_address
+        recipient = to_address or self.wallet_address
         if not sender or not recipient:
             return False, {"error": "from_address/to_address not configured"}
 
@@ -2443,7 +2440,7 @@ class BorosAdapter(BaseAdapter):
             Tuple of (success, transaction result).
         """
         try:
-            dest_address = root_address or self.user_address
+            dest_address = root_address or self.wallet_address
             if not dest_address:
                 return False, {"error": "No destination address configured"}
 
@@ -2462,7 +2459,7 @@ class BorosAdapter(BaseAdapter):
 
             tx = {
                 "chainId": self.chain_id,
-                "from": to_checksum_address(self.user_address),
+                "from": to_checksum_address(self.wallet_address),
                 "to": to_checksum_address(BOROS_MARKET_HUB),
                 "data": data,
                 "value": 0,
@@ -2517,7 +2514,7 @@ class BorosAdapter(BaseAdapter):
 
         Falls back to local construction if API doesn't return marketAcc.
         """
-        if not self.user_address:
+        if not self.wallet_address:
             raise ValueError("user_address not configured")
 
         # Try to get marketAcc from API (preferred)
@@ -2541,9 +2538,9 @@ class BorosAdapter(BaseAdapter):
         # Fallback: build locally
         # MarketAcc = address(20) | accountId(1) | tokenId(2) | marketId(3)
         addr = (
-            self.user_address[2:]
-            if self.user_address.startswith("0x")
-            else self.user_address
+            self.wallet_address[2:]
+            if self.wallet_address.startswith("0x")
+            else self.wallet_address
         )
         account_hex = format(self.account_id, "02x")
         token_hex = format(token_id, "04x")
