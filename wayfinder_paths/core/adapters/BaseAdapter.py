@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import functools
 from abc import ABC
+from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
+
+
+def require_wallet(fn: Callable) -> Callable:
+    """Return ``(False, ...)`` early if ``self.wallet_address`` is not set."""
+
+    @functools.wraps(fn)
+    async def wrapper(self: BaseAdapter, *args: Any, **kwargs: Any) -> Any:
+        if not getattr(self, "wallet_address", None):
+            return False, "wallet address not configured"
+        return await fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class BaseAdapter(ABC):
