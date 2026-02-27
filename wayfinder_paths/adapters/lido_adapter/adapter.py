@@ -6,8 +6,7 @@ from typing import Any, Literal
 from eth_utils import to_checksum_address
 from loguru import logger
 
-from wayfinder_paths.adapters.ethena_vault_adapter.adapter import _require_wallet
-from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
@@ -96,7 +95,7 @@ class LidoAdapter(BaseAdapter):
             )
             return bool(paused), int(limit)
 
-    @_require_wallet
+    @require_wallet
     async def stake_eth(
         self,
         *,
@@ -214,7 +213,7 @@ class LidoAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def wrap_steth(
         self,
         *,
@@ -252,7 +251,7 @@ class LidoAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def unwrap_wsteth(
         self,
         *,
@@ -277,7 +276,7 @@ class LidoAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def request_withdrawal(
         self,
         *,
@@ -375,7 +374,7 @@ class LidoAdapter(BaseAdapter):
         async with web3_from_chain_id(chain_id) as w3:
             return await _query(w3)
 
-    @_require_wallet
+    @require_wallet
     async def claim_withdrawals(
         self,
         *,
