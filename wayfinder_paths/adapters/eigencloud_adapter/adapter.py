@@ -114,9 +114,8 @@ class EigenCloudAdapter(BaseAdapter):
         *,
         include_total_shares: bool = True,
         include_share_to_underlying: bool = True,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        block_id = block_identifier if block_identifier is not None else "pending"
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 sm = web3.eth.contract(
@@ -130,7 +129,7 @@ class EigenCloudAdapter(BaseAdapter):
 
                     whitelisted_coro = sm.functions.strategyIsWhitelistedForDeposit(
                         strat
-                    ).call(block_identifier=block_id)
+                    ).call(block_identifier=block_identifier)
 
                     # EigenStrategy can accept EIGEN or bEIGEN, so treat underlying token
                     # as "EIGEN" for display purposes by default.
@@ -138,13 +137,13 @@ class EigenCloudAdapter(BaseAdapter):
                         asyncio.sleep(0, result=EIGEN_TOKEN)
                         if strat.lower() == EIGENCLOUD_EIGEN_STRATEGY.lower()
                         else strat_contract.functions.underlyingToken().call(
-                            block_identifier=block_id
+                            block_identifier=block_identifier
                         )
                     )
 
                     total_shares_coro = (
                         strat_contract.functions.totalShares().call(
-                            block_identifier=block_id
+                            block_identifier=block_identifier
                         )
                         if include_total_shares
                         else asyncio.sleep(0, result=0)
@@ -152,7 +151,7 @@ class EigenCloudAdapter(BaseAdapter):
 
                     shares_to_underlying_coro = (
                         strat_contract.functions.sharesToUnderlyingView(MANTISSA).call(
-                            block_identifier=block_id
+                            block_identifier=block_identifier
                         )
                         if include_share_to_underlying
                         else asyncio.sleep(0, result=0)
@@ -172,7 +171,7 @@ class EigenCloudAdapter(BaseAdapter):
                         underlying_addr,
                         self.chain_id,
                         web3=web3,
-                        block_identifier=block_id,
+                        block_identifier=block_identifier,
                     )
 
                     out.append(
@@ -202,7 +201,7 @@ class EigenCloudAdapter(BaseAdapter):
         amount: int,
         token: str | None = None,
         check_whitelist: bool = True,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
         wallet = self.wallet_address
         if not wallet:
@@ -215,7 +214,6 @@ class EigenCloudAdapter(BaseAdapter):
             return False, "amount must be positive"
 
         strat = to_checksum_address(strategy)
-        block_id = block_identifier if block_identifier is not None else "pending"
 
         tok: str | None = None
         try:
@@ -228,7 +226,7 @@ class EigenCloudAdapter(BaseAdapter):
                 if tok is None:
                     s = web3.eth.contract(address=strat, abi=ISTRATEGY_ABI)
                     underlying = await s.functions.underlyingToken().call(
-                        block_identifier=block_id
+                        block_identifier=block_identifier
                     )
                     tok = to_checksum_address(str(underlying))
 
@@ -238,7 +236,7 @@ class EigenCloudAdapter(BaseAdapter):
                     )
                     whitelisted = await sm.functions.strategyIsWhitelistedForDeposit(
                         strat
-                    ).call(block_identifier=block_id)
+                    ).call(block_identifier=block_identifier)
                     if not whitelisted:
                         return False, f"strategy not whitelisted for deposit: {strat}"
         except Exception as exc:
@@ -286,23 +284,22 @@ class EigenCloudAdapter(BaseAdapter):
         self,
         *,
         account: str | None = None,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, dict[str, Any] | str]:
         acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "account (or wallet_address) is required"
 
-        block_id = block_identifier if block_identifier is not None else "pending"
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 dm = web3.eth.contract(
                     address=self.delegation_manager, abi=IDELEGATION_MANAGER_ABI
                 )
                 is_delegated_coro = dm.functions.isDelegated(acct).call(
-                    block_identifier=block_id
+                    block_identifier=block_identifier
                 )
                 delegated_to_coro = dm.functions.delegatedTo(acct).call(
-                    block_identifier=block_id
+                    block_identifier=block_identifier
                 )
                 is_delegated, delegated_to = await asyncio.gather(
                     is_delegated_coro, delegated_to_coro
@@ -316,7 +313,7 @@ class EigenCloudAdapter(BaseAdapter):
                             str(
                                 await dm.functions.delegationApprover(
                                     delegated_to_addr
-                                ).call(block_identifier=block_id)
+                                ).call(block_identifier=block_identifier)
                             )
                         )
                     except Exception:
@@ -368,7 +365,7 @@ class EigenCloudAdapter(BaseAdapter):
         *,
         staker: str | None = None,
         include_withdrawal_roots: bool = True,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
         wallet = self.wallet_address
         if not wallet:
@@ -407,7 +404,7 @@ class EigenCloudAdapter(BaseAdapter):
         approver_expiry: int = 0,
         approver_salt: Any = None,
         include_withdrawal_roots: bool = True,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
         wallet = self.wallet_address
         if not wallet:
@@ -447,7 +444,7 @@ class EigenCloudAdapter(BaseAdapter):
         strategies: list[str],
         deposit_shares: list[int],
         include_withdrawal_roots: bool = True,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
         wallet = self.wallet_address
         if not wallet:
@@ -541,10 +538,9 @@ class EigenCloudAdapter(BaseAdapter):
         self,
         *,
         withdrawal_root: str | bytes,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, dict[str, Any] | str]:
         root_hex = _as_bytes32_hex(withdrawal_root)
-        block_id = block_identifier if block_identifier is not None else "pending"
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 dm = web3.eth.contract(
@@ -552,11 +548,11 @@ class EigenCloudAdapter(BaseAdapter):
                 )
                 withdrawal, shares = await dm.functions.getQueuedWithdrawal(
                     root_hex
-                ).call(block_identifier=block_id)
+                ).call(block_identifier=block_identifier)
 
                 # withdrawal = (staker, delegatedTo, withdrawer, nonce, startBlock, strategies, scaledShares)
-                strategies = [to_checksum_address(s) for s in (withdrawal[5] or [])]
-                scaled_shares = list(withdrawal[6] or [])
+                strategies = [to_checksum_address(s) for s in withdrawal[5]]
+                scaled_shares = withdrawal[6]
 
                 return True, {
                     "withdrawal_root": root_hex,
@@ -580,7 +576,7 @@ class EigenCloudAdapter(BaseAdapter):
         withdrawal_root: str | bytes,
         receive_as_tokens: bool = True,
         tokens_override: list[str] | None = None,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
         wallet = self.wallet_address
         if not wallet:
@@ -589,7 +585,6 @@ class EigenCloudAdapter(BaseAdapter):
             return False, "sign_callback is required"
 
         root_hex = _as_bytes32_hex(withdrawal_root)
-        block_id = block_identifier if block_identifier is not None else "pending"
 
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
@@ -598,10 +593,10 @@ class EigenCloudAdapter(BaseAdapter):
                 )
                 withdrawal, shares = await dm.functions.getQueuedWithdrawal(
                     root_hex
-                ).call(block_identifier=block_id)
+                ).call(block_identifier=block_identifier)
 
-                strategies = [to_checksum_address(s) for s in (withdrawal[5] or [])]
-                scaled_shares = list(withdrawal[6] or [])
+                strategies = [to_checksum_address(s) for s in withdrawal[5]]
+                scaled_shares = withdrawal[6]
 
                 if tokens_override is not None:
                     if len(tokens_override) != len(strategies):
@@ -618,17 +613,15 @@ class EigenCloudAdapter(BaseAdapter):
                             == EIGENCLOUD_BEACON_CHAIN_ETH_STRATEGY_SENTINEL.lower()
                         ):
                             tokens.append(ZERO_ADDRESS)
-                            continue
-                        if strat.lower() == EIGENCLOUD_EIGEN_STRATEGY.lower():
+                        elif strat.lower() == EIGENCLOUD_EIGEN_STRATEGY.lower():
                             tokens.append(EIGEN_TOKEN)
-                            continue
-                        s = web3.eth.contract(address=strat, abi=ISTRATEGY_ABI)
-                        underlying = await s.functions.underlyingToken().call(
-                            block_identifier=block_id
-                        )
-                        tokens.append(to_checksum_address(str(underlying)))
+                        else:
+                            s = web3.eth.contract(address=strat, abi=ISTRATEGY_ABI)
+                            underlying = await s.functions.underlyingToken().call(
+                                block_identifier=block_identifier
+                            )
+                            tokens.append(to_checksum_address(str(underlying)))
 
-                # Even when receive_as_tokens=False, tokens length must match strategies.
                 if len(tokens) != len(strategies):
                     return False, "tokens length must equal withdrawal strategies length"
 
@@ -656,39 +649,34 @@ class EigenCloudAdapter(BaseAdapter):
                     "withdrawal_root": root_hex,
                     "receive_as_tokens": receive_as_tokens,
                     "tokens": tokens,
-                    "shares": list(shares or []),
+                    "shares": shares,
                 }
         except Exception as exc:
             return False, str(exc)
-
-    # ---------------------------
-    # Rewards (merkle claims)
-    # ---------------------------
 
     async def get_rewards_metadata(
         self,
         *,
         account: str | None = None,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, dict[str, Any] | str]:
         acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "account (or wallet_address) is required"
 
-        block_id = block_identifier if block_identifier is not None else "pending"
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 rc = web3.eth.contract(
                     address=self.rewards_coordinator, abi=IREWARDS_COORDINATOR_ABI
                 )
                 claimer_coro = rc.functions.claimerFor(acct).call(
-                    block_identifier=block_id
+                    block_identifier=block_identifier
                 )
                 roots_len_coro = rc.functions.getDistributionRootsLength().call(
-                    block_identifier=block_id
+                    block_identifier=block_identifier
                 )
                 current_root_coro = rc.functions.getCurrentClaimableDistributionRoot().call(
-                    block_identifier=block_id
+                    block_identifier=block_identifier
                 )
                 claimer, roots_len, current_root = await asyncio.gather(
                     claimer_coro, roots_len_coro, current_root_coro
@@ -739,16 +727,15 @@ class EigenCloudAdapter(BaseAdapter):
         self,
         *,
         claim: Any,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, bool | str]:
-        block_id = block_identifier if block_identifier is not None else "pending"
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 rc = web3.eth.contract(
                     address=self.rewards_coordinator, abi=IREWARDS_COORDINATOR_ABI
                 )
                 ok = await rc.functions.checkClaim(claim).call(
-                    block_identifier=block_id
+                    block_identifier=block_identifier
                 )
                 return True, ok
         except Exception as exc:
@@ -856,13 +843,12 @@ class EigenCloudAdapter(BaseAdapter):
         *,
         account: str | None = None,
         include_usd: bool = False,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, dict[str, Any] | str]:
         acct = to_checksum_address(account) if account else self.wallet_address
         if not acct:
             return False, "account (or wallet_address) is required"
 
-        block_id = block_identifier if block_identifier is not None else "pending"
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 dm = web3.eth.contract(
@@ -871,7 +857,7 @@ class EigenCloudAdapter(BaseAdapter):
 
                 strategies, deposit_shares = await dm.functions.getDepositedShares(
                     acct
-                ).call(block_identifier=block_id)
+                ).call(block_identifier=block_identifier)
                 strategies = [to_checksum_address(s) for s in (strategies or [])]
                 deposit_shares = list(deposit_shares or [])
 
@@ -879,14 +865,14 @@ class EigenCloudAdapter(BaseAdapter):
                 if strategies:
                     withdrawable_raw, _deposit_raw = (
                         await dm.functions.getWithdrawableShares(acct, strategies).call(
-                            block_identifier=block_id
+                            block_identifier=block_identifier
                         )
                     )
                     withdrawable_shares = list(withdrawable_raw or [])
 
                 is_delegated, delegated_to = await asyncio.gather(
-                    dm.functions.isDelegated(acct).call(block_identifier=block_id),
-                    dm.functions.delegatedTo(acct).call(block_identifier=block_id),
+                    dm.functions.isDelegated(acct).call(block_identifier=block_identifier),
+                    dm.functions.delegatedTo(acct).call(block_identifier=block_identifier),
                 )
 
                 positions: list[dict[str, Any]] = []
@@ -916,7 +902,7 @@ class EigenCloudAdapter(BaseAdapter):
                                 underlying_addr = to_checksum_address(
                                     str(
                                         await s.functions.underlyingToken().call(
-                                            block_identifier=block_id
+                                            block_identifier=block_identifier
                                         )
                                     )
                                 )
@@ -927,14 +913,14 @@ class EigenCloudAdapter(BaseAdapter):
                             try:
                                 deposit_underlying = await s.functions.sharesToUnderlyingView(
                                     dep
-                                ).call(block_identifier=block_id)
+                                ).call(block_identifier=block_identifier)
                             except Exception:
                                 deposit_underlying = 0
                         if wdr > 0:
                             try:
                                 withdrawable_underlying = (
                                     await s.functions.sharesToUnderlyingView(wdr).call(
-                                        block_identifier=block_id
+                                        block_identifier=block_identifier
                                     )
                                 )
                             except Exception:
@@ -981,21 +967,20 @@ class EigenCloudAdapter(BaseAdapter):
         include_queued_withdrawals: bool = True,
         withdrawal_roots: list[str] | None = None,
         include_rewards_metadata: bool = True,
-        block_identifier: int | str | None = None,
+        block_identifier: int | str = "pending",
     ) -> tuple[bool, dict[str, Any] | str]:
         acct = to_checksum_address(account)
-        block_id = block_identifier if block_identifier is not None else "pending"
 
         ok_pos, pos = await self.get_pos(
             account=acct,
             include_usd=include_usd,
-            block_identifier=block_id,
+            block_identifier=block_identifier,
         )
         if not ok_pos:
             return False, str(pos)
 
         ok_del, delegation = await self.get_delegation_state(
-            account=acct, block_identifier=block_id
+            account=acct, block_identifier=block_identifier
         )
         if not ok_del:
             return False, str(delegation)
@@ -1015,7 +1000,7 @@ class EigenCloudAdapter(BaseAdapter):
             queued: list[dict[str, Any]] = []
             for r in roots:
                 ok_q, q = await self.get_queued_withdrawal(
-                    withdrawal_root=r, block_identifier=block_id
+                    withdrawal_root=r, block_identifier=block_identifier
                 )
                 if ok_q and isinstance(q, dict):
                     queued.append(q)
@@ -1023,7 +1008,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         if include_rewards_metadata:
             ok_rm, rm = await self.get_rewards_metadata(
-                account=acct, block_identifier=block_id
+                account=acct, block_identifier=block_identifier
             )
             if ok_rm and isinstance(rm, dict):
                 state["rewards"] = rm
