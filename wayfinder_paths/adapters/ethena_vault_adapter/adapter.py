@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 from collections.abc import Callable
 from typing import Any
 
 from eth_utils import to_checksum_address
 
-from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.ethena_abi import ETHENA_SUSDE_VAULT_ABI
@@ -22,18 +21,6 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 VESTING_PERIOD_S = 8 * 60 * 60  # 8 hours
-
-
-def _require_wallet(fn: Callable) -> Callable:
-    """Return (False, ...) early if wallet_address is not set."""
-
-    @functools.wraps(fn)
-    async def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        if not self.wallet_address:
-            return False, "strategy wallet address not configured"
-        return await fn(self, *args, **kwargs)
-
-    return wrapper
 
 
 class EthenaVaultAdapter(BaseAdapter):
@@ -272,7 +259,7 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def deposit_usde(
         self,
         *,
@@ -310,7 +297,7 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def request_withdraw_by_shares(
         self,
         *,
@@ -333,7 +320,7 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def request_withdraw_by_assets(
         self,
         *,
@@ -356,7 +343,7 @@ class EthenaVaultAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    @_require_wallet
+    @require_wallet
     async def claim_withdraw(
         self,
         *,
