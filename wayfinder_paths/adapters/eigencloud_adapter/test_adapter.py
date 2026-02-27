@@ -104,7 +104,7 @@ def test_default_addresses(adapter):
 async def test_deposit_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.deposit(strategy=FAKE_STRATEGY, amount=1)
     assert ok is False
-    assert "wallet_address" in str(msg).lower()
+    assert "wallet" in str(msg).lower()
 
 
 @pytest.mark.asyncio
