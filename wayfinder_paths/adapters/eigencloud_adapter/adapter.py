@@ -176,7 +176,7 @@ class EigenCloudAdapter(BaseAdapter):
 
                     out.append(
                         {
-                            "chain_id": int(self.chain_id),
+                            "chain_id": self.chain_id,
                             "strategy": strat,
                             "strategy_name": name,
                             "underlying": underlying_addr,
@@ -209,8 +209,7 @@ class EigenCloudAdapter(BaseAdapter):
         if not self.sign_callback:
             return False, "sign_callback is required"
 
-        amt = int(amount)
-        if amt <= 0:
+        if amount <= 0:
             return False, "amount must be positive"
 
         strat = to_checksum_address(strategy)
@@ -250,7 +249,7 @@ class EigenCloudAdapter(BaseAdapter):
                 token_address=tok,
                 owner=wallet,
                 spender=self.strategy_manager,
-                amount=amt,
+                amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -265,7 +264,7 @@ class EigenCloudAdapter(BaseAdapter):
                 target=self.strategy_manager,
                 abi=ISTRATEGY_MANAGER_ABI,
                 fn_name="depositIntoStrategy",
-                args=[strat, tok, amt],
+                args=[strat, tok, amount],
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
@@ -275,7 +274,7 @@ class EigenCloudAdapter(BaseAdapter):
                 "approve_tx_hash": approve_tx_hash,
                 "strategy": strat,
                 "token": tok,
-                "amount": amt,
+                "amount": amount,
             }
         except Exception as exc:
             return False, str(exc)
@@ -343,7 +342,6 @@ class EigenCloudAdapter(BaseAdapter):
 
         op = to_checksum_address(operator)
         sig = _as_bytes(approver_signature)
-        expiry = int(approver_expiry or 0)
         salt = _as_bytes32_hex(approver_salt)
 
         try:
@@ -351,7 +349,7 @@ class EigenCloudAdapter(BaseAdapter):
                 target=self.delegation_manager,
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="delegateTo",
-                args=[op, (sig, expiry), salt],
+                args=[op, (sig, approver_expiry), salt],
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
@@ -414,7 +412,6 @@ class EigenCloudAdapter(BaseAdapter):
 
         op = to_checksum_address(new_operator)
         sig = _as_bytes(approver_signature)
-        expiry = int(approver_expiry or 0)
         salt = _as_bytes32_hex(approver_salt)
 
         try:
@@ -422,7 +419,7 @@ class EigenCloudAdapter(BaseAdapter):
                 target=self.delegation_manager,
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="redelegate",
-                args=[op, (sig, expiry), salt],
+                args=[op, (sig, approver_expiry), salt],
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
@@ -565,7 +562,7 @@ class EigenCloudAdapter(BaseAdapter):
                         "strategies": strategies,
                         "scaledShares": scaled_shares,
                     },
-                    "shares": list(shares or []),
+                    "shares": shares,
                 }
         except Exception as exc:
             return False, str(exc)
@@ -823,7 +820,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx: dict[str, Any] = {
-                "chainId": int(self.chain_id),
+                "chainId": self.chain_id,
                 "from": wallet,
                 "to": self.rewards_coordinator,
                 "data": "0x" + data.hex(),
@@ -833,10 +830,6 @@ class EigenCloudAdapter(BaseAdapter):
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
-
-    # ---------------------------
-    # Positions
-    # ---------------------------
 
     async def get_pos(
         self,
@@ -858,8 +851,7 @@ class EigenCloudAdapter(BaseAdapter):
                 strategies, deposit_shares = await dm.functions.getDepositedShares(
                     acct
                 ).call(block_identifier=block_identifier)
-                strategies = [to_checksum_address(s) for s in (strategies or [])]
-                deposit_shares = list(deposit_shares or [])
+                strategies = [to_checksum_address(s) for s in strategies]
 
                 withdrawable_shares: list[int] = []
                 if strategies:
@@ -868,7 +860,7 @@ class EigenCloudAdapter(BaseAdapter):
                             block_identifier=block_identifier
                         )
                     )
-                    withdrawable_shares = list(withdrawable_raw or [])
+                    withdrawable_shares = withdrawable_raw
 
                 is_delegated, delegated_to = await asyncio.gather(
                     dm.functions.isDelegated(acct).call(block_identifier=block_identifier),
@@ -900,10 +892,8 @@ class EigenCloudAdapter(BaseAdapter):
                         else:
                             try:
                                 underlying_addr = to_checksum_address(
-                                    str(
-                                        await s.functions.underlyingToken().call(
-                                            block_identifier=block_identifier
-                                        )
+                                    await s.functions.underlyingToken().call(
+                                        block_identifier=block_identifier
                                     )
                                 )
                             except Exception:
@@ -947,7 +937,7 @@ class EigenCloudAdapter(BaseAdapter):
                     positions.append(pos)
 
                 out: dict[str, Any] = {
-                    "chain_id": int(self.chain_id),
+                    "chain_id": self.chain_id,
                     "account": acct,
                     "isDelegated": is_delegated,
                     "delegatedTo": to_checksum_address(delegated_to),
@@ -987,7 +977,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         state: dict[str, Any] = {
             "protocol": "eigencloud",
-            "chainId": int(self.chain_id),
+            "chainId": self.chain_id,
             "account": acct,
             "delegation": delegation,
             "positions": (pos or {}).get("positions") if isinstance(pos, dict) else [],
