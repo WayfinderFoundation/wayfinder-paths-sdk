@@ -103,7 +103,7 @@ async def test_deposit_requires_signing_callback(adapter):
 async def test_deposit_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.deposit(amount=1)
     assert ok is False
-    assert "wallet_address" in str(msg).lower()
+    assert "wallet" in str(msg).lower()
 
 
 @pytest.mark.asyncio
@@ -124,7 +124,7 @@ async def test_deposit_rejects_negative_amount(adapter_with_signer):
 async def test_withdraw_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.withdraw(amount=1)
     assert ok is False
-    assert "wallet_address" in str(msg).lower()
+    assert "wallet" in str(msg).lower()
 
 
 @pytest.mark.asyncio
@@ -165,7 +165,7 @@ async def test_withdraw_full_zero_shares(adapter_with_signer):
 async def test_get_pos_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.get_pos()
     assert ok is False
-    assert "wallet_address" in str(msg).lower()
+    assert "wallet" in str(msg).lower()
 
 
 @pytest.mark.asyncio

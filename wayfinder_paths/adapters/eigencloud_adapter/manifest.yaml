@@ -1,0 +1,15 @@
+schema_version: "0.1"
+entrypoint: "adapters.eigencloud_adapter.adapter.EigenCloudAdapter"
+capabilities:
+  - "market.list"
+  - "position.read"
+  - "restaking.deposit"
+  - "restaking.withdraw.queue"
+  - "restaking.withdraw.complete"
+  - "delegation.delegate"
+  - "delegation.undelegate"
+  - "delegation.redelegate"
+  - "rewards.read"
+  - "rewards.claim"
+dependencies: []
+
