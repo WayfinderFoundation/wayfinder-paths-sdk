@@ -83,7 +83,8 @@ class EigenCloudAdapter(BaseAdapter):
 
     Notes:
     - Restaking is share accounting (strategies), not ERC-4626.
-    - Delegation is optional; withdrawals are delayed via a queue.
+    - Delegation is optional
+    - withdrawals are delayed via a queue.
     - Rewards are claimed via merkle proofs (offchain-prepared claim structs).
     """
 
@@ -166,7 +167,7 @@ class EigenCloudAdapter(BaseAdapter):
                         )
                     )
 
-                    underlying_addr = to_checksum_address(str(underlying))
+                    underlying_addr = to_checksum_address(underlying)
                     symbol, token_name, decimals = await get_erc20_metadata(
                         underlying_addr,
                         self.chain_id,
@@ -227,7 +228,7 @@ class EigenCloudAdapter(BaseAdapter):
                     underlying = await s.functions.underlyingToken().call(
                         block_identifier=block_identifier
                     )
-                    tok = to_checksum_address(str(underlying))
+                    tok = to_checksum_address(underlying)
 
                 if check_whitelist:
                     sm = web3.eth.contract(
@@ -304,16 +305,14 @@ class EigenCloudAdapter(BaseAdapter):
                     is_delegated_coro, delegated_to_coro
                 )
 
-                delegated_to_addr = to_checksum_address(str(delegated_to))
+                delegated_to_addr = to_checksum_address(delegated_to)
                 operator_approver: str | None = None
                 if is_delegated and delegated_to_addr != ZERO_ADDRESS:
                     try:
                         operator_approver = to_checksum_address(
-                            str(
-                                await dm.functions.delegationApprover(
-                                    delegated_to_addr
-                                ).call(block_identifier=block_identifier)
-                            )
+                            await dm.functions.delegationApprover(
+                                delegated_to_addr
+                            ).call(block_identifier=block_identifier)
                         )
                     except Exception:
                         operator_approver = None
@@ -386,7 +385,7 @@ class EigenCloudAdapter(BaseAdapter):
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
-                    tx_hash=str(tx_hash)
+                    tx_hash=tx_hash
                 )
                 if ok and isinstance(roots, list):
                     payload["withdrawal_roots"] = roots
@@ -427,7 +426,7 @@ class EigenCloudAdapter(BaseAdapter):
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
-                    tx_hash=str(tx_hash)
+                    tx_hash=tx_hash
                 )
                 if ok and isinstance(roots, list):
                     payload["withdrawal_roots"] = roots
@@ -473,7 +472,7 @@ class EigenCloudAdapter(BaseAdapter):
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
-                    tx_hash=str(tx_hash)
+                    tx_hash=tx_hash
                 )
                 if ok and isinstance(roots, list):
                     payload["withdrawal_roots"] = roots
@@ -487,9 +486,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         for log in logs if isinstance(logs, list) else []:
             try:
-                if str(log.get("address") or "").lower() != str(
-                    self.delegation_manager
-                ).lower():
+                if (log.get("address") or "").lower() != self.delegation_manager.lower():
                     continue
                 topics = log.get("topics") or []
                 if not topics:
@@ -517,7 +514,7 @@ class EigenCloudAdapter(BaseAdapter):
         *,
         tx_hash: str,
     ) -> tuple[bool, list[str] | str]:
-        h = str(tx_hash or "").strip()
+        h = tx_hash.strip()
         if not h:
             return False, "tx_hash is required"
         if not h.startswith("0x"):
@@ -617,7 +614,7 @@ class EigenCloudAdapter(BaseAdapter):
                             underlying = await s.functions.underlyingToken().call(
                                 block_identifier=block_identifier
                             )
-                            tokens.append(to_checksum_address(str(underlying)))
+                            tokens.append(to_checksum_address(underlying))
 
                 if len(tokens) != len(strategies):
                     return False, "tokens length must equal withdrawal strategies length"
