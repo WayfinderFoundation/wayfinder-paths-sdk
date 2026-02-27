@@ -11,6 +11,7 @@ from web3 import AsyncWeb3
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.adapters.uniswap_adapter.base import UniswapV3BaseAdapter
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import PRJX_NPM, PRJX_ROUTER
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.projectx import (
@@ -44,7 +45,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
     deadline,
     filter_positions,
-    find_pool,
     liq_for_amounts,
     read_all_positions,
     read_position,
@@ -55,6 +55,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
 )
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.web3_batch import batch_web3_calls
 
 MINT_POLL_ATTEMPTS = 6
 INITIAL_MINT_DELAY_SECONDS = 2
@@ -778,10 +779,11 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
 
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
                 pool = web3.eth.contract(address=pool_address, abi=PROJECTX_POOL_ABI)
-                slot0, token0_raw, token1_raw = await asyncio.gather(
-                    pool.functions.slot0().call(block_identifier="latest"),
-                    pool.functions.token0().call(block_identifier="latest"),
-                    pool.functions.token1().call(block_identifier="latest"),
+                slot0, token0_raw, token1_raw = await batch_web3_calls(
+                    web3,
+                    lambda: pool.functions.slot0().call(block_identifier="latest"),
+                    lambda: pool.functions.token0().call(block_identifier="latest"),
+                    lambda: pool.functions.token1().call(block_identifier="latest"),
                 )
                 sqrt_price_x96 = int(slot0[0])
                 token0 = to_checksum_address(token0_raw)
@@ -1005,13 +1007,21 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         pool_addr = self._require_pool_address()
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool = web3.eth.contract(address=pool_addr, abi=PROJECTX_POOL_ABI)
-            slot0, tick_spacing, fee, liquidity, token0, token1 = await asyncio.gather(
-                pool.functions.slot0().call(block_identifier="latest"),
-                pool.functions.tickSpacing().call(block_identifier="latest"),
-                pool.functions.fee().call(block_identifier="latest"),
-                pool.functions.liquidity().call(block_identifier="latest"),
-                pool.functions.token0().call(block_identifier="latest"),
-                pool.functions.token1().call(block_identifier="latest"),
+            (
+                slot0,
+                tick_spacing,
+                fee,
+                liquidity,
+                token0,
+                token1,
+            ) = await batch_web3_calls(
+                web3,
+                lambda: pool.functions.slot0().call(block_identifier="latest"),
+                lambda: pool.functions.tickSpacing().call(block_identifier="latest"),
+                lambda: pool.functions.fee().call(block_identifier="latest"),
+                lambda: pool.functions.liquidity().call(block_identifier="latest"),
+                lambda: pool.functions.token0().call(block_identifier="latest"),
+                lambda: pool.functions.token1().call(block_identifier="latest"),
             )
 
         meta = {
@@ -1036,9 +1046,10 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         if cached:
             return cached
         contract = web3.eth.contract(address=checksum, abi=ERC20_ABI)
-        decimals, symbol = await asyncio.gather(
-            contract.functions.decimals().call(block_identifier="latest"),
-            contract.functions.symbol().call(block_identifier="latest"),
+        decimals, symbol = await batch_web3_calls(
+            web3,
+            lambda: contract.functions.decimals().call(block_identifier="latest"),
+            lambda: contract.functions.symbol().call(block_identifier="latest"),
         )
         token_id = ADDRESS_TO_TOKEN_ID.get(checksum)
         meta = {
@@ -1255,17 +1266,19 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         tick_lower: int,
         tick_upper: int,
     ) -> tuple[int, int]:
-        (f0_global, f1_global, tl, tu) = await asyncio.gather(
-            pool_contract.functions.feeGrowthGlobal0X128().call(
+        web3 = pool_contract.w3
+        (f0_global, f1_global, tl, tu) = await batch_web3_calls(
+            web3,
+            lambda: pool_contract.functions.feeGrowthGlobal0X128().call(
                 block_identifier="latest"
             ),
-            pool_contract.functions.feeGrowthGlobal1X128().call(
+            lambda: pool_contract.functions.feeGrowthGlobal1X128().call(
                 block_identifier="latest"
             ),
-            pool_contract.functions.ticks(int(tick_lower)).call(
+            lambda: pool_contract.functions.ticks(int(tick_lower)).call(
                 block_identifier="latest"
             ),
-            pool_contract.functions.ticks(int(tick_upper)).call(
+            lambda: pool_contract.functions.ticks(int(tick_upper)).call(
                 block_identifier="latest"
             ),
         )
@@ -1352,9 +1365,25 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 address=self.factory_address,
                 abi=PROJECTX_FACTORY_ABI,
             )
-            results = await asyncio.gather(
-                *(find_pool(factory, token_a, token_b, fee) for fee in fees)
+            token_a_cs = to_checksum_address(token_a)
+            token_b_cs = to_checksum_address(token_b)
+            raw_pools = await batch_web3_calls(
+                web3,
+                *(
+                    lambda fee=fee: factory.functions.getPool(
+                        token_a_cs,
+                        token_b_cs,
+                        int(fee),
+                    ).call(block_identifier="latest")
+                    for fee in fees
+                ),
             )
+            results: list[str | None] = []
+            for addr in raw_pools:
+                if not addr or str(addr).lower() == ZERO_ADDRESS.lower():
+                    results.append(None)
+                else:
+                    results.append(to_checksum_address(addr))
             fallback: tuple[int, str] | None = None
             for fee, pool_addr in zip(fees, results, strict=True):
                 if not pool_addr:

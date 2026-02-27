@@ -30,6 +30,7 @@ from wayfinder_paths.core.constants.moonwell_abi import (
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.web3_batch import batch_web3_calls
 
 CHAIN_NAME = "base"
 
@@ -1353,20 +1354,21 @@ class MoonwellAdapter(BaseAdapter):
                 )
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
 
-                bal_raw, exch_raw, cash_raw, m_dec, u_addr = await asyncio.gather(
-                    mtoken_contract.functions.balanceOf(account).call(
+                bal_raw, exch_raw, cash_raw, m_dec, u_addr = await batch_web3_calls(
+                    web3,
+                    lambda: mtoken_contract.functions.balanceOf(account).call(
                         block_identifier="pending"
                     ),
-                    mtoken_contract.functions.exchangeRateStored().call(
+                    lambda: mtoken_contract.functions.exchangeRateStored().call(
                         block_identifier="pending"
                     ),
-                    mtoken_contract.functions.getCash().call(
+                    lambda: mtoken_contract.functions.getCash().call(
                         block_identifier="pending"
                     ),
-                    mtoken_contract.functions.decimals().call(
+                    lambda: mtoken_contract.functions.decimals().call(
                         block_identifier="pending"
                     ),
-                    mtoken_contract.functions.underlying().call(
+                    lambda: mtoken_contract.functions.underlying().call(
                         block_identifier="pending"
                     ),
                 )

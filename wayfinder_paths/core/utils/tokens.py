@@ -11,6 +11,7 @@ from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.web3_batch import batch_web3_calls
 
 NATIVE_TOKEN_ADDRESSES: set = {
     "0x0000000000000000000000000000000000000000",
@@ -174,13 +175,15 @@ async def get_token_balance_with_decimals(
 
         checksum_token = w3.to_checksum_address(str(token_address))
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
-        balance_coro = contract.functions.balanceOf(checksum_wallet).call(
-            block_identifier=balance_block_identifier
+        balance, decimals = await batch_web3_calls(
+            w3,
+            lambda: contract.functions.balanceOf(checksum_wallet).call(
+                block_identifier=balance_block_identifier
+            ),
+            lambda: contract.functions.decimals().call(
+                block_identifier=decimals_block_identifier
+            ),
         )
-        decimals_coro = contract.functions.decimals().call(
-            block_identifier=decimals_block_identifier
-        )
-        balance, decimals = await asyncio.gather(balance_coro, decimals_coro)
         return int(balance), int(decimals)
 
     if web3 is None:
