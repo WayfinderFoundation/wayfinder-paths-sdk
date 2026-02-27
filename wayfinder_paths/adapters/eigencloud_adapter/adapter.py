@@ -158,13 +158,16 @@ class EigenCloudAdapter(BaseAdapter):
                         else asyncio.sleep(0, result=0)
                     )
 
-                    whitelisted, underlying, total_shares, share_price = (
-                        await asyncio.gather(
-                            whitelisted_coro,
-                            underlying_coro,
-                            total_shares_coro,
-                            shares_to_underlying_coro,
-                        )
+                    (
+                        whitelisted,
+                        underlying,
+                        total_shares,
+                        share_price,
+                    ) = await asyncio.gather(
+                        whitelisted_coro,
+                        underlying_coro,
+                        total_shares_coro,
+                        shares_to_underlying_coro,
                     )
 
                     underlying_addr = to_checksum_address(underlying)
@@ -486,7 +489,9 @@ class EigenCloudAdapter(BaseAdapter):
 
         for log in logs if isinstance(logs, list) else []:
             try:
-                if (log.get("address") or "").lower() != self.delegation_manager.lower():
+                if (
+                    log.get("address") or ""
+                ).lower() != self.delegation_manager.lower():
                     continue
                 topics = log.get("topics") or []
                 if not topics:
@@ -616,7 +621,10 @@ class EigenCloudAdapter(BaseAdapter):
                             tokens.append(to_checksum_address(underlying))
 
                 if len(tokens) != len(strategies):
-                    return False, "tokens length must equal withdrawal strategies length"
+                    return (
+                        False,
+                        "tokens length must equal withdrawal strategies length",
+                    )
 
                 withdrawal_tuple = (
                     to_checksum_address(withdrawal[0]),
@@ -668,8 +676,10 @@ class EigenCloudAdapter(BaseAdapter):
                 roots_len_coro = rc.functions.getDistributionRootsLength().call(
                     block_identifier=block_identifier
                 )
-                current_root_coro = rc.functions.getCurrentClaimableDistributionRoot().call(
-                    block_identifier=block_identifier
+                current_root_coro = (
+                    rc.functions.getCurrentClaimableDistributionRoot().call(
+                        block_identifier=block_identifier
+                    )
                 )
                 claimer, roots_len, current_root = await asyncio.gather(
                     claimer_coro, roots_len_coro, current_root_coro
@@ -851,16 +861,21 @@ class EigenCloudAdapter(BaseAdapter):
 
                 withdrawable_shares: list[int] = []
                 if strategies:
-                    withdrawable_raw, _deposit_raw = (
-                        await dm.functions.getWithdrawableShares(acct, strategies).call(
-                            block_identifier=block_identifier
-                        )
+                    (
+                        withdrawable_raw,
+                        _deposit_raw,
+                    ) = await dm.functions.getWithdrawableShares(acct, strategies).call(
+                        block_identifier=block_identifier
                     )
                     withdrawable_shares = withdrawable_raw
 
                 is_delegated, delegated_to = await asyncio.gather(
-                    dm.functions.isDelegated(acct).call(block_identifier=block_identifier),
-                    dm.functions.delegatedTo(acct).call(block_identifier=block_identifier),
+                    dm.functions.isDelegated(acct).call(
+                        block_identifier=block_identifier
+                    ),
+                    dm.functions.delegatedTo(acct).call(
+                        block_identifier=block_identifier
+                    ),
                 )
 
                 positions: list[dict[str, Any]] = []
@@ -897,9 +912,11 @@ class EigenCloudAdapter(BaseAdapter):
 
                         if dep > 0:
                             try:
-                                deposit_underlying = await s.functions.sharesToUnderlyingView(
-                                    dep
-                                ).call(block_identifier=block_identifier)
+                                deposit_underlying = (
+                                    await s.functions.sharesToUnderlyingView(dep).call(
+                                        block_identifier=block_identifier
+                                    )
+                                )
                             except Exception:
                                 deposit_underlying = 0
                         if wdr > 0:

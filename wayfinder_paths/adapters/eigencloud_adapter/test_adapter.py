@@ -30,7 +30,9 @@ def _mock_call(return_value):
 
 def _make_strategy_contract(*, underlying_token=FAKE_TOKEN):
     contract = MagicMock()
-    contract.functions.underlyingToken = MagicMock(return_value=_mock_call(underlying_token))
+    contract.functions.underlyingToken = MagicMock(
+        return_value=_mock_call(underlying_token)
+    )
     contract.functions.totalShares = MagicMock(return_value=_mock_call(123))
     contract.functions.sharesToUnderlyingView = MagicMock(return_value=_mock_call(456))
     return contract
@@ -53,10 +55,18 @@ def _make_delegation_manager_contract(
     delegated_to=ZERO_ADDRESS,
 ):
     contract = MagicMock()
-    contract.functions.getQueuedWithdrawal = MagicMock(return_value=_mock_call(queued_withdrawal))
-    contract.functions.queueWithdrawals = MagicMock(return_value=_mock_call([b"\x11" * 32]))
-    contract.functions.getDepositedShares = MagicMock(return_value=_mock_call(deposited))
-    contract.functions.getWithdrawableShares = MagicMock(return_value=_mock_call(withdrawable))
+    contract.functions.getQueuedWithdrawal = MagicMock(
+        return_value=_mock_call(queued_withdrawal)
+    )
+    contract.functions.queueWithdrawals = MagicMock(
+        return_value=_mock_call([b"\x11" * 32])
+    )
+    contract.functions.getDepositedShares = MagicMock(
+        return_value=_mock_call(deposited)
+    )
+    contract.functions.getWithdrawableShares = MagicMock(
+        return_value=_mock_call(withdrawable)
+    )
     contract.functions.isDelegated = MagicMock(return_value=_mock_call(is_delegated))
     contract.functions.delegatedTo = MagicMock(return_value=_mock_call(delegated_to))
     return contract
@@ -112,7 +122,9 @@ async def test_deposit_rejects_non_positive_amount(adapter_with_signer):
 
 
 @pytest.mark.asyncio
-async def test_deposit_discovers_underlying_and_approves_strategy_manager(adapter_with_signer):
+async def test_deposit_discovers_underlying_and_approves_strategy_manager(
+    adapter_with_signer,
+):
     mock_web3 = MagicMock()
     sm = _make_strategy_manager_contract(whitelisted=True)
     strat = _make_strategy_contract(underlying_token=FAKE_TOKEN)
@@ -274,7 +286,11 @@ async def test_complete_withdrawal_builds_tokens_list(adapter_with_signer):
         FAKE_WALLET,
         1,
         100,
-        [FAKE_STRATEGY, EIGENCLOUD_BEACON_CHAIN_ETH_STRATEGY_SENTINEL, EIGENCLOUD_EIGEN_STRATEGY],
+        [
+            FAKE_STRATEGY,
+            EIGENCLOUD_BEACON_CHAIN_ETH_STRATEGY_SENTINEL,
+            EIGENCLOUD_EIGEN_STRATEGY,
+        ],
         [10, 20, 30],
     )
     shares = [10, 20, 30]

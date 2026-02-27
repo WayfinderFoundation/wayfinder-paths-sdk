@@ -80,8 +80,12 @@ async def get_erc20_metadata(
         contract = w3.eth.contract(address=checksum_token, abi=ERC20_ABI)
 
         symbol, name, decimals = await asyncio.gather(
-            _erc20_string(w3, checksum_token, "symbol", block_identifier=block_identifier),
-            _erc20_string(w3, checksum_token, "name", block_identifier=block_identifier),
+            _erc20_string(
+                w3, checksum_token, "symbol", block_identifier=block_identifier
+            ),
+            _erc20_string(
+                w3, checksum_token, "name", block_identifier=block_identifier
+            ),
             contract.functions.decimals().call(block_identifier=block_identifier),
         )
         return str(symbol), str(name), int(decimals)
