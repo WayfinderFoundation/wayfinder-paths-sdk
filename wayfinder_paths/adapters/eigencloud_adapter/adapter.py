@@ -544,7 +544,6 @@ class EigenCloudAdapter(BaseAdapter):
                     root_hex
                 ).call(block_identifier=block_identifier)
 
-                # withdrawal = (staker, delegatedTo, withdrawer, nonce, startBlock, strategies, scaledShares)
                 strategies = [to_checksum_address(s) for s in withdrawal[5]]
                 scaled_shares = withdrawal[6]
 
