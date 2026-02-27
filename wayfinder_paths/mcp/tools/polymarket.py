@@ -109,13 +109,8 @@ def _resolve_wallet(
     if not w:
         return want, None, None
     addr = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    pk_s = str(pk).strip() if pk else None
-    return want, addr, pk_s
+    pk = w.get("private_key") or w.get("private_key_hex")
+    return want, addr, pk
 
 
 def _annotate(

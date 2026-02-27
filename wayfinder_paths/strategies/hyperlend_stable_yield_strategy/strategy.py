@@ -679,7 +679,7 @@ class HyperlendStableYieldStrategy(Strategy):
                 )
 
                 if not result:
-                    error_msg = str(tx_data) if isinstance(tx_data, str) else ""
+                    error_msg = tx_data if isinstance(tx_data, str) else ""
 
                     if (
                         "Transaction did not land" in error_msg
@@ -810,7 +810,6 @@ class HyperlendStableYieldStrategy(Strategy):
             self.usdt_token_info
         )
 
-        # Get final balances in strategy wallet (don't transfer to main)
         total_usdt = 0.0
         try:
             _, total_usdt_wei = await self.balance_adapter.get_balance(

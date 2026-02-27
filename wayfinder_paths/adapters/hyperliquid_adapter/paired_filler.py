@@ -651,7 +651,6 @@ class PairedFiller:
             cl_spot = _rand_cloid()
             cl_perp = _rand_cloid()
 
-            # Execute spot and perp legs in parallel
             spot_task = asyncio.create_task(
                 self._ioc_leg(
                     is_spot=True,

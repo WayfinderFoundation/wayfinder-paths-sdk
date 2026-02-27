@@ -1779,7 +1779,6 @@ class MorphoAdapter(BaseAdapter):
                     f"Insufficient reallocatable liquidity: needed={needed} available={best_total}",
                 )
 
-            # Build withdrawals.
             remaining = needed
             withdrawals: list[tuple[MarketParamsTuple, int]] = []
             for it in sorted(
@@ -1824,7 +1823,6 @@ class MorphoAdapter(BaseAdapter):
                     if bundler_address
                     else to_checksum_address(self.bundler_address)
                 )
-                # Build bundler calls.
                 call1 = await self._encode_data(
                     chain_id=int(chain_id),
                     target=bundler,

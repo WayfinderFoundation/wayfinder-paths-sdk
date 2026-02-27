@@ -2630,7 +2630,7 @@ class BorosAdapter(BaseAdapter):
                     if ia_bps - best_ia > max_ia_deviation:
                         break
 
-                size_wei = int(size_str) if isinstance(size_str, str) else int(size_str)
+                size_wei = int(size_str)
                 cumulative += size_wei
                 chosen_ia = ia_bps
 

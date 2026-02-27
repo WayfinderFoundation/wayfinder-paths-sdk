@@ -86,7 +86,6 @@ class BorosHypeWithdrawMixin:
             else:
                 logger.info(f"Builder fee status: {msg}")
 
-        # Get inventory once - use it for initial decisions/logging.
         inv = await self.observe()
         isolated_usd = float(inv.boros_idle_collateral_isolated or 0.0) * float(
             inv.hype_price_usd or 0.0

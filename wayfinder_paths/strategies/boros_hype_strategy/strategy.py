@@ -1170,7 +1170,6 @@ class BorosHypeStrategy(
         alloc = self._get_allocation_status(inv)
         yield_info = await self._get_yield_info(inv)
 
-        # Build human-readable summary with full breakdown
         spot_parts = []
         if inv.khype_balance > 0.001:
             spot_parts.append(

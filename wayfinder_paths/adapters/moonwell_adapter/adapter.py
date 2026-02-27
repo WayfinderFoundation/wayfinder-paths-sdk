@@ -759,8 +759,7 @@ class MoonwellAdapter(BaseAdapter):
                 if not markets_info:
                     return True, []
 
-                # Build a filtered list of (market_info, market_address) pairs to ensure
-                # markets_info and market_addrs always have matching lengths.
+                # Ensure markets_info and market_addrs always have matching lengths.
                 filtered_markets = [
                     (m, to_checksum_address(str(m[0])))
                     for m in markets_info
@@ -771,7 +770,6 @@ class MoonwellAdapter(BaseAdapter):
 
                 markets_info = [m for m, _ in filtered_markets]
                 market_addrs = [addr for _, addr in filtered_markets]
-                # Fetch market metadata (symbol/underlying/decimals) via multicall.
                 meta_calls: list[Any] = []
                 for mtoken in market_addrs:
                     mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)

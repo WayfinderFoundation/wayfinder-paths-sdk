@@ -12,15 +12,13 @@ from wayfinder_paths.core.utils.contracts import (
     deploy_contract as _deploy_contract,
 )
 from wayfinder_paths.core.utils.solidity import SOLC_VERSION, compile_solidity
-from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
-    find_wallet_by_label,
-    normalize_address,
     ok,
     resolve_path_inside_repo,
+    resolve_wallet_and_signer,
     summarize_abi,
 )
 
@@ -139,23 +137,10 @@ async def deploy_contract(
 
     ``constructor_args`` is a JSON-encoded list (e.g. ``'["0xabc...", 1000]'``).
     """
-    w = find_wallet_by_label(wallet_label)
-    if not w:
-        return err("not_found", f"Unknown wallet_label: {wallet_label}")
-
-    sender = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    if not sender or not pk:
-        return err(
-            "invalid_wallet",
-            "Wallet must include address and private_key_hex in config.json",
-        )
-
-    sign_callback = make_sign_callback(pk)
+    resolved = resolve_wallet_and_signer(wallet_label)
+    if isinstance(resolved, dict):
+        return resolved
+    sender, _, sign_callback = resolved
 
     loaded = _load_solidity_source(source_path)
     if isinstance(loaded, dict):

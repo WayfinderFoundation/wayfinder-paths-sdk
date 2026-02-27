@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 import yaml
 
 from wayfinder_paths.core.config import CONFIG
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 
 getcontext().prec = 78
 
@@ -128,6 +130,25 @@ def resolve_wallet_address(
         return None, None
 
     return normalize_address(w.get("address")), want
+
+
+def resolve_wallet_and_signer(
+    wallet_label: str,
+) -> tuple[str, str, Callable[..., Any]] | dict[str, Any]:
+    """Look up a wallet by label and return ``(address, label, sign_callback)`` or an error dict."""
+    w = find_wallet_by_label(wallet_label)
+    if not w:
+        return err("not_found", f"Unknown wallet_label: {wallet_label}")
+
+    sender = normalize_address(w.get("address"))
+    pk = w.get("private_key") or w.get("private_key_hex")
+    if not sender or not pk:
+        return err(
+            "invalid_wallet",
+            "Wallet must include address and private_key_hex in config.json",
+        )
+
+    return sender, wallet_label, make_sign_callback(pk)
 
 
 def parse_amount_to_raw(amount: str, decimals: int) -> int:

@@ -89,7 +89,6 @@ async def deploy_contract(
     if not bytecode or bytecode == "0x":
         raise RuntimeError(f"Compiled bytecode for '{contract_name}' is empty")
 
-    # Build + broadcast the deploy transaction
     tx = await build_deploy_transaction(
         abi=abi,
         bytecode=bytecode,
@@ -100,7 +99,6 @@ async def deploy_contract(
 
     tx_hash = await send_transaction(tx, sign_callback, wait_for_receipt=True)
 
-    # Get contract address from receipt
     async with web3_from_chain_id(chain_id) as w3:
         receipt = await w3.eth.get_transaction_receipt(tx_hash)
 
@@ -125,7 +123,6 @@ async def deploy_contract(
     # Verify on Etherscan (best-effort, don't fail the deploy)
     if verify:
         try:
-            # Encode constructor args for verification
             encoded_args = None
             if constructor_args:
                 bytecode_hex = remove_0x_prefix(bytecode)
@@ -233,7 +230,7 @@ async def verify_on_etherscan(
             data = resp.json()
 
             if data.get("status") == "1":
-                guid = str(data.get("result") or "").strip() or None
+                guid = (data.get("result") or "").strip() or None
                 if not guid:
                     raise RuntimeError("Etherscan verification returned empty GUID")
                 logger.info(f"Etherscan verification submitted, GUID: {guid}")

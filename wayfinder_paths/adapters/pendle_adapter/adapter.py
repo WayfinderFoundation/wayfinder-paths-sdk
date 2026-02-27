@@ -1691,10 +1691,6 @@ class PendleAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    # ---------------------------------------
-    # Execute swap
-    # ---------------------------------------
-
     async def execute_swap(
         self,
         *,
@@ -1811,10 +1807,6 @@ class PendleAdapter(BaseAdapter):
             "quote": quote_result.get("data"),
             "tokenApprovals": token_approvals,
         }
-
-    # ---------------------------------------
-    # Execute universal convert
-    # ---------------------------------------
 
     async def execute_convert(
         self,

@@ -254,7 +254,7 @@ async def runner(
         if action == "job_runs":
             if not name:
                 return err("invalid_request", "name is required for job_runs")
-            lim = int(limit) if isinstance(limit, int) else 50
+            lim = limit if isinstance(limit, int) else 50
             resp = client.call("job_runs", {"name": str(name).strip(), "limit": lim})
             if resp.get("ok"):
                 return ok(resp.get("result"))
@@ -265,7 +265,7 @@ async def runner(
         if action == "run_report":
             if run_id is None:
                 return err("invalid_request", "run_id is required for run_report")
-            tb = int(tail_bytes) if isinstance(tail_bytes, int) else 4000
+            tb = tail_bytes if isinstance(tail_bytes, int) else 4000
             resp = client.call("run_report", {"run_id": int(run_id), "tail_bytes": tb})
             if resp.get("ok"):
                 return ok(resp.get("result"))

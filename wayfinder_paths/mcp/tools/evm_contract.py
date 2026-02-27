@@ -15,17 +15,16 @@ from wayfinder_paths.core.utils.etherscan import (
 )
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     abi_function_signature,
     err,
-    find_wallet_by_label,
     normalize_address,
     ok,
     resolve_path_inside_repo,
     resolve_wallet_address,
+    resolve_wallet_and_signer,
     sanitize_for_json,
     sha256_json,
     summarize_abi,
@@ -596,21 +595,10 @@ async def contract_execute(
 
     Use this for state-changing writes. For view/pure reads, use `contract_call`.
     """
-    w = find_wallet_by_label(wallet_label)
-    if not w:
-        return err("not_found", f"Unknown wallet_label: {wallet_label}")
-
-    sender = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    if not sender or not pk:
-        return err(
-            "invalid_wallet",
-            "Wallet must include address and private_key_hex in config.json",
-        )
+    resolved = resolve_wallet_and_signer(wallet_label)
+    if isinstance(resolved, dict):
+        return resolved
+    sender, _, sign_callback = resolved
 
     loaded_abi = await _resolve_abi(
         chain_id=int(chain_id),
@@ -658,8 +646,6 @@ async def contract_execute(
         )
     except Exception as exc:
         return err("invalid_args", str(exc))
-
-    sign_callback = make_sign_callback(pk)
 
     try:
         tx = await encode_call(
