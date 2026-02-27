@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from web3 import Web3
+from web3._utils.events import event_abi_to_log_topic
 
 from wayfinder_paths.adapters.eigencloud_adapter.adapter import EigenCloudAdapter
 from wayfinder_paths.core.constants.contracts import (
@@ -15,6 +17,7 @@ from wayfinder_paths.core.constants.contracts import (
     EIGENCLOUD_STRATEGY_MANAGER,
     ZERO_ADDRESS,
 )
+from wayfinder_paths.core.constants.eigencloud_abi import IDELEGATION_MANAGER_ABI
 
 FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 FAKE_STRATEGY = "0x1111111111111111111111111111111111111111"
@@ -169,26 +172,8 @@ async def test_queue_withdrawals_validates_lengths(adapter_with_signer):
 
 
 @pytest.mark.asyncio
-async def test_queue_withdrawals_returns_simulated_roots(adapter_with_signer):
-    mock_web3 = MagicMock()
-    dm = _make_delegation_manager_contract()
-
-    def contract_side_effect(*, address=None, abi=None):
-        if str(address).lower() == EIGENCLOUD_DELEGATION_MANAGER.lower():
-            return dm
-        raise AssertionError(f"unexpected contract address: {address}")
-
-    mock_web3.eth.contract = MagicMock(side_effect=contract_side_effect)
-
-    @asynccontextmanager
-    async def mock_web3_ctx(_chain_id):
-        yield mock_web3
-
+async def test_queue_withdrawals_includes_withdrawal_roots(adapter_with_signer):
     with (
-        patch(
-            "wayfinder_paths.adapters.eigencloud_adapter.adapter.web3_from_chain_id",
-            mock_web3_ctx,
-        ),
         patch(
             "wayfinder_paths.adapters.eigencloud_adapter.adapter.encode_call",
             new_callable=AsyncMock,
@@ -199,6 +184,12 @@ async def test_queue_withdrawals_returns_simulated_roots(adapter_with_signer):
             new_callable=AsyncMock,
             return_value="0xtx",
         ),
+        patch.object(
+            adapter_with_signer,
+            "get_withdrawal_roots_from_tx_hash",
+            new_callable=AsyncMock,
+            return_value=(True, ["0x" + ("11" * 32)]),
+        ),
     ):
         ok, res = await adapter_with_signer.queue_withdrawals(
             strategies=[FAKE_STRATEGY], deposit_shares=[123]
@@ -207,6 +198,71 @@ async def test_queue_withdrawals_returns_simulated_roots(adapter_with_signer):
     assert ok is True
     assert res["tx_hash"] == "0xtx"
     assert res["withdrawal_roots"] == ["0x" + ("11" * 32)]
+
+
+@pytest.mark.asyncio
+async def test_get_withdrawal_roots_from_tx_hash_decodes_slashing_events(adapter):
+    event_abi = next(
+        i
+        for i in IDELEGATION_MANAGER_ABI
+        if i.get("type") == "event" and i.get("name") == "SlashingWithdrawalQueued"
+    )
+
+    w3 = Web3()
+    topic0 = event_abi_to_log_topic(event_abi)
+
+    withdrawal_root = b"\x11" * 32
+    withdrawal = (
+        FAKE_WALLET,
+        ZERO_ADDRESS,
+        FAKE_WALLET,
+        1,
+        100,
+        [FAKE_STRATEGY],
+        [10],
+    )
+    shares_to_withdraw = [10]
+
+    data = w3.codec.encode(
+        [
+            "bytes32",
+            "(address,address,address,uint256,uint32,address[],uint256[])",
+            "uint256[]",
+        ],
+        [withdrawal_root, withdrawal, shares_to_withdraw],
+    )
+
+    receipt = {
+        "logs": [
+            {
+                "address": EIGENCLOUD_DELEGATION_MANAGER,
+                "topics": [topic0],
+                "data": data,
+                "logIndex": 0,
+                "transactionIndex": 0,
+                "transactionHash": b"\x00" * 32,
+                "blockHash": b"\x00" * 32,
+                "blockNumber": 1,
+            }
+        ]
+    }
+
+    mock_web3 = MagicMock()
+    mock_web3.codec = w3.codec
+    mock_web3.eth.get_transaction_receipt = AsyncMock(return_value=receipt)
+
+    @asynccontextmanager
+    async def mock_web3_ctx(_chain_id):
+        yield mock_web3
+
+    with patch(
+        "wayfinder_paths.adapters.eigencloud_adapter.adapter.web3_from_chain_id",
+        mock_web3_ctx,
+    ):
+        ok, roots = await adapter.get_withdrawal_roots_from_tx_hash(tx_hash="0xtx")
+
+    assert ok is True
+    assert roots == ["0x" + ("11" * 32)]
 
 
 @pytest.mark.asyncio
@@ -322,4 +378,3 @@ async def test_get_pos_happy_path(adapter):
     assert pos["deposit_shares"] == 100
     assert pos["withdrawable_shares"] == 90
     assert pos["underlying"].lower() == FAKE_TOKEN.lower()
-

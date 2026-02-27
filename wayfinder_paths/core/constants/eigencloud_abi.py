@@ -213,6 +213,38 @@ IDELEGATION_MANAGER_ABI = [
         "inputs": [{"name": "operator", "type": "address"}],
         "outputs": [{"name": "", "type": "address"}],
     },
+    # Events (useful for recovering withdrawal roots from transaction receipts).
+    {
+        "type": "event",
+        "name": "SlashingWithdrawalQueued",
+        "anonymous": False,
+        "inputs": [
+            {"name": "withdrawalRoot", "type": "bytes32", "indexed": False},
+            {
+                "name": "withdrawal",
+                "type": "tuple",
+                "indexed": False,
+                "components": [
+                    {"name": "staker", "type": "address"},
+                    {"name": "delegatedTo", "type": "address"},
+                    {"name": "withdrawer", "type": "address"},
+                    {"name": "nonce", "type": "uint256"},
+                    {"name": "startBlock", "type": "uint32"},
+                    {"name": "strategies", "type": "address[]"},
+                    {"name": "scaledShares", "type": "uint256[]"},
+                ],
+            },
+            {"name": "sharesToWithdraw", "type": "uint256[]", "indexed": False},
+        ],
+    },
+    {
+        "type": "event",
+        "name": "SlashingWithdrawalCompleted",
+        "anonymous": False,
+        "inputs": [
+            {"name": "withdrawalRoot", "type": "bytes32", "indexed": False},
+        ],
+    },
 ]
 
 ISTRATEGY_ABI = [
@@ -411,4 +443,3 @@ IREWARDS_COORDINATOR_ABI = [
         "outputs": [{"name": "", "type": "uint32"}],
     },
 ]
-
