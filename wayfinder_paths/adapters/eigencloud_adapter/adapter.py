@@ -7,7 +7,7 @@ from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from web3._utils.events import event_abi_to_log_topic, get_event_data
 
-from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.base import MANTISSA, MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
@@ -198,6 +198,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def deposit(
         self,
         *,
@@ -207,9 +208,6 @@ class EigenCloudAdapter(BaseAdapter):
         check_whitelist: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -251,7 +249,7 @@ class EigenCloudAdapter(BaseAdapter):
         try:
             ok_appr, appr = await ensure_allowance(
                 token_address=tok,
-                owner=wallet,
+                owner=self.wallet_address,
                 spender=self.strategy_manager,
                 amount=amount,
                 chain_id=self.chain_id,
@@ -269,7 +267,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=ISTRATEGY_MANAGER_ABI,
                 fn_name="depositIntoStrategy",
                 args=[strat, tok, amount],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -328,6 +326,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def delegate(
         self,
         *,
@@ -336,9 +335,6 @@ class EigenCloudAdapter(BaseAdapter):
         approver_expiry: int = 0,
         approver_salt: Any = None,
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -352,7 +348,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="delegateTo",
                 args=[op, (sig, approver_expiry), salt],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -360,6 +356,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def undelegate(
         self,
         *,
@@ -367,13 +364,10 @@ class EigenCloudAdapter(BaseAdapter):
         include_withdrawal_roots: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
-        stk = to_checksum_address(staker) if staker else wallet
+        stk = to_checksum_address(staker) if staker else self.wallet_address
 
         try:
             tx = await encode_call(
@@ -381,7 +375,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="undelegate",
                 args=[stk],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -396,6 +390,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def redelegate(
         self,
         *,
@@ -406,9 +401,6 @@ class EigenCloudAdapter(BaseAdapter):
         include_withdrawal_roots: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -422,7 +414,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="redelegate",
                 args=[op, (sig, approver_expiry), salt],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -437,6 +429,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def queue_withdrawals(
         self,
         *,
@@ -445,9 +438,6 @@ class EigenCloudAdapter(BaseAdapter):
         include_withdrawal_roots: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -460,7 +450,7 @@ class EigenCloudAdapter(BaseAdapter):
         if any(s <= 0 for s in deposit_shares):
             return False, "all deposit_shares must be positive"
 
-        params = [(strats, deposit_shares, wallet)]
+        params = [(strats, deposit_shares, self.wallet_address)]
 
         try:
             tx = await encode_call(
@@ -468,7 +458,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="queueWithdrawals",
                 args=[params],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -568,6 +558,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def complete_withdrawal(
         self,
         *,
@@ -576,9 +567,6 @@ class EigenCloudAdapter(BaseAdapter):
         tokens_override: list[str] | None = None,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -641,7 +629,7 @@ class EigenCloudAdapter(BaseAdapter):
                     abi=IDELEGATION_MANAGER_ABI,
                     fn_name="completeQueuedWithdrawal",
                     args=[withdrawal_tuple, tokens, receive_as_tokens],
-                    from_address=wallet,
+                    from_address=self.wallet_address,
                     chain_id=self.chain_id,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
@@ -700,14 +688,12 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def set_rewards_claimer(
         self,
         *,
         claimer: str,
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -718,7 +704,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IREWARDS_COORDINATOR_ABI,
                 fn_name="setClaimerFor",
                 args=[c],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -744,15 +730,13 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def claim_rewards(
         self,
         *,
         claim: Any,
         recipient: str,
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -763,7 +747,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IREWARDS_COORDINATOR_ABI,
                 fn_name="processClaim",
                 args=[claim, rcpt],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -771,15 +755,13 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def claim_rewards_batch(
         self,
         *,
         claims: list[Any],
         recipient: str,
     ) -> tuple[bool, Any]:
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -793,7 +775,7 @@ class EigenCloudAdapter(BaseAdapter):
                 abi=IREWARDS_COORDINATOR_ABI,
                 fn_name="processClaims",
                 args=[claims, rcpt],
-                from_address=wallet,
+                from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
@@ -801,6 +783,7 @@ class EigenCloudAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
+    @require_wallet
     async def claim_rewards_calldata(
         self,
         *,
@@ -808,9 +791,6 @@ class EigenCloudAdapter(BaseAdapter):
         value: int = 0,
     ) -> tuple[bool, Any]:
         """Raw-calldata fallback for rewards claiming (e.g., from EigenLayer CLI/app)."""
-        wallet = self.wallet_address
-        if not wallet:
-            return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
@@ -827,7 +807,7 @@ class EigenCloudAdapter(BaseAdapter):
         try:
             tx: dict[str, Any] = {
                 "chainId": self.chain_id,
-                "from": wallet,
+                "from": self.wallet_address,
                 "to": self.rewards_coordinator,
                 "data": "0x" + data.hex(),
                 "value": value,
