@@ -31,6 +31,7 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
+# kjill check these
 def _as_bytes(data: bytes | str) -> bytes:
     if isinstance(data, (bytes, bytearray)):
         return bytes(data)
@@ -62,7 +63,7 @@ def _as_bytes32_hex(value: Any) -> str:
     if isinstance(value, int):
         if value < 0:
             raise ValueError("bytes32 int must be non-negative")
-        return "0x" + HexBytes(int(value).to_bytes(32, "big")).hex()
+        return "0x" + HexBytes(value.to_bytes(32, "big")).hex()
     raise TypeError("expected bytes32 as hex string, bytes, or int")
 
 
@@ -160,37 +161,33 @@ class EigenCloudAdapter(BaseAdapter):
                         )
                     )
 
-                    underlying_addr = to_checksum_address(str(underlying))
+                    underlying_addr = to_checksum_address(underlying)
                     symbol, token_name, decimals = await get_erc20_metadata(
                         underlying_addr,
-                        int(CHAIN_ID_ETHEREUM),
+                        CHAIN_ID_ETHEREUM,
                         web3=web3,
                         block_identifier=block_id,
                     )
 
                     out.append(
                         {
-                            "chain_id": int(CHAIN_ID_ETHEREUM),
+                            "chain_id": CHAIN_ID_ETHEREUM,
                             "strategy": strat,
-                            "strategy_name": str(name),
+                            "strategy_name": name,
                             "underlying": underlying_addr,
-                            "underlying_symbol": str(symbol or ""),
-                            "underlying_name": str(token_name or ""),
-                            "underlying_decimals": int(decimals or 0),
-                            "is_whitelisted_for_deposit": bool(whitelisted),
-                            "total_shares": int(total_shares or 0),
+                            "underlying_symbol": symbol or "",
+                            "underlying_name": token_name or "",
+                            "underlying_decimals": decimals or 0,
+                            "is_whitelisted_for_deposit": whitelisted,
+                            "total_shares": total_shares or 0,
                             # underlying units per 1e18 shares
-                            "shares_to_underlying_1e18": int(share_price or 0),
+                            "shares_to_underlying_1e18": share_price or 0,
                         }
                     )
 
                 return True, out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
-
-    # ---------------------------
-    # Deposit / Restake
-    # ---------------------------
 
     async def deposit(
         self,
@@ -201,13 +198,14 @@ class EigenCloudAdapter(BaseAdapter):
         check_whitelist: bool = True,
         block_identifier: int | str | None = None,
     ) -> tuple[bool, Any]:
+        # kjill fix this later
         wallet = self.wallet_address
         if not wallet:
             return False, "wallet_address is required"
         if not self.sign_callback:
             return False, "sign_callback is required"
 
-        amt = int(amount)
+        amt = amount
         if amt <= 0:
             return False, "amount must be positive"
 
@@ -221,27 +219,24 @@ class EigenCloudAdapter(BaseAdapter):
             elif strat.lower() == EIGENCLOUD_EIGEN_STRATEGY.lower():
                 tok = EIGEN_TOKEN
 
-            if check_whitelist or tok is None:
-                async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
-                    if tok is None:
-                        s = web3.eth.contract(address=strat, abi=ISTRATEGY_ABI)
-                        underlying = await s.functions.underlyingToken().call(
-                            block_identifier=block_id
-                        )
-                        tok = to_checksum_address(str(underlying))
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
+                if tok is None:
+                    s = web3.eth.contract(address=strat, abi=ISTRATEGY_ABI)
+                    underlying = await s.functions.underlyingToken().call(
+                        block_identifier=block_id
+                    )
+                    tok = to_checksum_address(underlying)
 
-                    if check_whitelist:
-                        sm = web3.eth.contract(
-                            address=EIGENCLOUD_STRATEGY_MANAGER, abi=ISTRATEGY_MANAGER_ABI
-                        )
-                        whitelisted = await sm.functions.strategyIsWhitelistedForDeposit(
-                            strat
-                        ).call(block_identifier=block_id)
-                        if not whitelisted:
-                            return False, (
-                                f"strategy not whitelisted for deposit: {strat}"
-                            )
-        except Exception as exc:  # noqa: BLE001
+                if check_whitelist:
+                    sm = web3.eth.contract(
+                        address=EIGENCLOUD_STRATEGY_MANAGER, abi=ISTRATEGY_MANAGER_ABI
+                    )
+                    whitelisted = await sm.functions.strategyIsWhitelistedForDeposit(
+                        strat
+                    ).call(block_identifier=block_id)
+                    if not whitelisted:
+                        return False, f"strategy not whitelisted for deposit: {strat}"
+        except Exception as exc:  
             return False, str(exc)
 
         if tok is None:
@@ -259,9 +254,7 @@ class EigenCloudAdapter(BaseAdapter):
             )
             if not ok_appr:
                 return False, appr
-            approve_tx_hash = (
-                str(appr) if isinstance(appr, str) and str(appr).startswith("0x") else None
-            )
+            approve_tx_hash = appr if isinstance(appr, str) and appr.startswith("0x") else None
 
             tx = await encode_call(
                 target=EIGENCLOUD_STRATEGY_MANAGER,
@@ -279,12 +272,8 @@ class EigenCloudAdapter(BaseAdapter):
                 "token": tok,
                 "amount": amt,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
-
-    # ---------------------------
-    # Delegation
-    # ---------------------------
 
     async def get_delegation_state(
         self,
@@ -312,26 +301,24 @@ class EigenCloudAdapter(BaseAdapter):
                     is_delegated_coro, delegated_to_coro
                 )
 
-                delegated_to_addr = to_checksum_address(str(delegated_to))
+                delegated_to_addr = to_checksum_address(delegated_to)
                 operator_approver: str | None = None
-                if int(is_delegated or 0) and delegated_to_addr != ZERO_ADDRESS:
+                if is_delegated and delegated_to_addr != ZERO_ADDRESS:
                     try:
                         operator_approver = to_checksum_address(
-                            str(
-                                await dm.functions.delegationApprover(
-                                    delegated_to_addr
-                                ).call(block_identifier=block_id)
-                            )
+                            await dm.functions.delegationApprover(
+                                delegated_to_addr
+                            ).call(block_identifier=block_id)
                         )
                     except Exception:
                         operator_approver = None
 
                 return True, {
-                    "isDelegated": bool(is_delegated),
+                    "isDelegated": is_delegated,
                     "delegatedTo": delegated_to_addr,
                     "operatorApprover": operator_approver,
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def delegate(
@@ -350,7 +337,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         op = to_checksum_address(operator)
         sig = _as_bytes(approver_signature)
-        expiry = int(approver_expiry or 0)
+        expiry = approver_expiry or 0
         salt = _as_bytes32_hex(approver_salt)
 
         try:
@@ -364,7 +351,7 @@ class EigenCloudAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def undelegate(
@@ -411,7 +398,7 @@ class EigenCloudAdapter(BaseAdapter):
             if roots_hex is not None:
                 payload["withdrawal_roots"] = roots_hex
             return True, payload
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def redelegate(
@@ -432,7 +419,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         op = to_checksum_address(new_operator)
         sig = _as_bytes(approver_signature)
-        expiry = int(approver_expiry or 0)
+        expiry = approver_expiry or 0
         salt = _as_bytes32_hex(approver_salt)
         block_id = block_identifier if block_identifier is not None else "pending"
 
@@ -464,7 +451,7 @@ class EigenCloudAdapter(BaseAdapter):
             if roots_hex is not None:
                 payload["withdrawal_roots"] = roots_hex
             return True, payload
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     # ---------------------------
@@ -491,7 +478,7 @@ class EigenCloudAdapter(BaseAdapter):
             return False, "strategies and deposit_shares must have equal length"
 
         strats = [to_checksum_address(s) for s in strategies]
-        shares = [int(s) for s in deposit_shares]
+        shares = list(deposit_shares)
         if any(s <= 0 for s in shares):
             return False, "all deposit_shares must be positive"
 
@@ -526,7 +513,7 @@ class EigenCloudAdapter(BaseAdapter):
             if roots_hex is not None:
                 payload["withdrawal_roots"] = roots_hex
             return True, payload
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_queued_withdrawal(
@@ -547,23 +534,23 @@ class EigenCloudAdapter(BaseAdapter):
                 ).call(block_identifier=block_id)
 
                 # withdrawal = (staker, delegatedTo, withdrawer, nonce, startBlock, strategies, scaledShares)
-                strategies = [to_checksum_address(str(s)) for s in (withdrawal[5] or [])]
-                scaled_shares = [int(x) for x in (withdrawal[6] or [])]
+                strategies = [to_checksum_address(s) for s in (withdrawal[5] or [])]
+                scaled_shares = list(withdrawal[6] or [])
 
                 return True, {
                     "withdrawal_root": root_hex,
                     "withdrawal": {
-                        "staker": to_checksum_address(str(withdrawal[0])),
-                        "delegatedTo": to_checksum_address(str(withdrawal[1])),
-                        "withdrawer": to_checksum_address(str(withdrawal[2])),
-                        "nonce": int(withdrawal[3] or 0),
-                        "startBlock": int(withdrawal[4] or 0),
+                        "staker": to_checksum_address(withdrawal[0]),
+                        "delegatedTo": to_checksum_address(withdrawal[1]),
+                        "withdrawer": to_checksum_address(withdrawal[2]),
+                        "nonce": withdrawal[3],
+                        "startBlock": withdrawal[4],
                         "strategies": strategies,
                         "scaledShares": scaled_shares,
                     },
-                    "shares": [int(x) for x in (shares or [])],
+                    "shares": list(shares or []),
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def complete_withdrawal(
@@ -592,8 +579,8 @@ class EigenCloudAdapter(BaseAdapter):
                     root_hex
                 ).call(block_identifier=block_id)
 
-                strategies = [to_checksum_address(str(s)) for s in (withdrawal[5] or [])]
-                scaled_shares = [int(x) for x in (withdrawal[6] or [])]
+                strategies = [to_checksum_address(s) for s in (withdrawal[5] or [])]
+                scaled_shares = list(withdrawal[6] or [])
 
                 if tokens_override is not None:
                     if len(tokens_override) != len(strategies):
@@ -618,18 +605,18 @@ class EigenCloudAdapter(BaseAdapter):
                         underlying = await s.functions.underlyingToken().call(
                             block_identifier=block_id
                         )
-                        tokens.append(to_checksum_address(str(underlying)))
+                        tokens.append(to_checksum_address(underlying))
 
                 # Even when receive_as_tokens=False, tokens length must match strategies.
                 if len(tokens) != len(strategies):
                     return False, "tokens length must equal withdrawal strategies length"
 
                 withdrawal_tuple = (
-                    to_checksum_address(str(withdrawal[0])),
-                    to_checksum_address(str(withdrawal[1])),
-                    to_checksum_address(str(withdrawal[2])),
-                    int(withdrawal[3] or 0),
-                    int(withdrawal[4] or 0),
+                    to_checksum_address(withdrawal[0]),
+                    to_checksum_address(withdrawal[1]),
+                    to_checksum_address(withdrawal[2]),
+                    withdrawal[3],
+                    withdrawal[4],
                     strategies,
                     scaled_shares,
                 )
@@ -638,7 +625,7 @@ class EigenCloudAdapter(BaseAdapter):
                     target=EIGENCLOUD_DELEGATION_MANAGER,
                     abi=IDELEGATION_MANAGER_ABI,
                     fn_name="completeQueuedWithdrawal",
-                    args=[withdrawal_tuple, tokens, bool(receive_as_tokens)],
+                    args=[withdrawal_tuple, tokens, receive_as_tokens],
                     from_address=wallet,
                     chain_id=CHAIN_ID_ETHEREUM,
                 )
@@ -646,11 +633,11 @@ class EigenCloudAdapter(BaseAdapter):
                 return True, {
                     "tx_hash": tx_hash,
                     "withdrawal_root": root_hex,
-                    "receive_as_tokens": bool(receive_as_tokens),
+                    "receive_as_tokens": receive_as_tokens,
                     "tokens": tokens,
-                    "shares": [int(x) for x in (shares or [])],
+                    "shares": list(shares or []),
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     # ---------------------------
@@ -689,16 +676,16 @@ class EigenCloudAdapter(BaseAdapter):
                 root_tuple = current_root or ("0x" + ("00" * 32), 0, 0, False)
                 return True, {
                     "earner": acct,
-                    "claimerFor": to_checksum_address(str(claimer)),
-                    "distributionRootsLength": int(roots_len or 0),
+                    "claimerFor": to_checksum_address(claimer),
+                    "distributionRootsLength": roots_len or 0,
                     "currentRoot": {
                         "root": _as_bytes32_hex(root_tuple[0]),
-                        "rewardsCalculationEndTimestamp": int(root_tuple[1] or 0),
-                        "activatedAt": int(root_tuple[2] or 0),
-                        "disabled": bool(root_tuple[3]),
+                        "rewardsCalculationEndTimestamp": root_tuple[1] or 0,
+                        "activatedAt": root_tuple[2] or 0,
+                        "disabled": root_tuple[3],
                     },
                 }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def set_rewards_claimer(
@@ -724,7 +711,7 @@ class EigenCloudAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def check_claim(
@@ -740,8 +727,8 @@ class EigenCloudAdapter(BaseAdapter):
                     address=EIGENCLOUD_REWARDS_COORDINATOR, abi=IREWARDS_COORDINATOR_ABI
                 )
                 ok = await rc.functions.checkClaim(claim).call(block_identifier=block_id)
-                return True, bool(ok)
-        except Exception as exc:  # noqa: BLE001
+                return True, ok
+        except Exception as exc:  
             return False, str(exc)
 
     async def claim_rewards(
@@ -768,7 +755,7 @@ class EigenCloudAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def claim_rewards_batch(
@@ -798,7 +785,7 @@ class EigenCloudAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def claim_rewards_calldata(
@@ -822,15 +809,15 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx: dict[str, Any] = {
-                "chainId": int(CHAIN_ID_ETHEREUM),
-                "from": to_checksum_address(wallet),
-                "to": to_checksum_address(EIGENCLOUD_REWARDS_COORDINATOR),
+                "chainId": CHAIN_ID_ETHEREUM,
+                "from": wallet,
+                "to": EIGENCLOUD_REWARDS_COORDINATOR,
                 "data": "0x" + data.hex(),
-                "value": int(value or 0),
+                "value": value,
             }
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     # ---------------------------
@@ -858,8 +845,8 @@ class EigenCloudAdapter(BaseAdapter):
                 strategies, deposit_shares = await dm.functions.getDepositedShares(
                     acct
                 ).call(block_identifier=block_id)
-                strategies = [to_checksum_address(str(s)) for s in (strategies or [])]
-                deposit_shares = [int(x) for x in (deposit_shares or [])]
+                strategies = [to_checksum_address(s) for s in (strategies or [])]
+                deposit_shares = list(deposit_shares or [])
 
                 withdrawable_shares: list[int] = []
                 if strategies:
@@ -868,7 +855,7 @@ class EigenCloudAdapter(BaseAdapter):
                             block_identifier=block_id
                         )
                     )
-                    withdrawable_shares = [int(x) for x in (withdrawable_raw or [])]
+                    withdrawable_shares = list(withdrawable_raw or [])
 
                 is_delegated, delegated_to = await asyncio.gather(
                     dm.functions.isDelegated(acct).call(block_identifier=block_id),
@@ -900,10 +887,8 @@ class EigenCloudAdapter(BaseAdapter):
                         else:
                             try:
                                 underlying_addr = to_checksum_address(
-                                    str(
-                                        await s.functions.underlyingToken().call(
-                                            block_identifier=block_id
-                                        )
+                                    await s.functions.underlyingToken().call(
+                                        block_identifier=block_id
                                     )
                                 )
                             except Exception:
@@ -911,54 +896,50 @@ class EigenCloudAdapter(BaseAdapter):
 
                         if dep > 0:
                             try:
-                                deposit_underlying = int(
-                                    await s.functions.sharesToUnderlyingView(dep).call(
-                                        block_identifier=block_id
-                                    )
+                                deposit_underlying = await s.functions.sharesToUnderlyingView(dep).call(
+                                    block_identifier=block_id
                                 )
                             except Exception:
                                 deposit_underlying = 0
                         if wdr > 0:
                             try:
-                                withdrawable_underlying = int(
-                                    await s.functions.sharesToUnderlyingView(wdr).call(
-                                        block_identifier=block_id
-                                    )
+                                withdrawable_underlying = await s.functions.sharesToUnderlyingView(wdr).call(
+                                    block_identifier=block_id
                                 )
                             except Exception:
                                 withdrawable_underlying = 0
 
                     pos: dict[str, Any] = {
                         "strategy": strat,
-                        "deposit_shares": int(dep),
-                        "withdrawable_shares": int(wdr),
+                        "deposit_shares": dep,
+                        "withdrawable_shares": wdr,
                         "underlying": underlying_addr,
-                        "deposit_underlying_estimate": int(deposit_underlying),
-                        "withdrawable_underlying_estimate": int(withdrawable_underlying),
+                        "deposit_underlying_estimate": deposit_underlying,
+                        "withdrawable_underlying_estimate": withdrawable_underlying,
                     }
 
                     if include_usd and underlying_addr:
                         usd = await self._usd_value(
                             token_address=underlying_addr,
-                            amount_raw=int(withdrawable_underlying),
+                            amount_raw=withdrawable_underlying,
                         )
                         pos["usd_value"] = usd
                         if usd_value_total is not None and usd is not None:
-                            usd_value_total += float(usd)
+                            usd_value_total += usd
 
                     positions.append(pos)
 
                 out: dict[str, Any] = {
-                    "chain_id": int(CHAIN_ID_ETHEREUM),
+                    "chain_id": CHAIN_ID_ETHEREUM,
                     "account": acct,
-                    "isDelegated": bool(is_delegated),
-                    "delegatedTo": to_checksum_address(str(delegated_to)),
+                    "isDelegated": is_delegated,
+                    "delegatedTo": to_checksum_address(delegated_to),
                     "positions": positions,
                 }
                 if include_usd:
                     out["usd_value"] = usd_value_total
                 return True, out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_full_user_state(
@@ -990,7 +971,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         state: dict[str, Any] = {
             "protocol": "eigencloud",
-            "chainId": int(CHAIN_ID_ETHEREUM),
+            "chainId": CHAIN_ID_ETHEREUM,
             "account": acct,
             "delegation": delegation,
             "positions": (pos or {}).get("positions") if isinstance(pos, dict) else [],
@@ -1021,7 +1002,7 @@ class EigenCloudAdapter(BaseAdapter):
     async def _usd_value(self, *, token_address: str, amount_raw: int) -> float | None:
         try:
             data = await TOKEN_CLIENT.get_token_details(
-                token_address, market_data=True, chain_id=int(CHAIN_ID_ETHEREUM)
+                token_address, market_data=True, chain_id=CHAIN_ID_ETHEREUM
             )
             price = (
                 data.get("price_usd") or data.get("price") or data.get("current_price")
@@ -1029,6 +1010,6 @@ class EigenCloudAdapter(BaseAdapter):
             if not price:
                 return None
             decimals = int(data.get("decimals", 18))
-            return (float(amount_raw) / (10**decimals)) * float(price)
+            return (amount_raw / (10**decimals)) * float(price)
         except Exception:
             return None
