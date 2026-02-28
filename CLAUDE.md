@@ -85,6 +85,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | CCXT (CEX)            | `/using-ccxt-adapter`            |
 | Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
+| Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Contract Dev          | `/contract-development`          |
@@ -101,6 +102,40 @@ When answering questions about **rates/APYs/funding**:
 - Always fetch the value via an adapter/client/tool call when possible.
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
+
+## Delta Lab MCP resources (yield discovery)
+
+**Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
+
+**⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
+
+**MCP resources (quick queries):**
+- `wayfinder://delta-lab/symbols` - List basis symbols
+- `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
+- `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
+- `wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LOOKBACK}/{LIMIT}` - Delta-neutral pairs for symbol
+- `wayfinder://delta-lab/assets/{asset_id}` - Asset metadata by ID
+- `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
+- `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
+- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Historical data (snapshots only)
+
+**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
+
+**Examples:**
+```
+# Quick queries via MCP
+uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
+uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
+uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
+
+# Serious analysis via client
+data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
+# If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
+print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
+
+data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=30)
+data["price"]["price_usd"].plot()
+```
 
 ## Running strategies via MCP
 
@@ -256,6 +291,44 @@ Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 
 Common mistakes when writing run scripts. **Read before writing any script.**
 
+**0. Client vs Adapter return patterns — CRITICAL DIFFERENCE**
+
+**Clients return data directly; Adapters return `(ok, data)` tuples.** This is the #1 source of script errors.
+
+```python
+# CLIENTS (return data directly, raise exceptions on errors)
+from wayfinder_paths.core.clients import DELTA_LAB_CLIENT, POOL_CLIENT, TOKEN_CLIENT
+
+# WRONG — clients don't return tuples
+ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError: too many values to unpack
+
+# RIGHT — clients return data directly
+data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ✅ dict
+pools = await POOL_CLIENT.get_pools(...)  # ✅ LlamaMatchesResponse
+token = await TOKEN_CLIENT.get_token_details(...)  # ✅ TokenDetails
+
+# ADAPTERS (always return tuple[bool, data])
+from wayfinder_paths.mcp.scripting import get_adapter
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+
+adapter = get_adapter(HyperliquidAdapter)
+
+# WRONG — adapters always return tuples
+data = await adapter.get_meta_and_asset_ctxs()  # ❌ data is actually (True, {...})
+
+# RIGHT — destructure the tuple and check ok
+ok, data = await adapter.get_meta_and_asset_ctxs()  # ✅
+if not ok:
+    raise RuntimeError(f"Adapter call failed: {data}")
+meta, ctxs = data[0], data[1]
+```
+
+**Why the difference?**
+- **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
+- **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
+
+**Rule of thumb:** If it's in `wayfinder_paths.core.clients`, it returns data directly. If it's in `wayfinder_paths.adapters`, it returns a tuple.
+
 **1. `get_adapter()` already loads config — don't call `load_config()` first**
 
 ```python
@@ -370,6 +443,32 @@ Before writing *any* script that uses a protocol adapter, invoke the matching sk
 **10. Write the script file before calling `run_script`**
 
 `mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
+
+**11. Funding rate sign (CRITICAL for perp trading)**
+
+**CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
+
+```python
+# WRONG interpretation
+funding_rate = -0.08  # -8% annually
+print("Negative = good for shorts!")  # ❌ BACKWARDS!
+
+# RIGHT interpretation
+funding_rate = -0.08  # -8% annually
+if funding_rate > 0:
+    # Positive funding: Longs pay shorts (good for shorts)
+    print("Shorts receive funding")  # ✅
+else:
+    # Negative funding: Shorts pay longs (bad for shorts)
+    print("Shorts PAY funding")  # ✅
+```
+
+This applies to:
+- Hyperliquid perp funding rates
+- Delta Lab perp opportunities
+- Any perp trading strategy analysis
+
+When evaluating perp positions, always verify the sign interpretation - it's backwards from intuition for many traders.
 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
