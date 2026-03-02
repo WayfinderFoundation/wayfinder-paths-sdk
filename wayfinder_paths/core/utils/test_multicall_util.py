@@ -10,8 +10,10 @@ from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.constants.contracts import (
     BASE_USDC,
     BASE_WETH,
+    KHYPE_ADDRESS,
 )
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.utils import multicall as multicall_mod
 from wayfinder_paths.core.utils.multicall import (
     ReadOnlyCall,
     _multicall3_supported,
@@ -197,14 +199,18 @@ async def test_read_only_calls_multicall_or_gather_falls_back_when_no_multicall_
 
 
 async def _web3_or_skip(chain_id: int):
-    """Yield a web3 instance for *chain_id*, or skip if RPC is unreachable."""
+    """Return (ctx, web3) for *chain_id*, or skip if RPC is unreachable."""
+    ctx = web3_from_chain_id(chain_id)
     try:
-        ctx = web3_from_chain_id(chain_id)
         web3 = await ctx.__aenter__()
-        await web3.eth.get_block_number()
-        return ctx, web3
     except Exception as exc:  # noqa: BLE001
         pytest.skip(f"RPC unreachable for chain {chain_id}: {exc}")
+    try:
+        await web3.eth.get_block_number()
+    except Exception as exc:  # noqa: BLE001
+        await ctx.__aexit__(None, None, None)
+        pytest.skip(f"RPC unreachable for chain {chain_id}: {exc}")
+    return ctx, web3
 
 
 @pytest.mark.asyncio
@@ -295,6 +301,47 @@ async def test_live_multicall3_chunking_on_base(monkeypatch):
         assert symbol == "USDC"
         assert decimals == 6
         assert total_supply > 0
+    finally:
+        await ctx.__aexit__(None, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.local
+async def test_live_fallback_when_multicall_unsupported(monkeypatch):
+    """Force _multicall3_supported=False on HyperEVM and verify fallback to individual calls."""
+    ctx, web3 = await _web3_or_skip(999)
+    try:
+
+        async def _unsupported(*_a, **_kw):
+            return False
+
+        monkeypatch.setattr(multicall_mod, "_multicall3_supported", _unsupported)
+
+        called = {"n": 0}
+
+        async def _spy_aggregate(*_args, **_kwargs):
+            called["n"] += 1
+            raise AssertionError("aggregate should not be called")
+
+        monkeypatch.setattr(MulticallAdapter, "aggregate", _spy_aggregate)
+
+        erc20 = web3.eth.contract(address=KHYPE_ADDRESS, abi=ERC20_ABI)
+
+        name, symbol, decimals = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=999,
+            calls=[
+                ReadOnlyCall(erc20, "name", postprocess=str),
+                ReadOnlyCall(erc20, "symbol", postprocess=str),
+                ReadOnlyCall(erc20, "decimals", postprocess=int),
+            ],
+            block_identifier="latest",
+        )
+
+        assert called["n"] == 0, "aggregate should never be called when unsupported"
+        assert isinstance(name, str) and name
+        assert isinstance(symbol, str) and symbol
+        assert isinstance(decimals, int) and 0 <= decimals <= 36
     finally:
         await ctx.__aexit__(None, None, None)
 

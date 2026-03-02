@@ -4,8 +4,9 @@ import pytest
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
-from wayfinder_paths.core.constants.contracts import MULTICALL3_ADDRESS
+from wayfinder_paths.core.constants.contracts import KHYPE_ADDRESS, MULTICALL3_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.utils import multicall as multicall_mod
 from wayfinder_paths.core.utils.multicall import (
     ReadOnlyCall,
     read_only_calls_multicall_or_gather,
@@ -182,3 +183,46 @@ async def test_multicall_helper_falls_back_when_multicall_reverts(gorlami, monke
 
         assert tuple(slot0_mc) == tuple(slot0_direct)
         assert int(fee_mc) == int(fee_direct)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_multicall_helper_falls_back_when_unsupported(gorlami, monkeypatch):
+    """When _multicall3_supported returns False, helper falls back to individual calls."""
+    async with web3_from_chain_id(999) as web3:
+        try:
+            await web3.eth.get_block_number()
+        except Exception as exc:  # noqa: BLE001
+            pytest.skip(f"gorlami RPC unreachable for HyperEVM: {exc}")
+
+        # Force the support check to return False, simulating a chain without Multicall3.
+        async def _unsupported(*_a, **_kw):
+            return False
+
+        monkeypatch.setattr(multicall_mod, "_multicall3_supported", _unsupported)
+
+        called = {"n": 0}
+
+        async def _spy_aggregate(*_args, **_kwargs):
+            called["n"] += 1
+            raise AssertionError("aggregate should not be called")
+
+        monkeypatch.setattr(MulticallAdapter, "aggregate", _spy_aggregate)
+
+        erc20 = web3.eth.contract(address=KHYPE_ADDRESS, abi=ERC20_ABI)
+
+        name, symbol, decimals = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=999,
+            calls=[
+                ReadOnlyCall(erc20, "name", postprocess=str),
+                ReadOnlyCall(erc20, "symbol", postprocess=str),
+                ReadOnlyCall(erc20, "decimals", postprocess=int),
+            ],
+            block_identifier="latest",
+        )
+
+        assert called["n"] == 0, "aggregate should never be called when unsupported"
+        assert isinstance(name, str) and name
+        assert isinstance(symbol, str) and symbol
+        assert isinstance(decimals, int) and 0 <= decimals <= 36
