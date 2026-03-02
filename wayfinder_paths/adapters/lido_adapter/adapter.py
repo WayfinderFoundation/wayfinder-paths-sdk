@@ -11,12 +11,17 @@ from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
+from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.lido_abi import (
     STETH_LIDO_ABI,
     WITHDRAWAL_QUEUE_ABI,
     WSTETH_ABI,
 )
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
+from wayfinder_paths.core.utils.multicall import (
+    ReadOnlyCall,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -89,9 +94,14 @@ class LidoAdapter(BaseAdapter):
         entry = self._entry(chain_id)
         async with web3_from_chain_id(chain_id) as web3:
             steth = web3.eth.contract(address=entry["steth"], abi=STETH_LIDO_ABI)
-            paused, limit = await asyncio.gather(
-                steth.functions.isStakingPaused().call(block_identifier="pending"),
-                steth.functions.getCurrentStakeLimit().call(block_identifier="pending"),
+            paused, limit = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=chain_id,
+                calls=[
+                    ReadOnlyCall(steth, "isStakingPaused", postprocess=bool),
+                    ReadOnlyCall(steth, "getCurrentStakeLimit", postprocess=int),
+                ],
+                block_identifier="pending",
             )
             return bool(paused), int(limit)
 
@@ -482,9 +492,14 @@ class LidoAdapter(BaseAdapter):
             entry = self._entry(chain_id)
             async with web3_from_chain_id(chain_id) as web3:
                 wsteth = web3.eth.contract(address=entry["wsteth"], abi=WSTETH_ABI)
-                steth_per, wsteth_per = await asyncio.gather(
-                    wsteth.functions.stEthPerToken().call(block_identifier="pending"),
-                    wsteth.functions.tokensPerStEth().call(block_identifier="pending"),
+                steth_per, wsteth_per = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        ReadOnlyCall(wsteth, "stEthPerToken", postprocess=int),
+                        ReadOnlyCall(wsteth, "tokensPerStEth", postprocess=int),
+                    ],
+                    block_identifier="pending",
                 )
                 return True, {
                     "chain_id": chain_id,
@@ -512,27 +527,35 @@ class LidoAdapter(BaseAdapter):
             async with web3_from_chain_id(chain_id) as web3:
                 steth = web3.eth.contract(address=entry["steth"], abi=STETH_LIDO_ABI)
                 wsteth = web3.eth.contract(address=entry["wsteth"], abi=WSTETH_ABI)
+                steth_erc20 = web3.eth.contract(address=entry["steth"], abi=ERC20_ABI)
+                wsteth_erc20 = web3.eth.contract(address=entry["wsteth"], abi=ERC20_ABI)
 
-                steth_balance_coro = get_token_balance(
-                    entry["steth"],
-                    chain_id,
-                    acct,
-                    web3=web3,
-                    block_identifier="pending",
-                )
-                steth_shares_coro = steth.functions.sharesOf(acct).call(
-                    block_identifier="pending"
-                )
-                wsteth_balance_coro = get_token_balance(
-                    entry["wsteth"],
-                    chain_id,
-                    acct,
-                    web3=web3,
-                    block_identifier="pending",
-                )
-
-                steth_balance, steth_shares, wsteth_balance = await asyncio.gather(
-                    steth_balance_coro, steth_shares_coro, wsteth_balance_coro
+                steth_balance, steth_shares, wsteth_balance = (
+                    await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=chain_id,
+                        calls=[
+                            ReadOnlyCall(
+                                steth_erc20,
+                                "balanceOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                            ReadOnlyCall(
+                                steth,
+                                "sharesOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                            ReadOnlyCall(
+                                wsteth_erc20,
+                                "balanceOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                        ],
+                        block_identifier="pending",
+                    )
                 )
                 wsteth_steth_equiv = await wsteth.functions.getStETHByWstETH(
                     int(wsteth_balance)
