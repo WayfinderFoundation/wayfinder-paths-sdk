@@ -20,9 +20,7 @@ class ReadOnlyCall:
     postprocess: Callable[[Any], Any] | None = None
 
 
-def _decode_output(
-    web3: AsyncWeb3, contract: Any, fn_name: str, data: bytes
-) -> Any:
+def _decode_output(web3: AsyncWeb3, contract: Any, fn_name: str, data: bytes) -> Any:
     fn = contract.get_function_by_name(fn_name)
     outputs = fn.abi.get("outputs") or []
     types = [
@@ -30,7 +28,7 @@ def _decode_output(
         for o in outputs
         if isinstance(o, dict) and o.get("type") is not None
     ]
-    decoded = web3.codec.decode(types, data) if types else tuple()
+    decoded = web3.codec.decode(types, data) if types else ()
     if len(decoded) == 1:
         return decoded[0]
     return decoded
@@ -44,7 +42,7 @@ def _as_bytes(value: Any) -> bytes:
     # HexBytes, bytearray, etc.
     try:
         return bytes(value)
-    except Exception:  
+    except Exception:
         return b""
 
 
@@ -57,7 +55,7 @@ async def _multicall3_supported(
 
     try:
         code = await web3.eth.get_code(web3.to_checksum_address(address))
-    except Exception:  
+    except Exception:
         return False
     return len(_as_bytes(code)) > 0
 
@@ -117,7 +115,7 @@ async def read_only_calls_multicall_or_gather(
                 value = _decode_output(web3, spec.contract, spec.fn_name, data)
                 decoded.append(spec.postprocess(value) if spec.postprocess else value)
             out_all.extend(decoded)
-        except Exception:  
+        except Exception:
             out_all.extend(await _fallback(batch))
 
     return out_all

@@ -75,7 +75,9 @@ class AvantisAdapter(BaseAdapter):
                     chain_id=self.chain_id,
                     calls=[
                         ReadOnlyCall(
-                            v, "asset", postprocess=lambda a: to_checksum_address(str(a))
+                            v,
+                            "asset",
+                            postprocess=lambda a: to_checksum_address(str(a)),
                         ),
                         ReadOnlyCall(v, "decimals", postprocess=int),
                         ReadOnlyCall(v, "symbol", postprocess=str),
@@ -152,7 +154,9 @@ class AvantisAdapter(BaseAdapter):
                             postprocess=lambda a: to_checksum_address(str(a)),
                         ),
                         ReadOnlyCall(mgr, "currentBalanceUSDC", postprocess=int),
-                        ReadOnlyCall(mgr, "currentAdjustedBalanceUSDC", postprocess=int),
+                        ReadOnlyCall(
+                            mgr, "currentAdjustedBalanceUSDC", postprocess=int
+                        ),
                         ReadOnlyCall(mgr, "getBufferRatio", postprocess=int),
                         ReadOnlyCall(mgr, "totalRewards", postprocess=int),
                         ReadOnlyCall(mgr, "pnlRewards", postprocess=int),
@@ -317,7 +321,9 @@ class AvantisAdapter(BaseAdapter):
                     calls=[
                         ReadOnlyCall(v, "decimals", postprocess=int),
                         ReadOnlyCall(
-                            v, "asset", postprocess=lambda a: to_checksum_address(str(a))
+                            v,
+                            "asset",
+                            postprocess=lambda a: to_checksum_address(str(a)),
                         ),
                         ReadOnlyCall(
                             v,

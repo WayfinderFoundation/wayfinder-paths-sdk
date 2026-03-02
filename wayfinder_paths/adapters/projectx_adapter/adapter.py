@@ -28,14 +28,14 @@ from wayfinder_paths.core.constants.projectx_abi import (
 from wayfinder_paths.core.constants.uniswap_v3_abi import (
     NONFUNGIBLE_POSITION_MANAGER_ABI,
 )
+from wayfinder_paths.core.utils.multicall import (
+    ReadOnlyCall,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
     is_native_token,
-)
-from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
-    read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.transaction import (
     encode_call,
@@ -781,17 +781,19 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
 
             async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
                 pool = web3.eth.contract(address=pool_address, abi=PROJECTX_POOL_ABI)
-                slot0, token0_raw, token1_raw = (
-                    await read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=PROJECTX_CHAIN_ID,
-                        calls=[
-                            ReadOnlyCall(pool, "slot0"),
-                            ReadOnlyCall(pool, "token0", postprocess=str),
-                            ReadOnlyCall(pool, "token1", postprocess=str),
-                        ],
-                        block_identifier="latest",
-                    )
+                (
+                    slot0,
+                    token0_raw,
+                    token1_raw,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=PROJECTX_CHAIN_ID,
+                    calls=[
+                        ReadOnlyCall(pool, "slot0"),
+                        ReadOnlyCall(pool, "token0", postprocess=str),
+                        ReadOnlyCall(pool, "token1", postprocess=str),
+                    ],
+                    block_identifier="latest",
                 )
                 sqrt_price_x96 = int(slot0[0])
                 token0 = to_checksum_address(token0_raw)
@@ -1015,20 +1017,25 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         pool_addr = self._require_pool_address()
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             pool = web3.eth.contract(address=pool_addr, abi=PROJECTX_POOL_ABI)
-            slot0, tick_spacing, fee, liquidity, token0, token1 = (
-                await read_only_calls_multicall_or_gather(
-                    web3=web3,
-                    chain_id=PROJECTX_CHAIN_ID,
-                    calls=[
-                        ReadOnlyCall(pool, "slot0"),
-                        ReadOnlyCall(pool, "tickSpacing", postprocess=int),
-                        ReadOnlyCall(pool, "fee", postprocess=int),
-                        ReadOnlyCall(pool, "liquidity", postprocess=int),
-                        ReadOnlyCall(pool, "token0", postprocess=str),
-                        ReadOnlyCall(pool, "token1", postprocess=str),
-                    ],
-                    block_identifier="latest",
-                )
+            (
+                slot0,
+                tick_spacing,
+                fee,
+                liquidity,
+                token0,
+                token1,
+            ) = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=PROJECTX_CHAIN_ID,
+                calls=[
+                    ReadOnlyCall(pool, "slot0"),
+                    ReadOnlyCall(pool, "tickSpacing", postprocess=int),
+                    ReadOnlyCall(pool, "fee", postprocess=int),
+                    ReadOnlyCall(pool, "liquidity", postprocess=int),
+                    ReadOnlyCall(pool, "token0", postprocess=str),
+                    ReadOnlyCall(pool, "token1", postprocess=str),
+                ],
+                block_identifier="latest",
             )
 
         meta = {

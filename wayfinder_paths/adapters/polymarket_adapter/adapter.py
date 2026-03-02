@@ -22,6 +22,7 @@ from py_clob_client.config import (  # type: ignore[import-untyped]
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
     MAX_UINT256,
@@ -37,7 +38,6 @@ from wayfinder_paths.core.constants.polymarket import (
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
 )
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.multicall import (
     ReadOnlyCall,
     read_only_calls_multicall_or_gather,

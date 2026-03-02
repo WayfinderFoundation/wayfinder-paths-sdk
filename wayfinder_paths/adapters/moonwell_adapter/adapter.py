@@ -1357,30 +1357,34 @@ class MoonwellAdapter(BaseAdapter):
                 )
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
 
-                bal_raw, exch_raw, cash_raw, m_dec, u_addr = (
-                    await read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=[
-                            ReadOnlyCall(
-                                mtoken_contract,
-                                "balanceOf",
-                                args=(account,),
-                                postprocess=int,
-                            ),
-                            ReadOnlyCall(
-                                mtoken_contract, "exchangeRateStored", postprocess=int
-                            ),
-                            ReadOnlyCall(mtoken_contract, "getCash", postprocess=int),
-                            ReadOnlyCall(mtoken_contract, "decimals", postprocess=int),
-                            ReadOnlyCall(
-                                mtoken_contract,
-                                "underlying",
-                                postprocess=lambda a: to_checksum_address(str(a)),
-                            ),
-                        ],
-                        block_identifier="pending",
-                    )
+                (
+                    bal_raw,
+                    exch_raw,
+                    cash_raw,
+                    m_dec,
+                    u_addr,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        ReadOnlyCall(
+                            mtoken_contract,
+                            "balanceOf",
+                            args=(account,),
+                            postprocess=int,
+                        ),
+                        ReadOnlyCall(
+                            mtoken_contract, "exchangeRateStored", postprocess=int
+                        ),
+                        ReadOnlyCall(mtoken_contract, "getCash", postprocess=int),
+                        ReadOnlyCall(mtoken_contract, "decimals", postprocess=int),
+                        ReadOnlyCall(
+                            mtoken_contract,
+                            "underlying",
+                            postprocess=lambda a: to_checksum_address(str(a)),
+                        ),
+                    ],
+                    block_identifier="pending",
                 )
 
                 if bal_raw == 0 or exch_raw == 0:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any, Literal
 
 from eth_utils import to_checksum_address
@@ -530,32 +529,34 @@ class LidoAdapter(BaseAdapter):
                 steth_erc20 = web3.eth.contract(address=entry["steth"], abi=ERC20_ABI)
                 wsteth_erc20 = web3.eth.contract(address=entry["wsteth"], abi=ERC20_ABI)
 
-                steth_balance, steth_shares, wsteth_balance = (
-                    await read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=chain_id,
-                        calls=[
-                            ReadOnlyCall(
-                                steth_erc20,
-                                "balanceOf",
-                                args=(acct,),
-                                postprocess=int,
-                            ),
-                            ReadOnlyCall(
-                                steth,
-                                "sharesOf",
-                                args=(acct,),
-                                postprocess=int,
-                            ),
-                            ReadOnlyCall(
-                                wsteth_erc20,
-                                "balanceOf",
-                                args=(acct,),
-                                postprocess=int,
-                            ),
-                        ],
-                        block_identifier="pending",
-                    )
+                (
+                    steth_balance,
+                    steth_shares,
+                    wsteth_balance,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        ReadOnlyCall(
+                            steth_erc20,
+                            "balanceOf",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                        ReadOnlyCall(
+                            steth,
+                            "sharesOf",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                        ReadOnlyCall(
+                            wsteth_erc20,
+                            "balanceOf",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                    ],
+                    block_identifier="pending",
                 )
                 wsteth_steth_equiv = await wsteth.functions.getStETHByWstETH(
                     int(wsteth_balance)

@@ -21,7 +21,7 @@ from wayfinder_paths.core.utils.multicall import (
     ReadOnlyCall,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
+from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -154,49 +154,52 @@ class EthenaVaultAdapter(BaseAdapter):
                     )
 
                     if block_identifier == "pending":
-                        usde_balance, susde_balance, cooldown_raw = (
-                            await read_only_calls_multicall_or_gather(
-                                web3=web3,
-                                chain_id=CHAIN_ID_ETHEREUM,
-                                calls=[
-                                    ReadOnlyCall(
-                                        usde,
-                                        "balanceOf",
-                                        args=(acct,),
-                                        postprocess=int,
-                                    ),
-                                    ReadOnlyCall(
-                                        susde,
-                                        "balanceOf",
-                                        args=(acct,),
-                                        postprocess=int,
-                                    ),
-                                    ReadOnlyCall(vault, "cooldowns", args=(acct,)),
-                                ],
-                                block_identifier="pending",
-                            )
+                        (
+                            usde_balance,
+                            susde_balance,
+                            cooldown_raw,
+                        ) = await read_only_calls_multicall_or_gather(
+                            web3=web3,
+                            chain_id=CHAIN_ID_ETHEREUM,
+                            calls=[
+                                ReadOnlyCall(
+                                    usde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                                ReadOnlyCall(
+                                    susde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                                ReadOnlyCall(vault, "cooldowns", args=(acct,)),
+                            ],
+                            block_identifier="pending",
                         )
                     else:
-                        usde_balance, susde_balance = (
-                            await read_only_calls_multicall_or_gather(
-                                web3=web3,
-                                chain_id=CHAIN_ID_ETHEREUM,
-                                calls=[
-                                    ReadOnlyCall(
-                                        usde,
-                                        "balanceOf",
-                                        args=(acct,),
-                                        postprocess=int,
-                                    ),
-                                    ReadOnlyCall(
-                                        susde,
-                                        "balanceOf",
-                                        args=(acct,),
-                                        postprocess=int,
-                                    ),
-                                ],
-                                block_identifier=block_identifier,
-                            )
+                        (
+                            usde_balance,
+                            susde_balance,
+                        ) = await read_only_calls_multicall_or_gather(
+                            web3=web3,
+                            chain_id=CHAIN_ID_ETHEREUM,
+                            calls=[
+                                ReadOnlyCall(
+                                    usde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                                ReadOnlyCall(
+                                    susde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                            ],
+                            block_identifier=block_identifier,
                         )
                         cooldown_raw = await vault.functions.cooldowns(acct).call(
                             block_identifier="pending"
@@ -225,26 +228,27 @@ class EthenaVaultAdapter(BaseAdapter):
                         address=to_checksum_address(token_addrs["susde"]),
                         abi=ERC20_ABI,
                     )
-                    usde_balance, susde_balance = (
-                        await read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=cid,
-                            calls=[
-                                ReadOnlyCall(
-                                    usde,
-                                    "balanceOf",
-                                    args=(acct,),
-                                    postprocess=int,
-                                ),
-                                ReadOnlyCall(
-                                    susde,
-                                    "balanceOf",
-                                    args=(acct,),
-                                    postprocess=int,
-                                ),
-                            ],
-                            block_identifier=block_identifier,
-                        )
+                    (
+                        usde_balance,
+                        susde_balance,
+                    ) = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=cid,
+                        calls=[
+                            ReadOnlyCall(
+                                usde,
+                                "balanceOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                            ReadOnlyCall(
+                                susde,
+                                "balanceOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                        ],
+                        block_identifier=block_identifier,
                     )
 
                 shares = susde_balance or 0

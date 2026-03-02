@@ -13,7 +13,9 @@ _repo_root_str = str(_repo_root)
 def pytest_configure(config):
     config.addinivalue_line("markers", "smoke: mark test as a smoke test")
     config.addinivalue_line("markers", "integration: mark test as integration")
-    config.addinivalue_line("markers", "local: tests that hit live networks (skip in CI)")
+    config.addinivalue_line(
+        "markers", "local: tests that hit live networks (skip in CI)"
+    )
     if _repo_root_str not in sys.path:
         sys.path.insert(0, _repo_root_str)
     elif sys.path.index(_repo_root_str) > 0:

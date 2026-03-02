@@ -10,7 +10,6 @@ from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.constants.contracts import (
     BASE_USDC,
     BASE_WETH,
-    KHYPE_ADDRESS,
 )
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.multicall import (
@@ -86,7 +85,12 @@ async def test_read_only_calls_multicall_or_gather_decodes_outputs(monkeypatch):
         address="0x0000000000000000000000000000000000000001",
         fn_defs={
             "foo": _FnDef(outputs=[{"name": "", "type": "uint256"}]),
-            "bar": _FnDef(outputs=[{"name": "a", "type": "uint256"}, {"name": "b", "type": "bool"}]),
+            "bar": _FnDef(
+                outputs=[
+                    {"name": "a", "type": "uint256"},
+                    {"name": "b", "type": "bool"},
+                ]
+            ),
         },
         call_results={},
     )
@@ -122,7 +126,9 @@ async def test_read_only_calls_multicall_or_gather_decodes_outputs(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_read_only_calls_multicall_or_gather_falls_back_on_multicall_error(monkeypatch):
+async def test_read_only_calls_multicall_or_gather_falls_back_on_multicall_error(
+    monkeypatch,
+):
     web3 = AsyncWeb3(AsyncHTTPProvider("http://localhost:8545"))
 
     async def _code_ok(_addr):
@@ -134,7 +140,7 @@ async def test_read_only_calls_multicall_or_gather_falls_back_on_multicall_error
         address="0x0000000000000000000000000000000000000001",
         fn_defs={"foo": _FnDef(outputs=[{"name": "", "type": "uint256"}])},
         call_results={
-            ("foo", tuple()): 999,
+            ("foo", ()): 999,
         },
     )
 
@@ -153,7 +159,9 @@ async def test_read_only_calls_multicall_or_gather_falls_back_on_multicall_error
 
 
 @pytest.mark.asyncio
-async def test_read_only_calls_multicall_or_gather_falls_back_when_no_multicall_code(monkeypatch):
+async def test_read_only_calls_multicall_or_gather_falls_back_when_no_multicall_code(
+    monkeypatch,
+):
     web3 = AsyncWeb3(AsyncHTTPProvider("http://localhost:8545"))
 
     async def _no_code(_addr):
@@ -165,7 +173,7 @@ async def test_read_only_calls_multicall_or_gather_falls_back_when_no_multicall_
         address="0x0000000000000000000000000000000000000001",
         fn_defs={"foo": _FnDef(outputs=[{"name": "", "type": "uint256"}])},
         call_results={
-            ("foo", tuple()): 111,
+            ("foo", ()): 111,
         },
     )
 
@@ -221,18 +229,21 @@ async def test_live_multicall3_on_base(monkeypatch):
         usdc = web3.eth.contract(address=BASE_USDC, abi=ERC20_ABI)
         weth = web3.eth.contract(address=BASE_WETH, abi=ERC20_ABI)
 
-        usdc_dec, usdc_sym, weth_dec, weth_sym = (
-            await read_only_calls_multicall_or_gather(
-                web3=web3,
-                chain_id=8453,
-                calls=[
-                    ReadOnlyCall(usdc, "decimals", postprocess=int),
-                    ReadOnlyCall(usdc, "symbol", postprocess=str),
-                    ReadOnlyCall(weth, "decimals", postprocess=int),
-                    ReadOnlyCall(weth, "symbol", postprocess=str),
-                ],
-                block_identifier="latest",
-            )
+        (
+            usdc_dec,
+            usdc_sym,
+            weth_dec,
+            weth_sym,
+        ) = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=8453,
+            calls=[
+                ReadOnlyCall(usdc, "decimals", postprocess=int),
+                ReadOnlyCall(usdc, "symbol", postprocess=str),
+                ReadOnlyCall(weth, "decimals", postprocess=int),
+                ReadOnlyCall(weth, "symbol", postprocess=str),
+            ],
+            block_identifier="latest",
         )
 
         assert called["n"] >= 1, "Expected multicall aggregation on Base"

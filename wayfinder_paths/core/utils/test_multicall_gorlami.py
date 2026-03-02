@@ -4,7 +4,7 @@ import pytest
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
-from wayfinder_paths.core.constants.contracts import KHYPE_ADDRESS, MULTICALL3_ADDRESS
+from wayfinder_paths.core.constants.contracts import MULTICALL3_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.multicall import (
     ReadOnlyCall,
@@ -94,7 +94,7 @@ async def test_multicall_helper_uses_multicall3_on_mainnet_fork(gorlami, monkeyp
 
         called = {"n": 0}
         real_aggregate = MulticallAdapter.aggregate
- 
+
         async def _wrapped_aggregate(self, calls, *, value=0, block_identifier=None):
             called["n"] += 1
             return await real_aggregate(
