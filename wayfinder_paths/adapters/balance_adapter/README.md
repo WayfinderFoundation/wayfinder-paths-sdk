@@ -16,12 +16,9 @@ The BalanceAdapter provides:
 
 ```python
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
+from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = BalanceAdapter(
-    config=config,
-    main_wallet_signing_callback=main_signing_cb,
-    strategy_wallet_signing_callback=strategy_signing_cb,
-)
+adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
 ```
 
 ## Methods
@@ -91,22 +88,27 @@ Send tokens to an arbitrary address (e.g., bridge contract).
 success, tx_hash = await adapter.send_to_address(
     token_id="usd-coin-base",
     amount=1000000,  # raw amount
-    from_wallet=config["strategy_wallet"],
+    from_wallet=strategy_wallet_address,
     to_address="0xBridgeContract...",
-    signing_callback=strategy_signing_cb,
+    signing_callback=strategy_sign_callback,
 )
 ```
 
 ## Configuration
 
-The adapter requires wallet configuration in `config`:
+The adapter takes wallet addresses and signing callbacks directly (no config lookup):
 
 ```python
-config = {
-    "main_wallet": {"address": "0x..."},
-    "strategy_wallet": {"address": "0x..."},
-}
+adapter = BalanceAdapter(
+    config=config,
+    main_sign_callback=main_cb,
+    strategy_sign_callback=strategy_cb,
+    main_wallet_address="0x...",
+    strategy_wallet_address="0x...",
+)
 ```
+
+Or use `get_adapter()` which wires everything automatically from wallet labels.
 
 ## Dependencies
 

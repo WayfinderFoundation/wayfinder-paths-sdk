@@ -55,3 +55,5 @@ CHAIN_EXPLORER_URLS: dict[int, str] = {
     CHAIN_ID_PLASMA: "https://plasmascan.to/",
     CHAIN_ID_HYPEREVM: "https://hyperevmscan.io/",
 }
+
+ETHERSCAN_V2_API_URL = "https://api.etherscan.io/v2/api"

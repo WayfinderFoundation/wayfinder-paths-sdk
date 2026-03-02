@@ -29,7 +29,7 @@ Before looking up external docs, consult this repo's own adapter surfaces first:
 - Output:
   - `(True, {"tx_hash": "0x...", "chainId": ..., "quote": {...}, "tokenApprovals": [...]})`
   - `(False, {"error": "...", "stage": "quote|approval|broadcast", ...})`
-- **Requires**: `strategy_wallet_signing_callback` must be configured
+- **Requires**: `sign_callback` must be configured (use `get_adapter(PendleAdapter, "main")`)
 
 ### Example: Swap USDC into PT
 

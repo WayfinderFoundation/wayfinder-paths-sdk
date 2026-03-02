@@ -11,11 +11,8 @@ class TestAaveV3Adapter:
     @pytest.fixture
     def adapter(self):
         return AaveV3Adapter(
-            config={
-                "strategy_wallet": {
-                    "address": "0x1234567890123456789012345678901234567890"
-                }
-            }
+            config={},
+            wallet_address="0x1234567890123456789012345678901234567890",
         )
 
     def test_adapter_type(self, adapter):
@@ -23,7 +20,7 @@ class TestAaveV3Adapter:
 
     def test_strategy_address_optional(self):
         adapter = AaveV3Adapter(config={})
-        assert adapter.strategy_wallet_address is None
+        assert adapter.wallet_address is None
 
     @pytest.mark.asyncio
     async def test_get_all_markets_basic(self, adapter):

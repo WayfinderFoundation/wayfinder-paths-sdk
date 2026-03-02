@@ -107,12 +107,11 @@ class MoonwellAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("moonwell_adapter", config)
-        cfg = config or {}
-
-        self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
+        self.sign_callback = sign_callback
 
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
@@ -120,9 +119,8 @@ class MoonwellAdapter(BaseAdapter):
         self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
         self.m_usdc = MOONWELL_M_USDC
 
-        strategy_addr = (cfg.get("strategy_wallet") or {}).get("address")
-        self.strategy_wallet_address: str | None = (
-            to_checksum_address(strategy_addr) if strategy_addr else None
+        self.wallet_address: str | None = (
+            to_checksum_address(wallet_address) if wallet_address else None
         )
         self._cache = Cache(Cache.MEMORY)
 
@@ -133,7 +131,7 @@ class MoonwellAdapter(BaseAdapter):
         underlying_token: str,
         amount: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         amount = int(amount)
@@ -149,7 +147,7 @@ class MoonwellAdapter(BaseAdapter):
             spender=mtoken,
             amount=amount,
             chain_id=CHAIN_ID_BASE,
-            signing_callback=self.strategy_wallet_signing_callback,
+            signing_callback=self.sign_callback,
             approval_amount=MAX_UINT256,
         )
         if not approved[0]:
@@ -163,9 +161,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def unlend(
@@ -174,7 +170,7 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
         amount: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         amount = int(amount)
@@ -191,9 +187,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def borrow(
@@ -202,7 +196,7 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
         amount: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         amount = int(amount)
@@ -219,9 +213,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def repay(
@@ -232,7 +224,7 @@ class MoonwellAdapter(BaseAdapter):
         amount: int,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         amount = int(amount)
@@ -248,7 +240,7 @@ class MoonwellAdapter(BaseAdapter):
             spender=mtoken,
             amount=amount,
             chain_id=CHAIN_ID_BASE,
-            signing_callback=self.strategy_wallet_signing_callback,
+            signing_callback=self.sign_callback,
             approval_amount=MAX_UINT256,
         )
         if not approved[0]:
@@ -265,9 +257,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def set_collateral(
@@ -275,7 +265,7 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
@@ -288,9 +278,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
 
         try:
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -322,11 +310,7 @@ class MoonwellAdapter(BaseAdapter):
         account: str | None = None,
     ) -> tuple[bool, bool | str]:
         try:
-            acct = (
-                to_checksum_address(account)
-                if account
-                else self.strategy_wallet_address
-            )
+            acct = to_checksum_address(account) if account else self.wallet_address
             if not acct:
                 return False, "strategy wallet address not configured"
             mtoken = to_checksum_address(mtoken)
@@ -347,7 +331,7 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
@@ -360,9 +344,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def claim_rewards(
@@ -370,7 +352,7 @@ class MoonwellAdapter(BaseAdapter):
         *,
         min_rewards_usd: float = 0.0,
     ) -> tuple[bool, dict[str, int] | str]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
@@ -392,7 +374,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        await send_transaction(transaction, self.strategy_wallet_signing_callback)
+        await send_transaction(transaction, self.sign_callback)
         return True, rewards
 
     async def _get_outstanding_rewards(self, account: str) -> dict[str, int]:
@@ -1023,9 +1005,7 @@ class MoonwellAdapter(BaseAdapter):
         block_identifier: int | str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         mtoken = to_checksum_address(mtoken)
-        account = (
-            to_checksum_address(account) if account else self.strategy_wallet_address
-        )
+        account = to_checksum_address(account) if account else self.wallet_address
         if not account:
             return False, "strategy wallet address not configured"
         block_id = block_identifier if block_identifier is not None else "pending"
@@ -1327,9 +1307,7 @@ class MoonwellAdapter(BaseAdapter):
         *,
         account: str | None = None,
     ) -> tuple[bool, int | str]:
-        account = (
-            to_checksum_address(account) if account else self.strategy_wallet_address
-        )
+        account = to_checksum_address(account) if account else self.wallet_address
         if not account:
             return False, "strategy wallet address not configured"
 
@@ -1364,9 +1342,7 @@ class MoonwellAdapter(BaseAdapter):
         account: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         mtoken = to_checksum_address(mtoken)
-        account = (
-            to_checksum_address(account) if account else self.strategy_wallet_address
-        )
+        account = to_checksum_address(account) if account else self.wallet_address
         if not account:
             return False, "strategy wallet address not configured"
 
@@ -1462,7 +1438,7 @@ class MoonwellAdapter(BaseAdapter):
         *,
         amount: int,
     ) -> tuple[bool, Any]:
-        strategy = self.strategy_wallet_address
+        strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         amount = int(amount)
@@ -1478,7 +1454,5 @@ class MoonwellAdapter(BaseAdapter):
             chain_id=CHAIN_ID_BASE,
             value=amount,
         )
-        txn_hash = await send_transaction(
-            transaction, self.strategy_wallet_signing_callback
-        )
+        txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)

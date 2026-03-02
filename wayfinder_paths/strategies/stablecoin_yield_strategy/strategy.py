@@ -188,16 +188,22 @@ class StablecoinYieldStrategy(Strategy):
                 "strategy": self.config,
             }
 
+            strat_addr = (strategy_wallet_cfg or {}).get("address")
+            main_addr = (main_wallet_cfg or {}).get("address")
+
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
-                main_wallet_signing_callback=self.main_wallet_signing_callback,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                main_sign_callback=self.main_wallet_signing_callback,
+                strategy_sign_callback=self.strategy_wallet_signing_callback,
+                main_wallet_address=main_addr,
+                strategy_wallet_address=strat_addr,
             )
             self.token_adapter = TokenAdapter()
             self.pool_adapter = PoolAdapter()
             self.brap_adapter = BRAPAdapter(
                 adapter_config,
-                strategy_wallet_signing_callback=self.strategy_wallet_signing_callback,
+                sign_callback=self.strategy_wallet_signing_callback,
+                wallet_address=strat_addr,
             )
         except Exception as e:
             logger.error(f"Failed to initialize strategy adapters: {e}")
@@ -454,7 +460,7 @@ class StablecoinYieldStrategy(Strategy):
                 )
                 self.current_pool_balance = current_pool_balance_raw if success else 0
             except Exception as e:
-                print(f"Warning: Failed to get pool balance: {e}")
+                logger.warning(f"Warning: Failed to get pool balance: {e}")
                 self.current_pool_balance = 0
         else:
             self.current_pool_balance = 0

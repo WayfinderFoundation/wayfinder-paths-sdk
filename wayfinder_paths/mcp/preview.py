@@ -279,3 +279,42 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
         return {"summary": header + base + details, "recipient_mismatch": False}
 
     return {"summary": header + base, "recipient_mismatch": mismatch}
+
+
+def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+    req = tool_input if isinstance(tool_input, dict) else {}
+    if not req:
+        return {"summary": "CONTRACT_EXECUTE missing parameters."}
+
+    wallet_label = str(req.get("wallet_label") or "").strip()
+    w = find_wallet_by_label(wallet_label) if wallet_label else None
+    sender = normalize_address((w or {}).get("address")) if w else None
+
+    chain_id = req.get("chain_id")
+    contract_address = normalize_address(req.get("contract_address"))
+    fn = str(req.get("function_signature") or req.get("function_name") or "").strip()
+
+    args = req.get("args")
+    value_wei = req.get("value_wei")
+    wait_for_receipt = req.get("wait_for_receipt", True)
+
+    if req.get("abi_path"):
+        abi_hint = f"abi_path: {req.get('abi_path')}"
+    elif req.get("abi") is not None:
+        abi_hint = "abi: (inline)"
+    else:
+        abi_hint = "abi: (missing)"
+
+    summary = (
+        "CONTRACT_EXECUTE\n"
+        f"wallet_label: {wallet_label or '(missing)'}\n"
+        f"sender: {sender or '(unknown)'}\n"
+        f"chain_id: {chain_id}\n"
+        f"contract_address: {contract_address or '(missing)'}\n"
+        f"function: {fn or '(missing)'}\n"
+        f"args: {args if args is not None else []}\n"
+        f"value_wei: {value_wei if value_wei is not None else 0}\n"
+        f"wait_for_receipt: {wait_for_receipt}\n"
+        f"{abi_hint}"
+    )
+    return {"summary": summary}
