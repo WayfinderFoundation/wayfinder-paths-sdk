@@ -427,7 +427,9 @@ class EulerV2Adapter(BaseAdapter):
             entry = self._entry(int(chain_id))
             evc = to_checksum_address(str(entry["evc"]))
 
-            total_value = int(value) if value is not None else sum(int(i[2]) for i in items)
+            total_value = (
+                int(value) if value is not None else sum(int(i[2]) for i in items)
+            )
             tx = await encode_call(
                 target=evc,
                 abi=EVC_ABI,
