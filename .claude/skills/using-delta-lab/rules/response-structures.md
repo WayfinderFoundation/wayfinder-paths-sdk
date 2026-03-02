@@ -521,3 +521,113 @@ hl_funding = funding_df[funding_df["venue"] == "hyperliquid"]
 # Resample to daily average
 daily_avg = funding_df.resample("1D")["funding_rate"].mean()
 ```
+
+## Screening Responses
+
+All screening endpoints return `ScreenResponse`:
+
+```python
+{
+    "data": [...],  # List of feature rows
+    "count": 20     # Number of rows returned
+}
+```
+
+### ScreenPriceRow
+
+```python
+{
+    "asof_ts": "2025-02-27T12:00:00Z",
+    "asset_id": 1,
+    "symbol": "BTC",
+    "price_usd": 95000.0,
+    "ret_1d": 0.02,        # 1-day return (decimal: 0.02 = 2%)
+    "ret_7d": 0.05,
+    "ret_30d": 0.15,
+    "ret_90d": 0.40,
+    "vol_7d": 0.35,         # Annualized volatility (decimal)
+    "vol_30d": 0.45,
+    "vol_90d": 0.50,
+    "mdd_30d": -0.12,       # Max drawdown (negative: -0.12 = -12%)
+    "mdd_90d": -0.20
+}
+```
+
+### ScreenLendingRow
+
+```python
+{
+    "asof_ts": "2025-02-27T12:00:00Z",
+    "market_id": 42,
+    "asset_id": 1,
+    "symbol": "ETH",
+    "venue_id": 5,
+    "venue_name": "aave",
+    "is_frozen": false,
+    "is_paused": false,
+    "base_yield_apy": 0.03,
+    "net_supply_apr_now": 0.045,       # Current net supply APR (decimal)
+    "net_supply_mean_7d": 0.042,
+    "net_supply_mean_30d": 0.038,
+    "net_supply_std_30d": 0.005,
+    "net_supply_z_30d": 1.4,           # Z-score vs 30d mean
+    "combined_net_supply_apr_now": 0.06, # Including reward APR
+    "combined_supply_mean_7d": 0.055,
+    "combined_supply_mean_30d": 0.050,
+    "combined_supply_std_30d": 0.008,
+    "combined_supply_z_30d": 1.25,
+    "net_borrow_apr_now": 0.065,
+    "net_borrow_mean_7d": 0.060,
+    "net_borrow_mean_30d": 0.058,
+    "net_borrow_std_30d": 0.004,
+    "net_borrow_z_30d": 1.75,
+    "util_now": 0.82,                  # Utilization ratio
+    "util_mean_30d": 0.78,
+    "util_z_30d": 0.8,
+    "liquidity_usd": 50000000.0,
+    "supply_tvl_usd": 200000000.0,
+    "borrow_tvl_usd": 164000000.0,
+    "ltv_max": 0.80,
+    "liq_threshold": 0.825,
+    "liquidation_penalty": 0.05,
+    "borrow_spike_score": 2.1          # Anomaly detection score
+}
+```
+
+### ScreenPerpRow
+
+```python
+{
+    "asof_ts": "2025-02-27T12:00:00Z",
+    "instrument_id": 10,
+    "market_id": 15,
+    "venue_id": 3,
+    "venue_name": "hyperliquid",
+    "base_asset_id": 1,
+    "base_symbol": "BTC",
+    "quote_asset_id": 2,
+    "quote_symbol": "USDT",
+    "mark_price": 95000.0,
+    "index_price": 94980.0,
+    "basis_now": 0.0002,               # Current basis (decimal)
+    "funding_now": 0.00005,            # Current funding rate
+    "funding_mean_7d": 0.00004,
+    "funding_std_7d": 0.00002,
+    "funding_mean_30d": 0.00003,
+    "funding_std_30d": 0.000015,
+    "funding_mean_90d": 0.000035,
+    "funding_std_90d": 0.00002,
+    "funding_z_30d": 1.0,              # Z-score vs 30d mean
+    "funding_z_90d": 0.75,
+    "funding_pos_pct_30d": 0.85,       # % of time positive in 30d
+    "funding_neg_pct_30d": 0.15,
+    "basis_mean_7d": 0.00018,
+    "basis_mean_30d": 0.00015,
+    "basis_std_30d": 0.0001,
+    "basis_z_30d": 0.5,
+    "oi_now": 500000000.0,             # Open interest (USD)
+    "oi_mean_7d": 480000000.0,
+    "oi_change_vs_7d_mean": 0.04,      # OI change vs 7d mean (decimal)
+    "volume_24h": 2000000000.0
+}
+```

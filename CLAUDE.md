@@ -118,6 +118,14 @@ When answering questions about **rates/APYs/funding**:
 - `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
 - `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
 - `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Historical data (snapshots only)
+- `wayfinder://delta-lab/screen/price/{SORT}/{LIMIT}/{BASIS}` - Screen assets by price features
+- `wayfinder://delta-lab/screen/lending/{SORT}/{LIMIT}/{BASIS}` - Screen lending markets
+- `wayfinder://delta-lab/screen/perp/{SORT}/{LIMIT}/{BASIS}` - Screen perp markets
+
+**Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
+- **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
+- **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
+- **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
 
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
@@ -128,13 +136,18 @@ uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
 uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
 uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
 
+# Screening via MCP
+uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all"  # Top 20 lending rates
+uri="wayfinder://delta-lab/screen/perp/funding_now/20/ETH"  # Top 20 ETH perp funding rates
+uri="wayfinder://delta-lab/screen/price/ret_1d/10/all"  # Top 10 daily movers
+
 # Serious analysis via client
 data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
 # If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
 print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
 
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=30)
-data["price"]["price_usd"].plot()
+# Client screening with extra filters (venue, min_tvl, etc.)
+data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave", min_tvl=1_000_000)
 ```
 
 ## Running strategies via MCP

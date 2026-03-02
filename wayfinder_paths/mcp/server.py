@@ -23,6 +23,9 @@ from wayfinder_paths.mcp.resources.delta_lab import (
     get_best_delta_neutral_pairs,
     get_delta_lab_asset,
     get_top_apy,
+    screen_lending,
+    screen_perp,
+    screen_price,
 )
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
@@ -102,6 +105,9 @@ mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
 mcp.resource(
     "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
 )(get_asset_timeseries_data)
+mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
+mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(screen_lending)
+mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)
