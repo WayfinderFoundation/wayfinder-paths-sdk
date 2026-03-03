@@ -72,9 +72,7 @@ class EthenaVaultAdapter(BaseAdapter):
                         chain_id=CHAIN_ID_ETHEREUM,
                         calls=[
                             Call(vault, "getUnvestedAmount", postprocess=int),
-                            Call(
-                                vault, "lastDistributionTimestamp", postprocess=int
-                            ),
+                            Call(vault, "lastDistributionTimestamp", postprocess=int),
                             Call(vault, "totalAssets", postprocess=int),
                         ],
                         block_identifier="pending",

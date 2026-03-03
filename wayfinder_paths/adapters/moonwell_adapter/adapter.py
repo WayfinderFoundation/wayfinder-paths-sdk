@@ -1373,9 +1373,7 @@ class MoonwellAdapter(BaseAdapter):
                             args=(account,),
                             postprocess=int,
                         ),
-                        Call(
-                            mtoken_contract, "exchangeRateStored", postprocess=int
-                        ),
+                        Call(mtoken_contract, "exchangeRateStored", postprocess=int),
                         Call(mtoken_contract, "getCash", postprocess=int),
                         Call(mtoken_contract, "decimals", postprocess=int),
                         Call(

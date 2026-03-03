@@ -778,12 +778,8 @@ class PolymarketAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
-                            Call(
-                                usdce, "balanceOf", args=(acct,), postprocess=int
-                            ),
-                            Call(
-                                usdc, "balanceOf", args=(acct,), postprocess=int
-                            ),
+                            Call(usdce, "balanceOf", args=(acct,), postprocess=int),
+                            Call(usdc, "balanceOf", args=(acct,), postprocess=int),
                         ],
                         block_identifier="pending",
                     )

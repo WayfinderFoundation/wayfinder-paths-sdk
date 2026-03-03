@@ -154,9 +154,7 @@ class AvantisAdapter(BaseAdapter):
                             postprocess=lambda a: to_checksum_address(str(a)),
                         ),
                         Call(mgr, "currentBalanceUSDC", postprocess=int),
-                        Call(
-                            mgr, "currentAdjustedBalanceUSDC", postprocess=int
-                        ),
+                        Call(mgr, "currentAdjustedBalanceUSDC", postprocess=int),
                         Call(mgr, "getBufferRatio", postprocess=int),
                         Call(mgr, "totalRewards", postprocess=int),
                         Call(mgr, "pnlRewards", postprocess=int),
