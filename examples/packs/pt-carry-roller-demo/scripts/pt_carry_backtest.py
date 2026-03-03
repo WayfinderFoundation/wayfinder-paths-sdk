@@ -5,7 +5,7 @@ import asyncio
 import json
 import math
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -42,7 +42,9 @@ def _score_row(row: dict[str, Any]) -> float:
     reward = _to_float(row.get("reward_apr"))
     if not math.isfinite(implied) and not math.isfinite(reward):
         return float("-inf")
-    return (implied if math.isfinite(implied) else 0.0) + (reward if math.isfinite(reward) else 0.0)
+    return (implied if math.isfinite(implied) else 0.0) + (
+        reward if math.isfinite(reward) else 0.0
+    )
 
 
 def _filter_rows(
@@ -130,7 +132,9 @@ def _run_backtest(
         )
         ranked = sorted(filtered, key=_score_row, reverse=True)
 
-        decision_day = i == 0 or (params.rebalance_every_days > 0 and i % params.rebalance_every_days == 0)
+        decision_day = i == 0 or (
+            params.rebalance_every_days > 0 and i % params.rebalance_every_days == 0
+        )
         if decision_day and ranked:
             chosen = ranked[0]
             chosen_symbol = str(chosen.get("pt_symbol") or "").strip() or None
@@ -226,11 +230,15 @@ def _run_backtest(
     }
 
 
-async def _load_delta_lab_series(*, symbol: str, lookback_days: int, limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+async def _load_delta_lab_series(
+    *, symbol: str, lookback_days: int, limit: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     try:
         from wayfinder_paths.core.clients.DeltaLabClient import DeltaLabClient
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError("Missing DeltaLabClient (install wayfinder-paths-sdk)") from exc
+        raise RuntimeError(
+            "Missing DeltaLabClient (install wayfinder-paths-sdk)"
+        ) from exc
 
     client = DeltaLabClient()
     series = await client.get_asset_timeseries(
@@ -250,7 +258,15 @@ async def _load_delta_lab_series(*, symbol: str, lookback_days: int, limit: int)
         ts = row.get("ts")
         if ts is None:
             continue
-        pendle_rows.append({**row.to_dict(), "ts": ts.to_pydatetime().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")})
+        pendle_rows.append(
+            {
+                **row.to_dict(),
+                "ts": ts.to_pydatetime()
+                .replace(tzinfo=UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
+            }
+        )
 
     price_rows: list[dict[str, Any]] = []
     if price_df is not None and not price_df.empty:
@@ -259,13 +275,23 @@ async def _load_delta_lab_series(*, symbol: str, lookback_days: int, limit: int)
             ts = row.get("ts")
             if ts is None:
                 continue
-            price_rows.append({**row.to_dict(), "ts": ts.to_pydatetime().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")})
+            price_rows.append(
+                {
+                    **row.to_dict(),
+                    "ts": ts.to_pydatetime()
+                    .replace(tzinfo=UTC)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                }
+            )
 
     return pendle_rows, price_rows
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backtest a simple Pendle PT carry roller strategy.")
+    parser = argparse.ArgumentParser(
+        description="Backtest a simple Pendle PT carry roller strategy."
+    )
     parser.add_argument("--symbol", default="ETH")
     parser.add_argument("--lookback-days", type=int, default=120)
     parser.add_argument("--limit", type=int, default=5000)
@@ -274,7 +300,11 @@ def main() -> None:
     parser.add_argument("--min-tvl-usd", type=float, default=250_000)
     parser.add_argument("--min-days-to-maturity", type=int, default=14)
     parser.add_argument("--max-days-to-maturity", type=int, default=365)
-    parser.add_argument("--out", default="", help="Optional output JSON path (prints to stdout when omitted).")
+    parser.add_argument(
+        "--out",
+        default="",
+        help="Optional output JSON path (prints to stdout when omitted).",
+    )
     args = parser.parse_args()
 
     params = BacktestParams(
@@ -306,11 +336,15 @@ def main() -> None:
         out_path = str(args.out)
         with open(out_path, "w") as f:
             json.dump(result, f, indent=2, default=str)
-        print(json.dumps({"ok": True, "out": out_path, "summary": result.get("summary")}, indent=2))
+        print(
+            json.dumps(
+                {"ok": True, "out": out_path, "summary": result.get("summary")},
+                indent=2,
+            )
+        )
     else:
         print(json.dumps(result, indent=2, default=str))
 
 
 if __name__ == "__main__":
     main()
-

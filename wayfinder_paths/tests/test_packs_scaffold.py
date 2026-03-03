@@ -69,4 +69,3 @@ def test_pack_doctor_fix_creates_missing_readme_and_skill(tmp_path: Path):
     assert report.ok is True
     assert "README.md" in report.created_files
     assert "skill/SKILL.md" in report.created_files
-

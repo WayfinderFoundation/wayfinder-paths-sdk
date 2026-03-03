@@ -10,7 +10,6 @@ from typing import Any
 from wayfinder_paths.packs.manifest import PackManifest, PackManifestError
 from wayfinder_paths.packs.scaffold import slugify
 
-
 _ROOT_ASSET_RE = re.compile(r"""(?:src|href)=["']/(assets|_next)/""")
 _SERVICE_WORKER_RE = re.compile(r"serviceWorker", re.IGNORECASE)
 
@@ -72,7 +71,9 @@ def run_doctor(
 
     manifest_path = pack_dir / "wfpack.yaml"
     if not manifest_path.exists():
-        raise PackDoctorError("Missing wfpack.yaml (run `wayfinder pack init <slug>` to scaffold one)")
+        raise PackDoctorError(
+            "Missing wfpack.yaml (run `wayfinder pack init <slug>` to scaffold one)"
+        )
 
     errors: list[DoctorIssue] = []
     warnings: list[DoctorIssue] = []
@@ -82,7 +83,9 @@ def run_doctor(
     try:
         manifest = PackManifest.load(manifest_path)
     except PackManifestError as exc:
-        errors.append(DoctorIssue(level="error", message=str(exc), path=str(manifest_path)))
+        errors.append(
+            DoctorIssue(level="error", message=str(exc), path=str(manifest_path))
+        )
 
     ctx: dict[str, Any] = {}
     if manifest:
@@ -103,13 +106,18 @@ def run_doctor(
             if isinstance(first, dict):
                 component_path = str(first.get("path") or "").strip()
         if not component_path:
-            component_path = "strategy.py" if manifest.primary_kind == "strategy" else "scripts/main.py"
+            component_path = (
+                "strategy.py"
+                if manifest.primary_kind == "strategy"
+                else "scripts/main.py"
+            )
 
         ctx = {
             "slug": manifest.slug,
             "name": manifest.name,
             "version": manifest.version,
-            "summary": manifest.summary.strip() or "TODO: describe what this pack does.",
+            "summary": manifest.summary.strip()
+            or "TODO: describe what this pack does.",
             "primary_kind": manifest.primary_kind,
             "component_path": component_path,
         }
@@ -117,7 +125,12 @@ def run_doctor(
         if isinstance(components, list):
             for item in components:
                 if not isinstance(item, dict):
-                    warnings.append(DoctorIssue(level="warning", message="components entry must be an object"))
+                    warnings.append(
+                        DoctorIssue(
+                            level="warning",
+                            message="components entry must be an object",
+                        )
+                    )
                     continue
                 path_raw = str(item.get("path") or "").strip()
                 if not path_raw:
@@ -132,11 +145,19 @@ def run_doctor(
                         )
                     )
         elif components is not None:
-            warnings.append(DoctorIssue(level="warning", message="wfpack.yaml components must be a list"))
+            warnings.append(
+                DoctorIssue(
+                    level="warning", message="wfpack.yaml components must be a list"
+                )
+            )
 
         readme_path = pack_dir / "README.md"
         if not readme_path.exists():
-            warnings.append(DoctorIssue(level="warning", message="Missing README.md", path=str(readme_path)))
+            warnings.append(
+                DoctorIssue(
+                    level="warning", message="Missing README.md", path=str(readme_path)
+                )
+            )
             if fix:
                 rendered = _render_template(_read_template("README.md.tmpl"), ctx)
                 if _write_if_missing(readme_path, rendered, overwrite=overwrite):
@@ -144,7 +165,13 @@ def run_doctor(
 
         skill_path = pack_dir / "skill" / "SKILL.md"
         if not skill_path.exists():
-            warnings.append(DoctorIssue(level="warning", message="Missing skill/SKILL.md", path=str(skill_path)))
+            warnings.append(
+                DoctorIssue(
+                    level="warning",
+                    message="Missing skill/SKILL.md",
+                    path=str(skill_path),
+                )
+            )
             if fix:
                 rendered = _render_template(_read_template("skill/SKILL.md.tmpl"), ctx)
                 if _write_if_missing(skill_path, rendered, overwrite=overwrite):
@@ -165,7 +192,9 @@ def run_doctor(
                         _read_template("applet/applet.manifest.json.tmpl"),
                         ctx,
                     )
-                    if _write_if_missing(applet_manifest_path, rendered, overwrite=overwrite):
+                    if _write_if_missing(
+                        applet_manifest_path, rendered, overwrite=overwrite
+                    ):
                         created_files.append(manifest.applet.manifest_path)
 
             build_dir = pack_dir / manifest.applet.build_dir
@@ -183,7 +212,9 @@ def run_doctor(
             entry = "index.html"
             if applet_manifest_path.exists():
                 try:
-                    parsed = json.loads(applet_manifest_path.read_text(encoding="utf-8"))
+                    parsed = json.loads(
+                        applet_manifest_path.read_text(encoding="utf-8")
+                    )
                 except Exception:
                     parsed = None
                 if isinstance(parsed, dict):
@@ -262,4 +293,3 @@ def run_doctor(
         warnings=warnings,
         created_files=created_files,
     )
-

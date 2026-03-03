@@ -42,7 +42,11 @@ class PacksApiClient:
             "bundle": ("bundle.zip", bundle_path.read_bytes(), "application/zip")
         }
         if source_path:
-            files["source"] = ("source.zip", source_path.read_bytes(), "application/zip")
+            files["source"] = (
+                "source.zip",
+                source_path.read_bytes(),
+                "application/zip",
+            )
 
         resp = self._client.post(url, data=data, files=files, headers=self._headers())
         if resp.status_code >= 400:
@@ -137,7 +141,9 @@ class PacksApiClient:
         url = f"{self.base_url}/api/v1/packs/{slug}/versions/{version}"
         resp = self._client.get(url, headers=self._headers())
         if resp.status_code >= 400:
-            raise PacksApiError(f"Get pack version failed ({resp.status_code}): {resp.text}")
+            raise PacksApiError(
+                f"Get pack version failed ({resp.status_code}): {resp.text}"
+            )
         return resp.json()
 
     def download_bundle(
@@ -151,7 +157,9 @@ class PacksApiClient:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with self._client.stream("GET", url, headers=self._headers()) as resp:
             if resp.status_code >= 400:
-                raise PacksApiError(f"Download bundle failed ({resp.status_code}): {resp.text}")
+                raise PacksApiError(
+                    f"Download bundle failed ({resp.status_code}): {resp.text}"
+                )
             with out_path.open("wb") as f:
                 for chunk in resp.iter_bytes():
                     f.write(chunk)

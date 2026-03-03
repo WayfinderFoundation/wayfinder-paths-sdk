@@ -87,7 +87,7 @@ def preview_pack(
                     "  <body>",
                     "    <div class='row'>",
                     "      <div class='card' style='flex: 1 1 520px'>",
-                    f"        <div style='opacity:.8'>Parent shell</div>",
+                    "        <div style='opacity:.8'>Parent shell</div>",
                     f"        <div style='font-size:18px;margin-top:6px'>{manifest.name}</div>",
                     f"        <div style='opacity:.7;margin-top:8px'>{manifest.summary}</div>",
                     "        <div style='opacity:.7;margin-top:10px'>Bridge: <span id='bridge'>pending</span></div>",
@@ -131,7 +131,9 @@ def preview_pack(
             t.start()
 
         try:
-            print(f"Pack preview running:\n  Parent: {parent_url}\n  Applet: {applet_url}\n(Press Ctrl+C to stop)")
+            print(
+                f"Pack preview running:\n  Parent: {parent_url}\n  Applet: {applet_url}\n(Press Ctrl+C to stop)"
+            )
             while True:
                 threading.Event().wait(3600)
         except KeyboardInterrupt:
@@ -141,4 +143,3 @@ def preview_pack(
             applet_server.shutdown()
 
         return PreviewUrls(parent_url=parent_url, applet_url=applet_url)
-

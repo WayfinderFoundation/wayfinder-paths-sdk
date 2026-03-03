@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import re
 import yaml
 from packaging.version import InvalidVersion, Version
 
@@ -105,8 +105,12 @@ class PackManifest:
                 raise PackManifestError("wfpack.yaml applet must be an object")
             build_dir = str(applet_obj.get("build_dir", "")).strip()
             if not build_dir:
-                raise PackManifestError("wfpack.yaml applet.build_dir is required when applet is present")
-            manifest_path = str(applet_obj.get("manifest", "applet/applet.manifest.json")).strip()
+                raise PackManifestError(
+                    "wfpack.yaml applet.build_dir is required when applet is present"
+                )
+            manifest_path = str(
+                applet_obj.get("manifest", "applet/applet.manifest.json")
+            ).strip()
             applet = PackAppletConfig(build_dir=build_dir, manifest_path=manifest_path)
 
         return PackManifest(

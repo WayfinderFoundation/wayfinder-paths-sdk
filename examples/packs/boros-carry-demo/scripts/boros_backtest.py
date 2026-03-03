@@ -35,7 +35,9 @@ def _build_demo_points(cfg: DemoConfig) -> list[dict[str, Any]]:
         price = max(250.0, base_price + wobble + 15.0 * math.sin(i / 1.9))
 
         fixed = 0.12 + 0.03 * math.sin(i / 11.0)  # 12% ± 3%
-        floating = fixed + 0.03 + 0.015 * math.sin(i / 7.3 + 0.85)  # avg +3%, swings ±1.5%
+        floating = (
+            fixed + 0.03 + 0.015 * math.sin(i / 7.3 + 0.85)
+        )  # avg +3%, swings ±1.5%
         funding = 0.04 + 0.02 * math.sin(i / 8.5 + 1.3)  # 4% ± 2% (stylized)
 
         points.append(
@@ -56,11 +58,15 @@ def _build_demo_points(cfg: DemoConfig) -> list[dict[str, Any]]:
     return points
 
 
-async def _build_delta_lab_points(*, symbol: str, lookback_days: int, limit: int) -> list[dict[str, Any]]:
+async def _build_delta_lab_points(
+    *, symbol: str, lookback_days: int, limit: int
+) -> list[dict[str, Any]]:
     try:
         from wayfinder_paths.core.clients.DeltaLabClient import DeltaLabClient
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError("Missing wayfinder_paths DeltaLabClient (install wayfinder-paths-sdk)") from exc
+        raise RuntimeError(
+            "Missing wayfinder_paths DeltaLabClient (install wayfinder-paths-sdk)"
+        ) from exc
 
     client = DeltaLabClient()
     series = await client.get_asset_timeseries(
@@ -73,7 +79,9 @@ async def _build_delta_lab_points(*, symbol: str, lookback_days: int, limit: int
     boros_df = series.get("boros")
     funding_df = series.get("funding")
     if price_df is None or boros_df is None:
-        raise RuntimeError("Delta Lab response missing required series: price and boros")
+        raise RuntimeError(
+            "Delta Lab response missing required series: price and boros"
+        )
 
     joined = price_df.join(boros_df, how="inner")
     if joined.empty:
@@ -98,16 +106,33 @@ async def _build_delta_lab_points(*, symbol: str, lookback_days: int, limit: int
     for ts, row in joined.iterrows():
         points.append(
             {
-                "ts": ts.to_pydatetime().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z"),
+                "ts": ts.to_pydatetime()
+                .replace(tzinfo=UTC)
+                .isoformat()
+                .replace("+00:00", "Z"),
                 "price_usd": float(row.get("price_usd")),
-                "fixed_rate_mark": float(row.get("fixed_rate_mark")) if row.get("fixed_rate_mark") is not None else None,
-                "floating_rate_oracle": float(row.get("floating_rate_oracle")) if row.get("floating_rate_oracle") is not None else None,
-                "funding_rate": float(row.get("funding_rate")) if row.get("funding_rate") is not None else None,
+                "fixed_rate_mark": float(row.get("fixed_rate_mark"))
+                if row.get("fixed_rate_mark") is not None
+                else None,
+                "floating_rate_oracle": float(row.get("floating_rate_oracle"))
+                if row.get("floating_rate_oracle") is not None
+                else None,
+                "funding_rate": float(row.get("funding_rate"))
+                if row.get("funding_rate") is not None
+                else None,
                 "pv": float(row.get("pv")) if row.get("pv") is not None else None,
-                "market_id": int(row.get("market_id")) if row.get("market_id") is not None else 0,
-                "chain_id": int(row.get("chain_id")) if row.get("chain_id") is not None else None,
-                "venue": str(row.get("venue")) if row.get("venue") is not None else None,
-                "market_external_id": str(row.get("market_external_id")) if row.get("market_external_id") is not None else None,
+                "market_id": int(row.get("market_id"))
+                if row.get("market_id") is not None
+                else 0,
+                "chain_id": int(row.get("chain_id"))
+                if row.get("chain_id") is not None
+                else None,
+                "venue": str(row.get("venue"))
+                if row.get("venue") is not None
+                else None,
+                "market_external_id": str(row.get("market_external_id"))
+                if row.get("market_external_id") is not None
+                else None,
             }
         )
 
@@ -115,11 +140,13 @@ async def _build_delta_lab_points(*, symbol: str, lookback_days: int, limit: int
     return points
 
 
-def _compute_summary(points: list[dict[str, Any]], *, notional_usd: float) -> dict[str, Any]:
+def _compute_summary(
+    points: list[dict[str, Any]], *, notional_usd: float
+) -> dict[str, Any]:
     pnl_long = 0.0  # pay fixed, receive floating
     pnl_short = 0.0  # receive fixed, pay floating
 
-    for prev, cur in zip(points, points[1:]):
+    for prev, cur in zip(points, points[1:], strict=False):
         t0 = datetime.fromisoformat(str(prev["ts"]).replace("Z", "+00:00"))
         t1 = datetime.fromisoformat(str(cur["ts"]).replace("Z", "+00:00"))
         dt_years = (t1 - t0).total_seconds() / (365.0 * 24.0 * 3600.0)
@@ -144,7 +171,9 @@ def _compute_summary(points: list[dict[str, Any]], *, notional_usd: float) -> di
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Boros carry dataset for the demo applet.")
+    parser = argparse.ArgumentParser(
+        description="Generate Boros carry dataset for the demo applet."
+    )
     parser.add_argument("--mode", choices=["demo", "delta-lab"], default="demo")
     parser.add_argument("--symbol", default="ETH")
     parser.add_argument("--lookback-days", type=int, default=90)
@@ -192,7 +221,17 @@ def main() -> None:
     }
 
     out_path.write_text(json.dumps(payload, indent=2))
-    print(json.dumps({"ok": True, "out": str(out_path), "points": len(points), "summary": summary}, indent=2))
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "out": str(out_path),
+                "points": len(points),
+                "summary": summary,
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

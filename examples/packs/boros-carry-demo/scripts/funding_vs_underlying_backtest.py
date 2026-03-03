@@ -28,11 +28,15 @@ def _to_float(value: object) -> float:
     return num if math.isfinite(num) else float("nan")
 
 
-async def _load_points(*, symbol: str, lookback_days: int, limit: int) -> list[dict[str, Any]]:
+async def _load_points(
+    *, symbol: str, lookback_days: int, limit: int
+) -> list[dict[str, Any]]:
     try:
         from wayfinder_paths.core.clients.DeltaLabClient import DeltaLabClient
     except Exception as exc:  # pragma: no cover
-        raise RuntimeError("Missing wayfinder_paths DeltaLabClient (install wayfinder-paths-sdk)") from exc
+        raise RuntimeError(
+            "Missing wayfinder_paths DeltaLabClient (install wayfinder-paths-sdk)"
+        ) from exc
 
     client = DeltaLabClient()
     series = await client.get_asset_timeseries(
@@ -53,7 +57,9 @@ async def _load_points(*, symbol: str, lookback_days: int, limit: int) -> list[d
         ts = row.get("ts")
         if ts is None:
             continue
-        ts_iso = ts.to_pydatetime().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+        ts_iso = (
+            ts.to_pydatetime().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+        )
         prices[ts_iso] = _to_float(row.get("price_usd"))
 
     # Funding can have multiple markets per ts; pick the row with max oi_usd when present.
@@ -69,7 +75,12 @@ async def _load_points(*, symbol: str, lookback_days: int, limit: int) -> list[d
             ts = row.get("ts")
             if ts is None:
                 continue
-            ts_iso = ts.to_pydatetime().replace(tzinfo=UTC).isoformat().replace("+00:00", "Z")
+            ts_iso = (
+                ts.to_pydatetime()
+                .replace(tzinfo=UTC)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
             best_funding[ts_iso] = _to_float(row.get("funding_rate"))
 
     points: list[dict[str, Any]] = []
@@ -143,7 +154,9 @@ def _compute_pnl_series(
             side = -1.0
         elif funding < -thr:
             side = 1.0
-        carry_step = side * notional_usd * ret - side * funding * dt_years * notional_usd
+        carry_step = (
+            side * notional_usd * ret - side * funding * dt_years * notional_usd
+        )
         carry_pnl.append(carry_pnl[-1] + carry_step)
 
         # Funding-vs-underlying: only take carry when the recent underlying trend is not against it.
@@ -157,7 +170,9 @@ def _compute_pnl_series(
             side_f = -1.0
         elif funding < -thr and mom >= 0:
             side_f = 1.0
-        carry_filtered_step = side_f * notional_usd * ret - side_f * funding * dt_years * notional_usd
+        carry_filtered_step = (
+            side_f * notional_usd * ret - side_f * funding * dt_years * notional_usd
+        )
         carry_filtered_pnl.append(carry_filtered_pnl[-1] + carry_filtered_step)
 
     return {
@@ -178,7 +193,11 @@ def main() -> None:
     parser.add_argument("--notional-usd", type=float, default=100_000)
     parser.add_argument("--funding-threshold-bps", type=float, default=0.0)
     parser.add_argument("--momentum-days", type=int, default=7)
-    parser.add_argument("--out", default="", help="Optional output JSON path (prints to stdout when omitted).")
+    parser.add_argument(
+        "--out",
+        default="",
+        help="Optional output JSON path (prints to stdout when omitted).",
+    )
     args = parser.parse_args()
 
     cfg = BacktestConfig(
@@ -192,7 +211,9 @@ def main() -> None:
     )
 
     points = asyncio.run(
-        _load_points(symbol=cfg.symbol, lookback_days=cfg.lookback_days, limit=cfg.limit)
+        _load_points(
+            symbol=cfg.symbol, lookback_days=cfg.lookback_days, limit=cfg.limit
+        )
     )
     series = _compute_pnl_series(
         points,
@@ -220,7 +241,11 @@ def main() -> None:
             json.dump(payload, f, indent=2, default=str)
         print(
             json.dumps(
-                {"ok": True, "out": cfg.out, "final_pnl": {k: v[-1] for k, v in series.items()}},
+                {
+                    "ok": True,
+                    "out": cfg.out,
+                    "final_pnl": {k: v[-1] for k, v in series.items()},
+                },
                 indent=2,
             )
         )
@@ -230,4 +255,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

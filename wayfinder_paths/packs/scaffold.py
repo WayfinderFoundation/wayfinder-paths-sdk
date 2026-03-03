@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -92,7 +92,7 @@ def _build_wfpack_yaml(
 
     lines.append("")
     lines.append("components:")
-    lines.append(f'  - id: "main"')
+    lines.append('  - id: "main"')
     lines.append(f"    kind: {component_kind}")
     lines.append(f"    path: {_yaml_quote(component_path)}")
 
@@ -179,7 +179,9 @@ def init_pack(
 
     write("wfpack.yaml", manifest_text)
     write("README.md", _render_template(_read_template("README.md.tmpl"), ctx))
-    write("skill/SKILL.md", _render_template(_read_template("skill/SKILL.md.tmpl"), ctx))
+    write(
+        "skill/SKILL.md", _render_template(_read_template("skill/SKILL.md.tmpl"), ctx)
+    )
     write(component_path, _render_template(_read_template(component_template), ctx))
 
     if with_applet:
@@ -200,7 +202,7 @@ def init_pack(
         "template": primary_kind,
         "template_version": "0.1.0",
         "created_with": "wayfinder-paths",
-        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "answers": {
             "slug": slug,
             "name": pack_name,
@@ -219,7 +221,9 @@ def init_pack(
             overwritten.append(meta_path)
         else:
             created.append(meta_path)
-        meta_path.write_text(json.dumps(template_meta, indent=2, default=str) + "\n", encoding="utf-8")
+        meta_path.write_text(
+            json.dumps(template_meta, indent=2, default=str) + "\n", encoding="utf-8"
+        )
 
     return PackInitResult(
         pack_dir=pack_dir,
@@ -228,4 +232,3 @@ def init_pack(
         overwritten_files=overwritten,
         skipped_files=skipped,
     )
-

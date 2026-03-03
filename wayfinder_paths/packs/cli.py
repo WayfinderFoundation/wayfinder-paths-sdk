@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -25,7 +25,9 @@ def pack_cli() -> None:
     pass
 
 
-@pack_cli.command(name="init", help="Scaffold a new pack folder (wfpack.yaml + optional applet).")
+@pack_cli.command(
+    name="init", help="Scaffold a new pack folder (wfpack.yaml + optional applet)."
+)
 @click.argument("slug")
 @click.option(
     "--dir",
@@ -49,7 +51,9 @@ def pack_cli() -> None:
 )
 @click.option("--tag", "tags", multiple=True, help="Tag (repeatable).")
 @click.option("--applet/--no-applet", default=False, show_default=True)
-@click.option("--overwrite", is_flag=True, help="Overwrite scaffolded files if they exist.")
+@click.option(
+    "--overwrite", is_flag=True, help="Overwrite scaffolded files if they exist."
+)
 def init_cmd(
     slug: str,
     base_dir: str,
@@ -84,20 +88,29 @@ def init_cmd(
             "result": {
                 "pack_dir": str(result.pack_dir),
                 "manifest": str(result.manifest_path),
-                "created": [str(p.relative_to(result.pack_dir)) for p in result.created_files],
-                "overwritten": [
-                    str(p.relative_to(result.pack_dir)) for p in result.overwritten_files
+                "created": [
+                    str(p.relative_to(result.pack_dir)) for p in result.created_files
                 ],
-                "skipped": [str(p.relative_to(result.pack_dir)) for p in result.skipped_files],
+                "overwritten": [
+                    str(p.relative_to(result.pack_dir))
+                    for p in result.overwritten_files
+                ],
+                "skipped": [
+                    str(p.relative_to(result.pack_dir)) for p in result.skipped_files
+                ],
             },
         }
     )
 
 
-@pack_cli.command(name="doctor", help="Validate a pack folder and optionally fix common issues.")
+@pack_cli.command(
+    name="doctor", help="Validate a pack folder and optionally fix common issues."
+)
 @click.option("--path", "pack_path", default=".", show_default=True)
 @click.option("--fix", is_flag=True, help="Create missing recommended files.")
-@click.option("--overwrite", is_flag=True, help="Overwrite generated files when using --fix.")
+@click.option(
+    "--overwrite", is_flag=True, help="Overwrite generated files when using --fix."
+)
 def doctor_cmd(pack_path: str, fix: bool, overwrite: bool) -> None:
     try:
         report = run_doctor(pack_dir=Path(pack_path), fix=fix, overwrite=overwrite)
@@ -126,13 +139,17 @@ def doctor_cmd(pack_path: str, fix: bool, overwrite: bool) -> None:
         raise click.ClickException("Pack doctor found errors")
 
 
-@pack_cli.command(name="preview", help="Serve a local parent-shell preview for this pack's applet.")
+@pack_cli.command(
+    name="preview", help="Serve a local parent-shell preview for this pack's applet."
+)
 @click.option("--path", "pack_path", default=".", show_default=True)
 @click.option("--parent-port", default=3333, show_default=True, type=int)
 @click.option("--applet-port", default=3334, show_default=True, type=int)
 def preview_cmd(pack_path: str, parent_port: int, applet_port: int) -> None:
     try:
-        preview_pack(pack_dir=Path(pack_path), parent_port=parent_port, applet_port=applet_port)
+        preview_pack(
+            pack_dir=Path(pack_path), parent_port=parent_port, applet_port=applet_port
+        )
     except PackPreviewError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -159,12 +176,18 @@ def build_cmd(pack_path: str, out_path: str) -> None:
     )
 
 
-@pack_cli.command(name="publish", help="Build and publish a pack bundle to the Packs API.")
+@pack_cli.command(
+    name="publish", help="Build and publish a pack bundle to the Packs API."
+)
 @click.option("--path", "pack_path", default=".", show_default=True)
 @click.option("--out", "out_path", default="dist/bundle.zip", show_default=True)
 @click.option("--api-url", "api_url", default=None, help="Override Packs API base URL.")
-@click.option("--owner-wallet", default=None, help="Owner wallet address for new packs.")
-@click.option("--source", "source_path", default=None, help="Optional source.zip to upload.")
+@click.option(
+    "--owner-wallet", default=None, help="Owner wallet address for new packs."
+)
+@click.option(
+    "--source", "source_path", default=None, help="Optional source.zip to upload."
+)
 def publish_cmd(
     pack_path: str,
     out_path: str,
@@ -213,6 +236,7 @@ def search_cmd(
         raise click.ClickException(str(exc)) from exc
 
     if q:
+
         def matches(p: dict[str, Any]) -> bool:
             blob = " ".join(
                 [
@@ -248,11 +272,15 @@ def info_cmd(slug: str, api_url: str | None) -> None:
 
 @pack_cli.command(name="fork", help="Fork a pack in the registry.")
 @click.option("--slug", required=True, help="Parent pack slug.")
-@click.option("--version", "pack_version", default=None, help="Pack version (defaults to latest).")
+@click.option(
+    "--version", "pack_version", default=None, help="Pack version (defaults to latest)."
+)
 @click.option("--new-slug", default=None, help="Slug for the fork (optional).")
 @click.option("--name", default=None, help="Name for the fork (optional).")
 @click.option("--summary", default=None, help="Summary for the fork (optional).")
-@click.option("--owner-wallet", default=None, help="Owner wallet for the fork (optional).")
+@click.option(
+    "--owner-wallet", default=None, help="Owner wallet for the fork (optional)."
+)
 @click.option("--api-url", "api_url", default=None, help="Override Packs API base URL.")
 def fork_cmd(
     slug: str,
@@ -291,7 +319,10 @@ def _safe_extract_zip(zip_path: Path, *, dest_dir: Path) -> list[str]:
             if rel.is_absolute() or ".." in rel.parts:
                 continue
             target = (dest_dir / rel).resolve()
-            if dest_dir.resolve() not in target.parents and target != dest_dir.resolve():
+            if (
+                dest_dir.resolve() not in target.parents
+                and target != dest_dir.resolve()
+            ):
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info, "r") as src, target.open("wb") as out:
@@ -311,7 +342,9 @@ def _sha256_file(path: Path) -> str:
 
 @pack_cli.command(name="install", help="Download and unpack a pack bundle locally.")
 @click.option("--slug", required=True, help="Pack slug.")
-@click.option("--version", "pack_version", default=None, help="Pack version (defaults to latest).")
+@click.option(
+    "--version", "pack_version", default=None, help="Pack version (defaults to latest)."
+)
 @click.option(
     "--dir",
     "install_dir",
@@ -341,19 +374,26 @@ def install_cmd(
     if not isinstance(pack_obj, dict) or not isinstance(versions, list) or not versions:
         raise click.ClickException("Pack not found or has no versions")
 
-    desired_version = (pack_version or str(pack_obj.get("latest_version") or "")).strip()
+    desired_version = (
+        pack_version or str(pack_obj.get("latest_version") or "")
+    ).strip()
     if not desired_version:
         desired_version = str(versions[0].get("version") or "").strip()
     if not desired_version:
         raise click.ClickException("Pack has no published versions")
 
-    version_obj = next((v for v in versions if str(v.get("version") or "").strip() == desired_version), None)
+    version_obj = next(
+        (v for v in versions if str(v.get("version") or "").strip() == desired_version),
+        None,
+    )
     if not isinstance(version_obj, dict):
         try:
             version_detail = client.get_pack_version(slug=slug, version=desired_version)
         except PacksApiError as exc:
             raise click.ClickException(str(exc)) from exc
-        version_obj = version_detail.get("version") if isinstance(version_detail, dict) else None
+        version_obj = (
+            version_detail.get("version") if isinstance(version_detail, dict) else None
+        )
 
     if not isinstance(version_obj, dict):
         raise click.ClickException(f"Version not found: {desired_version}")
@@ -400,11 +440,11 @@ def install_cmd(
     packs_map[slug] = {
         "version": desired_version,
         "bundle_sha256": actual_sha,
-        "installed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "installed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "path": str(dest),
     }
     lock["schemaVersion"] = lock.get("schemaVersion") or "0.1"
-    lock["generatedAt"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    lock["generatedAt"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     lock["packs"] = packs_map
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text(json.dumps(lock, indent=2, default=str) + "\n")
@@ -469,7 +509,9 @@ def signal_emit_cmd(
         try:
             parsed_metrics[k] = float(v)
         except ValueError as exc:
-            raise click.ClickException(f"Invalid --metric value (expected number): {item}") from exc
+            raise click.ClickException(
+                f"Invalid --metric value (expected number): {item}"
+            ) from exc
 
     client = PacksApiClient(api_base_url=api_url)
     try:
@@ -497,7 +539,9 @@ def event_group() -> None:
 
 @event_group.command(name="emit", help="Emit an event for a pack.")
 @click.option("--slug", required=True, help="Pack slug.")
-@click.option("--type", "event_type", required=True, help="Event type (e.g. state_snapshot).")
+@click.option(
+    "--type", "event_type", required=True, help="Event type (e.g. state_snapshot)."
+)
 @click.option("--version", "pack_version", default=None, help="Optional pack version.")
 @click.option("--stream-key", default="public", show_default=True)
 @click.option(
@@ -528,9 +572,13 @@ def event_emit_cmd(
         try:
             payload_value = json.loads(Path(payload_file).read_text())
         except OSError as exc:
-            raise click.ClickException(f"Failed to read --payload-file: {payload_file}") from exc
+            raise click.ClickException(
+                f"Failed to read --payload-file: {payload_file}"
+            ) from exc
         except json.JSONDecodeError as exc:
-            raise click.ClickException(f"Invalid JSON in --payload-file: {payload_file}") from exc
+            raise click.ClickException(
+                f"Invalid JSON in --payload-file: {payload_file}"
+            ) from exc
     else:
         try:
             payload_value = json.loads(payload_json or "{}")
