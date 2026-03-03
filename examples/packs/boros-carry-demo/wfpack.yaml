@@ -1,0 +1,24 @@
+schema_version: "0.1"
+
+slug: boros-carry-demo
+name: Boros Carry Backtest (Delta Lab Demo)
+version: 0.1.10
+summary: "Demo pack: Boros carry vs underlying (+ perp funding). Includes a funding-vs-underlying long/short backtest and a static applet."
+primary_kind: monitor
+
+tags:
+  - demo
+  - delta-lab
+  - boros
+
+components:
+  - id: boros-backtest
+    kind: script
+    path: scripts/boros_backtest.py
+  - id: funding-vs-underlying
+    kind: script
+    path: scripts/funding_vs_underlying_backtest.py
+
+applet:
+  build_dir: "applet/dist"
+  manifest: "applet/applet.manifest.json"

@@ -13,6 +13,10 @@ dist/
 build/
 site/
 
+# Pack templates (used by `wayfinder pack init`) live under a `dist/` folder.
+!wayfinder_paths/packs/templates/applet/dist/
+!wayfinder_paths/packs/templates/applet/dist/**
+
 # Virtual environments
 .venv/
 venv/

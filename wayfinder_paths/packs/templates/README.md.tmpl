@@ -1,0 +1,24 @@
+# {{name}}
+
+{{summary}}
+
+## What’s inside
+
+- `wfpack.yaml` (pack manifest)
+- `{{component_path}}` (main component)
+- `skill/SKILL.md` (agent-facing usage notes)
+- `applet/` (static UI, optional)
+
+## Build
+
+```bash
+wayfinder pack doctor --path .
+wayfinder pack build --path . --out dist/bundle.zip
+```
+
+## Publish
+
+```bash
+export WAYFINDER_PACKS_API_URL="http://localhost:8000"
+wayfinder pack publish --path . --owner-wallet 0xYourWallet
+```

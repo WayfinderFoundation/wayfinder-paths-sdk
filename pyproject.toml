@@ -7,6 +7,9 @@ authors = ["Wayfinder <dev@wayfinder.ai>"]
 packages = [
     { include = "wayfinder_paths", from = "." },
 ]
+include = [
+    { path = "wayfinder_paths/packs/templates", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"

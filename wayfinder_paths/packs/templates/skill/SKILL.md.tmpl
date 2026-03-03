@@ -1,0 +1,19 @@
+# {{name}} — Pack Skill
+
+{{summary}}
+
+## Key files
+
+- `wfpack.yaml` — manifest (slug/version/kind)
+- `{{component_path}}` — main component
+
+## How to use
+
+1. Read `wfpack.yaml` to understand what this pack contains and its permissions.
+2. Explain what the pack does in plain English.
+3. If asked to “make it feel alive”, emit signals/events for the pack runtime:
+
+```bash
+wayfinder pack signal emit --slug {{slug}} --title "Hello" --message "World"
+```
+
