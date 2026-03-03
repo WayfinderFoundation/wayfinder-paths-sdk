@@ -28,7 +28,7 @@ from wayfinder_paths.core.constants.moonwell_abi import (
     WETH_ABI,
 )
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
@@ -1367,18 +1367,18 @@ class MoonwellAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=CHAIN_ID_BASE,
                     calls=[
-                        ReadOnlyCall(
+                        Call(
                             mtoken_contract,
                             "balanceOf",
                             args=(account,),
                             postprocess=int,
                         ),
-                        ReadOnlyCall(
+                        Call(
                             mtoken_contract, "exchangeRateStored", postprocess=int
                         ),
-                        ReadOnlyCall(mtoken_contract, "getCash", postprocess=int),
-                        ReadOnlyCall(mtoken_contract, "decimals", postprocess=int),
-                        ReadOnlyCall(
+                        Call(mtoken_contract, "getCash", postprocess=int),
+                        Call(mtoken_contract, "decimals", postprocess=int),
+                        Call(
                             mtoken_contract,
                             "underlying",
                             postprocess=lambda a: to_checksum_address(str(a)),

@@ -8,7 +8,7 @@ from wayfinder_paths.core.constants.contracts import KHYPE_ADDRESS, MULTICALL3_A
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils import multicall as multicall_mod
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -114,11 +114,11 @@ async def test_multicall_helper_uses_multicall3_on_mainnet_fork(gorlami, monkeyp
             web3=web3,
             chain_id=1,
             calls=[
-                ReadOnlyCall(pool, "slot0"),
-                ReadOnlyCall(pool, "fee", postprocess=int),
-                ReadOnlyCall(pool, "liquidity", postprocess=int),
-                ReadOnlyCall(pool, "token0", postprocess=_cs),
-                ReadOnlyCall(pool, "token1", postprocess=_cs),
+                Call(pool, "slot0"),
+                Call(pool, "fee", postprocess=int),
+                Call(pool, "liquidity", postprocess=int),
+                Call(pool, "token0", postprocess=_cs),
+                Call(pool, "token1", postprocess=_cs),
             ],
             block_identifier="latest",
         )
@@ -137,10 +137,10 @@ async def test_multicall_helper_uses_multicall3_on_mainnet_fork(gorlami, monkeyp
             web3=web3,
             chain_id=1,
             calls=[
-                ReadOnlyCall(erc20_0, "decimals", postprocess=int),
-                ReadOnlyCall(erc20_0, "symbol", postprocess=str),
-                ReadOnlyCall(erc20_1, "decimals", postprocess=int),
-                ReadOnlyCall(erc20_1, "symbol", postprocess=str),
+                Call(erc20_0, "decimals", postprocess=int),
+                Call(erc20_0, "symbol", postprocess=str),
+                Call(erc20_1, "decimals", postprocess=int),
+                Call(erc20_1, "symbol", postprocess=str),
             ],
             block_identifier="latest",
         )
@@ -172,8 +172,8 @@ async def test_multicall_helper_falls_back_when_multicall_reverts(gorlami, monke
             web3=web3,
             chain_id=1,
             calls=[
-                ReadOnlyCall(pool, "slot0"),
-                ReadOnlyCall(pool, "fee", postprocess=int),
+                Call(pool, "slot0"),
+                Call(pool, "fee", postprocess=int),
             ],
             block_identifier="latest",
         )
@@ -215,9 +215,9 @@ async def test_multicall_helper_falls_back_when_unsupported(gorlami, monkeypatch
             web3=web3,
             chain_id=999,
             calls=[
-                ReadOnlyCall(erc20, "name", postprocess=str),
-                ReadOnlyCall(erc20, "symbol", postprocess=str),
-                ReadOnlyCall(erc20, "decimals", postprocess=int),
+                Call(erc20, "name", postprocess=str),
+                Call(erc20, "symbol", postprocess=str),
+                Call(erc20, "decimals", postprocess=int),
             ],
             block_identifier="latest",
         )

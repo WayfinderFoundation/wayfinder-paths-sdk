@@ -18,7 +18,7 @@ from wayfinder_paths.core.constants.ethena_contracts import (
 )
 from wayfinder_paths.core.utils.interest import apr_to_apy
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
@@ -71,11 +71,11 @@ class EthenaVaultAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=CHAIN_ID_ETHEREUM,
                         calls=[
-                            ReadOnlyCall(vault, "getUnvestedAmount", postprocess=int),
-                            ReadOnlyCall(
+                            Call(vault, "getUnvestedAmount", postprocess=int),
+                            Call(
                                 vault, "lastDistributionTimestamp", postprocess=int
                             ),
-                            ReadOnlyCall(vault, "totalAssets", postprocess=int),
+                            Call(vault, "totalAssets", postprocess=int),
                         ],
                         block_identifier="pending",
                     ),
@@ -162,19 +162,19 @@ class EthenaVaultAdapter(BaseAdapter):
                             web3=web3,
                             chain_id=CHAIN_ID_ETHEREUM,
                             calls=[
-                                ReadOnlyCall(
+                                Call(
                                     usde,
                                     "balanceOf",
                                     args=(acct,),
                                     postprocess=int,
                                 ),
-                                ReadOnlyCall(
+                                Call(
                                     susde,
                                     "balanceOf",
                                     args=(acct,),
                                     postprocess=int,
                                 ),
-                                ReadOnlyCall(vault, "cooldowns", args=(acct,)),
+                                Call(vault, "cooldowns", args=(acct,)),
                             ],
                             block_identifier="pending",
                         )
@@ -186,13 +186,13 @@ class EthenaVaultAdapter(BaseAdapter):
                             web3=web3,
                             chain_id=CHAIN_ID_ETHEREUM,
                             calls=[
-                                ReadOnlyCall(
+                                Call(
                                     usde,
                                     "balanceOf",
                                     args=(acct,),
                                     postprocess=int,
                                 ),
-                                ReadOnlyCall(
+                                Call(
                                     susde,
                                     "balanceOf",
                                     args=(acct,),
@@ -235,13 +235,13 @@ class EthenaVaultAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=cid,
                         calls=[
-                            ReadOnlyCall(
+                            Call(
                                 usde,
                                 "balanceOf",
                                 args=(acct,),
                                 postprocess=int,
                             ),
-                            ReadOnlyCall(
+                            Call(
                                 susde,
                                 "balanceOf",
                                 args=(acct,),
@@ -258,10 +258,10 @@ class EthenaVaultAdapter(BaseAdapter):
                         address=ETHENA_SUSDE_VAULT_MAINNET,
                         abi=ETHENA_SUSDE_VAULT_ABI,
                     )
-                    mc_calls = [ReadOnlyCall(vault, "cooldowns", args=(acct,))]
+                    mc_calls = [Call(vault, "cooldowns", args=(acct,))]
                     if shares > 0:
                         mc_calls.append(
-                            ReadOnlyCall(
+                            Call(
                                 vault,
                                 "convertToAssets",
                                 args=(int(shares),),

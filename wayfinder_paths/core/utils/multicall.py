@@ -13,7 +13,7 @@ from wayfinder_paths.core.constants.contracts import MULTICALL3_ADDRESS
 
 
 @dataclass(frozen=True)
-class ReadOnlyCall:
+class Call:
     contract: Any
     fn_name: str
     args: tuple[Any, ...] = ()
@@ -64,7 +64,7 @@ async def read_only_calls_multicall_or_gather(
     *,
     web3: AsyncWeb3,
     chain_id: int | None,
-    calls: Sequence[ReadOnlyCall],
+    calls: Sequence[Call],
     block_identifier: str | int = "latest",
     chunk_size: int = 0,
 ) -> list[Any]:
@@ -79,7 +79,7 @@ async def read_only_calls_multicall_or_gather(
     if not calls:
         return []
 
-    async def _fallback(chunk: Sequence[ReadOnlyCall]) -> list[Any]:
+    async def _fallback(chunk: Sequence[Call]) -> list[Any]:
         coros: list[Awaitable[Any]] = []
         for c in chunk:
             fn = getattr(c.contract.functions, c.fn_name)
@@ -94,7 +94,7 @@ async def read_only_calls_multicall_or_gather(
     if not supported:
         return await _fallback(calls)
 
-    batches: list[Sequence[ReadOnlyCall]]
+    batches: list[Sequence[Call]]
     if chunk_size and chunk_size > 0 and len(calls) > chunk_size:
         batches = [calls[i : i + chunk_size] for i in range(0, len(calls), chunk_size)]
     else:

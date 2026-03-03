@@ -17,7 +17,7 @@ from wayfinder_paths.core.constants.contracts import (
 )
 from wayfinder_paths.core.constants.erc4626_abi import ERC4626_ABI
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
@@ -74,16 +74,16 @@ class AvantisAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=self.chain_id,
                     calls=[
-                        ReadOnlyCall(
+                        Call(
                             v,
                             "asset",
                             postprocess=lambda a: to_checksum_address(str(a)),
                         ),
-                        ReadOnlyCall(v, "decimals", postprocess=int),
-                        ReadOnlyCall(v, "symbol", postprocess=str),
-                        ReadOnlyCall(v, "name", postprocess=str),
-                        ReadOnlyCall(v, "totalAssets", postprocess=int),
-                        ReadOnlyCall(v, "totalSupply", postprocess=int),
+                        Call(v, "decimals", postprocess=int),
+                        Call(v, "symbol", postprocess=str),
+                        Call(v, "name", postprocess=str),
+                        Call(v, "totalAssets", postprocess=int),
+                        Call(v, "totalSupply", postprocess=int),
                     ],
                     block_identifier="pending",
                 )
@@ -143,25 +143,25 @@ class AvantisAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=self.chain_id,
                     calls=[
-                        ReadOnlyCall(
+                        Call(
                             mgr,
                             "junior",
                             postprocess=lambda a: to_checksum_address(str(a)),
                         ),
-                        ReadOnlyCall(
+                        Call(
                             mgr,
                             "senior",
                             postprocess=lambda a: to_checksum_address(str(a)),
                         ),
-                        ReadOnlyCall(mgr, "currentBalanceUSDC", postprocess=int),
-                        ReadOnlyCall(
+                        Call(mgr, "currentBalanceUSDC", postprocess=int),
+                        Call(
                             mgr, "currentAdjustedBalanceUSDC", postprocess=int
                         ),
-                        ReadOnlyCall(mgr, "getBufferRatio", postprocess=int),
-                        ReadOnlyCall(mgr, "totalRewards", postprocess=int),
-                        ReadOnlyCall(mgr, "pnlRewards", postprocess=int),
-                        ReadOnlyCall(mgr, "rewardPeriod", postprocess=int),
-                        ReadOnlyCall(mgr, "lastRewardTime", postprocess=int),
+                        Call(mgr, "getBufferRatio", postprocess=int),
+                        Call(mgr, "totalRewards", postprocess=int),
+                        Call(mgr, "pnlRewards", postprocess=int),
+                        Call(mgr, "rewardPeriod", postprocess=int),
+                        Call(mgr, "lastRewardTime", postprocess=int),
                     ],
                     block_identifier=block_id,
                 )
@@ -319,27 +319,27 @@ class AvantisAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=self.chain_id,
                     calls=[
-                        ReadOnlyCall(v, "decimals", postprocess=int),
-                        ReadOnlyCall(
+                        Call(v, "decimals", postprocess=int),
+                        Call(
                             v,
                             "asset",
                             postprocess=lambda a: to_checksum_address(str(a)),
                         ),
-                        ReadOnlyCall(
+                        Call(
                             v,
                             "balanceOf",
                             args=(acct,),
                             postprocess=int,
                         ),
-                        ReadOnlyCall(v, "totalAssets", postprocess=int),
-                        ReadOnlyCall(v, "totalSupply", postprocess=int),
-                        ReadOnlyCall(
+                        Call(v, "totalAssets", postprocess=int),
+                        Call(v, "totalSupply", postprocess=int),
+                        Call(
                             v,
                             "maxRedeem",
                             args=(acct,),
                             postprocess=int,
                         ),
-                        ReadOnlyCall(
+                        Call(
                             v,
                             "maxWithdraw",
                             args=(acct,),

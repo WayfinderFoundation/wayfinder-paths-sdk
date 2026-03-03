@@ -39,7 +39,7 @@ from wayfinder_paths.core.constants.polymarket import (
     ZERO32_STR,
 )
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import (
@@ -778,10 +778,10 @@ class PolymarketAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
-                            ReadOnlyCall(
+                            Call(
                                 usdce, "balanceOf", args=(acct,), postprocess=int
                             ),
-                            ReadOnlyCall(
+                            Call(
                                 usdc, "balanceOf", args=(acct,), postprocess=int
                             ),
                         ],
@@ -1214,8 +1214,8 @@ class PolymarketAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=POLYGON_CHAIN_ID,
                     calls=[
-                        ReadOnlyCall(usdce, "balanceOf", args=(addr,), postprocess=int),
-                        ReadOnlyCall(usdc, "balanceOf", args=(addr,), postprocess=int),
+                        Call(usdce, "balanceOf", args=(addr,), postprocess=int),
+                        Call(usdc, "balanceOf", args=(addr,), postprocess=int),
                     ],
                     block_identifier="pending",
                 )
@@ -1555,7 +1555,7 @@ class PolymarketAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
-                            ReadOnlyCall(
+                            Call(
                                 ctf,
                                 "getCollectionId",
                                 args=(parent, cond_b32, int(i)),
@@ -1570,7 +1570,7 @@ class PolymarketAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
-                            ReadOnlyCall(
+                            Call(
                                 ctf,
                                 "getPositionId",
                                 args=(collateral_cs, collection_id),
@@ -1586,7 +1586,7 @@ class PolymarketAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
-                            ReadOnlyCall(
+                            Call(
                                 ctf,
                                 "balanceOf",
                                 args=(holder, int(pid)),

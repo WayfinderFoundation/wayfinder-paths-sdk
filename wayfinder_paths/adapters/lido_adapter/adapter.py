@@ -18,7 +18,7 @@ from wayfinder_paths.core.constants.lido_abi import (
 )
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
@@ -97,8 +97,8 @@ class LidoAdapter(BaseAdapter):
                 web3=web3,
                 chain_id=chain_id,
                 calls=[
-                    ReadOnlyCall(steth, "isStakingPaused", postprocess=bool),
-                    ReadOnlyCall(steth, "getCurrentStakeLimit", postprocess=int),
+                    Call(steth, "isStakingPaused", postprocess=bool),
+                    Call(steth, "getCurrentStakeLimit", postprocess=int),
                 ],
                 block_identifier="pending",
             )
@@ -495,8 +495,8 @@ class LidoAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=chain_id,
                     calls=[
-                        ReadOnlyCall(wsteth, "stEthPerToken", postprocess=int),
-                        ReadOnlyCall(wsteth, "tokensPerStEth", postprocess=int),
+                        Call(wsteth, "stEthPerToken", postprocess=int),
+                        Call(wsteth, "tokensPerStEth", postprocess=int),
                     ],
                     block_identifier="pending",
                 )
@@ -537,19 +537,19 @@ class LidoAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=chain_id,
                     calls=[
-                        ReadOnlyCall(
+                        Call(
                             steth_erc20,
                             "balanceOf",
                             args=(acct,),
                             postprocess=int,
                         ),
-                        ReadOnlyCall(
+                        Call(
                             steth,
                             "sharesOf",
                             args=(acct,),
                             postprocess=int,
                         ),
-                        ReadOnlyCall(
+                        Call(
                             wsteth_erc20,
                             "balanceOf",
                             args=(acct,),

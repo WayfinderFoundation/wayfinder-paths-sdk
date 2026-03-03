@@ -15,7 +15,7 @@ from wayfinder_paths.core.constants.contracts import (
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils import multicall as multicall_mod
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     _multicall3_supported,
     read_only_calls_multicall_or_gather,
 )
@@ -115,8 +115,8 @@ async def test_read_only_calls_multicall_or_gather_decodes_outputs(monkeypatch):
         web3=web3,
         chain_id=1,
         calls=[
-            ReadOnlyCall(dummy, "foo"),
-            ReadOnlyCall(dummy, "bar"),
+            Call(dummy, "foo"),
+            Call(dummy, "bar"),
         ],
         block_identifier="latest",
     )
@@ -154,7 +154,7 @@ async def test_read_only_calls_multicall_or_gather_falls_back_on_multicall_error
     (foo,) = await read_only_calls_multicall_or_gather(
         web3=web3,
         chain_id=1,
-        calls=[ReadOnlyCall(dummy, "foo")],
+        calls=[Call(dummy, "foo")],
         block_identifier="latest",
     )
     assert foo == 999
@@ -187,7 +187,7 @@ async def test_read_only_calls_multicall_or_gather_falls_back_when_no_multicall_
     (foo,) = await read_only_calls_multicall_or_gather(
         web3=web3,
         chain_id=1,
-        calls=[ReadOnlyCall(dummy, "foo")],
+        calls=[Call(dummy, "foo")],
         block_identifier="latest",
     )
     assert foo == 111
@@ -244,10 +244,10 @@ async def test_live_multicall3_on_base(monkeypatch):
             web3=web3,
             chain_id=8453,
             calls=[
-                ReadOnlyCall(usdc, "decimals", postprocess=int),
-                ReadOnlyCall(usdc, "symbol", postprocess=str),
-                ReadOnlyCall(weth, "decimals", postprocess=int),
-                ReadOnlyCall(weth, "symbol", postprocess=str),
+                Call(usdc, "decimals", postprocess=int),
+                Call(usdc, "symbol", postprocess=str),
+                Call(weth, "decimals", postprocess=int),
+                Call(weth, "symbol", postprocess=str),
             ],
             block_identifier="latest",
         )
@@ -286,10 +286,10 @@ async def test_live_multicall3_chunking_on_base(monkeypatch):
             web3=web3,
             chain_id=8453,
             calls=[
-                ReadOnlyCall(usdc, "name", postprocess=str),
-                ReadOnlyCall(usdc, "symbol", postprocess=str),
-                ReadOnlyCall(usdc, "decimals", postprocess=int),
-                ReadOnlyCall(usdc, "totalSupply", postprocess=int),
+                Call(usdc, "name", postprocess=str),
+                Call(usdc, "symbol", postprocess=str),
+                Call(usdc, "decimals", postprocess=int),
+                Call(usdc, "totalSupply", postprocess=int),
             ],
             block_identifier="latest",
             chunk_size=2,
@@ -331,9 +331,9 @@ async def test_live_fallback_when_multicall_unsupported(monkeypatch):
             web3=web3,
             chain_id=999,
             calls=[
-                ReadOnlyCall(erc20, "name", postprocess=str),
-                ReadOnlyCall(erc20, "symbol", postprocess=str),
-                ReadOnlyCall(erc20, "decimals", postprocess=int),
+                Call(erc20, "name", postprocess=str),
+                Call(erc20, "symbol", postprocess=str),
+                Call(erc20, "decimals", postprocess=int),
             ],
             block_identifier="latest",
         )
@@ -364,9 +364,9 @@ async def test_live_multicall_matches_direct_calls_on_base():
             web3=web3,
             chain_id=8453,
             calls=[
-                ReadOnlyCall(usdc, "name"),
-                ReadOnlyCall(usdc, "decimals"),
-                ReadOnlyCall(usdc, "totalSupply"),
+                Call(usdc, "name"),
+                Call(usdc, "decimals"),
+                Call(usdc, "totalSupply"),
             ],
             block_identifier="latest",
         )

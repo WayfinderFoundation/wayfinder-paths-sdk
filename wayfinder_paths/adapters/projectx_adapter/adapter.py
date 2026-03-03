@@ -29,7 +29,7 @@ from wayfinder_paths.core.constants.uniswap_v3_abi import (
     NONFUNGIBLE_POSITION_MANAGER_ABI,
 )
 from wayfinder_paths.core.utils.multicall import (
-    ReadOnlyCall,
+    Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import (
@@ -789,9 +789,9 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                     web3=web3,
                     chain_id=PROJECTX_CHAIN_ID,
                     calls=[
-                        ReadOnlyCall(pool, "slot0"),
-                        ReadOnlyCall(pool, "token0", postprocess=str),
-                        ReadOnlyCall(pool, "token1", postprocess=str),
+                        Call(pool, "slot0"),
+                        Call(pool, "token0", postprocess=str),
+                        Call(pool, "token1", postprocess=str),
                     ],
                     block_identifier="latest",
                 )
@@ -1028,12 +1028,12 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 web3=web3,
                 chain_id=PROJECTX_CHAIN_ID,
                 calls=[
-                    ReadOnlyCall(pool, "slot0"),
-                    ReadOnlyCall(pool, "tickSpacing", postprocess=int),
-                    ReadOnlyCall(pool, "fee", postprocess=int),
-                    ReadOnlyCall(pool, "liquidity", postprocess=int),
-                    ReadOnlyCall(pool, "token0", postprocess=str),
-                    ReadOnlyCall(pool, "token1", postprocess=str),
+                    Call(pool, "slot0"),
+                    Call(pool, "tickSpacing", postprocess=int),
+                    Call(pool, "fee", postprocess=int),
+                    Call(pool, "liquidity", postprocess=int),
+                    Call(pool, "token0", postprocess=str),
+                    Call(pool, "token1", postprocess=str),
                 ],
                 block_identifier="latest",
             )
@@ -1064,8 +1064,8 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             web3=web3,
             chain_id=PROJECTX_CHAIN_ID,
             calls=[
-                ReadOnlyCall(contract, "decimals", postprocess=int),
-                ReadOnlyCall(contract, "symbol", postprocess=str),
+                Call(contract, "decimals", postprocess=int),
+                Call(contract, "symbol", postprocess=str),
             ],
             block_identifier="latest",
         )
@@ -1288,10 +1288,10 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             web3=pool_contract.w3,
             chain_id=PROJECTX_CHAIN_ID,
             calls=[
-                ReadOnlyCall(pool_contract, "feeGrowthGlobal0X128", postprocess=int),
-                ReadOnlyCall(pool_contract, "feeGrowthGlobal1X128", postprocess=int),
-                ReadOnlyCall(pool_contract, "ticks", args=(int(tick_lower),)),
-                ReadOnlyCall(pool_contract, "ticks", args=(int(tick_upper),)),
+                Call(pool_contract, "feeGrowthGlobal0X128", postprocess=int),
+                Call(pool_contract, "feeGrowthGlobal1X128", postprocess=int),
+                Call(pool_contract, "ticks", args=(int(tick_lower),)),
+                Call(pool_contract, "ticks", args=(int(tick_upper),)),
             ],
             block_identifier="latest",
         )
@@ -1390,7 +1390,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 web3=web3,
                 chain_id=PROJECTX_CHAIN_ID,
                 calls=[
-                    ReadOnlyCall(
+                    Call(
                         factory,
                         "getPool",
                         args=(token_a_cs, token_b_cs, int(fee)),
