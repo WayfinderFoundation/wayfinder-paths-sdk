@@ -34,30 +34,14 @@ def _decode_output(web3: AsyncWeb3, contract: Any, fn_name: str, data: bytes) ->
     return decoded
 
 
-def _as_bytes(value: Any) -> bytes:
-    if value is None:
-        return b""
-    if isinstance(value, bytes):
-        return value
-    # HexBytes, bytearray, etc.
-    try:
-        return bytes(value)
-    except Exception:
-        return b""
-
-
 async def _multicall3_supported(
     web3: AsyncWeb3, *, address: str = MULTICALL3_ADDRESS
 ) -> bool:
-    """
-    Multicall3 is *commonly* deployed at the same address on many EVM networks
-    """
-
     try:
         code = await web3.eth.get_code(web3.to_checksum_address(address))
     except Exception:
         return False
-    return len(_as_bytes(code)) > 0
+    return len(code) > 0
 
 
 async def read_only_calls_multicall_or_gather(
