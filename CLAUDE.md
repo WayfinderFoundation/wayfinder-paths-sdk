@@ -329,26 +329,9 @@ Hyperliquid deposits (Bridge2):
 - Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address).
 - Withdraw flow: `mcp__wayfinder__hyperliquid_execute(action="withdraw", amount_usdc=...)` → `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal")`.
 
-Polymarket quick flows:
+Polymarket flows and funding details are documented in `/using-polymarket-adapter` (USDC.e collateral, bridge paths, buy/sell/close/redeem).
 
-- Search markets/events: `mcp__wayfinder__polymarket(action="search", query="bitcoin february 9", limit=10)`
-- Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket(action="status", wallet_label="main")`
-- Convert **native Polygon USDC (0x3c499c...) → USDC.e (0x2791..., required collateral)**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` (skip if you already have USDC.e)
-- Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_usdc=2)`
-- Close a position (sell full size): `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES")`
-- Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
-
-Polymarket funding (USDC.e collateral):
-
-- **Have native Polygon USDC (0x3c499c...) on Polygon:** Use `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` to convert it → USDC.e (0x2791...).
-- **Already have USDC.e (0x2791...) on Polygon:** You can trade immediately; skip `bridge_deposit`.
-- **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
-- **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
-
-Sizing note (avoid ambiguity):
-
-- If a user says "$X at Y× leverage", confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.
-- `mcp__wayfinder__hyperliquid_execute` supports `usd_amount` with `usd_amount_kind="notional"|"margin"` so this is explicit.
+Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin** (use `usd_amount_kind="notional"|"margin"` on `mcp__wayfinder__hyperliquid_execute`).
 
 **Scripting helper for adapters:**
 
@@ -522,31 +505,15 @@ quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", a
 
 **7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
-**8. Adapter read methods return `(ok, data)` tuples — always destructure**
-
-```python
-# WRONG — treats the tuple as the data itself
-data = await adapter.get_meta_and_asset_ctxs()
-meta = data[0]  # This is the bool, not the meta!
-
-# RIGHT — destructure the ok/data tuple, check ok
-ok, data = await adapter.get_meta_and_asset_ctxs()
-if not ok:
-    raise RuntimeError(f"API call failed: {data}")
-meta, ctxs = data[0], data[1]
-```
-
-This applies to virtually all adapter read methods (`get_meta_and_asset_ctxs`, `get_spot_meta`, `get_markets`, `get_user_state`, etc.). The pattern is universal across Hyperliquid, Moonwell, Pendle, and all other adapters.
-
-**9. Load the protocol skill before writing adapter scripts**
+**8. Load the protocol skill before writing adapter scripts**
 
 Before writing *any* script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
 
-**10. Write the script file before calling `run_script`**
+**9. Write the script file before calling `run_script`**
 
 `mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
 
-**11. Funding rate sign (CRITICAL for perp trading)**
+**10. Funding rate sign (CRITICAL for perp trading)**
 
 **CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
 
@@ -635,44 +602,18 @@ Safety note:
 
 Supported chains:
 
-| Chain     | ID    | Code         | Symbol | Native token ID        |
-| --------- | ----- | ------------ | ------ | ---------------------- |
-| Ethereum  | 1     | `ethereum`   | ETH    | `ethereum-ethereum`    |
-| Base      | 8453  | `base`       | ETH    | `ethereum-base`        |
-| Arbitrum  | 42161 | `arbitrum`   | ETH    | `ethereum-arbitrum`    |
-| Polygon   | 137   | `polygon`    | POL    | `polygon-ecosystem-token-polygon`|
-| BSC       | 56    | `bsc`        | BNB    | `binancecoin-bsc`      |
-| Avalanche | 43114 | `avalanche`  | AVAX   | `avalanche-avalanche`|
-| Plasma    | 9745  | `plasma`     | PLASMA | `plasma-plasma`        |
-| HyperEVM  | 999   | `hyperevm`   | HYPE   | `hyperliquid-hyperevm` |
-
-- **Plasma**: EVM chain where Pendle deploys PT/YT markets. Not Pendle-specific — it's its own chain.
-- **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
+- `ethereum` (1), `base` (8453), `arbitrum` (42161), `polygon` (137), `bsc` (56), `avalanche` (43114), `plasma` (9745), `hyperevm` (999).
 
 Gas requirements (critical — assets get stuck without gas):
 
-- **Every on-chain action requires the destination chain's native gas token in the wallet.** Without gas, the wallet cannot transact and assets are effectively stuck until gas is provided.
-- **Before any operation on a chain**, check the wallet has sufficient native gas on that chain using `wayfinder://balances/{label}`.
-- **Bridging to a new chain for the first time:** The wallet needs native gas before it can do anything. Bridge the native gas token (e.g. ETH) to the destination chain first, then bridge or swap for the target token. Use the native token IDs from the chain table (e.g. `ethereum-base` for ETH on Base).
-- Use the native token IDs from the chain table above when bridging gas (e.g. `ethereum-base` for ETH on Base, `plasma-plasma` for PLASMA on Plasma).
+- **Before any on-chain operation**, check the wallet has native gas on that chain using `wayfinder://balances/{label}`.
+- If bridging to a new chain for the first time: bridge gas first. If you need the native token ID, look it up via `wayfinder://tokens/search/{chain_code}/{query}`.
 
 Token identifiers (important for quoting/execution/lookups):
 
-All token functions (`get_token_details`, `quote_swap`, `execute`, etc.) expect **token IDs**, not free-text search queries.
-
-- **Token ID format:** `<coingecko_id>-<chain_code>` — the first part is the coingecko_id, NOT the symbol.
-  - `usd-coin-base` (USDC on Base — coingecko_id is `usd-coin`, NOT `usdc`)
-  - `ethereum-arbitrum` (ETH on Arbitrum)
-  - `usdt0-arbitrum` (USDT on Arbitrum)
-  - `hyperliquid-hyperevm` (HYPE on HyperEVM)
-- **Address ID format:** `<chain_code>_<address>` when you know the ERC20 contract (e.g., `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
-- **Do NOT pass symbol-chain** (`usdc-base`) or free-text queries (`USDC plasma`) — these will fail. Always use one of the two ID formats above.
-- If you don't know a token's coingecko_id, use the MCP resource `wayfinder://tokens/search/{chain_code}/{query}` to find it first, then use the returned token ID.
-- See `.claude/skills/using-pool-token-balance-data/rules/tokens.md` for full details.
+- Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
 
 ## Common Commands
-
-Note: `just` is a command runner (install via `brew install just` or `cargo install just`). If you don't have `just`, use the poetry commands directly.
 
 ```bash
 # Install dependencies
