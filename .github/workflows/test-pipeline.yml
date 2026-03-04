@@ -88,7 +88,7 @@ jobs:
       run: poetry install --no-interaction
     
     - name: Validate test coverage
-      run: poetry run pytest wayfinder_paths/tests/ -v --maxfail=5
+      run: poetry run pytest wayfinder_paths/tests/ -v --maxfail=5 -m "not local"
 
   # Smoke Tests
   smoke-tests:
@@ -129,7 +129,7 @@ jobs:
       run: poetry run python scripts/make_wallets.py --default
 
     - name: Run smoke tests
-      run: poetry run pytest -k smoke -v
+      run: poetry run pytest -k smoke -v -m "not local"
 
   # Adapter Tests
   adapter-tests:
@@ -167,7 +167,7 @@ jobs:
       run: poetry install --no-interaction
     
     - name: Run adapter tests
-      run: poetry run pytest wayfinder_paths/adapters/ -v --maxfail=5
+      run: poetry run pytest wayfinder_paths/adapters/ -v --maxfail=5 -m "not local"
 
   # MCP Tests
   mcp-tests:
@@ -205,7 +205,7 @@ jobs:
       run: poetry install --no-interaction
 
     - name: Run MCP tests
-      run: poetry run pytest wayfinder_paths/mcp/ -v --maxfail=5
+      run: poetry run pytest wayfinder_paths/mcp/ -v --maxfail=5 -m "not local"
 
   # Integration Tests (strategies with multiple adapters)
   integration-tests:
@@ -247,7 +247,7 @@ jobs:
       run: poetry run python scripts/make_wallets.py --default
 
     - name: Run integration tests
-      run: poetry run pytest wayfinder_paths/strategies/ -v --maxfail=5
+      run: poetry run pytest wayfinder_paths/strategies/ -v --maxfail=5 -m "not local"
 
   # Security Tests
   security-tests:
