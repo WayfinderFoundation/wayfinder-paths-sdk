@@ -7,6 +7,7 @@ from .types import (
     BorosTenorQuote,
     MarginHealth,
 )
+from .utils import parse_market_name_maturity, parse_market_name_maturity_ts
 
 __all__ = [
     "BorosAdapter",
@@ -14,4 +15,6 @@ __all__ = [
     "BorosTenorQuote",
     "BorosLimitOrder",
     "MarginHealth",
+    "parse_market_name_maturity",
+    "parse_market_name_maturity_ts",
 ]

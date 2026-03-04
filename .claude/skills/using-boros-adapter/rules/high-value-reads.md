@@ -59,6 +59,7 @@ The adapter normalizes API responses to snake_case. Always use snake_case field 
 Notes:
 - Boros enforces `limit <= 100`.
 - The underlying asset is typically `metadata.assetSymbol` (don’t guess field names).
+- `platform` field is a **dict** (`{"name": "Hyperliquid", "platformId": "Hyperliquid", ...}`), NOT a plain string. Use `m.get("platform", {}).get("name", "")` to extract the name.
 
 ### Orderbook snapshot
 
@@ -86,8 +87,34 @@ Notes:
 - `volume_24h`, `notional_oi`, `asset_mark_price`
 - `next_settlement_time`, `last_traded_apr`, `amm_implied_apr`
 
-Interpretation:
-- `mid_apr` is the "implied fixed APR now" for that market (use bid/ask depending on the side you will execute).
+**CRITICAL — `mid_apr` unit: total remaining tenor yield, NOT an annualized APR**
+
+`mid_apr` (and the `mr` field in candles) is the **total fixed yield you earn from now to maturity**, expressed as a fraction of notional. It is NOT an annualized APR.
+
+Example: `mid_apr=0.0377` with 22 days remaining means you earn **3.77% total** on notional over those 22 days.
+
+Delta Lab verifies this via: `APY = (1 + mid_apr)^(365/tenor_days) - 1`
+→ `(1.0377)^(365/22) - 1 = 83.8% APY` ✓
+
+**Correct carry formulas (SHORT YU = receive fixed, pay floating):**
+```python
+from wayfinder_paths.adapters.boros_adapter import parse_market_name_maturity_ts
+
+remaining_days = (maturity_ts - now_unix) / 86400
+daily_fixed    = mid_apr / remaining_days        # daily fixed accrual as fraction of notional
+daily_floating = floating_apr / 365.0            # floating_apr IS annualized
+daily_carry    = daily_fixed - daily_floating
+annualized_carry = daily_carry * 365             # net annualized carry
+
+# LONG YU = opposite signs
+annualized_carry_long = (daily_floating - daily_fixed) * 365
+```
+
+**Common mistake:** `carry = mid_apr - floating_apr` is wrong — it mixes units (total-tenor yield vs annualized rate) and underestimates carry by 10–20×.
+
+`floating_apr` IS annualized; only `mid_apr` / `mr` is the total-tenor yield.
+
+`long_yield_apr` includes leverage/margin effects and should not be used directly in carry calculations — compute it from first principles as shown above.
 
 ### Quote multiple markets for an underlying (tenor curve builder)
 
@@ -189,6 +216,23 @@ Valid `time_frame` values: `5m`, `1h`, `1d`, `1w`
 ok, history = await adapter.get_market_history(market_id=47, time_frame="1h")
 for candle in history[-24:]:
     print(f"{candle.get('t')}: mark={candle.get('mr')}, floating={candle.get('ofr')}")
+```
+
+Candle fields: `t` (Unix timestamp), `mr` (total remaining fixed yield — see CRITICAL note above), `ofr` (annualized floating rate — daily CLOSE, can be noisy), `b7dmafr` / `b30dmafr` (7/30-day MA funding), `u` (instantaneous oracle rate update).
+
+**Getting maturity for historical/expired markets:**
+
+Active markets expose `maturity_ts` via `quote_market_by_id`, but expired markets return 404. Instead, parse the market name directly:
+
+```python
+from wayfinder_paths.adapters.boros_adapter import parse_market_name_maturity_ts
+
+# Market names encode maturity as YYMMDD suffix: BTCUSDT-BN-T-260327 → 2026-03-27
+maturity_ts = parse_market_name_maturity_ts("BTCUSDT-BN-T-260327")  # → 1774569600
+
+# In a backtest loop:
+remaining_days = (maturity_ts - candle_ts_unix) / 86400
+daily_carry = candle["mr"] / remaining_days - candle["ofr"] / 365
 ```
 
 ## When to Use Which Method
