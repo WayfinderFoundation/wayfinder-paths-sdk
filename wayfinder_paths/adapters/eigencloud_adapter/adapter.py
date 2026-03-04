@@ -164,7 +164,6 @@ class EigenCloudAdapter(BaseAdapter):
                     underlying_addr = to_checksum_address(underlying)
                     symbol, token_name, decimals = await get_erc20_metadata(
                         underlying_addr,
-                        CHAIN_ID_ETHEREUM,
                         web3=web3,
                         block_identifier=block_identifier,
                     )
