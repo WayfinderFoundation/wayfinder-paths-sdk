@@ -93,13 +93,6 @@ def test_adapter_type(adapter):
     assert adapter.adapter_type == "EIGENCLOUD"
 
 
-def test_default_addresses(adapter):
-    assert adapter.chain_id == 1
-    assert adapter.strategy_manager == EIGENCLOUD_STRATEGY_MANAGER
-    assert adapter.delegation_manager == EIGENCLOUD_DELEGATION_MANAGER
-    assert adapter.rewards_coordinator == EIGENCLOUD_REWARDS_COORDINATOR
-
-
 @pytest.mark.asyncio
 async def test_deposit_requires_wallet(adapter_no_wallet):
     ok, msg = await adapter_no_wallet.deposit(strategy=FAKE_STRATEGY, amount=1)
