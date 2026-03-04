@@ -231,6 +231,9 @@ class TestEthenaVaultAdapter:
         usde_equivalent = 55 * 10**18
 
         mock_vault = MagicMock()
+        mock_vault.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(side_effect=[usde_balance, shares])
+        )
         mock_vault.functions.cooldowns.return_value = MagicMock(
             call=AsyncMock(return_value=(0, 0))
         )
@@ -245,14 +248,7 @@ class TestEthenaVaultAdapter:
         async def mock_web3_ctx(_chain_id):
             yield mock_web3
 
-        with (
-            patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx),
-            patch(
-                f"{ADAPTER_MODULE}.get_token_balance",
-                new_callable=AsyncMock,
-                side_effect=[usde_balance, shares],
-            ),
-        ):
+        with patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx):
             ok, state = await readonly_adapter.get_full_user_state(
                 account=MOCK_WALLET,
                 chain_id=CHAIN_ID_ETHEREUM,
@@ -272,6 +268,9 @@ class TestEthenaVaultAdapter:
     @pytest.mark.asyncio
     async def test_get_full_user_state_zero_position_filtered(self, readonly_adapter):
         mock_vault = MagicMock()
+        mock_vault.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(return_value=0)
+        )
         mock_vault.functions.cooldowns.return_value = MagicMock(
             call=AsyncMock(return_value=(0, 0))
         )
@@ -283,14 +282,7 @@ class TestEthenaVaultAdapter:
         async def mock_web3_ctx(_chain_id):
             yield mock_web3
 
-        with (
-            patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx),
-            patch(
-                f"{ADAPTER_MODULE}.get_token_balance",
-                new_callable=AsyncMock,
-                return_value=0,
-            ),
-        ):
+        with patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx):
             ok, state = await readonly_adapter.get_full_user_state(
                 account=MOCK_WALLET,
                 chain_id=CHAIN_ID_ETHEREUM,
@@ -303,6 +295,9 @@ class TestEthenaVaultAdapter:
     @pytest.mark.asyncio
     async def test_get_full_user_state_zero_position_included(self, readonly_adapter):
         mock_vault = MagicMock()
+        mock_vault.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(return_value=0)
+        )
         mock_vault.functions.cooldowns.return_value = MagicMock(
             call=AsyncMock(return_value=(0, 0))
         )
@@ -314,14 +309,7 @@ class TestEthenaVaultAdapter:
         async def mock_web3_ctx(_chain_id):
             yield mock_web3
 
-        with (
-            patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx),
-            patch(
-                f"{ADAPTER_MODULE}.get_token_balance",
-                new_callable=AsyncMock,
-                return_value=0,
-            ),
-        ):
+        with patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx):
             ok, state = await readonly_adapter.get_full_user_state(
                 account=MOCK_WALLET,
                 chain_id=CHAIN_ID_ETHEREUM,
@@ -342,6 +330,9 @@ class TestEthenaVaultAdapter:
         tokens = ethena_tokens_by_chain_id(chain_id)
 
         mock_vault = MagicMock()
+        mock_vault.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(side_effect=[usde_balance, shares])
+        )
         mock_vault.functions.cooldowns.return_value = MagicMock(
             call=AsyncMock(return_value=(0, 0))
         )
@@ -356,14 +347,7 @@ class TestEthenaVaultAdapter:
         async def mock_web3_ctx(_chain_id):
             yield mock_web3
 
-        with (
-            patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx),
-            patch(
-                f"{ADAPTER_MODULE}.get_token_balance",
-                new_callable=AsyncMock,
-                side_effect=[usde_balance, shares],
-            ),
-        ):
+        with patch(f"{ADAPTER_MODULE}.web3_from_chain_id", mock_web3_ctx):
             ok, state = await readonly_adapter.get_full_user_state(
                 account=MOCK_WALLET,
                 chain_id=chain_id,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from eth_utils import to_checksum_address
@@ -17,6 +16,10 @@ from wayfinder_paths.core.constants.contracts import (
     BASE_USDC,
 )
 from wayfinder_paths.core.constants.erc4626_abi import ERC4626_ABI
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -60,17 +63,6 @@ class AvantisAdapter(BaseAdapter):
             async with web3_from_chain_id(self.chain_id) as web3:
                 v = web3.eth.contract(address=self.vault, abi=ERC4626_ABI)
 
-                asset_coro = v.functions.asset().call(block_identifier="pending")
-                decimals_coro = v.functions.decimals().call(block_identifier="pending")
-                symbol_coro = v.functions.symbol().call(block_identifier="pending")
-                name_coro = v.functions.name().call(block_identifier="pending")
-                total_assets_coro = v.functions.totalAssets().call(
-                    block_identifier="pending"
-                )
-                total_supply_coro = v.functions.totalSupply().call(
-                    block_identifier="pending"
-                )
-
                 (
                     asset,
                     decimals,
@@ -78,13 +70,22 @@ class AvantisAdapter(BaseAdapter):
                     name,
                     total_assets,
                     total_supply,
-                ) = await asyncio.gather(
-                    asset_coro,
-                    decimals_coro,
-                    symbol_coro,
-                    name_coro,
-                    total_assets_coro,
-                    total_supply_coro,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[
+                        Call(
+                            v,
+                            "asset",
+                            postprocess=lambda a: to_checksum_address(str(a)),
+                        ),
+                        Call(v, "decimals", postprocess=int),
+                        Call(v, "symbol", postprocess=str),
+                        Call(v, "name", postprocess=str),
+                        Call(v, "totalAssets", postprocess=int),
+                        Call(v, "totalSupply", postprocess=int),
+                    ],
+                    block_identifier="pending",
                 )
 
                 share_decimals = int(decimals or 0)
@@ -138,18 +139,29 @@ class AvantisAdapter(BaseAdapter):
                     pnl_rewards,
                     reward_period,
                     last_reward_time,
-                ) = await asyncio.gather(
-                    mgr.functions.junior().call(block_identifier=block_id),
-                    mgr.functions.senior().call(block_identifier=block_id),
-                    mgr.functions.currentBalanceUSDC().call(block_identifier=block_id),
-                    mgr.functions.currentAdjustedBalanceUSDC().call(
-                        block_identifier=block_id
-                    ),
-                    mgr.functions.getBufferRatio().call(block_identifier=block_id),
-                    mgr.functions.totalRewards().call(block_identifier=block_id),
-                    mgr.functions.pnlRewards().call(block_identifier=block_id),
-                    mgr.functions.rewardPeriod().call(block_identifier=block_id),
-                    mgr.functions.lastRewardTime().call(block_identifier=block_id),
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[
+                        Call(
+                            mgr,
+                            "junior",
+                            postprocess=lambda a: to_checksum_address(str(a)),
+                        ),
+                        Call(
+                            mgr,
+                            "senior",
+                            postprocess=lambda a: to_checksum_address(str(a)),
+                        ),
+                        Call(mgr, "currentBalanceUSDC", postprocess=int),
+                        Call(mgr, "currentAdjustedBalanceUSDC", postprocess=int),
+                        Call(mgr, "getBufferRatio", postprocess=int),
+                        Call(mgr, "totalRewards", postprocess=int),
+                        Call(mgr, "pnlRewards", postprocess=int),
+                        Call(mgr, "rewardPeriod", postprocess=int),
+                        Call(mgr, "lastRewardTime", postprocess=int),
+                    ],
+                    block_identifier=block_id,
                 )
                 return (
                     True,
@@ -293,24 +305,6 @@ class AvantisAdapter(BaseAdapter):
             async with web3_from_chain_id(self.chain_id) as web3:
                 v = web3.eth.contract(address=vault, abi=ERC4626_ABI)
 
-                decimals_coro = v.functions.decimals().call(block_identifier=block_id)
-                asset_coro = v.functions.asset().call(block_identifier=block_id)
-                shares_coro = v.functions.balanceOf(acct).call(
-                    block_identifier=block_id
-                )
-                total_assets_coro = v.functions.totalAssets().call(
-                    block_identifier=block_id
-                )
-                total_supply_coro = v.functions.totalSupply().call(
-                    block_identifier=block_id
-                )
-                max_redeem_coro = v.functions.maxRedeem(acct).call(
-                    block_identifier=block_id
-                )
-                max_withdraw_coro = v.functions.maxWithdraw(acct).call(
-                    block_identifier=block_id
-                )
-
                 (
                     decimals,
                     asset,
@@ -319,14 +313,38 @@ class AvantisAdapter(BaseAdapter):
                     total_supply,
                     max_redeem,
                     max_withdraw,
-                ) = await asyncio.gather(
-                    decimals_coro,
-                    asset_coro,
-                    shares_coro,
-                    total_assets_coro,
-                    total_supply_coro,
-                    max_redeem_coro,
-                    max_withdraw_coro,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[
+                        Call(v, "decimals", postprocess=int),
+                        Call(
+                            v,
+                            "asset",
+                            postprocess=lambda a: to_checksum_address(str(a)),
+                        ),
+                        Call(
+                            v,
+                            "balanceOf",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                        Call(v, "totalAssets", postprocess=int),
+                        Call(v, "totalSupply", postprocess=int),
+                        Call(
+                            v,
+                            "maxRedeem",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                        Call(
+                            v,
+                            "maxWithdraw",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                    ],
+                    block_identifier=block_id,
                 )
 
                 shares_i = int(shares or 0)

@@ -11,6 +11,7 @@ from wayfinder_paths.core.clients.TokenClient import (
 )
 from wayfinder_paths.core.constants.chains import CHAIN_ID_TO_CODE
 from wayfinder_paths.core.utils.tokens import get_erc20_metadata
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
 class TokenAdapter(BaseAdapter):
@@ -26,9 +27,10 @@ class TokenAdapter(BaseAdapter):
         self, token_address: str, *, chain_id: int
     ) -> tuple[bool, TokenDetails | str]:
         try:
-            symbol, name, decimals = await get_erc20_metadata(
-                token_address, int(chain_id)
-            )
+            async with web3_from_chain_id(chain_id) as w3:
+                symbol, name, decimals = await get_erc20_metadata(
+                    token_address, web3=w3
+                )
             chain_code = CHAIN_ID_TO_CODE.get(int(chain_id), str(chain_id))
             data: dict[str, Any] = {
                 "token_id": f"{chain_code}_{token_address}",

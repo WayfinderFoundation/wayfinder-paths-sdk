@@ -22,6 +22,7 @@ from py_clob_client.config import (  # type: ignore[import-untyped]
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
     MAX_UINT256,
@@ -36,6 +37,10 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
+)
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -760,21 +765,23 @@ class PolymarketAdapter(BaseAdapter):
                     f"(token={from_token}, need_base_units={base_units}, balance_base_units={bal})."
                 )
                 if from_chain_id == POLYGON_CHAIN_ID:
-                    usdce_bal, usdc_bal = await asyncio.gather(
-                        get_token_balance(
-                            POLYGON_USDC_E_ADDRESS,
-                            POLYGON_CHAIN_ID,
-                            from_address,
-                            web3=web3,
-                            block_identifier="pending",
-                        ),
-                        get_token_balance(
-                            POLYGON_USDC_ADDRESS,
-                            POLYGON_CHAIN_ID,
-                            from_address,
-                            web3=web3,
-                            block_identifier="pending",
-                        ),
+                    acct = to_checksum_address(from_address)
+                    usdce = web3.eth.contract(
+                        address=to_checksum_address(POLYGON_USDC_E_ADDRESS),
+                        abi=ERC20_ABI,
+                    )
+                    usdc = web3.eth.contract(
+                        address=to_checksum_address(POLYGON_USDC_ADDRESS),
+                        abi=ERC20_ABI,
+                    )
+                    usdce_bal, usdc_bal = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=POLYGON_CHAIN_ID,
+                        calls=[
+                            Call(usdce, "balanceOf", args=(acct,), postprocess=int),
+                            Call(usdc, "balanceOf", args=(acct,), postprocess=int),
+                        ],
+                        block_identifier="pending",
                     )
                     msg += (
                         " Polygon balances: "
@@ -1190,10 +1197,24 @@ class PolymarketAdapter(BaseAdapter):
             return True, rows
 
         async def _fetch_balances() -> tuple[bool, dict[str, Any] | str]:
-            bal_usdce, bal_usdc = await asyncio.gather(
-                get_token_balance(POLYGON_USDC_E_ADDRESS, POLYGON_CHAIN_ID, addr),
-                get_token_balance(POLYGON_USDC_ADDRESS, POLYGON_CHAIN_ID, addr),
-            )
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                usdce = web3.eth.contract(
+                    address=to_checksum_address(POLYGON_USDC_E_ADDRESS),
+                    abi=ERC20_ABI,
+                )
+                usdc = web3.eth.contract(
+                    address=to_checksum_address(POLYGON_USDC_ADDRESS),
+                    abi=ERC20_ABI,
+                )
+                bal_usdce, bal_usdc = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=POLYGON_CHAIN_ID,
+                    calls=[
+                        Call(usdce, "balanceOf", args=(addr,), postprocess=int),
+                        Call(usdc, "balanceOf", args=(addr,), postprocess=int),
+                    ],
+                    block_identifier="pending",
+                )
             return True, {
                 "usdc_e": {
                     "address": POLYGON_USDC_E_ADDRESS,
@@ -1513,34 +1534,76 @@ class PolymarketAdapter(BaseAdapter):
         index_sets = await self._outcome_index_sets(condition_id=condition_id)
 
         async def _try_parent(parent: bytes) -> tuple[bool, dict[str, Any] | str]:
-            for collateral in collaterals:
-                pos_ids = await asyncio.gather(
-                    *[
-                        self._compute_position_id(
-                            collateral=collateral,
-                            parent_collection_id=parent,
-                            condition_id=cond_b32,
-                            index_set=i,
-                        )
-                        for i in index_sets
-                    ]
+            ctf_addr = self._contract_addrs(neg_risk=False)["conditional_tokens"]
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                ctf = web3.eth.contract(
+                    address=to_checksum_address(ctf_addr),
+                    abi=CONDITIONAL_TOKENS_ABI,
                 )
-                bals = await asyncio.gather(
-                    *[
-                        self._balance_of_position(holder=holder, position_id=pid)
-                        for pid in pos_ids
+
+                for collateral in collaterals:
+                    collateral_cs = to_checksum_address(collateral)
+
+                    # getCollectionId -> getPositionId -> balanceOf; all are pure/view reads,
+                    # but Multicall3 may not be available on every RPC/network. The helper
+                    # automatically falls back to `asyncio.gather` if multicall isn't supported.
+                    collection_ids = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=POLYGON_CHAIN_ID,
+                        calls=[
+                            Call(
+                                ctf,
+                                "getCollectionId",
+                                args=(parent, cond_b32, int(i)),
+                            )
+                            for i in index_sets
+                        ],
+                        block_identifier="pending",
+                        chunk_size=32,
+                    )
+
+                    pos_ids = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=POLYGON_CHAIN_ID,
+                        calls=[
+                            Call(
+                                ctf,
+                                "getPositionId",
+                                args=(collateral_cs, collection_id),
+                                postprocess=int,
+                            )
+                            for collection_id in collection_ids
+                        ],
+                        block_identifier="pending",
+                        chunk_size=32,
+                    )
+
+                    bals = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=POLYGON_CHAIN_ID,
+                        calls=[
+                            Call(
+                                ctf,
+                                "balanceOf",
+                                args=(holder, int(pid)),
+                                postprocess=int,
+                            )
+                            for pid in pos_ids
+                        ],
+                        block_identifier="pending",
+                        chunk_size=64,
+                    )
+
+                    redeemable = [
+                        i for i, b in zip(index_sets, bals, strict=False) if int(b) > 0
                     ]
-                )
-                redeemable = [
-                    i for i, b in zip(index_sets, bals, strict=False) if int(b) > 0
-                ]
-                if redeemable:
-                    return True, {
-                        "collateral": to_checksum_address(collateral),
-                        "parentCollectionId": "0x" + parent.hex(),
-                        "conditionId": "0x" + cond_b32.hex(),
-                        "indexSets": redeemable,
-                    }
+                    if redeemable:
+                        return True, {
+                            "collateral": collateral_cs,
+                            "parentCollectionId": "0x" + parent.hex(),
+                            "conditionId": "0x" + cond_b32.hex(),
+                            "indexSets": redeemable,
+                        }
             return (
                 False,
                 "No redeemable balance detected for the provided condition_id.",

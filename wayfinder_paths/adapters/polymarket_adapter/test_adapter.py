@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -121,17 +122,21 @@ class TestPolymarketAdapter:
         async def mock_list_open_orders(*_args, **_kwargs):
             return True, [{"id": "order_1"}]
 
-        async def mock_get_token_balance(token_address: str, *_args, **_kwargs):
-            if token_address.lower() == POLYGON_USDC_E_ADDRESS.lower():
-                return 1_230_000
-            if token_address.lower() == POLYGON_USDC_ADDRESS.lower():
-                return 4_560_000
-            return 0
+        mock_contract = MagicMock()
+        mock_contract.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(side_effect=[1_230_000, 4_560_000])
+        )
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = mock_contract
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
 
         monkeypatch.setattr(adapter, "get_positions", mock_get_positions)
         monkeypatch.setattr(adapter, "list_open_orders", mock_list_open_orders)
         monkeypatch.setattr(
-            polymarket_adapter_module, "get_token_balance", mock_get_token_balance
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
         )
 
         account = "0x" + "11" * 20
@@ -345,24 +350,31 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             adapter, "_outcome_index_sets", AsyncMock(return_value=[1, 2])
         )
-        monkeypatch.setattr(
-            adapter,
-            "_compute_position_id",
-            AsyncMock(
-                side_effect=lambda **kwargs: 1 if kwargs["index_set"] == 1 else 2
-            ),
+
+        mock_ctf = MagicMock()
+        mock_ctf.functions.getCollectionId.return_value = MagicMock(
+            call=AsyncMock(side_effect=[b"\x01" * 32, b"\x02" * 32])
         )
-        monkeypatch.setattr(
-            adapter,
-            "_balance_of_position",
-            AsyncMock(
-                side_effect=lambda **kwargs: 10 if kwargs["position_id"] == 1 else 0
-            ),
+        mock_ctf.functions.getPositionId.return_value = MagicMock(
+            call=AsyncMock(side_effect=[100, 200])
         )
+        mock_ctf.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(side_effect=[10, 0])
+        )
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = mock_ctf
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
         parent_scan = AsyncMock(
             side_effect=ValueError({"code": -32005, "message": "too many"})
         )
         monkeypatch.setattr(adapter, "_find_parent_collection_id", parent_scan)
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
 
         ok, path = await adapter.preflight_redeem(
             condition_id=condition_id, holder=holder
@@ -380,8 +392,28 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             adapter, "_outcome_index_sets", AsyncMock(return_value=[1, 2])
         )
-        monkeypatch.setattr(adapter, "_compute_position_id", AsyncMock(return_value=1))
-        monkeypatch.setattr(adapter, "_balance_of_position", AsyncMock(return_value=0))
+
+        mock_ctf = MagicMock()
+        # 3 collaterals × 2 index_sets = 6 calls per function
+        mock_ctf.functions.getCollectionId.return_value = MagicMock(
+            call=AsyncMock(return_value=b"\x01" * 32)
+        )
+        mock_ctf.functions.getPositionId.return_value = MagicMock(
+            call=AsyncMock(return_value=100)
+        )
+        mock_ctf.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(return_value=0)
+        )
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = mock_ctf
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
         monkeypatch.setattr(
             adapter,
             "_find_parent_collection_id",
