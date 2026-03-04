@@ -140,7 +140,7 @@ ReadMcpResourceTool(
 
 **Path Parameters:**
 - `{symbol}` - Asset symbol (e.g., "ETH", "BTC")
-- `{series}` - Data series: "price" (default), "funding", "lending", "rates", or empty for all
+- `{series}` - Data series: "price" (default), "yield", "lending", "funding", "pendle", "boros", "rates" (all rates), or empty for all
 - `{lookback_days}` - Number of days to look back (default: "7" for quick snapshot)
 - `{limit}` - Maximum data points per series (default: "100", max: "10000")
 
@@ -279,6 +279,34 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/o
 - `venue` - Filter by venue name (e.g. "hyperliquid", "binance")
 - `order` - Switch to ascending sort (MCP defaults to descending)
 - `asset_ids` - Filter by specific asset IDs
+
+### 11. Screen Borrow Routes
+**URI:** `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+
+**Purpose:** Screen lending borrow routes (collateral → borrow) by route configuration (LTV, liquidation thresholds, debt ceilings, topology/mode).
+
+**Path Parameters:**
+- `{sort}` - Column to sort by. Options include: `ltv_max`, `liq_threshold`, `liquidation_penalty`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
+- `{limit}` - Max rows to return (default: "100", max: "1000")
+- `{basis}` - Collateral basis symbol filter (e.g. "ETH") or `"all"` for no filter
+- `{borrow_basis}` - Borrow basis symbol filter (e.g. "USD") or `"all"` for no filter
+
+**Examples:**
+```python
+# ETH collateral -> USD borrow routes by max LTV
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD")
+
+# Screen across all collateral/borrow pairs
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/100/all/all")
+```
+
+**Client-only filters (use `DELTA_LAB_CLIENT.screen_borrow_routes()` for):**
+- `venue` - Filter by venue name
+- `chain_id` - Filter by chain ID
+- `market_id` - Filter by market ID
+- `topology` - Filter by route topology (e.g. "POOLED", "ISOLATED_PAIR")
+- `mode_type` - Filter by route mode type (e.g. "BASE", "EMODE")
+- `asset_ids` / `borrow_asset_ids` - Filter by exact asset IDs
 
 ## Implementation Details
 

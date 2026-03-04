@@ -23,6 +23,7 @@ from wayfinder_paths.mcp.resources.delta_lab import (
     get_best_delta_neutral_pairs,
     get_delta_lab_asset,
     get_top_apy,
+    screen_borrow_routes,
     screen_lending,
     screen_perp,
     screen_price,
@@ -108,6 +109,9 @@ mcp.resource(
 mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
 mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(screen_lending)
 mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
+mcp.resource(
+    "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}"
+)(screen_borrow_routes)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)

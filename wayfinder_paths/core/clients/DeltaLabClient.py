@@ -411,5 +411,72 @@ class DeltaLabClient(WayfinderClient):
         response = await self._authed_request("GET", url, params=params)
         return response.json()
 
+    async def screen_borrow_routes(
+        self,
+        *,
+        sort: str = "ltv_max",
+        order: str = "desc",
+        limit: int = 100,
+        asset_ids: list[int] | None = None,
+        basis: str | None = None,
+        borrow_asset_ids: list[int] | None = None,
+        borrow_basis: str | None = None,
+        venue: str | None = None,
+        chain_id: int | None = None,
+        market_id: int | None = None,
+        topology: str | None = None,
+        mode_type: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Screen lending borrow routes (collateral → borrow).
+
+        Args:
+            sort: Column to sort by (default: "ltv_max")
+            order: "asc" or "desc" (default: "desc")
+            limit: Max rows, 1-1000 (default: 100)
+            asset_ids: Filter to specific collateral asset IDs
+            basis: Collateral basis symbol (e.g. "ETH") — overrides asset_ids
+            borrow_asset_ids: Filter to specific borrow asset IDs
+            borrow_basis: Borrow basis symbol (e.g. "USD") — overrides borrow_asset_ids
+            venue: Filter by venue name
+            chain_id: Filter by chain ID
+            market_id: Filter by market ID
+            topology: Filter by route topology (e.g. "POOLED", "ISOLATED_PAIR")
+            mode_type: Filter by route mode type (e.g. "BASE", "EMODE", "ISOLATION")
+
+        Returns:
+            ScreenResponse: {"data": [ScreenBorrowRouteRow, ...], "count": N}
+        """
+        url = f"{get_api_base_url()}/delta-lab/screen/borrow-routes"
+        params: dict[str, str | int] = {
+            "sort": sort,
+            "order": order,
+            "limit": limit,
+        }
+
+        if basis:
+            params["basis"] = basis
+        elif asset_ids:
+            params["asset_ids"] = ",".join(str(a) for a in asset_ids)
+
+        if borrow_basis:
+            params["borrow_basis"] = borrow_basis
+        elif borrow_asset_ids:
+            params["borrow_asset_ids"] = ",".join(str(a) for a in borrow_asset_ids)
+
+        if venue:
+            params["venue"] = venue
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        if market_id is not None:
+            params["market_id"] = market_id
+        if topology:
+            params["topology"] = topology
+        if mode_type:
+            params["mode_type"] = mode_type
+
+        response = await self._authed_request("GET", url, params=params)
+        return response.json()
+
 
 DELTA_LAB_CLIENT = DeltaLabClient()

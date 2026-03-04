@@ -15,6 +15,7 @@ These are the core Delta Lab client methods you'll use most often.
 - "Show me the highest yield with lowest risk" → `get_best_delta_neutral_pairs()` + use `pareto_frontier`
 - "What are the top movers today?" → `screen_price(sort="ret_1d")`
 - "Which perps have highest funding?" → `screen_perp(sort="funding_now")`
+- "What are the best ETH→USD borrow routes?" → `screen_borrow_routes(basis="ETH", borrow_basis="USD")`
 - "Best lending rates on Aave?" → `screen_lending(venue="aave")` (client only)
 - "What asset is asset_id 123?" → `get_asset(asset_id=123)`
 - "Find all WETH assets across chains" → `get_assets_by_address("0xC02a...")`
@@ -54,6 +55,7 @@ Quick URIs:
 - `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/ETH` - Top 20 ETH lending rates
 - `wayfinder://delta-lab/screen/perp/funding_now/20/all` - Top 20 perp funding rates
 - `wayfinder://delta-lab/screen/perp/funding_mean_30d/20/BTC` - BTC perps by 30d mean funding
+- `wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD` - ETH collateral → USD borrow routes
 
 Use `all` as the basis param to screen across all assets, or a symbol like `ETH` to filter.
 
@@ -147,26 +149,36 @@ result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
     "lookback_days": 7,
     "summary": {
         "instrument_type_counts": {
-            "perp": 15,
-            "lending": 8,
-            "fixed_rate": 3
+            "PERP": 15,
+            "LENDING_SUPPLY": 8,
+            "LENDING_BORROW": 4,
+            "BOROS_MARKET": 3,
+            "PENDLE_PT": 2,
+            "YIELD_TOKEN": 1
         }
     },
     "directions": {
-        "LONG": [...],  # Opportunities where you receive yield
-        "SHORT": [...]  # Opportunities where you pay yield
+        "LONG": [...],  # Opportunities where you take the LONG side
+        "SHORT": [...]  # Opportunities where you take the SHORT side
     },
     "opportunities": [...],  # All opportunities combined
-    "warnings": []
+    "warnings": [
+        {
+            "type": "stale_data",
+            "instrument_id": 123,
+            "last_updated": "2024-02-12T10:00:00+00:00"
+        }
+    ]
 }
 ```
 
 ### Key Fields
 
-- `directions.LONG` - Yield-generating positions (lending, short perp in positive funding, PT)
-- `directions.SHORT` - Yield-paying positions (borrowing, long perp in positive funding, YT)
+- `directions.LONG` - Opportunities where `side="LONG"` (supply/lend, hold yield token/PT, receive fixed rate, long perp)
+- `directions.SHORT` - Opportunities where `side="SHORT"` (borrow, pay fixed rate, short perp)
 - `opportunities` - All opportunities regardless of direction
 - `summary.instrument_type_counts` - Count by instrument type
+- `warnings` - List of warning objects (often empty)
 
 ## 2. Get Best Delta-Neutral Pairs
 
@@ -468,7 +480,7 @@ Returns `dict[str, pd.DataFrame]` with each series as a separate DataFrame:
         index=DatetimeIndex  # ts column converted to datetime index
     ),
     "lending": DataFrame(
-        columns=["market_id", "chain_id", "venue", "supply_apr", "borrow_apr", ...],
+        columns=["market_id", "asset_symbol", "chain_id", "venue", "supply_apr", "borrow_apr", ...],
         index=DatetimeIndex
     ),
     ...
@@ -479,7 +491,7 @@ Returns `dict[str, pd.DataFrame]` with each series as a separate DataFrame:
 
 - `"price"` - Price history (columns: `price_usd`)
 - `"yield"` - Yield token rates (columns: `yield_token_asset_id`, `yield_token_symbol`, `apy_base`, `apy_base_7d`, `exchange_rate`, `tvl_usd`)
-- `"lending"` - Lending market rates (columns: `market_id`, `venue`, `supply_apr`, `borrow_apr`, `supply_reward_apr`, `borrow_reward_apr`, `utilization`, `supply_tvl_usd`, `borrow_tvl_usd`)
+- `"lending"` - Lending market rates (columns include: `market_id`, `asset_symbol`, `chain_id`, `venue`, `supply_apr`, `supply_reward_apr`, `borrow_apr`, `borrow_reward_apr`, `net_supply_apy`, `net_borrow_apy`, `avg_supply_apy`, `avg_borrow_apy`, `utilization`, `supply_tvl_usd`, `borrow_tvl_usd`, `collateral_tvl_usd`, `fee`, `rewards_estimated`, `base_yield_apy`, `underlying_apy`, `combined_supply_apy`)
 - `"funding"` - Perp funding rates (columns: `instrument_id`, `venue`, `market_external_id`, `funding_rate`, `mark_price_usd`, `oi_usd`, `volume_usd`)
 - `"pendle"` - Pendle PT/YT rates (columns: `market_id`, `venue`, `pt_symbol`, `maturity_ts`, `implied_apy`, `underlying_apy`, `reward_apr`, `pt_price`, `tvl_usd`)
 - `"boros"` - Boros fixed rates (columns: `market_id`, `venue`, `market_external_id`, `fixed_rate_mark`, `floating_rate_oracle`, `pv`)

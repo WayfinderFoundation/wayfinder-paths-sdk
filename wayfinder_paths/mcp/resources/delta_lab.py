@@ -302,3 +302,41 @@ async def screen_perp(
         return result
     except Exception as exc:
         return {"error": str(exc)}
+
+
+async def screen_borrow_routes(
+    sort: str = "ltv_max",
+    limit: str = "100",
+    basis: str = "all",
+    borrow_basis: str = "all",
+) -> dict[str, Any]:
+    """Screen borrow routes (collateral → borrow) by route configuration.
+
+    Args:
+        sort: Column to sort by (default: "ltv_max"). Options include:
+              ltv_max, liq_threshold, liquidation_penalty, debt_ceiling_usd,
+              venue_name, market_label, created_at
+        limit: Max rows to return (default: "100", max: "1000")
+        basis: Collateral basis symbol to filter by (e.g. "ETH"). Use "all" for no filter.
+        borrow_basis: Borrow basis symbol to filter by (e.g. "USD"). Use "all" for no filter.
+
+    Returns:
+        Dict with data (list of borrow route rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        borrow_basis_param = (
+            borrow_basis.strip().upper()
+            if borrow_basis.strip().lower() != "all"
+            else None
+        )
+        result = await DELTA_LAB_CLIENT.screen_borrow_routes(
+            sort=sort.strip(),
+            limit=limit_int,
+            basis=basis_param,
+            borrow_basis=borrow_basis_param,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}

@@ -118,31 +118,31 @@ else:
 ```
 
 **In Delta Lab data:**
-- Positive funding → SHORT perp is a LONG opportunity (you receive funding)
-- Negative funding → SHORT perp is a SHORT opportunity (you pay funding)
-- The APY value is already signed correctly for the direction shown
+- Positive funding → `side="SHORT"` `instrument_type="PERP"` receives funding (good for shorts)
+- Negative funding → `side="SHORT"` `instrument_type="PERP"` pays funding (cost for shorts)
+- Delta-neutral candidates typically use `instrument_type="PERP"` and `side="SHORT"` as the hedge leg
 
 ## 4. Side vs Sign
 
 **Don't confuse direction with sign:**
 
 ```python
-# This is a LONG opportunity (you receive yield as short perp)
+# This is a short perp position receiving funding
 {
-    "side": "LONG",
-    "instrument_type": "perp",
+    "side": "SHORT",
+    "instrument_type": "PERP",
     "apy": {"value": 0.12}  # Positive funding = shorts receive
 }
 
-# This is a SHORT opportunity (you pay yield as short perp)
+# This is a short perp position paying funding
 {
     "side": "SHORT",
-    "instrument_type": "perp",
+    "instrument_type": "PERP",
     "apy": {"value": -0.08}  # Negative funding = shorts pay
 }
 ```
 
-- `side` indicates whether the opportunity is yield-generating (LONG) or yield-paying (SHORT)
+- `side` indicates the position direction (LONG or SHORT)
 - `apy.value` sign indicates whether you receive (positive) or pay (negative)
 - For delta-neutral pairs, the hedge_leg APY is already signed correctly in net_apy
 

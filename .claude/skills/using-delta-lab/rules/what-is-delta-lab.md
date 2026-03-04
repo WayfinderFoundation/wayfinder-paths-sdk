@@ -46,8 +46,12 @@ The API resolves the symbol to a `basis_group_id` and finds all related assets.
 ### Opportunity
 
 An **opportunity** is a single position that provides yield:
-- **LONG** opportunities - You receive yield (lending, PT, short perp funding)
-- **SHORT** opportunities - You pay yield (borrowing, YT, long perp funding)
+- **LONG** side - Positions where `side="LONG"` (supply/lend, hold yield token/PT, long perp, receive fixed rate)
+- **SHORT** side - Positions where `side="SHORT"` (borrow, short perp, pay fixed rate)
+
+Use the sign of `apy.value` to determine receive vs pay:
+- Positive `apy.value` → the position receives yield
+- Negative `apy.value` → the position pays yield (cost)
 
 ### Delta-Neutral Pair
 
@@ -56,17 +60,17 @@ A **delta-neutral pair** consists of:
 - **Hedge leg** - The position offsetting price exposure
 - **Net APY** - Combined yield after hedging costs
 
-Example: Long BTC spot + short BTC perp = delta-neutral carry trade
+Example: Supply wstETH (`LENDING_SUPPLY`) + short ETH perp (`PERP`) = delta-neutral carry trade
 
 ### Instrument Types
 
-Different ways to gain exposure:
-- `perp` - Perpetual futures
-- `spot` - Spot holdings
-- `lending` - Lending positions
-- `fixed_rate` - Fixed-rate markets (Boros)
-- `pt` - Principal tokens (Pendle)
-- `yt` - Yield tokens (Pendle)
+Delta Lab opportunities use these `instrument_type` enums:
+- `PERP` - Perpetual futures (funding)
+- `LENDING_SUPPLY` - Supply-side lending
+- `LENDING_BORROW` - Borrow-side lending
+- `BOROS_MARKET` - Boros fixed-rate markets
+- `PENDLE_PT` - Pendle PT markets
+- `YIELD_TOKEN` - Yield-bearing token yields
 
 ## When to Use Delta Lab
 
