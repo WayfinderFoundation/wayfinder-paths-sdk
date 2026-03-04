@@ -14,6 +14,20 @@ from wayfinder_paths.mcp.resources.contracts import (
     get_contract,
     list_contracts,
 )
+from wayfinder_paths.mcp.resources.delta_lab import (
+    get_asset_basis_info,
+    get_asset_timeseries_data,
+    get_assets_by_address,
+    get_basis_apy_sources,
+    get_basis_symbols,
+    get_best_delta_neutral_pairs,
+    get_delta_lab_asset,
+    get_top_apy,
+    screen_borrow_routes,
+    screen_lending,
+    screen_perp,
+    screen_price,
+)
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
     describe_strategy,
@@ -78,6 +92,28 @@ mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
 mcp.resource("wayfinder://contracts")(list_contracts)
 mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
+mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
+mcp.resource("wayfinder://delta-lab/top-apy/{lookback_days}/{limit}")(get_top_apy)
+mcp.resource(
+    "wayfinder://delta-lab/{basis_symbol}/apy-sources/{lookback_days}/{limit}"
+)(get_basis_apy_sources)
+mcp.resource(
+    "wayfinder://delta-lab/{basis_symbol}/delta-neutral/{lookback_days}/{limit}"
+)(get_best_delta_neutral_pairs)
+mcp.resource("wayfinder://delta-lab/assets/{asset_id}")(get_delta_lab_asset)
+mcp.resource("wayfinder://delta-lab/assets/by-address/{address}")(get_assets_by_address)
+mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
+mcp.resource(
+    "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
+)(get_asset_timeseries_data)
+mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
+mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(
+    screen_lending
+)
+mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
+mcp.resource(
+    "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}"
+)(screen_borrow_routes)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)

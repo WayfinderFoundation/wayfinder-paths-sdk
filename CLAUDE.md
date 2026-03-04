@@ -86,11 +86,98 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | CCXT (CEX)            | `/using-ccxt-adapter`            |
 | Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
+| Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
+| Backtesting           | `/backtest-strategy`             |
 | Contract Dev          | `/contract-development`          |
 
+
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
+
+## Backtesting Framework
+
+Use the backtesting framework to **validate strategy ideas before production deployment**. The framework provides:
+
+- Automatic data fetching from Delta Lab and Hyperliquid
+- Realistic transaction costs (fees, slippage, funding)
+- Comprehensive performance metrics (Sharpe, max drawdown, etc.)
+- Liquidation simulation
+- Multi-leverage testing
+
+**Load `/backtest-strategy` skill** before using the framework for full documentation.
+
+### Quick Start
+
+```python
+from wayfinder_paths.core.backtesting import quick_backtest
+
+def my_strategy(prices, ctx):
+    """Define your signal logic."""
+    returns = prices.pct_change(24)  # 24-period momentum
+    ranks = returns.rank(axis=1, pct=True)
+    target = (ranks > 0.5).astype(float) - (ranks < 0.5).astype(float)
+    return target / target.abs().sum(axis=1).fillna(1)
+
+# Run backtest with automatic data fetching
+result = await quick_backtest(
+    strategy_fn=my_strategy,
+    symbols=["BTC", "ETH"],
+    start_date="2025-01-01",
+    end_date="2025-02-01",
+    leverage=2.0
+)
+
+print(result.stats)  # Sharpe, max_drawdown, CAGR, etc.
+```
+
+### Manual Workflow (Full Control)
+
+```python
+from wayfinder_paths.core.backtesting import (
+    fetch_prices,
+    fetch_funding_rates,
+    run_backtest,
+    BacktestConfig,
+)
+
+# Fetch data
+prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01", interval="1h")
+funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
+
+# Generate signals
+target_positions = my_strategy(prices, {"symbols": ["BTC", "ETH"]})
+
+# Configure and run
+config = BacktestConfig(
+    leverage=2.0,
+    fee_rate=0.0004,
+    funding_rates=funding,
+    enable_liquidation=True
+)
+result = run_backtest(prices, target_positions, config)
+```
+
+### Key Metrics
+
+- **`sharpe`** - Risk-adjusted returns (>1.0 good, >2.0 excellent)
+- **`sortino`** - Like Sharpe but only penalizes downside volatility
+- **`cagr`** - Annualized return (%)
+- **`max_drawdown`** - Largest peak-to-trough decline (%)
+- **`profit_factor`** - Gross profit / gross loss (>1.5 good)
+
+### From Backtest to Production
+
+Once validated:
+1. Create strategy class: `just create-strategy "Strategy Name"`
+2. Implement Strategy interface (deposit, update, withdraw, exit)
+3. Add adapters and manifest
+4. Write smoke tests
+5. Deploy with small capital first
+
+See `/backtest-strategy` skill for full guide, common patterns, and gotchas.
+
+## Contract development
 
 Before writing or deploying Solidity contracts, invoke `/contract-development`.
 
@@ -102,6 +189,56 @@ When answering questions about **rates/APYs/funding**:
 - Always fetch the value via an adapter/client/tool call when possible.
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
+
+## Delta Lab MCP resources (yield discovery)
+
+**Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
+
+**⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
+
+**MCP resources (quick queries):**
+- `wayfinder://delta-lab/symbols` - List basis symbols
+- `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
+- `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
+- `wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LOOKBACK}/{LIMIT}` - Delta-neutral pairs for symbol
+- `wayfinder://delta-lab/assets/{asset_id}` - Asset metadata by ID
+- `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
+- `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
+- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Historical data (snapshots only)
+- `wayfinder://delta-lab/screen/price/{SORT}/{LIMIT}/{BASIS}` - Screen assets by price features
+- `wayfinder://delta-lab/screen/lending/{SORT}/{LIMIT}/{BASIS}` - Screen lending markets
+- `wayfinder://delta-lab/screen/perp/{SORT}/{LIMIT}/{BASIS}` - Screen perp markets
+- `wayfinder://delta-lab/screen/borrow-routes/{SORT}/{LIMIT}/{BASIS}/{BORROW_BASIS}` - Screen borrow routes (collateral → borrow)
+
+**Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
+- **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
+- **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
+- **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
+- **Borrow routes:** `ltv_max`, `liq_threshold`, `liquidation_penalty`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
+
+**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
+
+**Examples:**
+```
+# Quick queries via MCP
+uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
+uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
+uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
+
+# Screening via MCP
+uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all"  # Top 20 lending rates
+uri="wayfinder://delta-lab/screen/perp/funding_now/20/ETH"  # Top 20 ETH perp funding rates
+uri="wayfinder://delta-lab/screen/price/ret_1d/10/all"  # Top 10 daily movers
+uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD"  # ETH collateral -> USD borrow routes
+
+# Serious analysis via client
+data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
+# If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
+print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
+
+# Client screening with extra filters (venue, min_tvl, etc.)
+data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave", min_tvl=1_000_000)
+```
 
 ## Running strategies via MCP
 
@@ -173,7 +310,7 @@ For anything beyond a simple single swap, follow this checklist:
 1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
 2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
 3. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
-4. **Offer simulation** — Before executing, ask the user if they'd like to dry-run it first. Simulation (Gorlami forks) is also valuable for **iterating on complex scripts** — use it to verify logic, catch reverts, and debug multi-step flows without spending real funds. Available for **EVM on-chain transactions only** (Base, Arbitrum, Ethereum, etc.). **Hyperliquid L1, CEXes, and other off-chain protocols cannot be simulated.** If the flow mixes both (e.g. swap on Base then deposit to Hyperliquid), simulate the on-chain portion and flag the off-chain steps as live-only.
+4. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
 5. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
 
 Hyperliquid minimums:
@@ -181,17 +318,7 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction (required for multi-dex trading):
-
-- Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **dex abstraction** to be enabled on the user's account.
-- The adapter calls `ensure_dex_abstraction(address)` automatically before `place_market_order`, `place_limit_order`, and `place_trigger_order`. It queries the current state via `Info.query_user_dex_abstraction_state(user)` and enables it if needed — this is a one-time on-chain action per account.
-- If you're writing a custom script that places orders directly, call `await adapter.ensure_dex_abstraction(address)` before your first order.
-
-Hyperliquid deposits (Bridge2):
-
-- Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
-- Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address).
-- Withdraw flow: `mcp__wayfinder__hyperliquid_execute(action="withdraw", amount_usdc=...)` → `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal")`.
+HIP-3 dex abstraction + Hyperliquid deposits/withdrawals: handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
 Polymarket quick flows:
 
@@ -209,10 +336,7 @@ Polymarket funding (USDC.e collateral):
 - **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
 - **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
 
-Sizing note (avoid ambiguity):
-
-- If a user says "$X at Y× leverage", confirm whether `$X`is **notional** (position size) or **margin** (collateral):`margin ≈ notional / leverage`, `notional = margin \* leverage`.
-- `mcp__wayfinder__hyperliquid_execute` supports `usd_amount` with `usd_amount_kind="notional"|"margin"` so this is explicit.
+Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin** (use `usd_amount_kind="notional"|"margin"` on `mcp__wayfinder__hyperliquid_execute`).
 
 **Scripting helper for adapters:**
 
@@ -256,6 +380,44 @@ Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 ### Scripting gotchas (`.wayfinder_runs/` scripts)
 
 Common mistakes when writing run scripts. **Read before writing any script.**
+
+**0. Client vs Adapter return patterns — CRITICAL DIFFERENCE**
+
+**Clients return data directly; Adapters return `(ok, data)` tuples.** This is the #1 source of script errors.
+
+```python
+# CLIENTS (return data directly, raise exceptions on errors)
+from wayfinder_paths.core.clients import DELTA_LAB_CLIENT, POOL_CLIENT, TOKEN_CLIENT
+
+# WRONG — clients don't return tuples
+ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError: too many values to unpack
+
+# RIGHT — clients return data directly
+data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ✅ dict
+pools = await POOL_CLIENT.get_pools(...)  # ✅ LlamaMatchesResponse
+token = await TOKEN_CLIENT.get_token_details(...)  # ✅ TokenDetails
+
+# ADAPTERS (always return tuple[bool, data])
+from wayfinder_paths.mcp.scripting import get_adapter
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+
+adapter = get_adapter(HyperliquidAdapter)
+
+# WRONG — adapters always return tuples
+data = await adapter.get_meta_and_asset_ctxs()  # ❌ data is actually (True, {...})
+
+# RIGHT — destructure the tuple and check ok
+ok, data = await adapter.get_meta_and_asset_ctxs()  # ✅
+if not ok:
+    raise RuntimeError(f"Adapter call failed: {data}")
+meta, ctxs = data[0], data[1]
+```
+
+**Why the difference?**
+- **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
+- **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
+
+**Rule of thumb:** If it's in `wayfinder_paths.core.clients`, it returns data directly. If it's in `wayfinder_paths.adapters`, it returns a tuple.
 
 **1. `get_adapter()` already loads config — don't call `load_config()` first**
 
@@ -351,18 +513,10 @@ quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", a
 **8. Adapter read methods return `(ok, data)` tuples — always destructure**
 
 ```python
-# WRONG — treats the tuple as the data itself
-data = await adapter.get_meta_and_asset_ctxs()
-meta = data[0]  # This is the bool, not the meta!
-
-# RIGHT — destructure the ok/data tuple, check ok
 ok, data = await adapter.get_meta_and_asset_ctxs()
 if not ok:
-    raise RuntimeError(f"API call failed: {data}")
-meta, ctxs = data[0], data[1]
+    raise RuntimeError(data)
 ```
-
-This applies to virtually all adapter read methods (`get_meta_and_asset_ctxs`, `get_spot_meta`, `get_markets`, `get_user_state`, etc.). The pattern is universal across Hyperliquid, Moonwell, Pendle, and all other adapters.
 
 **9. Load the protocol skill before writing adapter scripts**
 
@@ -371,6 +525,32 @@ Before writing *any* script that uses a protocol adapter, invoke the matching sk
 **10. Write the script file before calling `run_script`**
 
 `mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
+
+**11. Funding rate sign (CRITICAL for perp trading)**
+
+**CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
+
+```python
+# WRONG interpretation
+funding_rate = -0.08  # -8% annually
+print("Negative = good for shorts!")  # ❌ BACKWARDS!
+
+# RIGHT interpretation
+funding_rate = -0.08  # -8% annually
+if funding_rate > 0:
+    # Positive funding: Longs pay shorts (good for shorts)
+    print("Shorts receive funding")  # ✅
+else:
+    # Negative funding: Shorts pay longs (bad for shorts)
+    print("Shorts PAY funding")  # ✅
+```
+
+This applies to:
+- Hyperliquid perp funding rates
+- Delta Lab perp opportunities
+- Any perp trading strategy analysis
+
+When evaluating perp positions, always verify the sign interpretation - it's backwards from intuition for many traders.
 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
@@ -395,14 +575,6 @@ poetry run wayfinder runner add-job \
   --interval 600 \
   --config ./config.json
 
-# Add an interval job for a local one-off script (must live in .wayfinder_runs/ by default)
-poetry run wayfinder runner add-job \
-  --name hourly-report \
-  --type script \
-  --script-path .wayfinder_runs/report.py \
-  --arg --verbose \
-  --interval 3600
-
 # Inspect / control
 poetry run wayfinder runner status
 poetry run wayfinder runner run-once basis-update
@@ -412,22 +584,9 @@ poetry run wayfinder runner delete basis-update
 poetry run wayfinder runner stop
 ```
 
-Architecture/extensibility notes live in `RUNNER_ARCHITECTURE.md`.
+See `RUNNER_ARCHITECTURE.md`.
 
-Runner MCP tool (controls the daemon via its local Unix socket):
-
-- `mcp__wayfinder__runner(action="status")`
-- `mcp__wayfinder__runner(action="daemon_status")`
-- `mcp__wayfinder__runner(action="ensure_started")` (starts detached if needed)
-- `mcp__wayfinder__runner(action="daemon_stop")`
-- `mcp__wayfinder__runner(action="add_job", name="basis-update", interval_seconds=600, strategy="basis_trading_strategy", strategy_action="update", config="./config.json")`
-- `mcp__wayfinder__runner(action="add_job", name="hourly-report", type="script", interval_seconds=3600, script_path=".wayfinder_runs/report.py", args=["--verbose"])`
-- `mcp__wayfinder__runner(action="pause_job", name="basis-update")`
-- `mcp__wayfinder__runner(action="resume_job", name="basis-update")`
-- `mcp__wayfinder__runner(action="delete_job", name="basis-update")`
-- `mcp__wayfinder__runner(action="run_once", name="basis-update")`
-- `mcp__wayfinder__runner(action="job_runs", name="basis-update", limit=20)`
-- `mcp__wayfinder__runner(action="run_report", run_id=123, tail_bytes=4000)`
+Runner MCP tool: `mcp__wayfinder__runner(action=...)`.
 
 Safety note:
 
@@ -451,28 +610,14 @@ Supported chains:
 
 Gas requirements (critical — assets get stuck without gas):
 
-- **Every on-chain action requires the destination chain's native gas token in the wallet.** Without gas, the wallet cannot transact and assets are effectively stuck until gas is provided.
-- **Before any operation on a chain**, check the wallet has sufficient native gas on that chain using `wayfinder://balances/{label}`.
-- **Bridging to a new chain for the first time:** The wallet needs native gas before it can do anything. Bridge the native gas token (e.g. ETH) to the destination chain first, then bridge or swap for the target token. Use the native token IDs from the chain table (e.g. `ethereum-base` for ETH on Base).
-- Use the native token IDs from the chain table above when bridging gas (e.g. `ethereum-base` for ETH on Base, `plasma-plasma` for PLASMA on Plasma).
+- **Before any on-chain operation**, check the wallet has native gas on that chain using `wayfinder://balances/{label}`.
+- If bridging to a new chain for the first time: bridge gas first. If you need the native token ID, look it up via `wayfinder://tokens/search/{chain_code}/{query}`.
 
 Token identifiers (important for quoting/execution/lookups):
 
-All token functions (`get_token_details`, `quote_swap`, `execute`, etc.) expect **token IDs**, not free-text search queries.
-
-- **Token ID format:** `<coingecko_id>-<chain_code>` — the first part is the coingecko_id, NOT the symbol.
-  - `usd-coin-base` (USDC on Base — coingecko_id is `usd-coin`, NOT `usdc`)
-  - `ethereum-arbitrum` (ETH on Arbitrum)
-  - `usdt0-arbitrum` (USDT on Arbitrum)
-  - `hyperliquid-hyperevm` (HYPE on HyperEVM)
-- **Address ID format:** `<chain_code>_<address>` when you know the ERC20 contract (e.g., `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`).
-- **Do NOT pass symbol-chain** (`usdc-base`) or free-text queries (`USDC plasma`) — these will fail. Always use one of the two ID formats above.
-- If you don't know a token's coingecko_id, use the MCP resource `wayfinder://tokens/search/{chain_code}/{query}` to find it first, then use the returned token ID.
-- See `.claude/skills/using-pool-token-balance-data/rules/tokens.md` for full details.
+- Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
 
 ## Common Commands
-
-Note: `just` is a command runner (install via `brew install just` or `cargo install just`). If you don't have `just`, use the poetry commands directly.
 
 ```bash
 # Install dependencies

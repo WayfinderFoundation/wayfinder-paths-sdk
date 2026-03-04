@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import re
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -70,6 +72,36 @@ def cash_wei_to_float(value_wei: Any) -> float:
         return float(Decimal(str(value_wei)) / Decimal(1e18))
     except Exception:
         return 0.0
+
+
+def parse_market_name_maturity(market_name: str) -> datetime | None:
+    """Parse maturity date from a Boros market name.
+
+    Market names follow the pattern: {PAIR}-{VENUE}-{TYPE}-{YYMMDD}
+    Examples:
+      BTCUSDT-BN-T-260327  → 2026-03-27 UTC
+      BTCUSDC-HL-$-260327  → 2026-03-27 UTC
+      ETHUSDT-BN-T-260327  → 2026-03-27 UTC
+
+    Returns a UTC datetime at midnight on the maturity date, or None if
+    the name does not match the expected pattern.
+    """
+    if not market_name:
+        return None
+    m = re.search(r"-(\d{6})$", market_name)
+    if not m:
+        return None
+    try:
+        dt = datetime.strptime(m.group(1), "%y%m%d").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return dt
+
+
+def parse_market_name_maturity_ts(market_name: str) -> int | None:
+    """Like parse_market_name_maturity but returns a Unix timestamp (int) or None."""
+    dt = parse_market_name_maturity(market_name)
+    return int(dt.timestamp()) if dt is not None else None
 
 
 def market_id_from_market_acc(market_acc: str) -> int | None:

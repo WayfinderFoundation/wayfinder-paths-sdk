@@ -1,0 +1,8 @@
+name: backtest-strategy
+description: Guide agents through backtesting strategy ideas with automatic data fetching and performance analysis
+version: 1.0.0
+trigger:
+  - backtest
+  - backtesting
+  - test strategy
+  - validate strategy

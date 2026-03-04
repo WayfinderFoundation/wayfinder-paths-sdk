@@ -127,6 +127,24 @@ Example interpretation:
 
 This is the standard perp convention (Hyperliquid, dYdX, etc.). Don't confuse this with "negative = bad for longs".
 
+## `ofr` daily close is noisy — use hourly average for backtesting
+
+Boros candles record the **instantaneous** oracle rate at candle-close time (`ofr` = `u` field). Hyperliquid funding settles every 8 hours, so a daily-close candle can land mid-settlement and capture extreme transient spike values that are not representative of the day's actual floating cost.
+
+Observed example (market 60, 2026-03-04):
+- `ofr` daily close: **-31.54%/yr**
+- `ofr` hourly average: **-3.98%/yr** — 8× difference, different sign direction
+
+For backtesting, use `1h` candles and resample:
+```python
+ok, hist = await adapter.get_market_history(market_id=60, time_frame="1h")
+hourly_ofr = pd.DataFrame([{"ts": pd.to_datetime(int(c["t"]), unit="s", utc=True),
+                              "ofr": c.get("ofr")} for c in hist]).set_index("ts")
+daily_ofr_avg = hourly_ofr["ofr"].resample("1D").mean()  # use this for backtesting
+```
+
+For forward carry estimation, prefer `funding_7d_ma_apr` or `funding_30d_ma_apr` from the live quote — these smooth out the noise and are better predictors of realized floating cost.
+
 ## Settlement cadence matters (especially for rate-locking)
 
 Funding is settled on a schedule determined by the underlying perp venue.

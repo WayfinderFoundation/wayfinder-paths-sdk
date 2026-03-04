@@ -1,5 +1,6 @@
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT, BalanceClient
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT, BRAPClient
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT, DeltaLabClient
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
 from wayfinder_paths.core.clients.HyperlendClient import (
     HYPERLEND_CLIENT,
@@ -33,6 +34,8 @@ __all__ = [
     "BalanceClient",
     "BRAP_CLIENT",
     "BRAPClient",
+    "DELTA_LAB_CLIENT",
+    "DeltaLabClient",
     "HYPERLEND_CLIENT",
     "HyperlendClient",
     "HyperliquidDataClient",
