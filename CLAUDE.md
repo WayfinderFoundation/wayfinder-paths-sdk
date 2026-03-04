@@ -506,15 +506,23 @@ quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", a
 
 **7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
-**8. Load the protocol skill before writing adapter scripts**
+**8. Adapter read methods return `(ok, data)` tuples — always destructure**
+
+```python
+ok, data = await adapter.get_meta_and_asset_ctxs()
+if not ok:
+    raise RuntimeError(data)
+```
+
+**9. Load the protocol skill before writing adapter scripts**
 
 Before writing *any* script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
 
-**9. Write the script file before calling `run_script`**
+**10. Write the script file before calling `run_script`**
 
 `mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
 
-**10. Funding rate sign (CRITICAL for perp trading)**
+**11. Funding rate sign (CRITICAL for perp trading)**
 
 **CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
 
@@ -582,20 +590,7 @@ poetry run wayfinder runner stop
 
 Architecture/extensibility notes live in `RUNNER_ARCHITECTURE.md`.
 
-Runner MCP tool (controls the daemon via its local Unix socket):
-
-- `mcp__wayfinder__runner(action="status")`
-- `mcp__wayfinder__runner(action="daemon_status")`
-- `mcp__wayfinder__runner(action="ensure_started")` (starts detached if needed)
-- `mcp__wayfinder__runner(action="daemon_stop")`
-- `mcp__wayfinder__runner(action="add_job", name="basis-update", interval_seconds=600, strategy="basis_trading_strategy", strategy_action="update", config="./config.json")`
-- `mcp__wayfinder__runner(action="add_job", name="hourly-report", type="script", interval_seconds=3600, script_path=".wayfinder_runs/report.py", args=["--verbose"])`
-- `mcp__wayfinder__runner(action="pause_job", name="basis-update")`
-- `mcp__wayfinder__runner(action="resume_job", name="basis-update")`
-- `mcp__wayfinder__runner(action="delete_job", name="basis-update")`
-- `mcp__wayfinder__runner(action="run_once", name="basis-update")`
-- `mcp__wayfinder__runner(action="job_runs", name="basis-update", limit=20)`
-- `mcp__wayfinder__runner(action="run_report", run_id=123, tail_bytes=4000)`
+Runner MCP tool: `mcp__wayfinder__runner(action=...)`.
 
 Safety note:
 
@@ -603,7 +598,19 @@ Safety note:
 
 Supported chains:
 
-- `ethereum` (1), `base` (8453), `arbitrum` (42161), `polygon` (137), `bsc` (56), `avalanche` (43114), `plasma` (9745), `hyperevm` (999).
+| Chain     | ID    | Code         | Symbol | Native token ID        |
+| --------- | ----- | ------------ | ------ | ---------------------- |
+| Ethereum  | 1     | `ethereum`   | ETH    | `ethereum-ethereum`    |
+| Base      | 8453  | `base`       | ETH    | `ethereum-base`        |
+| Arbitrum  | 42161 | `arbitrum`   | ETH    | `ethereum-arbitrum`    |
+| Polygon   | 137   | `polygon`    | POL    | `polygon-ecosystem-token-polygon`|
+| BSC       | 56    | `bsc`        | BNB    | `binancecoin-bsc`      |
+| Avalanche | 43114 | `avalanche`  | AVAX   | `avalanche-avalanche`|
+| Plasma    | 9745  | `plasma`     | PLASMA | `plasma-plasma`        |
+| HyperEVM  | 999   | `hyperevm`   | HYPE   | `hyperliquid-hyperevm` |
+
+- **Plasma**: EVM chain where Pendle deploys PT/YT markets. Not Pendle-specific — it's its own chain.
+- **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
 
 Gas requirements (critical — assets get stuck without gas):
 
