@@ -27,6 +27,10 @@ from wayfinder_paths.core.constants.moonwell_abi import (
     REWARD_DISTRIBUTOR_ABI,
     WETH_ABI,
 )
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -1353,22 +1357,32 @@ class MoonwellAdapter(BaseAdapter):
                 )
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
 
-                bal_raw, exch_raw, cash_raw, m_dec, u_addr = await asyncio.gather(
-                    mtoken_contract.functions.balanceOf(account).call(
-                        block_identifier="pending"
-                    ),
-                    mtoken_contract.functions.exchangeRateStored().call(
-                        block_identifier="pending"
-                    ),
-                    mtoken_contract.functions.getCash().call(
-                        block_identifier="pending"
-                    ),
-                    mtoken_contract.functions.decimals().call(
-                        block_identifier="pending"
-                    ),
-                    mtoken_contract.functions.underlying().call(
-                        block_identifier="pending"
-                    ),
+                (
+                    bal_raw,
+                    exch_raw,
+                    cash_raw,
+                    m_dec,
+                    u_addr,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(
+                            mtoken_contract,
+                            "balanceOf",
+                            args=(account,),
+                            postprocess=int,
+                        ),
+                        Call(mtoken_contract, "exchangeRateStored", postprocess=int),
+                        Call(mtoken_contract, "getCash", postprocess=int),
+                        Call(mtoken_contract, "decimals", postprocess=int),
+                        Call(
+                            mtoken_contract,
+                            "underlying",
+                            postprocess=lambda a: to_checksum_address(str(a)),
+                        ),
+                    ],
+                    block_identifier="pending",
                 )
 
                 if bal_raw == 0 or exch_raw == 0:
