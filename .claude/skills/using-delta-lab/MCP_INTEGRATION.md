@@ -281,7 +281,9 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/o
 - `asset_ids` - Filter by specific asset IDs
 
 ### 11. Screen Borrow Routes
-**URI:** `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+**URIs:**
+- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}`
 
 **Purpose:** Screen lending borrow routes (collateral → borrow) by route configuration (LTV, liquidation thresholds, debt ceilings, topology/mode).
 
@@ -290,6 +292,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/o
 - `{limit}` - Max rows to return (default: "100", max: "1000")
 - `{basis}` - Collateral basis symbol filter (e.g. "ETH") or `"all"` for no filter
 - `{borrow_basis}` - Borrow basis symbol filter (e.g. "USD") or `"all"` for no filter
+- `{chain_id}` - Optional chain filter (e.g. `8453`) or `"all"` for no filter
 
 **Examples:**
 ```python
@@ -298,11 +301,13 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow
 
 # Screen across all collateral/borrow pairs
 ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/100/all/all")
+
+# Base chain only
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD/8453")
 ```
 
 **Client-only filters (use `DELTA_LAB_CLIENT.screen_borrow_routes()` for):**
 - `venue` - Filter by venue name
-- `chain_id` - Filter by chain ID
 - `market_id` - Filter by market ID
 - `topology` - Filter by route topology (e.g. "POOLED", "ISOLATED_PAIR")
 - `mode_type` - Filter by route mode type (e.g. "BASE", "EMODE")

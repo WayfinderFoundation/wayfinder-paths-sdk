@@ -309,6 +309,7 @@ async def screen_borrow_routes(
     limit: str = "100",
     basis: str = "all",
     borrow_basis: str = "all",
+    chain_id: str = "all",
 ) -> dict[str, Any]:
     """Screen borrow routes (collateral → borrow) by route configuration.
 
@@ -319,6 +320,7 @@ async def screen_borrow_routes(
         limit: Max rows to return (default: "100", max: "1000")
         basis: Collateral basis symbol to filter by (e.g. "ETH"). Use "all" for no filter.
         borrow_basis: Borrow basis symbol to filter by (e.g. "USD"). Use "all" for no filter.
+        chain_id: Chain ID filter (e.g. "8453"). Use "all" for no filter.
 
     Returns:
         Dict with data (list of borrow route rows) and count
@@ -331,11 +333,15 @@ async def screen_borrow_routes(
             if borrow_basis.strip().lower() != "all"
             else None
         )
+        chain_id_param = None
+        if chain_id.strip().lower() != "all":
+            chain_id_param = int(chain_id.strip())
         result = await DELTA_LAB_CLIENT.screen_borrow_routes(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
             borrow_basis=borrow_basis_param,
+            chain_id=chain_id_param,
         )
         return result
     except Exception as exc:

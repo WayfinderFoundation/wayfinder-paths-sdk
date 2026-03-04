@@ -651,7 +651,8 @@ All screening endpoints return `ScreenResponse`:
 ### ScreenBorrowRouteRow
 
 From `DELTA_LAB_CLIENT.screen_borrow_routes(...)` or MCP:
-`wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}`
 
 ```python
 {

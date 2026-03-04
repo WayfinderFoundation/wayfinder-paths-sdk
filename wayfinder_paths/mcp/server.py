@@ -114,6 +114,9 @@ mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_
 mcp.resource(
     "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}"
 )(screen_borrow_routes)
+mcp.resource(
+    "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}"
+)(screen_borrow_routes)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)
