@@ -91,7 +91,7 @@ LHYPE_ACCOUNTANT = to_checksum_address("0xcE621a3CA6F72706678cFF0572ae8d15e5F001
 # LayerZero OFT bridge (HyperEVM native HYPE -> Arbitrum OFT HYPE)
 HYPE_OFT_ADDRESS = to_checksum_address("0x007C26Ed5C33Fe6fEF62223d4c363A01F1b1dDc1")
 
-# Multicall3 (deployed at same address on all EVM chains)
+# Multicall3 (commonly deployed at this address on many EVM chains; not all)
 MULTICALL3_ADDRESS = to_checksum_address("0xcA11bde05977b3631167028862bE2a173976CA11")
 
 LIFI_ROUTER_HYPEREVM = to_checksum_address("0x0a0758d937d1059c356D4714e57F5df0239bce1A")

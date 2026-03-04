@@ -9,6 +9,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
+from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.ethena_abi import ETHENA_SUSDE_VAULT_ABI
 from wayfinder_paths.core.constants.ethena_contracts import (
     ETHENA_SUSDE_VAULT_MAINNET,
@@ -16,7 +17,11 @@ from wayfinder_paths.core.constants.ethena_contracts import (
     ethena_tokens_by_chain_id,
 )
 from wayfinder_paths.core.utils.interest import apr_to_apy
-from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
+from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -61,21 +66,20 @@ class EthenaVaultAdapter(BaseAdapter):
                     address=ETHENA_SUSDE_VAULT_MAINNET,
                     abi=ETHENA_SUSDE_VAULT_ABI,
                 )
-
-                unvested_coro = vault.functions.getUnvestedAmount().call(
-                    block_identifier="pending"
+                (vals, block) = await asyncio.gather(
+                    read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=CHAIN_ID_ETHEREUM,
+                        calls=[
+                            Call(vault, "getUnvestedAmount", postprocess=int),
+                            Call(vault, "lastDistributionTimestamp", postprocess=int),
+                            Call(vault, "totalAssets", postprocess=int),
+                        ],
+                        block_identifier="pending",
+                    ),
+                    web3.eth.get_block("latest"),
                 )
-                last_dist_coro = vault.functions.lastDistributionTimestamp().call(
-                    block_identifier="pending"
-                )
-                total_assets_coro = vault.functions.totalAssets().call(
-                    block_identifier="pending"
-                )
-                block_coro = web3.eth.get_block("latest")
-
-                unvested, last_dist, total_assets, block = await asyncio.gather(
-                    unvested_coro, last_dist_coro, total_assets_coro, block_coro
-                )
+                unvested, last_dist, total_assets = vals
 
                 if unvested <= 0 or total_assets <= 0:
                     return True, 0.0
@@ -138,29 +142,66 @@ class EthenaVaultAdapter(BaseAdapter):
                         address=ETHENA_SUSDE_VAULT_MAINNET,
                         abi=ETHENA_SUSDE_VAULT_ABI,
                     )
-                    (
-                        usde_balance,
-                        susde_balance,
-                        cooldown_raw,
-                    ) = await asyncio.gather(
-                        get_token_balance(
-                            token_addrs["usde"],
-                            cid,
-                            acct,
-                            web3=web3,
-                            block_identifier=block_identifier,
-                        ),
-                        get_token_balance(
-                            token_addrs["susde"],
-                            cid,
-                            acct,
-                            web3=web3,
-                            block_identifier=block_identifier,
-                        ),
-                        vault.functions.cooldowns(acct).call(
-                            block_identifier="pending"
-                        ),
+                    usde = web3.eth.contract(
+                        address=to_checksum_address(token_addrs["usde"]),
+                        abi=ERC20_ABI,
                     )
+                    susde = web3.eth.contract(
+                        address=to_checksum_address(token_addrs["susde"]),
+                        abi=ERC20_ABI,
+                    )
+
+                    if block_identifier == "pending":
+                        (
+                            usde_balance,
+                            susde_balance,
+                            cooldown_raw,
+                        ) = await read_only_calls_multicall_or_gather(
+                            web3=web3,
+                            chain_id=CHAIN_ID_ETHEREUM,
+                            calls=[
+                                Call(
+                                    usde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                                Call(
+                                    susde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                                Call(vault, "cooldowns", args=(acct,)),
+                            ],
+                            block_identifier="pending",
+                        )
+                    else:
+                        (
+                            usde_balance,
+                            susde_balance,
+                        ) = await read_only_calls_multicall_or_gather(
+                            web3=web3,
+                            chain_id=CHAIN_ID_ETHEREUM,
+                            calls=[
+                                Call(
+                                    usde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                                Call(
+                                    susde,
+                                    "balanceOf",
+                                    args=(acct,),
+                                    postprocess=int,
+                                ),
+                            ],
+                            block_identifier=block_identifier,
+                        )
+                        cooldown_raw = await vault.functions.cooldowns(acct).call(
+                            block_identifier="pending"
+                        )
                     cooldown = {
                         "cooldownEnd": cooldown_raw[0] or 0,
                         "underlyingAmount": cooldown_raw[1] or 0,
@@ -177,21 +218,35 @@ class EthenaVaultAdapter(BaseAdapter):
             else:
                 # Balances on the target chain, vault reads on mainnet.
                 async with web3_from_chain_id(cid) as web3:
-                    usde_balance, susde_balance = await asyncio.gather(
-                        get_token_balance(
-                            token_addrs["usde"],
-                            cid,
-                            acct,
-                            web3=web3,
-                            block_identifier=block_identifier,
-                        ),
-                        get_token_balance(
-                            token_addrs["susde"],
-                            cid,
-                            acct,
-                            web3=web3,
-                            block_identifier=block_identifier,
-                        ),
+                    usde = web3.eth.contract(
+                        address=to_checksum_address(token_addrs["usde"]),
+                        abi=ERC20_ABI,
+                    )
+                    susde = web3.eth.contract(
+                        address=to_checksum_address(token_addrs["susde"]),
+                        abi=ERC20_ABI,
+                    )
+                    (
+                        usde_balance,
+                        susde_balance,
+                    ) = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=cid,
+                        calls=[
+                            Call(
+                                usde,
+                                "balanceOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                            Call(
+                                susde,
+                                "balanceOf",
+                                args=(acct,),
+                                postprocess=int,
+                            ),
+                        ],
+                        block_identifier=block_identifier,
                     )
 
                 shares = susde_balance or 0
@@ -201,24 +256,28 @@ class EthenaVaultAdapter(BaseAdapter):
                         address=ETHENA_SUSDE_VAULT_MAINNET,
                         abi=ETHENA_SUSDE_VAULT_ABI,
                     )
-                    coros: list[Any] = [
-                        vault.functions.cooldowns(acct).call(
-                            block_identifier="pending"
-                        ),
-                    ]
+                    mc_calls = [Call(vault, "cooldowns", args=(acct,))]
                     if shares > 0:
-                        coros.append(
-                            vault.functions.convertToAssets(shares).call(
-                                block_identifier="pending"
+                        mc_calls.append(
+                            Call(
+                                vault,
+                                "convertToAssets",
+                                args=(int(shares),),
+                                postprocess=int,
                             )
                         )
-                    results = await asyncio.gather(*coros)
+                    results = await read_only_calls_multicall_or_gather(
+                        web3=web3_hub,
+                        chain_id=CHAIN_ID_ETHEREUM,
+                        calls=mc_calls,
+                        block_identifier="pending",
+                    )
                     cooldown_raw = results[0]
                     cooldown = {
                         "cooldownEnd": cooldown_raw[0] or 0,
                         "underlyingAmount": cooldown_raw[1] or 0,
                     }
-                    usde_equivalent = (results[1] or 0) if shares > 0 else 0
+                    usde_equivalent = int(results[1] or 0) if shares > 0 else 0
 
             cd_underlying = cooldown.get("underlyingAmount", 0)
 
