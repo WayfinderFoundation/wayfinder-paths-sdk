@@ -81,9 +81,7 @@ async def get_erc20_metadata(
         _erc20_string(
             web3, checksum_token, "symbol", block_identifier=block_identifier
         ),
-        _erc20_string(
-            web3, checksum_token, "name", block_identifier=block_identifier
-        ),
+        _erc20_string(web3, checksum_token, "name", block_identifier=block_identifier),
         contract.functions.decimals().call(block_identifier=block_identifier),
     )
     return symbol, name, int(decimals)
