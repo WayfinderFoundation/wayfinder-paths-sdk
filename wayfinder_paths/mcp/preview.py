@@ -162,6 +162,24 @@ def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, A
         )
         return {"summary": header + base + details}
 
+    if action == "place_trigger_order":
+        tpsl_val = req.get("tpsl")
+        tpsl_label = "TAKE-PROFIT" if tpsl_val == "tp" else "STOP-LOSS"
+        is_market_trigger = req.get("is_market_trigger", True)
+        trigger_kind = "market" if is_market_trigger else "limit"
+        details = (
+            f"\n\n{tpsl_label} ({trigger_kind} trigger)\n"
+            f"tpsl: {tpsl_val}\n"
+            f"is_buy: {req.get('is_buy')}\n"
+            f"trigger_price: {req.get('trigger_price')}\n"
+            f"size: {req.get('size')}\n"
+            f"is_market_trigger: {is_market_trigger}\n"
+            f"limit_price: {req.get('price')}\n"
+            f"builder_wallet: {HYPE_FEE_WALLET}\n"
+            f"builder_fee_tenths_bp: {req.get('builder_fee_tenths_bp') or '(from config/default)'}"
+        )
+        return {"summary": header + base + details}
+
     if action == "cancel_order":
         details = (
             "\n\nCANCEL\n"
