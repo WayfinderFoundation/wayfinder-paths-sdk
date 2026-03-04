@@ -310,7 +310,7 @@ For anything beyond a simple single swap, follow this checklist:
 1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
 2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
 3. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
-4. **Offer simulation** — Before executing, ask the user if they'd like to dry-run it first. Simulation (Gorlami forks) is also valuable for **iterating on complex scripts** — use it to verify logic, catch reverts, and debug multi-step flows without spending real funds. Available for **EVM on-chain transactions only** (Base, Arbitrum, Ethereum, etc.). **Hyperliquid L1, CEXes, and other off-chain protocols cannot be simulated.** If the flow mixes both (e.g. swap on Base then deposit to Hyperliquid), simulate the on-chain portion and flag the off-chain steps as live-only.
+4. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
 5. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
 
 Hyperliquid minimums:
@@ -318,19 +318,23 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction (required for multi-dex trading):
+HIP-3 dex abstraction + Hyperliquid deposits/withdrawals: handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
-- Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **dex abstraction** to be enabled on the user's account.
-- The adapter calls `ensure_dex_abstraction(address)` automatically before `place_market_order`, `place_limit_order`, and `place_trigger_order`. It queries the current state via `Info.query_user_dex_abstraction_state(user)` and enables it if needed — this is a one-time on-chain action per account.
-- If you're writing a custom script that places orders directly, call `await adapter.ensure_dex_abstraction(address)` before your first order.
+Polymarket quick flows:
 
-Hyperliquid deposits (Bridge2):
+- Search markets/events: `mcp__wayfinder__polymarket(action="search", query="bitcoin february 9", limit=10)`
+- Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket(action="status", wallet_label="main")`
+- Convert **native Polygon USDC (0x3c499c...) → USDC.e (0x2791..., required collateral)**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` (skip if you already have USDC.e)
+- Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_usdc=2)`
+- Close a position (sell full size): `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES")`
+- Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
-- Deposit asset is **USDC on Arbitrum (chain_id 42161)**; deposits are made by transferring Arbitrum USDC to `HYPERLIQUID_BRIDGE_ADDRESS`.
-- Deposit flow: `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")` → `mcp__wayfinder__hyperliquid(action="wait_for_deposit", expected_increase=...)` (deposit tool hard-codes Arbitrum USDC + bridge address).
-- Withdraw flow: `mcp__wayfinder__hyperliquid_execute(action="withdraw", amount_usdc=...)` → `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal")`.
+Polymarket funding (USDC.e collateral):
 
-Polymarket flows and funding details are documented in `/using-polymarket-adapter` (USDC.e collateral, bridge paths, buy/sell/close/redeem).
+- **Have native Polygon USDC (0x3c499c...) on Polygon:** Use `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` to convert it → USDC.e (0x2791...).
+- **Already have USDC.e (0x2791...) on Polygon:** You can trade immediately; skip `bridge_deposit`.
+- **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
+- **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
 
 Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin** (use `usd_amount_kind="notional"|"margin"` on `mcp__wayfinder__hyperliquid_execute`).
 
@@ -570,14 +574,6 @@ poetry run wayfinder runner add-job \
   --action update \
   --interval 600 \
   --config ./config.json
-
-# Add an interval job for a local one-off script (must live in .wayfinder_runs/ by default)
-poetry run wayfinder runner add-job \
-  --name hourly-report \
-  --type script \
-  --script-path .wayfinder_runs/report.py \
-  --arg --verbose \
-  --interval 3600
 
 # Inspect / control
 poetry run wayfinder runner status
