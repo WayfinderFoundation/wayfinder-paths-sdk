@@ -34,7 +34,7 @@ async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
     adapter = LidoAdapter(config={})
     ok, msg = await getattr(adapter, method)(**kwargs)
     assert ok is False
-    assert msg == "strategy wallet address not configured"
+    assert msg == "wallet address not configured"
 
 
 def test_split_withdrawal_amount_min():
