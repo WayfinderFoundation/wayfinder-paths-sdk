@@ -31,8 +31,6 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance, get_erc20_metada
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-CHAIN_NAME = "ethereum"
-
 _SLASHING_WITHDRAWAL_QUEUED_EVENT_ABI = next(
     i
     for i in IDELEGATION_MANAGER_ABI
@@ -99,13 +97,6 @@ class EigenCloudAdapter(BaseAdapter):
         super().__init__("eigencloud_adapter", config)
         self.sign_callback = sign_callback
 
-        self.chain_id = CHAIN_ID_ETHEREUM
-        self.chain_name = CHAIN_NAME
-
-        self.strategy_manager: str = EIGENCLOUD_STRATEGY_MANAGER
-        self.delegation_manager: str = EIGENCLOUD_DELEGATION_MANAGER
-        self.rewards_coordinator: str = EIGENCLOUD_REWARDS_COORDINATOR
-
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
@@ -118,9 +109,9 @@ class EigenCloudAdapter(BaseAdapter):
         block_identifier: int | str = "pending",
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 sm = web3.eth.contract(
-                    address=self.strategy_manager, abi=ISTRATEGY_MANAGER_ABI
+                    address=EIGENCLOUD_STRATEGY_MANAGER, abi=ISTRATEGY_MANAGER_ABI
                 )
                 out: list[dict[str, Any]] = []
 
@@ -173,14 +164,14 @@ class EigenCloudAdapter(BaseAdapter):
                     underlying_addr = to_checksum_address(underlying)
                     symbol, token_name, decimals = await get_erc20_metadata(
                         underlying_addr,
-                        self.chain_id,
+                        CHAIN_ID_ETHEREUM,
                         web3=web3,
                         block_identifier=block_identifier,
                     )
 
                     out.append(
                         {
-                            "chain_id": self.chain_id,
+                            "chain_id": CHAIN_ID_ETHEREUM,
                             "strategy": strat,
                             "strategy_name": name,
                             "underlying": underlying_addr,
@@ -223,7 +214,7 @@ class EigenCloudAdapter(BaseAdapter):
             elif strat.lower() == EIGENCLOUD_EIGEN_STRATEGY.lower():
                 tok = EIGEN_TOKEN
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 if tok is None:
                     s = web3.eth.contract(address=strat, abi=ISTRATEGY_ABI)
                     underlying = await s.functions.underlyingToken().call(
@@ -233,7 +224,7 @@ class EigenCloudAdapter(BaseAdapter):
 
                 if check_whitelist:
                     sm = web3.eth.contract(
-                        address=self.strategy_manager, abi=ISTRATEGY_MANAGER_ABI
+                        address=EIGENCLOUD_STRATEGY_MANAGER, abi=ISTRATEGY_MANAGER_ABI
                     )
                     whitelisted = await sm.functions.strategyIsWhitelistedForDeposit(
                         strat
@@ -250,9 +241,9 @@ class EigenCloudAdapter(BaseAdapter):
             ok_appr, appr = await ensure_allowance(
                 token_address=tok,
                 owner=self.wallet_address,
-                spender=self.strategy_manager,
+                spender=EIGENCLOUD_STRATEGY_MANAGER,
                 amount=amount,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -263,12 +254,12 @@ class EigenCloudAdapter(BaseAdapter):
             )
 
             tx = await encode_call(
-                target=self.strategy_manager,
+                target=EIGENCLOUD_STRATEGY_MANAGER,
                 abi=ISTRATEGY_MANAGER_ABI,
                 fn_name="depositIntoStrategy",
                 args=[strat, tok, amount],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {
@@ -292,9 +283,9 @@ class EigenCloudAdapter(BaseAdapter):
             return False, "account (or wallet_address) is required"
 
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 dm = web3.eth.contract(
-                    address=self.delegation_manager, abi=IDELEGATION_MANAGER_ABI
+                    address=EIGENCLOUD_DELEGATION_MANAGER, abi=IDELEGATION_MANAGER_ABI
                 )
                 is_delegated_coro = dm.functions.isDelegated(acct).call(
                     block_identifier=block_identifier
@@ -344,12 +335,12 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx = await encode_call(
-                target=self.delegation_manager,
+                target=EIGENCLOUD_DELEGATION_MANAGER,
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="delegateTo",
                 args=[op, (sig, approver_expiry), salt],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -371,12 +362,12 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx = await encode_call(
-                target=self.delegation_manager,
+                target=EIGENCLOUD_DELEGATION_MANAGER,
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="undelegate",
                 args=[stk],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
@@ -410,12 +401,12 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx = await encode_call(
-                target=self.delegation_manager,
+                target=EIGENCLOUD_DELEGATION_MANAGER,
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="redelegate",
                 args=[op, (sig, approver_expiry), salt],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
@@ -454,12 +445,12 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx = await encode_call(
-                target=self.delegation_manager,
+                target=EIGENCLOUD_DELEGATION_MANAGER,
                 abi=IDELEGATION_MANAGER_ABI,
                 fn_name="queueWithdrawals",
                 args=[params],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
@@ -481,7 +472,7 @@ class EigenCloudAdapter(BaseAdapter):
             try:
                 if (
                     log.get("address") or ""
-                ).lower() != self.delegation_manager.lower():
+                ).lower() != EIGENCLOUD_DELEGATION_MANAGER.lower():
                     continue
                 topics = log.get("topics") or []
                 if not topics:
@@ -516,7 +507,7 @@ class EigenCloudAdapter(BaseAdapter):
             h = f"0x{h}"
 
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 receipt = await web3.eth.get_transaction_receipt(h)
                 roots = self._withdrawal_roots_from_receipt(web3=web3, receipt=receipt)
                 return True, roots
@@ -531,9 +522,9 @@ class EigenCloudAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         root_hex = _as_bytes32_hex(withdrawal_root)
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 dm = web3.eth.contract(
-                    address=self.delegation_manager, abi=IDELEGATION_MANAGER_ABI
+                    address=EIGENCLOUD_DELEGATION_MANAGER, abi=IDELEGATION_MANAGER_ABI
                 )
                 withdrawal, shares = await dm.functions.getQueuedWithdrawal(
                     root_hex
@@ -573,9 +564,9 @@ class EigenCloudAdapter(BaseAdapter):
         root_hex = _as_bytes32_hex(withdrawal_root)
 
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 dm = web3.eth.contract(
-                    address=self.delegation_manager, abi=IDELEGATION_MANAGER_ABI
+                    address=EIGENCLOUD_DELEGATION_MANAGER, abi=IDELEGATION_MANAGER_ABI
                 )
                 withdrawal, shares = await dm.functions.getQueuedWithdrawal(
                     root_hex
@@ -625,12 +616,12 @@ class EigenCloudAdapter(BaseAdapter):
                 )
 
                 tx = await encode_call(
-                    target=self.delegation_manager,
+                    target=EIGENCLOUD_DELEGATION_MANAGER,
                     abi=IDELEGATION_MANAGER_ABI,
                     fn_name="completeQueuedWithdrawal",
                     args=[withdrawal_tuple, tokens, receive_as_tokens],
                     from_address=self.wallet_address,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_ETHEREUM,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
                 return True, {
@@ -654,9 +645,9 @@ class EigenCloudAdapter(BaseAdapter):
             return False, "account (or wallet_address) is required"
 
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 rc = web3.eth.contract(
-                    address=self.rewards_coordinator, abi=IREWARDS_COORDINATOR_ABI
+                    address=EIGENCLOUD_REWARDS_COORDINATOR, abi=IREWARDS_COORDINATOR_ABI
                 )
                 claimer_coro = rc.functions.claimerFor(acct).call(
                     block_identifier=block_identifier
@@ -700,12 +691,12 @@ class EigenCloudAdapter(BaseAdapter):
         c = to_checksum_address(claimer)
         try:
             tx = await encode_call(
-                target=self.rewards_coordinator,
+                target=EIGENCLOUD_REWARDS_COORDINATOR,
                 abi=IREWARDS_COORDINATOR_ABI,
                 fn_name="setClaimerFor",
                 args=[c],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -719,9 +710,9 @@ class EigenCloudAdapter(BaseAdapter):
         block_identifier: int | str = "pending",
     ) -> tuple[bool, bool | str]:
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 rc = web3.eth.contract(
-                    address=self.rewards_coordinator, abi=IREWARDS_COORDINATOR_ABI
+                    address=EIGENCLOUD_REWARDS_COORDINATOR, abi=IREWARDS_COORDINATOR_ABI
                 )
                 ok = await rc.functions.checkClaim(claim).call(
                     block_identifier=block_identifier
@@ -743,12 +734,12 @@ class EigenCloudAdapter(BaseAdapter):
         rcpt = to_checksum_address(recipient)
         try:
             tx = await encode_call(
-                target=self.rewards_coordinator,
+                target=EIGENCLOUD_REWARDS_COORDINATOR,
                 abi=IREWARDS_COORDINATOR_ABI,
                 fn_name="processClaim",
                 args=[claim, rcpt],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -771,12 +762,12 @@ class EigenCloudAdapter(BaseAdapter):
         rcpt = to_checksum_address(recipient)
         try:
             tx = await encode_call(
-                target=self.rewards_coordinator,
+                target=EIGENCLOUD_REWARDS_COORDINATOR,
                 abi=IREWARDS_COORDINATOR_ABI,
                 fn_name="processClaims",
                 args=[claims, rcpt],
                 from_address=self.wallet_address,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_ETHEREUM,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -806,9 +797,9 @@ class EigenCloudAdapter(BaseAdapter):
 
         try:
             tx: dict[str, Any] = {
-                "chainId": self.chain_id,
+                "chainId": CHAIN_ID_ETHEREUM,
                 "from": self.wallet_address,
-                "to": self.rewards_coordinator,
+                "to": EIGENCLOUD_REWARDS_COORDINATOR,
                 "data": "0x" + data.hex(),
                 "value": value,
             }
@@ -829,9 +820,9 @@ class EigenCloudAdapter(BaseAdapter):
             return False, "account (or wallet_address) is required"
 
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 dm = web3.eth.contract(
-                    address=self.delegation_manager, abi=IDELEGATION_MANAGER_ABI
+                    address=EIGENCLOUD_DELEGATION_MANAGER, abi=IDELEGATION_MANAGER_ABI
                 )
 
                 strategies, deposit_shares = await dm.functions.getDepositedShares(
@@ -930,7 +921,7 @@ class EigenCloudAdapter(BaseAdapter):
                     positions.append(pos)
 
                 out: dict[str, Any] = {
-                    "chain_id": self.chain_id,
+                    "chain_id": CHAIN_ID_ETHEREUM,
                     "account": acct,
                     "isDelegated": is_delegated,
                     "delegatedTo": to_checksum_address(delegated_to),
@@ -970,7 +961,7 @@ class EigenCloudAdapter(BaseAdapter):
 
         state: dict[str, Any] = {
             "protocol": "eigencloud",
-            "chainId": self.chain_id,
+            "chainId": CHAIN_ID_ETHEREUM,
             "account": acct,
             "delegation": delegation,
             "positions": (pos or {}).get("positions") if isinstance(pos, dict) else [],
@@ -1001,7 +992,7 @@ class EigenCloudAdapter(BaseAdapter):
     async def _usd_value(self, *, token_address: str, amount_raw: int) -> float | None:
         try:
             data = await TOKEN_CLIENT.get_token_details(
-                token_address, market_data=True, chain_id=self.chain_id
+                token_address, market_data=True, chain_id=CHAIN_ID_ETHEREUM
             )
             price = (
                 data.get("price_usd") or data.get("price") or data.get("current_price")
