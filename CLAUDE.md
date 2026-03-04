@@ -588,7 +588,7 @@ poetry run wayfinder runner delete basis-update
 poetry run wayfinder runner stop
 ```
 
-Architecture/extensibility notes live in `RUNNER_ARCHITECTURE.md`.
+See `RUNNER_ARCHITECTURE.md`.
 
 Runner MCP tool: `mcp__wayfinder__runner(action=...)`.
 
