@@ -289,7 +289,6 @@ class DeltaLabClient(WayfinderClient):
         response = await self._authed_request("GET", url, params=params)
         return response.json()
 
-
     async def screen_price(
         self,
         *,

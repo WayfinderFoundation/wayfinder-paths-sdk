@@ -107,7 +107,9 @@ mcp.resource(
     "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
 )(get_asset_timeseries_data)
 mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
-mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(screen_lending)
+mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(
+    screen_lending
+)
 mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
 mcp.resource(
     "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}"

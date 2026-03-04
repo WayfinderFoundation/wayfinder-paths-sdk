@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -92,7 +92,7 @@ def parse_market_name_maturity(market_name: str) -> datetime | None:
     if not m:
         return None
     try:
-        dt = datetime.strptime(m.group(1), "%y%m%d").replace(tzinfo=timezone.utc)
+        dt = datetime.strptime(m.group(1), "%y%m%d").replace(tzinfo=UTC)
     except ValueError:
         return None
     return dt
