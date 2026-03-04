@@ -213,7 +213,7 @@ When answering questions about **rates/APYs/funding**:
 - **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
 - **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
 - **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
-- **Borrow routes:** `ltv_max`, `liq_threshold`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
+- **Borrow routes:** `ltv_max`, `liq_threshold`, `liquidation_penalty`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
 
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
