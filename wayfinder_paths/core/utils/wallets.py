@@ -11,6 +11,16 @@ _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 Account.enable_unaudited_hdwallet_features()
 
 
+def make_sign_callback(private_key: str):
+    account = Account.from_key(private_key)
+
+    async def sign_callback(transaction: dict) -> bytes:
+        signed = account.sign_transaction(transaction)
+        return signed.raw_transaction
+
+    return sign_callback
+
+
 def make_random_wallet() -> dict[str, str]:
     acct = Account.create()
     return {

@@ -207,61 +207,99 @@ for venue in funding_df["venue"].unique():
 - **MCP:** "Show recent price", "What's the funding rate?", quick sanity checks
 - **Client:** Plotting, filtering, aggregating, multi-day analysis, lending data
 
+### 8. Screen Price
+**URI:** `wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}`
+
+**Purpose:** Screen assets by price features — returns, volatility, drawdowns. Useful for quickly finding top movers or most volatile assets.
+
+**Path Parameters:**
+- `{sort}` - Column to sort by. Options: `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `ret_90d`, `vol_7d`, `vol_30d`, `vol_90d`, `mdd_30d`, `mdd_90d`
+- `{limit}` - Max rows to return (default: "100", max: "1000")
+- `{basis}` - Basis symbol filter (e.g. "ETH", "BTC") or `"all"` for no filter
+
+**Examples:**
+```python
+# Top 10 daily movers (all assets)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/ret_1d/10/all")
+
+# Most volatile ETH-basis assets (30d)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/vol_30d/20/ETH")
+```
+
+### 9. Screen Lending
+**URI:** `wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}`
+
+**Purpose:** Screen lending markets by surface features — supply/borrow APRs, TVL, utilization, z-scores. Frozen/paused markets are excluded by default in MCP.
+
+**Path Parameters:**
+- `{sort}` - Column to sort by. Options: `net_supply_apr_now`, `net_supply_mean_7d`, `net_supply_mean_30d`, `combined_net_supply_apr_now`, `combined_supply_mean_7d`, `net_borrow_apr_now`, `supply_tvl_usd`, `liquidity_usd`, `util_now`, `util_mean_30d`, `borrow_spike_score`, `net_supply_z_30d`
+- `{limit}` - Max rows to return (default: "100", max: "1000")
+- `{basis}` - Basis symbol filter (e.g. "ETH") or `"all"` for no filter
+
+**Examples:**
+```python
+# Top 20 lending rates across all assets
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all")
+
+# Best ETH lending rates
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/ETH")
+
+# Highest borrow spike scores (potential rate anomalies)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lending/borrow_spike_score/10/all")
+```
+
+**Client-only filters (use `DELTA_LAB_CLIENT.screen_lending()` for):**
+- `venue` - Filter by venue name (e.g. "aave", "morpho", "moonwell")
+- `min_tvl` - Minimum supply TVL in USD
+- `exclude_frozen` - Toggle frozen/paused market exclusion (MCP always excludes)
+
+### 10. Screen Perp
+**URI:** `wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}`
+
+**Purpose:** Screen perpetual markets by surface features — funding rates, basis, OI, volume. Useful for finding high-funding or anomalous perp markets.
+
+**Path Parameters:**
+- `{sort}` - Column to sort by. Options: `funding_now`, `funding_mean_7d`, `funding_std_7d`, `funding_mean_30d`, `funding_std_30d`, `funding_z_30d`, `funding_z_90d`, `funding_pos_pct_30d`, `basis_now`, `basis_mean_7d`, `basis_mean_30d`, `basis_z_30d`, `oi_now`, `oi_mean_7d`, `oi_change_vs_7d_mean`, `volume_24h`, `mark_price`
+- `{limit}` - Max rows to return (default: "100", max: "1000")
+- `{basis}` - Basis symbol filter (e.g. "BTC") or `"all"` for no filter
+
+**Examples:**
+```python
+# Top 20 highest funding rates right now
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/funding_now/20/all")
+
+# ETH perps sorted by 30-day mean funding
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/funding_mean_30d/20/ETH")
+
+# Biggest OI changes vs 7d mean
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/oi_change_vs_7d_mean/10/all")
+```
+
+**Client-only filters (use `DELTA_LAB_CLIENT.screen_perp()` for):**
+- `venue` - Filter by venue name (e.g. "hyperliquid", "binance")
+- `order` - Switch to ascending sort (MCP defaults to descending)
+- `asset_ids` - Filter by specific asset IDs
+
 ## Implementation Details
 
 **File:** `wayfinder_paths/mcp/resources/delta_lab.py`
 
-Three async functions that wrap `DELTA_LAB_CLIENT` methods:
-- `get_basis_apy_sources(basis_symbol, lookback_days, limit)`
-- `get_best_delta_neutral_pairs(basis_symbol, lookback_days, limit)`
-- `get_delta_lab_asset(asset_id)`
-
-All functions:
-- Return JSON strings
+Async functions that wrap `DELTA_LAB_CLIENT` methods. All functions:
+- Return dicts (JSON-serializable)
 - Handle errors gracefully (return `{"error": "..."}`)
 - Auto-uppercase basis symbols for consistency
 
 **Server registration:** `wayfinder_paths/mcp/server.py`
-- Imported delta_lab resource functions
-- Registered three MCP resources with FastMCP
 
 ## When to Use MCP Resources vs Direct Client
 
 ### Use MCP Resources (interactive):
-- ✅ Quick one-off queries in Claude conversation
-- ✅ No script needed
-- ✅ Immediate results
-- ❌ Timeseries data returned as JSON arrays (not DataFrames)
+- Quick one-off queries in Claude conversation
+- No script needed, immediate results
+- Screening with sort + basis filter
 
 ### Use Direct Client (scripting):
-- ✅ Complex filtering/processing logic
-- ✅ Multiple API calls with transformations
-- ✅ Batch operations
-- ✅ Part of a larger workflow
-- ✅ **Timeseries data as DataFrames** - `get_asset_timeseries()` returns `dict[str, pd.DataFrame]` for easy plotting/analysis
-
-## Testing
-
-After restarting the MCP server, you can test with:
-
-```python
-# In Claude conversation (no code needed)
-ReadMcpResourceTool(
-    server="wayfinder",
-    uri="wayfinder://delta-lab/BTC/apy-sources",
-    params={"limit": "10"}
-)
-```
-
-Or programmatically:
-```python
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
-
-result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
-    basis_symbol="BTC",
-    lookback_days=7,
-    limit=10
-)
-```
-
-Both access the same backend API.
+- Extra filters: `venue`, `min_tvl`, `exclude_frozen`, `asset_ids`, `order`
+- Complex filtering/processing logic
+- Multiple API calls with transformations
+- **Timeseries data as DataFrames** for plotting/analysis

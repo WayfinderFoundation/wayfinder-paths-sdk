@@ -10,9 +10,12 @@ These are the core Delta Lab client methods you'll use most often.
 - "What are the absolute best APYs right now?" → `get_top_apy()` (all symbols)
 - "What are the best APYs for BTC/ETH?" → `get_basis_apy_sources(basis_symbol="BTC")`
 - "Find me delta-neutral opportunities" → `get_best_delta_neutral_pairs()`
-- "What lending rates are available for X?" → `get_basis_apy_sources()` + filter `instrument_type=="LENDING_SUPPLY"`
-- "Compare funding rates across venues" → `get_basis_apy_sources()` + filter `instrument_type=="PERP"`
+- "What lending rates are available for X?" → `screen_lending(basis="ETH")` or `get_basis_apy_sources()` + filter
+- "Compare funding rates across venues" → `screen_perp(basis="BTC")` or `get_basis_apy_sources()` + filter
 - "Show me the highest yield with lowest risk" → `get_best_delta_neutral_pairs()` + use `pareto_frontier`
+- "What are the top movers today?" → `screen_price(sort="ret_1d")`
+- "Which perps have highest funding?" → `screen_perp(sort="funding_now")`
+- "Best lending rates on Aave?" → `screen_lending(venue="aave")` (client only)
 - "What asset is asset_id 123?" → `get_asset(asset_id=123)`
 - "Find all WETH assets across chains" → `get_assets_by_address("0xC02a...")`
 - "Is ETH in a basis group?" → `get_asset_basis("ETH")`
@@ -44,7 +47,15 @@ Quick URIs:
 - `wayfinder://delta-lab/ETH/delta-neutral/7/5` - Top 5 delta-neutral pairs for ETH (7-day lookback)
 - `wayfinder://delta-lab/ETH/delta-neutral/14/20` - Top 20 pairs for ETH (14-day lookback)
 
-**Only use Python client below for:** Complex filtering, DataFrame formatting, or multi-venue lending data.
+**Only use Python client below for:** Complex filtering (venue, min_tvl), DataFrame formatting, or multi-venue lending data.
+
+**Screening URIs (cross-venue snapshots):**
+- `wayfinder://delta-lab/screen/price/ret_1d/10/all` - Top 10 daily movers
+- `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/ETH` - Top 20 ETH lending rates
+- `wayfinder://delta-lab/screen/perp/funding_now/20/all` - Top 20 perp funding rates
+- `wayfinder://delta-lab/screen/perp/funding_mean_30d/20/BTC` - BTC perps by 30d mean funding
+
+Use `all` as the basis param to screen across all assets, or a symbol like `ETH` to filter.
 
 ## 0. Get Basis Symbols (Discovery)
 
@@ -518,4 +529,84 @@ price_df = data["price"]
 lending_df = data["lending"]
 funding_df = data["funding"]
 # ... etc
+```
+
+## 7. Screening (Cross-Venue Feature Snapshots)
+
+**Purpose:** Screen assets, lending markets, or perp markets by pre-computed features. Returns the latest snapshot from materialized views — much faster than scanning individual opportunities.
+
+### screen_price — Price Features
+
+```python
+# Top 20 daily movers
+data = await DELTA_LAB_CLIENT.screen_price(sort="ret_1d", limit=20)
+
+# ETH-basis assets by 30d volatility
+data = await DELTA_LAB_CLIENT.screen_price(sort="vol_30d", basis="ETH", limit=50)
+
+# Worst 30d drawdowns (ascending = worst first)
+data = await DELTA_LAB_CLIENT.screen_price(sort="mdd_30d", order="asc", limit=10)
+```
+
+**Sortable columns:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `ret_90d`, `vol_7d`, `vol_30d`, `vol_90d`, `mdd_30d`, `mdd_90d`
+
+### screen_lending — Lending Surface Features
+
+```python
+# Top lending rates right now
+data = await DELTA_LAB_CLIENT.screen_lending(sort="net_supply_apr_now", limit=20)
+
+# ETH lending on Aave only
+data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave")
+
+# High-TVL markets with combined rewards
+data = await DELTA_LAB_CLIENT.screen_lending(
+    sort="combined_net_supply_apr_now", min_tvl=1_000_000, limit=50
+)
+
+# Borrow spike detection
+data = await DELTA_LAB_CLIENT.screen_lending(sort="borrow_spike_score", limit=10)
+```
+
+**Sortable columns:** `net_supply_apr_now`, `net_supply_mean_7d`, `net_supply_mean_30d`, `net_supply_z_30d`, `combined_net_supply_apr_now`, `combined_supply_mean_7d`, `net_borrow_apr_now`, `net_borrow_mean_7d`, `net_borrow_z_30d`, `util_now`, `util_mean_30d`, `supply_tvl_usd`, `borrow_tvl_usd`, `liquidity_usd`, `ltv_max`, `liq_threshold`, `liquidation_penalty`, `borrow_spike_score`
+
+**Client-only filters:** `venue`, `min_tvl`, `exclude_frozen` (MCP always excludes frozen)
+
+### screen_perp — Perp Surface Features
+
+```python
+# Highest funding right now
+data = await DELTA_LAB_CLIENT.screen_perp(sort="funding_now", limit=20)
+
+# BTC perps by 30d mean funding
+data = await DELTA_LAB_CLIENT.screen_perp(sort="funding_mean_30d", basis="BTC")
+
+# Hyperliquid perps only
+data = await DELTA_LAB_CLIENT.screen_perp(venue="hyperliquid", sort="funding_now")
+
+# Biggest OI changes (unusual activity)
+data = await DELTA_LAB_CLIENT.screen_perp(sort="oi_change_vs_7d_mean", limit=10)
+```
+
+**Sortable columns:** `funding_now`, `funding_mean_7d`, `funding_std_7d`, `funding_mean_30d`, `funding_std_30d`, `funding_mean_90d`, `funding_std_90d`, `funding_z_30d`, `funding_z_90d`, `funding_pos_pct_30d`, `funding_neg_pct_30d`, `basis_now`, `basis_mean_7d`, `basis_mean_30d`, `basis_std_30d`, `basis_z_30d`, `oi_now`, `oi_mean_7d`, `oi_change_vs_7d_mean`, `volume_24h`, `mark_price`, `index_price`
+
+**Client-only filters:** `venue`, `order`, `asset_ids`
+
+### Response Format (all screeners)
+
+All three return `{"data": [...], "count": N}`:
+
+```python
+{
+    "data": [
+        {
+            "asof_ts": "2025-02-27T12:00:00Z",
+            "asset_id": 1,
+            "symbol": "BTC",
+            # ... surface-specific columns
+        },
+        ...
+    ],
+    "count": 20
+}
 ```

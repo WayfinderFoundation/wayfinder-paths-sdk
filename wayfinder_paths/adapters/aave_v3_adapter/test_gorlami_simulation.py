@@ -42,8 +42,9 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     )
 
     adapter = AaveV3Adapter(
-        config={"strategy_wallet": {"address": acct.address}},
-        strategy_wallet_signing_callback=sign_cb,
+        config={},
+        sign_callback=sign_cb,
+        wallet_address=acct.address,
     )
 
     wrapped = await adapter._wrapped_native(chain_id=chain_id)

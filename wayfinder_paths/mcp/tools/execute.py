@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from eth_account import Account
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
@@ -20,6 +19,7 @@ from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -28,6 +28,7 @@ from wayfinder_paths.mcp.utils import (
     normalize_address,
     ok,
     parse_amount_to_raw,
+    sanitize_for_json,
 )
 
 
@@ -108,18 +109,6 @@ def _addr_lower(addr: str | None) -> str | None:
     return a.lower() if a else None
 
 
-def _sanitize_for_json(obj: Any) -> Any:
-    if hasattr(obj, "hex") and callable(obj.hex):
-        return obj.hex()
-    if isinstance(obj, bytes):
-        return obj.hex()
-    if isinstance(obj, dict):
-        return {k: _sanitize_for_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_sanitize_for_json(v) for v in obj]
-    return obj
-
-
 def _compact_quote(
     quote_data: dict[str, Any], best_quote: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -191,16 +180,6 @@ def _compact_quote(
     return result
 
 
-def _make_sign_callback(private_key: str):
-    account = Account.from_key(private_key)
-
-    async def sign_callback(transaction: dict) -> bytes:
-        signed = account.sign_transaction(transaction)
-        return signed.raw_transaction
-
-    return sign_callback
-
-
 async def _broadcast(
     sign_callback,
     tx: dict[str, Any],
@@ -215,7 +194,7 @@ async def _broadcast(
             result["explorer_url"] = explorer_link
         return True, result
     except Exception as e:
-        return False, {"error": _sanitize_for_json(str(e)), "chain_id": chain_id}
+        return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
 
 
 async def _ensure_allowance(
@@ -330,7 +309,7 @@ async def execute(
         )
         return response
 
-    sign_callback = _make_sign_callback(pk)
+    sign_callback = make_sign_callback(pk)
 
     if req.kind == "swap":
         rcpt = normalize_address(req.recipient) or sender

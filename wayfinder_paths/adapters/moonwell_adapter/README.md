@@ -33,14 +33,9 @@ The MoonwellAdapter provides:
 
 ```python
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
+from wayfinder_paths.mcp.scripting import get_adapter
 
-config = {
-    "strategy_wallet": {"address": "0x..."},
-    "moonwell_adapter": {
-        "chain_id": 8453,
-    }
-}
-adapter = MoonwellAdapter(config=config)
+adapter = get_adapter(MoonwellAdapter, "main")
 ```
 
 ## Methods

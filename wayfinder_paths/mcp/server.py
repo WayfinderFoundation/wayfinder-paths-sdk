@@ -10,6 +10,10 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.mcp.resources.contracts import (
+    get_contract,
+    list_contracts,
+)
 from wayfinder_paths.mcp.resources.delta_lab import (
     get_asset_basis_info,
     get_asset_timeseries_data,
@@ -19,6 +23,9 @@ from wayfinder_paths.mcp.resources.delta_lab import (
     get_best_delta_neutral_pairs,
     get_delta_lab_asset,
     get_top_apy,
+    screen_lending,
+    screen_perp,
+    screen_price,
 )
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
@@ -45,6 +52,12 @@ from wayfinder_paths.mcp.resources.wallets import (
     get_wallet_activity,
     get_wallet_balances,
     list_wallets,
+)
+from wayfinder_paths.mcp.tools.contracts import compile_contract, deploy_contract
+from wayfinder_paths.mcp.tools.evm_contract import (
+    contract_call,
+    contract_execute,
+    contract_get_abi,
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
@@ -76,6 +89,8 @@ mcp.resource("wayfinder://hyperliquid/prices/{coin}")(get_mid_price)
 mcp.resource("wayfinder://hyperliquid/markets")(get_markets)
 mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
+mcp.resource("wayfinder://contracts")(list_contracts)
+mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
 mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
 mcp.resource("wayfinder://delta-lab/top-apy/{lookback_days}/{limit}")(get_top_apy)
 mcp.resource(
@@ -90,6 +105,9 @@ mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
 mcp.resource(
     "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
 )(get_asset_timeseries_data)
+mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
+mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(screen_lending)
+mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)
@@ -102,6 +120,11 @@ mcp.tool()(run_script)
 mcp.tool()(execute)
 mcp.tool()(wallets)
 mcp.tool()(runner)
+mcp.tool()(compile_contract)
+mcp.tool()(deploy_contract)
+mcp.tool()(contract_get_abi)
+mcp.tool()(contract_call)
+mcp.tool()(contract_execute)
 
 
 def main() -> None:

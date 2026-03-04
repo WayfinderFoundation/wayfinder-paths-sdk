@@ -209,3 +209,96 @@ async def get_asset_timeseries_data(
         return result
     except Exception as exc:
         return {"error": str(exc)}
+
+
+async def screen_price(
+    sort: str = "price_usd",
+    limit: str = "100",
+    basis: str = "all",
+) -> dict[str, Any]:
+    """Screen assets by price features (returns, volatility, drawdowns).
+
+    Args:
+        sort: Column to sort by (default: "price_usd"). Options include:
+              price_usd, ret_1d, ret_7d, ret_30d, ret_90d,
+              vol_7d, vol_30d, vol_90d, mdd_30d, mdd_90d
+        limit: Max rows to return (default: "100", max: "1000")
+        basis: Basis symbol to filter by (e.g. "ETH", "BTC"). Use "all" for no filter.
+
+    Returns:
+        Dict with data (list of price feature rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        result = await DELTA_LAB_CLIENT.screen_price(
+            sort=sort.strip(),
+            limit=limit_int,
+            basis=basis_param,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def screen_lending(
+    sort: str = "net_supply_apr_now",
+    limit: str = "100",
+    basis: str = "all",
+) -> dict[str, Any]:
+    """Screen lending markets by surface features (supply/borrow APRs, TVL).
+
+    Args:
+        sort: Column to sort by (default: "net_supply_apr_now"). Options include:
+              net_supply_apr_now, net_supply_mean_7d, net_supply_mean_30d,
+              combined_net_supply_apr_now, net_borrow_apr_now,
+              supply_tvl_usd, liquidity_usd, util_now, borrow_spike_score
+        limit: Max rows to return (default: "100", max: "1000")
+        basis: Basis symbol to filter by (e.g. "ETH", "BTC"). Use "all" for no filter.
+
+    Returns:
+        Dict with data (list of lending surface feature rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        result = await DELTA_LAB_CLIENT.screen_lending(
+            sort=sort.strip(),
+            limit=limit_int,
+            basis=basis_param,
+            exclude_frozen=True,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def screen_perp(
+    sort: str = "funding_now",
+    limit: str = "100",
+    basis: str = "all",
+) -> dict[str, Any]:
+    """Screen perpetual markets by surface features (funding, basis, OI).
+
+    Args:
+        sort: Column to sort by (default: "funding_now"). Options include:
+              funding_now, funding_mean_7d, funding_mean_30d,
+              basis_now, basis_mean_7d, basis_mean_30d,
+              oi_now, volume_24h, mark_price
+        limit: Max rows to return (default: "100", max: "1000")
+        basis: Basis symbol to filter by (e.g. "ETH", "BTC"). Use "all" for no filter.
+
+    Returns:
+        Dict with data (list of perp surface feature rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        result = await DELTA_LAB_CLIENT.screen_perp(
+            sort=sort.strip(),
+            limit=limit_int,
+            basis=basis_param,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}

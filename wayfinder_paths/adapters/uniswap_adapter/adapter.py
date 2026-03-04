@@ -17,7 +17,8 @@ class UniswapAdapter(UniswapV3BaseAdapter):
         self,
         config: dict[str, Any],
         *,
-        strategy_wallet_signing_callback=None,
+        sign_callback=None,
+        wallet_address: str | None = None,
     ) -> None:
         chain_id = int(config.get("chain_id", 8453))
         if chain_id not in SUPPORTED_CHAIN_IDS:
@@ -26,11 +27,9 @@ class UniswapAdapter(UniswapV3BaseAdapter):
                 f"Supported: {sorted(SUPPORTED_CHAIN_IDS)}"
             )
 
-        wallet = (config or {}).get("strategy_wallet") or {}
-        addr = wallet.get("address")
-        if not addr:
-            raise ValueError("strategy_wallet.address is required for UniswapAdapter")
-        owner = to_checksum_address(str(addr))
+        if not wallet_address:
+            raise ValueError("wallet_address is required for UniswapAdapter")
+        owner = to_checksum_address(str(wallet_address))
 
         super().__init__(
             "uniswap_adapter",
@@ -39,5 +38,5 @@ class UniswapAdapter(UniswapV3BaseAdapter):
             npm_address=UNISWAP_V3_NPM[chain_id],
             factory_address=UNISWAP_V3_FACTORY[chain_id],
             owner=owner,
-            strategy_wallet_signing_callback=strategy_wallet_signing_callback,
+            sign_callback=sign_callback,
         )

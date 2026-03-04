@@ -62,8 +62,9 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
     )
 
     adapter = MorphoAdapter(
-        config={"strategy_wallet": {"address": acct.address}},
-        strategy_wallet_signing_callback=sign_cb,
+        config={},
+        sign_callback=sign_cb,
+        wallet_address=acct.address,
     )
 
     markets = await MORPHO_CLIENT.get_all_markets(chain_id=int(chain_id), listed=True)
@@ -256,8 +257,9 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
     )
 
     adapter = MorphoAdapter(
-        config={"strategy_wallet": {"address": acct.address}},
-        strategy_wallet_signing_callback=sign_cb,
+        config={},
+        sign_callback=sign_cb,
+        wallet_address=acct.address,
     )
 
     markets = await MORPHO_CLIENT.get_all_markets(

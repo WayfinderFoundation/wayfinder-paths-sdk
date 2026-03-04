@@ -1,0 +1,12 @@
+schema_version: "0.1"
+entrypoint: "adapters.ethena_vault_adapter.adapter.EthenaVaultAdapter"
+capabilities:
+  - "vault.read"
+  - "vault.deposit"
+  - "vault.withdraw"
+  - "position.read"
+  - "market.apy"
+  - "lending.lend"
+  - "lending.unlend"
+dependencies: []
+

@@ -130,5 +130,13 @@ def write_wallet_mnemonic(mnemonic: str, path: str | Path | None = None) -> Path
 _GORLAMI_PATH = "/blockchain/gorlami"
 
 
+def get_etherscan_api_key() -> str | None:
+    system = CONFIG.get("system", {})
+    api_key = system.get("etherscan_api_key")
+    if api_key:
+        return str(api_key).strip()
+    return os.environ.get("ETHERSCAN_API_KEY")
+
+
 def get_gorlami_base_url() -> str:
     return f"{get_api_base_url().rstrip('/')}{_GORLAMI_PATH}"

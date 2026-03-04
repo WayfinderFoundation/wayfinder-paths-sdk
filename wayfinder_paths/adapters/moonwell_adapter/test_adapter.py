@@ -25,10 +25,10 @@ from wayfinder_paths.core.constants.contracts import (
 class TestMoonwellAdapter:
     @pytest.fixture
     def adapter(self):
-        config = {
-            "strategy_wallet": {"address": "0x1234567890123456789012345678901234567890"}
-        }
-        return MoonwellAdapter(config=config)
+        return MoonwellAdapter(
+            config={},
+            wallet_address="0x1234567890123456789012345678901234567890",
+        )
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "MOONWELL"
@@ -1048,7 +1048,7 @@ class TestMoonwellAdapter:
 
     def test_strategy_address_missing(self):
         adapter = MoonwellAdapter(config={})
-        assert adapter.strategy_wallet_address is None
+        assert adapter.wallet_address is None
 
     @pytest.mark.asyncio
     async def test_max_withdrawable_mtoken_zero_balance(self, adapter):

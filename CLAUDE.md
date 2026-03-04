@@ -51,8 +51,14 @@ Simulation / scenario testing (vnet only):
 Safety defaults:
 
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
+- Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
+  - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
+  - To fetch an ABI directly (without making a call), use MCP `contract_get_abi(...)`.
 - Hyperliquid perp writes: use MCP `hyperliquid_execute(...)` (orders/leverage). Also gated by a review prompt.
 - Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
+- Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
+  - Deployments (and other contract actions) are recorded in wallet profiles. Read `wayfinder://wallets/{label}` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
+  - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `wayfinder://contracts` (list all) or `wayfinder://contracts/{chain_id}/{address}` (specific contract).
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.
 
 Transaction outcome rules (don’t assume a tx hash means success):
@@ -83,6 +89,8 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
+| Contract Dev          | `/contract-development`          |
+
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
@@ -168,6 +176,10 @@ Once validated:
 
 See `/backtest-strategy` skill for full guide, common patterns, and gotchas.
 
+## Contract development
+
+Before writing or deploying Solidity contracts, invoke `/contract-development`.
+
 ## Data accuracy (no guessing)
 
 When answering questions about **rates/APYs/funding**:
@@ -192,6 +204,14 @@ When answering questions about **rates/APYs/funding**:
 - `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
 - `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
 - `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Historical data (snapshots only)
+- `wayfinder://delta-lab/screen/price/{SORT}/{LIMIT}/{BASIS}` - Screen assets by price features
+- `wayfinder://delta-lab/screen/lending/{SORT}/{LIMIT}/{BASIS}` - Screen lending markets
+- `wayfinder://delta-lab/screen/perp/{SORT}/{LIMIT}/{BASIS}` - Screen perp markets
+
+**Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
+- **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
+- **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
+- **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
 
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
@@ -202,13 +222,18 @@ uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
 uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
 uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
 
+# Screening via MCP
+uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all"  # Top 20 lending rates
+uri="wayfinder://delta-lab/screen/perp/funding_now/20/ETH"  # Top 20 ETH perp funding rates
+uri="wayfinder://delta-lab/screen/price/ret_1d/10/all"  # Top 10 daily movers
+
 # Serious analysis via client
 data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
 # If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
 print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
 
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=30)
-data["price"]["price_usd"].plot()
+# Client screening with extra filters (venue, min_tvl, etc.)
+data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave", min_tvl=1_000_000)
 ```
 
 ## Running strategies via MCP
@@ -332,11 +357,21 @@ When writing scripts under `.wayfinder_runs/`, use `get_adapter()` to simplify s
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
-adapter = get_adapter(MoonwellAdapter, "main")  # Auto-wires config + signing
+# Single-wallet adapter (sign_callback + wallet_address)
+adapter = get_adapter(MoonwellAdapter, "main")
 await adapter.set_collateral(mtoken=USDC_MTOKEN)
+
+# Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
+from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
+adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
+
+# Read-only (no wallet needed)
+adapter = get_adapter(PendleAdapter)
 ```
 
-This auto-loads `config.json`, looks up the wallet by label, creates a signing callback, and wires everything together. For read-only adapters (e.g., PendleAdapter), omit the wallet label.
+`get_adapter()` auto-loads `config.json`, looks up wallets by label, creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
+- `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
+- `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
 
 For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_chain_id(chain_id)` from `wayfinder_paths.core.utils.web3` — it's an **async context manager** (see gotchas below):
 
@@ -403,6 +438,9 @@ adapter = MoonwellAdapter(config=config, ...)
 # RIGHT — get_adapter() handles config + wallet + signing internally
 from wayfinder_paths.mcp.scripting import get_adapter
 adapter = get_adapter(MoonwellAdapter, "main")
+
+# Dual-wallet adapters (e.g. BalanceAdapter) take two wallet labels:
+adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
 
 # For read-only adapters, omit the wallet label:
 adapter = get_adapter(HyperliquidAdapter)
@@ -815,6 +853,8 @@ Read-only wallet information is exposed via MCP resources, and fund-moving / tra
 - `wayfinder://wallets/{label}` - full profile for a wallet (protocol interactions, transactions)
 - `wayfinder://balances/{label}` - enriched token balances
 - `wayfinder://activity/{label}` - recent wallet activity (best-effort)
+- `wayfinder://contracts` - list all locally-deployed contracts (name, address, chain, verification status)
+- `wayfinder://contracts/{chain_id}/{address}` - full metadata + ABI for a deployed contract
 
 **Tool actions (`mcp__wayfinder__wallets`):**
 

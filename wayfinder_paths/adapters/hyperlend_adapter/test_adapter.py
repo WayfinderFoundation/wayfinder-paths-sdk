@@ -21,11 +21,8 @@ class TestHyperlendAdapter:
     @pytest.fixture
     def adapter(self):
         return HyperlendAdapter(
-            config={
-                "strategy_wallet": {
-                    "address": "0x1234567890123456789012345678901234567890"
-                }
-            },
+            config={},
+            wallet_address="0x1234567890123456789012345678901234567890",
         )
 
     @pytest.mark.asyncio
@@ -182,7 +179,7 @@ class TestHyperlendAdapter:
 
     def test_strategy_address_optional(self):
         adapter = HyperlendAdapter(config={})
-        assert adapter.strategy_wallet_address is None
+        assert adapter.wallet_address is None
 
     @pytest.mark.asyncio
     async def test_get_all_markets_success(self, adapter):
@@ -548,7 +545,7 @@ class TestHyperlendAdapter:
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
             mock_record.return_value = None
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, txn = await adapter.lend(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -584,7 +581,7 @@ class TestHyperlendAdapter:
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
             mock_record.return_value = None
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, txn = await adapter.unlend(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -616,7 +613,7 @@ class TestHyperlendAdapter:
         ):
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, txn = await adapter.borrow(
                 underlying_token=token,
@@ -649,7 +646,7 @@ class TestHyperlendAdapter:
         ):
             mock_encode.side_effect = [{"tx": "borrow"}, {"tx": "unwrap"}]
             mock_send.side_effect = ["0xborrow", "0xunwrap"]
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, res = await adapter.borrow(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -669,7 +666,7 @@ class TestHyperlendAdapter:
         assert first_kwargs["args"][1] == 123
         assert first_kwargs["args"][2] == 2  # variable rate mode
         assert first_kwargs["args"][3] == 0  # referral code
-        assert first_kwargs["args"][4] == adapter.strategy_wallet_address
+        assert first_kwargs["args"][4] == adapter.wallet_address
 
         second_kwargs = mock_encode.await_args_list[1].kwargs
         assert second_kwargs["target"] == HYPEREVM_WHYPE
@@ -696,7 +693,7 @@ class TestHyperlendAdapter:
             mock_allow.return_value = (True, "ok")
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, txn = await adapter.repay(
                 underlying_token=token,
@@ -734,7 +731,7 @@ class TestHyperlendAdapter:
         ):
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, txn = await adapter.repay(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -751,7 +748,7 @@ class TestHyperlendAdapter:
         assert kwargs["fn_name"] == "repayETH"
         assert kwargs["args"][0] == HYPEREVM_WHYPE
         assert kwargs["args"][1] == 123
-        assert kwargs["args"][2] == adapter.strategy_wallet_address
+        assert kwargs["args"][2] == adapter.wallet_address
         assert kwargs["value"] == 123
 
     @pytest.mark.asyncio
@@ -798,7 +795,7 @@ class TestHyperlendAdapter:
             mock_bal.side_effect = [1000, 10000]  # debt, native balance
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.strategy_wallet_signing_callback = AsyncMock()
+            adapter.sign_callback = AsyncMock()
 
             ok, txn = await adapter.repay(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -816,7 +813,7 @@ class TestHyperlendAdapter:
         assert kwargs["fn_name"] == "repayETH"
         assert kwargs["args"][0] == HYPEREVM_WHYPE
         assert kwargs["args"][1] == MAX_UINT256
-        assert kwargs["args"][2] == adapter.strategy_wallet_address
+        assert kwargs["args"][2] == adapter.wallet_address
         assert kwargs["value"] == 1001  # 1000 + 1 wei buffer
 
     @pytest.mark.asyncio

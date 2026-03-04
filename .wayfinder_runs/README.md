@@ -9,4 +9,5 @@ This directory is for **one-off scripts** created during interactive sessions (e
   - A “keeper” is a script that worked as intended and you expect to reuse in later sessions (so you don’t have to regenerate/review it from scratch).
   - Promoted scripts are organized under protocol folders (e.g. `.wayfinder_runs/library/hyperliquid/`, `.wayfinder_runs/library/moonwell/`), falling back to `.wayfinder_runs/library/misc/`.
 - Prefer using RPCs from `config.json` (`strategy.rpc_urls`) via `wayfinder_paths.core.utils.web3.web3_from_chain_id(...)` instead of hardcoding RPC URLs in scripts.
+- Recent on-chain actions (including `deploy_contract`) are recorded in `.wayfinder_runs/wallet_profiles.json` and exposed via the MCP resource `wayfinder://wallets/{label}`.
 - Override the directory via `WAYFINDER_RUNS_DIR` (defaults to `.wayfinder_runs`).
