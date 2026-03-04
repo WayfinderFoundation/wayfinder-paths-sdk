@@ -222,6 +222,7 @@ def _annotate_hl_profile(
 async def hyperliquid_execute(
     action: Literal[
         "place_order",
+        "place_trigger_order",
         "cancel_order",
         "update_leverage",
         "withdraw",
@@ -248,6 +249,10 @@ async def hyperliquid_execute(
     is_cross: bool = True,
     amount_usdc: float | None = None,
     builder_fee_tenths_bp: int | None = None,
+    # place_trigger_order params
+    trigger_price: float | None = None,
+    tpsl: Literal["tp", "sl"] | None = None,
+    is_market_trigger: bool = True,
 ) -> dict[str, Any]:
     want = str(wallet_label or "").strip()
     if not want:
@@ -274,6 +279,9 @@ async def hyperliquid_execute(
         "is_cross": is_cross,
         "amount_usdc": amount_usdc,
         "builder_fee_tenths_bp": builder_fee_tenths_bp,
+        "trigger_price": trigger_price,
+        "tpsl": tpsl,
+        "is_market_trigger": is_market_trigger,
     }
     tool_input = {"request": key_input}
     preview_obj = build_hyperliquid_execute_preview(tool_input)
@@ -512,6 +520,124 @@ async def hyperliquid_execute(
             },
         )
 
+        return response
+
+    if action == "place_trigger_order":
+        if tpsl not in ("tp", "sl"):
+            return err(
+                "invalid_request", "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)"
+            )
+        if trigger_price is None:
+            return err(
+                "invalid_request", "trigger_price is required for place_trigger_order"
+            )
+        try:
+            tpx = float(trigger_price)
+        except (TypeError, ValueError):
+            return err("invalid_request", "trigger_price must be a number")
+        if tpx <= 0:
+            return err("invalid_request", "trigger_price must be positive")
+        if is_buy is None:
+            return err(
+                "invalid_request",
+                "is_buy is required for place_trigger_order — set to opposite of your position "
+                "(long position → is_buy=False to sell; short position → is_buy=True to buy back)",
+            )
+        if size is None:
+            return err(
+                "invalid_request",
+                "size is required for place_trigger_order (coin units)",
+            )
+        try:
+            sz = float(size)
+        except (TypeError, ValueError):
+            return err("invalid_request", "size must be a number")
+        if sz <= 0:
+            return err("invalid_request", "size must be positive")
+
+        limit_px: float | None = None
+        if not is_market_trigger:
+            if price is None:
+                return err(
+                    "invalid_request",
+                    "price is required for limit trigger orders (is_market_trigger=False)",
+                )
+            try:
+                limit_px = float(price)
+            except (TypeError, ValueError):
+                return err("invalid_request", "price must be a number")
+            if limit_px <= 0:
+                return err("invalid_request", "price must be positive")
+
+        try:
+            builder = _resolve_builder_fee(
+                config=config, builder_fee_tenths_bp=builder_fee_tenths_bp
+            )
+        except ValueError as exc:
+            return err("invalid_request", str(exc))
+
+        sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
+        if sz_valid <= 0:
+            return err("invalid_request", "size is too small after lot-size rounding")
+
+        ok_order, res = await adapter.place_trigger_order(
+            resolved_asset_id,
+            bool(is_buy),
+            tpx,
+            float(sz_valid),
+            sender,
+            tpsl=tpsl,
+            is_market=bool(is_market_trigger),
+            limit_price=limit_px,
+            builder=builder,
+        )
+        effects.append(
+            {
+                "type": "hl",
+                "label": "place_trigger_order",
+                "ok": ok_order,
+                "result": res,
+            }
+        )
+
+        ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
+        status = "confirmed" if ok_all else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": sender,
+                "asset_id": resolved_asset_id,
+                "coin": coin,
+                "trigger_order": {
+                    "tpsl": tpsl,
+                    "is_buy": bool(is_buy),
+                    "trigger_price": tpx,
+                    "is_market_trigger": bool(is_market_trigger),
+                    "limit_price": limit_px,
+                    "size_requested": float(sz),
+                    "size_valid": float(sz_valid),
+                    "builder": builder,
+                },
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="place_trigger_order",
+            status=status,
+            details={
+                "asset_id": resolved_asset_id,
+                "coin": coin,
+                "tpsl": tpsl,
+                "is_buy": bool(is_buy),
+                "trigger_price": tpx,
+                "size": float(sz_valid),
+            },
+        )
         return response
 
     # place_order requires explicit is_spot

@@ -18,7 +18,12 @@ Orders below this threshold will be rejected by Hyperliquid.
 Orders:
 - `place_market_order(asset_id, is_buy, slippage, size, address, reduce_only=False, cloid=None, builder=None)`
 - `place_limit_order(asset_id, is_buy, price, size, address, reduce_only=False, builder=None)`
-- `place_stop_loss(asset_id, is_buy, trigger_price, size, address)`
+- `place_trigger_order(asset_id, is_buy, trigger_price, size, address, tpsl, is_market=True, limit_price=None)`
+  - `tpsl="sl"` → stop-loss; `tpsl="tp"` → take-profit
+  - `is_market=True` (default): fires a market order when the trigger price is hit
+  - `is_market=False`: fires a limit order at `limit_price` when triggered (requires `limit_price`)
+  - Always `reduce_only=True` — closes an existing position, never opens a new one
+- `place_stop_loss(asset_id, is_buy, trigger_price, size, address)` — convenience wrapper for `place_trigger_order(..., tpsl="sl", is_market=True)`
 - `cancel_order(asset_id, order_id, address)`
 - `cancel_order_by_cloid(asset_id, cloid, address)`
 
@@ -53,10 +58,67 @@ For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid` (user state, mids, meta, `wait_for_deposit`, `wait_for_withdrawal`)
 - Writes: `mcp__wayfinder__hyperliquid_execute`:
   - `place_order` (perp and spot, with `is_spot` flag)
+  - `place_trigger_order` (stop-loss / take-profit, perp only — see below)
   - `cancel_order`
   - `update_leverage`
   - `withdraw`
   - `spot_to_perp_transfer` / `perp_to_spot_transfer` (move USDC between wallets)
+
+### `place_trigger_order` via MCP
+
+Place a stop-loss or take-profit on a perp position. Always `reduce_only` — it closes a position, never opens one.
+
+**Required params:**
+- `coin` or `asset_id` — perp market (e.g. `"ETH"`, `"BTC"`)
+- `tpsl` — `"sl"` for stop-loss, `"tp"` for take-profit
+- `is_buy` — direction of the trigger order, **opposite of your position**:
+  - Long position → `is_buy=False` (sell to close)
+  - Short position → `is_buy=True` (buy back to close)
+- `trigger_price` — price at which the order fires (float)
+- `size` — position size in coin units (float)
+
+**Optional params:**
+- `is_market_trigger` (default `True`) — `True` fires a market order on trigger; `False` fires a limit order (requires `price`)
+- `price` — limit price for the triggered order when `is_market_trigger=False`
+
+**Examples:**
+
+```
+# Stop-loss on a long ETH position: close 0.5 ETH if price drops to 2800
+hyperliquid_execute(
+    action="place_trigger_order",
+    wallet_label="main",
+    coin="ETH",
+    tpsl="sl",
+    is_buy=False,           # selling to close a long
+    trigger_price=2800.0,
+    size=0.5,
+)
+
+# Take-profit on a short BTC position: close 0.01 BTC if price drops to 85000
+hyperliquid_execute(
+    action="place_trigger_order",
+    wallet_label="main",
+    coin="BTC",
+    tpsl="tp",
+    is_buy=True,            # buying back to close a short
+    trigger_price=85000.0,
+    size=0.01,
+)
+
+# Limit stop-loss (trigger at 2800, fill at 2790 to avoid slippage)
+hyperliquid_execute(
+    action="place_trigger_order",
+    wallet_label="main",
+    coin="ETH",
+    tpsl="sl",
+    is_buy=False,
+    trigger_price=2800.0,
+    size=0.5,
+    is_market_trigger=False,
+    price=2790.0,
+)
+```
 
 ### Builder fee (“builder code”)
 
