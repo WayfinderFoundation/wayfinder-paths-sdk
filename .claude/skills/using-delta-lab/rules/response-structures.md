@@ -112,7 +112,8 @@ Detailed breakdown of APY sources (all fields are optional).
     "oi_usd": 1000000000,  # Open interest in USD
     "volume_usd": 500000000,  # 24h volume in USD
 
-    # Fixed-rate markets (Boros)
+    # Fixed-rate markets (Boros) — see note below
+    "fixed_rate_mark": 0.838,  # see BOROS NOTE below
     "implied_apy": 0.12,  # 12% APY
 
     # Lending markets
@@ -145,9 +146,16 @@ For **lending**:
 - LONG side → `supply_apr` + `supply_reward_apr`
 - SHORT side → `borrow_apr` - `borrow_reward_apr` (you pay this)
 
-For **fixed-rate**:
-- `implied_apy` is what you lock in
-- Compare to `funding_apy_est` (floating) for arbitrage
+For **fixed-rate (Boros)**:
+- `fixed_rate_mark` is **NOT** the annualized APR from the adapter's `mid_apr` field.
+  It is the APY computed by annualizing `mid_apr` (the total remaining tenor yield) via:
+  `fixed_rate_mark = (1 + mid_apr)^(365 / remaining_tenor_days) - 1`
+  Example: `mid_apr=0.0377`, 22 days remaining → `(1.0377)^(365/22)-1 = 83.8%`
+- Both `LONG` and `SHORT` sides show the **same** `fixed_rate_mark` because Delta Lab
+  only captures the fixed leg. It does NOT net out the floating rate.
+  To get actual net carry, use the BorosAdapter directly:
+  `carry = mid_apr/remaining_days - floating_apr/365` (then × 365 to annualize)
+- `implied_apy` is an alternative field that may duplicate `fixed_rate_mark`
 
 ## Risk Metrics
 
