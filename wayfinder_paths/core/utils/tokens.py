@@ -43,7 +43,7 @@ async def _erc20_string(
     token_address: str,
     field: str,
     *,
-    block_identifier: str = "latest",
+    block_identifier: str | int = "latest",
 ) -> str:
     checksum_token = web3.to_checksum_address(token_address)
     contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
@@ -69,22 +69,22 @@ async def _erc20_string(
 
 
 async def get_erc20_metadata(
-    token_address: str, chain_id: int, *, block_identifier: str = "latest"
+    token_address: str,
+    *,
+    web3: AsyncWeb3,
+    block_identifier: str | int = "latest",
 ) -> tuple[str, str, int]:
-    async with web3_from_chain_id(chain_id) as web3:
-        checksum_token = web3.to_checksum_address(token_address)
-        contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
+    checksum_token = web3.to_checksum_address(token_address)
+    contract = web3.eth.contract(address=checksum_token, abi=ERC20_ABI)
 
-        symbol, name, decimals = await asyncio.gather(
-            _erc20_string(
-                web3, checksum_token, "symbol", block_identifier=block_identifier
-            ),
-            _erc20_string(
-                web3, checksum_token, "name", block_identifier=block_identifier
-            ),
-            contract.functions.decimals().call(block_identifier=block_identifier),
-        )
-        return str(symbol), str(name), int(decimals)
+    symbol, name, decimals = await asyncio.gather(
+        _erc20_string(
+            web3, checksum_token, "symbol", block_identifier=block_identifier
+        ),
+        _erc20_string(web3, checksum_token, "name", block_identifier=block_identifier),
+        contract.functions.decimals().call(block_identifier=block_identifier),
+    )
+    return symbol, name, int(decimals)
 
 
 async def get_token_balance(
