@@ -77,6 +77,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Aave V3               | `/using-aave-v3-adapter`         |
 | Morpho                | `/using-morpho-adapter`          |
 | Pendle                | `/using-pendle-adapter`          |
+| Ethena (sUSDe)        | `/using-ethena-vault-adapter`    |
 | Hyperliquid           | `/using-hyperliquid-adapter`     |
 | Hyperlend             | `/using-hyperlend-adapter`       |
 | Boros                 | `/using-boros-adapter`           |
