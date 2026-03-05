@@ -38,7 +38,7 @@ async def search_alpha(
         if type_value not in ("all", ""):
             kwargs["scan_type"] = type_value
         search_value = search.strip()
-        if search_value:
+        if search_value and search_value != "_":
             kwargs["search"] = search_value
         score = float(min_score)
         if score > 0:
