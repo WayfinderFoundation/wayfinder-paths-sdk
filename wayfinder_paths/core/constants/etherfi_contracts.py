@@ -70,7 +70,7 @@ WEETH_L2_SYNC_POOL_BY_CHAIN_ID: dict[int, str] = {
 
 def weeth_token_by_chain_id(chain_id: int) -> str:
     """Return the weETH token address for a given chain_id (token-only on L2s)."""
-    addr = WEETH_TOKEN_BY_CHAIN_ID.get(int(chain_id))
+    addr = WEETH_TOKEN_BY_CHAIN_ID.get(chain_id)
     if not addr:
         raise ValueError(f"Unsupported weETH chain_id={chain_id}")
     return addr

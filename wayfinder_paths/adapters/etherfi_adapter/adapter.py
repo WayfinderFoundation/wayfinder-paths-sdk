@@ -128,7 +128,7 @@ class EtherfiAdapter(BaseAdapter):
         )
 
     def _entry(self, chain_id: int) -> dict[str, str]:
-        entry = ETHERFI_BY_CHAIN.get(int(chain_id))
+        entry = ETHERFI_BY_CHAIN.get(chain_id)
         if not entry:
             raise ValueError(f"Unsupported ether.fi chain_id={chain_id} (mainnet only)")
         return entry
@@ -221,8 +221,7 @@ class EtherfiAdapter(BaseAdapter):
             lp = web3.eth.contract(
                 address=entry["liquidity_pool"], abi=ETHERFI_LIQUIDITY_POOL_ABI
             )
-            paused = await lp.functions.paused().call(block_identifier="pending")
-            return bool(paused)
+            return await lp.functions.paused().call(block_identifier="pending")
 
     @require_wallet
     async def stake_eth(
@@ -258,7 +257,7 @@ class EtherfiAdapter(BaseAdapter):
                 args=args,
                 from_address=self.wallet_address,
                 chain_id=chain_id,
-                value=int(amount_wei),
+                value=amount_wei,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -284,10 +283,10 @@ class EtherfiAdapter(BaseAdapter):
                 token_address=entry["eeth"],
                 owner=self.wallet_address,
                 spender=entry["weeth"],
-                amount=int(amount_eeth),
+                amount=amount_eeth,
                 chain_id=chain_id,
                 signing_callback=self.sign_callback,
-                approval_amount=int(approval_amount),
+                approval_amount=approval_amount,
             )
             if not approved[0]:
                 return approved
@@ -296,7 +295,7 @@ class EtherfiAdapter(BaseAdapter):
                 target=entry["weeth"],
                 abi=ETHERFI_WEETH_ABI,
                 fn_name="wrap",
-                args=[int(amount_eeth)],
+                args=[amount_eeth],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
@@ -325,7 +324,7 @@ class EtherfiAdapter(BaseAdapter):
                 target=entry["weeth"],
                 abi=ETHERFI_WEETH_ABI,
                 fn_name="wrapWithPermit",
-                args=[int(amount_eeth), permit_tuple],
+                args=[amount_eeth, permit_tuple],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
@@ -351,7 +350,7 @@ class EtherfiAdapter(BaseAdapter):
                 target=entry["weeth"],
                 abi=ETHERFI_WEETH_ABI,
                 fn_name="unwrap",
-                args=[int(amount_weeth)],
+                args=[amount_weeth],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
@@ -386,10 +385,10 @@ class EtherfiAdapter(BaseAdapter):
                 token_address=entry["eeth"],
                 owner=self.wallet_address,
                 spender=entry["liquidity_pool"],
-                amount=int(amount_eeth),
+                amount=amount_eeth,
                 chain_id=chain_id,
                 signing_callback=self.sign_callback,
-                approval_amount=int(approval_amount),
+                approval_amount=approval_amount,
             )
             if not approved[0]:
                 return approved
@@ -398,7 +397,7 @@ class EtherfiAdapter(BaseAdapter):
                 target=entry["liquidity_pool"],
                 abi=ETHERFI_LIQUIDITY_POOL_ABI,
                 fn_name="requestWithdraw",
-                args=[rcpt, int(amount_eeth)],
+                args=[rcpt, amount_eeth],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
@@ -418,7 +417,7 @@ class EtherfiAdapter(BaseAdapter):
             return True, {
                 "tx": tx_hash,
                 "recipient": rcpt,
-                "amount_eeth": int(amount_eeth),
+                "amount_eeth": amount_eeth,
                 "request_id": request_id,
             }
         except Exception as exc:
@@ -453,7 +452,7 @@ class EtherfiAdapter(BaseAdapter):
                 target=entry["liquidity_pool"],
                 abi=ETHERFI_LIQUIDITY_POOL_ABI,
                 fn_name="requestWithdrawWithPermit",
-                args=[owner_addr, int(amount_eeth), permit_tuple],
+                args=[owner_addr, amount_eeth, permit_tuple],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
@@ -473,7 +472,7 @@ class EtherfiAdapter(BaseAdapter):
             return True, {
                 "tx": tx_hash,
                 "owner": owner_addr,
-                "amount_eeth": int(amount_eeth),
+                "amount_eeth": amount_eeth,
                 "request_id": request_id,
             }
         except Exception as exc:
@@ -487,7 +486,7 @@ class EtherfiAdapter(BaseAdapter):
         chain_id: int = CHAIN_ID_ETHEREUM,
     ) -> tuple[bool, Any]:
         """Claim a finalized withdrawal: burns WithdrawRequest NFT and receives ETH."""
-        if int(token_id) < 0:
+        if token_id < 0:
             return False, "token_id must be non-negative"
 
         try:
@@ -496,7 +495,7 @@ class EtherfiAdapter(BaseAdapter):
                 target=entry["withdraw_request_nft"],
                 abi=ETHERFI_WITHDRAW_REQUEST_NFT_ABI,
                 fn_name="claimWithdraw",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
@@ -520,12 +519,12 @@ class EtherfiAdapter(BaseAdapter):
                     address=entry["withdraw_request_nft"],
                     abi=ETHERFI_WITHDRAW_REQUEST_NFT_ABI,
                 )
-                finalized = await nft.functions.isFinalized(int(token_id)).call(
+                finalized = await nft.functions.isFinalized(token_id).call(
                     block_identifier=block_identifier
                 )
-                if not bool(finalized):
+                if not finalized:
                     return True, 0
-                amt = await nft.functions.getClaimableAmount(int(token_id)).call(
+                amt = await nft.functions.getClaimableAmount(token_id).call(
                     block_identifier=block_identifier
                 )
                 return True, int(amt or 0)
@@ -547,10 +546,10 @@ class EtherfiAdapter(BaseAdapter):
                     address=entry["withdraw_request_nft"],
                     abi=ETHERFI_WITHDRAW_REQUEST_NFT_ABI,
                 )
-                finalized = await nft.functions.isFinalized(int(token_id)).call(
+                finalized = await nft.functions.isFinalized(token_id).call(
                     block_identifier=block_identifier
                 )
-                return True, bool(finalized)
+                return True, finalized
         except Exception as exc:
             return False, str(exc)
 
@@ -592,18 +591,18 @@ class EtherfiAdapter(BaseAdapter):
                     block_identifier=block_identifier,
                 )
 
-                eeth_balance = int(res[0])
-                weeth_balance = int(res[1])
-                weeth_rate = int(res[2])
+                eeth_balance = res[0]
+                weeth_balance = res[1]
+                weeth_rate = res[2]
 
                 idx = 3
-                eeth_shares = int(res[idx]) if include_shares else None
+                eeth_shares = res[idx] if include_shares else None
                 idx += 1 if include_shares else 0
-                total_pooled = int(res[idx])
+                total_pooled = res[idx]
 
                 weeth_eeth_equiv = 0
                 if weeth_balance > 0:
-                    weeth_eeth_equiv = int(
+                    weeth_eeth_equiv = (
                         await weeth.functions.getEETHByWeETH(weeth_balance).call(
                             block_identifier=block_identifier
                         )
@@ -612,7 +611,7 @@ class EtherfiAdapter(BaseAdapter):
 
                 return True, {
                     "protocol": "etherfi",
-                    "chain_id": int(chain_id),
+                    "chain_id": chain_id,
                     "account": acct,
                     "contracts": {
                         "liquidity_pool": entry["liquidity_pool"],
@@ -622,19 +621,19 @@ class EtherfiAdapter(BaseAdapter):
                     },
                     "eeth": (
                         {
-                            "balance_raw": int(eeth_balance),
-                            "shares_raw": int(eeth_shares),
+                            "balance_raw": eeth_balance,
+                            "shares_raw": eeth_shares,
                         }
                         if eeth_shares is not None
-                        else {"balance_raw": int(eeth_balance)}
+                        else {"balance_raw": eeth_balance}
                     ),
                     "weeth": {
-                        "balance_raw": int(weeth_balance),
-                        "eeth_equivalent_raw": int(weeth_eeth_equiv),
-                        "rate": int(weeth_rate),
+                        "balance_raw": weeth_balance,
+                        "eeth_equivalent_raw": weeth_eeth_equiv,
+                        "rate": weeth_rate,
                     },
                     "liquidity_pool": {
-                        "total_pooled_ether": int(total_pooled),
+                        "total_pooled_ether": total_pooled,
                     },
                 }
         except Exception as exc:
