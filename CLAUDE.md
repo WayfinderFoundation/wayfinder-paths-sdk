@@ -69,31 +69,33 @@ Transaction outcome rules (don’t assume a tx hash means success):
 
 ## Protocol skills (load before using adapters)
 
-Before writing scripts or using adapters for a specific protocol, **invoke the relevant skill** to load usage patterns and gotchas:
+Before using any adapter, **load the relevant skill** (don’t guess at method signatures or return shapes):
 
-| Protocol              | Skill                            |
-| --------------------- | -------------------------------- |
-| Moonwell              | `/using-moonwell-adapter`        |
-| Aave V3               | `/using-aave-v3-adapter`         |
-| Morpho                | `/using-morpho-adapter`          |
-| Pendle                | `/using-pendle-adapter`          |
-| Ethena (sUSDe)        | `/using-ethena-vault-adapter`    |
-| Hyperliquid           | `/using-hyperliquid-adapter`     |
-| Hyperlend             | `/using-hyperlend-adapter`       |
-| Boros                 | `/using-boros-adapter`           |
-| BRAP (swaps)          | `/using-brap-adapter`            |
-| Polymarket            | `/using-polymarket-adapter`      |
-| CCXT (CEX)            | `/using-ccxt-adapter`            |
-| Uniswap (V3)          | `/using-uniswap-adapter`         |
-| ProjectX (V3 fork)    | `/using-projectx-adapter`        |
-| Delta Lab             | `/using-delta-lab`               |
+| Protocol | Skill |
+| --- | --- |
+| Adapters (overview) | `/using-adapters` |
+| Moonwell | `/using-moonwell-adapter` |
+| Aave V3 | `/using-aave-v3-adapter` |
+| Morpho | `/using-morpho-adapter` |
+| Pendle | `/using-pendle-adapter` |
+| Ethena (sUSDe) | `/using-ethena-vault-adapter` |
+| Euler v2 | `/using-euler-v2-adapter` |
+| Avantis | `/using-avantis-adapter` |
+| Lido | `/using-lido-adapter` |
+| EigenCloud | `/using-eigencloud-adapter` |
+| Hyperliquid | `/using-hyperliquid-adapter` |
+| Hyperlend | `/using-hyperlend-adapter` |
+| Boros | `/using-boros-adapter` |
+| BRAP (swaps) | `/using-brap-adapter` |
+| Polymarket | `/using-polymarket-adapter` |
+| CCXT (CEX) | `/using-ccxt-adapter` |
+| Uniswap (V3) | `/using-uniswap-adapter` |
+| ProjectX (V3 fork) | `/using-projectx-adapter` |
+| Delta Lab | `/using-delta-lab` |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
-| Simulation / Dry-run  | `/simulation-dry-run`            |
-| Backtesting           | `/backtest-strategy`             |
-| Contract Dev          | `/contract-development`          |
-
-
-Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
+| Simulation / Dry-run | `/simulation-dry-run` |
+| Backtesting | `/backtest-strategy` |
+| Contract Dev | `/contract-development` |
 
 ## Backtesting Framework
 
