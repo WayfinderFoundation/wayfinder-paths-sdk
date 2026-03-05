@@ -99,20 +99,19 @@ ReadMcpResourceTool(
 ```
 
 ### 5. Assets by Address
-**URIs:**
-- `wayfinder://delta-lab/assets/by-address/{address}`
+**URI:**
 - `wayfinder://delta-lab/assets/by-address/{address}/{chain_id}`
 
 **Path Parameters:**
 - `address` - Contract address to search for
-- `chain_id` - Optional chain filter (chain ID like `8453` or chain code like `base`). Use `"all"` for no filter.
+- `chain_id` - Chain filter (chain ID like `8453` or chain code like `base`). Use `"all"` for no filter.
 
 **Example:**
 ```python
 # All chains
 ReadMcpResourceTool(
     server="wayfinder",
-    uri="wayfinder://delta-lab/assets/by-address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    uri="wayfinder://delta-lab/assets/by-address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2/all"
 )
 
 # Base only

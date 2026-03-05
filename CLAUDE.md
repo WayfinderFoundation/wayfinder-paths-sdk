@@ -204,7 +204,7 @@ When answering questions about **rates/APYs/funding**:
 - `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
 - `wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LOOKBACK}/{LIMIT}` - Delta-neutral pairs for symbol
 - `wayfinder://delta-lab/assets/{asset_id}` - Asset metadata by ID
-- `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
+- `wayfinder://delta-lab/assets/by-address/{ADDRESS}/{chain_id}` - Assets by contract address (use `all` for no filter)
 - `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
 - `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Historical data (snapshots only)
 - `wayfinder://delta-lab/screen/price/{SORT}/{LIMIT}/{BASIS}` - Screen assets by price features
