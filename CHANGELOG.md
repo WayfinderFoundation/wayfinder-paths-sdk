@@ -16,8 +16,7 @@ Added
 Changed
 
 1. `require_wallet` decorator moved to shared `core/adapters/BaseAdapter.py` (#124) — adapters no longer duplicate wallet-check logic.
-2. README updated with new adapter listings (#128).
-3. Claude docs and skills expanded: backtesting skill, Ethena vault skill, Euler v2 skill, Delta Lab skill, Avantis skill, and updated Boros/Hyperliquid skill docs.
+2. Claude docs and skills expanded: backtesting skill, Ethena vault skill, Euler v2 skill, Delta Lab skill, Avantis skill, and updated Boros/Hyperliquid skill docs.
 
 ## [0.7.0] - 2026-02-23 (5919548c8b95964e89854a51f68cef92168710b1)
 
