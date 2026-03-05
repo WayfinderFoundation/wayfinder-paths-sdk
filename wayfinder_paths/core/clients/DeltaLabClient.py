@@ -156,6 +156,31 @@ class DeltaLabClient(WayfinderClient):
         response = await self._authed_request("GET", url, params=params)
         return response.json()
 
+    async def search_assets(
+        self,
+        *,
+        query: str,
+        chain_id: int | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """
+        Search assets by symbol/name/address/coingecko_id.
+
+        Args:
+            query: Search term
+            chain_id: Optional chain ID filter
+            limit: Max results (default: 25, max: 200)
+
+        Returns:
+            {"assets": [AssetResponse, ...], "total_count": N}
+        """
+        url = f"{get_api_base_url()}/delta-lab/assets/search"
+        params: dict[str, str | int] = {"query": query, "limit": limit}
+        if chain_id is not None:
+            params["chain_id"] = chain_id
+        response = await self._authed_request("GET", url, params=params)
+        return response.json()
+
     async def get_asset_basis(self, *, symbol: str) -> dict[str, Any]:
         """
         Get basis group information for an asset.

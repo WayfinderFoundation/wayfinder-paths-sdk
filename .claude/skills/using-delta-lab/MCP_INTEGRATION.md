@@ -99,29 +99,55 @@ ReadMcpResourceTool(
 ```
 
 ### 5. Assets by Address
-**URI:** `wayfinder://delta-lab/assets/by-address/{address}`
+**URIs:**
+- `wayfinder://delta-lab/assets/by-address/{address}`
+- `wayfinder://delta-lab/assets/by-address/{address}/{chain_id}`
 
 **Path Parameters:**
 - `address` - Contract address to search for
-
-**Note:** Returns assets from all chains. To filter by chain_id, use the client directly.
+- `chain_id` - Optional chain filter (chain ID like `8453` or chain code like `base`). Use `"all"` for no filter.
 
 **Example:**
 ```python
-# Via MCP resource (interactive) - returns all chains
+# All chains
 ReadMcpResourceTool(
     server="wayfinder",
     uri="wayfinder://delta-lab/assets/by-address/0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
 )
 
-# To filter by chain, use client:
-result = await DELTA_LAB_CLIENT.get_assets_by_address(
-    address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    chain_id=1
+# Base only
+ReadMcpResourceTool(
+    server="wayfinder",
+    uri="wayfinder://delta-lab/assets/by-address/0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913/8453"
 )
 ```
 
-### 6. Asset Basis Info
+### 6. Asset Search
+**URIs:**
+- `wayfinder://delta-lab/assets/search/{query}`
+- `wayfinder://delta-lab/assets/search/{chain}/{query}`
+- `wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}`
+
+**Purpose:** Find Delta Lab asset IDs when you only know an approximate symbol/name (e.g. `sUSDai`, `wsteth`, `usdc`).
+
+**Path Parameters:**
+- `{query}` - Search term (symbol/name/address/coingecko_id/asset_id)
+- `{chain}` - Optional chain filter (chain ID like `8453` or chain code like `base`). Use `"all"` for no filter.
+- `{limit}` - Max results (default `25`, max `200`)
+
+**Examples:**
+```python
+# Search across all chains
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/assets/search/sUSDai")
+
+# Base only (chain code)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/assets/search/base/usdc")
+
+# Base only + smaller limit
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/assets/search/base/usdc/10")
+```
+
+### 7. Asset Basis Info
 **URI:** `wayfinder://delta-lab/{symbol}/basis`
 
 **Example:**
@@ -133,7 +159,7 @@ ReadMcpResourceTool(
 )
 ```
 
-### 7. Asset Timeseries (Quick Snapshots)
+### 8. Asset Timeseries (Quick Snapshots)
 **URI:** `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}`
 
 **MCP Philosophy:** SHORT, interpretable results only. For serious analysis, use the client.
@@ -207,7 +233,7 @@ for venue in funding_df["venue"].unique():
 - **MCP:** "Show recent price", "What's the funding rate?", quick sanity checks
 - **Client:** Plotting, filtering, aggregating, multi-day analysis, lending data
 
-### 8. Screen Price
+### 9. Screen Price
 **URI:** `wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}`
 
 **Purpose:** Screen assets by price features — returns, volatility, drawdowns. Useful for quickly finding top movers or most volatile assets.
@@ -226,7 +252,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/
 ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/vol_30d/20/ETH")
 ```
 
-### 9. Screen Lending
+### 10. Screen Lending
 **URI:** `wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}`
 
 **Purpose:** Screen lending markets by surface features — supply/borrow APRs, TVL, utilization, z-scores. Frozen/paused markets are excluded by default in MCP.
@@ -253,7 +279,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lendin
 - `min_tvl` - Minimum supply TVL in USD
 - `exclude_frozen` - Toggle frozen/paused market exclusion (MCP always excludes)
 
-### 10. Screen Perp
+### 11. Screen Perp
 **URI:** `wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}`
 
 **Purpose:** Screen perpetual markets by surface features — funding rates, basis, OI, volume. Useful for finding high-funding or anomalous perp markets.
@@ -280,8 +306,10 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/o
 - `order` - Switch to ascending sort (MCP defaults to descending)
 - `asset_ids` - Filter by specific asset IDs
 
-### 11. Screen Borrow Routes
-**URI:** `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+### 12. Screen Borrow Routes
+**URIs:**
+- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
+- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}`
 
 **Purpose:** Screen lending borrow routes (collateral → borrow) by route configuration (LTV, liquidation thresholds, debt ceilings, topology/mode).
 
@@ -290,6 +318,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/o
 - `{limit}` - Max rows to return (default: "100", max: "1000")
 - `{basis}` - Collateral basis symbol filter (e.g. "ETH") or `"all"` for no filter
 - `{borrow_basis}` - Borrow basis symbol filter (e.g. "USD") or `"all"` for no filter
+- `{chain_id}` - Optional chain filter (chain ID like `8453` or chain code like `base`). Use `"all"` for no filter.
 
 **Examples:**
 ```python
@@ -298,11 +327,13 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow
 
 # Screen across all collateral/borrow pairs
 ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/100/all/all")
+
+# Base chain only
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD/8453")
 ```
 
 **Client-only filters (use `DELTA_LAB_CLIENT.screen_borrow_routes()` for):**
 - `venue` - Filter by venue name
-- `chain_id` - Filter by chain ID
 - `market_id` - Filter by market ID
 - `topology` - Filter by route topology (e.g. "POOLED", "ISOLATED_PAIR")
 - `mode_type` - Filter by route mode type (e.g. "BASE", "EMODE")

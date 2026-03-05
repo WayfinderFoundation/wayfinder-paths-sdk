@@ -27,6 +27,7 @@ from wayfinder_paths.mcp.resources.delta_lab import (
     screen_lending,
     screen_perp,
     screen_price,
+    search_delta_lab_assets,
 )
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
@@ -102,6 +103,16 @@ mcp.resource(
 )(get_best_delta_neutral_pairs)
 mcp.resource("wayfinder://delta-lab/assets/{asset_id}")(get_delta_lab_asset)
 mcp.resource("wayfinder://delta-lab/assets/by-address/{address}")(get_assets_by_address)
+mcp.resource("wayfinder://delta-lab/assets/by-address/{address}/{chain_id}")(
+    get_assets_by_address
+)
+mcp.resource("wayfinder://delta-lab/assets/search/{query}")(search_delta_lab_assets)
+mcp.resource("wayfinder://delta-lab/assets/search/{chain}/{query}")(
+    search_delta_lab_assets
+)
+mcp.resource("wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}")(
+    search_delta_lab_assets
+)
 mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
 mcp.resource(
     "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
@@ -113,6 +124,9 @@ mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(
 mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
 mcp.resource(
     "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}"
+)(screen_borrow_routes)
+mcp.resource(
+    "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}"
 )(screen_borrow_routes)
 
 # Tools (actions/mutations)
