@@ -99,7 +99,7 @@ mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
 mcp.resource("wayfinder://contracts")(list_contracts)
 mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
 mcp.resource(
-    "wayfinder://alpha-lab/search/{search}/{scan_type}/{min_score}/{sort}/{limit}/{offset}"
+    "wayfinder://alpha-lab/search/{search}/{scan_type}/{min_score}/{created_after}/{created_before}/{sort}/{limit}/{offset}"
 )(search_alpha)
 mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
 mcp.resource("wayfinder://delta-lab/top-apy/{lookback_days}/{limit}")(get_top_apy)
