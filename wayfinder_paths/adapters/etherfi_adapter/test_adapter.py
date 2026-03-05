@@ -213,7 +213,13 @@ async def test_unwrap_weeth_rejects_zero(adapter):
 async def test_wrap_eeth_with_permit_rejects_zero(adapter):
     ok, msg = await adapter.wrap_eeth_with_permit(
         amount_eeth=0,
-        permit={"value": 0, "deadline": 0, "v": 27, "r": b"\x00" * 32, "s": b"\x00" * 32},
+        permit={
+            "value": 0,
+            "deadline": 0,
+            "v": 27,
+            "r": b"\x00" * 32,
+            "s": b"\x00" * 32,
+        },
     )
     assert ok is False
     assert "positive" in msg.lower()
@@ -230,7 +236,13 @@ async def test_request_withdraw_rejects_zero(adapter):
 async def test_request_withdraw_with_permit_rejects_zero(adapter):
     ok, msg = await adapter.request_withdraw_with_permit(
         amount_eeth=0,
-        permit={"value": 0, "deadline": 0, "v": 27, "r": b"\x00" * 32, "s": b"\x00" * 32},
+        permit={
+            "value": 0,
+            "deadline": 0,
+            "v": 27,
+            "r": b"\x00" * 32,
+            "s": b"\x00" * 32,
+        },
     )
     assert ok is False
     assert "positive" in msg.lower()
@@ -332,7 +344,13 @@ async def test_get_pos_returns_expected_structure(adapter):
     weeth_eeth_equiv = 525_000_000_000_000_000  # 0.525 ETH
 
     mock_multicall = AsyncMock(
-        return_value=[eeth_balance, weeth_balance, weeth_rate, eeth_shares, total_pooled]
+        return_value=[
+            eeth_balance,
+            weeth_balance,
+            weeth_rate,
+            eeth_shares,
+            total_pooled,
+        ]
     )
 
     mock_weeth_contract = MagicMock()
@@ -396,7 +414,9 @@ async def test_get_pos_zero_weeth_skips_equiv_call(adapter):
     """When weeth balance is 0, getEETHByWeETH should NOT be called."""
     ctx_factory, mock_web3 = _mock_web3_ctx()
 
-    mock_multicall = AsyncMock(return_value=[10**18, 0, 10**18, 9 * 10**17, 100 * 10**18])
+    mock_multicall = AsyncMock(
+        return_value=[10**18, 0, 10**18, 9 * 10**17, 100 * 10**18]
+    )
 
     mock_weeth_contract = MagicMock()
     mock_get_eeth = MagicMock(return_value=MagicMock(call=AsyncMock()))
@@ -520,7 +540,9 @@ async def test_wrap_eeth_calls_ensure_allowance_then_wrap(adapter):
 
 @pytest.mark.asyncio
 async def test_wrap_eeth_returns_false_when_allowance_fails(adapter):
-    with patch(f"{PATCH_PREFIX}.ensure_allowance", new_callable=AsyncMock) as mock_allow:
+    with patch(
+        f"{PATCH_PREFIX}.ensure_allowance", new_callable=AsyncMock
+    ) as mock_allow:
         mock_allow.return_value = (False, "approval rejected")
         ok, msg = await adapter.wrap_eeth(amount_eeth=10**18)
 
