@@ -268,7 +268,7 @@ class DeltaLabClient(WayfinderClient):
                 df = pd.DataFrame(records)
                 # Convert ts to datetime and set as index
                 if "ts" in df.columns:
-                    df["ts"] = pd.to_datetime(df["ts"])
+                    df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")
                     df.set_index("ts", inplace=True)
                 result[normalized_key] = df
 
