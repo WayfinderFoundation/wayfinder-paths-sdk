@@ -283,6 +283,45 @@ async def screen_price(
         return {"error": str(exc)}
 
 
+async def screen_price_by_asset_ids(
+    sort: str = "price_usd",
+    limit: str = "100",
+    asset_ids: str = "all",
+) -> dict[str, Any]:
+    """Screen assets by price features for specific asset IDs.
+
+    Args:
+        sort: Column to sort by (default: "price_usd")
+        limit: Max rows to return (default: "100", max: "1000")
+        asset_ids: Comma-separated asset IDs (e.g. "1,2,3") or "all"
+
+    Returns:
+        Dict with data (list of price feature rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+
+        asset_ids_param = None
+        asset_ids_value = asset_ids.strip().lower()
+        if asset_ids_value not in ("all", "_"):
+            try:
+                ids = [int(x.strip()) for x in asset_ids.split(",") if x.strip()]
+            except ValueError:
+                return {"error": f"invalid asset_ids: {asset_ids!r}"}
+            if not ids:
+                return {"error": "asset_ids must not be empty"}
+            asset_ids_param = ids
+
+        result = await DELTA_LAB_CLIENT.screen_price(
+            sort=sort.strip(),
+            limit=limit_int,
+            asset_ids=asset_ids_param,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def screen_lending(
     sort: str = "net_supply_apr_now",
     limit: str = "100",
@@ -315,6 +354,46 @@ async def screen_lending(
         return {"error": str(exc)}
 
 
+async def screen_lending_by_asset_ids(
+    sort: str = "net_supply_apr_now",
+    limit: str = "100",
+    asset_ids: str = "all",
+) -> dict[str, Any]:
+    """Screen lending markets by surface features for specific asset IDs.
+
+    Args:
+        sort: Column to sort by (default: "net_supply_apr_now")
+        limit: Max rows to return (default: "100", max: "1000")
+        asset_ids: Comma-separated asset IDs (e.g. "1,2,3") or "all"
+
+    Returns:
+        Dict with data (list of lending surface feature rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+
+        asset_ids_param = None
+        asset_ids_value = asset_ids.strip().lower()
+        if asset_ids_value not in ("all", "_"):
+            try:
+                ids = [int(x.strip()) for x in asset_ids.split(",") if x.strip()]
+            except ValueError:
+                return {"error": f"invalid asset_ids: {asset_ids!r}"}
+            if not ids:
+                return {"error": "asset_ids must not be empty"}
+            asset_ids_param = ids
+
+        result = await DELTA_LAB_CLIENT.screen_lending(
+            sort=sort.strip(),
+            limit=limit_int,
+            asset_ids=asset_ids_param,
+            exclude_frozen=True,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def screen_perp(
     sort: str = "funding_now",
     limit: str = "100",
@@ -340,6 +419,45 @@ async def screen_perp(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def screen_perp_by_asset_ids(
+    sort: str = "funding_now",
+    limit: str = "100",
+    asset_ids: str = "all",
+) -> dict[str, Any]:
+    """Screen perpetual markets by surface features for specific base asset IDs.
+
+    Args:
+        sort: Column to sort by (default: "funding_now")
+        limit: Max rows to return (default: "100", max: "1000")
+        asset_ids: Comma-separated base asset IDs (e.g. "1,2,3") or "all"
+
+    Returns:
+        Dict with data (list of perp surface feature rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+
+        asset_ids_param = None
+        asset_ids_value = asset_ids.strip().lower()
+        if asset_ids_value not in ("all", "_"):
+            try:
+                ids = [int(x.strip()) for x in asset_ids.split(",") if x.strip()]
+            except ValueError:
+                return {"error": f"invalid asset_ids: {asset_ids!r}"}
+            if not ids:
+                return {"error": "asset_ids must not be empty"}
+            asset_ids_param = ids
+
+        result = await DELTA_LAB_CLIENT.screen_perp(
+            sort=sort.strip(),
+            limit=limit_int,
+            asset_ids=asset_ids_param,
         )
         return result
     except Exception as exc:
@@ -390,6 +508,73 @@ async def screen_borrow_routes(
             limit=limit_int,
             basis=basis_param,
             borrow_basis=borrow_basis_param,
+            chain_id=chain_id_param,
+        )
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def screen_borrow_routes_by_asset_ids(
+    sort: str = "ltv_max",
+    limit: str = "100",
+    asset_ids: str = "all",
+    borrow_asset_ids: str = "all",
+    chain_id: str = "all",
+) -> dict[str, Any]:
+    """Screen borrow routes by exact collateral/borrow asset IDs.
+
+    Args:
+        sort: Column to sort by (default: "ltv_max")
+        limit: Max rows to return (default: "100", max: "1000")
+        asset_ids: Comma-separated collateral asset IDs (e.g. "1,2,3") or "all"
+        borrow_asset_ids: Comma-separated borrow asset IDs (e.g. "3,4") or "all"
+        chain_id: Optional chain filter (chain ID like "8453" or chain code like "base").
+                 Use "all" for no filter.
+
+    Returns:
+        Dict with data (list of borrow route rows) and count
+    """
+    try:
+        limit_int = min(1000, max(1, int(limit)))
+
+        asset_ids_param = None
+        asset_ids_value = asset_ids.strip().lower()
+        if asset_ids_value not in ("all", "_"):
+            try:
+                ids = [int(x.strip()) for x in asset_ids.split(",") if x.strip()]
+            except ValueError:
+                return {"error": f"invalid asset_ids: {asset_ids!r}"}
+            if not ids:
+                return {"error": "asset_ids must not be empty"}
+            asset_ids_param = ids
+
+        borrow_asset_ids_param = None
+        borrow_asset_ids_value = borrow_asset_ids.strip().lower()
+        if borrow_asset_ids_value not in ("all", "_"):
+            try:
+                ids = [int(x.strip()) for x in borrow_asset_ids.split(",") if x.strip()]
+            except ValueError:
+                return {"error": f"invalid borrow_asset_ids: {borrow_asset_ids!r}"}
+            if not ids:
+                return {"error": "borrow_asset_ids must not be empty"}
+            borrow_asset_ids_param = ids
+
+        chain_id_param = None
+        chain_value = chain_id.strip().lower()
+        if chain_value not in ("all", "_"):
+            if chain_value.isdigit():
+                chain_id_param = int(chain_value)
+            else:
+                chain_id_param = CHAIN_CODE_TO_ID.get(chain_value)
+                if chain_id_param is None:
+                    return {"error": f"unknown chain filter: {chain_id!r}"}
+
+        result = await DELTA_LAB_CLIENT.screen_borrow_routes(
+            sort=sort.strip(),
+            limit=limit_int,
+            asset_ids=asset_ids_param,
+            borrow_asset_ids=borrow_asset_ids_param,
             chain_id=chain_id_param,
         )
         return result

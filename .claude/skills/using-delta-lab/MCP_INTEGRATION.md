@@ -234,7 +234,9 @@ for venue in funding_df["venue"].unique():
 - **Client:** Plotting, filtering, aggregating, multi-day analysis, lending data
 
 ### 9. Screen Price
-**URI:** `wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}`
+**URIs:**
+- `wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}`
+- `wayfinder://delta-lab/screen/price/by-asset-ids/{sort}/{limit}/{asset_ids}`
 
 **Purpose:** Screen assets by price features — returns, volatility, drawdowns. Useful for quickly finding top movers or most volatile assets.
 
@@ -242,6 +244,7 @@ for venue in funding_df["venue"].unique():
 - `{sort}` - Column to sort by. Options: `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `ret_90d`, `vol_7d`, `vol_30d`, `vol_90d`, `mdd_30d`, `mdd_90d`
 - `{limit}` - Max rows to return (default: "100", max: "1000")
 - `{basis}` - Basis symbol filter (e.g. "ETH", "BTC") or `"all"` for no filter
+- `{asset_ids}` - Comma-separated asset IDs (e.g. `"1,2,3"`) or `"all"`
 
 **Examples:**
 ```python
@@ -250,10 +253,15 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/
 
 # Most volatile ETH-basis assets (30d)
 ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/vol_30d/20/ETH")
+
+# Exact asset IDs (comma-separated)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/by-asset-ids/price_usd/10/1275,498")
 ```
 
 ### 10. Screen Lending
-**URI:** `wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}`
+**URIs:**
+- `wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}`
+- `wayfinder://delta-lab/screen/lending/by-asset-ids/{sort}/{limit}/{asset_ids}`
 
 **Purpose:** Screen lending markets by surface features — supply/borrow APRs, TVL, utilization, z-scores. Frozen/paused markets are excluded by default in MCP.
 
@@ -261,6 +269,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/price/
 - `{sort}` - Column to sort by. Options: `net_supply_apr_now`, `net_supply_mean_7d`, `net_supply_mean_30d`, `combined_net_supply_apr_now`, `combined_supply_mean_7d`, `net_borrow_apr_now`, `supply_tvl_usd`, `liquidity_usd`, `util_now`, `util_mean_30d`, `borrow_spike_score`, `net_supply_z_30d`
 - `{limit}` - Max rows to return (default: "100", max: "1000")
 - `{basis}` - Basis symbol filter (e.g. "ETH") or `"all"` for no filter
+- `{asset_ids}` - Comma-separated asset IDs (e.g. `"1,2,3"`) or `"all"`
 
 **Examples:**
 ```python
@@ -272,6 +281,9 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lendin
 
 # Highest borrow spike scores (potential rate anomalies)
 ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lending/borrow_spike_score/10/all")
+
+# Exact asset IDs (comma-separated)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lending/by-asset-ids/net_supply_apr_now/20/1,1275")
 ```
 
 **Client-only filters (use `DELTA_LAB_CLIENT.screen_lending()` for):**
@@ -280,7 +292,9 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lendin
 - `exclude_frozen` - Toggle frozen/paused market exclusion (MCP always excludes)
 
 ### 11. Screen Perp
-**URI:** `wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}`
+**URIs:**
+- `wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}`
+- `wayfinder://delta-lab/screen/perp/by-asset-ids/{sort}/{limit}/{asset_ids}`
 
 **Purpose:** Screen perpetual markets by surface features — funding rates, basis, OI, volume. Useful for finding high-funding or anomalous perp markets.
 
@@ -288,6 +302,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/lendin
 - `{sort}` - Column to sort by. Options: `funding_now`, `funding_mean_7d`, `funding_std_7d`, `funding_mean_30d`, `funding_std_30d`, `funding_z_30d`, `funding_z_90d`, `funding_pos_pct_30d`, `basis_now`, `basis_mean_7d`, `basis_mean_30d`, `basis_z_30d`, `oi_now`, `oi_mean_7d`, `oi_change_vs_7d_mean`, `volume_24h`, `mark_price`
 - `{limit}` - Max rows to return (default: "100", max: "1000")
 - `{basis}` - Basis symbol filter (e.g. "BTC") or `"all"` for no filter
+- `{asset_ids}` - Comma-separated base asset IDs (e.g. `"1,2,3"`) or `"all"`
 
 **Examples:**
 ```python
@@ -299,17 +314,21 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/f
 
 # Biggest OI changes vs 7d mean
 ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/oi_change_vs_7d_mean/10/all")
+
+# Exact base asset IDs (comma-separated)
+ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/perp/by-asset-ids/funding_now/20/1,2")
 ```
 
 **Client-only filters (use `DELTA_LAB_CLIENT.screen_perp()` for):**
 - `venue` - Filter by venue name (e.g. "hyperliquid", "binance")
 - `order` - Switch to ascending sort (MCP defaults to descending)
-- `asset_ids` - Filter by specific asset IDs
 
 ### 12. Screen Borrow Routes
 **URIs:**
 - `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
 - `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}`
+- `wayfinder://delta-lab/screen/borrow-routes/by-asset-ids/{sort}/{limit}/{asset_ids}/{borrow_asset_ids}`
+- `wayfinder://delta-lab/screen/borrow-routes/by-asset-ids/{sort}/{limit}/{asset_ids}/{borrow_asset_ids}/{chain_id}`
 
 **Purpose:** Screen lending borrow routes (collateral → borrow) by route configuration (LTV, liquidation thresholds, debt ceilings, topology/mode).
 
@@ -337,7 +356,6 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://delta-lab/screen/borrow
 - `market_id` - Filter by market ID
 - `topology` - Filter by route topology (e.g. "POOLED", "ISOLATED_PAIR")
 - `mode_type` - Filter by route mode type (e.g. "BASE", "EMODE")
-- `asset_ids` / `borrow_asset_ids` - Filter by exact asset IDs
 
 ## Implementation Details
 
