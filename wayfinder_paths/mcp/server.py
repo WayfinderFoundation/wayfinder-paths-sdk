@@ -10,6 +10,7 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.mcp.resources.alpha_lab import search_alpha
 from wayfinder_paths.mcp.resources.contracts import (
     get_contract,
     list_contracts,
@@ -97,6 +98,12 @@ mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
 mcp.resource("wayfinder://contracts")(list_contracts)
 mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
+mcp.resource("wayfinder://alpha-lab/search/{search}")(search_alpha)
+mcp.resource("wayfinder://alpha-lab/search/{search}/{scan_type}")(search_alpha)
+mcp.resource("wayfinder://alpha-lab/search/{search}/{scan_type}/{min_score}")(search_alpha)
+mcp.resource("wayfinder://alpha-lab/search/{search}/{scan_type}/{min_score}/{sort}/{limit}")(
+    search_alpha
+)
 mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
 mcp.resource("wayfinder://delta-lab/top-apy/{lookback_days}/{limit}")(get_top_apy)
 mcp.resource(
