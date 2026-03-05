@@ -684,3 +684,34 @@ From `DELTA_LAB_CLIENT.screen_borrow_routes(...)` or MCP:
 Notes:
 - `ltv_max`, `liq_threshold`, and `liquidation_penalty` are fractions (0.8 = 80%).
 - Some fields can be `null` depending on venue/market metadata.
+
+## AssetResponse
+
+From `DELTA_LAB_CLIENT.get_asset(...)` or MCP:
+- `wayfinder://delta-lab/assets/{asset_id}`
+
+```python
+{
+    "asset_id": 1,
+    "symbol": "USDC",
+    "name": "USD Coin",
+    "decimals": 6,
+    "chain_id": 8453,
+    "address": "0x...",
+    "coingecko_id": "usd-coin"
+}
+```
+
+## AssetSearchResponse
+
+From MCP:
+- `wayfinder://delta-lab/assets/search/{query}`
+- `wayfinder://delta-lab/assets/search/{chain}/{query}`
+- `wayfinder://delta-lab/assets/by-address/{address}/{chain_id}`
+
+```python
+{
+    "assets": [AssetResponse, ...],
+    "total_count": 3
+}
+```
