@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.0] - 2026-03-05 (252e0e018ac10143779785bb4ddba5087267cbb7)
+
+Added
+
+1. **Delta Lab client and MCP resources** (#69): Full yield-discovery client (`DeltaLabClient`) with basis APY sources, delta-neutral pair finding, top APY ranking, and screening endpoints (price, lending, perp, borrow routes). MCP resources for quick queries (`wayfinder://delta-lab/...`). Includes asset search by ID/address and chain-based filters (#135).
+2. **Backtesting framework** (`core/backtesting/`): `quick_backtest` and `run_backtest` with automatic data fetching from Delta Lab and Hyperliquid, realistic transaction costs, funding rate integration, liquidation simulation, multi-leverage testing, and comprehensive stats (Sharpe, Sortino, CAGR, max drawdown, profit factor).
+3. **Euler v2 adapter** (#104): EVK/eVault lending and borrowing on Ethereum — vault market discovery, APYs, positions, and EVC-batched lend/borrow flows with Claude skill docs.
+4. **Ethena sUSDe vault adapter** (#117): Spot APY reads, cooldown/position queries, and USDe→sUSDe stake/unstake flows on Ethereum mainnet with Claude skill docs (#133).
+5. **Lido adapter** (#121): wstETH staking/unstaking on Ethereum with safety guards, `require_wallet` decorator, and Gorlami simulation tests.
+6. **Eigencloud adapter** (#127): EigenLayer restaking integration with withdrawal root tracking and Gorlami simulation coverage.
+7. **Web3 multicall utility** (#129): Batched read-only contract calls via `Multicall3` (`core/utils/multicall.py`) with chain support detection and tests.
+8. **Hyperliquid stop-loss and trigger orders** (#134): New order types added to the Hyperliquid MCP execution tool.
+
+Changed
+
+1. `require_wallet` decorator moved to shared `core/adapters/BaseAdapter.py` (#124) — adapters no longer duplicate wallet-check logic.
+2. Claude docs and skills expanded: backtesting skill, Ethena vault skill, Euler v2 skill, Delta Lab skill, Avantis skill, and updated Boros/Hyperliquid skill docs.
+
 ## [0.7.0] - 2026-02-23 (5919548c8b95964e89854a51f68cef92168710b1)
 
 **Breaking Changes**
