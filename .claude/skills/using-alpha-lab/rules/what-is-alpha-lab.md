@@ -1,0 +1,20 @@
+# What is Alpha Lab?
+
+Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals. It aggregates and scores insights from multiple scan types, ranking them by an `insightfulness_score` (0-1).
+
+## Scan Types
+
+| Type | What it surfaces |
+|------|-----------------|
+| `twitter_post` | Scored tweets from DeFi/crypto accounts |
+| `defi_llama_chain_flow` | Notable chain TVL inflows/outflows |
+| `delta_lab_top_apy` | Standout APY opportunities from Delta Lab |
+| `delta_lab_best_delta_neutral` | Top delta-neutral pair opportunities |
+
+Use `await ALPHA_LAB_CLIENT.get_types()` to discover available types at runtime.
+
+## Key Concepts
+
+- **Insightfulness score** — 0-1 float. Higher = more actionable/notable. Use `min_score` to filter noise.
+- **Read-only** — Alpha Lab is discovery only, no execution.
+- **Complements Delta Lab** — Delta Lab gives raw rates/APYs; Alpha Lab surfaces the *interesting* ones with context.
