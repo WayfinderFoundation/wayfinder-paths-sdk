@@ -8,6 +8,8 @@ from wayfinder_paths.core.config import get_api_base_url
 VALID_TYPES = {
     "twitter_post",
     "defi_llama_chain_flow",
+    "defi_llama_overview",
+    "defi_llama_protocol",
     "delta_lab_top_apy",
     "delta_lab_best_delta_neutral",
 }
