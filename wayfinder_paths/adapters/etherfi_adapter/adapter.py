@@ -11,6 +11,7 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_walle
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
+from wayfinder_paths.core.constants.erc721_abi import ERC721_TRANSFER_EVENT_ABI
 from wayfinder_paths.core.constants.etherfi_abi import (
     ETHERFI_EETH_ABI,
     ETHERFI_LIQUIDITY_POOL_ABI,
@@ -39,17 +40,7 @@ _WITHDRAW_REQUEST_CREATED_TOPIC0 = HexBytes(
     event_abi_to_log_topic(_WITHDRAW_REQUEST_CREATED_EVENT_ABI)
 )
 
-_ERC721_TRANSFER_EVENT_ABI: dict[str, Any] = {
-    "type": "event",
-    "name": "Transfer",
-    "inputs": [
-        {"indexed": True, "name": "from", "type": "address"},
-        {"indexed": True, "name": "to", "type": "address"},
-        {"indexed": True, "name": "tokenId", "type": "uint256"},
-    ],
-    "anonymous": False,
-}
-_ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(_ERC721_TRANSFER_EVENT_ABI))
+_ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
 
 
 def _as_hex_bytes32(value: str | bytes | int) -> bytes:
@@ -188,7 +179,7 @@ class EtherfiAdapter(BaseAdapter):
                     if topic0 == _ERC721_TRANSFER_TOPIC0 and transfer_mint_id is None:
                         evt = get_event_data(
                             web3.codec,
-                            _ERC721_TRANSFER_EVENT_ABI,
+                            ERC721_TRANSFER_EVENT_ABI,
                             log,
                         )
                         args = evt.get("args") or {}

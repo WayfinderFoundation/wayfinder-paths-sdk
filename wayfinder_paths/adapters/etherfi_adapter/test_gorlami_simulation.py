@@ -107,7 +107,9 @@ async def test_gorlami_stake_and_get_pos(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.stake_eth(
+        amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM
+    )
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
@@ -123,7 +125,9 @@ async def test_gorlami_wrap_unwrap_round_trip(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.stake_eth(
+        amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM
+    )
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
@@ -139,7 +143,9 @@ async def test_gorlami_wrap_unwrap_round_trip(gorlami):
     eeth_balance = int(eeth_balance)
     assert eeth_balance > 0
 
-    ok, tx = await adapter.wrap_eeth(amount_eeth=eeth_balance, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.wrap_eeth(
+        amount_eeth=eeth_balance, chain_id=CHAIN_ID_ETHEREUM
+    )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
@@ -166,7 +172,9 @@ async def test_gorlami_wrap_unwrap_round_trip(gorlami):
     # Wrapped the full eETH balance; share-based rounding can leave 1 wei dust.
     assert eeth_after_wrap <= 1
 
-    ok, tx = await adapter.unwrap_weeth(amount_weeth=weeth_balance, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.unwrap_weeth(
+        amount_weeth=weeth_balance, chain_id=CHAIN_ID_ETHEREUM
+    )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
@@ -188,7 +196,9 @@ async def test_gorlami_wrap_with_permit(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.stake_eth(
+        amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM
+    )
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
@@ -234,7 +244,9 @@ async def test_gorlami_request_withdraw_and_claim_status(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.stake_eth(
+        amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM
+    )
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
@@ -294,7 +306,9 @@ async def test_gorlami_request_withdraw_with_permit_mints_nft(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
+    ok, tx = await adapter.stake_eth(
+        amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM
+    )
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
