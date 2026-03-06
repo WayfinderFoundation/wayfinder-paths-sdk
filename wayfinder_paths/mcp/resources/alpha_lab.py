@@ -56,3 +56,11 @@ async def search_alpha(
         return await ALPHA_LAB_CLIENT.search(**kwargs)
     except Exception as exc:
         return {"error": str(exc)}
+
+
+async def get_alpha_types() -> list[str]:
+    """Get available Alpha Lab scan types."""
+    try:
+        return await ALPHA_LAB_CLIENT.get_types()
+    except Exception as exc:
+        return [f"error: {exc}"]

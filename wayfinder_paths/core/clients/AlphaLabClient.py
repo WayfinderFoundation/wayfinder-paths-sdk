@@ -60,5 +60,10 @@ class AlphaLabClient(WayfinderClient):
         response = await self._authed_request("GET", url, params=params)
         return response.json()
 
+    async def get_types(self) -> list[str]:
+        url = f"{get_api_base_url()}/alpha-lab/types/"
+        response = await self._authed_request("GET", url)
+        return response.json()
+
 
 ALPHA_LAB_CLIENT = AlphaLabClient()
