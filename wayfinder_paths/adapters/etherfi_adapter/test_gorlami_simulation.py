@@ -163,8 +163,8 @@ async def test_gorlami_wrap_unwrap_round_trip(gorlami):
             )
         )
     assert weeth_balance > 0
-    # Wrapped the full eETH balance, so eETH should be gone.
-    assert eeth_after_wrap == 0
+    # Wrapped the full eETH balance; share-based rounding can leave 1 wei dust.
+    assert eeth_after_wrap <= 1
 
     ok, tx = await adapter.unwrap_weeth(amount_weeth=weeth_balance, chain_id=CHAIN_ID_ETHEREUM)
     assert ok is True, tx
