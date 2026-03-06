@@ -24,8 +24,7 @@ pytestmark = pytest.mark.skipif(
     reason="api_key not configured (needed for gorlami fork proxy)",
 )
 
-CHAIN_ID = CHAIN_ID_ETHEREUM
-ENTRY = ETHERFI_BY_CHAIN[CHAIN_ID]
+ENTRY = ETHERFI_BY_CHAIN[CHAIN_ID_ETHEREUM]
 STAKE_AMOUNT = 10**18  # 1 ETH
 
 
@@ -42,9 +41,9 @@ def _make_adapter(acct) -> EtherfiAdapter:
 
 
 async def _ensure_fork(gorlami) -> str:
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
-        assert await web3.eth.chain_id == int(CHAIN_ID)
-    fork_info = gorlami.forks.get(str(CHAIN_ID))
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
+        assert await web3.eth.chain_id == CHAIN_ID_ETHEREUM
+    fork_info = gorlami.forks.get(str(CHAIN_ID_ETHEREUM))
     assert fork_info is not None
     return fork_info["fork_id"]
 
@@ -108,13 +107,13 @@ async def test_gorlami_stake_and_get_pos(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID)
+    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, pos = await adapter.get_pos(account=acct.address, chain_id=CHAIN_ID)
+    ok, pos = await adapter.get_pos(account=acct.address, chain_id=CHAIN_ID_ETHEREUM)
     assert ok is True, pos
     assert pos["eeth"]["balance_raw"] > 0
 
@@ -124,15 +123,15 @@ async def test_gorlami_wrap_unwrap_round_trip(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID)
+    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
         eeth_balance = await get_token_balance(
             ENTRY["eeth"],
-            CHAIN_ID,
+            CHAIN_ID_ETHEREUM,
             acct.address,
             web3=web3,
             block_identifier="pending",
@@ -140,34 +139,48 @@ async def test_gorlami_wrap_unwrap_round_trip(gorlami):
     eeth_balance = int(eeth_balance)
     assert eeth_balance > 0
 
-    ok, tx = await adapter.wrap_eeth(amount_eeth=eeth_balance, chain_id=CHAIN_ID)
+    ok, tx = await adapter.wrap_eeth(amount_eeth=eeth_balance, chain_id=CHAIN_ID_ETHEREUM)
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
-        weeth_balance = await get_token_balance(
-            ENTRY["weeth"],
-            CHAIN_ID,
-            acct.address,
-            web3=web3,
-            block_identifier="pending",
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
+        weeth_balance = int(
+            await get_token_balance(
+                ENTRY["weeth"],
+                CHAIN_ID_ETHEREUM,
+                acct.address,
+                web3=web3,
+                block_identifier="pending",
+            )
         )
-    weeth_balance = int(weeth_balance)
+        eeth_after_wrap = int(
+            await get_token_balance(
+                ENTRY["eeth"],
+                CHAIN_ID_ETHEREUM,
+                acct.address,
+                web3=web3,
+                block_identifier="pending",
+            )
+        )
     assert weeth_balance > 0
+    # Wrapped the full eETH balance, so eETH should be gone.
+    assert eeth_after_wrap == 0
 
-    ok, tx = await adapter.unwrap_weeth(amount_weeth=weeth_balance, chain_id=CHAIN_ID)
+    ok, tx = await adapter.unwrap_weeth(amount_weeth=weeth_balance, chain_id=CHAIN_ID_ETHEREUM)
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
-        eeth_after = await get_token_balance(
-            ENTRY["eeth"],
-            CHAIN_ID,
-            acct.address,
-            web3=web3,
-            block_identifier="pending",
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
+        eeth_after_unwrap = int(
+            await get_token_balance(
+                ENTRY["eeth"],
+                CHAIN_ID_ETHEREUM,
+                acct.address,
+                web3=web3,
+                block_identifier="pending",
+            )
         )
-    assert int(eeth_after) > 0
+    assert eeth_after_unwrap > 0
 
 
 @pytest.mark.asyncio
@@ -175,15 +188,15 @@ async def test_gorlami_wrap_with_permit(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID)
+    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
         eeth_balance = await get_token_balance(
             ENTRY["eeth"],
-            CHAIN_ID,
+            CHAIN_ID_ETHEREUM,
             acct.address,
             web3=web3,
             block_identifier="pending",
@@ -200,15 +213,15 @@ async def test_gorlami_wrap_with_permit(gorlami):
     ok, tx = await adapter.wrap_eeth_with_permit(
         amount_eeth=int(eeth_balance),
         permit=permit,
-        chain_id=CHAIN_ID,
+        chain_id=CHAIN_ID_ETHEREUM,
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
         weeth_balance = await get_token_balance(
             ENTRY["weeth"],
-            CHAIN_ID,
+            CHAIN_ID_ETHEREUM,
             acct.address,
             web3=web3,
             block_identifier="pending",
@@ -221,16 +234,16 @@ async def test_gorlami_request_withdraw_and_claim_status(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID)
+    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
         eeth_balance = int(
             await get_token_balance(
                 ENTRY["eeth"],
-                CHAIN_ID,
+                CHAIN_ID_ETHEREUM,
                 acct.address,
                 web3=web3,
                 block_identifier="pending",
@@ -241,7 +254,7 @@ async def test_gorlami_request_withdraw_and_claim_status(gorlami):
     withdraw_amount = min(eeth_balance, 10**17)  # up to 0.1 eETH
     ok, res = await adapter.request_withdraw(
         amount_eeth=withdraw_amount,
-        chain_id=CHAIN_ID,
+        chain_id=CHAIN_ID_ETHEREUM,
         include_request_id=True,
     )
     assert ok is True, res
@@ -252,14 +265,14 @@ async def test_gorlami_request_withdraw_and_claim_status(gorlami):
 
     ok, finalized = await adapter.is_withdraw_finalized(
         token_id=request_id,
-        chain_id=CHAIN_ID,
+        chain_id=CHAIN_ID_ETHEREUM,
     )
     assert ok is True, finalized
     assert isinstance(finalized, bool)
 
     ok, claimable = await adapter.get_claimable_withdraw(
         token_id=request_id,
-        chain_id=CHAIN_ID,
+        chain_id=CHAIN_ID_ETHEREUM,
     )
     assert ok is True, claimable
     assert isinstance(claimable, int) and claimable >= 0
@@ -267,7 +280,7 @@ async def test_gorlami_request_withdraw_and_claim_status(gorlami):
     # Claim will only succeed if finalized; otherwise it should fail cleanly.
     ok, claim_tx_or_err = await adapter.claim_withdraw(
         token_id=request_id,
-        chain_id=CHAIN_ID,
+        chain_id=CHAIN_ID_ETHEREUM,
     )
     if finalized:
         assert ok is True, claim_tx_or_err
@@ -281,16 +294,16 @@ async def test_gorlami_request_withdraw_with_permit_mints_nft(gorlami):
     fork_id = await _ensure_fork(gorlami)
     adapter, acct = await _fund_adapter(gorlami, fork_id)
 
-    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID)
+    ok, tx = await adapter.stake_eth(amount_wei=STAKE_AMOUNT, chain_id=CHAIN_ID_ETHEREUM)
     if not ok and "paused" in str(tx).lower():
         pytest.skip("ether.fi LiquidityPool is paused on this fork")
     assert ok is True, tx
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
         eeth_balance = int(
             await get_token_balance(
                 ENTRY["eeth"],
-                CHAIN_ID,
+                CHAIN_ID_ETHEREUM,
                 acct.address,
                 web3=web3,
                 block_identifier="pending",
@@ -309,7 +322,7 @@ async def test_gorlami_request_withdraw_with_permit_mints_nft(gorlami):
     ok, res = await adapter.request_withdraw_with_permit(
         amount_eeth=withdraw_amount,
         permit=permit,
-        chain_id=CHAIN_ID,
+        chain_id=CHAIN_ID_ETHEREUM,
         include_request_id=True,
     )
     assert ok is True, res
@@ -318,7 +331,7 @@ async def test_gorlami_request_withdraw_with_permit_mints_nft(gorlami):
     request_id = res.get("request_id")
     assert isinstance(request_id, int)
 
-    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
         nft = web3.eth.contract(
             address=ENTRY["withdraw_request_nft"],
             abi=ETHERFI_WITHDRAW_REQUEST_NFT_ABI,
