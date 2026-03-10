@@ -20,7 +20,6 @@ from wayfinder_paths.core.constants.etherfi_abi import (
 )
 from wayfinder_paths.core.constants.etherfi_contracts import (
     ETHERFI_BY_CHAIN,
-    weeth_token_by_chain_id,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -123,7 +122,6 @@ class EtherfiAdapter(BaseAdapter):
         if not entry:
             raise ValueError(f"Unsupported ether.fi chain_id={chain_id} (mainnet only)")
         return entry
-
 
     async def _parse_request_id_from_receipt(
         self, *, chain_id: int, tx_hash: str, expected_owner: str | None = None
