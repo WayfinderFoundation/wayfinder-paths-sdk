@@ -124,13 +124,6 @@ class EtherfiAdapter(BaseAdapter):
             raise ValueError(f"Unsupported ether.fi chain_id={chain_id} (mainnet only)")
         return entry
 
-    @staticmethod
-    def get_weeth_address(chain_id: int) -> str | None:
-        """Return the weETH token address on the given chain_id (token-only on L2s)."""
-        try:
-            return weeth_token_by_chain_id(chain_id)
-        except Exception:
-            return None
 
     async def _parse_request_id_from_receipt(
         self, *, chain_id: int, tx_hash: str, expected_owner: str | None = None

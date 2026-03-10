@@ -15,7 +15,10 @@ from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_BASE,
     CHAIN_ID_ETHEREUM,
 )
-from wayfinder_paths.core.constants.etherfi_contracts import ETHERFI_BY_CHAIN
+from wayfinder_paths.core.constants.etherfi_contracts import (
+    ETHERFI_BY_CHAIN,
+    weeth_token_by_chain_id,
+)
 
 WALLET = "0x1234567890123456789012345678901234567890"
 ENTRY = ETHERFI_BY_CHAIN[CHAIN_ID_ETHEREUM]
@@ -73,20 +76,21 @@ def test_no_wallet_is_none():
     assert adapter.wallet_address is None
 
 
-def test_get_weeth_address_mainnet():
+def test_weeth_token_by_chain_id_mainnet():
     assert (
-        EtherfiAdapter.get_weeth_address(CHAIN_ID_ETHEREUM)
+        weeth_token_by_chain_id(CHAIN_ID_ETHEREUM)
         == "0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee"
     )
 
 
-def test_get_weeth_address_l2s():
-    assert EtherfiAdapter.get_weeth_address(CHAIN_ID_BASE) is not None
-    assert EtherfiAdapter.get_weeth_address(CHAIN_ID_ARBITRUM) is not None
+def test_weeth_token_by_chain_id_l2s():
+    assert weeth_token_by_chain_id(CHAIN_ID_BASE) is not None
+    assert weeth_token_by_chain_id(CHAIN_ID_ARBITRUM) is not None
 
 
-def test_get_weeth_address_unsupported_returns_none():
-    assert EtherfiAdapter.get_weeth_address(999999) is None
+def test_weeth_token_by_chain_id_unsupported_raises():
+    with pytest.raises(ValueError, match="Unsupported"):
+        weeth_token_by_chain_id(999999)
 
 
 def test_entry_unsupported_chain():
