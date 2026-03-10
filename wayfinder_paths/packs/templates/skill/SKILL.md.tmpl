@@ -1,19 +1,24 @@
-# {{name}} — Pack Skill
+---
+name: {{name}}
+description: "{{summary}}"
+metadata:
+  tags: []
+---
 
-{{summary}}
+## When to use
+
+Use this pack when you are:
+- <!-- describe scenarios where an agent should use this pack -->
+
+## What it does
+
+<!-- 2-4 sentences explaining what this pack does in plain English -->
+
+## Quick start
+
+<!-- minimal code/CLI snippet to run or use this pack -->
 
 ## Key files
 
 - `wfpack.yaml` — manifest (slug/version/kind)
 - `{{component_path}}` — main component
-
-## How to use
-
-1. Read `wfpack.yaml` to understand what this pack contains and its permissions.
-2. Explain what the pack does in plain English.
-3. If asked to “make it feel alive”, emit signals/events for the pack runtime:
-
-```bash
-wayfinder pack signal emit --slug {{slug}} --title "Hello" --message "World"
-```
-
