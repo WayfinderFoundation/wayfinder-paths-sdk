@@ -282,7 +282,9 @@ class MultiVaultSplitStrategy(Strategy):
     ) -> dict[str, float]:
         apy_hlp = float(self.apy_overrides.get("hlp") or 0.0)
         if self._hlp_enabled():
-            ok, hlp = await self.hyperliquid_adapter.get_hlp_apys(self.hlp_vault_address)
+            ok, hlp = await self.hyperliquid_adapter.get_hlp_apys(
+                self.hlp_vault_address
+            )
             if ok and isinstance(hlp, dict):
                 apy_hlp = float(hlp.get("apy7d") or apy_hlp or 0.0)
 
@@ -326,7 +328,8 @@ class MultiVaultSplitStrategy(Strategy):
             "avantis": self._avantis_enabled(),
         }
         viable = {
-            "hlp": enabled["hlp"] and (total_value < 1 or total_value / 3 >= MIN_HLP_USD),
+            "hlp": enabled["hlp"]
+            and (total_value < 1 or total_value / 3 >= MIN_HLP_USD),
             "boros": enabled["boros"]
             and (total_value < 1 or total_value / 3 >= MIN_BOROS_USD),
             "avantis": enabled["avantis"],
@@ -350,27 +353,37 @@ class MultiVaultSplitStrategy(Strategy):
                 )
 
         stable_per_venue = 0.5 / len(active)
-        apy_values = {leg: max(float(apys.get(f"apy_{leg}") or 0.0), 0.0) for leg in active}
+        apy_values = {
+            leg: max(float(apys.get(f"apy_{leg}") or 0.0), 0.0) for leg in active
+        }
         total_apy = sum(apy_values.values())
         if total_apy <= 0:
             apy_weights = {leg: 0.5 / len(active) for leg in active}
         else:
-            apy_weights = {
-                leg: (apy_values[leg] / total_apy) * 0.5 for leg in active
-            }
+            apy_weights = {leg: (apy_values[leg] / total_apy) * 0.5 for leg in active}
 
         weights = {
-            leg: (stable_per_venue + apy_weights.get(leg, 0.0)) if viable.get(leg) else 0.0
+            leg: (stable_per_venue + apy_weights.get(leg, 0.0))
+            if viable.get(leg)
+            else 0.0
             for leg in ("hlp", "boros", "avantis")
         }
         return weights["hlp"], weights["boros"], weights["avantis"]
 
     async def _get_inventory(self) -> Inventory:
         ok, arb_usdc_raw = await self.balance_adapter.get_vault_wallet_balance(USDC_ARB)
-        ok_base, base_usdc_raw = await self.balance_adapter.get_vault_wallet_balance(USDC_BASE)
-        ok_usdt, usdt_raw = await self.balance_adapter.get_vault_wallet_balance(USDT_ARB)
-        ok_eth_arb, eth_arb_raw = await self.balance_adapter.get_vault_wallet_balance(ETH_ARB)
-        ok_eth_base, eth_base_raw = await self.balance_adapter.get_vault_wallet_balance(ETH_BASE)
+        ok_base, base_usdc_raw = await self.balance_adapter.get_vault_wallet_balance(
+            USDC_BASE
+        )
+        ok_usdt, usdt_raw = await self.balance_adapter.get_vault_wallet_balance(
+            USDT_ARB
+        )
+        ok_eth_arb, eth_arb_raw = await self.balance_adapter.get_vault_wallet_balance(
+            ETH_ARB
+        )
+        ok_eth_base, eth_base_raw = await self.balance_adapter.get_vault_wallet_balance(
+            ETH_BASE
+        )
 
         usdc_arb_idle = from_erc20_raw(arb_usdc_raw if ok else 0, 6)
         usdc_base_idle = from_erc20_raw(base_usdc_raw if ok_base else 0, 6)
@@ -403,7 +416,9 @@ class MultiVaultSplitStrategy(Strategy):
                 )
 
         avantis_value_usdc = 0.0
-        ok_pos, pos = await self.avantis_adapter.position(account=self.strategy_wallet_address)
+        ok_pos, pos = await self.avantis_adapter.position(
+            account=self.strategy_wallet_address
+        )
         if ok_pos and isinstance(pos, dict):
             avantis_value_usdc = float(pos.get("value_usdc") or 0.0)
 
@@ -430,10 +445,7 @@ class MultiVaultSplitStrategy(Strategy):
         positions_value = hlp_equity + avantis_value_usdc + boros_vault_value_usd
         unallocated_total = usdc_arb_idle + usdc_base_idle + hl_perp_idle
         total_value = (
-            positions_value
-            + unallocated_total
-            + usdt_arb_idle
-            + boros_account_idle_usd
+            positions_value + unallocated_total + usdt_arb_idle + boros_account_idle_usd
         )
 
         return Inventory(
@@ -469,7 +481,10 @@ class MultiVaultSplitStrategy(Strategy):
         needed = max(float(topup_base_eth), float(min_base_eth) - inv.eth_base_idle)
         if inv.eth_arb_idle + EPS < needed:
             top_up = needed - inv.eth_arb_idle
-            ok, detail = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
+            (
+                ok,
+                detail,
+            ) = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
                 ETH_ARB,
                 top_up,
                 strategy_name=self.__class__.__name__,
@@ -541,9 +556,7 @@ class MultiVaultSplitStrategy(Strategy):
         if bridged <= EPS:
             return False, "No bridged Base USDC arrived for Avantis deposit"
 
-        ok, detail = await self.avantis_adapter.deposit(
-            amount=to_erc20_raw(bridged, 6)
-        )
+        ok, detail = await self.avantis_adapter.deposit(amount=to_erc20_raw(bridged, 6))
         if not ok:
             return False, f"Avantis deposit after bridge failed: {detail}"
         deposited += bridged
@@ -769,7 +782,9 @@ class MultiVaultSplitStrategy(Strategy):
         }
         current = {
             "hlp": inv.hlp_equity,
-            "boros": inv.boros_vault_value_usd + inv.boros_account_idle_usd + inv.usdt_arb_idle,
+            "boros": inv.boros_vault_value_usd
+            + inv.boros_account_idle_usd
+            + inv.usdt_arb_idle,
             "avantis": inv.avantis_value_usdc,
         }
         gaps = {leg: max(target[leg] - current[leg], 0.0) for leg in target}
@@ -819,14 +834,20 @@ class MultiVaultSplitStrategy(Strategy):
             timeout_seconds=180,
         )
         if usdc_arb > EPS:
-            ok, detail = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
+            (
+                ok,
+                detail,
+            ) = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
                 USDC_ARB,
                 usdc_arb,
                 strategy_name=self.__class__.__name__,
             )
             if not ok:
                 return False, f"Failed to return USDC to main wallet: {detail}"
-        return True, "Completed pending Boros withdrawal and returned USDC to main wallet"
+        return (
+            True,
+            "Completed pending Boros withdrawal and returned USDC to main wallet",
+        )
 
     async def deposit(
         self,
@@ -839,7 +860,10 @@ class MultiVaultSplitStrategy(Strategy):
             return False, f"Minimum deposit is {self.INFO.minimum_net_deposit:.2f} USDC"
 
         if gas_token_amount > 0:
-            ok, detail = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
+            (
+                ok,
+                detail,
+            ) = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
                 ETH_ARB,
                 float(gas_token_amount),
                 strategy_name=self.__class__.__name__,
@@ -848,7 +872,10 @@ class MultiVaultSplitStrategy(Strategy):
             if not ok:
                 return False, f"Failed to move Arbitrum ETH gas: {detail}"
 
-        ok, detail = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
+        (
+            ok,
+            detail,
+        ) = await self.balance_adapter.move_from_main_wallet_to_strategy_wallet(
             USDC_ARB,
             amount,
             strategy_name=self.__class__.__name__,
@@ -870,7 +897,11 @@ class MultiVaultSplitStrategy(Strategy):
         ok_withdraw, status = await self.boros_adapter.get_user_withdrawal_status(
             token_id=self.boros_token_id
         )
-        if ok_withdraw and isinstance(status, dict) and int(status.get("start") or 0) > 0:
+        if (
+            ok_withdraw
+            and isinstance(status, dict)
+            and int(status.get("start") or 0) > 0
+        ):
             ok, detail = await self.boros_adapter.finalize_vault_withdrawal(
                 token_id=self.boros_token_id
             )
@@ -931,11 +962,19 @@ class MultiVaultSplitStrategy(Strategy):
                 else f"Hyperliquid bridge withdraw failed: {detail}"
             )
 
-        ok_pos, pos = await self.avantis_adapter.position(account=self.strategy_wallet_address)
-        if ok_pos and isinstance(pos, dict) and float(pos.get("value_usdc") or 0.0) > EPS:
+        ok_pos, pos = await self.avantis_adapter.position(
+            account=self.strategy_wallet_address
+        )
+        if (
+            ok_pos
+            and isinstance(pos, dict)
+            and float(pos.get("value_usdc") or 0.0) > EPS
+        ):
             ok, detail = await self.avantis_adapter.withdraw(amount=0, redeem_full=True)
             messages.append(
-                "Redeemed Avantis position" if ok else f"Avantis withdraw failed: {detail}"
+                "Redeemed Avantis position"
+                if ok
+                else f"Avantis withdraw failed: {detail}"
             )
 
         for vault in inv.boros_vaults:
@@ -979,7 +1018,11 @@ class MultiVaultSplitStrategy(Strategy):
         ok_withdraw, status = await self.boros_adapter.get_user_withdrawal_status(
             token_id=self.boros_token_id
         )
-        if ok_withdraw and isinstance(status, dict) and int(status.get("start") or 0) > 0:
+        if (
+            ok_withdraw
+            and isinstance(status, dict)
+            and int(status.get("start") or 0) > 0
+        ):
             ok, detail = await self.boros_adapter.finalize_vault_withdrawal(
                 token_id=self.boros_token_id
             )
@@ -1020,7 +1063,10 @@ class MultiVaultSplitStrategy(Strategy):
 
         inv = await self._get_inventory()
         if inv.usdc_arb_idle > EPS:
-            ok, detail = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
+            (
+                ok,
+                detail,
+            ) = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
                 USDC_ARB,
                 inv.usdc_arb_idle,
                 strategy_name=self.__class__.__name__,
@@ -1031,7 +1077,10 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append(f"Failed to return Arbitrum USDC: {detail}")
 
         if inv.usdc_base_idle > EPS:
-            ok, detail = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
+            (
+                ok,
+                detail,
+            ) = await self.balance_adapter.move_from_strategy_wallet_to_main_wallet(
                 USDC_BASE,
                 inv.usdc_base_idle,
                 strategy_name=self.__class__.__name__,
@@ -1042,14 +1091,18 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append(f"Failed to return Base USDC: {detail}")
 
         cleaned = [message for message in messages if message]
-        return True, "; ".join(cleaned) if cleaned else "Best-effort withdrawal complete"
+        return True, "; ".join(
+            cleaned
+        ) if cleaned else "Best-effort withdrawal complete"
 
     async def exit(self, **kwargs: Any) -> StatusTuple:
         return await self.withdraw(**kwargs)
 
     async def _status(self) -> StatusDict:
         inv = await self._get_inventory()
-        apys = self.cached_apys or await self._fetch_apys(deposit_amount_usdc=inv.total_value)
+        apys = self.cached_apys or await self._fetch_apys(
+            deposit_amount_usdc=inv.total_value
+        )
         return {
             "portfolio_value": float(inv.total_value),
             "net_deposit": 0.0,

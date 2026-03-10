@@ -58,7 +58,9 @@ def _inventory(
 ) -> Inventory:
     positions_value = hlp_equity + avantis_value_usdc + boros_vault_value_usd
     unallocated_total = usdc_arb_idle + usdc_base_idle + hl_perp_idle
-    total_value = positions_value + unallocated_total + usdt_arb_idle + boros_account_idle_usd
+    total_value = (
+        positions_value + unallocated_total + usdt_arb_idle + boros_account_idle_usd
+    )
     return Inventory(
         usdc_arb_idle=usdc_arb_idle,
         usdc_base_idle=usdc_base_idle,
@@ -81,7 +83,9 @@ def _inventory(
 
 
 def _mock_external(strategy: MultiVaultSplitStrategy) -> None:
-    strategy.ledger_adapter.record_strategy_snapshot = AsyncMock(return_value=(True, None))
+    strategy.ledger_adapter.record_strategy_snapshot = AsyncMock(
+        return_value=(True, None)
+    )
     strategy.balance_adapter.move_from_main_wallet_to_strategy_wallet = AsyncMock(
         return_value=(True, "0xmock")
     )
@@ -98,7 +102,9 @@ def _mock_external(strategy: MultiVaultSplitStrategy) -> None:
     strategy.boros_adapter.get_account_balances = AsyncMock(
         return_value=(True, {"cross_wei": 0, "total": 0.0, "isolated_positions": []})
     )
-    strategy.avantis_adapter.position = AsyncMock(return_value=(True, {"value_usdc": 0.0}))
+    strategy.avantis_adapter.position = AsyncMock(
+        return_value=(True, {"value_usdc": 0.0})
+    )
     strategy.avantis_adapter.withdraw = AsyncMock(return_value=(True, "0xmock"))
     strategy.hyperliquid_adapter.withdraw_hlp = AsyncMock(
         return_value=(True, {"status": "ok"})
@@ -149,7 +155,9 @@ async def test_smoke(strategy: MultiVaultSplitStrategy):
     assert ok is True
 
     strategy._get_inventory = AsyncMock(return_value=_inventory())
-    ok, _ = assert_status_tuple(await strategy.withdraw(**smoke_data.get("withdraw", {})))
+    ok, _ = assert_status_tuple(
+        await strategy.withdraw(**smoke_data.get("withdraw", {}))
+    )
     assert ok is True
 
 
@@ -168,7 +176,9 @@ async def test_canonical_usage(strategy: MultiVaultSplitStrategy):
 
     for example_name, example_data in canonical.items():
         if "deposit" in example_data:
-            ok, _ = assert_status_tuple(await strategy.deposit(**example_data["deposit"]))
+            ok, _ = assert_status_tuple(
+                await strategy.deposit(**example_data["deposit"])
+            )
             assert ok, f"Canonical example '{example_name}' deposit failed"
 
         if "update" in example_data:
@@ -250,7 +260,9 @@ async def test_pick_boros_vault_falls_back_to_best_yield(
         tenor_days=10.0,
         raw={"lpPrice": 1.0},
     )
-    strategy.boros_adapter.get_vaults_summary = AsyncMock(return_value=(True, [existing]))
+    strategy.boros_adapter.get_vaults_summary = AsyncMock(
+        return_value=(True, [existing])
+    )
     strategy.boros_adapter.best_yield_vault = AsyncMock(return_value=(True, best))
 
     picked, capacity = await strategy._pick_boros_vault_for_deposit(amount_tokens=20.0)
@@ -271,9 +283,13 @@ async def test_move_idle_to_boros_uses_existing_usdt_then_bridged_remainder(
             _inventory(usdt_arb_idle=5.0),
         ]
     )
-    strategy._pick_boros_vault_for_deposit = AsyncMock(return_value=(target_vault, 20.0))
+    strategy._pick_boros_vault_for_deposit = AsyncMock(
+        return_value=(target_vault, 20.0)
+    )
     strategy._deposit_usdt_to_boros_vault = AsyncMock(return_value=(True, "ok"))
-    strategy.brap_adapter.swap_from_token_ids = AsyncMock(return_value=(True, {"status": "ok"}))
+    strategy.brap_adapter.swap_from_token_ids = AsyncMock(
+        return_value=(True, {"status": "ok"})
+    )
 
     ok, message = await strategy._move_idle_to_boros(5.0)
 
@@ -302,12 +318,28 @@ async def test_deploy_boros_account_idle_caps_deposit_by_capacity(
     target_vault = BorosVault(amm_id=9, market_id=19, symbol="TARGET")
     strategy.boros_adapter.get_account_balances = AsyncMock(
         side_effect=[
-            (True, {"total": 20.0, "cross_wei": to_erc20_raw(20.0, 18), "isolated_positions": []}),
-            (True, {"total": 20.0, "cross_wei": to_erc20_raw(20.0, 18), "isolated_positions": []}),
+            (
+                True,
+                {
+                    "total": 20.0,
+                    "cross_wei": to_erc20_raw(20.0, 18),
+                    "isolated_positions": [],
+                },
+            ),
+            (
+                True,
+                {
+                    "total": 20.0,
+                    "cross_wei": to_erc20_raw(20.0, 18),
+                    "isolated_positions": [],
+                },
+            ),
         ]
     )
     strategy._pick_boros_vault_for_deposit = AsyncMock(return_value=(target_vault, 7.5))
-    strategy.boros_adapter.deposit_to_vault = AsyncMock(return_value=(True, {"status": "ok"}))
+    strategy.boros_adapter.deposit_to_vault = AsyncMock(
+        return_value=(True, {"status": "ok"})
+    )
 
     ok, message = await strategy._deploy_boros_account_idle()
 
@@ -323,13 +355,17 @@ async def test_deploy_boros_account_idle_caps_deposit_by_capacity(
 async def test_complete_pending_withdrawal_swaps_and_returns_usdc(
     strategy: MultiVaultSplitStrategy,
 ):
-    strategy.brap_adapter.swap_from_token_ids = AsyncMock(return_value=(True, {"status": "ok"}))
+    strategy.brap_adapter.swap_from_token_ids = AsyncMock(
+        return_value=(True, {"status": "ok"})
+    )
     strategy.balance_adapter.wait_for_balance = AsyncMock(return_value=12.5)
     strategy.balance_adapter.move_from_strategy_wallet_to_main_wallet = AsyncMock(
         return_value=(True, "0xreturn")
     )
 
-    ok, message = await strategy._complete_pending_withdrawal(_inventory(usdt_arb_idle=12.5))
+    ok, message = await strategy._complete_pending_withdrawal(
+        _inventory(usdt_arb_idle=12.5)
+    )
 
     assert ok is True
     assert "Completed pending Boros withdrawal" in message

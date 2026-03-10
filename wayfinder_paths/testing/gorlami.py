@@ -19,6 +19,20 @@ def gorlami_configured() -> bool:
     return bool(get_gorlami_api_key())
 
 
+def skip_if_gorlami_rate_limited(exc: Exception, *, action: str) -> None:
+    if not isinstance(exc, httpx.HTTPStatusError) or exc.response is None:
+        return
+    if exc.response.status_code != 429:
+        return
+
+    retry_after = exc.response.headers.get("Retry-After")
+    if retry_after:
+        pytest.skip(
+            f"gorlami rate limited (HTTP 429) during {action}; Retry-After={retry_after}s"
+        )
+    pytest.skip(f"gorlami rate limited (HTTP 429) during {action}")
+
+
 @pytest.fixture
 async def gorlami():
     forks = {}
@@ -42,8 +56,7 @@ async def gorlami():
         try:
             fork = await client.create_fork(chain_id)
         except httpx.HTTPStatusError as exc:
-            if exc.response is not None and exc.response.status_code == 429:
-                pytest.skip(f"gorlami rate limited (HTTP 429) creating fork for {key}")
+            skip_if_gorlami_rate_limited(exc, action=f"creating fork for {key}")
             raise
         forks[key] = fork
         logger.info(f"[gorlami] Created fork {fork['fork_id']} for chain {chain_id}")

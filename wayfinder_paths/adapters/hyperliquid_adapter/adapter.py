@@ -1382,7 +1382,9 @@ class HyperliquidAdapter(BaseAdapter):
             )
 
         try:
-            tx_hash = await send_transaction(tx, self._sign_callback, wait_for_receipt=True)
+            tx_hash = await send_transaction(
+                tx, self._sign_callback, wait_for_receipt=True
+            )
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1462,9 +1464,7 @@ class HyperliquidAdapter(BaseAdapter):
         *,
         user_address: str | None = None,
     ) -> tuple[bool, int | str]:
-        ok, status = await self.get_hlp_status(
-            vault_address, user_address=user_address
-        )
+        ok, status = await self.get_hlp_status(vault_address, user_address=user_address)
         if not ok or not isinstance(status, dict):
             return False, str(status)
         return True, int(status.get("wait_ms") or 0)
@@ -1559,7 +1559,10 @@ class HyperliquidAdapter(BaseAdapter):
             if wait_for_completion:
                 confirmed, withdrawals = await self.wait_for_withdrawal(dest)
                 if not confirmed:
-                    return False, "Withdrawal initiated but not observed on-chain in time"
+                    return (
+                        False,
+                        "Withdrawal initiated but not observed on-chain in time",
+                    )
                 return True, {"exchange": result, "withdrawals": withdrawals}
             return True, result
         except Exception as exc:  # noqa: BLE001

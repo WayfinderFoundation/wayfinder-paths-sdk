@@ -10,7 +10,9 @@ from wayfinder_paths.core.utils import retry as retry_utils
 @pytest.mark.asyncio
 async def test_gorlami_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     client = GorlamiTestnetClient()
-    request = httpx.Request("POST", "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami/fork")
+    request = httpx.Request(
+        "POST", "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami/fork"
+    )
     rate_limited = httpx.Response(
         429,
         request=request,

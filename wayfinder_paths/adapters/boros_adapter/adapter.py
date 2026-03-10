@@ -1322,7 +1322,9 @@ class BorosAdapter(BaseAdapter):
             return int(vault.user_total_lp_wei)
         raw = vault.raw or {}
         try:
-            candidate = raw.get("userTotalLp") or ((raw.get("user") or {}).get("totalLp"))
+            candidate = raw.get("userTotalLp") or (
+                (raw.get("user") or {}).get("totalLp")
+            )
             return int(candidate) if candidate is not None else None
         except (TypeError, ValueError):
             return None
@@ -1366,9 +1368,8 @@ class BorosAdapter(BaseAdapter):
             return False
         if str(vault.market_state or "").lower() == "paused":
             return False
-        if (
-            vault.tenor_days is not None
-            and float(vault.tenor_days) < float(min_tenor_days)
+        if vault.tenor_days is not None and float(vault.tenor_days) < float(
+            min_tenor_days
         ):
             return False
         return True
@@ -1424,11 +1425,14 @@ class BorosAdapter(BaseAdapter):
             tenor_days = (
                 time_to_maturity_days(maturity_ts) if maturity_ts is not None else None
             )
-        im_data = (market_meta or {}).get("imData") if isinstance(market_meta, dict) else {}
+        im_data = (
+            (market_meta or {}).get("imData") if isinstance(market_meta, dict) else {}
+        )
         is_isolated_only = bool((im_data or {}).get("isIsolatedOnly"))
         market_state = (
             str((market_meta or {}).get("state"))
-            if isinstance(market_meta, dict) and (market_meta or {}).get("state") is not None
+            if isinstance(market_meta, dict)
+            and (market_meta or {}).get("state") is not None
             else None
         )
 
@@ -1457,7 +1461,9 @@ class BorosAdapter(BaseAdapter):
             symbol=symbol,
             market_symbol=entry.get("marketSymbol")
             or market.get("symbol")
-            or ((market_meta.get("metadata") or {}).get("name") if market_meta else None),
+            or (
+                (market_meta.get("metadata") or {}).get("name") if market_meta else None
+            ),
             base_symbol=base_symbol,
             quote_symbol=quote_symbol,
             apy=apy,
@@ -1645,7 +1651,9 @@ class BorosAdapter(BaseAdapter):
                     str(vault.base_symbol or ""),
                     str(vault.quote_symbol or ""),
                 ]
-                hay = "".join(h.lower().replace("-", "").replace("/", "") for h in haystacks)
+                hay = "".join(
+                    h.lower().replace("-", "").replace("/", "") for h in haystacks
+                )
                 if needle in hay:
                     filtered.append(vault)
             results = filtered
@@ -2310,10 +2318,13 @@ class BorosAdapter(BaseAdapter):
                         is_deposit=False,
                     )
                     if fallback_ok:
-                        sweep_ok, sweep_res = True, {
-                            "status": "fallback_direct_transfer",
-                            "tx": fallback_res,
-                        }
+                        sweep_ok, sweep_res = (
+                            True,
+                            {
+                                "status": "fallback_direct_transfer",
+                                "tx": fallback_res,
+                            },
+                        )
                     elif not sweep_ok:
                         sweep_res = {
                             "status": "warning",
@@ -2538,7 +2549,9 @@ class BorosAdapter(BaseAdapter):
             chain_id=self.chain_id,
         )
         try:
-            tx_hash = await send_transaction(tx, self.sign_callback, wait_for_receipt=True)
+            tx_hash = await send_transaction(
+                tx, self.sign_callback, wait_for_receipt=True
+            )
             return True, {
                 "status": "ok",
                 "tx": {"tx_hash": tx_hash},
@@ -2558,19 +2571,30 @@ class BorosAdapter(BaseAdapter):
         simulate: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         if simulate:
-            return False, {"error": "simulate=True is not supported for direct Boros vault ops"}
+            return False, {
+                "error": "simulate=True is not supported for direct Boros vault ops"
+            }
 
         amm_id = await self._get_amm_id_for_market(int(market_id))
         if amm_id is None:
-            return False, {"error": f"Could not resolve amm_id for market_id={market_id}"}
+            return False, {
+                "error": f"Could not resolve amm_id for market_id={market_id}"
+            }
 
         effective_cash = int(net_cash_in_wei)
-        ok, vaults = await self.get_vaults_summary(account=self.wallet_address, use_direct_lp_query=False)
+        ok, vaults = await self.get_vaults_summary(
+            account=self.wallet_address, use_direct_lp_query=False
+        )
         if ok and isinstance(vaults, list):
-            match = next((vault for vault in vaults if int(vault.market_id) == int(market_id)), None)
+            match = next(
+                (vault for vault in vaults if int(vault.market_id) == int(market_id)),
+                None,
+            )
             if match:
                 available = self._wei_amount_to_tokens(
-                    ((match.raw or {}).get("user") or {}).get("availableBalanceToDeposit")
+                    ((match.raw or {}).get("user") or {}).get(
+                        "availableBalanceToDeposit"
+                    )
                 )
                 if available is not None and float(available) > 0:
                     available_wei = int(float(available) * 1e18)
@@ -2578,7 +2602,9 @@ class BorosAdapter(BaseAdapter):
                         effective_cash = available_wei
                         if min_lp_out_wei is not None and int(net_cash_in_wei) > 0:
                             min_lp_out_wei = int(
-                                int(min_lp_out_wei) * effective_cash / int(net_cash_in_wei)
+                                int(min_lp_out_wei)
+                                * effective_cash
+                                / int(net_cash_in_wei)
                             )
 
         if effective_cash <= 0:
@@ -2600,11 +2626,15 @@ class BorosAdapter(BaseAdapter):
         simulate: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         if simulate:
-            return False, {"error": "simulate=True is not supported for direct Boros vault ops"}
+            return False, {
+                "error": "simulate=True is not supported for direct Boros vault ops"
+            }
 
         amm_id = await self._get_amm_id_for_market(int(market_id))
         if amm_id is None:
-            return False, {"error": f"Could not resolve amm_id for market_id={market_id}"}
+            return False, {
+                "error": f"Could not resolve amm_id for market_id={market_id}"
+            }
 
         return await self.withdraw_from_vault_direct(
             amm_id=int(amm_id),
@@ -2614,7 +2644,9 @@ class BorosAdapter(BaseAdapter):
 
     async def get_rewards(self) -> tuple[bool, dict[str, float] | str]:
         try:
-            result = await self.boros_client.get_amm_rewards(user_address=self.wallet_address)
+            result = await self.boros_client.get_amm_rewards(
+                user_address=self.wallet_address
+            )
             return True, {
                 "accrued_usd": float(result.get("accruedAmountInUsd", 0) or 0.0),
                 "unclaimed_usd": float(result.get("unclaimedAmountInUsd", 0) or 0.0),
@@ -2624,7 +2656,9 @@ class BorosAdapter(BaseAdapter):
 
     async def get_claim_proof(self) -> tuple[bool, dict[str, Any] | str]:
         try:
-            proof = await self.boros_client.get_amm_rewards_proof(user_address=self.wallet_address)
+            proof = await self.boros_client.get_amm_rewards_proof(
+                user_address=self.wallet_address
+            )
             if not proof or not proof.get("tokens"):
                 return True, {}
             return True, proof
@@ -2658,7 +2692,9 @@ class BorosAdapter(BaseAdapter):
         )
 
         try:
-            tx_hash = await send_transaction(tx, self.sign_callback, wait_for_receipt=True)
+            tx_hash = await send_transaction(
+                tx, self.sign_callback, wait_for_receipt=True
+            )
             return True, {
                 "status": "claimed",
                 "tx_hash": tx_hash,

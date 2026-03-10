@@ -841,7 +841,10 @@ class TestBorosAdapter:
                         "marketId": 18,
                         "tokenId": 3,
                         "metadata": {"name": "HYPE-USDT"},
-                        "imData": {"symbol": "HYPE-USDT", "maturity": int(time.time()) + 86400},
+                        "imData": {
+                            "symbol": "HYPE-USDT",
+                            "maturity": int(time.time()) + 86400,
+                        },
                     }
                 ],
             )
