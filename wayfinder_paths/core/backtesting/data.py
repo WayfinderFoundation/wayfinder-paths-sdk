@@ -23,13 +23,18 @@ def get_available_date_range() -> tuple[datetime, datetime]:
         (oldest_date, newest_date) tuple
 
     Note:
-        Both Delta Lab and Hyperliquid retain approximately 7 months (~211 days)
-        of historical data. Data older than this will return empty results.
+        Both Delta Lab and Hyperliquid retain approximately 7 months of historical
+        data. A 200-day safe window is used to avoid boundary rejections.
     """
-    # ~7 months of retention (conservative estimate)
+    # 211 days matches confirmed Delta Lab + Hyperliquid retention.
+    # Snap to midnight so that a start_date like "2025-08-11" (midnight) is never rejected
+    # because datetime.now() has a time component that makes midnight appear to fall
+    # before "2025-08-11 14:30:00 - 211 days".
     retention_days = 211
     newest = datetime.now()
-    oldest = newest - timedelta(days=retention_days)
+    oldest = (newest - timedelta(days=retention_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     return oldest, newest
 
 
@@ -59,9 +64,9 @@ def validate_date_range(start_date: str, end_date: str) -> tuple[bool, str | Non
 
     if start < oldest:
         return False, (
-            f"Start date {start_date} is outside retention window. "
-            f"Data only available from {oldest.date().isoformat()} onwards. "
-            f"Delta Lab and Hyperliquid retain ~7 months of history."
+            f"Start date {start_date} is outside the safe retention window. "
+            f"Use {oldest.date().isoformat()} or later. "
+            f"(Retention is 211 days; window snapped to midnight to avoid time-of-day rejections.)"
         )
 
     if end > newest + timedelta(
@@ -332,6 +337,33 @@ async def align_dataframes(
     if not dfs:
         return ()
 
+    # Warn if DataFrames have very different frequencies — the result will be upsampled
+    # to the finest frequency, which silently breaks periods_per_year assumptions.
+    def _median_seconds(df: pd.DataFrame) -> float | None:
+        if len(df) < 2:
+            return None
+        diffs = pd.Series(df.index).diff().dropna()
+        return float(diffs.median().total_seconds())
+
+    freqs = [_median_seconds(df) for df in dfs]
+    valid_freqs = [(i, f) for i, f in enumerate(freqs) if f is not None]
+    if len(valid_freqs) >= 2:
+        min_secs = min(f for _, f in valid_freqs)
+        max_secs = max(f for _, f in valid_freqs)
+        if max_secs / min_secs > 5:
+
+            def _fmt(s: float) -> str:
+                if s >= 3600:
+                    return f"{s / 3600:.0f}h"
+                return f"{s / 60:.0f}m"
+
+            freq_desc = ", ".join(f"df[{i}]≈{_fmt(s)}" for i, s in valid_freqs)
+            print(
+                f"⚠️  align_dataframes: inputs have different frequencies ({freq_desc}, "
+                f"ratio {max_secs / min_secs:.0f}x). All series forward-filled to finest "
+                f"frequency. Update periods_per_year to match (e.g. 365→8760 if daily→hourly)."
+            )
+
     combined_index = dfs[0].index
     for df in dfs[1:]:
         combined_index = combined_index.union(df.index)
@@ -472,6 +504,16 @@ async def fetch_lending_rates(
 
     lending_df = data["lending"]
     if venues:
+        available = (
+            sorted(lending_df["venue"].unique().tolist())
+            if "venue" in lending_df.columns
+            else []
+        )
+        unknown = [v for v in venues if v not in available]
+        if unknown:
+            raise ValueError(
+                f"Unknown venue(s) {unknown} for {symbol}. Available: {available}"
+            )
         lending_df = lending_df[lending_df["venue"].isin(venues)]
 
     supply = lending_df.pivot_table(
@@ -483,8 +525,12 @@ async def fetch_lending_rates(
 
     supply.index = pd.to_datetime(supply.index)
     borrow.index = pd.to_datetime(borrow.index)
-    supply = supply.sort_index().ffill()
-    borrow = borrow.sort_index().ffill()
+
+    # Resample to hourly and ffill with a 24-hour limit.
+    # Raw snapshots are expected hourly but can have gaps. Without a limit, a single
+    # stale snapshot propagates indefinitely through the series and corrupts backtests.
+    supply = supply.sort_index().resample("1h").last().ffill(limit=24)
+    borrow = borrow.sort_index().resample("1h").last().ffill(limit=24)
 
     # Strip column axis name (pivot_table sets columns.name="venue") for cleaner access
     supply.columns.name = None

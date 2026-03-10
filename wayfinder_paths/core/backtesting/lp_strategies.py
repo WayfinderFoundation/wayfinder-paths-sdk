@@ -175,7 +175,9 @@ async def backtest_lp_position(
     periods_per_year = interval_to_periods.get(interval, 8760)
 
     prices = await fetch_prices(list(pool_assets), start_date, end_date, interval)
-    lp_prices = build_lp_price_index(prices, pool_assets, fee_income_rate, periods_per_year)
+    lp_prices = build_lp_price_index(
+        prices, pool_assets, fee_income_rate, periods_per_year
+    )
 
     col = f"LP_{pool_assets[0]}_{pool_assets[1]}"
     target = pd.DataFrame({col: 1.0}, index=lp_prices.index)

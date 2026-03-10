@@ -26,13 +26,17 @@ async def main() -> None:
     print(f"Sharpe:          {result.stats['sharpe']:.2f}")
     print(f"Max drawdown:    {result.stats['max_drawdown']:.2%}")
     print(f"Ann. volatility: {result.stats['volatility_ann']:.2%}")
-    print(f"Funding income:  {result.stats['total_funding']:.4f}  (negative = received)")
+    print(
+        f"Funding income:  {result.stats['total_funding']:.4f}  (negative = received)"
+    )
 
     # Delta-neutral health check:
     # - volatility_ann should be very low (<5%)
     # - total_funding should be negative (we received funding)
     # - max_drawdown should be minimal
-    assert result.stats["volatility_ann"] < 0.10, "Volatility too high — hedge may be off"
+    assert result.stats["volatility_ann"] < 0.10, (
+        "Volatility too high — hedge may be off"
+    )
     assert result.stats["total_funding"] <= 0, "Paying funding — check sign convention"
 
 

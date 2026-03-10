@@ -11,13 +11,15 @@ from wayfinder_paths.core.backtesting import backtest_yield_rotation
 
 
 async def main() -> None:
+    # Venue keys include chain suffix — discover with fetch_lending_rates("USDC", start, end)
+    # then print(rates["supply"].columns.tolist()) to see available names.
     result = await backtest_yield_rotation(
         symbol="USDC",
-        venues=["aave", "moonwell", "morpho"],
+        venues=["aave-v3-base", "moonwell-base"],
         start_date="2025-08-01",
         end_date="2026-01-01",
         lookback_signal_days=7,  # 7-day trailing avg for venue selection
-        fee_rate=0.0005,          # 5bps = amortized gas cost per switch
+        fee_rate=0.0005,  # 5bps = amortized gas cost per switch
     )
 
     print("\n=== USDC Yield Rotation ===")
@@ -29,7 +31,9 @@ async def main() -> None:
     # Health check: if trade_count is high, gas costs will dominate.
     # Increase lookback_signal_days to reduce switching frequency.
     if result.stats["trade_count"] > 20:
-        print("\n⚠  High switching frequency — consider increasing lookback_signal_days")
+        print(
+            "\n⚠  High switching frequency — consider increasing lookback_signal_days"
+        )
     else:
         print("\n✓ Switching frequency is reasonable")
 

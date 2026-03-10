@@ -73,25 +73,25 @@ __all__ = [
     "BacktestResult",
     "BacktestStats",
     # End-to-end strategy helpers
-    "quick_backtest",           # Perp/spot momentum (auto data fetch)
-    "backtest_with_rates",      # Perp/spot with explicit funding signal
-    "backtest_delta_neutral",   # Long spot + short perp, harvest funding
+    "quick_backtest",  # Perp/spot momentum (auto data fetch)
+    "backtest_with_rates",  # Perp/spot with explicit funding signal
+    "backtest_delta_neutral",  # Long spot + short perp, harvest funding
     "backtest_yield_rotation",  # Rotate across lending venues by supply APR
-    "backtest_carry_trade",     # Borrow cheap + supply expensive (net carry)
-    "backtest_lp_position",     # 50/50 AMM LP (fee income vs IL)
+    "backtest_carry_trade",  # Borrow cheap + supply expensive (net carry)
+    "backtest_lp_position",  # 50/50 AMM LP (fee income vs IL)
     # Synthetic price primitives
-    "build_yield_index",        # Compound APR rates into price index
-    "build_lp_price_index",     # LP value = hold * IL_factor * fee_multiplier
-    "simulate_il",              # Impermanent loss series for AMM pool
+    "build_yield_index",  # Compound APR rates into price index
+    "build_lp_price_index",  # LP value = hold * IL_factor * fee_multiplier
+    "simulate_il",  # Impermanent loss series for AMM pool
     # Data fetching
     "fetch_prices",
     "fetch_funding_rates",
     "fetch_borrow_rates",
-    "fetch_supply_rates",       # Supply APRs averaged across venues
-    "fetch_lending_rates",      # Supply + borrow APRs per venue (for rotation/carry)
+    "fetch_supply_rates",  # Supply APRs averaged across venues
+    "fetch_lending_rates",  # Supply + borrow APRs per venue (for rotation/carry)
     "get_available_date_range",
     "validate_date_range",
     # Utilities
-    "convert_to_spot",          # Spot leg (same prices, zero funding)
+    "convert_to_spot",  # Spot leg (same prices, zero funding)
     "align_dataframes",
 ]

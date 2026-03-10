@@ -179,11 +179,24 @@ async def backtest_with_rates(
     }
     target_positions = strategy_fn(prices, funding, context)
 
+    interval_to_periods = {
+        "1m": 365 * 24 * 60,
+        "5m": 365 * 24 * 12,
+        "15m": 365 * 24 * 4,
+        "1h": 365 * 24,
+        "4h": 365 * 6,
+        "1d": 365,
+    }
+    periods_per_year = interval_to_periods.get(interval, 365 * 24)
+
     if config is None:
-        config = BacktestConfig(leverage=leverage, funding_rates=funding)
+        config = BacktestConfig(
+            leverage=leverage, funding_rates=funding, periods_per_year=periods_per_year
+        )
     else:
         config.leverage = leverage
         config.funding_rates = funding
+        config.periods_per_year = periods_per_year
 
     return run_backtest(prices, target_positions, config)
 

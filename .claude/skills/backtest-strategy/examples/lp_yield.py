@@ -38,7 +38,7 @@ async def main() -> None:
         interval="1h",
     )
 
-    print(f"\n=== ETH/USDC LP Position ===")
+    print("\n=== ETH/USDC LP Position ===")
     print(f"LP return:     {result.stats['total_return']:.2%}")
     print(f"Hold return:   {result.stats['buy_hold_return']:.2%}")
     print(f"Sharpe:        {result.stats['sharpe']:.2f}")

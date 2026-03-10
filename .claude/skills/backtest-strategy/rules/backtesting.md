@@ -111,9 +111,38 @@ All end-to-end helpers set this automatically.
 ## Gotchas
 
 - **Look-ahead bias**: never use future data in signals
-- **Wrong `periods_per_year`**: Sharpe/volatility will be meaningless
+- **Wrong `periods_per_year`**: Sharpe/volatility will be meaningless; `quick_backtest` sets it automatically
 - **Leveraged yield**: bake leverage into synthetic price, don't use `config.leverage`
 - **`fetch_lending_rates`** returns per-venue data; `fetch_supply_rates`/`fetch_borrow_rates` return symbol-level averages
+
+### Silent zero return (CRITICAL)
+With `target_weight=1.0` and any `fee_rate > 0`, no trades will ever execute:
+the cash check requires `initial_capital ≥ notional + fees`, but `1.0 + fees > 1.0`.
+The backtester now warns when this happens. **For yield/lending strategies, set `fee_rate=0.0`
+and `slippage_rate=0.0`** (encode switching costs as discrete events, or skip them for the
+synthetic-price approach).
+
+### Venue names for `fetch_lending_rates`
+Venue keys include the chain suffix: `"moonwell-base"`, `"aave-v3-base"`, not just `"moonwell"`.
+An unknown venue name now raises a `ValueError` listing available options. To discover:
+```python
+rates = await fetch_lending_rates("USDC", start, end)  # no venues filter
+print(rates["supply"].columns.tolist())  # e.g. ['aave-v3-base', 'moonwell-base', ...]
+```
+
+### `align_dataframes` changes `periods_per_year`
+`fetch_lending_rates`, `fetch_prices`, and `fetch_funding_rates` all return **hourly** data (8760/yr),
+so aligning them is safe with no frequency mismatch. The warning fires if you mix custom
+daily/weekly data with hourly series — update `periods_per_year` to match the resulting frequency.
+Safer: resample each series to a common frequency before calling `align_dataframes`.
+
+### Borrow rate anomalies
+Lending rates include utilisation spikes (e.g. 100%+ APR during high demand).
+Always inspect the distribution before using raw rates in a synthetic price:
+```python
+print(borrow_df.describe())          # check mean vs median
+print(borrow_df.median())            # median is more robust than mean for spiky data
+```
 
 ---
 

@@ -99,89 +99,13 @@ Skills contain rules for correct method usage, common gotchas, and high-value re
 
 ## Backtesting Framework
 
-Use the backtesting framework to **validate strategy ideas before production deployment**. The framework supports perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade, LP strategies, and more.
+Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade, LP strategies. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
 
-**CRITICAL: Data oldest available ~August 2025** (Delta Lab + Hyperliquid retain ~7 months).
+**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`; for LP load `lp-strategies.md`.
 
-**Load `/backtest-strategy` skill** before using the framework for full documentation and all strategy patterns.
+All stats are decimals — format with `:.2%`. Key: `sharpe` (>2.0 excellent), `total_return`, `max_drawdown`, `total_funding` (negative = income received), `trade_count`.
 
-### Strategy type → helper
-
-```python
-from wayfinder_paths.core.backtesting import (
-    quick_backtest,           # Perp/spot momentum (auto data fetch + funding)
-    backtest_delta_neutral,   # Long spot + short perp, harvest funding
-    backtest_yield_rotation,  # Rotate across lending venues by supply APR
-    backtest_carry_trade,     # Borrow cheap + supply expensive (net carry)
-    backtest_lp_position,     # 50/50 AMM LP (fee income vs impermanent loss)
-    run_backtest,             # Full control
-)
-```
-
-### Quick Start (momentum)
-
-```python
-def my_strategy(prices, ctx):
-    returns = prices.pct_change(24)
-    ranks = returns.rank(axis=1, pct=True)
-    target = (ranks > 0.5).astype(float) - (ranks < 0.5).astype(float)
-    return target / target.abs().sum(axis=1).fillna(1)
-
-result = await quick_backtest(
-    strategy_fn=my_strategy,
-    symbols=["BTC", "ETH"],
-    start_date="2025-08-01",   # Oldest available: ~Aug 2025
-    end_date="2026-01-01",
-    leverage=2.0
-)
-print(f"Sharpe: {result.stats['sharpe']:.2f}")
-print(f"Return: {result.stats['total_return']:.2%}")
-```
-
-### Quick Start (yield rotation)
-
-```python
-result = await backtest_yield_rotation(
-    symbol="USDC",
-    venues=["aave", "moonwell", "morpho"],
-    start_date="2025-08-01",
-    end_date="2026-01-01",
-    lookback_signal_days=7,
-)
-```
-
-### Quick Start (delta-neutral)
-
-```python
-result = await backtest_delta_neutral(
-    symbols=["BTC", "ETH"],
-    start_date="2025-08-01",
-    end_date="2026-01-01",
-    funding_threshold=0.0001,  # Enter when funding > 0.01% per hour
-)
-print(f"Funding income: {result.stats['total_funding']:.4f}")  # Negative = received
-```
-
-### Key Metrics
-
-- **`sharpe`** - Risk-adjusted returns (>1.0 good, >2.0 excellent; yield strategies often >3.0)
-- **`total_return`** - Cumulative return (decimal: 0.45 = 45%)
-- **`max_drawdown`** - Largest peak-to-trough decline (near-zero for yield strategies)
-- **`total_funding`** - Funding income/cost for delta-neutral (negative = income received)
-- **`trade_count`** - Rebalances; keep low for yield strategies (each switch = gas cost)
-
-All stats are decimals — always format with `:.2%`.
-
-### From Backtest to Production
-
-Once validated:
-1. `just create-strategy "Strategy Name"`
-2. Implement Strategy interface (deposit, update, withdraw, exit)
-3. Add adapters and manifest
-4. Write smoke tests
-5. Deploy with small capital first
-
-See `/backtest-strategy` skill for full guide, all strategy patterns, and gotchas.
+Once validated: `just create-strategy "Name"` → implement deposit/update/withdraw/exit → smoke tests → deploy small capital first.
 
 ## Contract development
 

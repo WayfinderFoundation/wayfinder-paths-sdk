@@ -6,7 +6,7 @@ Provides end-to-end helpers for:
 - Supply rate rotation (USDC across Aave/Moonwell/Morpho)
 - Carry trade (borrow cheap, supply expensive)
 
-All strategies use daily data (periods_per_year=365) and synthetic price encoding:
+All strategies use hourly data (periods_per_year=8760) and synthetic price encoding:
 the raw APR is compounded into a cumulative price index, then run through the
 standard backtesting engine. This gives meaningful Sharpe/drawdown metrics
 for yield strategies that don't have "price" data in the traditional sense.
@@ -35,14 +35,15 @@ def build_yield_index(
     Args:
         rates_df: DataFrame of decimal APR values (index=timestamps, columns=venues/symbols)
                   Values are annual rates: 0.05 = 5% APY, 0.20 = 20% APY
-        periods_per_year: Periods in one year (365 for daily data, 8760 for hourly)
+        periods_per_year: Periods in one year. Must match data frequency:
+                          8760 for hourly (fetch_lending_rates output), 365 for daily.
 
     Returns:
         DataFrame of cumulative price indices starting at 1.0 (same shape as rates_df)
 
     Example:
         >>> rates = await fetch_lending_rates("USDC", "2025-08-01", "2026-01-01")
-        >>> prices = build_yield_index(rates["supply"])
+        >>> prices = build_yield_index(rates["supply"], periods_per_year=8760)
         >>> # prices now has the same shape but values start at 1.0 and grow with yield
     """
     return (1 + rates_df / periods_per_year).cumprod()
@@ -82,7 +83,7 @@ async def backtest_yield_rotation(
     Notes:
         - slippage_rate=0.0 (stablecoin deposits have no price impact)
         - enable_liquidation=False (supply-only positions cannot be liquidated)
-        - periods_per_year=365 (lending rates are daily at best)
+        - periods_per_year=8760 (lending rates are hourly)
 
     Example:
         >>> result = await backtest_yield_rotation(
@@ -96,9 +97,11 @@ async def backtest_yield_rotation(
     rates = await fetch_lending_rates(symbol, start_date, end_date, venues=venues)
     supply_rates = rates["supply"].reindex(columns=venues).ffill().dropna(how="all")
 
-    prices = build_yield_index(supply_rates)
+    prices = build_yield_index(supply_rates, periods_per_year=8760)
 
-    rolling_avg = supply_rates.rolling(lookback_signal_days, min_periods=1).mean()
+    # Data is hourly; convert lookback from days to hours for the rolling window
+    rolling_hours = lookback_signal_days * 24
+    rolling_avg = supply_rates.rolling(rolling_hours, min_periods=1).mean()
     best_venue = rolling_avg.idxmax(axis=1)
 
     target = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
@@ -110,7 +113,7 @@ async def backtest_yield_rotation(
         slippage_rate=0.0,
         leverage=1.0,
         enable_liquidation=False,
-        periods_per_year=365,
+        periods_per_year=8760,
     )
     return run_backtest(prices, target, config)
 
@@ -172,16 +175,17 @@ async def backtest_carry_trade(
     spread = best_supply - cheapest_borrow
 
     active = (spread > min_spread).astype(float)
-    net_carry_daily = spread / 365 * active
-    strategy_price = (1 + net_carry_daily).cumprod()
+    net_carry_per_hour = spread / 8760 * active
+    strategy_price = (1 + net_carry_per_hour).cumprod()
 
     prices = pd.DataFrame({"carry": strategy_price})
     target = pd.DataFrame({"carry": active}, index=prices.index)
 
     config = BacktestConfig(
         fee_rate=fee_rate,
+        slippage_rate=0.0,
         leverage=1.0,
         enable_liquidation=False,
-        periods_per_year=365,
+        periods_per_year=8760,
     )
     return run_backtest(prices, target, config)

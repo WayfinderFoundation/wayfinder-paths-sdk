@@ -12,12 +12,14 @@ from wayfinder_paths.core.backtesting import backtest_carry_trade
 
 
 async def main() -> None:
+    # Venue keys include chain suffix — use fetch_lending_rates("USDC", start, end)
+    # and print(rates["supply"].columns.tolist()) to discover available names.
     result = await backtest_carry_trade(
         symbol="USDC",
         start_date="2025-08-01",
         end_date="2026-01-01",
-        venues=["aave", "moonwell", "morpho"],
-        min_spread=0.01,   # Only enter when spread > 1% APR
+        venues=["aave-v3-base", "moonwell-base"],
+        min_spread=0.01,  # Only enter when spread > 1% APR
         fee_rate=0.0005,
     )
 
