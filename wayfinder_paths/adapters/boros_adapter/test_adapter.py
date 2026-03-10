@@ -1,5 +1,6 @@
 """Tests for BorosAdapter."""
 
+import time
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,7 @@ from wayfinder_paths.adapters.boros_adapter.adapter import (
     BorosAdapter,
     BorosLimitOrder,
     BorosMarketQuote,
+    BorosVault,
 )
 
 
@@ -493,7 +495,7 @@ class TestBorosAdapter:
     async def test_deposit_to_cross_margin_sweeps_after_deposit(
         self, adapter, mock_boros_client
     ):
-        """Test deposit triggers isolated->cross sweep on success."""
+        """Test deposit falls back to direct isolated->cross transfer when sweep is empty."""
         adapter.sign_callback = object()
 
         mock_boros_client.build_deposit_calldata = AsyncMock(
@@ -539,6 +541,16 @@ class TestBorosAdapter:
                 "sweep_isolated_to_cross",
                 new=AsyncMock(return_value=(True, {"status": "ok", "moved": []})),
             ) as mock_sweep,
+            patch.object(
+                adapter,
+                "unscaled_to_scaled_cash_wei",
+                new=AsyncMock(return_value=10**18),
+            ) as mock_scaled,
+            patch.object(
+                adapter,
+                "cash_transfer",
+                new=AsyncMock(return_value=(True, {"status": "ok"})),
+            ) as mock_transfer,
         ):
             ok, res = await adapter.deposit_to_cross_margin(
                 collateral_address="0x0000000000000000000000000000000000000001",
@@ -551,9 +563,49 @@ class TestBorosAdapter:
         assert res["status"] == "ok"
         assert res["approve"]["tx_hash"] == "0xapprove"
         assert res["tx"]["tx_hash"] == "0xdeposit"
-        assert res["sweep"]["status"] == "ok"
+        assert res["sweep"]["status"] == "fallback_direct_transfer"
 
         mock_sweep.assert_awaited_once_with(token_id=3, market_id=18)
+        mock_scaled.assert_awaited_once_with(3, 1_000_000)
+        mock_transfer.assert_awaited_once_with(
+            market_id=18,
+            amount_wei=10**18,
+            is_deposit=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_deposit_to_vault_ignores_zero_available_balance_cap(self, adapter):
+        adapter.get_vaults_summary = AsyncMock(
+            return_value=(
+                True,
+                [
+                    BorosVault(
+                        amm_id=680,
+                        market_id=68,
+                        symbol="BYBIT-HYPEUSDT-27MAR2026",
+                        raw={"user": {"availableBalanceToDeposit": "0"}},
+                    )
+                ],
+            )
+        )
+        adapter._get_amm_id_for_market = AsyncMock(return_value=680)
+        adapter.deposit_to_vault_direct = AsyncMock(
+            return_value=(True, {"status": "ok", "amm_id": 680})
+        )
+
+        ok, res = await adapter.deposit_to_vault(
+            market_id=68,
+            net_cash_in_wei=2 * 10**18,
+        )
+
+        assert ok is True
+        assert res["amm_id"] == 680
+        adapter.deposit_to_vault_direct.assert_awaited_once_with(
+            amm_id=680,
+            net_cash_in_wei=2 * 10**18,
+            min_lp_out_wei=None,
+            slippage_bps=20,
+        )
 
     @pytest.mark.asyncio
     async def test_close_positions_except_skips_keep_market(self, adapter):
@@ -761,3 +813,136 @@ class TestBorosAdapter:
 
         # None
         assert BorosAdapter.normalize_apr(None) is None
+
+    @pytest.mark.asyncio
+    async def test_get_vaults_summary_uses_direct_lp_balances(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.get_amm_summary = AsyncMock(
+            return_value={
+                "vaults": [
+                    {
+                        "ammId": 7,
+                        "marketId": 18,
+                        "symbol": "HYPE-USDT",
+                        "lpApy": 0.12,
+                        "lpPrice": 1.0,
+                        "totalSupplyCap": 1000,
+                        "totalLp": 500,
+                    }
+                ]
+            }
+        )
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "tokenId": 3,
+                        "metadata": {"name": "HYPE-USDT"},
+                        "imData": {"symbol": "HYPE-USDT", "maturity": int(time.time()) + 86400},
+                    }
+                ],
+            )
+        )
+        adapter.get_vault_lp_balance = AsyncMock(return_value=(True, int(25 * 1e18)))
+
+        ok, vaults = await adapter.get_vaults_summary(account=adapter.wallet_address)
+
+        assert ok is True
+        assert isinstance(vaults, list) and len(vaults) == 1
+        vault = vaults[0]
+        assert isinstance(vault, BorosVault)
+        assert vault.amm_id == 7
+        assert vault.user_total_lp_wei == int(25 * 1e18)
+        assert vault.user_deposit_tokens == pytest.approx(25.0)
+
+    @pytest.mark.asyncio
+    async def test_vault_helpers_reuse_summary_fields(self, adapter):
+        vault = BorosVault(
+            amm_id=7,
+            market_id=18,
+            symbol="HYPE-USDT",
+            remaining_supply_lp=int(50 * 1e18),
+            tenor_days=10.0,
+            raw={
+                "lpPrice": 1.25,
+                "user": {"totalLp": str(int(8 * 1e18))},
+            },
+        )
+
+        assert adapter.estimate_user_lp_balance_wei(vault) == int(8 * 1e18)
+        assert adapter.estimate_user_vault_value_tokens(vault) == pytest.approx(10.0)
+        assert adapter.estimate_vault_capacity_tokens(vault) == pytest.approx(62.5)
+        assert adapter.is_vault_open_for_deposit(vault, min_tenor_days=3.0) is True
+
+    @pytest.mark.asyncio
+    async def test_best_yield_vault_filters_expired_and_capacity(self, adapter):
+        adapter.search_vaults = AsyncMock(
+            return_value=(
+                True,
+                [
+                    BorosVault(
+                        amm_id=1,
+                        market_id=11,
+                        symbol="A",
+                        apy=0.08,
+                        is_expired=True,
+                    ),
+                    BorosVault(
+                        amm_id=2,
+                        market_id=12,
+                        symbol="B",
+                        apy=0.10,
+                        remaining_supply_lp=int(50 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                    ),
+                    BorosVault(
+                        amm_id=3,
+                        market_id=14,
+                        symbol="D",
+                        apy=0.20,
+                        remaining_supply_lp=int(50 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                        is_isolated_only=True,
+                    ),
+                    BorosVault(
+                        amm_id=4,
+                        market_id=15,
+                        symbol="E",
+                        apy=0.18,
+                        remaining_supply_lp=int(50 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                        market_state="Paused",
+                    ),
+                    BorosVault(
+                        amm_id=5,
+                        market_id=13,
+                        symbol="C",
+                        apy=0.15,
+                        remaining_supply_lp=int(1 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                    ),
+                ],
+            )
+        )
+
+        ok, best = await adapter.best_yield_vault(token_id=3, amount_tokens=10.0)
+
+        assert ok is True
+        assert isinstance(best, BorosVault)
+        assert best.amm_id == 2
+
+    @pytest.mark.asyncio
+    async def test_get_account_idle_balance_reads_total(self, adapter):
+        adapter.get_account_balances = AsyncMock(return_value=(True, {"total": 42.5}))
+
+        ok, total = await adapter.get_account_idle_balance(token_id=3, account_id=0)
+
+        assert ok is True
+        assert total == 42.5

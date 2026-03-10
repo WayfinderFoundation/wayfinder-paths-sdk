@@ -5,15 +5,17 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_api_key, get_gorlami_base_url
+from wayfinder_paths.core.config import get_gorlami_api_key, get_gorlami_base_url
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 from wayfinder_paths.core.utils.retry import exponential_backoff_s, retry_async
 
 
 class GorlamiTestnetClient:
+    MAX_RETRY_DELAY_S = 5.0
+
     def __init__(self):
         self.base_url = get_gorlami_base_url().rstrip("/")
-        api_key = get_api_key()
+        api_key = get_gorlami_api_key()
         headers = {"X-API-KEY": api_key} if api_key else {}
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
@@ -49,10 +51,17 @@ class GorlamiTestnetClient:
                 retry_after = exc.response.headers.get("Retry-After")
                 if retry_after:
                     try:
-                        return float(retry_after)
+                        return min(
+                            float(retry_after),
+                            float(self.MAX_RETRY_DELAY_S),
+                        )
                     except ValueError:
                         pass
-            return exponential_backoff_s(attempt, base_delay_s=0.25)
+            return exponential_backoff_s(
+                attempt,
+                base_delay_s=0.25,
+                max_delay_s=self.MAX_RETRY_DELAY_S,
+            )
 
         def _on_retry(attempt: int, exc: Exception, delay_s: float) -> None:
             status = None

@@ -7,12 +7,16 @@ import pytest
 from loguru import logger
 
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
-from wayfinder_paths.core.config import get_api_key, get_rpc_urls, set_rpc_urls
+from wayfinder_paths.core.config import (
+    get_gorlami_api_key,
+    get_rpc_urls,
+    set_rpc_urls,
+)
 from wayfinder_paths.core.utils import web3 as web3_utils
 
 
 def gorlami_configured() -> bool:
-    return bool(get_api_key())
+    return bool(get_gorlami_api_key())
 
 
 @pytest.fixture

@@ -365,6 +365,35 @@ class BorosClient:
         }
         return await self._http("GET", path, params=params)
 
+    async def get_amm_summary(
+        self,
+        *,
+        account: str | None = None,
+    ) -> dict[str, Any]:
+        path = self.endpoints["amm_summary"]
+        params = {"account": str(account)} if account else None
+        return await self._http("GET", path, params=params)
+
+    async def get_amm_rewards(
+        self,
+        *,
+        user_address: str | None = None,
+    ) -> dict[str, Any]:
+        path = self.endpoints["amm_rewards"]
+        params = {"user": user_address or self.user_address}
+        return await self._http("GET", path, params=params)
+
+    async def get_amm_rewards_proof(
+        self,
+        *,
+        user_address: str | None = None,
+    ) -> dict[str, Any]:
+        user = user_address or self.user_address
+        if not user:
+            raise ValueError("user_address is required")
+        path = f"{self.endpoints['amm_rewards_proof']}/{user}"
+        return await self._http("GET", path)
+
     async def get_open_orders(
         self,
         user_address: str | None = None,
