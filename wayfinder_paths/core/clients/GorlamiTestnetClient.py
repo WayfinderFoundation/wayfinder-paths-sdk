@@ -22,11 +22,21 @@ class GorlamiTestnetClient:
             headers=headers,
         )
 
-    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        accepted_statuses: set[int] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
         retryable_statuses = {429, 500, 502, 503, 504}
+        accepted_statuses = accepted_statuses or set()
 
         async def _attempt() -> httpx.Response:
             resp = await self.client.request(method, url, **kwargs)
+            if resp.status_code in accepted_statuses:
+                return resp
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
@@ -108,7 +118,7 @@ class GorlamiTestnetClient:
         url = f"{self.base_url}/fork/{fork_id}"
         logger.debug(f"Deleting fork {fork_id}")
 
-        resp = await self.client.delete(url)
+        resp = await self._request("DELETE", url, accepted_statuses={404})
         if resp.status_code == 404:
             logger.warning(f"Fork {fork_id} not found (already deleted?)")
             return False

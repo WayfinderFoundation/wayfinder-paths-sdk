@@ -36,3 +36,37 @@ async def test_gorlami_retry_after_is_capped(monkeypatch: pytest.MonkeyPatch) ->
 
     assert response.status_code == 200
     assert sleep_calls == [client.MAX_RETRY_DELAY_S]
+
+
+@pytest.mark.asyncio
+async def test_delete_fork_retries_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GorlamiTestnetClient()
+    request = httpx.Request(
+        "DELETE",
+        "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami/fork/fork-123",
+    )
+    rate_limited = httpx.Response(
+        429,
+        request=request,
+        headers={"Retry-After": "60"},
+        json={"detail": "rate limited"},
+    )
+    deleted = httpx.Response(200, request=request, json={"ok": True})
+
+    sleep_calls: list[float] = []
+
+    async def fake_sleep(delay_s: float) -> None:
+        sleep_calls.append(delay_s)
+
+    monkeypatch.setattr(retry_utils.asyncio, "sleep", fake_sleep)
+    client.client.request = AsyncMock(side_effect=[rate_limited, deleted])
+
+    try:
+        result = await client.delete_fork("fork-123")
+    finally:
+        await client.close()
+
+    assert result is True
+    assert sleep_calls == [client.MAX_RETRY_DELAY_S]

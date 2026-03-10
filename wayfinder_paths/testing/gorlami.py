@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from copy import deepcopy
 from unittest.mock import patch
 
-import httpx
 import pytest
 from loguru import logger
 
@@ -17,20 +16,6 @@ from wayfinder_paths.core.utils import web3 as web3_utils
 
 def gorlami_configured() -> bool:
     return bool(get_gorlami_api_key())
-
-
-def skip_if_gorlami_rate_limited(exc: Exception, *, action: str) -> None:
-    if not isinstance(exc, httpx.HTTPStatusError) or exc.response is None:
-        return
-    if exc.response.status_code != 429:
-        return
-
-    retry_after = exc.response.headers.get("Retry-After")
-    if retry_after:
-        pytest.skip(
-            f"gorlami rate limited (HTTP 429) during {action}; Retry-After={retry_after}s"
-        )
-    pytest.skip(f"gorlami rate limited (HTTP 429) during {action}")
 
 
 @pytest.fixture
@@ -53,11 +38,7 @@ async def gorlami():
         key = str(chain_id)
         if key in forks:
             return
-        try:
-            fork = await client.create_fork(chain_id)
-        except httpx.HTTPStatusError as exc:
-            skip_if_gorlami_rate_limited(exc, action=f"creating fork for {key}")
-            raise
+        fork = await client.create_fork(chain_id)
         forks[key] = fork
         logger.info(f"[gorlami] Created fork {fork['fork_id']} for chain {chain_id}")
         _apply_rpc_overrides()

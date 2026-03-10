@@ -1,27 +1,15 @@
-import httpx
 import pytest
 
 from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils import web3 as web3_utils
-from wayfinder_paths.testing.gorlami import (
-    gorlami_configured,
-    skip_if_gorlami_rate_limited,
-)
+from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
     not gorlami_configured(),
     reason="api_key not configured (needed for gorlami proxy)",
 )
-
-
-async def _gorlami_call(awaitable, *, action: str):
-    try:
-        return await awaitable
-    except httpx.HTTPStatusError as exc:
-        skip_if_gorlami_rate_limited(exc, action=action)
-        raise
 
 
 class TestGorlamiTestnetClient:
@@ -33,73 +21,46 @@ class TestGorlamiTestnetClient:
 
     @pytest.mark.asyncio
     async def test_create_and_delete_fork(self, client):
-        fork_info = await _gorlami_call(
-            client.create_fork(chain_id=CHAIN_ID_BASE),
-            action=f"creating fork for chain {CHAIN_ID_BASE}",
-        )
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
 
         assert "fork_id" in fork_info
         assert "rpc_url" in fork_info
         assert fork_info["chain_id"] == CHAIN_ID_BASE
 
-        result = await _gorlami_call(
-            client.delete_fork(fork_info["fork_id"]),
-            action=f"deleting fork {fork_info['fork_id']}",
-        )
+        result = await client.delete_fork(fork_info["fork_id"])
         assert result is True
 
     @pytest.mark.asyncio
     async def test_delete_fork_not_found(self, client):
-        result = await _gorlami_call(
-            client.delete_fork("nonexistent-fork-id"),
-            action="deleting fork nonexistent-fork-id",
-        )
+        result = await client.delete_fork("nonexistent-fork-id")
         assert result is False
 
     @pytest.mark.asyncio
     async def test_set_native_balance(self, client):
-        fork_info = await _gorlami_call(
-            client.create_fork(chain_id=CHAIN_ID_BASE),
-            action=f"creating fork for chain {CHAIN_ID_BASE}",
-        )
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         try:
-            result = await _gorlami_call(
-                client.set_native_balance(
-                    fork_id=fork_info["fork_id"],
-                    wallet="0x1234567890123456789012345678901234567890",
-                    amount=10**18,
-                ),
-                action=f"setting native balance on fork {fork_info['fork_id']}",
+            result = await client.set_native_balance(
+                fork_id=fork_info["fork_id"],
+                wallet="0x1234567890123456789012345678901234567890",
+                amount=10**18,
             )
             assert result is True
         finally:
-            await _gorlami_call(
-                client.delete_fork(fork_info["fork_id"]),
-                action=f"deleting fork {fork_info['fork_id']}",
-            )
+            await client.delete_fork(fork_info["fork_id"])
 
     @pytest.mark.asyncio
     async def test_set_erc20_balance(self, client):
-        fork_info = await _gorlami_call(
-            client.create_fork(chain_id=CHAIN_ID_BASE),
-            action=f"creating fork for chain {CHAIN_ID_BASE}",
-        )
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         try:
-            result = await _gorlami_call(
-                client.set_erc20_balance(
-                    fork_id=fork_info["fork_id"],
-                    token=BASE_USDC,
-                    wallet="0x1234567890123456789012345678901234567890",
-                    amount=1000 * 10**6,
-                ),
-                action=f"setting ERC20 balance on fork {fork_info['fork_id']}",
+            result = await client.set_erc20_balance(
+                fork_id=fork_info["fork_id"],
+                token=BASE_USDC,
+                wallet="0x1234567890123456789012345678901234567890",
+                amount=1000 * 10**6,
             )
             assert result is True
         finally:
-            await _gorlami_call(
-                client.delete_fork(fork_info["fork_id"]),
-                action=f"deleting fork {fork_info['fork_id']}",
-            )
+            await client.delete_fork(fork_info["fork_id"])
 
 
 class TestGorlamiProxyAuth:
@@ -116,48 +77,29 @@ class TestGorlamiProxyAuth:
         # Uses X-API-KEY header (not the old Authorization: <gorlami_key>)
         assert "X-API-KEY" in client.client.headers
 
-        fork_info = await _gorlami_call(
-            client.create_fork(chain_id=CHAIN_ID_BASE),
-            action=f"creating fork for chain {CHAIN_ID_BASE}",
-        )
+        fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         fork_id = fork_info["fork_id"]
         try:
             assert fork_info["rpc_url"].startswith(client.base_url)
 
             wallet = "0x1234567890123456789012345678901234567890"
-            await _gorlami_call(
-                client.set_native_balance(fork_id, wallet, 10**18),
-                action=f"setting native balance on fork {fork_id}",
-            )
-            await _gorlami_call(
-                client.set_erc20_balance(
-                    fork_id,
-                    BASE_USDC,
-                    wallet,
-                    500 * 10**6,
-                ),
-                action=f"setting ERC20 balance on fork {fork_id}",
+            await client.set_native_balance(fork_id, wallet, 10**18)
+            await client.set_erc20_balance(
+                fork_id,
+                BASE_USDC,
+                wallet,
+                500 * 10**6,
             )
 
-            block = await _gorlami_call(
-                client.send_rpc(fork_id, "eth_blockNumber", []),
-                action=f"sending RPC eth_blockNumber to fork {fork_id}",
-            )
+            block = await client.send_rpc(fork_id, "eth_blockNumber", [])
             assert int(block, 16) > 0
 
-            balance_hex = await _gorlami_call(
-                client.send_rpc(fork_id, "eth_getBalance", [wallet, "latest"]),
-                action=f"sending RPC eth_getBalance to fork {fork_id}",
+            balance_hex = await client.send_rpc(
+                fork_id, "eth_getBalance", [wallet, "latest"]
             )
             assert int(balance_hex, 16) == 10**18
         finally:
-            assert (
-                await _gorlami_call(
-                    client.delete_fork(fork_id),
-                    action=f"deleting fork {fork_id}",
-                )
-                is True
-            )
+            assert await client.delete_fork(fork_id) is True
 
 
 class TestGorlamiFixture:
