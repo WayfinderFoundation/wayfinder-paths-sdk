@@ -232,8 +232,6 @@ from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
 data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)
 ```
 
-**Note:** Alpha Lab includes Delta Lab highlights (top APYs + delta-neutral pairs). Delta Labs should be used when querying yields since it is more accurate, Alpha labs only stores highlights for Delta labs.
-
 ## Delta Lab MCP resources (yield discovery)
 
 **Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
