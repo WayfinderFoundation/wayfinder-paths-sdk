@@ -86,6 +86,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | CCXT (CEX)            | `/using-ccxt-adapter`            |
 | Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
+| Alpha Lab             | `/using-alpha-lab`               |
 | Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
@@ -189,6 +190,47 @@ When answering questions about **rates/APYs/funding**:
 - Always fetch the value via an adapter/client/tool call when possible.
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
+
+## Alpha Lab MCP resources (alpha discovery)
+
+**Load `/using-alpha-lab` skill for detailed docs.** Quick reference below.
+
+Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). Results ranked by `insightfulness_score` (0-1). Read-only — discovery only, no execution.
+
+**MCP resources:**
+- `wayfinder://alpha-lab/types` - List available scan types
+- `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}` - Search insights
+
+**Search params:** use `_` as placeholder to skip optional params.
+
+| Param | Values | Default |
+|-------|--------|---------|
+| `query` | text search or `_` for none | `_` |
+| `scan_type` | `all`, `twitter_post`, `defi_llama_chain_flow`, `defi_llama_overview`, `defi_llama_protocol`, `delta_lab_top_apy`, `delta_lab_best_delta_neutral` | `all` |
+| `created_after` | ISO 8601 datetime or `_` | `_` |
+| `created_before` | ISO 8601 datetime or `_` | `_` |
+| `limit` | 1-200 | `20` |
+
+**Examples:**
+```
+# Top 20 insights (all types)
+uri="wayfinder://alpha-lab/search/_/all/_/_/20"
+
+# Twitter posts only
+uri="wayfinder://alpha-lab/search/_/twitter_post/_/_/10"
+
+# Search for ETH-related insights
+uri="wayfinder://alpha-lab/search/ETH/all/_/_/10"
+
+# Today's insights
+uri="wayfinder://alpha-lab/search/_/all/2026-03-11T00:00:00Z/_/20"
+
+# Serious analysis via client
+from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
+data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)
+```
+
+**Note:** Alpha Lab already includes Delta Lab highlights (top APYs + delta-neutral pairs). Don't query Delta Lab separately for alpha requests — use Delta Lab directly only for raw rates, timeseries, or detailed screening.
 
 ## Delta Lab MCP resources (yield discovery)
 
