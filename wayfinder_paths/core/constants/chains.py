@@ -1,4 +1,5 @@
 CHAIN_ID_ETHEREUM = 1
+CHAIN_ID_GNOSIS = 100
 CHAIN_ID_BASE = 8453
 CHAIN_ID_ARBITRUM = 42161
 CHAIN_ID_BSC = 56
@@ -13,11 +14,13 @@ CHAIN_CODE_TO_ID = {
     "arbitrum-one": CHAIN_ID_ARBITRUM,
     "bsc": CHAIN_ID_BSC,
     "ethereum": CHAIN_ID_ETHEREUM,
+    "gnosis": CHAIN_ID_GNOSIS,
     "mainnet": CHAIN_ID_ETHEREUM,
     "polygon": CHAIN_ID_POLYGON,
     "avalanche": CHAIN_ID_AVALANCHE,
     "plasma": CHAIN_ID_PLASMA,
     "hyperevm": CHAIN_ID_HYPEREVM,
+    "xdai": CHAIN_ID_GNOSIS,
 }
 
 CHAIN_ID_TO_CODE: dict[int, str] = {
@@ -26,6 +29,7 @@ CHAIN_ID_TO_CODE: dict[int, str] = {
 
 SUPPORTED_CHAINS = [
     CHAIN_ID_ETHEREUM,
+    CHAIN_ID_GNOSIS,
     CHAIN_ID_BASE,
     CHAIN_ID_BSC,
     CHAIN_ID_ARBITRUM,
@@ -39,6 +43,7 @@ POA_MIDDLEWARE_CHAIN_IDS: set[int] = {
     CHAIN_ID_BSC,
     CHAIN_ID_POLYGON,
     CHAIN_ID_AVALANCHE,
+    CHAIN_ID_GNOSIS,
 }
 
 PRE_EIP_1559_CHAIN_IDS: set[int] = {
@@ -48,6 +53,7 @@ PRE_EIP_1559_CHAIN_IDS: set[int] = {
 
 CHAIN_EXPLORER_URLS: dict[int, str] = {
     CHAIN_ID_ETHEREUM: "https://etherscan.io/",
+    CHAIN_ID_GNOSIS: "https://gnosisscan.io/",
     CHAIN_ID_ARBITRUM: "https://arbiscan.io/",
     CHAIN_ID_BASE: "https://basescan.org/",
     CHAIN_ID_BSC: "https://bscscan.com/",

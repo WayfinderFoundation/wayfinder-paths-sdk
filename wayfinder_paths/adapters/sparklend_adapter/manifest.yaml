@@ -1,0 +1,13 @@
+schema_version: "0.1"
+entrypoint: "adapters.sparklend_adapter.adapter.SparkLendAdapter"
+capabilities:
+  - "market.list"
+  - "position.read"
+  - "lending.lend"
+  - "lending.unlend"
+  - "lending.borrow"
+  - "lending.repay"
+  - "collateral.toggle"
+  - "rewards.claim"
+dependencies: []
+
