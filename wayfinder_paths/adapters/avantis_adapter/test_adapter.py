@@ -301,3 +301,56 @@ async def test_get_full_user_state_propagates_get_pos_failure(adapter):
 
     assert ok is False
     assert "rpc error" in str(msg)
+
+
+@pytest.mark.asyncio
+async def test_get_pos_with_balance_returns_correct_assets(adapter):
+    """Non-trivial share balance: verify assets_balance and share_price from convertToAssets."""
+    mock_contract = _make_erc4626_contract(
+        balance_of=5_000_000,
+        convert_to_assets=5_200_000,
+        max_redeem=5_000_000,
+        max_withdraw=5_200_000,
+    )
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=mock_contract)
+
+    @asynccontextmanager
+    async def mock_web3_ctx(_chain_id):
+        yield mock_web3
+
+    with patch(
+        "wayfinder_paths.adapters.avantis_adapter.adapter.web3_from_chain_id",
+        mock_web3_ctx,
+    ):
+        ok, data = await adapter.get_pos()
+
+    assert ok is True
+    assert data["shares_balance"] == 5_000_000
+    # convertToAssets mock returns same value for any input
+    assert data["assets_balance"] == 5_200_000
+    assert data["share_price"] == 5_200_000
+    assert data["max_redeem"] == 5_000_000
+    assert data["max_withdraw"] == 5_200_000
+
+
+@pytest.mark.asyncio
+async def test_get_all_markets_share_price(adapter):
+    """Verify share_price is populated from convertToAssets(10**decimals)."""
+    mock_contract = _make_erc4626_contract(convert_to_assets=1_040_000)
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=mock_contract)
+
+    @asynccontextmanager
+    async def mock_web3_ctx(_chain_id):
+        yield mock_web3
+
+    with patch(
+        "wayfinder_paths.adapters.avantis_adapter.adapter.web3_from_chain_id",
+        mock_web3_ctx,
+    ):
+        ok, markets = await adapter.get_all_markets()
+
+    assert ok is True
+    assert len(markets) == 1
+    assert markets[0]["share_price"] == 1_040_000

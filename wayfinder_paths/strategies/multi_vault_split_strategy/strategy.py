@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -568,6 +569,9 @@ class MultiVaultSplitStrategy(Strategy):
         if amount_usdc < MIN_HLP_USD:
             return True, f"HLP amount below minimum ({amount_usdc:.2f} < {MIN_HLP_USD})"
 
+        # Hyperliquid SDK rejects floats with >6 decimal places
+        amount_usdc = math.floor(amount_usdc * 1e6) / 1e6
+
         ok, detail = await self.hyperliquid_adapter.send_usdc_to_bridge(
             amount_usdc,
             address=self.strategy_wallet_address,
@@ -855,11 +859,23 @@ class MultiVaultSplitStrategy(Strategy):
         gas_token_amount: float = 0.0,
         **_: Any,
     ) -> StatusTuple:
+        t0 = time.monotonic()
+
+        def _elapsed() -> str:
+            return f"[{time.monotonic() - t0:.1f}s]"
+
         amount = float(main_token_amount or self.INFO.minimum_net_deposit)
         if amount < self.INFO.minimum_net_deposit:
             return False, f"Minimum deposit is {self.INFO.minimum_net_deposit:.2f} USDC"
 
+        logger.info(
+            f"{_elapsed()} deposit: amount={amount:.2f} USDC, gas={gas_token_amount}"
+        )
+
         if gas_token_amount > 0:
+            logger.info(
+                f"{_elapsed()} deposit: moving {gas_token_amount} ETH gas to strategy wallet"
+            )
             (
                 ok,
                 detail,
@@ -871,7 +887,11 @@ class MultiVaultSplitStrategy(Strategy):
             )
             if not ok:
                 return False, f"Failed to move Arbitrum ETH gas: {detail}"
+            logger.info(f"{_elapsed()} deposit: gas transfer ok")
 
+        logger.info(
+            f"{_elapsed()} deposit: moving {amount:.2f} USDC to strategy wallet"
+        )
         (
             ok,
             detail,
@@ -882,18 +902,44 @@ class MultiVaultSplitStrategy(Strategy):
         )
         if not ok:
             return False, f"Failed to move deposit into strategy wallet: {detail}"
+        logger.info(f"{_elapsed()} deposit: USDC transfer ok, calling update()")
 
         return await self.update()
 
     async def update(self) -> StatusTuple:
+        t0 = time.monotonic()
+
+        def _elapsed() -> str:
+            return f"[{time.monotonic() - t0:.1f}s]"
+
         messages: list[str] = []
+        logger.info(f"{_elapsed()} update: fetching inventory")
         inv = await self._get_inventory()
+        logger.info(
+            f"{_elapsed()} update: inventory — "
+            f"positions_value={inv.positions_value:.2f}, "
+            f"usdt_arb_idle={inv.usdt_arb_idle:.2f}, "
+            f"usdc_arb_idle={inv.usdc_arb_idle:.2f}, "
+            f"usdc_base_idle={inv.usdc_base_idle:.2f}, "
+            f"unallocated_total={inv.unallocated_total:.2f}, "
+            f"boros_account_idle_usd={inv.boros_account_idle_usd:.2f}, "
+            f"hlp_equity={inv.hlp_equity:.2f}, "
+            f"avantis_value_usdc={inv.avantis_value_usdc:.2f}, "
+            f"boros_vault_value_usd={inv.boros_vault_value_usd:.2f}"
+        )
 
         if inv.positions_value < 0.5 and inv.usdt_arb_idle > 0.5:
+            logger.info(
+                f"{_elapsed()} update: no positions but USDT idle, completing pending withdrawal"
+            )
             ok, detail = await self._complete_pending_withdrawal(inv)
             messages.append(detail)
+            logger.info(
+                f"{_elapsed()} update: pending withdrawal ok={ok} detail={detail}"
+            )
             return ok, "; ".join(messages)
 
+        logger.info(f"{_elapsed()} update: checking Boros withdrawal status")
         ok_withdraw, status = await self.boros_adapter.get_user_withdrawal_status(
             token_id=self.boros_token_id
         )
@@ -902,6 +948,7 @@ class MultiVaultSplitStrategy(Strategy):
             and isinstance(status, dict)
             and int(status.get("start") or 0) > 0
         ):
+            logger.info(f"{_elapsed()} update: finalizing Boros withdrawal")
             ok, detail = await self.boros_adapter.finalize_vault_withdrawal(
                 token_id=self.boros_token_id
             )
@@ -909,34 +956,72 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append("Finalized pending Boros withdrawal")
             else:
                 messages.append(f"Boros finalize not ready: {detail}")
+            logger.info(f"{_elapsed()} update: Boros finalize ok={ok}")
 
+        logger.info(f"{_elapsed()} update: rolling expired Boros vaults")
         rolled = await self._roll_expired_boros_vaults()
         messages.extend(rolled)
+        logger.info(f"{_elapsed()} update: rolled {len(rolled)} vaults")
 
+        logger.info(f"{_elapsed()} update: re-fetching inventory for Boros idle check")
         inv = await self._get_inventory()
+        logger.info(
+            f"{_elapsed()} update: boros_account_idle_usd={inv.boros_account_idle_usd:.2f}, boros_enabled={self._boros_enabled()}"
+        )
         if inv.boros_account_idle_usd > 1.0 and self._boros_enabled():
+            logger.info(f"{_elapsed()} update: deploying Boros account idle")
             ok, detail = await self._deploy_boros_account_idle()
             messages.append(detail)
+            logger.info(
+                f"{_elapsed()} update: deploy Boros idle ok={ok} detail={detail}"
+            )
             if not ok:
                 logger.warning(detail)
 
+        logger.info(f"{_elapsed()} update: re-fetching inventory for new deposit check")
         inv = await self._get_inventory()
-        if inv.unallocated_total + inv.usdt_arb_idle > EPS:
+        deployable = inv.unallocated_total + inv.usdt_arb_idle
+        logger.info(
+            f"{_elapsed()} update: unallocated_total={inv.unallocated_total:.2f}, usdt_arb_idle={inv.usdt_arb_idle:.2f}, deployable={deployable:.2f}"
+        )
+        if deployable > EPS:
+            logger.info(f"{_elapsed()} update: deploying new deposit")
             ok, detail = await self._deploy_new_deposit(inv)
             messages.append(detail)
+            logger.info(f"{_elapsed()} update: deploy ok={ok} detail={detail}")
             if not ok:
                 return False, "; ".join([m for m in messages if m])
 
         cleaned = [message for message in messages if message]
+        logger.info(
+            f"{_elapsed()} update: complete — {'; '.join(cleaned) if cleaned else 'no action'}"
+        )
         return True, "; ".join(cleaned) if cleaned else "No action needed"
 
     async def withdraw(self, **kwargs: Any) -> StatusTuple:
         del kwargs
         messages: list[str] = []
+        t0 = time.monotonic()
+
+        def _elapsed() -> str:
+            return f"[{time.monotonic() - t0:.1f}s]"
+
+        logger.info(f"{_elapsed()} withdraw: fetching inventory")
         inv = await self._get_inventory()
+        logger.info(
+            f"{_elapsed()} withdraw: inventory fetched — "
+            f"hlp_enabled={self._hlp_enabled()}, "
+            f"hlp_withdrawable={inv.hlp_withdrawable_now:.2f}, "
+            f"hl_perp_idle={inv.hl_perp_idle:.2f}, "
+            f"usdt_arb_idle={inv.usdt_arb_idle:.2f}, "
+            f"usdc_arb_idle={inv.usdc_arb_idle:.2f}, "
+            f"usdc_base_idle={inv.usdc_base_idle:.2f}, "
+            f"boros_vaults={len(inv.boros_vaults)}"
+        )
 
         if self._hlp_enabled():
             if inv.hlp_withdrawable_now > EPS:
+                logger.info(f"{_elapsed()} withdraw: withdrawing from HLP")
                 ok, detail = await self.hyperliquid_adapter.withdraw_hlp(
                     inv.hlp_withdrawable_now,
                     self.hlp_vault_address,
@@ -944,6 +1029,7 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append(
                     "Withdrew from HLP" if ok else f"HLP withdraw failed: {detail}"
                 )
+                logger.info(f"{_elapsed()} withdraw: HLP withdraw ok={ok}")
                 await asyncio.sleep(2)
                 inv = await self._get_inventory()
             elif inv.hlp_in_cooldown:
@@ -951,6 +1037,9 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append(f"HLP still in cooldown (~{hours:.1f}h remaining)")
 
         if inv.hl_perp_idle > 1.0 and self._hlp_enabled():
+            logger.info(
+                f"{_elapsed()} withdraw: bridging {inv.hl_perp_idle:.2f} from Hyperliquid"
+            )
             ok, detail = await self.hyperliquid_adapter.withdraw_from_hyperliquid(
                 inv.hl_perp_idle,
                 destination=self.strategy_wallet_address,
@@ -961,26 +1050,35 @@ class MultiVaultSplitStrategy(Strategy):
                 if ok
                 else f"Hyperliquid bridge withdraw failed: {detail}"
             )
+            logger.info(f"{_elapsed()} withdraw: Hyperliquid bridge ok={ok}")
 
+        logger.info(f"{_elapsed()} withdraw: checking Avantis position")
         ok_pos, pos = await self.avantis_adapter.position(
             account=self.strategy_wallet_address
         )
-        if (
-            ok_pos
-            and isinstance(pos, dict)
-            and float(pos.get("value_usdc") or 0.0) > EPS
-        ):
+        avantis_val = (
+            float(pos.get("value_usdc") or 0.0)
+            if ok_pos and isinstance(pos, dict)
+            else 0.0
+        )
+        logger.info(f"{_elapsed()} withdraw: Avantis value_usdc={avantis_val:.2f}")
+        if ok_pos and isinstance(pos, dict) and avantis_val > EPS:
+            logger.info(f"{_elapsed()} withdraw: redeeming Avantis position")
             ok, detail = await self.avantis_adapter.withdraw(amount=0, redeem_full=True)
             messages.append(
                 "Redeemed Avantis position"
                 if ok
                 else f"Avantis withdraw failed: {detail}"
             )
+            logger.info(f"{_elapsed()} withdraw: Avantis redeem ok={ok}")
 
         for vault in inv.boros_vaults:
             lp_wei = self.boros_adapter.estimate_user_lp_balance_wei(vault)
             if not lp_wei:
                 continue
+            logger.info(
+                f"{_elapsed()} withdraw: withdrawing Boros vault {vault.symbol} lp_wei={lp_wei}"
+            )
             ok, detail = await self.boros_adapter.withdraw_from_vault(
                 market_id=vault.market_id,
                 lp_to_remove_wei=int(lp_wei),
@@ -990,13 +1088,16 @@ class MultiVaultSplitStrategy(Strategy):
                 if ok
                 else f"Boros vault withdraw failed for {vault.symbol}: {detail}"
             )
+            logger.info(f"{_elapsed()} withdraw: Boros vault {vault.symbol} ok={ok}")
 
+        logger.info(f"{_elapsed()} withdraw: checking Boros account balances")
         ok_bal, balances = await self.boros_adapter.get_account_balances(
             token_id=self.boros_token_id,
             account_id=0,
         )
         if ok_bal and isinstance(balances, dict):
             cross_wei = int(balances.get("cross_wei") or 0)
+            logger.info(f"{_elapsed()} withdraw: Boros cross_wei={cross_wei}")
             if cross_wei > 0:
                 buffer_wei = to_erc20_raw(0.01, 18)
                 unscaled = await self.boros_adapter.scaled_cash_wei_to_unscaled(
@@ -1004,6 +1105,9 @@ class MultiVaultSplitStrategy(Strategy):
                     max(0, cross_wei - buffer_wei),
                 )
                 if unscaled > 0:
+                    logger.info(
+                        f"{_elapsed()} withdraw: withdrawing Boros collateral unscaled={unscaled}"
+                    )
                     ok, detail = await self.boros_adapter.withdraw_collateral(
                         token_id=self.boros_token_id,
                         amount_native=int(unscaled),
@@ -1014,7 +1118,9 @@ class MultiVaultSplitStrategy(Strategy):
                         if ok
                         else f"Boros collateral withdraw failed: {detail}"
                     )
+                    logger.info(f"{_elapsed()} withdraw: Boros collateral ok={ok}")
 
+        logger.info(f"{_elapsed()} withdraw: checking Boros withdrawal status")
         ok_withdraw, status = await self.boros_adapter.get_user_withdrawal_status(
             token_id=self.boros_token_id
         )
@@ -1023,6 +1129,7 @@ class MultiVaultSplitStrategy(Strategy):
             and isinstance(status, dict)
             and int(status.get("start") or 0) > 0
         ):
+            logger.info(f"{_elapsed()} withdraw: finalizing Boros withdrawal")
             ok, detail = await self.boros_adapter.finalize_vault_withdrawal(
                 token_id=self.boros_token_id
             )
@@ -1031,16 +1138,33 @@ class MultiVaultSplitStrategy(Strategy):
                 await asyncio.sleep(2)
             else:
                 messages.append(f"Boros finalize pending: {detail}")
+            logger.info(f"{_elapsed()} withdraw: Boros finalize ok={ok}")
 
+        logger.info(
+            f"{_elapsed()} withdraw: re-fetching inventory for pending withdrawal check"
+        )
         inv = await self._get_inventory()
+        logger.info(f"{_elapsed()} withdraw: usdt_arb_idle={inv.usdt_arb_idle:.2f}")
         if inv.usdt_arb_idle > 0.5:
+            logger.info(
+                f"{_elapsed()} withdraw: completing pending withdrawal (USDT→USDC swap + wait)"
+            )
             ok, detail = await self._complete_pending_withdrawal(inv)
             messages.append(detail)
+            logger.info(
+                f"{_elapsed()} withdraw: pending withdrawal ok={ok} detail={detail}"
+            )
             inv = await self._get_inventory()
 
+        logger.info(f"{_elapsed()} withdraw: usdc_base_idle={inv.usdc_base_idle:.2f}")
         if inv.usdc_base_idle > 0.5:
+            logger.info(f"{_elapsed()} withdraw: bridging Base USDC to Arbitrum")
             ok_gas, gas_msg = await self._ensure_base_gas()
+            logger.info(f"{_elapsed()} withdraw: ensure_base_gas ok={ok_gas}")
             if ok_gas:
+                logger.info(
+                    f"{_elapsed()} withdraw: BRAP swap Base USDC→Arb USDC amount={inv.usdc_base_idle:.2f}"
+                )
                 ok, result = await self.brap_adapter.swap_from_token_ids(
                     from_token_id=USDC_BASE,
                     to_token_id=USDC_ARB,
@@ -1053,16 +1177,27 @@ class MultiVaultSplitStrategy(Strategy):
                     if ok
                     else f"Base->Arbitrum USDC bridge failed: {result}"
                 )
+                logger.info(
+                    f"{_elapsed()} withdraw: BRAP bridge ok={ok}, waiting for balance on Arb"
+                )
                 await self.balance_adapter.wait_for_balance(
                     token_id=USDC_ARB,
                     min_balance=0.5,
                     timeout_seconds=240,
                 )
+                logger.info(f"{_elapsed()} withdraw: wait_for_balance(USDC_ARB) done")
             else:
                 messages.append(gas_msg)
 
+        logger.info(f"{_elapsed()} withdraw: final inventory check")
         inv = await self._get_inventory()
+        logger.info(
+            f"{_elapsed()} withdraw: usdc_arb_idle={inv.usdc_arb_idle:.4f}, usdc_base_idle={inv.usdc_base_idle:.4f}"
+        )
         if inv.usdc_arb_idle > EPS:
+            logger.info(
+                f"{_elapsed()} withdraw: transferring {inv.usdc_arb_idle:.2f} USDC Arb to main"
+            )
             (
                 ok,
                 detail,
@@ -1075,8 +1210,12 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append("Returned Arbitrum USDC to main wallet")
             else:
                 messages.append(f"Failed to return Arbitrum USDC: {detail}")
+            logger.info(f"{_elapsed()} withdraw: Arb USDC transfer ok={ok}")
 
         if inv.usdc_base_idle > EPS:
+            logger.info(
+                f"{_elapsed()} withdraw: transferring {inv.usdc_base_idle:.2f} USDC Base to main"
+            )
             (
                 ok,
                 detail,
@@ -1089,8 +1228,12 @@ class MultiVaultSplitStrategy(Strategy):
                 messages.append("Returned Base USDC to main wallet")
             else:
                 messages.append(f"Failed to return Base USDC: {detail}")
+            logger.info(f"{_elapsed()} withdraw: Base USDC transfer ok={ok}")
 
         cleaned = [message for message in messages if message]
+        logger.info(
+            f"{_elapsed()} withdraw: complete — {'; '.join(cleaned) if cleaned else 'no action'}"
+        )
         return True, "; ".join(
             cleaned
         ) if cleaned else "Best-effort withdrawal complete"

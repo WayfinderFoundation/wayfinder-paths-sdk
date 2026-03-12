@@ -65,6 +65,9 @@ class AvantisAdapter(BaseAdapter):
             async with web3_from_chain_id(self.chain_id) as web3:
                 v = web3.eth.contract(address=self.vault, abi=ERC4626_ABI)
 
+                # avUSDC decimals is always 6; include convertToAssets(10**6) in one multicall
+                unit_shares = 10**6
+
                 (
                     asset,
                     decimals,
@@ -72,6 +75,7 @@ class AvantisAdapter(BaseAdapter):
                     name,
                     total_assets,
                     total_supply,
+                    share_price,
                 ) = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=self.chain_id,
@@ -86,22 +90,17 @@ class AvantisAdapter(BaseAdapter):
                         Call(v, "name", postprocess=str),
                         Call(v, "totalAssets", postprocess=int),
                         Call(v, "totalSupply", postprocess=int),
+                        Call(
+                            v,
+                            "convertToAssets",
+                            args=(unit_shares,),
+                            postprocess=int,
+                        ),
                     ],
                     block_identifier="pending",
                 )
 
                 share_decimals = int(decimals or 0)
-                unit_shares = 10**share_decimals if share_decimals >= 0 else 0
-                try:
-                    share_price = (
-                        await v.functions.convertToAssets(unit_shares).call(
-                            block_identifier="pending"
-                        )
-                        if unit_shares
-                        else 0
-                    )
-                except (ContractLogicError, Web3RPCError):
-                    share_price = 0
 
                 market: dict[str, Any] = {
                     "chain_id": int(self.chain_id),
@@ -372,29 +371,40 @@ class AvantisAdapter(BaseAdapter):
                 )
 
                 shares_i = int(shares or 0)
-                assets_i = (
-                    int(
-                        await v.functions.convertToAssets(shares_i).call(
-                            block_identifier=block_id
-                        )
-                    )
-                    if shares_i > 0
-                    else 0
-                )
-
                 share_decimals = int(decimals or 0)
                 unit_shares = 10**share_decimals if share_decimals >= 0 else 0
-                try:
-                    share_price = (
-                        int(
-                            await v.functions.convertToAssets(unit_shares).call(
-                                block_identifier=block_id
-                            )
-                        )
-                        if unit_shares
-                        else 0
+
+                # Batch both convertToAssets calls into a single multicall
+                convert_calls: list[Call] = []
+                if shares_i > 0:
+                    convert_calls.append(
+                        Call(v, "convertToAssets", args=(shares_i,), postprocess=int)
                     )
-                except (ContractLogicError, Web3RPCError):
+                if unit_shares:
+                    convert_calls.append(
+                        Call(v, "convertToAssets", args=(unit_shares,), postprocess=int)
+                    )
+
+                if convert_calls:
+                    try:
+                        convert_results = await read_only_calls_multicall_or_gather(
+                            web3=web3,
+                            chain_id=self.chain_id,
+                            calls=convert_calls,
+                            block_identifier=block_id,
+                        )
+                    except (ContractLogicError, Web3RPCError):
+                        convert_results = [0] * len(convert_calls)
+
+                idx = 0
+                if shares_i > 0:
+                    assets_i = int(convert_results[idx])
+                    idx += 1
+                else:
+                    assets_i = 0
+                if unit_shares:
+                    share_price = int(convert_results[idx])
+                else:
                     share_price = 0
 
                 underlying = to_checksum_address(str(asset))

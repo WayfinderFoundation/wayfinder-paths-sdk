@@ -24,6 +24,10 @@ from wayfinder_paths.core.constants.contracts import (
     HYPE_OFT_ADDRESS,
 )
 from wayfinder_paths.core.constants.hype_oft_abi import HYPE_OFT_ABI
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import (
     build_approve_transaction,
     get_token_balance,
@@ -92,6 +96,9 @@ class BorosAdapter(BaseAdapter):
         super().__init__("boros_adapter", config)
         self.sign_callback = sign_callback
         self._scaling_factor_cache: dict[int, int] = {}
+        self._amm_address_cache: dict[int, str | None] = {}
+        self._lp_balance_cache: dict[tuple[int, int, str], int] = {}
+        self._assets_by_id_cache: dict[int, dict[str, Any]] | None = None
 
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
@@ -825,18 +832,21 @@ class BorosAdapter(BaseAdapter):
                 filtered = filtered[: int(max_markets)]
             quotes: list[BorosMarketQuote] = []
 
-            for market in filtered:
+            async def _quote_one(market: dict[str, Any]) -> BorosMarketQuote | None:
                 try:
                     success, quote = await self.quote_market(
                         market,
                         tick_size=tick_size,
                         prefer_market_data=prefer_market_data,
                     )
-                    if success:
-                        quotes.append(quote)
+                    return quote if success else None
                 except Exception as e:
                     market_id = market.get("marketId") or market.get("id")
                     logger.warning(f"quote_market failed for {market_id}: {e}")
+                    return None
+
+            results = await asyncio.gather(*[_quote_one(m) for m in filtered])
+            quotes = [q for q in results if q is not None]
 
             quotes.sort(key=lambda q: q.maturity_ts)
             return True, quotes
@@ -1211,6 +1221,8 @@ class BorosAdapter(BaseAdapter):
             return False, {"error": str(e)}
 
     async def _fetch_assets_by_id(self) -> dict[int, dict[str, Any]]:
+        if self._assets_by_id_cache is not None:
+            return self._assets_by_id_cache
         ok_assets, assets = await self.get_assets()
         assets_by_id: dict[int, dict[str, Any]] = {}
         if ok_assets and assets:
@@ -1218,6 +1230,7 @@ class BorosAdapter(BaseAdapter):
                 tid = a.get("tokenId")
                 if tid is not None:
                     assets_by_id[tid] = a
+        self._assets_by_id_cache = assets_by_id
         return assets_by_id
 
     def _enrich_market(
@@ -1485,6 +1498,8 @@ class BorosAdapter(BaseAdapter):
         )
 
     async def _get_amm_address_from_router(self, amm_id: int) -> str | None:
+        if amm_id in self._amm_address_cache:
+            return self._amm_address_cache[amm_id]
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 contract = web3.eth.contract(
@@ -1492,8 +1507,11 @@ class BorosAdapter(BaseAdapter):
                     abi=BOROS_ROUTER_VIEW_ABI,
                 )
                 market_acc = await contract.functions.ammIdToAcc(int(amm_id)).call()
+            result: str | None = None
             if market_acc and len(market_acc) >= 20:
-                return to_checksum_address("0x" + market_acc[:20].hex())
+                result = to_checksum_address("0x" + market_acc[:20].hex())
+            self._amm_address_cache[amm_id] = result
+            return result
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed to resolve Boros AMM address {amm_id}: {exc}")
         return None
@@ -1532,39 +1550,158 @@ class BorosAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    def _invalidate_lp_cache(self) -> None:
+        self._lp_balance_cache = {}
+
     async def _augment_vault_lp_balances(
         self,
         vaults: list[BorosVault],
         *,
         account: str,
     ) -> list[BorosVault]:
-        for vault in vaults:
+        # Build list of (index, vault, token_id) for vaults that need LP queries
+        queryable: list[tuple[int, BorosVault, int]] = []
+        for i, vault in enumerate(vaults):
             token_id = self._to_int(
                 (vault.raw or {}).get("collateralTokenId")
                 or (vault.raw or {}).get("tokenId"),
                 default=0,
             )
-            if token_id <= 0 or vault.amm_id <= 0:
-                continue
+            if token_id > 0 and vault.amm_id > 0:
+                queryable.append((i, vault, token_id))
 
-            ok, balance = await self.get_vault_lp_balance(
-                amm_id=vault.amm_id,
-                token_id=token_id,
-                account=account,
+        if not queryable:
+            return vaults
+
+        # Check LP balance cache — resolve what we can, track what needs fetching
+        cached_balances: dict[int, int] = {}  # queryable index → balance
+        needs_fetch: list[int] = []  # indices into queryable
+        for qi, (_, vault, token_id) in enumerate(queryable):
+            market_acc = self.build_market_acc(
+                address=account,
+                account_id=0,
+                token_id=int(token_id),
+                market_id=0xFFFFFF,
             )
-            if not ok:
-                continue
+            cache_key = (vault.amm_id, token_id, market_acc.hex())
+            if cache_key in self._lp_balance_cache:
+                cached_balances[qi] = self._lp_balance_cache[cache_key]
+            else:
+                needs_fetch.append(qi)
 
-            balance_i = int(balance)
+        if needs_fetch:
+            await self._fetch_lp_balances_multicall(
+                queryable,
+                needs_fetch,
+                account,
+                cached_balances,
+            )
+
+        # Apply all balances (cached + freshly fetched)
+        for qi, (_, vault, _) in enumerate(queryable):
+            balance_i = cached_balances.get(qi, 0)
             if balance_i <= 0:
                 continue
-
             vault.user_total_lp_wei = balance_i
             vault.user_deposit_tokens = self.estimate_user_vault_value_tokens(
                 vault,
                 prefer_lp_balance=True,
             )
         return vaults
+
+    async def _fetch_lp_balances_multicall(
+        self,
+        queryable: list[tuple[int, BorosVault, int]],
+        needs_fetch: list[int],
+        account: str,
+        out: dict[int, int],
+    ) -> None:
+        """Batch-fetch LP balances via multicall, populating `out` and caches."""
+        async with web3_from_chain_id(self.chain_id) as web3:
+            router_contract = web3.eth.contract(
+                address=to_checksum_address(BOROS_ROUTER),
+                abi=BOROS_ROUTER_VIEW_ABI,
+            )
+
+            # --- Round 1: resolve uncached AMM addresses via multicall ---
+            amm_resolve_indices: list[int] = []  # indices into needs_fetch
+            amm_resolve_calls: list[Call] = []
+            for nfi in needs_fetch:
+                _, vault, _ = queryable[nfi]
+                if vault.amm_id not in self._amm_address_cache:
+                    amm_resolve_indices.append(nfi)
+                    amm_resolve_calls.append(
+                        Call(
+                            contract=router_contract,
+                            fn_name="ammIdToAcc",
+                            args=(int(vault.amm_id),),
+                        )
+                    )
+
+            if amm_resolve_calls:
+                amm_results = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=amm_resolve_calls,
+                )
+                for nfi, raw_acc in zip(amm_resolve_indices, amm_results, strict=False):
+                    _, vault, _ = queryable[nfi]
+                    resolved: str | None = None
+                    try:
+                        if raw_acc and len(raw_acc) >= 20:
+                            resolved = to_checksum_address("0x" + raw_acc[:20].hex())
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._amm_address_cache[vault.amm_id] = resolved
+
+            # --- Round 2: balanceOf calls on resolved AMM contracts ---
+            balance_calls: list[Call] = []
+            balance_indices: list[int] = []  # indices into needs_fetch
+            market_accs: list[bytes] = []
+            for nfi in needs_fetch:
+                _, vault, token_id = queryable[nfi]
+                amm_addr = self._amm_address_cache.get(vault.amm_id)
+                if not amm_addr:
+                    continue
+                market_acc = self.build_market_acc(
+                    address=account,
+                    account_id=0,
+                    token_id=int(token_id),
+                    market_id=0xFFFFFF,
+                )
+                amm_contract = web3.eth.contract(
+                    address=to_checksum_address(amm_addr),
+                    abi=BOROS_VAULT_BALANCE_ABI,
+                )
+                balance_calls.append(
+                    Call(
+                        contract=amm_contract,
+                        fn_name="balanceOf",
+                        args=(market_acc,),
+                    )
+                )
+                balance_indices.append(nfi)
+                market_accs.append(market_acc)
+
+            if not balance_calls:
+                return
+
+            bal_results = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=self.chain_id,
+                calls=balance_calls,
+            )
+            for nfi, balance_raw, market_acc in zip(
+                balance_indices, bal_results, market_accs, strict=False
+            ):
+                _, vault, token_id = queryable[nfi]
+                try:
+                    balance_i = int(balance_raw)
+                except (TypeError, ValueError):
+                    balance_i = 0
+                cache_key = (vault.amm_id, token_id, market_acc.hex())
+                self._lp_balance_cache[cache_key] = balance_i
+                out[nfi] = balance_i
 
     async def get_vaults_summary(
         self,
@@ -2504,6 +2641,7 @@ class BorosAdapter(BaseAdapter):
                 tx_hash = await send_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
                 )
+                self._invalidate_lp_cache()
                 return True, {
                     "status": "ok",
                     "tx": {"tx_hash": tx_hash},
@@ -2552,6 +2690,7 @@ class BorosAdapter(BaseAdapter):
             tx_hash = await send_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
+            self._invalidate_lp_cache()
             return True, {
                 "status": "ok",
                 "tx": {"tx_hash": tx_hash},
@@ -3278,6 +3417,7 @@ class BorosAdapter(BaseAdapter):
                 tx_hash = await send_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
                 )
+                self._invalidate_lp_cache()
                 return True, {"status": "ok", "tx": {"tx_hash": tx_hash}}
             except Exception as e:
                 return False, {
