@@ -311,6 +311,16 @@ class TestBasisTradingStrategy:
         assert "strategy_status" in status
 
     @pytest.mark.asyncio
+    async def test_status_handles_string_gas_balance(self, strategy):
+        strategy.balance_adapter.get_balance = AsyncMock(
+            return_value=(True, "1230000000000000")
+        )
+
+        status = assert_status_dict(await strategy.status())
+
+        assert status["gas_available"] == pytest.approx(0.00123)
+
+    @pytest.mark.asyncio
     async def test_ledger_records_snapshot(self, strategy, tmp_path):
         status = await strategy.status()
         assert status is not None
@@ -534,6 +544,85 @@ class TestBasisTradingStrategy:
             assert success
 
     @pytest.mark.asyncio
+    async def test_scale_up_position_rejects_partial_fill_if_live_book_stays_imbalanced(
+        self, strategy, mock_hyperliquid_adapter
+    ):
+        strategy.current_position = BasisPosition(
+            coin="XPL",
+            spot_asset_id=10000,
+            perp_asset_id=1,
+            spot_amount=133.0,
+            perp_amount=133.0,
+            entry_price=1.0,
+            leverage=2,
+            entry_timestamp=1700000000000,
+            funding_collected=0.0,
+        )
+
+        mock_hyperliquid_adapter.get_all_mid_prices = AsyncMock(
+            return_value=(True, {"XPL": 1.0})
+        )
+        mock_hyperliquid_adapter.get_user_state = AsyncMock(
+            side_effect=[
+                (
+                    True,
+                    {
+                        "marginSummary": {"accountValue": "300", "withdrawable": "300"},
+                        "assetPositions": [
+                            {
+                                "position": {
+                                    "coin": "XPL",
+                                    "szi": "-133",
+                                    "entryPx": "1",
+                                    "liquidationPx": "3",
+                                }
+                            }
+                        ],
+                    },
+                ),
+                (
+                    True,
+                    {
+                        "marginSummary": {"accountValue": "300", "withdrawable": "140"},
+                        "assetPositions": [
+                            {
+                                "position": {
+                                    "coin": "XPL",
+                                    "szi": "-186",
+                                    "entryPx": "1",
+                                    "liquidationPx": "3",
+                                }
+                            }
+                        ],
+                    },
+                ),
+            ]
+        )
+        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
+            side_effect=[
+                (True, {"balances": [{"coin": "USDC", "total": "0"}]}),
+                (True, {"balances": [{"coin": "UXPL", "total": "292.794901"}]}),
+            ]
+        )
+
+        with patch(
+            "wayfinder_paths.strategies.basis_trading_strategy.strategy.PairedFiller"
+        ) as mock_filler_class:
+            mock_filler = MagicMock()
+            mock_filler.fill_pair_units = AsyncMock(
+                return_value=(159.794901, 53.0, 159.79, 53.0, [], [])
+            )
+            mock_filler_class.return_value = mock_filler
+
+            success, msg = await strategy._scale_up_position(240.0)
+
+        assert success is False
+        assert "imbalanced after fill" in msg
+        assert strategy.current_position is not None
+        assert strategy.current_position.spot_amount == pytest.approx(292.794901)
+        assert strategy.current_position.perp_amount == pytest.approx(186.0)
+
+    @pytest.mark.asyncio
     async def test_update_does_not_scale_on_perp_pnl_margin_release(
         self, strategy, mock_hyperliquid_adapter
     ):
@@ -586,6 +675,58 @@ class TestBasisTradingStrategy:
         success, _ = assert_status_tuple(await strategy.update())
         assert success
         strategy._scale_up_position.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_monitor_repairs_leg_imbalance_even_during_cooldown(
+        self, strategy, mock_hyperliquid_adapter
+    ):
+        strategy.current_position = BasisPosition(
+            coin="XPL",
+            spot_asset_id=10000,
+            perp_asset_id=1,
+            spot_amount=133.0,
+            perp_amount=133.0,
+            entry_price=1.0,
+            leverage=2,
+            entry_timestamp=1700000000000,
+            funding_collected=0.0,
+        )
+
+        imbalanced_state = {
+            "marginSummary": {
+                "accountValue": "100",
+                "withdrawable": "0",
+                "totalNtlPos": "100",
+            },
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": "XPL",
+                        "szi": "-186",
+                        "entryPx": "1",
+                        "liquidationPx": "3",
+                    }
+                }
+            ],
+        }
+        mock_hyperliquid_adapter.get_user_state = AsyncMock(
+            side_effect=[(True, imbalanced_state), (True, imbalanced_state)]
+        )
+        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
+            return_value=(True, {"balances": [{"coin": "UXPL", "total": "292.794901"}]})
+        )
+
+        strategy._get_total_portfolio_value = AsyncMock(return_value=(100.0, 100.0, 0.0))
+        strategy._is_near_liquidation = AsyncMock(return_value=(False, "ok"))
+        strategy._repair_leg_imbalance = AsyncMock(return_value=(True, "shorted more"))
+        strategy._needs_new_position = AsyncMock(return_value=(True, "Position imbalance"))
+        strategy._is_rotation_allowed = AsyncMock(return_value=(False, "cooldown"))
+
+        success, msg = await strategy._monitor_position()
+
+        assert success is True
+        assert "cooldown" in msg
+        strategy._repair_leg_imbalance.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_update_includes_rotation_cooldown_hint(

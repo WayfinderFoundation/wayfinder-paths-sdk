@@ -57,6 +57,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.policies.erc20 import any_erc20_function
 from wayfinder_paths.policies.hyperliquid import (
     any_hyperliquid_l1_payload,
@@ -1041,7 +1042,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             wallet_address=self._get_strategy_wallet_address(),
         )
 
-        gas_balance = gas_balance_wei / 1e18
+        gas_balance = from_erc20_raw(gas_balance_wei or 0, 18) if success else 0.0
 
         return StatusDict(
             portfolio_value=total_value,
@@ -1537,6 +1538,8 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             return False, "No position to scale up"
 
         pos = self.current_position
+        pre_spot_amount = float(pos.spot_amount or 0.0)
+        pre_perp_amount = float(pos.perp_amount or 0.0)
         address = self._get_strategy_wallet_address()
 
         leverage = pos.leverage or 2
@@ -1616,26 +1619,30 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         if spot_filled <= 0 or perp_filled <= 0:
             return False, f"Failed to add to position on {pos.coin}"
 
-        self.current_position = BasisPosition(
-            coin=pos.coin,
-            spot_asset_id=pos.spot_asset_id,
-            perp_asset_id=pos.perp_asset_id,
-            spot_amount=pos.spot_amount + spot_filled,
-            perp_amount=pos.perp_amount + perp_filled,
-            entry_price=price,
-            leverage=leverage,
-            entry_timestamp=pos.entry_timestamp,
-            funding_collected=pos.funding_collected,
-        )
+        success, state = await self.hyperliquid_adapter.get_user_state(address)
+        if not success:
+            return False, f"Scale-up fill completed but failed to refresh state: {state}"
+
+        leg_ok, leg_msg = await self._verify_leg_balance(state)
+        live_pos = self.current_position or pos
+        added_spot = float(live_pos.spot_amount or 0.0) - pre_spot_amount
+        added_perp = float(live_pos.perp_amount or 0.0) - pre_perp_amount
+        if not leg_ok:
+            return (
+                False,
+                "Scale-up left legs imbalanced after fill: "
+                f"added {added_spot:.4f} spot vs {added_perp:.4f} perp ({leg_msg})",
+            )
 
         self.logger.info(
-            f"Scaled up position: +{spot_filled:.4f} spot, +{perp_filled:.4f} perp. "
-            f"Total now: {self.current_position.spot_amount:.4f} / {self.current_position.perp_amount:.4f}"
+            f"Scaled up position: +{added_spot:.4f} spot, +{added_perp:.4f} perp. "
+            f"Total now: {live_pos.spot_amount:.4f} / {live_pos.perp_amount:.4f}"
         )
 
         return (
             True,
-            f"Added {spot_filled:.4f} {pos.coin} to position (${spot_notional:.2f})",
+            f"Added {min(added_spot, added_perp):.4f} {pos.coin} to position "
+            f"(${min(spot_notional, perp_notional):.2f})",
         )
 
     async def _monitor_position(self) -> StatusTuple:
@@ -1671,6 +1678,25 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 rotation_reason="near_liquidation"
             )
 
+        leg_ok, leg_msg = await self._verify_leg_balance(state)
+        if not leg_ok:
+            self.logger.warning(f"Leg imbalance detected: {leg_msg}")
+            repair_ok, repair_msg = await self._repair_leg_imbalance(state)
+            if repair_ok:
+                actions_taken.append(f"Repaired leg imbalance: {repair_msg}")
+                success, refreshed_state = await self.hyperliquid_adapter.get_user_state(
+                    address
+                )
+                if success:
+                    state = refreshed_state
+                    leg_ok, leg_msg = await self._verify_leg_balance(state)
+                else:
+                    self.logger.warning(
+                        f"Could not refresh state after leg repair: {refreshed_state}"
+                    )
+            else:
+                actions_taken.append(f"Leg imbalance repair failed: {repair_msg}")
+
         needs_rebalance, reason = await self._needs_new_position(state, hl_value)
 
         if needs_rebalance:
@@ -1689,15 +1715,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 return (False, f"Rebalance failed - could not close: {close_msg}")
 
             return await self._find_and_open_position(rotation_reason=str(reason))
-
-        leg_ok, leg_msg = await self._verify_leg_balance(state)
-        if not leg_ok:
-            self.logger.warning(f"Leg imbalance detected: {leg_msg}")
-            repair_ok, repair_msg = await self._repair_leg_imbalance(state)
-            if repair_ok:
-                actions_taken.append(f"Repaired leg imbalance: {repair_msg}")
-            else:
-                actions_taken.append(f"Leg imbalance repair failed: {repair_msg}")
 
         unused_usd, bankroll_now = await self._unused_usd_now(state)
         min_deploy = max(self.MIN_UNUSED_USD, self.UNUSED_REL_EPS * bankroll_now)
@@ -1805,35 +1822,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             return True, "No position"
 
         pos = self.current_position
-        coin = pos.coin
-
-        perp_size = 0.0
-        for pos_wrapper in state.get("assetPositions", []):
-            position = pos_wrapper.get("position", {})
-            if position.get("coin") == coin:
-                perp_size = abs(float(position.get("szi", 0)))
-                break
-
-        address = self._get_strategy_wallet_address()
-        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
-        spot_size = 0.0
-        if spot_state_result[0]:
-            for bal in spot_state_result[1].get("balances", []):
-                if self._coins_match(bal.get("coin", ""), coin):
-                    spot_size = float(bal.get("total", 0))
-                    break
-
-        if spot_size <= 0 and perp_size <= 0:
-            return False, "Both legs are zero"
-
-        max_size = max(spot_size, perp_size)
-        if max_size > 0:
-            imbalance_pct = abs(spot_size - perp_size) / max_size
-            if imbalance_pct > 0.02:
-                return (
-                    False,
-                    f"Imbalance: spot={spot_size:.6f}, perp={perp_size:.6f} ({imbalance_pct * 100:.1f}%)",
-                )
+        spot_size, perp_size = await self._get_live_leg_sizes(state)
 
         self.current_position = BasisPosition(
             coin=pos.coin,
@@ -1847,6 +1836,18 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             funding_collected=pos.funding_collected,
         )
 
+        if spot_size <= 0 and perp_size <= 0:
+            return False, "Both legs are zero"
+
+        max_size = max(spot_size, perp_size)
+        if max_size > 0:
+            imbalance_pct = abs(spot_size - perp_size) / max_size
+            if imbalance_pct > 0.02:
+                return (
+                    False,
+                    f"Imbalance: spot={spot_size:.6f}, perp={perp_size:.6f} ({imbalance_pct * 100:.1f}%)",
+                )
+
         return True, f"Balanced: spot={spot_size:.6f}, perp={perp_size:.6f}"
 
     async def _repair_leg_imbalance(self, state: dict[str, Any]) -> tuple[bool, str]:
@@ -1856,21 +1857,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         pos = self.current_position
         coin = pos.coin
         address = self._get_strategy_wallet_address()
-
-        perp_size = 0.0
-        for pos_wrapper in state.get("assetPositions", []):
-            position = pos_wrapper.get("position", {})
-            if position.get("coin") == coin:
-                perp_size = abs(float(position.get("szi", 0)))
-                break
-
-        spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(address)
-        spot_size = 0.0
-        if spot_state_result[0]:
-            for bal in spot_state_result[1].get("balances", []):
-                if self._coins_match(bal.get("coin", ""), coin):
-                    spot_size = float(bal.get("total", 0))
-                    break
+        spot_size, perp_size = await self._get_live_leg_sizes(state)
 
         diff = abs(spot_size - perp_size)
         if diff < 0.001:
@@ -2133,6 +2120,13 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 return bal
 
         return None
+
+    async def _get_live_leg_sizes(self, state: dict[str, Any]) -> tuple[float, float]:
+        perp_position = self._get_perp_position(state)
+        spot_position = await self._get_spot_position()
+        perp_size = abs(float((perp_position or {}).get("szi", 0) or 0.0))
+        spot_size = abs(float((spot_position or {}).get("total", 0) or 0.0))
+        return spot_size, perp_size
 
     def _get_funding_earned(self, state: dict[str, Any]) -> float:
         if self.current_position is None:
