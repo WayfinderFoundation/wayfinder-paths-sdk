@@ -11,46 +11,12 @@ from wayfinder_paths.mcp.utils import (
     normalize_address,
 )
 
+TOP_BALANCE_LIMIT = 5
+ACTIVITY_LIMIT = 10
+
 
 def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
     return {"label": w.get("label"), "address": w.get("address")}
-
-
-async def list_wallets() -> str:
-    store = WalletProfileStore.default()
-    existing = load_wallets()
-    wallet_list = []
-    for w in existing:
-        view = _public_wallet_view(w)
-        addr = normalize_address(w.get("address"))
-        if addr:
-            tracked = store.get_protocols_for_wallet(addr.lower())
-            view["protocols"] = tracked
-        else:
-            view["protocols"] = []
-        wallet_list.append(view)
-    return json.dumps({"wallets": wallet_list}, indent=2)
-
-
-async def get_wallet(label: str) -> str:
-    store = WalletProfileStore.default()
-    w = find_wallet_by_label(label)
-    if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
-
-    address = normalize_address(w.get("address"))
-    if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
-
-    profile = store.get_profile(address)
-    return json.dumps(
-        {
-            "label": label,
-            "address": address,
-            "profile": profile,
-        },
-        indent=2,
-    )
 
 
 def _balance_usd(entry: dict[str, Any]) -> float:
@@ -61,54 +27,230 @@ def _balance_usd(entry: dict[str, Any]) -> float:
         return 0.0
 
 
-async def get_wallet_balances(label: str) -> str:
+def _filter_evm_balances(data: dict[str, Any]) -> dict[str, Any]:
+    balances_list = [b for b in data.get("balances", []) if isinstance(b, dict)]
+    filtered = [
+        b for b in balances_list if str(b.get("network", "")).lower() != "solana"
+    ]
+    chain_breakdown: dict[str, float] = {}
+    for entry in filtered:
+        network = str(entry.get("network") or "").strip()
+        if network:
+            chain_breakdown[network] = chain_breakdown.get(network, 0.0) + _balance_usd(
+                entry
+            )
+
+    enriched = dict(data)
+    enriched["balances"] = filtered
+    enriched["total_balance_usd"] = sum(_balance_usd(entry) for entry in filtered)
+    enriched["chain_breakdown"] = chain_breakdown
+    return enriched
+
+
+def _top_positions(
+    balances: list[dict[str, Any]], *, limit: int = TOP_BALANCE_LIMIT
+) -> list[dict[str, Any]]:
+    top = sorted(balances, key=_balance_usd, reverse=True)[:limit]
+    items: list[dict[str, Any]] = []
+    for entry in top:
+        items.append(
+            {
+                "symbol": entry.get("symbol"),
+                "network": entry.get("network"),
+                "balance_usd": _balance_usd(entry),
+                "balance": entry.get("balance"),
+                "address": entry.get("address"),
+            }
+        )
+    return items
+
+
+def _compact_activity(
+    events: list[Any], *, limit: int = ACTIVITY_LIMIT
+) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for event in events[:limit]:
+        if not isinstance(event, dict):
+            continue
+        compact.append(
+            {
+                "type": event.get("type"),
+                "network": event.get("network"),
+                "amount": event.get("amount"),
+                "symbol": event.get("symbol"),
+                "timestamp": event.get("timestamp"),
+                "direction": event.get("direction"),
+            }
+        )
+    return compact
+
+
+def _wallet_or_error(label: str) -> tuple[dict[str, Any] | None, str | None]:
     w = find_wallet_by_label(label)
     if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+        return None, json.dumps({"error": f"Wallet not found: {label}"})
 
     address = normalize_address(w.get("address"))
     if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
+        return None, json.dumps({"error": f"Invalid address for wallet: {label}"})
+
+    return {"wallet": w, "address": address}, None
+
+
+async def list_wallets() -> str:
+    store = WalletProfileStore.default()
+    existing = load_wallets()
+    wallet_list = []
+    for w in existing:
+        view = _public_wallet_view(w)
+        addr = normalize_address(w.get("address"))
+        view["protocols"] = store.get_protocols_for_wallet(addr.lower()) if addr else []
+        wallet_list.append(view)
+    return json.dumps({"wallets": wallet_list, "detail_level": "route"}, indent=2)
+
+
+async def get_wallet(label: str) -> str:
+    store = WalletProfileStore.default()
+    resolved, error = _wallet_or_error(label)
+    if error:
+        return error
+
+    assert resolved is not None
+    address = resolved["address"]
+    profile = store.get_profile(address)
+    profile_summary = {
+        "protocols": sorted(profile.keys()) if isinstance(profile, dict) else [],
+        "annotation_count": sum(len(v) for v in profile.values() if isinstance(v, list))
+        if isinstance(profile, dict)
+        else 0,
+    }
+    return json.dumps(
+        {
+            "label": label,
+            "address": address,
+            "profile_summary": profile_summary,
+            "detail_uri": f"wayfinder://wallets/{label}/full",
+        },
+        indent=2,
+    )
+
+
+async def get_wallet_full(label: str) -> str:
+    store = WalletProfileStore.default()
+    resolved, error = _wallet_or_error(label)
+    if error:
+        return error
+
+    assert resolved is not None
+    address = resolved["address"]
+    profile = store.get_profile(address)
+    return json.dumps(
+        {
+            "label": label,
+            "address": address,
+            "profile": profile,
+            "detail_level": "full",
+        },
+        indent=2,
+    )
+
+
+async def get_wallet_balances(label: str) -> str:
+    resolved, error = _wallet_or_error(label)
+    if error:
+        return error
+
+    assert resolved is not None
+    address = resolved["address"]
 
     try:
         data = await BALANCE_CLIENT.get_enriched_wallet_balances(
             wallet_address=address,
             exclude_spam_tokens=True,
         )
-        # Filter out Solana by default (EVM wallets)
-        if isinstance(data, dict) and isinstance(data.get("balances"), list):
-            balances_list = [b for b in data["balances"] if isinstance(b, dict)]
-            filtered = [
-                b
-                for b in balances_list
-                if str(b.get("network", "")).lower() != "solana"
-            ]
-            if len(filtered) != len(balances_list):
-                data = dict(data)
-                data["balances"] = filtered
-                data["total_balance_usd"] = sum(_balance_usd(b) for b in filtered)
-                breakdown: dict[str, float] = {}
-                for b in filtered:
-                    net = str(b.get("network") or "").strip()
-                    if net:
-                        breakdown[net] = breakdown.get(net, 0.0) + _balance_usd(b)
-                data["chain_breakdown"] = breakdown
-
+        data = _filter_evm_balances(data if isinstance(data, dict) else {})
+        balances_list = [b for b in data.get("balances", []) if isinstance(b, dict)]
         return json.dumps(
-            {"label": label, "address": address, "balances": data}, indent=2
+            {
+                "label": label,
+                "address": address,
+                "balances": {
+                    "total_balance_usd": data.get("total_balance_usd", 0),
+                    "chain_breakdown": data.get("chain_breakdown", {}),
+                    "position_count": len(balances_list),
+                    "top_positions": _top_positions(balances_list),
+                    "detail_uri": f"wayfinder://balances/{label}/full",
+                },
+            },
+            indent=2,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})
+
+
+async def get_wallet_balances_full(label: str) -> str:
+    resolved, error = _wallet_or_error(label)
+    if error:
+        return error
+
+    assert resolved is not None
+    address = resolved["address"]
+
+    try:
+        data = await BALANCE_CLIENT.get_enriched_wallet_balances(
+            wallet_address=address,
+            exclude_spam_tokens=True,
+        )
+        data = _filter_evm_balances(data if isinstance(data, dict) else {})
+        return json.dumps(
+            {
+                "label": label,
+                "address": address,
+                "balances": data,
+                "detail_level": "full",
+            },
+            indent=2,
         )
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": str(exc)})
 
 
 async def get_wallet_activity(label: str) -> str:
-    w = find_wallet_by_label(label)
-    if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+    resolved, error = _wallet_or_error(label)
+    if error:
+        return error
 
-    address = normalize_address(w.get("address"))
-    if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
+    assert resolved is not None
+    address = resolved["address"]
+
+    try:
+        data = await BALANCE_CLIENT.get_wallet_activity(
+            wallet_address=address, limit=ACTIVITY_LIMIT
+        )
+        activity = data.get("activity", []) if isinstance(data, dict) else []
+        return json.dumps(
+            {
+                "label": label,
+                "address": address,
+                "activity": _compact_activity(activity),
+                "next_offset": data.get("next_offset")
+                if isinstance(data, dict)
+                else None,
+                "detail_uri": f"wayfinder://activity/{label}/full",
+            },
+            indent=2,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({"error": str(exc)})
+
+
+async def get_wallet_activity_full(label: str) -> str:
+    resolved, error = _wallet_or_error(label)
+    if error:
+        return error
+
+    assert resolved is not None
+    address = resolved["address"]
 
     try:
         data = await BALANCE_CLIENT.get_wallet_activity(
@@ -118,8 +260,11 @@ async def get_wallet_activity(label: str) -> str:
             {
                 "label": label,
                 "address": address,
-                "activity": data.get("activity", []),
-                "next_offset": data.get("next_offset"),
+                "activity": data.get("activity", []) if isinstance(data, dict) else [],
+                "next_offset": data.get("next_offset")
+                if isinstance(data, dict)
+                else None,
+                "detail_level": "full",
             },
             indent=2,
         )

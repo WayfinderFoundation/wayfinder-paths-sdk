@@ -11,8 +11,10 @@ import asyncio
 from mcp.server.fastmcp import FastMCP
 
 from wayfinder_paths.mcp.resources.alpha_lab import get_alpha_types, search_alpha
+from wayfinder_paths.mcp.resources.catalog import guide_intent, list_intents
 from wayfinder_paths.mcp.resources.contracts import (
     get_contract,
+    get_contract_full,
     list_contracts,
 )
 from wayfinder_paths.mcp.resources.delta_lab import (
@@ -36,7 +38,9 @@ from wayfinder_paths.mcp.resources.delta_lab import (
 )
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
+    describe_adapter_full,
     describe_strategy,
+    describe_strategy_full,
     list_adapters,
     list_strategies,
 )
@@ -51,13 +55,17 @@ from wayfinder_paths.mcp.resources.hyperliquid import (
 )
 from wayfinder_paths.mcp.resources.tokens import (
     fuzzy_search_tokens,
+    fuzzy_search_tokens_full,
     get_gas_token,
     resolve_token,
 )
 from wayfinder_paths.mcp.resources.wallets import (
     get_wallet,
     get_wallet_activity,
+    get_wallet_activity_full,
     get_wallet_balances,
+    get_wallet_balances_full,
+    get_wallet_full,
     list_wallets,
 )
 from wayfinder_paths.mcp.tools.contracts import compile_contract, deploy_contract
@@ -78,17 +86,27 @@ from wayfinder_paths.mcp.tools.wallets import wallets
 mcp = FastMCP("wayfinder")
 
 # Resources (read-only data)
+mcp.resource("wayfinder://catalog/intents")(list_intents)
+mcp.resource("wayfinder://guide/{intent}")(guide_intent)
 mcp.resource("wayfinder://adapters")(list_adapters)
 mcp.resource("wayfinder://strategies")(list_strategies)
 mcp.resource("wayfinder://adapters/{name}")(describe_adapter)
+mcp.resource("wayfinder://adapters/{name}/full")(describe_adapter_full)
 mcp.resource("wayfinder://strategies/{name}")(describe_strategy)
+mcp.resource("wayfinder://strategies/{name}/full")(describe_strategy_full)
 mcp.resource("wayfinder://wallets")(list_wallets)
 mcp.resource("wayfinder://wallets/{label}")(get_wallet)
+mcp.resource("wayfinder://wallets/{label}/full")(get_wallet_full)
 mcp.resource("wayfinder://balances/{label}")(get_wallet_balances)
+mcp.resource("wayfinder://balances/{label}/full")(get_wallet_balances_full)
 mcp.resource("wayfinder://activity/{label}")(get_wallet_activity)
+mcp.resource("wayfinder://activity/{label}/full")(get_wallet_activity_full)
 mcp.resource("wayfinder://tokens/resolve/{query}")(resolve_token)
 mcp.resource("wayfinder://tokens/gas/{chain_code}")(get_gas_token)
 mcp.resource("wayfinder://tokens/search/{chain_code}/{query}")(fuzzy_search_tokens)
+mcp.resource("wayfinder://tokens/search-full/{chain_code}/{query}")(
+    fuzzy_search_tokens_full
+)
 mcp.resource("wayfinder://hyperliquid/{label}/state")(get_user_state)
 mcp.resource("wayfinder://hyperliquid/{label}/spot")(get_spot_user_state)
 mcp.resource("wayfinder://hyperliquid/prices")(get_mid_prices)
@@ -98,6 +116,7 @@ mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
 mcp.resource("wayfinder://contracts")(list_contracts)
 mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
+mcp.resource("wayfinder://contracts/{chain_id}/{address}/full")(get_contract_full)
 mcp.resource("wayfinder://alpha-lab/types")(get_alpha_types)
 mcp.resource(
     "wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}"
