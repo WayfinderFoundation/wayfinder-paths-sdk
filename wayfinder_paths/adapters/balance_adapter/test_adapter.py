@@ -175,3 +175,48 @@ class TestBalanceAdapter:
                 balance_block_identifier="pending",
                 default_native_decimals=18,
             )
+
+    @pytest.mark.asyncio
+    async def test_wait_for_balance_returns_latest_match(self):
+        adapter = BalanceAdapter(
+            config={},
+            strategy_wallet_address="0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        )
+        adapter.get_balance_details = AsyncMock(
+            side_effect=[
+                (True, {"balance_decimal": 1.0}),
+                (True, {"balance_decimal": 4.5}),
+                (True, {"balance_decimal": 6.0}),
+            ]
+        )
+
+        balance = await adapter.wait_for_balance(
+            token_id="usd-coin-arbitrum",
+            min_balance=5.0,
+            timeout_seconds=2,
+            poll_interval_seconds=0.1,
+        )
+
+        assert balance == 6.0
+
+    @pytest.mark.asyncio
+    async def test_wait_for_balance_returns_latest_on_timeout(self):
+        adapter = BalanceAdapter(
+            config={},
+            strategy_wallet_address="0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        )
+        adapter.get_balance_details = AsyncMock(
+            side_effect=[
+                (True, {"balance_decimal": 1.0}),
+                (True, {"balance_decimal": 2.0}),
+            ]
+        )
+
+        balance = await adapter.wait_for_balance(
+            token_id="usd-coin-arbitrum",
+            min_balance=5.0,
+            timeout_seconds=1,
+            poll_interval_seconds=1,
+        )
+
+        assert balance == 2.0

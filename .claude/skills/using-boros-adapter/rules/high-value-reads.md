@@ -157,6 +157,26 @@ success, asset = await adapter.get_asset_by_token_id(token_id=3)
 usdt_address = asset["address"]  # "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"
 ```
 
+### Vault discovery
+
+Use the vault helpers when the task is "where should I deposit collateral?" rather than "what fixed rate can I trade?"
+
+- `success, vaults = await adapter.get_vaults_summary(account="0x...")`
+  - Output: `(bool, list[BorosVault])`
+  - High-value fields: `amm_id`, `market_id`, `symbol`, `apy`, `tenor_days`, `is_isolated_only`, `market_state`, `remaining_supply_lp`
+  - When `account` is provided, the adapter also attaches user LP balance / estimated deposited value
+- `success, vaults = await adapter.search_vaults(token_id=3, asset="ETH", account="0x...")`
+  - Filter by collateral token (`token_id`) and/or symbol
+- `success, best = await adapter.best_yield_vault(token_id=3, amount_tokens=1000.0, min_tenor_days=7.0, allow_isolated_only=True)`
+  - Picks the highest-APY vault that is currently depositable and has enough capacity
+- `adapter.is_vault_open_for_deposit(vault, min_tenor_days=7.0, allow_isolated_only=True)`
+  - Use this instead of guessing from `is_active` / `state`
+
+Important notes:
+- `token_id` here is the **collateral token**, not the underlying perp symbol.
+- Isolated-only vaults are intentionally excluded unless `allow_isolated_only=True`.
+- "Open" means more than `is_active=true`: the helper also rejects expired, paused, below-tenor, and disallowed isolated-only vaults.
+
 ## Market Discovery Helpers
 
 ### List available underlyings

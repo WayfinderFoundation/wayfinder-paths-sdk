@@ -8,6 +8,8 @@ import aiohttp
 from aiocache import Cache
 from loguru import logger
 
+from wayfinder_paths.core.constants.base import DEFAULT_HTTP_HEADERS
+
 # Default Boros API endpoints
 # Open API endpoints (public, no auth required)
 OPEN_API_ENDPOINTS = {
@@ -39,8 +41,6 @@ CORE_API_ENDPOINTS = {
     "amm_chart": "/core/v2/amm/chart",
     "simulate_add_liquidity": "/core/v1/simulations/add-liquidity-single-cash",
     "simulate_remove_liquidity": "/core/v1/simulations/remove-liquidity-single-cash",
-    "build_add_liquidity_calldata": "/core/v4/calldata/add-liquidity-single-cash-to-amm",
-    "build_remove_liquidity_calldata": "/core/v4/calldata/remove-liquidity-single-cash-from-amm",
     "amm_rewards": "/core/v1/amm/rewards",
     "amm_rewards_proof": "/core/v1/merkels/amm_lp_rewards/user",
 }
@@ -102,7 +102,7 @@ class BorosClient:
         url = f"{self.base_url}{path}"
         timeout_val = timeout or self.timeout
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=DEFAULT_HTTP_HEADERS) as session:
             async with session.request(
                 method,
                 url,
@@ -364,6 +364,35 @@ class BorosClient:
             "accountId": int(account_id if account_id is not None else self.account_id),
         }
         return await self._http("GET", path, params=params)
+
+    async def get_amm_summary(
+        self,
+        *,
+        account: str | None = None,
+    ) -> dict[str, Any]:
+        path = self.endpoints["amm_summary"]
+        params = {"account": str(account)} if account else None
+        return await self._http("GET", path, params=params)
+
+    async def get_amm_rewards(
+        self,
+        *,
+        user_address: str | None = None,
+    ) -> dict[str, Any]:
+        path = self.endpoints["amm_rewards"]
+        params = {"user": user_address or self.user_address}
+        return await self._http("GET", path, params=params)
+
+    async def get_amm_rewards_proof(
+        self,
+        *,
+        user_address: str | None = None,
+    ) -> dict[str, Any]:
+        user = user_address or self.user_address
+        if not user:
+            raise ValueError("user_address is required")
+        path = f"{self.endpoints['amm_rewards_proof']}/{user}"
+        return await self._http("GET", path)
 
     async def get_open_orders(
         self,

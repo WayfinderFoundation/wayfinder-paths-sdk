@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
+import aiohttp
 from eth_utils import to_checksum_address
 from web3.exceptions import ContractLogicError, Web3RPCError
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.avantis_abi import AVANTIS_VAULT_MANAGER_ABI
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import DEFAULT_HTTP_HEADERS, MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import (
     AVANTIS_AVUSDC,
@@ -25,6 +26,7 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 CHAIN_NAME = "base"
+AVANTIS_RETURNS_URL = "https://api.avantisfi.com/v1/vault/returns"
 
 
 class AvantisAdapter(BaseAdapter):
@@ -63,6 +65,9 @@ class AvantisAdapter(BaseAdapter):
             async with web3_from_chain_id(self.chain_id) as web3:
                 v = web3.eth.contract(address=self.vault, abi=ERC4626_ABI)
 
+                # avUSDC decimals is always 6; include convertToAssets(10**6) in one multicall
+                unit_shares = 10**6
+
                 (
                     asset,
                     decimals,
@@ -70,6 +75,7 @@ class AvantisAdapter(BaseAdapter):
                     name,
                     total_assets,
                     total_supply,
+                    share_price,
                 ) = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=self.chain_id,
@@ -84,22 +90,17 @@ class AvantisAdapter(BaseAdapter):
                         Call(v, "name", postprocess=str),
                         Call(v, "totalAssets", postprocess=int),
                         Call(v, "totalSupply", postprocess=int),
+                        Call(
+                            v,
+                            "convertToAssets",
+                            args=(unit_shares,),
+                            postprocess=int,
+                        ),
                     ],
                     block_identifier="pending",
                 )
 
                 share_decimals = int(decimals or 0)
-                unit_shares = 10**share_decimals if share_decimals >= 0 else 0
-                try:
-                    share_price = (
-                        await v.functions.convertToAssets(unit_shares).call(
-                            block_identifier="pending"
-                        )
-                        if unit_shares
-                        else 0
-                    )
-                except (ContractLogicError, Web3RPCError):
-                    share_price = 0
 
                 market: dict[str, Any] = {
                     "chain_id": int(self.chain_id),
@@ -178,6 +179,28 @@ class AvantisAdapter(BaseAdapter):
                         "lastRewardTime": int(last_reward_time or 0),
                     },
                 )
+        except Exception as exc:
+            return False, str(exc)
+
+    async def _http_get_json(self, url: str) -> dict[str, Any]:
+        async with aiohttp.ClientSession(headers=DEFAULT_HTTP_HEADERS) as session:
+            async with session.get(url, timeout=10) as resp:
+                resp.raise_for_status()
+                return await resp.json()
+
+    async def fetch_trailing_apy(self) -> tuple[bool, dict[str, float] | str]:
+        try:
+            data = await self._http_get_json(AVANTIS_RETURNS_URL)
+            returns = data.get("returns", {})
+            meta = data.get("meta", {})
+            jr_pct = float((returns.get("jr") or {}).get("base") or 0.0)
+            sr_pct = float((returns.get("sr") or {}).get("base") or 0.0)
+            days = int(meta.get("days") or 7)
+            return True, {
+                "jr_apy": jr_pct / 100.0,
+                "sr_apy": sr_pct / 100.0,
+                "days": float(days),
+            }
         except Exception as exc:
             return False, str(exc)
 
@@ -348,29 +371,40 @@ class AvantisAdapter(BaseAdapter):
                 )
 
                 shares_i = int(shares or 0)
-                assets_i = (
-                    int(
-                        await v.functions.convertToAssets(shares_i).call(
-                            block_identifier=block_id
-                        )
-                    )
-                    if shares_i > 0
-                    else 0
-                )
-
                 share_decimals = int(decimals or 0)
                 unit_shares = 10**share_decimals if share_decimals >= 0 else 0
-                try:
-                    share_price = (
-                        int(
-                            await v.functions.convertToAssets(unit_shares).call(
-                                block_identifier=block_id
-                            )
-                        )
-                        if unit_shares
-                        else 0
+
+                # Batch both convertToAssets calls into a single multicall
+                convert_calls: list[Call] = []
+                if shares_i > 0:
+                    convert_calls.append(
+                        Call(v, "convertToAssets", args=(shares_i,), postprocess=int)
                     )
-                except (ContractLogicError, Web3RPCError):
+                if unit_shares:
+                    convert_calls.append(
+                        Call(v, "convertToAssets", args=(unit_shares,), postprocess=int)
+                    )
+
+                if convert_calls:
+                    try:
+                        convert_results = await read_only_calls_multicall_or_gather(
+                            web3=web3,
+                            chain_id=self.chain_id,
+                            calls=convert_calls,
+                            block_identifier=block_id,
+                        )
+                    except (ContractLogicError, Web3RPCError):
+                        convert_results = [0] * len(convert_calls)
+
+                idx = 0
+                if shares_i > 0:
+                    assets_i = int(convert_results[idx])
+                    idx += 1
+                else:
+                    assets_i = 0
+                if unit_shares:
+                    share_price = int(convert_results[idx])
+                else:
                     share_price = 0
 
                 underlying = to_checksum_address(str(asset))
@@ -455,6 +489,34 @@ class AvantisAdapter(BaseAdapter):
         if include_usd:
             state["usd_value"] = pos.get("usd_value")
         return True, state
+
+    async def position(
+        self,
+        *,
+        account: str | None = None,
+        include_usd: bool = True,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        target = account or self.wallet_address
+        if not target:
+            return False, "wallet_address is required"
+
+        ok, pos = await self.get_pos(
+            vault_address=self.vault,
+            account=target,
+            include_usd=include_usd,
+        )
+        if not ok or not isinstance(pos, dict):
+            return False, str(pos)
+
+        return True, {
+            "value_usdc": float(pos.get("assets_balance") or 0) / 1e6,
+            "shares": int(pos.get("shares_balance") or 0),
+            "assets": int(pos.get("assets_balance") or 0),
+            "share_price": int(pos.get("share_price") or 0),
+            "max_redeem": int(pos.get("max_redeem") or 0),
+            "max_withdraw": int(pos.get("max_withdraw") or 0),
+            "usd_value": pos.get("usd_value"),
+        }
 
     async def _usd_value(self, *, token_key: str, amount_raw: int) -> float | None:
         try:
