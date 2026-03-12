@@ -716,10 +716,14 @@ class TestBasisTradingStrategy:
             return_value=(True, {"balances": [{"coin": "UXPL", "total": "292.794901"}]})
         )
 
-        strategy._get_total_portfolio_value = AsyncMock(return_value=(100.0, 100.0, 0.0))
+        strategy._get_total_portfolio_value = AsyncMock(
+            return_value=(100.0, 100.0, 0.0)
+        )
         strategy._is_near_liquidation = AsyncMock(return_value=(False, "ok"))
         strategy._repair_leg_imbalance = AsyncMock(return_value=(True, "shorted more"))
-        strategy._needs_new_position = AsyncMock(return_value=(True, "Position imbalance"))
+        strategy._needs_new_position = AsyncMock(
+            return_value=(True, "Position imbalance")
+        )
         strategy._is_rotation_allowed = AsyncMock(return_value=(False, "cooldown"))
 
         success, msg = await strategy._monitor_position()

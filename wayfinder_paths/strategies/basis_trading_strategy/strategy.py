@@ -1621,7 +1621,10 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         success, state = await self.hyperliquid_adapter.get_user_state(address)
         if not success:
-            return False, f"Scale-up fill completed but failed to refresh state: {state}"
+            return (
+                False,
+                f"Scale-up fill completed but failed to refresh state: {state}",
+            )
 
         leg_ok, leg_msg = await self._verify_leg_balance(state)
         live_pos = self.current_position or pos
@@ -1684,9 +1687,10 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             repair_ok, repair_msg = await self._repair_leg_imbalance(state)
             if repair_ok:
                 actions_taken.append(f"Repaired leg imbalance: {repair_msg}")
-                success, refreshed_state = await self.hyperliquid_adapter.get_user_state(
-                    address
-                )
+                (
+                    success,
+                    refreshed_state,
+                ) = await self.hyperliquid_adapter.get_user_state(address)
                 if success:
                     state = refreshed_state
                     leg_ok, leg_msg = await self._verify_leg_balance(state)
