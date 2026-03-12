@@ -86,12 +86,12 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | CCXT (CEX)            | `/using-ccxt-adapter`            |
 | Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
+| Alpha Lab             | `/using-alpha-lab`               |
 | Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
 | Contract Dev          | `/contract-development`          |
-
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
@@ -169,6 +169,7 @@ result = run_backtest(prices, target_positions, config)
 ### From Backtest to Production
 
 Once validated:
+
 1. Create strategy class: `just create-strategy "Strategy Name"`
 2. Implement Strategy interface (deposit, update, withdraw, exit)
 3. Add adapters and manifest
@@ -190,6 +191,47 @@ When answering questions about **rates/APYs/funding**:
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
 
+## Alpha Lab MCP resources (alpha discovery)
+
+**Load `/using-alpha-lab` skill for detailed docs.** Quick reference below.
+
+Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). Results ranked by `insightfulness_score` (0-1). Read-only — discovery only, no execution.
+
+**MCP resources:**
+
+- `wayfinder://alpha-lab/types` - List available scan types
+- `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}` - Search insights
+
+**Search params:** use `_` as placeholder to skip optional params.
+
+| Param            | Values                                                                                                                                            | Default |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `query`          | text search or `_` for none                                                                                                                       | `_`     |
+| `scan_type`      | `all`, `twitter_post`, `defi_llama_chain_flow`, `defi_llama_overview`, `defi_llama_protocol`, `delta_lab_top_apy`, `delta_lab_best_delta_neutral` | `all`   |
+| `created_after`  | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
+| `created_before` | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
+| `limit`          | 1-200                                                                                                                                             | `20`    |
+
+**Examples:**
+
+```
+# Top 20 insights (all types)
+uri="wayfinder://alpha-lab/search/_/all/_/_/20"
+
+# Twitter posts only
+uri="wayfinder://alpha-lab/search/_/twitter_post/_/_/10"
+
+# Search for ETH-related insights
+uri="wayfinder://alpha-lab/search/ETH/all/_/_/10"
+
+# Today's insights
+uri="wayfinder://alpha-lab/search/_/all/2026-03-11T00:00:00Z/_/20"
+
+# Serious analysis via client
+from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
+data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)
+```
+
 ## Delta Lab MCP resources (yield discovery)
 
 **Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
@@ -197,6 +239,7 @@ When answering questions about **rates/APYs/funding**:
 **⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
 
 **MCP resources (quick queries):**
+
 - `wayfinder://delta-lab/symbols` - List basis symbols
 - `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
 - `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
@@ -211,6 +254,7 @@ When answering questions about **rates/APYs/funding**:
 - `wayfinder://delta-lab/screen/borrow-routes/{SORT}/{LIMIT}/{BASIS}/{BORROW_BASIS}` - Screen borrow routes (collateral → borrow)
 
 **Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
+
 - **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
 - **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
 - **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
@@ -219,6 +263,7 @@ When answering questions about **rates/APYs/funding**:
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
 **Examples:**
+
 ```
 # Quick queries via MCP
 uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
@@ -291,7 +336,7 @@ When a user asks to run, check, or interact with a strategy:
 
 6. **Safety review** - Fund-moving actions (deposit, update, withdraw, exit) are gated by a safety review hook that shows a preview and asks for confirmation.
 
-7. **Mypy typing** - When adding or modifying Python code, ensure all *new/changed* code is fully type-annotated and does not introduce new mypy errors (existing legacy errors may remain).
+7. **Mypy typing** - When adding or modifying Python code, ensure all _new/changed_ code is fully type-annotated and does not introduce new mypy errors (existing legacy errors may remain).
 
 ## Execution modes (one-off vs recurring)
 
@@ -336,7 +381,7 @@ Polymarket funding (USDC.e collateral):
 - **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
 - **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
 
-Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin** (use `usd_amount_kind="notional"|"margin"` on `mcp__wayfinder__hyperliquid_execute`).
+Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X`is **notional** or **margin** (use`usd_amount_kind="notional"|"margin"`on`mcp**wayfinder**hyperliquid_execute`).
 
 **Scripting helper for adapters:**
 
@@ -361,6 +406,7 @@ adapter = get_adapter(PendleAdapter)
 ```
 
 `get_adapter()` auto-loads `config.json`, looks up wallets by label, creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
+
 - `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
 - `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
 
@@ -414,6 +460,7 @@ meta, ctxs = data[0], data[1]
 ```
 
 **Why the difference?**
+
 - **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
 - **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
 
@@ -520,7 +567,7 @@ if not ok:
 
 **9. Load the protocol skill before writing adapter scripts**
 
-Before writing *any* script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
+Before writing _any_ script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
 
 **10. Write the script file before calling `run_script`**
 
@@ -546,6 +593,7 @@ else:
 ```
 
 This applies to:
+
 - Hyperliquid perp funding rates
 - Delta Lab perp opportunities
 - Any perp trading strategy analysis
@@ -594,16 +642,16 @@ Safety note:
 
 Supported chains:
 
-| Chain     | ID    | Code         | Symbol | Native token ID        |
-| --------- | ----- | ------------ | ------ | ---------------------- |
-| Ethereum  | 1     | `ethereum`   | ETH    | `ethereum-ethereum`    |
-| Base      | 8453  | `base`       | ETH    | `ethereum-base`        |
-| Arbitrum  | 42161 | `arbitrum`   | ETH    | `ethereum-arbitrum`    |
-| Polygon   | 137   | `polygon`    | POL    | `polygon-ecosystem-token-polygon`|
-| BSC       | 56    | `bsc`        | BNB    | `binancecoin-bsc`      |
-| Avalanche | 43114 | `avalanche`  | AVAX   | `avalanche-avalanche`|
-| Plasma    | 9745  | `plasma`     | PLASMA | `plasma-plasma`        |
-| HyperEVM  | 999   | `hyperevm`   | HYPE   | `hyperliquid-hyperevm` |
+| Chain     | ID    | Code        | Symbol | Native token ID                   |
+| --------- | ----- | ----------- | ------ | --------------------------------- |
+| Ethereum  | 1     | `ethereum`  | ETH    | `ethereum-ethereum`               |
+| Base      | 8453  | `base`      | ETH    | `ethereum-base`                   |
+| Arbitrum  | 42161 | `arbitrum`  | ETH    | `ethereum-arbitrum`               |
+| Polygon   | 137   | `polygon`   | POL    | `polygon-ecosystem-token-polygon` |
+| BSC       | 56    | `bsc`       | BNB    | `binancecoin-bsc`                 |
+| Avalanche | 43114 | `avalanche` | AVAX   | `avalanche-avalanche`             |
+| Plasma    | 9745  | `plasma`    | PLASMA | `plasma-plasma`                   |
+| HyperEVM  | 999   | `hyperevm`  | HYPE   | `hyperliquid-hyperevm`            |
 
 - **Plasma**: EVM chain where Pendle deploys PT/YT markets. Not Pendle-specific — it's its own chain.
 - **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
@@ -684,6 +732,7 @@ just create-strategy "My Strategy Name"
 ```
 
 Creates under `wayfinder_paths/strategies/<name>/`:
+
 - `strategy.py` - Strategy class with required method stubs
 - `manifest.yaml` - Strategy manifest (entrypoint, adapters, permissions)
 - `test_strategy.py` - Smoke test template
@@ -699,6 +748,7 @@ just create-adapter "my_protocol"
 ```
 
 Creates under `wayfinder_paths/adapters/<name>_adapter/`:
+
 - `adapter.py` - Adapter class extending `BaseAdapter`
 - `manifest.yaml` - Adapter manifest (entrypoint, capabilities, dependencies)
 - `test_adapter.py` - Basic test template
