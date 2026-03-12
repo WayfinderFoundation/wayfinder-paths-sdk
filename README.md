@@ -150,6 +150,8 @@ The repository ships with several strategies. Each strategy folder contains a RE
 | `moonwell_wsteth_loop_strategy` | Leveraged wstETH carry trade | Base | Stable | `wayfinder_paths/strategies/moonwell_wsteth_loop_strategy/README.md` |
 | `basis_trading_strategy` | Delta-neutral funding rate capture | Hyperliquid | Stable | `wayfinder_paths/strategies/basis_trading_strategy/README.md` |
 | `boros_hype_strategy` | HYPE yield with Boros + Hyperliquid hedging | Multi-chain | Stable | `wayfinder_paths/strategies/boros_hype_strategy/README.md` |
+| `multi_vault_split_strategy` | Diversified USDC vault allocation across HLP, Boros, and Avantis | Multi-chain | Stable | `wayfinder_paths/strategies/multi_vault_split_strategy/README.md` |
+| `projectx_thbill_usdc_strategy` | THBILL/USDC concentrated LP with fee compounding and recentering | HyperEVM | Stable | `wayfinder_paths/strategies/projectx_thbill_usdc_strategy/README.md` |
 
 > **Note:** WIP (work-in-progress) strategies may have incomplete features or known issues. Running them via MCP will show a warning but execution is not blocked.
 
