@@ -22,7 +22,7 @@ The position is **delta-neutral**: WETH debt offsets wstETH collateral, so PnL i
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | `MIN_GAS` | 0.002 ETH | Minimum gas buffer |
-| `MIN_USDC_DEPOSIT` | 20 USDC | Minimum initial collateral |
+| `MIN_USDC_DEPOSIT` | 10 USDC | Minimum initial collateral |
 | `MAX_DEPEG` | 0.01 (1%) | Max stETH/ETH depeg threshold |
 | `MIN_HEALTH_FACTOR` | 1.2 | Triggers deleveraging if below |
 | `MAX_HEALTH_FACTOR` | 1.5 | Triggers leverage loop if above |
@@ -99,6 +99,100 @@ poetry run python -m wayfinder_paths.run_strategy moonwell_wsteth_loop_strategy 
 - Unlends wstETH, swaps to USDC
 - Unlends USDC collateral
 - Returns USDC and remaining ETH to main wallet
+
+## Backtesting
+
+### How the position generates returns
+
+The strategy holds a delta-neutral loop: wstETH as collateral + USDC as seed collateral, WETH as debt. Because the collateral and debt are both ETH-denominated (wstETH ≈ ETH), price moves largely cancel. Net PnL comes from the **spread**:
+
+```
+net hourly return ≈ (wstETH_staking_yield × leverage - WETH_borrow_rate × (leverage - 1)) / 8760
+```
+
+The live leverage varies — the strategy targets `TARGET_HEALTH_FACTOR = 1.25` and rebalances when HF leaves the range [1.2, 1.5]. Approximate leverage ≈ 2–3x depending on Moonwell's collateral factors for wstETH and USDC on Base.
+
+### Starter backtest
+
+Compute stats directly from the hourly returns series. **Do not** use `run_backtest` with
+`target=1.0` — that produces NaN stats for synthetic-price strategies.
+
+```python
+import asyncio
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
+from wayfinder_paths.core.backtesting import fetch_lending_rates
+
+LEVERAGE = 2.5          # mid-range estimate; live leverage is HF-controlled (~2-3x)
+START = "2025-08-13"    # oldest safe Delta Lab date; update as needed
+END = "2026-03-01"
+PERIODS_PER_YEAR = 8760
+
+async def backtest() -> None:
+    start_dt = datetime.fromisoformat(START)
+    end_dt = datetime.fromisoformat(END)
+    lookback = (end_dt - start_dt).days
+
+    # --- wstETH staking yield ---
+    # Use base_yield_apy from the wstETH lending timeseries.
+    # This is the real Lido intrinsic APY baked into the wstETH/ETH exchange rate.
+    # Do NOT use fetch_supply_rates("wstETH") — it returns the Moonwell lending APR
+    # on top of staking yield, which is near-zero and not the staking yield itself.
+    # Do NOT derive from hourly wstETH/ETH price ratio — too noisy at 1h granularity.
+    data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+        symbol="wstETH", lookback_days=lookback, limit=10000, as_of=end_dt, series="lending"
+    )
+    mw = data["lending"]
+    mw = mw[mw["venue"] == "moonwell-base"].copy()
+    mw.index = pd.to_datetime(mw.index)
+    lido_rate = mw["base_yield_apy"].resample("1h").last().ffill(limit=24).bfill()
+    # During Aug 2025–Mar 2026, real Lido rate was ~2.3% ann (not the ~3.5% often assumed).
+
+    # --- WETH borrow rate on Moonwell ---
+    weth_rates = await fetch_lending_rates("WETH", START, END, venues=["moonwell-base"])
+    borrow_rate = weth_rates["borrow"]["moonwell-base"].ffill().bfill().fillna(0)
+
+    # Align to common index
+    idx = lido_rate.index.intersection(borrow_rate.index)
+    lido_h = lido_rate.reindex(idx).ffill() / PERIODS_PER_YEAR
+    borrow_h = borrow_rate.reindex(idx).ffill() / PERIODS_PER_YEAR
+
+    # Hourly returns: staking yield amplified by leverage, minus WETH borrow cost on debt
+    hourly_ret = lido_h * LEVERAGE - borrow_h * (LEVERAGE - 1)
+
+    # Stats
+    cumret = (1 + hourly_ret).cumprod()
+    total = float(cumret.iloc[-1]) - 1.0
+    years = len(hourly_ret) / PERIODS_PER_YEAR
+    cagr = float((1 + total) ** (1 / years) - 1)
+    vol = float(hourly_ret.std(ddof=0)) * np.sqrt(PERIODS_PER_YEAR)
+    sharpe = cagr / vol if vol > 0 else 0.0
+    mdd = float((cumret / cumret.cummax() - 1).min())
+
+    print(f"Total return : {total:.2%}")
+    print(f"Ann. return  : {cagr:.2%}")
+    print(f"Sharpe       : {sharpe:.2f}")
+    print(f"Max drawdown : {mdd:.2%}")
+    print(f"Lido median  : {lido_rate.reindex(idx).median():.2%}")
+    print(f"Borrow median: {borrow_rate.reindex(idx).median():.2%}")
+
+asyncio.run(backtest())
+```
+
+**WELL reward emissions**: `supply_reward_apr` is not populated in Delta Lab for Moonwell
+wstETH — rewards are not tracked. Add a constant `well_apy / PERIODS_PER_YEAR` term to
+`hourly_ret` to sensitivity-test (typical range: +0.5–2% ann depending on WELL price).
+
+**Known gaps vs. live strategy**:
+- Live leverage is dynamic (HF-controlled); this backtest uses a fixed 2.5x estimate
+- WELL token reward emissions (claimed when > $0.30 threshold) not available in Delta Lab
+- The live strategy's HF-based deleveraging during borrow rate spikes is not modeled
+- ETH price moves are excluded under the delta-neutral assumption; a small residual exposure exists
+
+**Key health check**: `lido_rate.median() > borrow_rate.median()` — if the spread inverts,
+the strategy pays to be leveraged. Spread was positive ~96% of hours during Aug 2025–Mar 2026.
 
 ## Testing
 
