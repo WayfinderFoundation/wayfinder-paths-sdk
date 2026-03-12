@@ -116,11 +116,24 @@ async def fetch_prices(
     end = datetime.fromisoformat(end_date)
     lookback_days = (end - start).days
 
+    _SUB_HOURLY = {"1m", "5m", "15m"}
+    _INTERVAL_TO_FREQ = {"1h": "1h", "4h": "4h", "1d": "1D"}
+
     if source == "auto":
-        source = "delta_lab"
+        source = "hyperliquid" if interval in _SUB_HOURLY else "delta_lab"
 
     if source == "delta_lab":
-        return await _fetch_prices_delta_lab(symbols, lookback_days, end)
+        if interval in _SUB_HOURLY:
+            raise ValueError(
+                f"Delta Lab only provides hourly data; sub-hourly interval '{interval}' "
+                f"is not supported. Use source='hyperliquid' for sub-hourly data."
+            )
+        result = await _fetch_prices_delta_lab(symbols, lookback_days, end)
+        if interval != "1h":
+            freq = _INTERVAL_TO_FREQ.get(interval)
+            if freq:
+                result = result.resample(freq).last().dropna(how="all")
+        return result
     elif source == "hyperliquid":
         return await _fetch_prices_hyperliquid(symbols, start, end, interval)
     else:

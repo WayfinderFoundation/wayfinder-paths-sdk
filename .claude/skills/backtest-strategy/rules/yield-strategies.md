@@ -87,3 +87,7 @@ Always use: `slippage_rate=0.0`, `enable_liquidation=False` (supply-only), `peri
 - `funding_rates` config: bake borrow costs into synthetic price instead
 - Negative weights: lending is long-only
 - Reward token APR: may not be in Delta Lab historical data — add manually if material
+
+## Carry trade accuracy caveat
+
+`backtest_carry_trade` computes `best_supply_rate - cheapest_borrow_rate` across venues. This spread is **only achievable if you already have collateral deployed** — borrowing requires over-collateralization and the collateral's price risk is not modeled. Treat the result as an upper bound. For a realistic model, bake collateral price exposure into the synthetic price series using the leveraged loop pattern.

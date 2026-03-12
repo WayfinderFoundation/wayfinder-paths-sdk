@@ -152,6 +152,16 @@ print(borrow_df.median())            # median is more robust than mean for spiky
 
 ## Not supported
 
+### Known limitations of supported strategies
+
+| Strategy | Limitation |
+|---|---|
+| **Carry trade** | Models `best_supply_rate - cheapest_borrow_rate` as a free spread. In reality, borrowing requires collateral whose price risk is unmodeled. Treat results as an upper bound on attainable carry. |
+| **Delta-neutral** | The spot leg is modeled as idle capital with no return. In practice it could earn lending yield (e.g. supply ETH to Aave). Stated net return understates the real opportunity by the spot supply APR. |
+| **Any strategy with `interval != "1h"` via Delta Lab** | Delta Lab is hourly-only. Non-hourly intervals are resampled down (`4h`, `1d`) or rejected (`1m`, `5m`, `15m` — use `source="hyperliquid"` instead). |
+
+---
+
 ### Could be implemented but accuracy is low — do not attempt
 
 | Strategy type | Why it's unreliable |
