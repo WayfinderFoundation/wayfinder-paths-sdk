@@ -160,7 +160,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `AaveV3Adapter` (Aave V3 lending/borrowing across Ethereum, Base, and Arbitrum)
 - `AvantisAdapter` (Avantis avUSDC ERC-4626 vault on Base)
 - `BalanceAdapter` (wallet balances + transfers)
-- `BorosAdapter` (Boros lending positions)
+- `BorosAdapter` (Boros fixed-rate markets, margin accounts, and vaults)
 - `BRAPAdapter` (cross-chain swaps + bridges)
 - `CCXTAdapter` (multi-exchange CEX trading via CCXT)
 - `EthenaVaultAdapter` (Ethena sUSDe staking vault with cooldown withdrawals)
