@@ -212,7 +212,7 @@ async def test_pick_boros_vault_prefers_existing_open_position(
         amm_id=1,
         market_id=11,
         symbol="CLOSED",
-        is_isolated_only=True,
+        is_expired=True,
         user_deposit_tokens=25.0,
         remaining_supply_lp=int(100 * 1e18),
         raw={"lpPrice": 1.0},
@@ -235,6 +235,41 @@ async def test_pick_boros_vault_prefers_existing_open_position(
 
     assert picked is open_vault
     assert capacity == pytest.approx(50.0)
+    strategy.boros_adapter.best_yield_vault.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pick_boros_vault_prefers_existing_isolated_only_position_when_enabled(
+    strategy: MultiVaultSplitStrategy,
+):
+    isolated_vault = BorosVault(
+        amm_id=1,
+        market_id=11,
+        symbol="ISOLATED",
+        is_isolated_only=True,
+        user_deposit_tokens=25.0,
+        remaining_supply_lp=int(100 * 1e18),
+        tenor_days=12.0,
+        raw={"lpPrice": 1.0},
+    )
+    open_vault = BorosVault(
+        amm_id=2,
+        market_id=12,
+        symbol="OPEN",
+        user_deposit_tokens=15.0,
+        remaining_supply_lp=int(50 * 1e18),
+        tenor_days=12.0,
+        raw={"lpPrice": 1.0},
+    )
+    strategy.boros_adapter.get_vaults_summary = AsyncMock(
+        return_value=(True, [isolated_vault, open_vault])
+    )
+    strategy.boros_adapter.best_yield_vault = AsyncMock()
+
+    picked, capacity = await strategy._pick_boros_vault_for_deposit(amount_tokens=20.0)
+
+    assert picked is isolated_vault
+    assert capacity == pytest.approx(100.0)
     strategy.boros_adapter.best_yield_vault.assert_not_awaited()
 
 
@@ -269,7 +304,12 @@ async def test_pick_boros_vault_falls_back_to_best_yield(
 
     assert picked is best
     assert capacity == pytest.approx(80.0)
-    strategy.boros_adapter.best_yield_vault.assert_awaited_once()
+    strategy.boros_adapter.best_yield_vault.assert_awaited_once_with(
+        token_id=strategy.boros_token_id,
+        amount_tokens=20.0,
+        min_tenor_days=3.0,
+        allow_isolated_only=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -300,14 +340,52 @@ async def test_move_idle_to_boros_uses_existing_usdt_then_bridged_remainder(
     second_call = strategy._deposit_usdt_to_boros_vault.await_args_list[1]
     assert first_call.kwargs["market_id"] == 19
     assert first_call.kwargs["amount_native"] == to_erc20_raw(6.0, 6)
+    assert first_call.kwargs["is_isolated_only"] is False
     assert second_call.kwargs["market_id"] == 19
     assert second_call.kwargs["amount_native"] == to_erc20_raw(5.0, 6)
+    assert second_call.kwargs["is_isolated_only"] is False
     strategy.brap_adapter.swap_from_token_ids.assert_awaited_once_with(
         from_token_id="usd-coin-arbitrum",
         to_token_id="usdt0-arbitrum",
         from_address=strategy.strategy_wallet_address,
         amount=str(to_erc20_raw(5.0, 6)),
         slippage=0.005,
+    )
+
+
+@pytest.mark.asyncio
+async def test_deposit_usdt_to_boros_vault_uses_isolated_margin_for_isolated_vault(
+    strategy: MultiVaultSplitStrategy,
+):
+    strategy.boros_adapter.deposit_to_isolated_margin = AsyncMock(
+        return_value=(True, {"status": "ok"})
+    )
+    strategy.boros_adapter.deposit_to_cross_margin = AsyncMock()
+    strategy.boros_adapter.unscaled_to_scaled_cash_wei = AsyncMock(
+        return_value=12 * 10**18
+    )
+    strategy.boros_adapter.deposit_to_vault = AsyncMock(
+        return_value=(True, {"status": "ok"})
+    )
+
+    ok, message = await strategy._deposit_usdt_to_boros_vault(
+        market_id=73,
+        amount_native=to_erc20_raw(12.0, 6),
+        is_isolated_only=True,
+    )
+
+    assert ok is True
+    assert "Deposited 12.00 USDT to Boros" in message
+    strategy.boros_adapter.deposit_to_isolated_margin.assert_awaited_once_with(
+        collateral_address=strategy.usdt_address,
+        amount_wei=to_erc20_raw(12.0, 6),
+        token_id=strategy.boros_token_id,
+        market_id=73,
+    )
+    strategy.boros_adapter.deposit_to_cross_margin.assert_not_awaited()
+    strategy.boros_adapter.deposit_to_vault.assert_awaited_once_with(
+        market_id=73,
+        net_cash_in_wei=12 * 10**18,
     )
 
 
@@ -345,6 +423,10 @@ async def test_deploy_boros_account_idle_caps_deposit_by_capacity(
 
     assert ok is True
     assert "Redeployed Boros idle cash" in message
+    strategy._pick_boros_vault_for_deposit.assert_awaited_once_with(
+        amount_tokens=20.0,
+        allow_isolated_only=False,
+    )
     strategy.boros_adapter.deposit_to_vault.assert_awaited_once_with(
         market_id=19,
         net_cash_in_wei=to_erc20_raw(7.5, 18),

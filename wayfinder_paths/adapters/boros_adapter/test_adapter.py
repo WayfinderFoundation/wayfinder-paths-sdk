@@ -574,6 +574,70 @@ class TestBorosAdapter:
         )
 
     @pytest.mark.asyncio
+    async def test_deposit_to_isolated_margin_skips_cross_sweep(
+        self, adapter, mock_boros_client
+    ):
+        adapter.sign_callback = object()
+
+        mock_boros_client.build_deposit_calldata = AsyncMock(
+            return_value={
+                "to": "0x0000000000000000000000000000000000000002",
+                "data": "0xdeadbeef",
+                "value": 0,
+            }
+        )
+
+        @asynccontextmanager
+        async def _mock_web3_from_chain_id(_chain_id: int):  # noqa: ANN001
+            mock_web3 = MagicMock()
+            mock_contract = MagicMock()
+            mock_fn = MagicMock()
+            mock_fn.call = AsyncMock(return_value=10**30)
+            mock_contract.functions.balanceOf.return_value = mock_fn
+            mock_web3.eth.contract.return_value = mock_contract
+            yield mock_web3
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.web3_from_chain_id",
+                new=_mock_web3_from_chain_id,
+            ),
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.build_approve_transaction",
+                new=AsyncMock(
+                    return_value={"to": "0x0", "data": "0x0", "chainId": 42161}
+                ),
+            ),
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                new=AsyncMock(return_value="0xapprove"),
+            ),
+            patch.object(
+                adapter,
+                "_broadcast_calldata",
+                new=AsyncMock(return_value=(True, {"tx_hash": "0xdeposit"})),
+            ),
+            patch.object(
+                adapter,
+                "sweep_isolated_to_cross",
+                new=AsyncMock(),
+            ) as mock_sweep,
+        ):
+            ok, res = await adapter.deposit_to_isolated_margin(
+                collateral_address="0x0000000000000000000000000000000000000001",
+                amount_wei=12_000_000,
+                token_id=3,
+                market_id=73,
+            )
+
+        assert ok is True
+        assert res["status"] == "ok"
+        assert res["target_margin"] == "isolated"
+        assert res["approve"]["tx_hash"] == "0xapprove"
+        assert res["tx"]["tx_hash"] == "0xdeposit"
+        mock_sweep.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_deposit_to_vault_ignores_zero_available_balance_cap(self, adapter):
         adapter.get_vaults_summary = AsyncMock(
             return_value=(
@@ -588,7 +652,7 @@ class TestBorosAdapter:
                 ],
             )
         )
-        adapter._get_amm_id_for_market = AsyncMock(return_value=680)
+        adapter._get_amm_id_for_market = AsyncMock()
         adapter.deposit_to_vault_direct = AsyncMock(
             return_value=(True, {"status": "ok", "amm_id": 680})
         )
@@ -605,7 +669,190 @@ class TestBorosAdapter:
             net_cash_in_wei=2 * 10**18,
             min_lp_out_wei=None,
             slippage_bps=20,
+            market_id=68,
+            is_isolated_only=False,
         )
+        adapter._get_amm_id_for_market.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deposit_to_vault_rejects_isolated_only_below_min_cash(self, adapter):
+        adapter._get_amm_id_for_market = AsyncMock()
+        adapter.get_vaults_summary = AsyncMock(
+            return_value=(
+                True,
+                [
+                    BorosVault(
+                        amm_id=730,
+                        market_id=73,
+                        symbol="HYPERLIQUID-xyzCL-27MAR2026",
+                        is_isolated_only=True,
+                        raw={"tokenId": 3},
+                    )
+                ],
+            )
+        )
+        adapter.get_cash_fee_data = AsyncMock(
+            return_value=(True, {"min_cash_isolated_wei": int(10 * 1e18)})
+        )
+        adapter.deposit_to_vault_direct = AsyncMock()
+
+        ok, res = await adapter.deposit_to_vault(
+            market_id=73,
+            net_cash_in_wei=2 * 10**18,
+        )
+
+        assert ok is False
+        assert "requires at least" in str(res.get("error") or "")
+        adapter.deposit_to_vault_direct.assert_not_awaited()
+        adapter._get_amm_id_for_market.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_amm_id_for_market_uses_cached_mapping(self, adapter):
+        adapter._amm_id_by_market_cache[73] = 730
+        adapter.get_vaults_summary = AsyncMock()
+
+        amm_id = await adapter._get_amm_id_for_market(73)
+
+        assert amm_id == 730
+        adapter.get_vaults_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_vault_context_for_amm_uses_cached_context(self, adapter):
+        adapter._vault_context_cache[730] = {
+            "amm_id": 730,
+            "market_id": 73,
+            "token_id": 3,
+            "is_isolated_only": True,
+        }
+        adapter.get_vaults_summary = AsyncMock()
+
+        context = await adapter._get_vault_context_for_amm(730)
+
+        assert context == {
+            "amm_id": 730,
+            "market_id": 73,
+            "token_id": 3,
+            "is_isolated_only": True,
+        }
+        adapter.get_vaults_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_get_vault_lp_balance_uses_isolated_market_acc(self, adapter):
+        adapter._get_amm_address_from_router = AsyncMock(
+            return_value="0x0000000000000000000000000000000000000009"
+        )
+        adapter._get_vault_context_for_amm = AsyncMock(
+            return_value={"market_id": 73, "is_isolated_only": True}
+        )
+
+        mock_balance_fn = MagicMock()
+        mock_balance_fn.call = AsyncMock(return_value=123)
+        mock_contract = MagicMock()
+        mock_contract.functions.balanceOf.return_value = mock_balance_fn
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = mock_contract
+
+        @asynccontextmanager
+        async def _mock_web3_from_chain_id(_chain_id: int):  # noqa: ANN001
+            yield mock_web3
+
+        with patch(
+            "wayfinder_paths.adapters.boros_adapter.adapter.web3_from_chain_id",
+            new=_mock_web3_from_chain_id,
+        ):
+            ok, balance = await adapter.get_vault_lp_balance(
+                amm_id=730,
+                token_id=3,
+                account=adapter.wallet_address,
+            )
+
+        assert ok is True
+        assert balance == 123
+        expected_market_acc = adapter.build_market_acc(
+            address=adapter.wallet_address,
+            account_id=0,
+            token_id=3,
+            market_id=73,
+        )
+        assert (
+            mock_contract.functions.balanceOf.call_args.args[0] == expected_market_acc
+        )
+
+    @pytest.mark.asyncio
+    async def test_deposit_to_vault_direct_uses_isolated_router_mode(
+        self, adapter, mock_boros_client
+    ):
+        adapter.sign_callback = object()
+        adapter._get_vault_context_for_amm = AsyncMock(
+            return_value={"market_id": 73, "is_isolated_only": True}
+        )
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.encode_call",
+                new=AsyncMock(
+                    return_value={
+                        "to": "0x0",
+                        "data": "0x0",
+                        "chainId": 42161,
+                        "from": adapter.wallet_address,
+                    }
+                ),
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                new=AsyncMock(return_value="0xadd"),
+            ),
+        ):
+            ok, res = await adapter.deposit_to_vault_direct(
+                amm_id=730,
+                net_cash_in_wei=12 * 10**18,
+            )
+
+        assert ok is True
+        assert res["is_isolated_only"] is True
+        assert res["enter_market"] is True
+        req = mock_encode.await_args.kwargs["args"][0]
+        assert req[0] is False
+        assert req[1] == 730
+        assert req[2] is True
+
+    @pytest.mark.asyncio
+    async def test_withdraw_from_vault_direct_uses_isolated_router_mode(
+        self, adapter, mock_boros_client
+    ):
+        adapter.sign_callback = object()
+        adapter._get_vault_context_for_amm = AsyncMock(
+            return_value={"market_id": 73, "is_isolated_only": True}
+        )
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.encode_call",
+                new=AsyncMock(
+                    return_value={
+                        "to": "0x0",
+                        "data": "0x0",
+                        "chainId": 42161,
+                        "from": adapter.wallet_address,
+                    }
+                ),
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                new=AsyncMock(return_value="0xremove"),
+            ),
+        ):
+            ok, res = await adapter.withdraw_from_vault_direct(
+                amm_id=730,
+                lp_to_remove_wei=25 * 10**18,
+            )
+
+        assert ok is True
+        assert res["is_isolated_only"] is True
+        req = mock_encode.await_args.kwargs["args"][0]
+        assert req[0] is False
+        assert req[1] == 730
 
     @pytest.mark.asyncio
     async def test_close_positions_except_skips_keep_market(self, adapter):
@@ -849,7 +1096,13 @@ class TestBorosAdapter:
                 ],
             )
         )
-        adapter.get_vault_lp_balance = AsyncMock(return_value=(True, int(25 * 1e18)))
+
+        # Mock the multicall-based LP balance fetcher to inject balances
+        async def _fake_fetch(queryable, needs_fetch, account, out):
+            for nfi in needs_fetch:
+                out[nfi] = int(25 * 1e18)
+
+        adapter._fetch_lp_balances_multicall = AsyncMock(side_effect=_fake_fetch)
 
         ok, vaults = await adapter.get_vaults_summary(account=adapter.wallet_address)
 
@@ -879,6 +1132,28 @@ class TestBorosAdapter:
         assert adapter.estimate_user_vault_value_tokens(vault) == pytest.approx(10.0)
         assert adapter.estimate_vault_capacity_tokens(vault) == pytest.approx(62.5)
         assert adapter.is_vault_open_for_deposit(vault, min_tenor_days=3.0) is True
+
+    @pytest.mark.asyncio
+    async def test_is_vault_open_for_deposit_can_allow_isolated_only(self, adapter):
+        vault = BorosVault(
+            amm_id=7,
+            market_id=18,
+            symbol="HYPE-USDT",
+            remaining_supply_lp=int(50 * 1e18),
+            tenor_days=10.0,
+            is_isolated_only=True,
+            raw={"lpPrice": 1.25},
+        )
+
+        assert adapter.is_vault_open_for_deposit(vault, min_tenor_days=3.0) is False
+        assert (
+            adapter.is_vault_open_for_deposit(
+                vault,
+                min_tenor_days=3.0,
+                allow_isolated_only=True,
+            )
+            is True
+        )
 
     @pytest.mark.asyncio
     async def test_best_yield_vault_filters_expired_and_capacity(self, adapter):
@@ -940,6 +1215,80 @@ class TestBorosAdapter:
         assert ok is True
         assert isinstance(best, BorosVault)
         assert best.amm_id == 2
+
+    @pytest.mark.asyncio
+    async def test_best_yield_vault_can_include_isolated_only(self, adapter):
+        adapter.search_vaults = AsyncMock(
+            return_value=(
+                True,
+                [
+                    BorosVault(
+                        amm_id=2,
+                        market_id=12,
+                        symbol="B",
+                        apy=0.10,
+                        remaining_supply_lp=int(50 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                    ),
+                    BorosVault(
+                        amm_id=3,
+                        market_id=14,
+                        symbol="D",
+                        apy=0.20,
+                        remaining_supply_lp=int(50 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                        is_isolated_only=True,
+                    ),
+                ],
+            )
+        )
+        adapter.get_cash_fee_data = AsyncMock(
+            return_value=(True, {"min_cash_isolated_wei": int(10 * 1e18)})
+        )
+
+        ok, best = await adapter.best_yield_vault(
+            token_id=3,
+            amount_tokens=10.0,
+            allow_isolated_only=True,
+        )
+
+        assert ok is True
+        assert isinstance(best, BorosVault)
+        assert best.amm_id == 3
+
+    @pytest.mark.asyncio
+    async def test_best_yield_vault_skips_isolated_only_below_min_cash(self, adapter):
+        adapter.search_vaults = AsyncMock(
+            return_value=(
+                True,
+                [
+                    BorosVault(
+                        amm_id=3,
+                        market_id=14,
+                        symbol="D",
+                        apy=0.20,
+                        remaining_supply_lp=int(50 * 1e18),
+                        raw={"lpPrice": 1.0},
+                        tenor_days=10.0,
+                        is_isolated_only=True,
+                    ),
+                ],
+            )
+        )
+        adapter.get_cash_fee_data = AsyncMock(
+            return_value=(True, {"min_cash_isolated_wei": int(10 * 1e18)})
+        )
+
+        ok, best = await adapter.best_yield_vault(
+            token_id=3,
+            amount_tokens=9.0,
+            allow_isolated_only=True,
+        )
+
+        assert ok is True
+        assert best is None
 
     @pytest.mark.asyncio
     async def test_get_account_idle_balance_reads_total(self, adapter):

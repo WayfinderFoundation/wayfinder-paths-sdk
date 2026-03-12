@@ -73,6 +73,7 @@ class BorosAdapter(BaseAdapter):
     SIDE_SHORT = 1
     MAX_INT128 = (1 << 127) - 1
     MIN_INT128 = -(1 << 127)
+    CROSS_MARGIN_MARKET_ID = 0xFFFFFF
 
     # LayerZero endpoint IDs for the HYPE OFT deployment.
     # These are needed to bridge between:
@@ -97,8 +98,10 @@ class BorosAdapter(BaseAdapter):
         self.sign_callback = sign_callback
         self._scaling_factor_cache: dict[int, int] = {}
         self._amm_address_cache: dict[int, str | None] = {}
+        self._amm_id_by_market_cache: dict[int, int] = {}
         self._lp_balance_cache: dict[tuple[int, int, str], int] = {}
         self._assets_by_id_cache: dict[int, dict[str, Any]] | None = None
+        self._vault_context_cache: dict[int, dict[str, Any]] = {}
 
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
@@ -1376,8 +1379,11 @@ class BorosAdapter(BaseAdapter):
         vault: BorosVault,
         *,
         min_tenor_days: float = 0.0,
+        allow_isolated_only: bool = False,
     ) -> bool:
-        if vault.is_expired or vault.is_isolated_only:
+        if vault.is_expired:
+            return False
+        if vault.is_isolated_only and not allow_isolated_only:
             return False
         if str(vault.market_state or "").lower() == "paused":
             return False
@@ -1523,6 +1529,8 @@ class BorosAdapter(BaseAdapter):
         token_id: int,
         account: str | None = None,
         account_id: int = 0,
+        market_id: int | None = None,
+        is_isolated_only: bool | None = None,
     ) -> tuple[bool, int | str]:
         address = account or self.wallet_address
         if not address:
@@ -1532,11 +1540,28 @@ class BorosAdapter(BaseAdapter):
         if not amm_address:
             return False, f"Could not resolve amm address for amm_id={int(amm_id)}"
 
+        resolved_market_id = (
+            int(market_id) if market_id is not None else self.CROSS_MARGIN_MARKET_ID
+        )
+        if market_id is None or is_isolated_only is None:
+            context = await self._get_vault_context_for_amm(int(amm_id))
+            if context:
+                if market_id is None and bool(context.get("is_isolated_only")):
+                    resolved_market_id = self._to_int(
+                        context.get("market_id"),
+                        default=self.CROSS_MARGIN_MARKET_ID,
+                    )
+                if is_isolated_only is None:
+                    is_isolated_only = bool(context.get("is_isolated_only"))
+
+        if not bool(is_isolated_only):
+            resolved_market_id = self.CROSS_MARGIN_MARKET_ID
+
         market_acc = self.build_market_acc(
             address=address,
             account_id=int(account_id),
             token_id=int(token_id),
-            market_id=0xFFFFFF,
+            market_id=int(resolved_market_id),
         )
 
         try:
@@ -1577,11 +1602,16 @@ class BorosAdapter(BaseAdapter):
         cached_balances: dict[int, int] = {}  # queryable index → balance
         needs_fetch: list[int] = []  # indices into queryable
         for qi, (_, vault, token_id) in enumerate(queryable):
+            market_id = (
+                int(vault.market_id)
+                if bool(vault.is_isolated_only)
+                else self.CROSS_MARGIN_MARKET_ID
+            )
             market_acc = self.build_market_acc(
                 address=account,
                 account_id=0,
                 token_id=int(token_id),
-                market_id=0xFFFFFF,
+                market_id=market_id,
             )
             cache_key = (vault.amm_id, token_id, market_acc.hex())
             if cache_key in self._lp_balance_cache:
@@ -1663,11 +1693,16 @@ class BorosAdapter(BaseAdapter):
                 amm_addr = self._amm_address_cache.get(vault.amm_id)
                 if not amm_addr:
                     continue
+                market_id = (
+                    int(vault.market_id)
+                    if bool(vault.is_isolated_only)
+                    else self.CROSS_MARGIN_MARKET_ID
+                )
                 market_acc = self.build_market_acc(
                     address=account,
                     account_id=0,
                     token_id=int(token_id),
-                    market_id=0xFFFFFF,
+                    market_id=market_id,
                 )
                 amm_contract = web3.eth.contract(
                     address=to_checksum_address(amm_addr),
@@ -1744,7 +1779,21 @@ class BorosAdapter(BaseAdapter):
                         ) or ((market_meta.get("market") or {}).get("tokenId"))
                 raw_entry["_market_meta"] = market_meta
                 raw_entry["_is_expired"] = market_id > 0 and market_meta is None
-                vaults.append(self._vault_from_raw(raw_entry))
+                vault = self._vault_from_raw(raw_entry)
+                vaults.append(vault)
+                if vault.amm_id > 0:
+                    raw = vault.raw or {}
+                    self._vault_context_cache[vault.amm_id] = {
+                        "amm_id": int(vault.amm_id),
+                        "market_id": int(vault.market_id),
+                        "token_id": self._to_int(
+                            raw.get("collateralTokenId") or raw.get("tokenId"),
+                            default=0,
+                        ),
+                        "is_isolated_only": bool(vault.is_isolated_only),
+                    }
+                if vault.market_id > 0 and vault.amm_id > 0:
+                    self._amm_id_by_market_cache[vault.market_id] = vault.amm_id
 
             if account and use_direct_lp_query:
                 vaults = await self._augment_vault_lp_balances(vaults, account=account)
@@ -1805,16 +1854,34 @@ class BorosAdapter(BaseAdapter):
         token_id: int = 3,
         amount_tokens: float,
         min_tenor_days: float = 3.0,
+        allow_isolated_only: bool = False,
     ) -> tuple[bool, BorosVault | None | str]:
         ok, vaults = await self.search_vaults(token_id=token_id, limit=0)
         if not ok or not isinstance(vaults, list):
             return False, vaults
+
+        min_isolated_cash_wei: int | None = None
+        if allow_isolated_only:
+            ok_fee, fee_data = await self.get_cash_fee_data(token_id=int(token_id))
+            if ok_fee and isinstance(fee_data, dict):
+                raw_min = fee_data.get("min_cash_isolated_wei")
+                try:
+                    min_isolated_cash_wei = int(raw_min)
+                except (TypeError, ValueError):
+                    min_isolated_cash_wei = None
 
         feasible: list[BorosVault] = []
         for vault in vaults:
             if not self.is_vault_open_for_deposit(
                 vault,
                 min_tenor_days=min_tenor_days,
+                allow_isolated_only=allow_isolated_only,
+            ):
+                continue
+            if (
+                vault.is_isolated_only
+                and min_isolated_cash_wei is not None
+                and int(float(amount_tokens) * 1e18) < int(min_isolated_cash_wei)
             ):
                 continue
             cap_tokens = self.estimate_vault_capacity_tokens(vault)
@@ -2344,29 +2411,30 @@ class BorosAdapter(BaseAdapter):
     # Execution Methods                                                    #
     # ------------------------------------------------------------------ #
 
-    async def deposit_to_cross_margin(
+    async def deposit_collateral(
         self,
         collateral_address: str,
         amount_wei: int,
         *,
         token_id: int,
         market_id: int,
+        target_margin: str = "cross",
     ) -> tuple[bool, dict[str, Any]]:
-        """Deposit collateral into Boros cross margin.
+        """Deposit collateral into Boros margin.
 
         IMPORTANT: amount_wei is in the collateral token's native decimals.
         Example: USDT has 6 decimals, so 1 USDT = 1_000_000.
 
-        After deposit, Boros may credit the cash as isolated for market_id. This
-        helper sweeps isolated -> cross for that market to match the method name.
+        For `target_margin="cross"`, Boros may first credit the cash as isolated for
+        `market_id`; this helper then sweeps isolated -> cross.
         """
         try:
-            # Defensive: cap the deposit amount to the user's on-chain balance.
-            #
-            # Boros API expects `amount` in native token decimals. For 18-decimal
-            # tokens, converting float balances back to ints can be off by a few
-            # wei. That can cause hard reverts during gas estimation. Capping to
-            # the actual ERC20 balance avoids these off-by-wei failures.
+            if target_margin not in {"cross", "isolated"}:
+                return False, {
+                    "error": f"Unsupported target_margin={target_margin!r}",
+                }
+
+            # Cap to the on-chain ERC20 balance to avoid off-by-wei estimate reverts.
             try:
                 bal_raw_i = await get_token_balance(
                     collateral_address, self.chain_id, self.wallet_address
@@ -2390,7 +2458,7 @@ class BorosAdapter(BaseAdapter):
                 amount_wei=amount_wei,
                 market_id=market_id,
                 user_address=self.wallet_address,
-                account_id=0,  # Cross margin
+                account_id=0,
             )
 
             if not self.sign_callback or not self.wallet_address:
@@ -2433,6 +2501,14 @@ class BorosAdapter(BaseAdapter):
                     "error": f"Deposit transaction failed: {tx_res.get('error') or tx_res}",
                     "approve": approve_res,
                     "calldata": calldata,
+                    "tx": tx_res,
+                }
+
+            if target_margin == "isolated":
+                return True, {
+                    "status": "ok",
+                    "target_margin": target_margin,
+                    "approve": approve_res,
                     "tx": tx_res,
                 }
 
@@ -2490,13 +2566,48 @@ class BorosAdapter(BaseAdapter):
 
             return True, {
                 "status": "ok",
+                "target_margin": target_margin,
                 "approve": approve_res,
                 "tx": tx_res,
                 "sweep": sweep_res,
             }
         except Exception as e:
-            logger.error(f"Failed to deposit to cross margin: {e}")
+            logger.error(f"Failed to deposit collateral into Boros: {e}")
             return False, {"error": str(e)}
+
+    async def deposit_to_cross_margin(
+        self,
+        collateral_address: str,
+        amount_wei: int,
+        *,
+        token_id: int,
+        market_id: int,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Deposit collateral into Boros cross margin."""
+        return await self.deposit_collateral(
+            collateral_address=collateral_address,
+            amount_wei=amount_wei,
+            token_id=token_id,
+            market_id=market_id,
+            target_margin="cross",
+        )
+
+    async def deposit_to_isolated_margin(
+        self,
+        collateral_address: str,
+        amount_wei: int,
+        *,
+        token_id: int,
+        market_id: int,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Deposit collateral into a market's isolated margin bucket."""
+        return await self.deposit_collateral(
+            collateral_address=collateral_address,
+            amount_wei=amount_wei,
+            token_id=token_id,
+            market_id=market_id,
+            target_margin="isolated",
+        )
 
     async def withdraw_collateral(
         self,
@@ -2575,24 +2686,41 @@ class BorosAdapter(BaseAdapter):
             logger.debug(f"Boros cash_transfer tx result: ok={tx_ok}, res={tx_res}")
             if not tx_ok:
                 return False, tx_res
-            logger.info("Boros cash_transfer succeeded (isolated -> cross)")
+            direction = "cross -> isolated" if is_deposit else "isolated -> cross"
+            logger.info(f"Boros cash_transfer succeeded ({direction})")
             return True, tx_res
         except Exception as e:
             logger.error(f"Failed to cash transfer: {e}")
             return False, {"error": str(e)}
 
     async def _get_amm_id_for_market(self, market_id: int) -> int | None:
-        ok, vaults = await self.get_vaults_summary(account=self.wallet_address)
-        if ok and isinstance(vaults, list):
-            for vault in vaults:
-                if int(vault.market_id) == int(market_id):
-                    return int(vault.amm_id)
+        market_id = int(market_id)
+        if cached := self._amm_id_by_market_cache.get(market_id):
+            return cached
 
-        ok, vaults = await self.get_vaults_summary(account=None)
-        if ok and isinstance(vaults, list):
-            for vault in vaults:
-                if int(vault.market_id) == int(market_id):
-                    return int(vault.amm_id)
+        for account in (self.wallet_address, None):
+            ok, vaults = await self.get_vaults_summary(
+                account=account,
+                use_direct_lp_query=False,
+            )
+            if ok and isinstance(vaults, list):
+                if cached := self._amm_id_by_market_cache.get(market_id):
+                    return cached
+        return None
+
+    async def _get_vault_context_for_amm(self, amm_id: int) -> dict[str, Any] | None:
+        amm_id = int(amm_id)
+        if cached := self._vault_context_cache.get(amm_id):
+            return dict(cached)
+
+        for account in (self.wallet_address, None):
+            ok, vaults = await self.get_vaults_summary(
+                account=account,
+                use_direct_lp_query=False,
+            )
+            if ok and isinstance(vaults, list):
+                if cached := self._vault_context_cache.get(amm_id):
+                    return dict(cached)
         return None
 
     async def deposit_to_vault_direct(
@@ -2602,6 +2730,8 @@ class BorosAdapter(BaseAdapter):
         net_cash_in_wei: int,
         min_lp_out_wei: int | None = None,
         slippage_bps: int = 20,
+        market_id: int | None = None,
+        is_isolated_only: bool | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         if not self.wallet_address:
             return False, {"error": "wallet_address is required"}
@@ -2617,7 +2747,24 @@ class BorosAdapter(BaseAdapter):
 
         desired_swap_side = self.SIDE_LONG
         desired_swap_rate = self.MAX_INT128
+        context = None
+        if market_id is None or is_isolated_only is None:
+            context = await self._get_vault_context_for_amm(int(amm_id))
+        resolved_market_id = int(market_id) if market_id is not None else None
+        if context:
+            if resolved_market_id is None:
+                resolved_market_id = (
+                    self._to_int(
+                        context.get("market_id"),
+                        default=0,
+                    )
+                    or None
+                )
+            if is_isolated_only is None:
+                is_isolated_only = bool(context.get("is_isolated_only"))
+        isolated_only = bool(is_isolated_only)
         last_error: str | None = None
+
         for enter_market in (True, False):
             try:
                 tx = await encode_call(
@@ -2626,7 +2773,7 @@ class BorosAdapter(BaseAdapter):
                     fn_name="addLiquiditySingleCashToAmm",
                     args=[
                         (
-                            True,
+                            not isolated_only,
                             int(amm_id),
                             bool(enter_market),
                             int(net_cash),
@@ -2646,7 +2793,11 @@ class BorosAdapter(BaseAdapter):
                     "status": "ok",
                     "tx": {"tx_hash": tx_hash},
                     "amm_id": int(amm_id),
+                    "market_id": int(resolved_market_id)
+                    if resolved_market_id is not None
+                    else None,
                     "net_cash_in_wei": int(net_cash),
+                    "is_isolated_only": isolated_only,
                     "enter_market": bool(enter_market),
                 }
             except Exception as exc:  # noqa: BLE001
@@ -2663,30 +2814,48 @@ class BorosAdapter(BaseAdapter):
         amm_id: int,
         lp_to_remove_wei: int,
         min_cash_out_wei: int = 0,
+        market_id: int | None = None,
+        is_isolated_only: bool | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         if not self.wallet_address:
             return False, {"error": "wallet_address is required"}
         if not self.sign_callback:
             return False, {"error": "sign_callback is required"}
 
-        tx = await encode_call(
-            target=BOROS_ROUTER,
-            abi=BOROS_ROUTER_VIEW_ABI,
-            fn_name="removeLiquiditySingleCashFromAmm",
-            args=[
-                (
-                    True,
-                    int(amm_id),
-                    int(lp_to_remove_wei),
-                    int(min_cash_out_wei),
-                    int(self.SIDE_SHORT),
-                    int(self.MIN_INT128),
+        context = None
+        if market_id is None or is_isolated_only is None:
+            context = await self._get_vault_context_for_amm(int(amm_id))
+        resolved_market_id = int(market_id) if market_id is not None else None
+        if context:
+            if resolved_market_id is None:
+                resolved_market_id = (
+                    self._to_int(
+                        context.get("market_id"),
+                        default=0,
+                    )
+                    or None
                 )
-            ],
-            from_address=self.wallet_address,
-            chain_id=self.chain_id,
-        )
+            if is_isolated_only is None:
+                is_isolated_only = bool(context.get("is_isolated_only"))
+        isolated_only = bool(is_isolated_only)
         try:
+            tx = await encode_call(
+                target=BOROS_ROUTER,
+                abi=BOROS_ROUTER_VIEW_ABI,
+                fn_name="removeLiquiditySingleCashFromAmm",
+                args=[
+                    (
+                        not isolated_only,
+                        int(amm_id),
+                        int(lp_to_remove_wei),
+                        int(min_cash_out_wei),
+                        int(self.SIDE_SHORT),
+                        int(self.MIN_INT128),
+                    )
+                ],
+                from_address=self.wallet_address,
+                chain_id=self.chain_id,
+            )
             tx_hash = await send_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
@@ -2695,7 +2864,11 @@ class BorosAdapter(BaseAdapter):
                 "status": "ok",
                 "tx": {"tx_hash": tx_hash},
                 "amm_id": int(amm_id),
+                "market_id": int(resolved_market_id)
+                if resolved_market_id is not None
+                else None,
                 "lp_to_remove_wei": int(lp_to_remove_wei),
+                "is_isolated_only": isolated_only,
             }
         except Exception as exc:  # noqa: BLE001
             return False, {"error": str(exc)}
@@ -2714,13 +2887,9 @@ class BorosAdapter(BaseAdapter):
                 "error": "simulate=True is not supported for direct Boros vault ops"
             }
 
-        amm_id = await self._get_amm_id_for_market(int(market_id))
-        if amm_id is None:
-            return False, {
-                "error": f"Could not resolve amm_id for market_id={market_id}"
-            }
-
         effective_cash = int(net_cash_in_wei)
+        amm_id: int | None = None
+        match: BorosVault | None = None
         ok, vaults = await self.get_vaults_summary(
             account=self.wallet_address, use_direct_lp_query=False
         )
@@ -2730,6 +2899,36 @@ class BorosAdapter(BaseAdapter):
                 None,
             )
             if match:
+                amm_id = int(match.amm_id)
+                if match.is_isolated_only:
+                    raw_token_id = self._to_int(
+                        (match.raw or {}).get("collateralTokenId")
+                        or (match.raw or {}).get("tokenId"),
+                        default=0,
+                    )
+                    if raw_token_id > 0:
+                        ok_fee, fee_data = await self.get_cash_fee_data(
+                            token_id=int(raw_token_id)
+                        )
+                        if ok_fee and isinstance(fee_data, dict):
+                            min_isolated_cash_wei = self._to_int(
+                                fee_data.get("min_cash_isolated_wei"),
+                                default=0,
+                            )
+                            if (
+                                min_isolated_cash_wei > 0
+                                and effective_cash < min_isolated_cash_wei
+                            ):
+                                min_isolated_cash = min_isolated_cash_wei / 1e18
+                                return False, {
+                                    "error": (
+                                        "Isolated-only Boros vault requires at least "
+                                        f"{min_isolated_cash:.6f} cash units"
+                                    ),
+                                    "market_id": int(market_id),
+                                    "required_cash_wei": int(min_isolated_cash_wei),
+                                    "requested_cash_wei": int(effective_cash),
+                                }
                 available = self._wei_amount_to_tokens(
                     ((match.raw or {}).get("user") or {}).get(
                         "availableBalanceToDeposit"
@@ -2746,6 +2945,13 @@ class BorosAdapter(BaseAdapter):
                                 / int(net_cash_in_wei)
                             )
 
+        if amm_id is None:
+            amm_id = await self._get_amm_id_for_market(int(market_id))
+        if amm_id is None:
+            return False, {
+                "error": f"Could not resolve amm_id for market_id={market_id}"
+            }
+
         if effective_cash <= 0:
             return False, {"error": "No Boros cash available to deposit"}
 
@@ -2754,6 +2960,8 @@ class BorosAdapter(BaseAdapter):
             net_cash_in_wei=int(effective_cash),
             min_lp_out_wei=min_lp_out_wei,
             slippage_bps=int(slippage_bps),
+            market_id=int(market_id),
+            is_isolated_only=bool(match.is_isolated_only) if match else None,
         )
 
     async def withdraw_from_vault(
@@ -2779,6 +2987,7 @@ class BorosAdapter(BaseAdapter):
             amm_id=int(amm_id),
             lp_to_remove_wei=int(lp_to_remove_wei),
             min_cash_out_wei=int(min_cash_out_wei),
+            market_id=int(market_id),
         )
 
     async def get_rewards(self) -> tuple[bool, dict[str, float] | str]:

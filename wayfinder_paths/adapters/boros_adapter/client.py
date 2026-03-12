@@ -39,8 +39,6 @@ CORE_API_ENDPOINTS = {
     "amm_chart": "/core/v2/amm/chart",
     "simulate_add_liquidity": "/core/v1/simulations/add-liquidity-single-cash",
     "simulate_remove_liquidity": "/core/v1/simulations/remove-liquidity-single-cash",
-    "build_add_liquidity_calldata": "/core/v4/calldata/add-liquidity-single-cash-to-amm",
-    "build_remove_liquidity_calldata": "/core/v4/calldata/remove-liquidity-single-cash-from-amm",
     "amm_rewards": "/core/v1/amm/rewards",
     "amm_rewards_proof": "/core/v1/merkels/amm_lp_rewards/user",
 }

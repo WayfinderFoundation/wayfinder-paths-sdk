@@ -132,6 +132,7 @@ class MultiVaultSplitStrategy(Strategy):
                 "enabled_legs": {"hlp": True, "boros": True, "avantis": True},
                 "hlp_vault_address": DEFAULT_HLP_VAULT_ADDRESS,
                 "boros_token_id": 3,
+                "boros_allow_isolated_only_vaults": True,
             },
         },
     )
@@ -204,6 +205,9 @@ class MultiVaultSplitStrategy(Strategy):
             self.config.get("hlp_vault_address") or DEFAULT_HLP_VAULT_ADDRESS
         )
         self.boros_token_id = int(self.config.get("boros_token_id") or 3)
+        self.boros_allow_isolated_only_vaults = bool(
+            self.config.get("boros_allow_isolated_only_vaults", True)
+        )
         self.allocation_mode = str(
             self.config.get("allocation_mode") or "hybrid_apy"
         ).lower()
@@ -250,13 +254,20 @@ class MultiVaultSplitStrategy(Strategy):
         self,
         *,
         amount_tokens: float,
+        allow_isolated_only: bool | None = None,
     ) -> tuple[BorosVault | None, float | None]:
+        if allow_isolated_only is None:
+            allow_isolated_only = self.boros_allow_isolated_only_vaults
+
         ok, user_vaults = await self.boros_adapter.get_vaults_summary(
             account=self.strategy_wallet_address
         )
         if ok and isinstance(user_vaults, list):
             for vault in user_vaults:
-                if not self.boros_adapter.is_vault_open_for_deposit(vault):
+                if not self.boros_adapter.is_vault_open_for_deposit(
+                    vault,
+                    allow_isolated_only=allow_isolated_only,
+                ):
                     continue
                 if self.boros_adapter.estimate_user_vault_value_tokens(vault) < 1.0:
                     continue
@@ -269,6 +280,7 @@ class MultiVaultSplitStrategy(Strategy):
             token_id=self.boros_token_id,
             amount_tokens=float(amount_tokens),
             min_tenor_days=3.0,
+            allow_isolated_only=allow_isolated_only,
         )
         if not ok:
             return None, None
@@ -600,6 +612,7 @@ class MultiVaultSplitStrategy(Strategy):
         *,
         market_id: int,
         amount_native: int,
+        is_isolated_only: bool = False,
     ) -> tuple[bool, str]:
         if amount_native <= 0:
             return True, "No USDT to deposit"
@@ -608,7 +621,12 @@ class MultiVaultSplitStrategy(Strategy):
         if not collateral_address:
             return False, "USDT address not configured"
 
-        ok_dep, dep_res = await self.boros_adapter.deposit_to_cross_margin(
+        deposit_margin = (
+            self.boros_adapter.deposit_to_isolated_margin
+            if is_isolated_only
+            else self.boros_adapter.deposit_to_cross_margin
+        )
+        ok_dep, dep_res = await deposit_margin(
             collateral_address=collateral_address,
             amount_wei=int(amount_native),
             token_id=self.boros_token_id,
@@ -658,6 +676,7 @@ class MultiVaultSplitStrategy(Strategy):
             ok, detail = await self._deposit_usdt_to_boros_vault(
                 market_id=best.market_id,
                 amount_native=to_erc20_raw(used_usdt, 6),
+                is_isolated_only=bool(best.is_isolated_only),
             )
             if not ok:
                 return False, detail
@@ -684,6 +703,7 @@ class MultiVaultSplitStrategy(Strategy):
             ok, detail = await self._deposit_usdt_to_boros_vault(
                 market_id=best.market_id,
                 amount_native=use_native,
+                is_isolated_only=bool(best.is_isolated_only),
             )
             if not ok:
                 return False, detail
@@ -722,7 +742,10 @@ class MultiVaultSplitStrategy(Strategy):
         if not ok_bal or not isinstance(balances, dict):
             return False, f"Failed to refresh Boros balances: {balances}"
 
-        best, capacity = await self._pick_boros_vault_for_deposit(amount_tokens=total)
+        best, capacity = await self._pick_boros_vault_for_deposit(
+            amount_tokens=total,
+            allow_isolated_only=False,
+        )
         if best is None:
             return False, "No Boros vault available for redeploy"
 
