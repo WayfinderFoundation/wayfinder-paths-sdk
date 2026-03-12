@@ -110,3 +110,50 @@ def test_web3s_accept_int_rpc_url_keys(restore_global_config: None) -> None:
 
     w3 = get_web3s_from_chain_id(CHAIN_ID_BASE)[0]
     assert w3.provider.endpoint_uri == "https://example.invalid"
+
+
+def test_gorlami_base_url_prefers_explicit_override(
+    restore_global_config: None,
+) -> None:
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+                "gorlami_base_url": "https://gorlami.example.com/proxy",
+            }
+        }
+    )
+
+    assert config.get_gorlami_base_url() == "https://gorlami.example.com/proxy"
+
+
+def test_gorlami_api_key_prefers_explicit_override(
+    restore_global_config: None,
+) -> None:
+    config.set_config(
+        {
+            "system": {
+                "api_key": "wk_primary",
+                "gorlami_api_key": "wk_gorlami",
+            }
+        }
+    )
+
+    assert config.get_gorlami_api_key() == "wk_gorlami"
+
+
+def test_gorlami_api_key_uses_remote_fallback_for_mixed_origins(
+    restore_global_config: None,
+) -> None:
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "http://localhost:8000/api",
+                "api_key": "wk_local",
+                "gorlami_base_url": "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami",
+                "_api_key": "wk_remote",
+            }
+        }
+    )
+
+    assert config.get_gorlami_api_key() == "wk_remote"

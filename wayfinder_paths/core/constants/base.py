@@ -12,6 +12,11 @@ DEFAULT_SLIPPAGE = 0.005
 # even if the transaction is eventually mined. A longer timeout reduces false negatives that
 # can lead to unsafe retry behavior (nonce gaps, duplicate swaps, etc.).
 DEFAULT_HTTP_TIMEOUT = 30.0  # HTTP client timeout
+# Browser-like headers to avoid Cloudflare bot detection on external APIs
+DEFAULT_HTTP_HEADERS: dict[str, str] = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+}
 DEFAULT_TRANSACTION_TIMEOUT = 180  # Transaction receipt timeout (seconds)
 
 ADAPTER_BALANCE = "BALANCE"

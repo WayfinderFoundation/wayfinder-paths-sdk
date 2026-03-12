@@ -154,3 +154,74 @@ async def test_get_account_balances_isolated_market_id_golden(
             "marketAcc": market_acc,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_assets_by_id_caches_after_first_call(adapter, mock_boros_client):
+    """After the first call, _fetch_assets_by_id returns cached data without hitting get_assets again."""
+    mock_boros_client.get_assets = AsyncMock(
+        return_value=[
+            {"tokenId": 3, "symbol": "USDT", "address": "0xaaa", "decimals": 18},
+            {"tokenId": 5, "symbol": "HYPE", "address": "0xbbb", "decimals": 18},
+        ]
+    )
+
+    result1 = await adapter._fetch_assets_by_id()
+    result2 = await adapter._fetch_assets_by_id()
+
+    assert result1 == result2
+    assert result1[3]["symbol"] == "USDT"
+    assert result1[5]["symbol"] == "HYPE"
+    # get_assets called only once due to caching
+    mock_boros_client.get_assets.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_quote_markets_for_underlying_parallel_consistency(
+    adapter, mock_boros_client
+):
+    """Quoting multiple markets returns consistent results (output shape locked for parallelization)."""
+    adapter._time_to_maturity_days = lambda maturity_ts: (maturity_ts or 0) / 1000.0  # type: ignore[method-assign]
+
+    mock_markets = [
+        {
+            "marketId": i,
+            "address": f"0x{i:04x}",
+            "tokenId": 3,
+            "imData": {
+                "symbol": "HYPERLIQUID-HYPE-USD",
+                "underlying": "HYPE",
+                "maturity": i * 1000,
+                "tickStep": 5,
+                "collateral": "0xUSDT",
+            },
+        }
+        for i in range(1, 5)
+    ]
+
+    async def _get_order_book(market_id: int, tick_size: float = 0.001):
+        base = market_id * 100
+        return {
+            "long": {"ia": [base, base + 10]},
+            "short": {"ia": [base + 20, base + 30]},
+        }
+
+    mock_boros_client.list_markets = AsyncMock(return_value=mock_markets)
+    mock_boros_client.get_order_book = AsyncMock(side_effect=_get_order_book)
+
+    ok, quotes = await adapter.quote_markets_for_underlying("HYPE", tick_size=0.001)
+    assert ok is True
+    assert len(quotes) == 4
+
+    # Sorted by maturity ascending
+    assert [q.market_id for q in quotes] == [1, 2, 3, 4]
+
+    for i, q in enumerate(quotes, start=1):
+        base = i * 100
+        assert q.underlying == "HYPE"
+        assert q.symbol == "HYPERLIQUID-HYPE-USD"
+        assert q.maturity_ts == i * 1000
+        assert q.best_bid_apr == pytest.approx((base + 10) / 1000.0)
+        assert q.best_ask_apr == pytest.approx((base + 20) / 1000.0)
+        expected_mid = ((base + 10) + (base + 20)) / 2000.0
+        assert q.mid_apr == pytest.approx(expected_mid)

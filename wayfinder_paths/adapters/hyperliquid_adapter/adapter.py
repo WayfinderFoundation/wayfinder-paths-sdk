@@ -7,9 +7,10 @@ from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any, Literal, cast
 
 from aiocache import Cache
+from eth_account import Account
 from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
-from hyperliquid.exchange import get_timestamp_ms
+from hyperliquid.exchange import Exchange, get_timestamp_ms
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
@@ -18,6 +19,7 @@ from hyperliquid.utils.signing import (
     WITHDRAW_SIGN_TYPES,
     OrderType,
     OrderWire,
+    float_to_usd_int,
     float_to_wire,
     get_l1_action_payload,
     order_type_to_wire,
@@ -33,11 +35,16 @@ from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
 )
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.contracts import HYPERCORE_SENTINEL_ADDRESS
+from wayfinder_paths.core.constants.contracts import (
+    HYPERCORE_SENTINEL_ADDRESS,
+    HYPERLIQUID_BRIDGE,
+)
 from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
+from wayfinder_paths.core.utils.tokens import build_send_transaction
+from wayfinder_paths.core.utils.transaction import send_transaction
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
@@ -55,10 +62,17 @@ class HyperliquidAdapter(BaseAdapter):
         config: dict[str, Any] | None = None,
         *,
         sign_callback: Callable[[dict], Awaitable[str]] | None = None,
+        wallet_address: str | None = None,
     ) -> None:
         super().__init__("hyperliquid_adapter", config)
 
         self._cache = Cache(Cache.MEMORY)
+        self.wallet_address = to_checksum_address(
+            wallet_address
+            or ((config or {}).get("strategy_wallet") or {}).get("address")
+            or ((config or {}).get("main_wallet") or {}).get("address")
+            or ZERO_ADDRESS
+        )
 
         if sign_callback is not None:
             self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
@@ -69,6 +83,35 @@ class HyperliquidAdapter(BaseAdapter):
         else:
             self._sign_callback = None
             self._signing_type = "local"
+
+        self._local_account = self._build_local_account(config or {})
+        self._exchange = (
+            Exchange(self._local_account) if self._local_account is not None else None
+        )
+
+    @staticmethod
+    def _build_local_account(config: dict[str, Any]) -> Any | None:
+        strategy_wallet = config.get("strategy_wallet") or {}
+        main_wallet = config.get("main_wallet") or {}
+        private_key = (
+            strategy_wallet.get("private_key_hex")
+            or strategy_wallet.get("private_key")
+            or main_wallet.get("private_key_hex")
+            or main_wallet.get("private_key")
+        )
+        if not private_key:
+            return None
+        private_key = (
+            private_key if str(private_key).startswith("0x") else f"0x{private_key}"
+        )
+        return Account.from_key(str(private_key))
+
+    def _require_exchange(self) -> Exchange:
+        if self._exchange is None:
+            raise ValueError(
+                "Hyperliquid vault transfers require a local private key in config"
+            )
+        return self._exchange
 
     async def _post_across_dexes(
         self,
@@ -1300,3 +1343,227 @@ class HyperliquidAdapter(BaseAdapter):
             "The withdrawal may still be processing."
         )
         return False, {}
+
+    async def send_usdc_to_bridge(
+        self,
+        amount: float,
+        token_id: str = "usd-coin-arbitrum",
+        *,
+        address: str | None = None,
+    ) -> tuple[bool, str]:
+        if not self._sign_callback:
+            return False, "sign_callback is required"
+
+        sender = to_checksum_address(address or self.wallet_address)
+        raw_amount = float_to_usd_int(float(amount))
+
+        try:
+            tx = await build_send_transaction(
+                from_address=sender,
+                to_address=HYPERLIQUID_BRIDGE,
+                token_id=token_id,
+                chain_id=42161,
+                amount=int(raw_amount),
+            )
+        except TypeError:
+            from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+            from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
+
+            token = await TOKEN_CLIENT.get_token_details(token_id)
+            chain_id = resolve_chain_id(token)
+            if chain_id is None:
+                return False, f"Could not resolve chain_id for token {token_id}"
+            tx = await build_send_transaction(
+                from_address=sender,
+                to_address=HYPERLIQUID_BRIDGE,
+                token_address=str(token["address"]),
+                chain_id=int(chain_id),
+                amount=int(raw_amount),
+            )
+
+        try:
+            tx_hash = await send_transaction(
+                tx, self._sign_callback, wait_for_receipt=True
+            )
+            return True, tx_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def deposit_hlp(
+        self,
+        usd_amount: float,
+        vault_address: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        try:
+            result = self._require_exchange().vault_usd_transfer(
+                str(vault_address), True, float_to_usd_int(float(usd_amount))
+            )
+            success = result.get("status") == "ok"
+            return success, result
+        except Exception as exc:  # noqa: BLE001
+            return False, {"error": str(exc)}
+
+    async def withdraw_hlp(
+        self,
+        usd_amount: float,
+        vault_address: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        try:
+            result = self._require_exchange().vault_usd_transfer(
+                str(vault_address), False, float_to_usd_int(float(usd_amount))
+            )
+            success = result.get("status") == "ok"
+            return success, result
+        except Exception as exc:  # noqa: BLE001
+            return False, {"error": str(exc)}
+
+    async def get_hlp_status(
+        self,
+        vault_address: str,
+        *,
+        user_address: str | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        user = to_checksum_address(user_address or self.wallet_address).lower()
+        now_ms = int(time.time() * 1000)
+
+        try:
+            equities = get_info().user_vault_equities(user)
+            entry = next(
+                (
+                    vault
+                    for vault in (equities or [])
+                    if str(vault.get("vaultAddress") or "").lower()
+                    == str(vault_address).lower()
+                ),
+                None,
+            )
+
+            equity = float((entry or {}).get("equity") or 0.0)
+            locked_until = (entry or {}).get("lockedUntilTimestamp")
+            locked_until_ms = int(locked_until or 0)
+            if 0 < locked_until_ms < 1_000_000_000_000:
+                locked_until_ms *= 1000
+
+            wait_ms = max(0, locked_until_ms - now_ms)
+            in_cooldown = wait_ms > 0
+            withdrawable_now = 0.0 if in_cooldown else equity
+
+            return True, {
+                "equity": equity,
+                "wait_ms": wait_ms,
+                "lockup_until_ms": locked_until_ms or now_ms,
+                "in_cooldown": in_cooldown,
+                "withdrawable_now": withdrawable_now,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_hlp_wait_time_ms(
+        self,
+        vault_address: str,
+        *,
+        user_address: str | None = None,
+    ) -> tuple[bool, int | str]:
+        ok, status = await self.get_hlp_status(vault_address, user_address=user_address)
+        if not ok or not isinstance(status, dict):
+            return False, str(status)
+        return True, int(status.get("wait_ms") or 0)
+
+    async def get_hlp_apys(
+        self,
+        vault_address: str,
+    ) -> tuple[bool, dict[str, float] | str]:
+        try:
+            details = get_info().post(
+                "/info",
+                {"type": "vaultDetails", "vaultAddress": str(vault_address)},
+            )
+            account_value = float(
+                details.get("accountValue") or details.get("vaultEquity") or 0.0
+            )
+            apr = details.get("apr")
+            if apr is not None:
+                apr_f = float(apr)
+                return True, {
+                    "apy7d": apr_f,
+                    "apy30d": apr_f,
+                    "pnl7d_pct": apr_f * (7 / 365) * 100,
+                    "pnl30d_pct": apr_f * (30 / 365) * 100,
+                }
+
+            def _annualize(pnl: Any, days: int) -> tuple[float, float]:
+                pnl_f = float(pnl or 0.0)
+                if account_value <= 0:
+                    return 0.0, 0.0
+                pnl_pct = pnl_f / account_value
+                apy = (1.0 + pnl_pct) ** (365.0 / float(days)) - 1.0
+                return pnl_pct * 100.0, apy
+
+            pnl7_pct, apy7 = _annualize(
+                details.get("pnl7D") or details.get("weekPnl"), 7
+            )
+            pnl30_pct, apy30 = _annualize(
+                details.get("pnl30D") or details.get("monthPnl"), 30
+            )
+            return True, {
+                "apy7d": apy7,
+                "apy30d": apy30,
+                "pnl7d_pct": pnl7_pct,
+                "pnl30d_pct": pnl30_pct,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def wait_for_usd_cash_increase(
+        self,
+        address: str,
+        expected_increase: float,
+        *,
+        initial_cash: float | None = None,
+        timeout_s: int = 180,
+        poll_interval_s: int = 5,
+    ) -> tuple[bool, float]:
+        if initial_cash is None:
+            ok, state = await self.get_user_state(address)
+            if not ok or not isinstance(state, dict):
+                initial = 0.0
+            else:
+                initial = self.get_perp_margin_amount(state)
+        else:
+            initial = float(initial_cash)
+
+        iterations = max(1, int(timeout_s) // max(1, int(poll_interval_s)))
+        current = initial
+        for _ in range(iterations):
+            ok, state = await self.get_user_state(address)
+            if ok and isinstance(state, dict):
+                current = self.get_perp_margin_amount(state)
+                if current >= initial + (float(expected_increase) * 0.95):
+                    return True, current
+            await asyncio.sleep(max(1, int(poll_interval_s)))
+        return False, current
+
+    async def withdraw_from_hyperliquid(
+        self,
+        amount: float,
+        *,
+        destination: str | None = None,
+        wait_for_completion: bool = False,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        dest = to_checksum_address(destination or self.wallet_address)
+        try:
+            result = self._require_exchange().withdraw_from_bridge(float(amount), dest)
+            success = result.get("status") == "ok"
+            if not success:
+                return False, result
+            if wait_for_completion:
+                confirmed, withdrawals = await self.wait_for_withdrawal(dest)
+                if not confirmed:
+                    return (
+                        False,
+                        "Withdrawal initiated but not observed on-chain in time",
+                    )
+                return True, {"exchange": result, "withdrawals": withdrawals}
+            return True, result
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
