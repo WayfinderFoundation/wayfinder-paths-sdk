@@ -18,9 +18,6 @@ automatic data fetching, and comprehensive performance metrics.
 ### Carry trade (borrow cheap, supply expensive)
     >>> result = await backtest_carry_trade("USDC", start, end, min_spread=0.01)
 
-### LP / AMM yield (fee income vs impermanent loss)
-    >>> result = await backtest_lp_position(("ETH", "USDC"), start, end, fee_income_rate=0.25)
-
 ### Manual workflow (full control over signals and config)
     >>> prices = await fetch_prices(["BTC", "ETH"], start, end)
     >>> funding = await fetch_funding_rates(["BTC", "ETH"], start, end)
@@ -48,11 +45,6 @@ from wayfinder_paths.core.backtesting.helpers import (
     backtest_with_rates,
     quick_backtest,
 )
-from wayfinder_paths.core.backtesting.lp_strategies import (
-    backtest_lp_position,
-    build_lp_price_index,
-    simulate_il,
-)
 from wayfinder_paths.core.backtesting.multi import run_multi_leverage_backtest
 from wayfinder_paths.core.backtesting.types import (
     BacktestConfig,
@@ -78,11 +70,8 @@ __all__ = [
     "backtest_delta_neutral",  # Long spot + short perp, harvest funding
     "backtest_yield_rotation",  # Rotate across lending venues by supply APR
     "backtest_carry_trade",  # Borrow cheap + supply expensive (net carry)
-    "backtest_lp_position",  # 50/50 AMM LP (fee income vs IL)
     # Synthetic price primitives
     "build_yield_index",  # Compound APR rates into price index
-    "build_lp_price_index",  # LP value = hold * IL_factor * fee_multiplier
-    "simulate_il",  # Impermanent loss series for AMM pool
     # Data fetching
     "fetch_prices",
     "fetch_funding_rates",

@@ -99,9 +99,9 @@ Skills contain rules for correct method usage, common gotchas, and high-value re
 
 ## Backtesting Framework
 
-Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade, LP strategies. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
+Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
 
-**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`; for LP load `lp-strategies.md`.
+**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`.
 
 All stats are decimals — format with `:.2%`. Key: `sharpe` (>2.0 excellent), `total_return`, `max_drawdown`, `total_funding` (negative = income received), `trade_count`.
 

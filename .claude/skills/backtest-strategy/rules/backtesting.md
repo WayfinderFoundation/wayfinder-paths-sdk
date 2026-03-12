@@ -21,7 +21,6 @@
 | Delta-neutral basis carry | `backtest_delta_neutral` | — |
 | Lending yield rotation | `backtest_yield_rotation` | `yield-strategies.md` |
 | Carry trade (borrow/supply spread) | `backtest_carry_trade` | `yield-strategies.md` |
-| LP / AMM yield | `backtest_lp_position` | `lp-strategies.md` |
 | Full control | `run_backtest` directly | — |
 
 All helpers are in `wayfinder_paths.core.backtesting`.
@@ -56,7 +55,6 @@ result = await backtest_delta_neutral(
 ```
 
 ### Yield rotation / carry → see `yield-strategies.md`
-### LP → see `lp-strategies.md`
 
 ---
 
@@ -149,6 +147,28 @@ Always inspect the distribution before using raw rates in a synthetic price:
 print(borrow_df.describe())          # check mean vs median
 print(borrow_df.median())            # median is more robust than mean for spiky data
 ```
+
+---
+
+## Not supported
+
+### Could be implemented but accuracy is low — do not attempt
+
+| Strategy type | Why it's unreliable |
+|---|---|
+| LP / AMM (V2 full-range) | IL formula is exact, but `fee_income_rate` must be externally estimated — no historical fee/volume data. Result is sensitivity analysis, not a real simulation. |
+| V3 concentrated liquidity | IL profile differs completely in/out of range; recentering events, range exits, and tick math are not modeled. |
+| On-chain volume-dependent strategies | Any strategy whose signal depends on DEX volume, pool utilization, or TVL — data not available in Delta Lab. |
+
+### Not possible — data doesn't exist
+
+| Strategy type | Blocker |
+|---|---|
+| Tokens not in Delta Lab | `fetch_prices` will return no data. Check Delta Lab coverage before designing a strategy around a specific token. |
+| CEX order book / microstructure | No order book history. Slippage and fill assumptions are rough estimates at best. |
+| Options / structured products | No options pricing history. |
+| Cross-chain bridge arbitrage | No bridge quote history or latency data. |
+| Strategies requiring sub-hourly data | All data is hourly. 1-minute or tick-level signals cannot be backtested. |
 
 ---
 

@@ -60,7 +60,6 @@ Use `run_backtest` directly (not the simplified helpers) when the strategy has c
 | Yield rotation with cooldown | `backtest_yield_rotation(lookback=7)` | Build target positions with cooldown enforcement |
 | Delta-neutral with dynamic coin selection | `backtest_delta_neutral(["BTC", "ETH"])` | Implement the coin scoring/selection algorithm |
 | Leveraged loop with health factor | Fixed leverage estimate | Bake dynamic leverage from real borrow rates into synthetic price |
-| LP with recentering logic | `backtest_lp_position(fee=0.05)` | Model range exits and recentering events |
 
 ### Step 4: Configure BacktestConfig from strategy parameters
 
@@ -87,7 +86,7 @@ Each strategy README has a **Backtesting** section with concrete parameters, dat
 | `moonwell_wsteth_loop_strategy` | Leveraged loop (synthetic price) | `wayfinder_paths/strategies/moonwell_wsteth_loop_strategy/README.md` |
 | `stablecoin_yield_strategy` | Yield rotation + cooldown | `wayfinder_paths/strategies/stablecoin_yield_strategy/README.md` |
 | `boros_hype_strategy` | Basis component only (Boros rates not in Delta Lab) | `wayfinder_paths/strategies/boros_hype_strategy/README.md` |
-| `projectx_thbill_usdc_strategy` | LP (V2 approximation for stable pair) | `wayfinder_paths/strategies/projectx_thbill_usdc_strategy/README.md` |
+| `projectx_thbill_usdc_strategy` | Constant fee APY (stable pair, IL negligible) | `wayfinder_paths/strategies/projectx_thbill_usdc_strategy/README.md` |
 
 Read the strategy README before running any backtest — parameters, venue names, and data availability caveats are documented there.
 

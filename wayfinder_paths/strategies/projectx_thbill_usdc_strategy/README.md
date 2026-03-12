@@ -56,11 +56,9 @@ print(f"Pool TVL (est.):  ${pool_tvl_usd:,.0f}")
 print(f"Estimated APY:    {fee_income_rate:.2%}")
 ```
 
-### Step 2: Run the LP backtest
+### Step 2: Compute stats from constant hourly return
 
-Since THBILL ≈ $1, IL is negligible. `backtest_lp_position` cannot be used here because it calls
-`fetch_prices(["THBILL", "USDC"])` internally and THBILL is not in Delta Lab. Instead compute
-stats directly from a constant hourly return:
+Since THBILL ≈ $1 and is not in Delta Lab, IL is negligible and there is no price history to simulate against. Compute stats directly from a constant hourly return:
 
 ```python
 import numpy as np
@@ -87,6 +85,6 @@ print(f"Max drawdown:     {mdd:.2%}")
 ```
 
 **Known gaps vs. live strategy**:
-- The V2 model distributes fee income uniformly over time; the live V3 strategy only earns fees while price is inside the ±0.20% band (which is most of the time for a stable pair)
+- This model distributes fee income uniformly over time; the live V3 strategy only earns fees while price is inside the ±0.20% band (which is most of the time for a stable pair)
 - Theo points (from THBILL volume) are not captured in the return
 - Recentering events (when price exits the band) briefly take the position out of fee-earning range — this is rare but not modeled
