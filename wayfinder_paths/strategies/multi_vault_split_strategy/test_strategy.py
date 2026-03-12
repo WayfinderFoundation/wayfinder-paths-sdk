@@ -357,6 +357,7 @@ async def test_move_idle_to_boros_uses_existing_usdt_then_bridged_remainder(
 async def test_deposit_usdt_to_boros_vault_uses_isolated_margin_for_isolated_vault(
     strategy: MultiVaultSplitStrategy,
 ):
+    strategy.usdt_address = "0x0000000000000000000000000000000000000001"
     strategy.boros_adapter.deposit_to_isolated_margin = AsyncMock(
         return_value=(True, {"status": "ok"})
     )
