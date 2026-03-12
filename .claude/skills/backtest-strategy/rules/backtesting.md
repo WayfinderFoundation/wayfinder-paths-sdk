@@ -6,7 +6,13 @@
 
 ---
 
-## Strategy type → helper
+## Existing strategy vs. new idea
+
+**If backtesting a strategy that exists in `wayfinder_paths/strategies/`**, load `existing-strategies.md` — it has the full workflow for reading strategy source code, extracting real parameters, and faithfully reproducing signal logic. The generic helpers below are for quick prototyping of *new* ideas; existing strategies need their actual logic reproduced.
+
+---
+
+## Strategy type → helper (for new ideas / quick prototyping)
 
 | Strategy | Helper | Load additional rule? |
 |---|---|---|

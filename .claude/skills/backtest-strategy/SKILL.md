@@ -8,12 +8,25 @@ metadata:
 ## When to use
 
 Use this skill when you are:
-- Validating a trading strategy idea before production deployment
+- Backtesting an existing strategy from `wayfinder_paths/strategies/`
+- Validating a new trading strategy idea before production deployment
 - Analyzing historical performance (Sharpe, drawdown, CAGR, funding PnL)
 - Testing any strategy type: momentum, delta-neutral, yield rotation, carry trade, LP
 - Testing different leverage levels or parameter combinations
 
 ## How to use
+
+**First, determine if you're backtesting an existing strategy or a new idea:**
+
+### Backtesting an existing strategy (from `wayfinder_paths/strategies/`)
+
+Load these rules:
+
+1. **[rules/backtesting.md](rules/backtesting.md)** — **Always load first.** Config reference, stats format, gotchas.
+2. **[rules/existing-strategies.md](rules/existing-strategies.md)** — **REQUIRED for existing strategies.** Workflow for reading strategy source code, extracting parameters, fetching real Delta Lab data, and faithfully reproducing signal logic. Never use generic helpers with default parameters for existing strategies.
+3. Load the strategy-type-specific rule if applicable (yield-strategies.md, lp-strategies.md).
+
+### Backtesting a new strategy idea
 
 Load these rules in order (most to least specific for your strategy type):
 
