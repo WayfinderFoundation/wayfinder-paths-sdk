@@ -9,7 +9,7 @@ from web3.exceptions import ContractLogicError, Web3RPCError
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.avantis_abi import AVANTIS_VAULT_MANAGER_ABI
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import DEFAULT_HTTP_HEADERS, MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import (
     AVANTIS_AVUSDC,
@@ -183,7 +183,7 @@ class AvantisAdapter(BaseAdapter):
             return False, str(exc)
 
     async def _http_get_json(self, url: str) -> dict[str, Any]:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=DEFAULT_HTTP_HEADERS) as session:
             async with session.get(url, timeout=10) as resp:
                 resp.raise_for_status()
                 return await resp.json()

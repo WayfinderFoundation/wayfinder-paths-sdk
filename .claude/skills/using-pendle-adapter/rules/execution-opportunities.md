@@ -133,6 +133,83 @@ adapter = get_adapter(PendleAdapter, "main")
 adapter = get_adapter(PendleAdapter)
 ```
 
+## Redeem expired/matured PTs (convert PT → underlying)
+
+After a PT passes its maturity date, redeem it using `execute_convert` (the universal convert endpoint). This is **not** a swap — it's a direct redemption of PT for the underlying asset.
+
+**Flow:**
+1. Discover positions + underlying addresses via `get_full_user_state_per_chain`
+2. Call `execute_convert` with PT as input, underlying as output
+3. (Optional) Swap the underlying to USDC/stables via BRAP
+
+- Call: `PendleAdapter.execute_convert(...)`
+- What it does:
+  1. Builds convert payload via `sdk_convert_v2()`
+  2. Checks balances (preflight)
+  3. Handles token approvals automatically
+  4. Broadcasts the transaction
+- Inputs:
+  - `chain` - chain ID or name
+  - `slippage` - decimal fraction (`0.01` = 1%)
+  - `inputs` - list of `{"token": PT_address, "amount": raw_balance_string}`
+  - `outputs` - list of underlying token addresses to receive
+  - `receiver` - optional; defaults to strategy wallet
+- Output:
+  - `(True, {"tx_hash": "0x...", ...})`
+  - `(False, {"error": "...", "stage": "preflight|quote|approval|broadcast", ...})`
+
+### Example: Redeem expired PTs
+
+```python
+import asyncio
+from wayfinder_paths.mcp.scripting import get_adapter
+from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
+from wayfinder_paths.core.utils.tokens import get_token_balance
+
+adapter = get_adapter(PendleAdapter, "main")
+wallet = adapter._strategy_address()
+
+CHAIN = 42161  # Arbitrum
+
+# Step 1: Discover positions and underlying tokens
+ok, state = await adapter.get_full_user_state_per_chain(
+    chain=CHAIN, account=wallet, include_prices=True,
+)
+if not ok:
+    raise RuntimeError(f"Failed to get user state: {state}")
+
+# Step 2: Find expired PT positions
+for pos in state.get("positions", []):
+    pt_addr = pos.get("pt", "")
+    underlying = pos.get("underlying", "")
+    pt_balance = pos.get("balances", {}).get("pt", {})
+    raw_balance = str(pt_balance.get("raw", 0))
+
+    if int(raw_balance) == 0 or not underlying:
+        continue
+
+    print(f"Redeeming {pos.get('marketName')}: PT={pt_addr} -> {underlying}")
+
+    # Step 3: Redeem PT -> underlying
+    ok, result = await adapter.execute_convert(
+        chain=CHAIN,
+        slippage=0.01,
+        inputs=[{"token": pt_addr, "amount": raw_balance}],
+        outputs=[underlying],
+    )
+    if ok:
+        print(f"  SUCCESS: {result.get('tx_hash')}")
+    else:
+        print(f"  FAILED: {result}")
+```
+
+### Important notes on PT redemption
+
+- **Expired PTs redeem to the SY underlying** (e.g. sUSDai, thBILL), not directly to USDC. You'll likely need a follow-up swap (via BRAP/`mcp__wayfinder__execute`) to convert to stables.
+- **`execute_swap` won't work** for expired markets — use `execute_convert` instead.
+- **`list_active_pt_yt_markets` excludes expired markets** by default. Use `get_full_user_state_per_chain` to find positions in expired markets.
+- The convert endpoint is the universal Pendle SDK entrypoint — it handles swaps, mints, redeems, LP add/remove, and rolls.
+
 ## Integration checklist (for manual execution)
 
 If not using `execute_swap()`, you still need:
