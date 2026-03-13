@@ -2,8 +2,6 @@ import json
 import os
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
-
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
@@ -107,15 +105,6 @@ def get_api_key() -> str | None:
     return os.environ.get("WAYFINDER_API_KEY")
 
 
-def _url_origin(value: str | None) -> str | None:
-    if not value:
-        return None
-    parsed = urlparse(str(value).strip())
-    if not parsed.scheme or not parsed.netloc:
-        return None
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
 def load_wallet_mnemonic(path: str | Path | None = None) -> str | None:
     config = CONFIG if path is None else load_config_json(path)
     value = config.get(_WALLET_MNEMONIC_KEY)
@@ -137,9 +126,6 @@ def write_wallet_mnemonic(mnemonic: str, path: str | Path | None = None) -> Path
     return cfg_path
 
 
-_GORLAMI_PATH = "/blockchain/gorlami"
-
-
 def get_etherscan_api_key() -> str | None:
     system = CONFIG.get("system", {})
     api_key = system.get("etherscan_api_key")
@@ -148,28 +134,3 @@ def get_etherscan_api_key() -> str | None:
     return os.environ.get("ETHERSCAN_API_KEY")
 
 
-def get_gorlami_base_url() -> str:
-    system = CONFIG.get("system", {})
-    explicit = system.get("gorlami_base_url")
-    if explicit:
-        return str(explicit).strip().rstrip("/")
-    return f"{get_api_base_url().rstrip('/')}{_GORLAMI_PATH}"
-
-
-def get_gorlami_api_key() -> str | None:
-    system = CONFIG.get("system", {})
-
-    explicit = system.get("gorlami_api_key")
-    if explicit:
-        return str(explicit).strip()
-
-    api_key = get_api_key()
-    gorlami_origin = _url_origin(system.get("gorlami_base_url"))
-    api_origin = _url_origin(system.get("api_base_url"))
-
-    if gorlami_origin and api_origin and gorlami_origin != api_origin:
-        fallback = system.get("_api_key")
-        if fallback:
-            return str(fallback).strip()
-
-    return api_key

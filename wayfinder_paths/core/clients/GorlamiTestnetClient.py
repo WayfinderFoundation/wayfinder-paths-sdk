@@ -5,22 +5,17 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_gorlami_api_key, get_gorlami_base_url
-from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
+from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
+from wayfinder_paths.core.config import get_api_base_url
 from wayfinder_paths.core.utils.retry import exponential_backoff_s, retry_async
 
 
-class GorlamiTestnetClient:
+class GorlamiTestnetClient(WayfinderClient):
     MAX_RETRY_DELAY_S = 5.0
 
     def __init__(self):
-        self.base_url = get_gorlami_base_url().rstrip("/")
-        api_key = get_gorlami_api_key()
-        headers = {"X-API-KEY": api_key} if api_key else {}
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
-            headers=headers,
-        )
+        super().__init__()
+        self.base_url = f"{get_api_base_url().rstrip('/')}/blockchain/gorlami"
 
     async def _request(
         self,
@@ -34,22 +29,12 @@ class GorlamiTestnetClient:
         accepted_statuses = accepted_statuses or set()
 
         async def _attempt() -> httpx.Response:
-            resp = await self.client.request(method, url, **kwargs)
-            if resp.status_code in accepted_statuses:
-                return resp
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                if (
-                    exc.response is not None
-                    and exc.response.status_code in retryable_statuses
-                ):
-                    await exc.response.aread()
-                raise
-            return resp
+            return await self._authed_request(method, url, **kwargs)
 
         def _should_retry(exc: Exception) -> bool:
             if isinstance(exc, httpx.HTTPStatusError):
+                if exc.response.status_code in accepted_statuses:
+                    return False
                 return (
                     exc.response is not None
                     and exc.response.status_code in retryable_statuses
@@ -85,14 +70,19 @@ class GorlamiTestnetClient:
                 type(exc).__name__,
             )
 
-        return await retry_async(
-            _attempt,
-            max_retries=3,
-            base_delay_s=0.25,
-            should_retry=_should_retry,
-            get_delay_s=_get_delay_s,
-            on_retry=_on_retry,
-        )
+        try:
+            return await retry_async(
+                _attempt,
+                max_retries=3,
+                base_delay_s=0.25,
+                should_retry=_should_retry,
+                get_delay_s=_get_delay_s,
+                on_retry=_on_retry,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in accepted_statuses:
+                return exc.response
+            raise
 
     async def create_fork(self, chain_id: int) -> dict:
         url = f"{self.base_url}/fork"
@@ -111,7 +101,8 @@ class GorlamiTestnetClient:
             "rpc_url": f"{self.base_url}/fork/{fork_id}",
             "chain_id": chain_id,
         }
-        logger.info(f"Created fork {fork_info['fork_id']} for chain {chain_id}")
+        logger.info(
+            f"Created fork {fork_info['fork_id']} for chain {chain_id}")
         return fork_info
 
     async def delete_fork(self, fork_id: str) -> bool:
