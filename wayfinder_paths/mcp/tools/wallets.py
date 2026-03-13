@@ -181,7 +181,7 @@ async def wallets(
     if action == "create":
         load_config(config_path)
         existing = load_wallets()
-        want = (label or "").strip()
+        want = (label or wallet_label or "").strip()
         if not want:
             return err(
                 "invalid_request", "label is required for wallets(action=create)"

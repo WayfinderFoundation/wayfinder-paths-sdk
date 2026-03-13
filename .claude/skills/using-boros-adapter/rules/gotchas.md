@@ -29,6 +29,29 @@ YU note (critical for sizing):
 Best practice:
 - Resolve decimals and convert explicitly at the boundary of each call.
 
+## Vaults: "active" is not the same as depositable
+
+For Boros vaults, do not infer depositability from a single raw field like `is_active`, `status`, or `state="Normal"`.
+
+Use `is_vault_open_for_deposit(...)` or `best_yield_vault(...)` instead.
+
+Those helpers also enforce:
+- expiry
+- paused market state
+- minimum tenor filters
+- isolated-only eligibility (`allow_isolated_only=True` if you want those vaults included)
+
+## Isolated-only vaults use isolated margin first
+
+An isolated-only vault is not funded the same way as a cross-margin vault.
+
+Correct flow:
+- `deposit_to_isolated_margin(..., market_id=...)`
+- `unscaled_to_scaled_cash_wei(token_id, amount_native)`
+- `deposit_to_vault(market_id=..., net_cash_in_wei=...)`
+
+If you deposit to cross margin first, the vault add-liquidity step can still fail because the cash is in the wrong bucket.
+
 ## Collateral vs YU sizing (critical - read before implementing)
 
 **Collateral is margin, YU is notional rate exposure.** Your deposited collateral does **not** cap YU 1:1.

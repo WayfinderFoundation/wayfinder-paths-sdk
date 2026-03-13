@@ -5,39 +5,36 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_api_key, get_gorlami_base_url
-from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
+from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
+from wayfinder_paths.core.config import get_api_base_url
 from wayfinder_paths.core.utils.retry import exponential_backoff_s, retry_async
 
 
-class GorlamiTestnetClient:
-    def __init__(self):
-        self.base_url = get_gorlami_base_url().rstrip("/")
-        api_key = get_api_key()
-        headers = {"X-API-KEY": api_key} if api_key else {}
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
-            headers=headers,
-        )
+class GorlamiTestnetClient(WayfinderClient):
+    MAX_RETRY_DELAY_S = 5.0
 
-    async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+    def __init__(self):
+        super().__init__()
+        self.base_url = f"{get_api_base_url().rstrip('/')}/blockchain/gorlami"
+
+    async def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        accepted_statuses: set[int] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
         retryable_statuses = {429, 500, 502, 503, 504}
+        accepted_statuses = accepted_statuses or set()
 
         async def _attempt() -> httpx.Response:
-            resp = await self.client.request(method, url, **kwargs)
-            try:
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                if (
-                    exc.response is not None
-                    and exc.response.status_code in retryable_statuses
-                ):
-                    await exc.response.aread()
-                raise
-            return resp
+            return await self._authed_request(method, url, **kwargs)
 
         def _should_retry(exc: Exception) -> bool:
             if isinstance(exc, httpx.HTTPStatusError):
+                if exc.response.status_code in accepted_statuses:
+                    return False
                 return (
                     exc.response is not None
                     and exc.response.status_code in retryable_statuses
@@ -49,10 +46,17 @@ class GorlamiTestnetClient:
                 retry_after = exc.response.headers.get("Retry-After")
                 if retry_after:
                     try:
-                        return float(retry_after)
+                        return min(
+                            float(retry_after),
+                            float(self.MAX_RETRY_DELAY_S),
+                        )
                     except ValueError:
                         pass
-            return exponential_backoff_s(attempt, base_delay_s=0.25)
+            return exponential_backoff_s(
+                attempt,
+                base_delay_s=0.25,
+                max_delay_s=self.MAX_RETRY_DELAY_S,
+            )
 
         def _on_retry(attempt: int, exc: Exception, delay_s: float) -> None:
             status = None
@@ -66,14 +70,19 @@ class GorlamiTestnetClient:
                 type(exc).__name__,
             )
 
-        return await retry_async(
-            _attempt,
-            max_retries=3,
-            base_delay_s=0.25,
-            should_retry=_should_retry,
-            get_delay_s=_get_delay_s,
-            on_retry=_on_retry,
-        )
+        try:
+            return await retry_async(
+                _attempt,
+                max_retries=3,
+                base_delay_s=0.25,
+                should_retry=_should_retry,
+                get_delay_s=_get_delay_s,
+                on_retry=_on_retry,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in accepted_statuses:
+                return exc.response
+            raise
 
     async def create_fork(self, chain_id: int) -> dict:
         url = f"{self.base_url}/fork"
@@ -99,7 +108,7 @@ class GorlamiTestnetClient:
         url = f"{self.base_url}/fork/{fork_id}"
         logger.debug(f"Deleting fork {fork_id}")
 
-        resp = await self.client.delete(url)
+        resp = await self._request("DELETE", url, accepted_statuses={404})
         if resp.status_code == 404:
             logger.warning(f"Fork {fork_id} not found (already deleted?)")
             return False

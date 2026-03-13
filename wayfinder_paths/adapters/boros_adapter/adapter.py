@@ -10,13 +10,24 @@ from eth_utils import function_signature_to_4byte_selector, to_checksum_address
 from loguru import logger
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.constants.boros_abi import (
+    BOROS_MARKET_HUB_VIEW_ABI,
+    BOROS_MERKLE_DISTRIBUTOR_ABI,
+    BOROS_ROUTER_VIEW_ABI,
+    BOROS_VAULT_BALANCE_ABI,
+)
 from wayfinder_paths.core.constants.chains import CHAIN_ID_HYPEREVM
 from wayfinder_paths.core.constants.contracts import (
     BOROS_MARKET_HUB,
+    BOROS_MERKLE_DISTRIBUTOR,
     BOROS_ROUTER,
     HYPE_OFT_ADDRESS,
 )
 from wayfinder_paths.core.constants.hype_oft_abi import HYPE_OFT_ABI
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import (
     build_approve_transaction,
     get_token_balance,
@@ -34,7 +45,12 @@ from .parsers import (
     parse_market_position,
     time_to_maturity_days,
 )
-from .types import BorosLimitOrder, BorosMarketQuote, BorosTenorQuote
+from .types import (
+    BorosLimitOrder,
+    BorosMarketQuote,
+    BorosTenorQuote,
+    BorosVault,
+)
 from .utils import (
     BOROS_TICK_BASE,
     cash_wei_to_float,
@@ -53,6 +69,11 @@ from .utils import (
 
 class BorosAdapter(BaseAdapter):
     adapter_type = "BOROS"
+    SIDE_LONG = 0
+    SIDE_SHORT = 1
+    MAX_INT128 = (1 << 127) - 1
+    MIN_INT128 = -(1 << 127)
+    CROSS_MARGIN_MARKET_ID = 0xFFFFFF
 
     # LayerZero endpoint IDs for the HYPE OFT deployment.
     # These are needed to bridge between:
@@ -76,6 +97,11 @@ class BorosAdapter(BaseAdapter):
         super().__init__("boros_adapter", config)
         self.sign_callback = sign_callback
         self._scaling_factor_cache: dict[int, int] = {}
+        self._amm_address_cache: dict[int, str | None] = {}
+        self._amm_id_by_market_cache: dict[int, int] = {}
+        self._lp_balance_cache: dict[tuple[int, int, str], int] = {}
+        self._assets_by_id_cache: dict[int, dict[str, Any]] | None = None
+        self._vault_context_cache: dict[int, dict[str, Any]] = {}
 
         boros_cfg = (config or {}).get("boros_adapter", {})
         self.chain_id = int(boros_cfg.get("chain_id", 42161))
@@ -92,36 +118,118 @@ class BorosAdapter(BaseAdapter):
             account_id=self.account_id,
         )
 
-    # ------------------------------------------------------------------ #
-    # Transaction Helpers                                                 #
-    # ------------------------------------------------------------------ #
-
-    BOROS_MARKET_HUB_VIEW_ABI = [
-        {
-            "inputs": [
-                {
-                    "internalType": "address",
-                    "name": "user",
-                    "type": "address",
-                }
-            ],
-            "name": "getPersonalCooldown",
-            "outputs": [
-                {
-                    "internalType": "uint256",
-                    "name": "",
-                    "type": "uint256",
-                }
-            ],
-            "stateMutability": "view",
-            "type": "function",
-        }
-    ]
-
     @staticmethod
     def _pad_address_bytes32(address: str) -> bytes:
         checksum = to_checksum_address(address)
         return bytes.fromhex(checksum[2:]).rjust(32, b"\x00")
+
+    @staticmethod
+    def _to_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    @staticmethod
+    def _maybe_float(value: Any) -> float | None:
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _wei_amount_to_tokens(value: Any) -> float | None:
+        try:
+            if value is None or value == "":
+                return None
+            return float(value) / 1e18
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _split_symbol(symbol: str) -> tuple[str | None, str | None]:
+        sym = str(symbol or "").strip()
+        if not sym:
+            return None, None
+        for sep in ("-", "/"):
+            parts = [p.strip() for p in sym.split(sep) if p.strip()]
+            if len(parts) >= 2:
+                return parts[0], parts[1]
+        return sym, None
+
+    @staticmethod
+    def build_market_acc(
+        *,
+        address: str,
+        account_id: int,
+        token_id: int,
+        market_id: int,
+    ) -> bytes:
+        addr = bytes.fromhex(to_checksum_address(address)[2:])
+        return (
+            addr
+            + int(account_id).to_bytes(1, "big")
+            + int(token_id).to_bytes(2, "big")
+            + int(market_id).to_bytes(3, "big")
+        )
+
+    async def get_scaling_factor(self, token_id: int) -> int:
+        cached = self._scaling_factor_cache.get(int(token_id))
+        if cached:
+            return cached
+
+        async with web3_from_chain_id(self.chain_id) as web3:
+            contract = web3.eth.contract(
+                address=to_checksum_address(BOROS_MARKET_HUB),
+                abi=BOROS_MARKET_HUB_VIEW_ABI,
+            )
+            token_addr, scaling = await contract.functions.tokenData(
+                int(token_id)
+            ).call()
+
+            scaling_i = int(scaling or 0)
+            if scaling_i <= 0:
+                raise ValueError(
+                    f"Invalid Boros scaling factor for token_id={int(token_id)} "
+                    f"(token={token_addr}, scaling={scaling})"
+                )
+
+            self._scaling_factor_cache[int(token_id)] = scaling_i
+            return scaling_i
+
+    async def scaled_cash_wei_to_unscaled(
+        self, token_id: int, scaled_cash_wei: int
+    ) -> int:
+        scaling = await self.get_scaling_factor(int(token_id))
+        return int(scaled_cash_wei) // int(scaling)
+
+    async def unscaled_to_scaled_cash_wei(
+        self, token_id: int, unscaled_amount: int
+    ) -> int:
+        scaling = await self.get_scaling_factor(int(token_id))
+        return int(unscaled_amount) * int(scaling)
+
+    async def get_user_withdrawal_status(
+        self,
+        *,
+        token_id: int,
+        user_address: str | None = None,
+    ) -> tuple[bool, dict[str, int] | str]:
+        try:
+            user = to_checksum_address(user_address or self.wallet_address or "")
+            async with web3_from_chain_id(self.chain_id) as web3:
+                contract = web3.eth.contract(
+                    address=to_checksum_address(BOROS_MARKET_HUB),
+                    abi=BOROS_MARKET_HUB_VIEW_ABI,
+                )
+                start, unscaled = await contract.functions.getUserWithdrawalStatus(
+                    user, int(token_id)
+                ).call()
+            return True, {"start": int(start), "unscaled": int(unscaled)}
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     async def get_cash_fee_data(self, *, token_id: int) -> tuple[bool, dict[str, Any]]:
         """Read MarketHub.getCashFeeData(tokenId) from chain.
@@ -456,13 +564,6 @@ class BorosAdapter(BaseAdapter):
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _to_int(value: Any) -> int | None:
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
     # ------------------------------------------------------------------ #
     # Market Data                                                          #
     # ------------------------------------------------------------------ #
@@ -734,18 +835,21 @@ class BorosAdapter(BaseAdapter):
                 filtered = filtered[: int(max_markets)]
             quotes: list[BorosMarketQuote] = []
 
-            for market in filtered:
+            async def _quote_one(market: dict[str, Any]) -> BorosMarketQuote | None:
                 try:
                     success, quote = await self.quote_market(
                         market,
                         tick_size=tick_size,
                         prefer_market_data=prefer_market_data,
                     )
-                    if success:
-                        quotes.append(quote)
+                    return quote if success else None
                 except Exception as e:
                     market_id = market.get("marketId") or market.get("id")
                     logger.warning(f"quote_market failed for {market_id}: {e}")
+                    return None
+
+            results = await asyncio.gather(*[_quote_one(m) for m in filtered])
+            quotes = [q for q in results if q is not None]
 
             quotes.sort(key=lambda q: q.maturity_ts)
             return True, quotes
@@ -1120,6 +1224,8 @@ class BorosAdapter(BaseAdapter):
             return False, {"error": str(e)}
 
     async def _fetch_assets_by_id(self) -> dict[int, dict[str, Any]]:
+        if self._assets_by_id_cache is not None:
+            return self._assets_by_id_cache
         ok_assets, assets = await self.get_assets()
         assets_by_id: dict[int, dict[str, Any]] = {}
         if ok_assets and assets:
@@ -1127,6 +1233,7 @@ class BorosAdapter(BaseAdapter):
                 tid = a.get("tokenId")
                 if tid is not None:
                     assets_by_id[tid] = a
+        self._assets_by_id_cache = assets_by_id
         return assets_by_id
 
     def _enrich_market(
@@ -1193,6 +1300,613 @@ class BorosAdapter(BaseAdapter):
             "floating_apr": floating_apr,
             "mark_apr": mark_apr,
         }
+
+    @staticmethod
+    def _coerce_vault_list(data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, list):
+            return [entry for entry in data if isinstance(entry, dict)]
+        if not isinstance(data, dict):
+            return []
+
+        collaterals = data.get("collaterals")
+        if isinstance(collaterals, list):
+            flattened: list[dict[str, Any]] = []
+            for coll in collaterals:
+                if not isinstance(coll, dict):
+                    continue
+                coll_token_id = coll.get("tokenId")
+                coll_addr = coll.get("collateralAddress")
+                for vault in coll.get("vaults") or []:
+                    if not isinstance(vault, dict):
+                        continue
+                    enriched = dict(vault)
+                    enriched.setdefault("collateralTokenId", coll_token_id)
+                    enriched.setdefault("collateralAddress", coll_addr)
+                    flattened.append(enriched)
+            if flattened:
+                return flattened
+
+        for key in ("results", "vaults", "data", "amm", "ammSummary", "ammStates"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [entry for entry in value if isinstance(entry, dict)]
+        return []
+
+    @staticmethod
+    def estimate_user_lp_balance_wei(vault: BorosVault) -> int | None:
+        if vault.user_total_lp_wei is not None:
+            return int(vault.user_total_lp_wei)
+        raw = vault.raw or {}
+        try:
+            candidate = raw.get("userTotalLp") or (
+                (raw.get("user") or {}).get("totalLp")
+            )
+            return int(candidate) if candidate is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def estimate_user_vault_value_tokens(
+        vault: BorosVault,
+        *,
+        prefer_lp_balance: bool = False,
+    ) -> float:
+        if vault.user_deposit_tokens is not None and not prefer_lp_balance:
+            return float(vault.user_deposit_tokens)
+        lp_wei = BorosAdapter.estimate_user_lp_balance_wei(vault)
+        lp_price = (vault.raw or {}).get("lpPrice")
+        try:
+            if lp_wei is None or lp_price is None:
+                return 0.0
+            return (float(lp_wei) * float(lp_price)) / 1e18
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def estimate_vault_capacity_tokens(vault: BorosVault) -> float | None:
+        if vault.remaining_supply_lp is None:
+            return None
+        lp_price = (vault.raw or {}).get("lpPrice")
+        try:
+            if lp_price is None:
+                return None
+            return (float(vault.remaining_supply_lp) * float(lp_price)) / 1e18
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def is_vault_open_for_deposit(
+        vault: BorosVault,
+        *,
+        min_tenor_days: float = 0.0,
+        allow_isolated_only: bool = False,
+    ) -> bool:
+        if vault.is_expired:
+            return False
+        if vault.is_isolated_only and not allow_isolated_only:
+            return False
+        if str(vault.market_state or "").lower() == "paused":
+            return False
+        if vault.tenor_days is not None and float(vault.tenor_days) < float(
+            min_tenor_days
+        ):
+            return False
+        return True
+
+    def _vault_from_raw(self, entry: dict[str, Any]) -> BorosVault:
+        market = entry.get("market") or {}
+        market_meta = entry.get("_market_meta") if isinstance(entry, dict) else None
+        is_expired = bool(entry.get("_is_expired", False))
+
+        symbol = (
+            entry.get("ammSymbol")
+            or entry.get("marketSymbol")
+            or entry.get("symbol")
+            or market.get("symbol")
+            or entry.get("name")
+            or ""
+        )
+        base_symbol, quote_symbol = self._split_symbol(symbol)
+        tvl = self._maybe_float(
+            entry.get("tvl")
+            or entry.get("tvlUsd")
+            or entry.get("tvlUSD")
+            or entry.get("tvl_usd")
+            or entry.get("totalValue")
+        )
+        apy = self._maybe_float(
+            entry.get("lpApy")
+            or entry.get("apy")
+            or entry.get("apy24h")
+            or entry.get("apyPct")
+        )
+
+        supply_cap = self._to_int(entry.get("totalSupplyCap"))
+        total_lp = self._to_int(entry.get("totalLp"))
+        remaining_lp = max(supply_cap - total_lp, 0) if supply_cap else None
+        remaining_pct = (
+            (remaining_lp / supply_cap)
+            if supply_cap and remaining_lp is not None
+            else None
+        )
+
+        maturity_ts: int | None = None
+        tenor_days: float | None = None
+        if isinstance(market_meta, dict):
+            symbol = (
+                (market_meta.get("imData") or {}).get("symbol")
+                or (market_meta.get("metadata") or {}).get("name")
+                or symbol
+            )
+            if symbol:
+                base_symbol, quote_symbol = self._split_symbol(symbol)
+            maturity_ts = self._extract_maturity_ts(market_meta)
+            tenor_days = (
+                time_to_maturity_days(maturity_ts) if maturity_ts is not None else None
+            )
+        im_data = (
+            (market_meta or {}).get("imData") if isinstance(market_meta, dict) else {}
+        )
+        is_isolated_only = bool((im_data or {}).get("isIsolatedOnly"))
+        market_state = (
+            str((market_meta or {}).get("state"))
+            if isinstance(market_meta, dict)
+            and (market_meta or {}).get("state") is not None
+            else None
+        )
+
+        user = entry.get("user") or {}
+        user_deposit_tokens = self._wei_amount_to_tokens(user.get("depositValue"))
+        user_available_tokens = self._wei_amount_to_tokens(
+            user.get("availableBalanceToDeposit")
+        )
+        user_total_lp_wei = None
+        try:
+            total_lp_raw = user.get("totalLp")
+            if total_lp_raw is not None:
+                user_total_lp_wei = int(total_lp_raw)
+        except (TypeError, ValueError):
+            user_total_lp_wei = None
+
+        return BorosVault(
+            amm_id=self._to_int(
+                entry.get("ammId") or entry.get("id") or entry.get("amm_id")
+            ),
+            market_id=self._to_int(
+                entry.get("marketId")
+                or entry.get("market_id")
+                or market.get("marketId")
+            ),
+            symbol=symbol,
+            market_symbol=entry.get("marketSymbol")
+            or market.get("symbol")
+            or (
+                (market_meta.get("metadata") or {}).get("name") if market_meta else None
+            ),
+            base_symbol=base_symbol,
+            quote_symbol=quote_symbol,
+            apy=apy,
+            tvl=tvl,
+            lp_token_address=entry.get("lpToken")
+            or entry.get("lpTokenAddress")
+            or entry.get("ammAddress"),
+            remaining_supply_lp=remaining_lp,
+            remaining_supply_pct=remaining_pct,
+            maturity_ts=maturity_ts,
+            tenor_days=tenor_days,
+            is_expired=is_expired,
+            is_isolated_only=is_isolated_only,
+            market_state=market_state,
+            user_deposit_tokens=user_deposit_tokens,
+            user_available_tokens=user_available_tokens,
+            user_total_lp_wei=user_total_lp_wei,
+            raw=entry,
+        )
+
+    async def _get_amm_address_from_router(self, amm_id: int) -> str | None:
+        if amm_id in self._amm_address_cache:
+            return self._amm_address_cache[amm_id]
+        try:
+            async with web3_from_chain_id(self.chain_id) as web3:
+                contract = web3.eth.contract(
+                    address=to_checksum_address(BOROS_ROUTER),
+                    abi=BOROS_ROUTER_VIEW_ABI,
+                )
+                market_acc = await contract.functions.ammIdToAcc(int(amm_id)).call()
+            result: str | None = None
+            if market_acc and len(market_acc) >= 20:
+                result = to_checksum_address("0x" + market_acc[:20].hex())
+            self._amm_address_cache[amm_id] = result
+            return result
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Failed to resolve Boros AMM address {amm_id}: {exc}")
+        return None
+
+    async def get_vault_lp_balance(
+        self,
+        *,
+        amm_id: int,
+        token_id: int,
+        account: str | None = None,
+        account_id: int = 0,
+        market_id: int | None = None,
+        is_isolated_only: bool | None = None,
+    ) -> tuple[bool, int | str]:
+        address = account or self.wallet_address
+        if not address:
+            return False, "wallet_address is required"
+
+        amm_address = await self._get_amm_address_from_router(int(amm_id))
+        if not amm_address:
+            return False, f"Could not resolve amm address for amm_id={int(amm_id)}"
+
+        resolved_market_id = (
+            int(market_id) if market_id is not None else self.CROSS_MARGIN_MARKET_ID
+        )
+        if market_id is None or is_isolated_only is None:
+            context = await self._get_vault_context_for_amm(int(amm_id))
+            if context:
+                if market_id is None and bool(context.get("is_isolated_only")):
+                    resolved_market_id = self._to_int(
+                        context.get("market_id"),
+                        default=self.CROSS_MARGIN_MARKET_ID,
+                    )
+                if is_isolated_only is None:
+                    is_isolated_only = bool(context.get("is_isolated_only"))
+
+        if not bool(is_isolated_only):
+            resolved_market_id = self.CROSS_MARGIN_MARKET_ID
+
+        market_acc = self.build_market_acc(
+            address=address,
+            account_id=int(account_id),
+            token_id=int(token_id),
+            market_id=int(resolved_market_id),
+        )
+
+        try:
+            async with web3_from_chain_id(self.chain_id) as web3:
+                contract = web3.eth.contract(
+                    address=to_checksum_address(amm_address),
+                    abi=BOROS_VAULT_BALANCE_ABI,
+                )
+                balance = await contract.functions.balanceOf(market_acc).call()
+            return True, int(balance)
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    def _invalidate_lp_cache(self) -> None:
+        self._lp_balance_cache = {}
+
+    async def _augment_vault_lp_balances(
+        self,
+        vaults: list[BorosVault],
+        *,
+        account: str,
+    ) -> list[BorosVault]:
+        # Build list of (index, vault, token_id) for vaults that need LP queries
+        queryable: list[tuple[int, BorosVault, int]] = []
+        for i, vault in enumerate(vaults):
+            token_id = self._to_int(
+                (vault.raw or {}).get("collateralTokenId")
+                or (vault.raw or {}).get("tokenId"),
+                default=0,
+            )
+            if token_id > 0 and vault.amm_id > 0:
+                queryable.append((i, vault, token_id))
+
+        if not queryable:
+            return vaults
+
+        # Check LP balance cache — resolve what we can, track what needs fetching
+        cached_balances: dict[int, int] = {}  # queryable index → balance
+        needs_fetch: list[int] = []  # indices into queryable
+        for qi, (_, vault, token_id) in enumerate(queryable):
+            market_id = (
+                int(vault.market_id)
+                if bool(vault.is_isolated_only)
+                else self.CROSS_MARGIN_MARKET_ID
+            )
+            market_acc = self.build_market_acc(
+                address=account,
+                account_id=0,
+                token_id=int(token_id),
+                market_id=market_id,
+            )
+            cache_key = (vault.amm_id, token_id, market_acc.hex())
+            if cache_key in self._lp_balance_cache:
+                cached_balances[qi] = self._lp_balance_cache[cache_key]
+            else:
+                needs_fetch.append(qi)
+
+        if needs_fetch:
+            await self._fetch_lp_balances_multicall(
+                queryable,
+                needs_fetch,
+                account,
+                cached_balances,
+            )
+
+        # Apply all balances (cached + freshly fetched)
+        for qi, (_, vault, _) in enumerate(queryable):
+            balance_i = cached_balances.get(qi, 0)
+            if balance_i <= 0:
+                continue
+            vault.user_total_lp_wei = balance_i
+            vault.user_deposit_tokens = self.estimate_user_vault_value_tokens(
+                vault,
+                prefer_lp_balance=True,
+            )
+        return vaults
+
+    async def _fetch_lp_balances_multicall(
+        self,
+        queryable: list[tuple[int, BorosVault, int]],
+        needs_fetch: list[int],
+        account: str,
+        out: dict[int, int],
+    ) -> None:
+        """Batch-fetch LP balances via multicall, populating `out` and caches."""
+        async with web3_from_chain_id(self.chain_id) as web3:
+            router_contract = web3.eth.contract(
+                address=to_checksum_address(BOROS_ROUTER),
+                abi=BOROS_ROUTER_VIEW_ABI,
+            )
+
+            # --- Round 1: resolve uncached AMM addresses via multicall ---
+            amm_resolve_indices: list[int] = []  # indices into needs_fetch
+            amm_resolve_calls: list[Call] = []
+            for nfi in needs_fetch:
+                _, vault, _ = queryable[nfi]
+                if vault.amm_id not in self._amm_address_cache:
+                    amm_resolve_indices.append(nfi)
+                    amm_resolve_calls.append(
+                        Call(
+                            contract=router_contract,
+                            fn_name="ammIdToAcc",
+                            args=(int(vault.amm_id),),
+                        )
+                    )
+
+            if amm_resolve_calls:
+                amm_results = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=amm_resolve_calls,
+                )
+                for nfi, raw_acc in zip(amm_resolve_indices, amm_results, strict=False):
+                    _, vault, _ = queryable[nfi]
+                    resolved: str | None = None
+                    try:
+                        if raw_acc and len(raw_acc) >= 20:
+                            resolved = to_checksum_address("0x" + raw_acc[:20].hex())
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._amm_address_cache[vault.amm_id] = resolved
+
+            # --- Round 2: balanceOf calls on resolved AMM contracts ---
+            balance_calls: list[Call] = []
+            balance_indices: list[int] = []  # indices into needs_fetch
+            market_accs: list[bytes] = []
+            for nfi in needs_fetch:
+                _, vault, token_id = queryable[nfi]
+                amm_addr = self._amm_address_cache.get(vault.amm_id)
+                if not amm_addr:
+                    continue
+                market_id = (
+                    int(vault.market_id)
+                    if bool(vault.is_isolated_only)
+                    else self.CROSS_MARGIN_MARKET_ID
+                )
+                market_acc = self.build_market_acc(
+                    address=account,
+                    account_id=0,
+                    token_id=int(token_id),
+                    market_id=market_id,
+                )
+                amm_contract = web3.eth.contract(
+                    address=to_checksum_address(amm_addr),
+                    abi=BOROS_VAULT_BALANCE_ABI,
+                )
+                balance_calls.append(
+                    Call(
+                        contract=amm_contract,
+                        fn_name="balanceOf",
+                        args=(market_acc,),
+                    )
+                )
+                balance_indices.append(nfi)
+                market_accs.append(market_acc)
+
+            if not balance_calls:
+                return
+
+            bal_results = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=self.chain_id,
+                calls=balance_calls,
+            )
+            for nfi, balance_raw, market_acc in zip(
+                balance_indices, bal_results, market_accs, strict=False
+            ):
+                _, vault, token_id = queryable[nfi]
+                try:
+                    balance_i = int(balance_raw)
+                except (TypeError, ValueError):
+                    balance_i = 0
+                cache_key = (vault.amm_id, token_id, market_acc.hex())
+                self._lp_balance_cache[cache_key] = balance_i
+                out[nfi] = balance_i
+
+    async def get_vaults_summary(
+        self,
+        *,
+        account: str | None = None,
+        use_direct_lp_query: bool = True,
+    ) -> tuple[bool, list[BorosVault] | str]:
+        try:
+            ok_markets, markets = await self.list_markets_all(is_whitelisted=None)
+            markets_by_id = (
+                {
+                    int(market.get("marketId") or 0): market
+                    for market in markets
+                    if isinstance(market, dict)
+                }
+                if ok_markets and isinstance(markets, list)
+                else {}
+            )
+
+            account_param = None
+            if account:
+                account_param = account.lower()
+                if not account_param.endswith("00"):
+                    account_param = f"{account_param}00"
+
+            raw_summary = await self.boros_client.get_amm_summary(account=account_param)
+            raw_vaults = self._coerce_vault_list(raw_summary)
+
+            vaults: list[BorosVault] = []
+            for raw_vault in raw_vaults:
+                market_id = self._to_int(raw_vault.get("marketId"))
+                market_meta = markets_by_id.get(market_id)
+                raw_entry = dict(raw_vault)
+                if isinstance(market_meta, dict):
+                    if raw_entry.get("tokenId") is None:
+                        raw_entry["tokenId"] = market_meta.get("tokenId")
+                    if raw_entry.get("collateralTokenId") is None:
+                        raw_entry["collateralTokenId"] = market_meta.get(
+                            "collateralTokenId"
+                        ) or ((market_meta.get("market") or {}).get("tokenId"))
+                raw_entry["_market_meta"] = market_meta
+                raw_entry["_is_expired"] = market_id > 0 and market_meta is None
+                vault = self._vault_from_raw(raw_entry)
+                vaults.append(vault)
+                if vault.amm_id > 0:
+                    raw = vault.raw or {}
+                    self._vault_context_cache[vault.amm_id] = {
+                        "amm_id": int(vault.amm_id),
+                        "market_id": int(vault.market_id),
+                        "token_id": self._to_int(
+                            raw.get("collateralTokenId") or raw.get("tokenId"),
+                            default=0,
+                        ),
+                        "is_isolated_only": bool(vault.is_isolated_only),
+                    }
+                if vault.market_id > 0 and vault.amm_id > 0:
+                    self._amm_id_by_market_cache[vault.market_id] = vault.amm_id
+
+            if account and use_direct_lp_query:
+                vaults = await self._augment_vault_lp_balances(vaults, account=account)
+
+            return True, vaults
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Failed to get Boros vaults summary: {exc}")
+            return False, str(exc)
+
+    async def search_vaults(
+        self,
+        *,
+        asset: str | None = None,
+        token_id: int | None = None,
+        limit: int = 20,
+        account: str | None = None,
+    ) -> tuple[bool, list[BorosVault] | str]:
+        ok, vaults = await self.get_vaults_summary(account=account)
+        if not ok or not isinstance(vaults, list):
+            return False, vaults
+
+        results = list(vaults)
+        if token_id is not None:
+            results = [
+                vault
+                for vault in results
+                if self._to_int(
+                    (vault.raw or {}).get("collateralTokenId")
+                    or (vault.raw or {}).get("tokenId")
+                )
+                == int(token_id)
+            ]
+
+        if asset:
+            needle = str(asset).strip().lower().replace("-", "").replace("/", "")
+            filtered: list[BorosVault] = []
+            for vault in results:
+                haystacks = [
+                    str(vault.symbol or ""),
+                    str(vault.market_symbol or ""),
+                    str(vault.base_symbol or ""),
+                    str(vault.quote_symbol or ""),
+                ]
+                hay = "".join(
+                    h.lower().replace("-", "").replace("/", "") for h in haystacks
+                )
+                if needle in hay:
+                    filtered.append(vault)
+            results = filtered
+
+        if limit and limit > 0:
+            results = results[: int(limit)]
+        return True, results
+
+    async def best_yield_vault(
+        self,
+        *,
+        token_id: int = 3,
+        amount_tokens: float,
+        min_tenor_days: float = 3.0,
+        allow_isolated_only: bool = False,
+    ) -> tuple[bool, BorosVault | None | str]:
+        ok, vaults = await self.search_vaults(token_id=token_id, limit=0)
+        if not ok or not isinstance(vaults, list):
+            return False, vaults
+
+        min_isolated_cash_wei: int | None = None
+        if allow_isolated_only:
+            ok_fee, fee_data = await self.get_cash_fee_data(token_id=int(token_id))
+            if ok_fee and isinstance(fee_data, dict):
+                raw_min = fee_data.get("min_cash_isolated_wei")
+                try:
+                    min_isolated_cash_wei = int(raw_min)
+                except (TypeError, ValueError):
+                    min_isolated_cash_wei = None
+
+        feasible: list[BorosVault] = []
+        for vault in vaults:
+            if not self.is_vault_open_for_deposit(
+                vault,
+                min_tenor_days=min_tenor_days,
+                allow_isolated_only=allow_isolated_only,
+            ):
+                continue
+            if (
+                vault.is_isolated_only
+                and min_isolated_cash_wei is not None
+                and int(float(amount_tokens) * 1e18) < int(min_isolated_cash_wei)
+            ):
+                continue
+            cap_tokens = self.estimate_vault_capacity_tokens(vault)
+            if cap_tokens is not None and cap_tokens < float(amount_tokens):
+                continue
+            feasible.append(vault)
+
+        if not feasible:
+            return True, None
+
+        feasible.sort(key=lambda vault: float(vault.apy or 0.0), reverse=True)
+        return True, feasible[0]
+
+    async def get_account_idle_balance(
+        self,
+        *,
+        token_id: int,
+        account_id: int = 0,
+    ) -> tuple[bool, float | str]:
+        ok, balances = await self.get_account_balances(
+            token_id=int(token_id), account_id=int(account_id)
+        )
+        if not ok or not isinstance(balances, dict):
+            return False, balances
+        return True, float(balances.get("total") or 0.0)
 
     async def get_collaterals(
         self, *, account_id: int | None = None
@@ -1502,7 +2216,7 @@ class BorosAdapter(BaseAdapter):
                     async with web3_from_chain_id(self.chain_id) as web3:
                         market_hub = web3.eth.contract(
                             address=to_checksum_address(BOROS_MARKET_HUB),
-                            abi=self.BOROS_MARKET_HUB_VIEW_ABI,
+                            abi=BOROS_MARKET_HUB_VIEW_ABI,
                         )
                         cooldown_seconds = int(
                             await market_hub.functions.getPersonalCooldown(
@@ -1646,7 +2360,7 @@ class BorosAdapter(BaseAdapter):
                     async with web3_from_chain_id(self.chain_id) as web3:
                         market_hub = web3.eth.contract(
                             address=to_checksum_address(BOROS_MARKET_HUB),
-                            abi=self.BOROS_MARKET_HUB_VIEW_ABI,
+                            abi=BOROS_MARKET_HUB_VIEW_ABI,
                         )
                         cooldown_seconds = int(
                             await market_hub.functions.getPersonalCooldown(
@@ -1697,29 +2411,30 @@ class BorosAdapter(BaseAdapter):
     # Execution Methods                                                    #
     # ------------------------------------------------------------------ #
 
-    async def deposit_to_cross_margin(
+    async def deposit_collateral(
         self,
         collateral_address: str,
         amount_wei: int,
         *,
         token_id: int,
         market_id: int,
+        target_margin: str = "cross",
     ) -> tuple[bool, dict[str, Any]]:
-        """Deposit collateral into Boros cross margin.
+        """Deposit collateral into Boros margin.
 
         IMPORTANT: amount_wei is in the collateral token's native decimals.
         Example: USDT has 6 decimals, so 1 USDT = 1_000_000.
 
-        After deposit, Boros may credit the cash as isolated for market_id. This
-        helper sweeps isolated -> cross for that market to match the method name.
+        For `target_margin="cross"`, Boros may first credit the cash as isolated for
+        `market_id`; this helper then sweeps isolated -> cross.
         """
         try:
-            # Defensive: cap the deposit amount to the user's on-chain balance.
-            #
-            # Boros API expects `amount` in native token decimals. For 18-decimal
-            # tokens, converting float balances back to ints can be off by a few
-            # wei. That can cause hard reverts during gas estimation. Capping to
-            # the actual ERC20 balance avoids these off-by-wei failures.
+            if target_margin not in {"cross", "isolated"}:
+                return False, {
+                    "error": f"Unsupported target_margin={target_margin!r}",
+                }
+
+            # Cap to the on-chain ERC20 balance to avoid off-by-wei estimate reverts.
             try:
                 bal_raw_i = await get_token_balance(
                     collateral_address, self.chain_id, self.wallet_address
@@ -1743,7 +2458,7 @@ class BorosAdapter(BaseAdapter):
                 amount_wei=amount_wei,
                 market_id=market_id,
                 user_address=self.wallet_address,
-                account_id=0,  # Cross margin
+                account_id=0,
             )
 
             if not self.sign_callback or not self.wallet_address:
@@ -1789,27 +2504,110 @@ class BorosAdapter(BaseAdapter):
                     "tx": tx_res,
                 }
 
+            if target_margin == "isolated":
+                return True, {
+                    "status": "ok",
+                    "target_margin": target_margin,
+                    "approve": approve_res,
+                    "tx": tx_res,
+                }
+
             sweep_ok, sweep_res = await self.sweep_isolated_to_cross(
                 token_id=int(token_id),
                 market_id=int(market_id),
             )
-            if not sweep_ok:
-                return False, {
-                    "error": f"Deposit succeeded but isolated->cross sweep failed: {sweep_res}",
-                    "approve": approve_res,
-                    "tx": tx_res,
-                    "sweep": sweep_res,
-                }
+            moved = sweep_res.get("moved") if isinstance(sweep_res, dict) else None
+            needs_direct_fallback = (not sweep_ok) or (
+                isinstance(moved, list) and len(moved) == 0
+            )
+            if needs_direct_fallback:
+                try:
+                    scaled_amount = await self.unscaled_to_scaled_cash_wei(
+                        int(token_id), int(amount_wei)
+                    )
+                    fallback_ok, fallback_res = await self.cash_transfer(
+                        market_id=int(market_id),
+                        amount_wei=int(scaled_amount),
+                        is_deposit=False,
+                    )
+                    if fallback_ok:
+                        sweep_ok, sweep_res = (
+                            True,
+                            {
+                                "status": "fallback_direct_transfer",
+                                "tx": fallback_res,
+                            },
+                        )
+                    elif not sweep_ok:
+                        sweep_res = {
+                            "status": "warning",
+                            "error": str(sweep_res),
+                            "fallback_error": fallback_res,
+                        }
+                    else:
+                        sweep_res = {
+                            "status": "warning",
+                            "moved": moved or [],
+                            "fallback_error": fallback_res,
+                        }
+                except Exception as exc:  # noqa: BLE001
+                    if not sweep_ok:
+                        sweep_res = {
+                            "status": "warning",
+                            "error": str(sweep_res),
+                            "fallback_error": str(exc),
+                        }
+                    else:
+                        sweep_res = {
+                            "status": "warning",
+                            "moved": moved or [],
+                            "fallback_error": str(exc),
+                        }
 
             return True, {
                 "status": "ok",
+                "target_margin": target_margin,
                 "approve": approve_res,
                 "tx": tx_res,
                 "sweep": sweep_res,
             }
         except Exception as e:
-            logger.error(f"Failed to deposit to cross margin: {e}")
+            logger.error(f"Failed to deposit collateral into Boros: {e}")
             return False, {"error": str(e)}
+
+    async def deposit_to_cross_margin(
+        self,
+        collateral_address: str,
+        amount_wei: int,
+        *,
+        token_id: int,
+        market_id: int,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Deposit collateral into Boros cross margin."""
+        return await self.deposit_collateral(
+            collateral_address=collateral_address,
+            amount_wei=amount_wei,
+            token_id=token_id,
+            market_id=market_id,
+            target_margin="cross",
+        )
+
+    async def deposit_to_isolated_margin(
+        self,
+        collateral_address: str,
+        amount_wei: int,
+        *,
+        token_id: int,
+        market_id: int,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Deposit collateral into a market's isolated margin bucket."""
+        return await self.deposit_collateral(
+            collateral_address=collateral_address,
+            amount_wei=amount_wei,
+            token_id=token_id,
+            market_id=market_id,
+            target_margin="isolated",
+        )
 
     async def withdraw_collateral(
         self,
@@ -1888,11 +2686,370 @@ class BorosAdapter(BaseAdapter):
             logger.debug(f"Boros cash_transfer tx result: ok={tx_ok}, res={tx_res}")
             if not tx_ok:
                 return False, tx_res
-            logger.info("Boros cash_transfer succeeded (isolated -> cross)")
+            direction = "cross -> isolated" if is_deposit else "isolated -> cross"
+            logger.info(f"Boros cash_transfer succeeded ({direction})")
             return True, tx_res
         except Exception as e:
             logger.error(f"Failed to cash transfer: {e}")
             return False, {"error": str(e)}
+
+    async def _get_amm_id_for_market(self, market_id: int) -> int | None:
+        market_id = int(market_id)
+        if cached := self._amm_id_by_market_cache.get(market_id):
+            return cached
+
+        for account in (self.wallet_address, None):
+            ok, vaults = await self.get_vaults_summary(
+                account=account,
+                use_direct_lp_query=False,
+            )
+            if ok and isinstance(vaults, list):
+                if cached := self._amm_id_by_market_cache.get(market_id):
+                    return cached
+        return None
+
+    async def _get_vault_context_for_amm(self, amm_id: int) -> dict[str, Any] | None:
+        amm_id = int(amm_id)
+        if cached := self._vault_context_cache.get(amm_id):
+            return dict(cached)
+
+        for account in (self.wallet_address, None):
+            ok, vaults = await self.get_vaults_summary(
+                account=account,
+                use_direct_lp_query=False,
+            )
+            if ok and isinstance(vaults, list):
+                if cached := self._vault_context_cache.get(amm_id):
+                    return dict(cached)
+        return None
+
+    async def deposit_to_vault_direct(
+        self,
+        *,
+        amm_id: int,
+        net_cash_in_wei: int,
+        min_lp_out_wei: int | None = None,
+        slippage_bps: int = 20,
+        market_id: int | None = None,
+        is_isolated_only: bool | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        if not self.wallet_address:
+            return False, {"error": "wallet_address is required"}
+        if not self.sign_callback:
+            return False, {"error": "sign_callback is required"}
+
+        net_cash = int(net_cash_in_wei)
+        if net_cash <= 0:
+            return False, {"error": "net_cash_in_wei must be positive"}
+
+        if min_lp_out_wei is None or int(min_lp_out_wei) <= 0:
+            min_lp_out_wei = int(net_cash * (1 - (int(slippage_bps) / 10_000)))
+
+        desired_swap_side = self.SIDE_LONG
+        desired_swap_rate = self.MAX_INT128
+        context = None
+        if market_id is None or is_isolated_only is None:
+            context = await self._get_vault_context_for_amm(int(amm_id))
+        resolved_market_id = int(market_id) if market_id is not None else None
+        if context:
+            if resolved_market_id is None:
+                resolved_market_id = (
+                    self._to_int(
+                        context.get("market_id"),
+                        default=0,
+                    )
+                    or None
+                )
+            if is_isolated_only is None:
+                is_isolated_only = bool(context.get("is_isolated_only"))
+        isolated_only = bool(is_isolated_only)
+        last_error: str | None = None
+
+        for enter_market in (True, False):
+            try:
+                tx = await encode_call(
+                    target=BOROS_ROUTER,
+                    abi=BOROS_ROUTER_VIEW_ABI,
+                    fn_name="addLiquiditySingleCashToAmm",
+                    args=[
+                        (
+                            not isolated_only,
+                            int(amm_id),
+                            bool(enter_market),
+                            int(net_cash),
+                            int(min_lp_out_wei),
+                            int(desired_swap_side),
+                            int(desired_swap_rate),
+                        )
+                    ],
+                    from_address=self.wallet_address,
+                    chain_id=self.chain_id,
+                )
+                tx_hash = await send_transaction(
+                    tx, self.sign_callback, wait_for_receipt=True
+                )
+                self._invalidate_lp_cache()
+                return True, {
+                    "status": "ok",
+                    "tx": {"tx_hash": tx_hash},
+                    "amm_id": int(amm_id),
+                    "market_id": int(resolved_market_id)
+                    if resolved_market_id is not None
+                    else None,
+                    "net_cash_in_wei": int(net_cash),
+                    "is_isolated_only": isolated_only,
+                    "enter_market": bool(enter_market),
+                }
+            except Exception as exc:  # noqa: BLE001
+                last_error = str(exc)
+                if enter_market:
+                    continue
+                return False, {"error": last_error}
+
+        return False, {"error": last_error or "Failed to deposit to Boros vault"}
+
+    async def withdraw_from_vault_direct(
+        self,
+        *,
+        amm_id: int,
+        lp_to_remove_wei: int,
+        min_cash_out_wei: int = 0,
+        market_id: int | None = None,
+        is_isolated_only: bool | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        if not self.wallet_address:
+            return False, {"error": "wallet_address is required"}
+        if not self.sign_callback:
+            return False, {"error": "sign_callback is required"}
+
+        context = None
+        if market_id is None or is_isolated_only is None:
+            context = await self._get_vault_context_for_amm(int(amm_id))
+        resolved_market_id = int(market_id) if market_id is not None else None
+        if context:
+            if resolved_market_id is None:
+                resolved_market_id = (
+                    self._to_int(
+                        context.get("market_id"),
+                        default=0,
+                    )
+                    or None
+                )
+            if is_isolated_only is None:
+                is_isolated_only = bool(context.get("is_isolated_only"))
+        isolated_only = bool(is_isolated_only)
+        try:
+            tx = await encode_call(
+                target=BOROS_ROUTER,
+                abi=BOROS_ROUTER_VIEW_ABI,
+                fn_name="removeLiquiditySingleCashFromAmm",
+                args=[
+                    (
+                        not isolated_only,
+                        int(amm_id),
+                        int(lp_to_remove_wei),
+                        int(min_cash_out_wei),
+                        int(self.SIDE_SHORT),
+                        int(self.MIN_INT128),
+                    )
+                ],
+                from_address=self.wallet_address,
+                chain_id=self.chain_id,
+            )
+            tx_hash = await send_transaction(
+                tx, self.sign_callback, wait_for_receipt=True
+            )
+            self._invalidate_lp_cache()
+            return True, {
+                "status": "ok",
+                "tx": {"tx_hash": tx_hash},
+                "amm_id": int(amm_id),
+                "market_id": int(resolved_market_id)
+                if resolved_market_id is not None
+                else None,
+                "lp_to_remove_wei": int(lp_to_remove_wei),
+                "is_isolated_only": isolated_only,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, {"error": str(exc)}
+
+    async def deposit_to_vault(
+        self,
+        *,
+        market_id: int,
+        net_cash_in_wei: int,
+        min_lp_out_wei: int | None = None,
+        slippage_bps: int = 20,
+        simulate: bool = False,
+    ) -> tuple[bool, dict[str, Any]]:
+        if simulate:
+            return False, {
+                "error": "simulate=True is not supported for direct Boros vault ops"
+            }
+
+        effective_cash = int(net_cash_in_wei)
+        amm_id: int | None = None
+        match: BorosVault | None = None
+        ok, vaults = await self.get_vaults_summary(
+            account=self.wallet_address, use_direct_lp_query=False
+        )
+        if ok and isinstance(vaults, list):
+            match = next(
+                (vault for vault in vaults if int(vault.market_id) == int(market_id)),
+                None,
+            )
+            if match:
+                amm_id = int(match.amm_id)
+                if match.is_isolated_only:
+                    raw_token_id = self._to_int(
+                        (match.raw or {}).get("collateralTokenId")
+                        or (match.raw or {}).get("tokenId"),
+                        default=0,
+                    )
+                    if raw_token_id > 0:
+                        ok_fee, fee_data = await self.get_cash_fee_data(
+                            token_id=int(raw_token_id)
+                        )
+                        if ok_fee and isinstance(fee_data, dict):
+                            min_isolated_cash_wei = self._to_int(
+                                fee_data.get("min_cash_isolated_wei"),
+                                default=0,
+                            )
+                            if (
+                                min_isolated_cash_wei > 0
+                                and effective_cash < min_isolated_cash_wei
+                            ):
+                                min_isolated_cash = min_isolated_cash_wei / 1e18
+                                return False, {
+                                    "error": (
+                                        "Isolated-only Boros vault requires at least "
+                                        f"{min_isolated_cash:.6f} cash units"
+                                    ),
+                                    "market_id": int(market_id),
+                                    "required_cash_wei": int(min_isolated_cash_wei),
+                                    "requested_cash_wei": int(effective_cash),
+                                }
+                available = self._wei_amount_to_tokens(
+                    ((match.raw or {}).get("user") or {}).get(
+                        "availableBalanceToDeposit"
+                    )
+                )
+                if available is not None and float(available) > 0:
+                    available_wei = int(float(available) * 1e18)
+                    if available_wei < effective_cash:
+                        effective_cash = available_wei
+                        if min_lp_out_wei is not None and int(net_cash_in_wei) > 0:
+                            min_lp_out_wei = int(
+                                int(min_lp_out_wei)
+                                * effective_cash
+                                / int(net_cash_in_wei)
+                            )
+
+        if amm_id is None:
+            amm_id = await self._get_amm_id_for_market(int(market_id))
+        if amm_id is None:
+            return False, {
+                "error": f"Could not resolve amm_id for market_id={market_id}"
+            }
+
+        if effective_cash <= 0:
+            return False, {"error": "No Boros cash available to deposit"}
+
+        return await self.deposit_to_vault_direct(
+            amm_id=int(amm_id),
+            net_cash_in_wei=int(effective_cash),
+            min_lp_out_wei=min_lp_out_wei,
+            slippage_bps=int(slippage_bps),
+            market_id=int(market_id),
+            is_isolated_only=bool(match.is_isolated_only) if match else None,
+        )
+
+    async def withdraw_from_vault(
+        self,
+        *,
+        market_id: int,
+        lp_to_remove_wei: int,
+        min_cash_out_wei: int = 0,
+        simulate: bool = False,
+    ) -> tuple[bool, dict[str, Any]]:
+        if simulate:
+            return False, {
+                "error": "simulate=True is not supported for direct Boros vault ops"
+            }
+
+        amm_id = await self._get_amm_id_for_market(int(market_id))
+        if amm_id is None:
+            return False, {
+                "error": f"Could not resolve amm_id for market_id={market_id}"
+            }
+
+        return await self.withdraw_from_vault_direct(
+            amm_id=int(amm_id),
+            lp_to_remove_wei=int(lp_to_remove_wei),
+            min_cash_out_wei=int(min_cash_out_wei),
+            market_id=int(market_id),
+        )
+
+    async def get_rewards(self) -> tuple[bool, dict[str, float] | str]:
+        try:
+            result = await self.boros_client.get_amm_rewards(
+                user_address=self.wallet_address
+            )
+            return True, {
+                "accrued_usd": float(result.get("accruedAmountInUsd", 0) or 0.0),
+                "unclaimed_usd": float(result.get("unclaimedAmountInUsd", 0) or 0.0),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_claim_proof(self) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            proof = await self.boros_client.get_amm_rewards_proof(
+                user_address=self.wallet_address
+            )
+            if not proof or not proof.get("tokens"):
+                return True, {}
+            return True, proof
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def claim_rewards(self) -> tuple[bool, dict[str, Any]]:
+        if not self.wallet_address:
+            return False, {"error": "wallet_address is required"}
+        if not self.sign_callback:
+            return False, {"error": "sign_callback is required"}
+
+        ok, proof = await self.get_claim_proof()
+        if not ok:
+            return False, {"error": proof}
+        if not isinstance(proof, dict) or not proof.get("tokens"):
+            return True, {"status": "no_rewards", "claimed": []}
+
+        tx = await encode_call(
+            target=BOROS_MERKLE_DISTRIBUTOR,
+            abi=BOROS_MERKLE_DISTRIBUTOR_ABI,
+            fn_name="claim",
+            args=[
+                to_checksum_address(self.wallet_address),
+                [to_checksum_address(token) for token in proof["tokens"]],
+                [int(amount) for amount in proof["accruedAmounts"]],
+                proof["proofs"],
+            ],
+            from_address=self.wallet_address,
+            chain_id=self.chain_id,
+        )
+
+        try:
+            tx_hash = await send_transaction(
+                tx, self.sign_callback, wait_for_receipt=True
+            )
+            return True, {
+                "status": "claimed",
+                "tx_hash": tx_hash,
+                "tokens": proof["tokens"],
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, {"error": str(exc)}
 
     async def bridge_hype_oft_hyperevm_to_arbitrum(
         self,
@@ -2469,6 +3626,7 @@ class BorosAdapter(BaseAdapter):
                 tx_hash = await send_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
                 )
+                self._invalidate_lp_cache()
                 return True, {"status": "ok", "tx": {"tx_hash": tx_hash}}
             except Exception as e:
                 return False, {
