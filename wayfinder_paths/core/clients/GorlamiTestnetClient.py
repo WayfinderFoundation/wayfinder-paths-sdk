@@ -5,7 +5,7 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_gorlami_api_key, get_gorlami_base_url
+from wayfinder_paths.core.auth import build_nft_auth_headers
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 from wayfinder_paths.core.utils.retry import exponential_backoff_s, retry_async
 
@@ -15,8 +15,12 @@ class GorlamiTestnetClient:
 
     def __init__(self):
         self.base_url = get_gorlami_base_url().rstrip("/")
-        api_key = get_gorlami_api_key()
-        headers = {"X-API-KEY": api_key} if api_key else {}
+        self._use_nft = use_nft_authentication()
+        headers: dict[str, str] = {}
+        if not self._use_nft:
+            api_key = get_gorlami_api_key()
+            if api_key:
+                headers["X-API-KEY"] = api_key
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
             headers=headers,
@@ -34,6 +38,9 @@ class GorlamiTestnetClient:
         accepted_statuses = accepted_statuses or set()
 
         async def _attempt() -> httpx.Response:
+            if self._use_nft:
+                existing = kwargs.get("headers") or {}
+                kwargs["headers"] = {**existing, **build_nft_auth_headers()}
             resp = await self.client.request(method, url, **kwargs)
             if resp.status_code in accepted_statuses:
                 return resp

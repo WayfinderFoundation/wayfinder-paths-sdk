@@ -2,7 +2,9 @@
   "system": {
     "api_base_url": "https://strategies.wayfinder.ai/api/v1",
     "api_key": "wk_your_key_here",
-    "etherscan_api_key": ""
+    "etherscan_api_key": "",
+    "use_nft_authentication": false,
+    "nft_token_id": null
   },
   "strategy": {
     "rpc_urls": {}

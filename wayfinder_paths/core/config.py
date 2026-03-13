@@ -173,3 +173,18 @@ def get_gorlami_api_key() -> str | None:
             return str(fallback).strip()
 
     return api_key
+
+
+def use_nft_authentication() -> bool:
+    return bool(CONFIG.get("system", {}).get("use_nft_authentication", False))
+
+
+def get_nft_token_id() -> int | None:
+    system = CONFIG.get("system", {})
+    token_id = system.get("nft_token_id")
+    if token_id is not None:
+        return int(token_id)
+    env = os.environ.get("WAYFINDER_NFT_TOKEN_ID")
+    if env:
+        return int(env)
+    return None

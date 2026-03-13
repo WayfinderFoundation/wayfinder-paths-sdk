@@ -4,7 +4,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_api_key
+from wayfinder_paths.core.auth import build_nft_auth_headers
+from wayfinder_paths.core.config import get_api_key, use_nft_authentication
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 
@@ -28,13 +29,15 @@ class WayfinderClient:
         logger.debug(f"Making {method} request to {url}")
         start_time = time.time()
 
-        # Pass API key to all endpoints (including public ones) for rate limiting
-        if not self.headers.get("X-API-KEY"):
-            self.headers["X-API-KEY"] = get_api_key()
-
         merged_headers = dict(self.headers)
         if headers:
             merged_headers.update(headers)
+
+        if use_nft_authentication():
+            merged_headers.update(build_nft_auth_headers())
+        elif not self.headers.get("X-API-KEY"):
+            self.headers["X-API-KEY"] = get_api_key()
+            merged_headers["X-API-KEY"] = self.headers["X-API-KEY"]
         resp = await self.client.request(method, url, headers=merged_headers, **kwargs)
 
         elapsed = time.time() - start_time
