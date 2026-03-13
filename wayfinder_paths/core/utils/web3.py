@@ -7,8 +7,6 @@ from web3.module import Module
 from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
-    get_gorlami_api_key,
-    get_gorlami_base_url,
     get_rpc_urls,
 )
 from wayfinder_paths.core.constants.chains import (
@@ -58,23 +56,17 @@ def _is_wayfinder_rpc(rpc: str) -> bool:
     return rpc.startswith(get_api_base_url())
 
 
-def _get_gorlami_base_url_safe() -> str | None:
-    try:
-        return get_gorlami_base_url().rstrip("/")
-    except Exception:
-        return None
+_GORLAMI_FORK_PREFIX = "/blockchain/gorlami/fork/"
 
 
 def _is_gorlami_fork_rpc(rpc: str) -> bool:
-    base = _get_gorlami_base_url_safe()
-    if not base:
-        return False
-    return rpc.startswith(f"{base}/fork/")
+    base = get_api_base_url().rstrip("/")
+    return rpc.startswith(f"{base}{_GORLAMI_FORK_PREFIX}")
 
 
-def _wayfinder_auth_headers(*, use_gorlami_key: bool = False) -> dict[str, str]:
+def _wayfinder_auth_headers() -> dict[str, str]:
     headers = AsyncHTTPProvider.get_request_headers()
-    api_key = get_gorlami_api_key() if use_gorlami_key else get_api_key()
+    api_key = get_api_key()
     if api_key:
         headers = {**headers, "X-API-KEY": api_key}
     return headers
@@ -99,7 +91,7 @@ def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
         provider = _GorlamiProvider(
             rpc,
-            request_kwargs={"headers": _wayfinder_auth_headers(use_gorlami_key=True)},
+            request_kwargs={"headers": _wayfinder_auth_headers()},
         )
         web3 = AsyncWeb3(provider)
     elif _is_wayfinder_rpc(rpc):
