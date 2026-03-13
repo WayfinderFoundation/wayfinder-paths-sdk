@@ -4,7 +4,7 @@ from typing import Any
 
 from eth_utils import to_checksum_address
 
-from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.sparklend_abi import (
@@ -177,11 +177,9 @@ class SparkLendAdapter(BaseAdapter):
     # Write / tx methods
     # ------------------
 
+    @require_wallet
     async def lend(self, *, chain_id: int, asset: str, amount: int) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -216,6 +214,7 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def unlend(
         self,
         *,
@@ -225,9 +224,6 @@ class SparkLendAdapter(BaseAdapter):
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0 and not withdraw_full:
             return False, "amount must be positive"
@@ -251,6 +247,7 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def borrow(
         self,
         *,
@@ -260,9 +257,6 @@ class SparkLendAdapter(BaseAdapter):
         rate_mode: int = VARIABLE_RATE_MODE,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -297,6 +291,7 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def repay(
         self,
         *,
@@ -307,9 +302,6 @@ class SparkLendAdapter(BaseAdapter):
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0 and not repay_full:
             return False, "amount must be positive"
@@ -351,13 +343,11 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def set_collateral(
         self, *, chain_id: int, asset: str, enabled: bool
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         try:
             entry = self._entry(int(chain_id))
             pool = entry["pool"]
@@ -376,11 +366,9 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def claim_rewards(self, *, chain_id: int) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         try:
             entry = self._entry(int(chain_id))
             rewards_controller = entry.get("rewards_controller")
@@ -791,10 +779,9 @@ class SparkLendAdapter(BaseAdapter):
     # Optional native helpers
     # -----------------------
 
+    @require_wallet
     async def supply_native(self, *, chain_id: int, amount: int) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -824,13 +811,11 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def withdraw_native(
         self, *, chain_id: int, amount: int, withdraw_full: bool = False
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0 and not withdraw_full:
             return False, "amount must be positive"
@@ -878,6 +863,7 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def borrow_native(
         self,
         *,
@@ -886,9 +872,6 @@ class SparkLendAdapter(BaseAdapter):
         rate_mode: int = VARIABLE_RATE_MODE,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0:
             return False, "amount must be positive"
@@ -930,6 +913,7 @@ class SparkLendAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    @require_wallet
     async def repay_native(
         self,
         *,
@@ -939,9 +923,6 @@ class SparkLendAdapter(BaseAdapter):
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
-        if not strategy:
-            return False, "strategy wallet address not configured"
-
         amount = int(amount)
         if amount <= 0 and not repay_full:
             return False, "amount must be positive"
