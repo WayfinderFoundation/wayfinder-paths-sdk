@@ -79,7 +79,7 @@ class SparkLendAdapter(BaseAdapter):
             wrapped = await gw.functions.getWETHAddress().call(
                 block_identifier="pending"
             )
-            wrapped = to_checksum_address(str(wrapped))
+            wrapped = to_checksum_address(wrapped)
             self._wrapped_native_by_chain[chain_id] = wrapped
             return wrapped
 
@@ -109,9 +109,9 @@ class SparkLendAdapter(BaseAdapter):
             )
 
         tokens = (
-            to_checksum_address(str(a_token)),
-            to_checksum_address(str(stable_debt)),
-            to_checksum_address(str(variable_debt)),
+            to_checksum_address(a_token),
+            to_checksum_address(stable_debt),
+            to_checksum_address(variable_debt),
         )
         self._reserve_tokens_by_chain_underlying[cache_key] = tokens
         return tokens
@@ -155,11 +155,11 @@ class SparkLendAdapter(BaseAdapter):
                 "liquidation_threshold_bps": _as_int(liq_threshold),
                 "liquidation_bonus_bps": _as_int(liq_bonus),
                 "reserve_factor_bps": _as_int(reserve_factor),
-                "usage_as_collateral_enabled": bool(usage_as_collateral_enabled),
-                "borrowing_enabled": bool(borrowing_enabled),
-                "stable_borrow_rate_enabled": bool(stable_borrow_rate_enabled),
-                "is_active": bool(is_active),
-                "is_frozen": bool(is_frozen),
+                "usage_as_collateral_enabled": usage_as_collateral_enabled,
+                "borrowing_enabled": borrowing_enabled,
+                "stable_borrow_rate_enabled": stable_borrow_rate_enabled,
+                "is_active": is_active,
+                "is_frozen": is_frozen,
             }
             self._reserve_config_by_chain_underlying[cache_key] = cfg
             return cfg
@@ -381,8 +381,8 @@ class SparkLendAdapter(BaseAdapter):
                 token_candidates: set[str] = set()
                 for row in reserves or []:
                     try:
-                        underlying = to_checksum_address(str(row[1]))
-                    except Exception:                        
+                        underlying = to_checksum_address(row[1])
+                    except Exception:
                         continue
                     try:
                         a_token, stable_debt, variable_debt = (
@@ -452,7 +452,7 @@ class SparkLendAdapter(BaseAdapter):
                 markets: list[dict[str, Any]] = []
                 for row in reserves or []:
                     symbol = str(row[0] or "")
-                    underlying = to_checksum_address(str(row[1]))
+                    underlying = to_checksum_address(row[1])
 
                     (
                         decimals,
@@ -496,9 +496,9 @@ class SparkLendAdapter(BaseAdapter):
                             block_identifier="pending"
                         )
                     )
-                    a_token = to_checksum_address(str(a_token))
-                    stable_debt_token = to_checksum_address(str(stable_debt_token))
-                    variable_debt_token = to_checksum_address(str(variable_debt_token))
+                    a_token = to_checksum_address(a_token)
+                    stable_debt_token = to_checksum_address(stable_debt_token)
+                    variable_debt_token = to_checksum_address(variable_debt_token)
                     self._reserve_tokens_by_chain_underlying[
                         (chain_id, underlying.lower())
                     ] = (a_token, stable_debt_token, variable_debt_token)
@@ -539,11 +539,11 @@ class SparkLendAdapter(BaseAdapter):
                             "liquidation_threshold_bps": _as_int(liq_threshold),
                             "liquidation_bonus_bps": _as_int(liq_bonus),
                             "reserve_factor_bps": _as_int(reserve_factor),
-                            "usage_as_collateral_enabled": bool(usage_as_collateral_enabled),
-                            "borrowing_enabled": bool(borrowing_enabled),
-                            "stable_borrow_enabled": bool(stable_borrow_rate_enabled),
-                            "is_active": bool(is_active),
-                            "is_frozen": bool(is_frozen),
+                            "usage_as_collateral_enabled": usage_as_collateral_enabled,
+                            "borrowing_enabled": borrowing_enabled,
+                            "stable_borrow_enabled": stable_borrow_rate_enabled,
+                            "is_active": is_active,
+                            "is_frozen": is_frozen,
                             "supply_cap": supply_cap,
                             "borrow_cap": borrow_cap,
                             "supply_cap_headroom": supply_cap_headroom,
@@ -618,9 +618,9 @@ class SparkLendAdapter(BaseAdapter):
                 "account": acct,
                 "underlying": underlying,
                 "decimals": _as_int(cfg.get("decimals"), 18),
-                "supply_token": to_checksum_address(str(a_token)),
-                "stable_debt_token": to_checksum_address(str(stable_debt_token)),
-                "variable_debt_token": to_checksum_address(str(variable_debt_token)),
+                "supply_token": to_checksum_address(a_token),
+                "stable_debt_token": to_checksum_address(stable_debt_token),
+                "variable_debt_token": to_checksum_address(variable_debt_token),
                 "supply_raw": _as_int(current_a_token_balance),
                 "stable_borrow_raw": _as_int(current_stable_debt),
                 "variable_borrow_raw": _as_int(current_variable_debt),
@@ -629,9 +629,7 @@ class SparkLendAdapter(BaseAdapter):
                 "stable_borrow_rate_ray": _as_int(stable_borrow_rate),
                 "liquidity_rate_ray": _as_int(liquidity_rate),
                 "stable_rate_last_updated": _as_int(stable_rate_last_updated),
-                "usage_as_collateral_enabled_on_user": bool(
-                    usage_as_collateral_enabled_on_user
-                ),
+                "usage_as_collateral_enabled_on_user": usage_as_collateral_enabled_on_user,
                 "reserve_config": cfg,
             }
         except Exception as exc:            
@@ -673,7 +671,7 @@ class SparkLendAdapter(BaseAdapter):
                 positions: list[dict[str, Any]] = []
                 for row in reserves or []:
                     symbol = str(row[0] or "")
-                    underlying = to_checksum_address(str(row[1]))
+                    underlying = to_checksum_address(row[1])
 
                     user_data = await dp.functions.getUserReserveData(
                         underlying, acct
@@ -681,7 +679,7 @@ class SparkLendAdapter(BaseAdapter):
                     supply = _as_int(user_data[0])
                     stable_debt = _as_int(user_data[1])
                     variable_debt = _as_int(user_data[2])
-                    collateral_enabled = bool(user_data[8])
+                    collateral_enabled = user_data[8]
 
                     if (
                         not include_zero_positions
@@ -706,11 +704,9 @@ class SparkLendAdapter(BaseAdapter):
                             "underlying": underlying,
                             "symbol": symbol,
                             "decimals": _as_int(cfg.get("decimals"), 18),
-                            "supply_token": to_checksum_address(str(a_token)),
-                            "stable_debt_token": to_checksum_address(str(stable_debt_token)),
-                            "variable_debt_token": to_checksum_address(
-                                str(variable_debt_token)
-                            ),
+                            "supply_token": to_checksum_address(a_token),
+                            "stable_debt_token": to_checksum_address(stable_debt_token),
+                            "variable_debt_token": to_checksum_address(variable_debt_token),
                             "supply_raw": supply,
                             "stable_borrow_raw": stable_debt,
                             "variable_borrow_raw": variable_debt,
