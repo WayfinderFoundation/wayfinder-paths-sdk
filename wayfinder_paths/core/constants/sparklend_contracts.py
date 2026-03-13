@@ -56,46 +56,4 @@ SPARKLEND_BY_CHAIN: dict[int, dict[str, str]] = {
             "0x856900aa78e856a5df1a2665eE3a66b2487cD68f"
         ),
     },
-    # Gnosis Chain
-    100: {
-        "chain_name": "gnosis",
-        "pool_addresses_provider_registry": to_checksum_address(
-            "0x49d24798d3b84965F0d1fc8684EF6565115e70c1"
-        ),
-        "pool_addresses_provider": to_checksum_address(
-            "0xA98DaCB3fC964A6A0d2ce3B77294241585EAbA6d"
-        ),
-        "pool": to_checksum_address("0x2Dae5307c5E3FD1CF5A72Cb6F698f915860607e0"),
-        "pool_configurator": to_checksum_address(
-            "0x2Fc8823E1b967D474b47Ae0aD041c2ED562ab588"
-        ),
-        "protocol_data_provider": to_checksum_address(
-            "0x2a002054A06546bB5a264D57A81347e23Af91D18"
-        ),
-        "ui_pool_data_provider": to_checksum_address(
-            "0xF028c2F4b19898718fD0F77b9b881CbfdAa5e8Bb"
-        ),
-        "ui_incentive_data_provider": to_checksum_address(
-            "0xA7F8A757C4f7696c015B595F51B2901AC0121B18"
-        ),
-        "rewards_controller": to_checksum_address(
-            "0x98e6BcBA7d5daFbfa4a92dAF08d3d7512820c30C"
-        ),
-        "oracle": to_checksum_address("0x8105f69D9C41644c6A0803fDA7D03Aa70996cFD9"),
-        "wrapped_native_gateway": to_checksum_address(
-            "0xBD7D6a9ad7865463DE44B05F04559f65e3B11704"
-        ),
-        "acl_manager": to_checksum_address(
-            "0x86C71796CcDB31c3997F8Ec5C2E3dB3e9e40b985"
-        ),
-        "emission_manager": to_checksum_address(
-            "0x4d988568b5f0462B08d1F40bA1F5f17ad2D24F76"
-        ),
-        "treasury": to_checksum_address(
-            "0xb9E6DBFa4De19CCed908BcbFe1d015190678AB5f"
-        ),
-        "treasury_controller": to_checksum_address(
-            "0x8220096398c3Dc2644026E8864f5D80Ef613B437"
-        ),
-    },
 }

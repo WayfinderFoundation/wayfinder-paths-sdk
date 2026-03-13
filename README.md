@@ -175,7 +175,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `PolymarketAdapter` (Polymarket markets, orderbooks, history, and trading)
 - `PoolAdapter` (pool analytics)
 - `ProjectXLiquidityAdapter` (ProjectX V3 concentrated liquidity on HyperEVM)
-- `SparkLendAdapter` (SparkLend Aave v3-style lending/borrowing on Ethereum and Gnosis)
+- `SparkLendAdapter` (SparkLend Aave v3-style lending/borrowing on Ethereum)
 - `TokenAdapter` (token metadata + pricing)
 - `UniswapAdapter` (Uniswap V3 concentrated liquidity management)
 

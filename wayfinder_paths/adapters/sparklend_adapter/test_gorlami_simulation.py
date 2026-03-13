@@ -5,7 +5,7 @@ import pytest
 from eth_account import Account
 
 from wayfinder_paths.adapters.sparklend_adapter.adapter import SparkLendAdapter
-from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM, CHAIN_ID_GNOSIS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
@@ -25,13 +25,6 @@ pytestmark = pytest.mark.skipif(
             5 * 10**18,
             int(0.05 * 10**18),
             2_000 * 10**6,
-        ),
-        (
-            CHAIN_ID_GNOSIS,
-            "0xDDAfbb505ad214D7b80b1f830fcCc89B60fb7A83",  # USDC
-            500 * 10**18,
-            100 * 10**18,
-            10_000 * 10**6,
         ),
     ],
 )
