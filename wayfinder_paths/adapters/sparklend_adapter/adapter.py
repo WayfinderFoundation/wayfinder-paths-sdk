@@ -394,9 +394,8 @@ class SparkLendAdapter(BaseAdapter):
                         continue
 
                     for addr in (a_token, stable_debt, variable_debt):
-                        addr_s = str(addr)
-                        if addr_s and addr_s.strip().lower() != ZERO_ADDRESS:
-                            token_candidates.add(to_checksum_address(addr_s))
+                        if addr.lower() != ZERO_ADDRESS:
+                            token_candidates.add(to_checksum_address(addr))
 
                 assets_set: set[str] = set()
                 for token in token_candidates:
@@ -925,7 +924,7 @@ class SparkLendAdapter(BaseAdapter):
                     chain_id=chain_id, underlying=wrapped
                 )
                 debt_token = variable_debt if rate_mode == VARIABLE_RATE_MODE else stable_debt
-                if str(debt_token).strip().lower() == ZERO_ADDRESS:
+                if debt_token.lower() == ZERO_ADDRESS:
                     return False, "debt token address not found for wrapped native"
 
                 debt = await get_token_balance(
