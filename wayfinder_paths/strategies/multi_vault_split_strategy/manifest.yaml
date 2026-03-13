@@ -1,0 +1,24 @@
+schema_version: "0.1"
+entrypoint: "wayfinder_paths.strategies.multi_vault_split_strategy.strategy.MultiVaultSplitStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      (action.type == 'erc20_transfer') OR
+      (action.type == 'swap') OR
+      (action.type == 'hyperliquid_transfer') OR
+      (action.type == 'hyperliquid_withdraw') OR
+      (action.type == 'boros_deposit') OR
+      (action.type == 'boros_withdraw') OR
+      (action.type == 'boros_order')
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "BRAP"
+    capabilities: ["swap.quote", "swap.execute", "bridge.execute"]
+  - name: "BOROS"
+    capabilities: ["market.read", "vault.read", "vault.deposit", "vault.withdraw"]
+  - name: "AVANTIS"
+    capabilities: ["market.list", "position.read", "vault.deposit", "vault.withdraw"]
+  - name: "HYPERLIQUID"
+    capabilities: ["vault.read", "vault.transfer", "transfer", "withdraw"]

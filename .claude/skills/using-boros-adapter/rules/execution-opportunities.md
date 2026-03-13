@@ -23,6 +23,50 @@ success, collaterals = await adapter.get_collaterals()
 - Don't suggest depositing if collateral is already sufficient
 - Don't trade if there's a pending withdrawal (funds are locked)
 
+## Vault deposit workflow (two-step, don't skip the margin step)
+
+Before depositing to a Boros vault, determine whether the target vault is cross-margin or isolated-only:
+
+```python
+success, best = await adapter.best_yield_vault(
+    token_id=3,
+    amount_tokens=1_000.0,
+    min_tenor_days=7.0,
+    allow_isolated_only=True,
+)
+```
+
+Then deposit in two steps:
+
+```python
+amount_native = 1_000 * 10**6  # 1000 USDT in native token decimals
+
+deposit_margin = (
+    adapter.deposit_to_isolated_margin
+    if best.is_isolated_only
+    else adapter.deposit_to_cross_margin
+)
+
+success, dep = await deposit_margin(
+    collateral_address=collateral_address,
+    amount_wei=amount_native,
+    token_id=3,
+    market_id=best.market_id,
+)
+
+scaled_cash = await adapter.unscaled_to_scaled_cash_wei(3, amount_native)
+
+success, tx = await adapter.deposit_to_vault(
+    market_id=best.market_id,
+    net_cash_in_wei=scaled_cash,
+)
+```
+
+Operational notes:
+- `amount_wei` on the margin deposit is in the token's native decimals.
+- `net_cash_in_wei` for `deposit_to_vault()` is Boros internal cash scaled to `1e18`.
+- `deposit_to_vault()` is the normal entry point; use `deposit_to_vault_direct()` only if you already have `amm_id`.
+
 ## Order placement workflow (don't skip steps)
 
 Before placing any Boros order, you **must** have the right collateral on Arbitrum and deposited to Boros:
@@ -124,6 +168,9 @@ The HYPE OFT bridge helper runs on **HyperEVM**.
 
 Deposits/withdrawals:
 - `deposit_to_cross_margin(collateral_address, amount_wei, token_id, market_id)`
+- `deposit_to_isolated_margin(collateral_address, amount_wei, token_id, market_id)`
+- `deposit_to_vault(market_id, net_cash_in_wei, ...)`
+- `deposit_to_vault_direct(amm_id, net_cash_in_wei, ...)`
 - `withdraw_collateral(token_id, amount_native|amount_wei, account_id=None)`
 - `cash_transfer(market_id, amount_wei, is_deposit=False)`
 - `sweep_isolated_to_cross(token_id, market_id=None)`
