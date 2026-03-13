@@ -6,6 +6,8 @@ capabilities:
   - "market.funding"
   - "market.candles"
   - "market.orderbook"
+  - "vault.read"
+  - "vault.transfer"
   - "order.execute"
   - "order.cancel"
   - "position.manage"

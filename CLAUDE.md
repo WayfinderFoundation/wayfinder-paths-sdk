@@ -245,7 +245,7 @@ When a user asks to run, check, or interact with a strategy:
    - `quote` - Get point-in-time expected APY for the strategy
 
    **Fund-moving actions (require safety review):**
-   - `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`)
+   - `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`). **First deposit?** Always include `gas_token_amount` (e.g. `0.001`) — the strategy wallet starts with no gas.
    - `update` - Rebalance or execute the strategy logic
    - `withdraw` - **Liquidate**: Close all positions and convert to stablecoins (funds stay in strategy wallet)
    - `exit` - **Transfer**: Move funds from strategy wallet to main wallet (call after withdraw)

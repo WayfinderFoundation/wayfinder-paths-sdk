@@ -119,6 +119,54 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+### User positions (including expired markets)
+
+Use `get_full_user_state_per_chain()` to discover all Pendle positions for a wallet, including expired markets. This is essential for finding redeemable PTs.
+
+```python
+"""Discover Pendle positions for a wallet."""
+import asyncio
+from wayfinder_paths.mcp.scripting import get_adapter
+from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
+
+async def main():
+    adapter = get_adapter(PendleAdapter, "main")
+    wallet = adapter._strategy_address()
+
+    ok, state = await adapter.get_full_user_state_per_chain(
+        chain=42161,  # or "arbitrum"
+        account=wallet,
+        include_prices=True,
+    )
+    if not ok:
+        print(f"Failed: {state}")
+        return
+
+    for pos in state.get("positions", []):
+        pt_bal = pos.get("balances", {}).get("pt", {})
+        raw = pt_bal.get("raw", 0)
+        if int(raw) == 0:
+            continue
+        decimals = pt_bal.get("decimals", 18)
+        human = int(raw) / (10 ** decimals)
+        print(f"{pos['marketName']}: {human:.4f} PT")
+        print(f"  PT: {pos['pt']}")
+        print(f"  Underlying: {pos['underlying']}")
+        print(f"  Expiry: {pos.get('expiry')}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+Output fields per position:
+- `marketName`, `marketAddress`, `pt`, `yt`, `sy`, `underlying`
+- `expiry`, `balances` (with `pt`, `yt`, `lp`, `sy` sub-objects each having `address`, `raw`, `decimals`)
+
+**Key use cases:**
+- Find expired PTs to redeem (see execution-opportunities.md)
+- Check current PT/YT/LP holdings across markets
+- Discover underlying token addresses without hardcoding
+
 ## Method summary
 
 | Method | Returns | Best for |

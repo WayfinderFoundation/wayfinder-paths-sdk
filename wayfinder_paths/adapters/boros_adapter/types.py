@@ -56,6 +56,32 @@ class BorosTenorQuote:
 
 
 @dataclass
+class BorosVault:
+    """Represents a Boros AMM vault."""
+
+    amm_id: int
+    market_id: int
+    symbol: str
+    market_symbol: str | None = None
+    base_symbol: str | None = None
+    quote_symbol: str | None = None
+    apy: float | None = None
+    tvl: float | None = None
+    lp_token_address: str | None = None
+    remaining_supply_lp: int | None = None
+    remaining_supply_pct: float | None = None
+    maturity_ts: int | None = None
+    tenor_days: float | None = None
+    is_expired: bool = False
+    is_isolated_only: bool = False
+    market_state: str | None = None
+    user_deposit_tokens: float | None = None
+    user_available_tokens: float | None = None
+    user_total_lp_wei: int | None = None
+    raw: dict[str, Any] | None = field(default=None, repr=False)
+
+
+@dataclass
 class BorosLimitOrder:
     """Represents an open limit order on Boros."""
 

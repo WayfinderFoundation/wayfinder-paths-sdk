@@ -36,6 +36,7 @@ from wayfinder_paths.core.constants.chains import (
     SUPPORTED_CHAINS,
 )
 from wayfinder_paths.core.constants.contracts import (
+    BOROS_MERKLE_DISTRIBUTOR,
     ENSO_ROUTER,
     HYPE_FEE_WALLET,
     HYPE_OFT_ADDRESS,
@@ -104,6 +105,7 @@ __all__ = [
     "ARBITRUM_USDC_ADDRESS",
     "ARBITRUM_USDC_TOKEN_ID",
     "HYPE_FEE_WALLET",
+    "BOROS_MERKLE_DISTRIBUTOR",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE",
     "ENSO_ROUTER",
