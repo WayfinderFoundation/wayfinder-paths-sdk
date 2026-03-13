@@ -206,7 +206,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -237,7 +237,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -278,7 +278,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -327,7 +327,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -349,7 +349,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:           
             return False, str(exc)
 
     @require_wallet
@@ -382,7 +382,7 @@ class SparkLendAdapter(BaseAdapter):
                 for row in reserves or []:
                     try:
                         underlying = to_checksum_address(str(row[1]))
-                    except Exception:  # noqa: BLE001
+                    except Exception:                        
                         continue
                     try:
                         a_token, stable_debt, variable_debt = (
@@ -390,7 +390,7 @@ class SparkLendAdapter(BaseAdapter):
                                 block_identifier="pending"
                             )
                         )
-                    except Exception:  # noqa: BLE001
+                    except Exception:                        
                         continue
 
                     for addr in (a_token, stable_debt, variable_debt):
@@ -404,7 +404,7 @@ class SparkLendAdapter(BaseAdapter):
                         rewards_for_asset = await rewards.functions.getRewardsByAsset(
                             token
                         ).call(block_identifier="pending")
-                    except Exception:  # noqa: BLE001
+                    except Exception:                        
                         continue
                     if rewards_for_asset:
                         assets_set.add(token)
@@ -423,7 +423,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     # -----------------
@@ -572,7 +572,7 @@ class SparkLendAdapter(BaseAdapter):
                     )
 
                 return True, markets
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     async def get_pos(
@@ -645,7 +645,7 @@ class SparkLendAdapter(BaseAdapter):
                 ),
                 "reserve_config": cfg,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     async def get_full_user_state(
@@ -757,7 +757,7 @@ class SparkLendAdapter(BaseAdapter):
                 "account_data": account_data,
                 "positions": positions,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     # -----------------------
@@ -791,7 +791,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -841,7 +841,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -888,7 +888,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
 
     @require_wallet
@@ -966,5 +966,5 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:            
             return False, str(exc)
