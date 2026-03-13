@@ -9,7 +9,9 @@ from wayfinder_paths.core.config import CONFIG, get_nft_token_id
 def build_nft_auth_headers() -> dict[str, str]:
     token_id = get_nft_token_id()
     if token_id is None:
-        raise ValueError("system.nft_token_id is required when use_nft_authentication is true")
+        raise ValueError(
+            "system.nft_token_id is required when use_nft_authentication is true"
+        )
 
     wallets = CONFIG.get("wallets", [])
     if not wallets:
@@ -28,6 +30,8 @@ def build_nft_auth_headers() -> dict[str, str]:
 
     return {
         "X-NFT-Token-Id": str(token_id),
-        "X-Wallet-Signature": signed.signature.hex() if signed.signature.hex().startswith("0x") else f"0x{signed.signature.hex()}",
+        "X-Wallet-Signature": signed.signature.hex()
+        if signed.signature.hex().startswith("0x")
+        else f"0x{signed.signature.hex()}",
         "X-Signature-Timestamp": timestamp,
     }

@@ -4,10 +4,12 @@ from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
 
+from wayfinder_paths.core.auth import build_nft_auth_headers
 from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
     get_rpc_urls,
+    use_nft_authentication,
 )
 from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_HYPEREVM,
@@ -66,9 +68,12 @@ def _is_gorlami_fork_rpc(rpc: str) -> bool:
 
 def _wayfinder_auth_headers() -> dict[str, str]:
     headers = AsyncHTTPProvider.get_request_headers()
-    api_key = get_api_key()
-    if api_key:
-        headers = {**headers, "X-API-KEY": api_key}
+    if use_nft_authentication():
+        headers = {**headers, **build_nft_auth_headers()}
+    else:
+        api_key = get_api_key()
+        if api_key:
+            headers = {**headers, "X-API-KEY": api_key}
     return headers
 
 
