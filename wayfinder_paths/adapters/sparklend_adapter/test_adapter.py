@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.sparklend_adapter.adapter import (
@@ -61,7 +60,9 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_require_wallet_blocks_borrow(self, adapter_no_wallet):
-        ok, msg = await adapter_no_wallet.borrow(chain_id=1, asset=FAKE_ASSET, amount=100)
+        ok, msg = await adapter_no_wallet.borrow(
+            chain_id=1, asset=FAKE_ASSET, amount=100
+        )
         assert ok is False
         assert "wallet" in msg.lower()
 
@@ -139,9 +140,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_repay_native_rejects_zero_without_repay_full(self, adapter):
-        ok, msg = await adapter.repay_native(
-            chain_id=1, amount=0, repay_full=False
-        )
+        ok, msg = await adapter.repay_native(chain_id=1, amount=0, repay_full=False)
         assert ok is False
         assert "positive" in msg
 
@@ -201,11 +200,7 @@ class TestSparkLendAdapter:
 
         # getAllReservesTokens returns [(symbol, address), ...]
         mock_dp.functions.getAllReservesTokens = MagicMock(
-            return_value=MagicMock(
-                call=AsyncMock(
-                    return_value=[("USDC", FAKE_ASSET)]
-                )
-            )
+            return_value=MagicMock(call=AsyncMock(return_value=[("USDC", FAKE_ASSET)]))
         )
 
         # getReserveConfigurationData returns 10-element tuple
@@ -213,15 +208,15 @@ class TestSparkLendAdapter:
             return_value=MagicMock(
                 call=AsyncMock(
                     return_value=(
-                        6,      # decimals
-                        8000,   # ltv
-                        8500,   # liq_threshold
+                        6,  # decimals
+                        8000,  # ltv
+                        8500,  # liq_threshold
                         10500,  # liq_bonus
-                        1000,   # reserve_factor
-                        True,   # usage_as_collateral_enabled
-                        True,   # borrowing_enabled
+                        1000,  # reserve_factor
+                        True,  # usage_as_collateral_enabled
+                        True,  # borrowing_enabled
                         False,  # stable_borrow_rate_enabled
-                        True,   # is_active
+                        True,  # is_active
                         False,  # is_frozen
                     )
                 )
@@ -233,18 +228,18 @@ class TestSparkLendAdapter:
             return_value=MagicMock(
                 call=AsyncMock(
                     return_value=(
-                        0,                  # unbacked
-                        0,                  # accruedToTreasuryScaled
-                        100_000_000,        # totalAToken (100 USDC)
-                        0,                  # totalStableDebt
-                        50_000_000,         # totalVariableDebt (50 USDC)
-                        int(0.05 * 10**27), # liquidityRate (5% APR in ray)
-                        int(0.10 * 10**27), # variableBorrowRate (10% APR in ray)
-                        0,                  # stableBorrowRate
-                        0,                  # averageStableBorrowRate
-                        10**27,             # liquidityIndex
-                        10**27,             # variableBorrowIndex
-                        0,                  # lastUpdateTimestamp
+                        0,  # unbacked
+                        0,  # accruedToTreasuryScaled
+                        100_000_000,  # totalAToken (100 USDC)
+                        0,  # totalStableDebt
+                        50_000_000,  # totalVariableDebt (50 USDC)
+                        int(0.05 * 10**27),  # liquidityRate (5% APR in ray)
+                        int(0.10 * 10**27),  # variableBorrowRate (10% APR in ray)
+                        0,  # stableBorrowRate
+                        0,  # averageStableBorrowRate
+                        10**27,  # liquidityIndex
+                        10**27,  # variableBorrowIndex
+                        0,  # lastUpdateTimestamp
                     )
                 )
             )
@@ -300,7 +295,18 @@ class TestSparkLendAdapter:
         mock_dp.functions.getReserveConfigurationData = MagicMock(
             return_value=MagicMock(
                 call=AsyncMock(
-                    return_value=(6, 8000, 8500, 10500, 1000, True, True, False, True, False)
+                    return_value=(
+                        6,
+                        8000,
+                        8500,
+                        10500,
+                        1000,
+                        True,
+                        True,
+                        False,
+                        True,
+                        False,
+                    )
                 )
             )
         )
@@ -311,14 +317,14 @@ class TestSparkLendAdapter:
                 call=AsyncMock(
                     return_value=(
                         5_000_000,  # currentATokenBalance
-                        0,          # currentStableDebt
+                        0,  # currentStableDebt
                         1_000_000,  # currentVariableDebt
-                        0,          # principalStableDebt
-                        500_000,    # scaledVariableDebt
-                        0,          # stableBorrowRate
+                        0,  # principalStableDebt
+                        500_000,  # scaledVariableDebt
+                        0,  # stableBorrowRate
                         int(0.05 * 10**27),  # liquidityRate
-                        0,          # stableRateLastUpdated
-                        True,       # usageAsCollateralEnabledOnUser
+                        0,  # stableRateLastUpdated
+                        True,  # usageAsCollateralEnabledOnUser
                     )
                 )
             )
@@ -362,15 +368,24 @@ class TestSparkLendAdapter:
         mock_dp = MagicMock()
 
         mock_dp.functions.getAllReservesTokens = MagicMock(
-            return_value=MagicMock(
-                call=AsyncMock(return_value=[("USDC", FAKE_ASSET)])
-            )
+            return_value=MagicMock(call=AsyncMock(return_value=[("USDC", FAKE_ASSET)]))
         )
 
         mock_dp.functions.getReserveConfigurationData = MagicMock(
             return_value=MagicMock(
                 call=AsyncMock(
-                    return_value=(6, 8000, 8500, 10500, 1000, True, True, False, True, False)
+                    return_value=(
+                        6,
+                        8000,
+                        8500,
+                        10500,
+                        1000,
+                        True,
+                        True,
+                        False,
+                        True,
+                        False,
+                    )
                 )
             )
         )
@@ -400,11 +415,11 @@ class TestSparkLendAdapter:
                 call=AsyncMock(
                     return_value=(
                         2_000_000_00,  # totalCollateralBase
-                        500_000_00,    # totalDebtBase
+                        500_000_00,  # totalDebtBase
                         1_500_000_00,  # availableBorrowsBase
-                        8500,          # currentLiquidationThreshold
-                        8000,          # ltv
-                        2 * 10**18,    # healthFactor (2.0)
+                        8500,  # currentLiquidationThreshold
+                        8000,  # ltv
+                        2 * 10**18,  # healthFactor (2.0)
                     )
                 )
             )
@@ -431,9 +446,7 @@ class TestSparkLendAdapter:
             "wayfinder_paths.adapters.sparklend_adapter.adapter.web3_utils.web3_from_chain_id",
             mock_web3_ctx,
         ):
-            ok, state = await adapter.get_full_user_state(
-                chain_id=1, account=FAKE_ADDR
-            )
+            ok, state = await adapter.get_full_user_state(chain_id=1, account=FAKE_ADDR)
 
         assert ok is True
         assert state["protocol"] == "sparklend"

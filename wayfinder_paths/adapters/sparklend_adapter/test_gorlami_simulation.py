@@ -103,7 +103,9 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, state = await adapter.get_full_user_state(chain_id=chain_id, account=acct.address)
+    ok, state = await adapter.get_full_user_state(
+        chain_id=chain_id, account=acct.address
+    )
     assert ok is True, state
     assert any(
         str(p.get("underlying") or "").lower() == wrapped.lower()

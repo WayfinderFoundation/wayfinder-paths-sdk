@@ -24,7 +24,6 @@ STABLE_RATE_MODE = 1
 REFERRAL_CODE = 0
 
 
-
 class SparkLendAdapter(BaseAdapter):
     adapter_type = "SPARKLEND"
 
@@ -48,9 +47,9 @@ class SparkLendAdapter(BaseAdapter):
             tuple[int, str], tuple[str, str, str]
         ] = {}
         # Cache: (chain_id, underlying.lower()) -> reserve config dict
-        self._reserve_config_by_chain_underlying: dict[tuple[int, str], dict[str, Any]] = (
-            {}
-        )
+        self._reserve_config_by_chain_underlying: dict[
+            tuple[int, str], dict[str, Any]
+        ] = {}
 
     def _entry(self, chain_id: int) -> dict[str, str]:
         entry = SPARKLEND_BY_CHAIN.get(chain_id)
@@ -66,7 +65,9 @@ class SparkLendAdapter(BaseAdapter):
         entry = self._entry(chain_id)
         gateway = entry.get("wrapped_native_gateway")
         if not gateway:
-            raise ValueError(f"wrapped_native_gateway not configured for chain_id={chain_id}")
+            raise ValueError(
+                f"wrapped_native_gateway not configured for chain_id={chain_id}"
+            )
 
         async with web3_utils.web3_from_chain_id(chain_id) as web3:
             gw = web3.eth.contract(address=gateway, abi=WETH_GATEWAY_ABI)
@@ -89,16 +90,20 @@ class SparkLendAdapter(BaseAdapter):
         entry = self._entry(chain_id)
         data_provider_addr = entry.get("protocol_data_provider")
         if not data_provider_addr:
-            raise ValueError(f"protocol_data_provider not configured for chain_id={chain_id}")
+            raise ValueError(
+                f"protocol_data_provider not configured for chain_id={chain_id}"
+            )
 
         async with web3_utils.web3_from_chain_id(chain_id) as web3:
             dp = web3.eth.contract(
                 address=to_checksum_address(data_provider_addr),
                 abi=PROTOCOL_DATA_PROVIDER_ABI,
             )
-            a_token, stable_debt, variable_debt = await dp.functions.getReserveTokensAddresses(
-                underlying
-            ).call(
+            (
+                a_token,
+                stable_debt,
+                variable_debt,
+            ) = await dp.functions.getReserveTokensAddresses(underlying).call(
                 block_identifier="pending"
             )
 
@@ -121,7 +126,9 @@ class SparkLendAdapter(BaseAdapter):
         entry = self._entry(chain_id)
         data_provider_addr = entry.get("protocol_data_provider")
         if not data_provider_addr:
-            raise ValueError(f"protocol_data_provider not configured for chain_id={chain_id}")
+            raise ValueError(
+                f"protocol_data_provider not configured for chain_id={chain_id}"
+            )
 
         async def _read(w3: Any) -> dict[str, Any]:
             dp = w3.eth.contract(
@@ -200,7 +207,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -231,7 +238,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -272,7 +279,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -321,7 +328,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -343,7 +350,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:           
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -353,7 +360,9 @@ class SparkLendAdapter(BaseAdapter):
             rewards_controller = entry.get("rewards_controller")
             data_provider_addr = entry.get("protocol_data_provider")
             if not rewards_controller:
-                raise ValueError(f"rewards_controller not configured for chain_id={chain_id}")
+                raise ValueError(
+                    f"rewards_controller not configured for chain_id={chain_id}"
+                )
             if not data_provider_addr:
                 raise ValueError(
                     f"protocol_data_provider not configured for chain_id={chain_id}"
@@ -379,12 +388,14 @@ class SparkLendAdapter(BaseAdapter):
                     except Exception:
                         continue
                     try:
-                        a_token, stable_debt, variable_debt = (
-                            await dp.functions.getReserveTokensAddresses(underlying).call(
-                                block_identifier="pending"
-                            )
-                        )
-                    except Exception:                        
+                        (
+                            a_token,
+                            stable_debt,
+                            variable_debt,
+                        ) = await dp.functions.getReserveTokensAddresses(
+                            underlying
+                        ).call(block_identifier="pending")
+                    except Exception:
                         continue
 
                     for addr in (a_token, stable_debt, variable_debt):
@@ -397,7 +408,7 @@ class SparkLendAdapter(BaseAdapter):
                         rewards_for_asset = await rewards.functions.getRewardsByAsset(
                             token
                         ).call(block_identifier="pending")
-                    except Exception:                        
+                    except Exception:
                         continue
                     if rewards_for_asset:
                         assets_set.add(token)
@@ -416,7 +427,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     # -----------------
@@ -485,10 +496,12 @@ class SparkLendAdapter(BaseAdapter):
                     variable_borrow_rate = reserve_data[6]
                     stable_borrow_rate = reserve_data[7]
 
-                    a_token, stable_debt_token, variable_debt_token = (
-                        await dp.functions.getReserveTokensAddresses(underlying).call(
-                            block_identifier="pending"
-                        )
+                    (
+                        a_token,
+                        stable_debt_token,
+                        variable_debt_token,
+                    ) = await dp.functions.getReserveTokensAddresses(underlying).call(
+                        block_identifier="pending"
                     )
                     a_token = to_checksum_address(a_token)
                     stable_debt_token = to_checksum_address(stable_debt_token)
@@ -497,7 +510,7 @@ class SparkLendAdapter(BaseAdapter):
                         (chain_id, underlying.lower())
                     ] = (a_token, stable_debt_token, variable_debt_token)
 
-                    unit = 10 ** decimals
+                    unit = 10**decimals
 
                     supply_apr = ray_to_apr(liquidity_rate)
                     variable_borrow_apr = ray_to_apr(variable_borrow_rate)
@@ -554,7 +567,7 @@ class SparkLendAdapter(BaseAdapter):
                     )
 
                 return True, markets
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     async def get_pos(
@@ -594,10 +607,12 @@ class SparkLendAdapter(BaseAdapter):
                     block_identifier="pending"
                 )
 
-                a_token, stable_debt_token, variable_debt_token = (
-                    await dp.functions.getReserveTokensAddresses(underlying).call(
-                        block_identifier="pending"
-                    )
+                (
+                    a_token,
+                    stable_debt_token,
+                    variable_debt_token,
+                ) = await dp.functions.getReserveTokensAddresses(underlying).call(
+                    block_identifier="pending"
                 )
 
                 cfg = await self._reserve_config(
@@ -625,7 +640,7 @@ class SparkLendAdapter(BaseAdapter):
                 "usage_as_collateral_enabled_on_user": usage_as_collateral_enabled_on_user,
                 "reserve_config": cfg,
             }
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(
@@ -648,7 +663,9 @@ class SparkLendAdapter(BaseAdapter):
 
             acct = to_checksum_address(account)
             async with web3_utils.web3_from_chain_id(chain_id) as web3:
-                pool = web3.eth.contract(address=to_checksum_address(pool_addr), abi=POOL_ABI)
+                pool = web3.eth.contract(
+                    address=to_checksum_address(pool_addr), abi=POOL_ABI
+                )
                 dp = web3.eth.contract(
                     address=to_checksum_address(data_provider_addr),
                     abi=PROTOCOL_DATA_PROVIDER_ABI,
@@ -683,10 +700,12 @@ class SparkLendAdapter(BaseAdapter):
                     ):
                         continue
 
-                    a_token, stable_debt_token, variable_debt_token = (
-                        await dp.functions.getReserveTokensAddresses(underlying).call(
-                            block_identifier="pending"
-                        )
+                    (
+                        a_token,
+                        stable_debt_token,
+                        variable_debt_token,
+                    ) = await dp.functions.getReserveTokensAddresses(underlying).call(
+                        block_identifier="pending"
                     )
                     cfg = await self._reserve_config(
                         chain_id=chain_id, underlying=underlying, web3=web3
@@ -699,7 +718,9 @@ class SparkLendAdapter(BaseAdapter):
                             "decimals": cfg.get("decimals", 18),
                             "supply_token": to_checksum_address(a_token),
                             "stable_debt_token": to_checksum_address(stable_debt_token),
-                            "variable_debt_token": to_checksum_address(variable_debt_token),
+                            "variable_debt_token": to_checksum_address(
+                                variable_debt_token
+                            ),
                             "supply_raw": supply,
                             "stable_borrow_raw": stable_debt,
                             "variable_borrow_raw": variable_debt,
@@ -725,7 +746,7 @@ class SparkLendAdapter(BaseAdapter):
                 "account_data": account_data,
                 "positions": positions,
             }
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     # -----------------------
@@ -759,7 +780,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -809,7 +830,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -856,7 +877,7 @@ class SparkLendAdapter(BaseAdapter):
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -892,7 +913,9 @@ class SparkLendAdapter(BaseAdapter):
                 _, stable_debt, variable_debt = await self._reserve_tokens(
                     chain_id=chain_id, underlying=wrapped
                 )
-                debt_token = variable_debt if rate_mode == VARIABLE_RATE_MODE else stable_debt
+                debt_token = (
+                    variable_debt if rate_mode == VARIABLE_RATE_MODE else stable_debt
+                )
                 if debt_token.lower() == ZERO_ADDRESS:
                     return False, "debt token address not found for wrapped native"
 
@@ -927,12 +950,17 @@ class SparkLendAdapter(BaseAdapter):
                 target=gateway,
                 abi=WETH_GATEWAY_ABI,
                 fn_name="repayETH",
-                args=[to_checksum_address(pool), repay_amount, rate_mode, self.wallet_address],
+                args=[
+                    to_checksum_address(pool),
+                    repay_amount,
+                    rate_mode,
+                    self.wallet_address,
+                ],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
                 value=value,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
-        except Exception as exc:            
+        except Exception as exc:
             return False, str(exc)

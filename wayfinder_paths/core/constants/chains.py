@@ -21,9 +21,7 @@ CHAIN_CODE_TO_ID = {
 }
 
 CHAIN_ID_TO_CODE: dict[int, str] = {
-    v: k
-    for k, v in CHAIN_CODE_TO_ID.items()
-    if k not in ("arbitrum-one", "mainnet")
+    v: k for k, v in CHAIN_CODE_TO_ID.items() if k not in ("arbitrum-one", "mainnet")
 }
 
 SUPPORTED_CHAINS = [

@@ -46,9 +46,7 @@ SPARKLEND_BY_CHAIN: dict[int, dict[str, str]] = {
         "emission_manager": to_checksum_address(
             "0xf09e48dd4CA8e76F63a57ADd428bB06fee7932a4"
         ),
-        "treasury": to_checksum_address(
-            "0xb137E7d16564c81ae2b0C8ee6B55De81dd46ECe5"
-        ),
+        "treasury": to_checksum_address("0xb137E7d16564c81ae2b0C8ee6B55De81dd46ECe5"),
         "treasury_controller": to_checksum_address(
             "0x92eF091C5a1E01b3CE1ba0D0150C84412d818F7a"
         ),
