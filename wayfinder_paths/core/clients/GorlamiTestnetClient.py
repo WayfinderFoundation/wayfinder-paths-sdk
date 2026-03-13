@@ -6,6 +6,7 @@ import httpx
 from loguru import logger
 
 from wayfinder_paths.core.auth import build_nft_auth_headers
+from wayfinder_paths.core.config import get_gorlami_api_key, get_gorlami_base_url, use_nft_authentication
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 from wayfinder_paths.core.utils.retry import exponential_backoff_s, retry_async
 
