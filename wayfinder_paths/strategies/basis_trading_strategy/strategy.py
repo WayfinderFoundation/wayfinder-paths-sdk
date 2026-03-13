@@ -112,6 +112,10 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
     # Rotation cooldown
     ROTATION_MIN_INTERVAL_DAYS = 14
 
+    # APY upgrade: always require at least this much edge even for small rotations.
+    MIN_APY_UPGRADE_THRESHOLD = 0.02
+    APY_UPGRADE_PAYBACK_DAYS = 21.0
+
     HYPE_PRO_FEE: int = 30
     DEFAULT_BUILDER_FEE: dict[str, Any] = {"b": HYPE_FEE_WALLET, "f": HYPE_PRO_FEE}
 
@@ -343,6 +347,23 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 if spot_asset_id:
                     break
 
+        # Reconstruct entry timestamp from fill history (survives restarts)
+        entry_ts = int(time.time() * 1000)
+        try:
+            address = self._get_strategy_wallet_address()
+            ok_fills, fills = await self.hyperliquid_adapter.get_user_fills(address)
+            if ok_fills and fills:
+                # Use the latest fill for this coin (most recent position entry)
+                coin_fills = [
+                    f
+                    for f in fills
+                    if f.get("coin") == coin or f.get("coin") == f"@{perp_asset_id}"
+                ]
+                if coin_fills:
+                    entry_ts = max(int(f.get("time", entry_ts)) for f in coin_fills)
+        except Exception:  # noqa: BLE001
+            pass
+
         # Reconstruct position state
         self.current_position = BasisPosition(
             coin=coin,
@@ -352,7 +373,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             perp_amount=perp_size,
             entry_price=entry_px,
             leverage=2,
-            entry_timestamp=int(time.time() * 1000),
+            entry_timestamp=entry_ts,
             funding_collected=abs(
                 float(perp_position.get("cumFunding", {}).get("sinceOpen", 0))
             ),
@@ -1041,7 +1062,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             wallet_address=self._get_strategy_wallet_address(),
         )
 
-        gas_balance = gas_balance_wei / 1e18
+        gas_balance = float(gas_balance_wei or 0.0) / self.GAS_DECIMALS
 
         return StatusDict(
             portfolio_value=total_value,
@@ -1616,17 +1637,18 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         if spot_filled <= 0 or perp_filled <= 0:
             return False, f"Failed to add to position on {pos.coin}"
 
-        self.current_position = BasisPosition(
-            coin=pos.coin,
-            spot_asset_id=pos.spot_asset_id,
-            perp_asset_id=pos.perp_asset_id,
-            spot_amount=pos.spot_amount + spot_filled,
-            perp_amount=pos.perp_amount + perp_filled,
-            entry_price=price,
-            leverage=leverage,
-            entry_timestamp=pos.entry_timestamp,
-            funding_collected=pos.funding_collected,
+        success, refreshed_state = await self.hyperliquid_adapter.get_user_state(
+            address
         )
+        if not success:
+            return (
+                False,
+                f"Failed to refresh user state after scale-up: {refreshed_state}",
+            )
+
+        leg_ok, leg_msg = await self._verify_leg_balance(refreshed_state)
+        if not leg_ok:
+            return False, f"Scale-up left legs imbalanced: {leg_msg}"
 
         self.logger.info(
             f"Scaled up position: +{spot_filled:.4f} spot, +{perp_filled:.4f} perp. "
@@ -1671,9 +1693,42 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 rotation_reason="near_liquidation"
             )
 
+        leg_ok, leg_msg = await self._verify_leg_balance(state)
+        if not leg_ok:
+            self.logger.warning(f"Leg imbalance detected: {leg_msg}")
+            repair_ok, repair_msg = await self._repair_leg_imbalance(state)
+            if repair_ok:
+                actions_taken.append(f"Repaired leg imbalance: {repair_msg}")
+                (
+                    success,
+                    refreshed_state,
+                ) = await self.hyperliquid_adapter.get_user_state(address)
+                if success:
+                    state = refreshed_state
+                else:
+                    self.logger.warning(
+                        f"Could not refresh state after leg repair: {refreshed_state}"
+                    )
+            else:
+                actions_taken.append(f"Leg imbalance repair failed: {repair_msg}")
+
         needs_rebalance, reason = await self._needs_new_position(state, hl_value)
 
         if needs_rebalance:
+            structural_reasons = (
+                "Missing perp or spot position",
+                "Perp position is not short",
+                "Position imbalance",
+                "Perp asset mismatch",
+                "Spot asset mismatch",
+            )
+            if any(str(reason).startswith(prefix) for prefix in structural_reasons):
+                self.logger.warning(f"Forcing rebalance despite cooldown: {reason}")
+                close_success, close_msg = await self._close_position()
+                if not close_success:
+                    return (False, f"Rebalance failed - could not close: {close_msg}")
+                return await self._find_and_open_position(rotation_reason=str(reason))
+
             rotation_allowed, cooldown_reason = await self._is_rotation_allowed()
 
             if not rotation_allowed:
@@ -1690,14 +1745,34 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
             return await self._find_and_open_position(rotation_reason=str(reason))
 
-        leg_ok, leg_msg = await self._verify_leg_balance(state)
-        if not leg_ok:
-            self.logger.warning(f"Leg imbalance detected: {leg_msg}")
-            repair_ok, repair_msg = await self._repair_leg_imbalance(state)
-            if repair_ok:
-                actions_taken.append(f"Repaired leg imbalance: {repair_msg}")
-            else:
-                actions_taken.append(f"Leg imbalance repair failed: {repair_msg}")
+        # ------------------------------------------------------------------ #
+        # APY upgrade: rotate only when the edge clears the estimated switch  #
+        # costs at the user's current bankroll.                               #
+        # ------------------------------------------------------------------ #
+        try:
+            apy_upgrade, apy_msg = await self._check_apy_upgrade(
+                coin, capital_usdc=total_value
+            )
+            if apy_upgrade:
+                rotation_allowed, cooldown_reason = await self._is_rotation_allowed()
+                if rotation_allowed:
+                    self.logger.info(f"APY upgrade rotation: {apy_msg}")
+                    close_success, close_msg = await self._close_position()
+                    if not close_success:
+                        return (
+                            False,
+                            f"APY upgrade rotation failed - could not close: {close_msg}",
+                        )
+                    return await self._find_and_open_position(rotation_reason=apy_msg)
+                else:
+                    self.logger.info(
+                        f"APY upgrade available ({apy_msg}) but {cooldown_reason}"
+                    )
+                    actions_taken.append(
+                        f"APY upgrade available but in cooldown: {cooldown_reason}"
+                    )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.warning(f"APY upgrade check failed: {exc}")
 
         unused_usd, bankroll_now = await self._unused_usd_now(state)
         min_deploy = max(self.MIN_UNUSED_USD, self.UNUSED_REL_EPS * bankroll_now)
@@ -2102,6 +2177,66 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         return False, "Position healthy"
 
+    async def _check_apy_upgrade(
+        self, current_coin: str, capital_usdc: float | None = None
+    ) -> tuple[bool, str]:
+        """Return (True, reason) if the best opportunity beats current by enough to justify switching."""
+        scoring_capital = float(capital_usdc or 0.0)
+        if scoring_capital <= 0:
+            scoring_capital = float(self.deposit_amount or 0.0)
+        if scoring_capital <= 0:
+            scoring_capital = 1000.0
+
+        result = await self.analyze(deposit_usdc=scoring_capital, verbose=False)
+        if not result.get("success") or not result.get("opportunities"):
+            return False, "No opportunities available"
+
+        opportunities = result["opportunities"]
+        best = opportunities[0]
+        best_selection = best.get("selection")
+        if not isinstance(best_selection, dict):
+            best_selection = best
+        best_coin = best.get("coin", "")
+        best_apy = float(best_selection.get("net_apy", 0.0) or 0.0)
+
+        if self._coins_match(best_coin, current_coin):
+            return False, "Current coin is already the best"
+
+        current_selection: dict[str, Any] | None = None
+        current_apy = 0.0
+        for opp in opportunities:
+            if self._coins_match(opp.get("coin", ""), current_coin):
+                selection = opp.get("selection")
+                current_selection = selection if isinstance(selection, dict) else opp
+                current_apy = float(current_selection.get("net_apy", 0.0) or 0.0)
+                break
+
+        gap = best_apy - current_apy
+        switch_cost_usd = max(
+            0.0,
+            float((current_selection or {}).get("exit_cost_usd", 0.0) or 0.0),
+        ) + max(0.0, float(best_selection.get("entry_cost_usd", 0.0) or 0.0))
+        hold_days = self.APY_UPGRADE_PAYBACK_DAYS
+        threshold = self.MIN_APY_UPGRADE_THRESHOLD
+        if switch_cost_usd > 0 and scoring_capital > 0 and hold_days > 0:
+            threshold = max(
+                threshold,
+                (switch_cost_usd / scoring_capital) / (hold_days / 365.0),
+            )
+        if gap >= threshold:
+            return (
+                True,
+                f"APY upgrade: {best_coin} ({best_apy:.2%}) beats {current_coin} "
+                f"({current_apy:.2%}) by {gap:.2%} with {threshold:.2%} hurdle "
+                f"from ${switch_cost_usd:.2f} switch cost over {hold_days:.1f}d",
+            )
+
+        return (
+            False,
+            f"Gap {gap:.2%} below hurdle {threshold:.2%} from "
+            f"${switch_cost_usd:.2f} switch cost over {hold_days:.1f}d",
+        )
+
     def _get_perp_position(self, state: dict[str, Any]) -> dict[str, Any] | None:
         if self.current_position is None:
             return None
@@ -2382,11 +2517,17 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             return True, "No existing position"
 
         last_rotation = await self._get_last_rotation_time()
+
+        # Fallback: use the current position's entry timestamp if ledger has no record
+        if last_rotation is None and self.current_position.entry_timestamp:
+            last_rotation = datetime.fromtimestamp(
+                self.current_position.entry_timestamp / 1000, tz=UTC
+            )
+
         if last_rotation is None:
             return True, "No prior rotation found"
 
         now = datetime.now(UTC)
-        # Ensure last_rotation is timezone-aware
         if last_rotation.tzinfo is None:
             last_rotation = last_rotation.replace(tzinfo=UTC)
 
@@ -2412,6 +2553,13 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             return ""
 
         last_rotation = await self._get_last_rotation_time()
+
+        # Fallback: use the current position's entry timestamp if ledger has no record
+        if last_rotation is None and self.current_position.entry_timestamp:
+            last_rotation = datetime.fromtimestamp(
+                self.current_position.entry_timestamp / 1000, tz=UTC
+            )
+
         if last_rotation is None:
             return "unlocked (cooldown inactive; no rotation recorded)"
 
