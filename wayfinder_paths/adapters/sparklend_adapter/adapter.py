@@ -5,6 +5,7 @@ from typing import Any
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.sparklend_abi import (
     POOL_ABI,
@@ -28,12 +29,6 @@ def _as_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return int(default)
-
-
-def _is_zero_address(addr: str | None) -> bool:
-    if not addr:
-        return True
-    return addr.strip().lower() == "0x0000000000000000000000000000000000000000"
 
 
 class SparkLendAdapter(BaseAdapter):
@@ -427,7 +422,7 @@ class SparkLendAdapter(BaseAdapter):
 
                     for addr in (a_token, stable_debt, variable_debt):
                         addr_s = str(addr)
-                        if not _is_zero_address(addr_s):
+                        if addr_s and addr_s.strip().lower() != ZERO_ADDRESS:
                             token_candidates.add(to_checksum_address(addr_s))
 
                 assets_set: set[str] = set()
@@ -610,11 +605,12 @@ class SparkLendAdapter(BaseAdapter):
     async def get_pos(
         self, *, chain_id: int, asset: str, account: str | None = None
     ) -> tuple[bool, dict[str, Any] | str]:
-        acct = to_checksum_address(account) if account else self.wallet_address
+        acct = account or self.wallet_address
         if not acct:
             return False, "strategy wallet address not configured"
 
         try:
+            acct = to_checksum_address(acct)
             entry = self._entry(int(chain_id))
             data_provider_addr = entry.get("protocol_data_provider")
             if not data_provider_addr:
@@ -973,7 +969,7 @@ class SparkLendAdapter(BaseAdapter):
                     chain_id=int(chain_id), underlying=wrapped
                 )
                 debt_token = variable_debt if rate_mode == VARIABLE_RATE_MODE else stable_debt
-                if _is_zero_address(debt_token):
+                if str(debt_token).strip().lower() == ZERO_ADDRESS:
                     return False, "debt token address not found for wrapped native"
 
                 debt = await get_token_balance(
