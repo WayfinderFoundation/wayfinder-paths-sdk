@@ -484,22 +484,12 @@ class SparkLendAdapter(BaseAdapter):
                     # (unbacked, accruedToTreasuryScaled, totalAToken, totalStableDebt, totalVariableDebt,
                     #  liquidityRate, variableBorrowRate, stableBorrowRate, averageStableBorrowRate,
                     #  liquidityIndex, variableBorrowIndex, lastUpdateTimestamp)
-                    total_a_token = _as_int(reserve_data[2] if len(reserve_data) > 2 else 0)
-                    total_stable_debt = _as_int(
-                        reserve_data[3] if len(reserve_data) > 3 else 0
-                    )
-                    total_variable_debt = _as_int(
-                        reserve_data[4] if len(reserve_data) > 4 else 0
-                    )
-                    liquidity_rate = _as_int(
-                        reserve_data[5] if len(reserve_data) > 5 else 0
-                    )
-                    variable_borrow_rate = _as_int(
-                        reserve_data[6] if len(reserve_data) > 6 else 0
-                    )
-                    stable_borrow_rate = _as_int(
-                        reserve_data[7] if len(reserve_data) > 7 else 0
-                    )
+                    total_a_token = _as_int(reserve_data[2])
+                    total_stable_debt = _as_int(reserve_data[3])
+                    total_variable_debt = _as_int(reserve_data[4])
+                    liquidity_rate = _as_int(reserve_data[5])
+                    variable_borrow_rate = _as_int(reserve_data[6])
+                    stable_borrow_rate = _as_int(reserve_data[7])
 
                     a_token, stable_debt_token, variable_debt_token = (
                         await dp.functions.getReserveTokensAddresses(underlying).call(
@@ -688,10 +678,10 @@ class SparkLendAdapter(BaseAdapter):
                     user_data = await dp.functions.getUserReserveData(
                         underlying, acct
                     ).call(block_identifier="pending")
-                    supply = _as_int(user_data[0] if len(user_data) > 0 else 0)
-                    stable_debt = _as_int(user_data[1] if len(user_data) > 1 else 0)
-                    variable_debt = _as_int(user_data[2] if len(user_data) > 2 else 0)
-                    collateral_enabled = bool(user_data[8] if len(user_data) > 8 else False)
+                    supply = _as_int(user_data[0])
+                    stable_debt = _as_int(user_data[1])
+                    variable_debt = _as_int(user_data[2])
+                    collateral_enabled = bool(user_data[8])
 
                     if (
                         not include_zero_positions
@@ -730,22 +720,12 @@ class SparkLendAdapter(BaseAdapter):
                     )
 
             account_data = {
-                "total_collateral_base": _as_int(
-                    account_data_tuple[0] if len(account_data_tuple) > 0 else 0
-                ),
-                "total_debt_base": _as_int(
-                    account_data_tuple[1] if len(account_data_tuple) > 1 else 0
-                ),
-                "available_borrows_base": _as_int(
-                    account_data_tuple[2] if len(account_data_tuple) > 2 else 0
-                ),
-                "current_liquidation_threshold": _as_int(
-                    account_data_tuple[3] if len(account_data_tuple) > 3 else 0
-                ),
-                "ltv": _as_int(account_data_tuple[4] if len(account_data_tuple) > 4 else 0),
-                "health_factor": _as_int(
-                    account_data_tuple[5] if len(account_data_tuple) > 5 else 0
-                ),
+                "total_collateral_base": _as_int(account_data_tuple[0]),
+                "total_debt_base": _as_int(account_data_tuple[1]),
+                "available_borrows_base": _as_int(account_data_tuple[2]),
+                "current_liquidation_threshold": _as_int(account_data_tuple[3]),
+                "ltv": _as_int(account_data_tuple[4]),
+                "health_factor": _as_int(account_data_tuple[5]),
             }
 
             return True, {
