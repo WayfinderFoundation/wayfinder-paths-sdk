@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any
+
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
@@ -132,5 +133,3 @@ def get_etherscan_api_key() -> str | None:
     if api_key:
         return str(api_key).strip()
     return os.environ.get("ETHERSCAN_API_KEY")
-
-

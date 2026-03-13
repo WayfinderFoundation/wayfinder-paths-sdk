@@ -101,8 +101,7 @@ class GorlamiTestnetClient(WayfinderClient):
             "rpc_url": f"{self.base_url}/fork/{fork_id}",
             "chain_id": chain_id,
         }
-        logger.info(
-            f"Created fork {fork_info['fork_id']} for chain {chain_id}")
+        logger.info(f"Created fork {fork_info['fork_id']} for chain {chain_id}")
         return fork_info
 
     async def delete_fork(self, fork_id: str) -> bool:

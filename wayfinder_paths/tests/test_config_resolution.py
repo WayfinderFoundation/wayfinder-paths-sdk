@@ -126,4 +126,6 @@ def test_gorlami_base_url_derived_from_api_base(
     )
 
     client = GorlamiTestnetClient()
-    assert client.base_url == "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
+    assert (
+        client.base_url == "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
+    )
