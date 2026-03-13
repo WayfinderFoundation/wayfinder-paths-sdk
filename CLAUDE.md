@@ -107,76 +107,20 @@ Use the backtesting framework to **validate strategy ideas before production dep
 
 **Load `/backtest-strategy` skill** before using the framework for full documentation.
 
-### Quick Start
-
 ```python
 from wayfinder_paths.core.backtesting import quick_backtest
 
-def my_strategy(prices, ctx):
-    """Define your signal logic."""
-    returns = prices.pct_change(24)  # 24-period momentum
-    ranks = returns.rank(axis=1, pct=True)
-    target = (ranks > 0.5).astype(float) - (ranks < 0.5).astype(float)
-    return target / target.abs().sum(axis=1).fillna(1)
-
-# Run backtest with automatic data fetching
 result = await quick_backtest(
-    strategy_fn=my_strategy,
+    strategy_fn=my_strategy,  # fn(prices, ctx) -> target_positions DataFrame
     symbols=["BTC", "ETH"],
     start_date="2025-01-01",
     end_date="2025-02-01",
     leverage=2.0
 )
-
-print(result.stats)  # Sharpe, max_drawdown, CAGR, etc.
+print(result.stats)  # sharpe, sortino, cagr, max_drawdown, profit_factor
 ```
 
-### Manual Workflow (Full Control)
-
-```python
-from wayfinder_paths.core.backtesting import (
-    fetch_prices,
-    fetch_funding_rates,
-    run_backtest,
-    BacktestConfig,
-)
-
-# Fetch data
-prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01", interval="1h")
-funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
-
-# Generate signals
-target_positions = my_strategy(prices, {"symbols": ["BTC", "ETH"]})
-
-# Configure and run
-config = BacktestConfig(
-    leverage=2.0,
-    fee_rate=0.0004,
-    funding_rates=funding,
-    enable_liquidation=True
-)
-result = run_backtest(prices, target_positions, config)
-```
-
-### Key Metrics
-
-- **`sharpe`** - Risk-adjusted returns (>1.0 good, >2.0 excellent)
-- **`sortino`** - Like Sharpe but only penalizes downside volatility
-- **`cagr`** - Annualized return (%)
-- **`max_drawdown`** - Largest peak-to-trough decline (%)
-- **`profit_factor`** - Gross profit / gross loss (>1.5 good)
-
-### From Backtest to Production
-
-Once validated:
-
-1. Create strategy class: `just create-strategy "Strategy Name"`
-2. Implement Strategy interface (deposit, update, withdraw, exit)
-3. Add adapters and manifest
-4. Write smoke tests
-5. Deploy with small capital first
-
-See `/backtest-strategy` skill for full guide, common patterns, and gotchas.
+See `/backtest-strategy` skill for manual workflow, key metrics, and production deployment guide.
 
 ## Contract development
 
@@ -376,10 +320,9 @@ Polymarket quick flows:
 
 Polymarket funding (USDC.e collateral):
 
-- **Have native Polygon USDC (0x3c499c...) on Polygon:** Use `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` to convert it → USDC.e (0x2791...).
-- **Already have USDC.e (0x2791...) on Polygon:** You can trade immediately; skip `bridge_deposit`.
-- **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
-- **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
+- **Polygon USDC → USDC.e:** `polymarket_execute(action="bridge_deposit", amount=10)` converts native USDC (0x3c499c...) → USDC.e (0x2791...).
+- **Already have USDC.e:** Trade immediately, skip `bridge_deposit`.
+- **Funds on other chains:** BRAP swap to USDC.e: `execute(kind="swap", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")`. Or use `bridge_deposit` with `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()`).
 
 Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X`is **notional** or **margin** (use`usd_amount_kind="notional"|"margin"`on`mcp**wayfinder**hyperliquid_execute`).
 
@@ -557,23 +500,11 @@ quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", a
 
 **7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
-**8. Adapter read methods return `(ok, data)` tuples — always destructure**
+**8. Write the script file before calling `run_script`**
 
-```python
-ok, data = await adapter.get_meta_and_asset_ctxs()
-if not ok:
-    raise RuntimeError(data)
-```
+`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`.
 
-**9. Load the protocol skill before writing adapter scripts**
-
-Before writing _any_ script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
-
-**10. Write the script file before calling `run_script`**
-
-`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
-
-**11. Funding rate sign (CRITICAL for perp trading)**
+**9. Funding rate sign (CRITICAL for perp trading)**
 
 **CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
 
@@ -608,28 +539,10 @@ When a user wants a **repeatable/automated system** (recurring jobs):
 Runner CLI (project-local state in `./.wayfinder/runner/`):
 
 ```bash
-# Start the daemon (recommended: detached/background)
-poetry run wayfinder runner start --detach
-
-# Idempotent: start if needed, otherwise no-op
-poetry run wayfinder runner ensure
-
-# Add an interval job (every 10 minutes)
-poetry run wayfinder runner add-job \
-  --name basis-update \
-  --type strategy \
-  --strategy basis_trading_strategy \
-  --action update \
-  --interval 600 \
-  --config ./config.json
-
-# Inspect / control
-poetry run wayfinder runner status
-poetry run wayfinder runner run-once basis-update
-poetry run wayfinder runner pause basis-update
-poetry run wayfinder runner resume basis-update
-poetry run wayfinder runner delete basis-update
-poetry run wayfinder runner stop
+poetry run wayfinder runner start --detach   # Start daemon
+poetry run wayfinder runner ensure            # Idempotent start
+poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
+poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
 ```
 
 See `RUNNER_ARCHITECTURE.md`.
@@ -731,14 +644,7 @@ just create-strategy "My Strategy Name"
 # or: poetry run python scripts/create_strategy.py "My Strategy Name"
 ```
 
-Creates under `wayfinder_paths/strategies/<name>/`:
-
-- `strategy.py` - Strategy class with required method stubs
-- `manifest.yaml` - Strategy manifest (entrypoint, adapters, permissions)
-- `test_strategy.py` - Smoke test template
-- `examples.json` - Test data file
-- `README.md` - Documentation template
-- **Dedicated wallet** added to `config.json` with the strategy name as label
+Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
 
 **New adapter:**
 
@@ -747,15 +653,7 @@ just create-adapter "my_protocol"
 # or: poetry run python scripts/create_adapter.py "my_protocol"
 ```
 
-Creates under `wayfinder_paths/adapters/<name>_adapter/`:
-
-- `adapter.py` - Adapter class extending `BaseAdapter`
-- `manifest.yaml` - Adapter manifest (entrypoint, capabilities, dependencies)
-- `test_adapter.py` - Basic test template
-- `examples.json` - Test data file
-- `README.md` - Documentation template
-
-Use `--override` flag to replace an existing strategy/adapter.
+Creates `wayfinder_paths/adapters/<name>_adapter/` with adapter.py, manifest.yaml, test, examples.json, README. Use `--override` to replace existing.
 
 ### Manifests
 
