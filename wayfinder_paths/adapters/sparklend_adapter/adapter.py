@@ -24,12 +24,6 @@ STABLE_RATE_MODE = 1
 REFERRAL_CODE = 0
 
 
-def _as_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
 
 class SparkLendAdapter(BaseAdapter):
     adapter_type = "SPARKLEND"
@@ -150,11 +144,11 @@ class SparkLendAdapter(BaseAdapter):
             )
 
             cfg = {
-                "decimals": _as_int(decimals, 18),
-                "ltv_bps": _as_int(ltv),
-                "liquidation_threshold_bps": _as_int(liq_threshold),
-                "liquidation_bonus_bps": _as_int(liq_bonus),
-                "reserve_factor_bps": _as_int(reserve_factor),
+                "decimals": decimals,
+                "ltv_bps": ltv,
+                "liquidation_threshold_bps": liq_threshold,
+                "liquidation_bonus_bps": liq_bonus,
+                "reserve_factor_bps": reserve_factor,
                 "usage_as_collateral_enabled": usage_as_collateral_enabled,
                 "borrowing_enabled": borrowing_enabled,
                 "stable_borrow_rate_enabled": stable_borrow_rate_enabled,
@@ -475,8 +469,8 @@ class SparkLendAdapter(BaseAdapter):
                         bc, sc = await dp.functions.getReserveCaps(underlying).call(
                             block_identifier="pending"
                         )
-                        borrow_cap = _as_int(bc)
-                        supply_cap = _as_int(sc)
+                        borrow_cap = bc
+                        supply_cap = sc
 
                     reserve_data = await dp.functions.getReserveData(underlying).call(
                         block_identifier="pending"
@@ -484,12 +478,12 @@ class SparkLendAdapter(BaseAdapter):
                     # (unbacked, accruedToTreasuryScaled, totalAToken, totalStableDebt, totalVariableDebt,
                     #  liquidityRate, variableBorrowRate, stableBorrowRate, averageStableBorrowRate,
                     #  liquidityIndex, variableBorrowIndex, lastUpdateTimestamp)
-                    total_a_token = _as_int(reserve_data[2])
-                    total_stable_debt = _as_int(reserve_data[3])
-                    total_variable_debt = _as_int(reserve_data[4])
-                    liquidity_rate = _as_int(reserve_data[5])
-                    variable_borrow_rate = _as_int(reserve_data[6])
-                    stable_borrow_rate = _as_int(reserve_data[7])
+                    total_a_token = reserve_data[2]
+                    total_stable_debt = reserve_data[3]
+                    total_variable_debt = reserve_data[4]
+                    liquidity_rate = reserve_data[5]
+                    variable_borrow_rate = reserve_data[6]
+                    stable_borrow_rate = reserve_data[7]
 
                     a_token, stable_debt_token, variable_debt_token = (
                         await dp.functions.getReserveTokensAddresses(underlying).call(
@@ -503,8 +497,7 @@ class SparkLendAdapter(BaseAdapter):
                         (chain_id, underlying.lower())
                     ] = (a_token, stable_debt_token, variable_debt_token)
 
-                    decimals_i = _as_int(decimals, 18)
-                    unit = 10 ** max(0, decimals_i)
+                    unit = 10 ** decimals
 
                     supply_apr = ray_to_apr(liquidity_rate)
                     variable_borrow_apr = ray_to_apr(variable_borrow_rate)
@@ -531,14 +524,14 @@ class SparkLendAdapter(BaseAdapter):
                             "pool": entry.get("pool"),
                             "underlying": underlying,
                             "symbol": symbol,
-                            "decimals": decimals_i,
+                            "decimals": decimals,
                             "supply_token": a_token,
                             "stable_debt_token": stable_debt_token,
                             "variable_debt_token": variable_debt_token,
-                            "ltv_bps": _as_int(ltv),
-                            "liquidation_threshold_bps": _as_int(liq_threshold),
-                            "liquidation_bonus_bps": _as_int(liq_bonus),
-                            "reserve_factor_bps": _as_int(reserve_factor),
+                            "ltv_bps": ltv,
+                            "liquidation_threshold_bps": liq_threshold,
+                            "liquidation_bonus_bps": liq_bonus,
+                            "reserve_factor_bps": reserve_factor,
                             "usage_as_collateral_enabled": usage_as_collateral_enabled,
                             "borrowing_enabled": borrowing_enabled,
                             "stable_borrow_enabled": stable_borrow_rate_enabled,
@@ -617,18 +610,18 @@ class SparkLendAdapter(BaseAdapter):
                 "pool": entry.get("pool"),
                 "account": acct,
                 "underlying": underlying,
-                "decimals": _as_int(cfg.get("decimals"), 18),
+                "decimals": cfg.get("decimals", 18),
                 "supply_token": to_checksum_address(a_token),
                 "stable_debt_token": to_checksum_address(stable_debt_token),
                 "variable_debt_token": to_checksum_address(variable_debt_token),
-                "supply_raw": _as_int(current_a_token_balance),
-                "stable_borrow_raw": _as_int(current_stable_debt),
-                "variable_borrow_raw": _as_int(current_variable_debt),
-                "principal_stable_debt_raw": _as_int(principal_stable_debt),
-                "scaled_variable_debt_raw": _as_int(scaled_variable_debt),
-                "stable_borrow_rate_ray": _as_int(stable_borrow_rate),
-                "liquidity_rate_ray": _as_int(liquidity_rate),
-                "stable_rate_last_updated": _as_int(stable_rate_last_updated),
+                "supply_raw": current_a_token_balance,
+                "stable_borrow_raw": current_stable_debt,
+                "variable_borrow_raw": current_variable_debt,
+                "principal_stable_debt_raw": principal_stable_debt,
+                "scaled_variable_debt_raw": scaled_variable_debt,
+                "stable_borrow_rate_ray": stable_borrow_rate,
+                "liquidity_rate_ray": liquidity_rate,
+                "stable_rate_last_updated": stable_rate_last_updated,
                 "usage_as_collateral_enabled_on_user": usage_as_collateral_enabled_on_user,
                 "reserve_config": cfg,
             }
@@ -676,9 +669,9 @@ class SparkLendAdapter(BaseAdapter):
                     user_data = await dp.functions.getUserReserveData(
                         underlying, acct
                     ).call(block_identifier="pending")
-                    supply = _as_int(user_data[0])
-                    stable_debt = _as_int(user_data[1])
-                    variable_debt = _as_int(user_data[2])
+                    supply = user_data[0]
+                    stable_debt = user_data[1]
+                    variable_debt = user_data[2]
                     collateral_enabled = user_data[8]
 
                     if (
@@ -703,7 +696,7 @@ class SparkLendAdapter(BaseAdapter):
                         {
                             "underlying": underlying,
                             "symbol": symbol,
-                            "decimals": _as_int(cfg.get("decimals"), 18),
+                            "decimals": cfg.get("decimals", 18),
                             "supply_token": to_checksum_address(a_token),
                             "stable_debt_token": to_checksum_address(stable_debt_token),
                             "variable_debt_token": to_checksum_address(variable_debt_token),
@@ -716,12 +709,12 @@ class SparkLendAdapter(BaseAdapter):
                     )
 
             account_data = {
-                "total_collateral_base": _as_int(account_data_tuple[0]),
-                "total_debt_base": _as_int(account_data_tuple[1]),
-                "available_borrows_base": _as_int(account_data_tuple[2]),
-                "current_liquidation_threshold": _as_int(account_data_tuple[3]),
-                "ltv": _as_int(account_data_tuple[4]),
-                "health_factor": _as_int(account_data_tuple[5]),
+                "total_collateral_base": account_data_tuple[0],
+                "total_debt_base": account_data_tuple[1],
+                "available_borrows_base": account_data_tuple[2],
+                "current_liquidation_threshold": account_data_tuple[3],
+                "ltv": account_data_tuple[4],
+                "health_factor": account_data_tuple[5],
             }
 
             return True, {
