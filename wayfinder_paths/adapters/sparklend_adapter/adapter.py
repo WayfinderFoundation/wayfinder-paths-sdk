@@ -176,7 +176,6 @@ class SparkLendAdapter(BaseAdapter):
 
     @require_wallet
     async def lend(self, *, chain_id: int, asset: str, amount: int) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -187,7 +186,7 @@ class SparkLendAdapter(BaseAdapter):
 
             approved = await ensure_allowance(
                 token_address=asset,
-                owner=strategy,
+                owner=self.wallet_address,
                 spender=pool,
                 amount=amount,
                 chain_id=chain_id,
@@ -201,8 +200,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=pool,
                 abi=POOL_ABI,
                 fn_name="supply",
-                args=[asset, amount, strategy, REFERRAL_CODE],
-                from_address=strategy,
+                args=[asset, amount, self.wallet_address, REFERRAL_CODE],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -219,7 +218,6 @@ class SparkLendAdapter(BaseAdapter):
         amount: int,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0 and not withdraw_full:
             return False, "amount must be positive"
 
@@ -233,8 +231,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=pool,
                 abi=POOL_ABI,
                 fn_name="withdraw",
-                args=[asset, withdraw_amount, strategy],
-                from_address=strategy,
+                args=[asset, withdraw_amount, self.wallet_address],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -251,7 +249,6 @@ class SparkLendAdapter(BaseAdapter):
         amount: int,
         rate_mode: int = VARIABLE_RATE_MODE,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -275,8 +272,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=pool,
                 abi=POOL_ABI,
                 fn_name="borrow",
-                args=[asset, amount, rate_mode, REFERRAL_CODE, strategy],
-                from_address=strategy,
+                args=[asset, amount, rate_mode, REFERRAL_CODE, self.wallet_address],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -294,7 +291,6 @@ class SparkLendAdapter(BaseAdapter):
         rate_mode: int = VARIABLE_RATE_MODE,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0 and not repay_full:
             return False, "amount must be positive"
 
@@ -311,7 +307,7 @@ class SparkLendAdapter(BaseAdapter):
 
             approved = await ensure_allowance(
                 token_address=asset,
-                owner=strategy,
+                owner=self.wallet_address,
                 spender=pool,
                 amount=allowance_target,
                 chain_id=chain_id,
@@ -325,8 +321,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=pool,
                 abi=POOL_ABI,
                 fn_name="repay",
-                args=[asset, repay_amount, rate_mode, strategy],
-                from_address=strategy,
+                args=[asset, repay_amount, rate_mode, self.wallet_address],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -338,7 +334,6 @@ class SparkLendAdapter(BaseAdapter):
     async def set_collateral(
         self, *, chain_id: int, asset: str, enabled: bool
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         try:
             entry = self._entry(chain_id)
             pool = entry["pool"]
@@ -349,7 +344,7 @@ class SparkLendAdapter(BaseAdapter):
                 abi=POOL_ABI,
                 fn_name="setUserUseReserveAsCollateral",
                 args=[asset, enabled],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -359,7 +354,6 @@ class SparkLendAdapter(BaseAdapter):
 
     @require_wallet
     async def claim_rewards(self, *, chain_id: int) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         try:
             entry = self._entry(chain_id)
             rewards_controller = entry.get("rewards_controller")
@@ -424,7 +418,7 @@ class SparkLendAdapter(BaseAdapter):
                 abi=REWARDS_CONTROLLER_ABI,
                 fn_name="claimAllRewardsToSelf",
                 args=[assets],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -772,7 +766,6 @@ class SparkLendAdapter(BaseAdapter):
 
     @require_wallet
     async def supply_native(self, *, chain_id: int, amount: int) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -791,8 +784,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=gateway,
                 abi=WETH_GATEWAY_ABI,
                 fn_name="depositETH",
-                args=[to_checksum_address(pool), strategy, REFERRAL_CODE],
-                from_address=strategy,
+                args=[to_checksum_address(pool), self.wallet_address, REFERRAL_CODE],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
                 value=amount,
             )
@@ -805,7 +798,6 @@ class SparkLendAdapter(BaseAdapter):
     async def withdraw_native(
         self, *, chain_id: int, amount: int, withdraw_full: bool = False
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0 and not withdraw_full:
             return False, "amount must be positive"
 
@@ -828,7 +820,7 @@ class SparkLendAdapter(BaseAdapter):
             allowance_target = MAX_UINT256 if withdraw_full else amount
             approved = await ensure_allowance(
                 token_address=a_token,
-                owner=strategy,
+                owner=self.wallet_address,
                 spender=gateway,
                 amount=allowance_target,
                 chain_id=chain_id,
@@ -843,8 +835,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=gateway,
                 abi=WETH_GATEWAY_ABI,
                 fn_name="withdrawETH",
-                args=[to_checksum_address(pool), withdraw_amount, strategy],
-                from_address=strategy,
+                args=[to_checksum_address(pool), withdraw_amount, self.wallet_address],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -860,7 +852,6 @@ class SparkLendAdapter(BaseAdapter):
         amount: int,
         rate_mode: int = VARIABLE_RATE_MODE,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -892,7 +883,7 @@ class SparkLendAdapter(BaseAdapter):
                 abi=WETH_GATEWAY_ABI,
                 fn_name="borrowETH",
                 args=[to_checksum_address(pool), amount, rate_mode, REFERRAL_CODE],
-                from_address=strategy,
+                from_address=self.wallet_address,
                 chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
@@ -909,7 +900,6 @@ class SparkLendAdapter(BaseAdapter):
         rate_mode: int = VARIABLE_RATE_MODE,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
-        strategy = self.wallet_address
         if amount <= 0 and not repay_full:
             return False, "amount must be positive"
 
@@ -941,7 +931,7 @@ class SparkLendAdapter(BaseAdapter):
                 debt = await get_token_balance(
                     debt_token,
                     chain_id,
-                    strategy,
+                    self.wallet_address,
                     block_identifier="pending",
                 )
                 if debt <= 0:
@@ -950,7 +940,7 @@ class SparkLendAdapter(BaseAdapter):
                 native_balance = await get_token_balance(
                     None,
                     chain_id,
-                    strategy,
+                    self.wallet_address,
                     block_identifier="pending",
                 )
                 buffer_wei = max(1, debt // 10_000)  # 0.01%
@@ -969,8 +959,8 @@ class SparkLendAdapter(BaseAdapter):
                 target=gateway,
                 abi=WETH_GATEWAY_ABI,
                 fn_name="repayETH",
-                args=[to_checksum_address(pool), repay_amount, rate_mode, strategy],
-                from_address=strategy,
+                args=[to_checksum_address(pool), repay_amount, rate_mode, self.wallet_address],
+                from_address=self.wallet_address,
                 chain_id=chain_id,
                 value=value,
             )
