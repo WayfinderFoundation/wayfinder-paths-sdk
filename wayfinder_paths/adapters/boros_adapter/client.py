@@ -8,6 +8,8 @@ import aiohttp
 from aiocache import Cache
 from loguru import logger
 
+from wayfinder_paths.core.constants.base import DEFAULT_HTTP_HEADERS
+
 # Default Boros API endpoints
 # Open API endpoints (public, no auth required)
 OPEN_API_ENDPOINTS = {
@@ -100,7 +102,7 @@ class BorosClient:
         url = f"{self.base_url}{path}"
         timeout_val = timeout or self.timeout
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=DEFAULT_HTTP_HEADERS) as session:
             async with session.request(
                 method,
                 url,

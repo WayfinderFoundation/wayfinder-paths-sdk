@@ -37,7 +37,7 @@ ETH_ARB = "ethereum-arbitrum"
 ETH_BASE = "ethereum-base"
 
 DEFAULT_HLP_VAULT_ADDRESS = "0xdfc24b077bc1425ad1dea75bcb6f8158e10df303"
-MIN_NET_DEPOSIT = 50.0
+MIN_NET_DEPOSIT = 40.0
 MIN_HLP_USD = 11.0
 MIN_BOROS_USD = 11.0
 EPS = 1e-6
