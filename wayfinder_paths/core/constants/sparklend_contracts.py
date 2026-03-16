@@ -40,6 +40,10 @@ SPARKLEND_BY_CHAIN: dict[int, dict[str, str]] = {
         "wrapped_native_gateway": to_checksum_address(
             "0xBD7D6a9ad7865463DE44B05F04559f65e3B11704"
         ),
+        # Alias for AaveV3Adapter compatibility (Spark is Aave v3-based).
+        "wrapped_token_gateway": to_checksum_address(
+            "0xBD7D6a9ad7865463DE44B05F04559f65e3B11704"
+        ),
         "acl_manager": to_checksum_address(
             "0xdA135Cd78A086025BcdC87B038a1C462032b510C"
         ),

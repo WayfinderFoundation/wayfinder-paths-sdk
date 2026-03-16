@@ -4,7 +4,8 @@ from typing import Any
 
 from eth_utils import to_checksum_address
 
-from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
+from wayfinder_paths.adapters.aave_v3_adapter.adapter import AaveV3Adapter
+from wayfinder_paths.core.adapters.BaseAdapter import require_wallet
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.sparklend_abi import (
@@ -24,7 +25,7 @@ STABLE_RATE_MODE = 1
 REFERRAL_CODE = 0
 
 
-class SparkLendAdapter(BaseAdapter):
+class SparkLendAdapter(AaveV3Adapter):
     adapter_type = "SPARKLEND"
 
     def __init__(
@@ -33,15 +34,13 @@ class SparkLendAdapter(BaseAdapter):
         sign_callback=None,
         wallet_address: str | None = None,
     ) -> None:
-        super().__init__("sparklend_adapter", config or {})
-        self.sign_callback = sign_callback
-
-        self.wallet_address: str | None = (
-            to_checksum_address(wallet_address) if wallet_address else None
+        # SparkLend is Aave v3-based. We inherit common pool interactions from
+        # AaveV3Adapter and keep Spark-specific reads/rate modes here.
+        super().__init__(
+            config=config, sign_callback=sign_callback, wallet_address=wallet_address
         )
+        self.name = "sparklend_adapter"
 
-        # Cache: chain_id -> wrapped native token address (WETH/WXDAI)
-        self._wrapped_native_by_chain: dict[int, str] = {}
         # Cache: (chain_id, underlying.lower()) -> (aToken, stableDebtToken, variableDebtToken)
         self._reserve_tokens_by_chain_underlying: dict[
             tuple[int, str], tuple[str, str, str]
@@ -52,31 +51,10 @@ class SparkLendAdapter(BaseAdapter):
         ] = {}
 
     def _entry(self, chain_id: int) -> dict[str, str]:
-        entry = SPARKLEND_BY_CHAIN.get(chain_id)
+        entry = SPARKLEND_BY_CHAIN.get(int(chain_id))
         if not entry:
             raise ValueError(f"Unsupported SparkLend chain_id={chain_id}")
         return entry
-
-    async def _wrapped_native(self, *, chain_id: int) -> str:
-        cached = self._wrapped_native_by_chain.get(chain_id)
-        if cached:
-            return cached
-
-        entry = self._entry(chain_id)
-        gateway = entry.get("wrapped_native_gateway")
-        if not gateway:
-            raise ValueError(
-                f"wrapped_native_gateway not configured for chain_id={chain_id}"
-            )
-
-        async with web3_utils.web3_from_chain_id(chain_id) as web3:
-            gw = web3.eth.contract(address=gateway, abi=WETH_GATEWAY_ABI)
-            wrapped = await gw.functions.getWETHAddress().call(
-                block_identifier="pending"
-            )
-            wrapped = to_checksum_address(wrapped)
-            self._wrapped_native_by_chain[chain_id] = wrapped
-            return wrapped
 
     async def _reserve_tokens(
         self, *, chain_id: int, underlying: str
@@ -176,72 +154,6 @@ class SparkLendAdapter(BaseAdapter):
     # ------------------
 
     @require_wallet
-    async def lend(self, *, chain_id: int, asset: str, amount: int) -> tuple[bool, Any]:
-        if amount <= 0:
-            return False, "amount must be positive"
-
-        try:
-            entry = self._entry(chain_id)
-            pool = entry["pool"]
-            asset = to_checksum_address(asset)
-
-            approved = await ensure_allowance(
-                token_address=asset,
-                owner=self.wallet_address,
-                spender=pool,
-                amount=amount,
-                chain_id=chain_id,
-                signing_callback=self.sign_callback,
-                approval_amount=MAX_UINT256,
-            )
-            if not approved[0]:
-                return approved
-
-            tx = await encode_call(
-                target=pool,
-                abi=POOL_ABI,
-                fn_name="supply",
-                args=[asset, amount, self.wallet_address, REFERRAL_CODE],
-                from_address=self.wallet_address,
-                chain_id=chain_id,
-            )
-            txn_hash = await send_transaction(tx, self.sign_callback)
-            return True, txn_hash
-        except Exception as exc:
-            return False, str(exc)
-
-    @require_wallet
-    async def unlend(
-        self,
-        *,
-        chain_id: int,
-        asset: str,
-        amount: int,
-        withdraw_full: bool = False,
-    ) -> tuple[bool, Any]:
-        if amount <= 0 and not withdraw_full:
-            return False, "amount must be positive"
-
-        try:
-            entry = self._entry(chain_id)
-            pool = entry["pool"]
-            asset = to_checksum_address(asset)
-            withdraw_amount = MAX_UINT256 if withdraw_full else amount
-
-            tx = await encode_call(
-                target=pool,
-                abi=POOL_ABI,
-                fn_name="withdraw",
-                args=[asset, withdraw_amount, self.wallet_address],
-                from_address=self.wallet_address,
-                chain_id=chain_id,
-            )
-            txn_hash = await send_transaction(tx, self.sign_callback)
-            return True, txn_hash
-        except Exception as exc:
-            return False, str(exc)
-
-    @require_wallet
     async def borrow(
         self,
         *,
@@ -250,24 +162,34 @@ class SparkLendAdapter(BaseAdapter):
         amount: int,
         rate_mode: int = VARIABLE_RATE_MODE,
     ) -> tuple[bool, Any]:
-        if amount <= 0:
-            return False, "amount must be positive"
 
         if rate_mode not in (STABLE_RATE_MODE, VARIABLE_RATE_MODE):
             return False, "rate_mode must be 1 (stable) or 2 (variable)"
 
         try:
+            if rate_mode == VARIABLE_RATE_MODE:
+                return await super().borrow(
+                    underlying_token=str(asset),
+                    qty=int(amount),
+                    chain_id=int(chain_id),
+                    native=False,
+                )
+            
+            
+            if amount <= 0:
+                return False, "amount must be positive"
+
+            # Stable rate: AaveV3Adapter only supports variable rate, so call Pool directly.
             entry = self._entry(chain_id)
             pool = entry["pool"]
             asset = to_checksum_address(asset)
 
-            if rate_mode == STABLE_RATE_MODE:
-                cfg = await self._reserve_config(chain_id=chain_id, underlying=asset)
-                if not cfg.get("stable_borrow_rate_enabled"):
-                    return (
-                        False,
-                        "stable borrow is not enabled for this reserve (use rate_mode=2)",
-                    )
+            cfg = await self._reserve_config(chain_id=chain_id, underlying=asset)
+            if not cfg.get("stable_borrow_rate_enabled"):
+                return (
+                    False,
+                    "stable borrow is not enabled for this reserve (use rate_mode=2)",
+                )
 
             tx = await encode_call(
                 target=pool,
@@ -299,6 +221,16 @@ class SparkLendAdapter(BaseAdapter):
             return False, "rate_mode must be 1 (stable) or 2 (variable)"
 
         try:
+            if rate_mode == VARIABLE_RATE_MODE:
+                return await super().repay(
+                    underlying_token=str(asset),
+                    qty=int(amount),
+                    chain_id=int(chain_id),
+                    native=False,
+                    repay_full=bool(repay_full),
+                )
+
+            # Stable rate: AaveV3Adapter only supports variable rate, so call Pool directly.
             entry = self._entry(chain_id)
             pool = entry["pool"]
             asset = to_checksum_address(asset)
@@ -323,28 +255,6 @@ class SparkLendAdapter(BaseAdapter):
                 abi=POOL_ABI,
                 fn_name="repay",
                 args=[asset, repay_amount, rate_mode, self.wallet_address],
-                from_address=self.wallet_address,
-                chain_id=chain_id,
-            )
-            txn_hash = await send_transaction(tx, self.sign_callback)
-            return True, txn_hash
-        except Exception as exc:
-            return False, str(exc)
-
-    @require_wallet
-    async def set_collateral(
-        self, *, chain_id: int, asset: str, enabled: bool
-    ) -> tuple[bool, Any]:
-        try:
-            entry = self._entry(chain_id)
-            pool = entry["pool"]
-            asset = to_checksum_address(asset)
-
-            tx = await encode_call(
-                target=pool,
-                abi=POOL_ABI,
-                fn_name="setUserUseReserveAsCollateral",
-                args=[asset, enabled],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
