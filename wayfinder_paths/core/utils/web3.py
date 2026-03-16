@@ -7,7 +7,6 @@ from web3.module import Module
 from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
-    get_gorlami_base_url,
     get_rpc_urls,
 )
 from wayfinder_paths.core.constants.chains import (
@@ -57,18 +56,12 @@ def _is_wayfinder_rpc(rpc: str) -> bool:
     return rpc.startswith(get_api_base_url())
 
 
-def _get_gorlami_base_url_safe() -> str | None:
-    try:
-        return get_gorlami_base_url().rstrip("/")
-    except Exception:
-        return None
+_GORLAMI_FORK_PREFIX = "/blockchain/gorlami/fork/"
 
 
 def _is_gorlami_fork_rpc(rpc: str) -> bool:
-    base = _get_gorlami_base_url_safe()
-    if not base:
-        return False
-    return rpc.startswith(f"{base}/fork/")
+    base = get_api_base_url().rstrip("/")
+    return rpc.startswith(f"{base}{_GORLAMI_FORK_PREFIX}")
 
 
 def _wayfinder_auth_headers() -> dict[str, str]:
@@ -97,7 +90,8 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
         provider = _GorlamiProvider(
-            rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
+            rpc,
+            request_kwargs={"headers": _wayfinder_auth_headers()},
         )
         web3 = AsyncWeb3(provider)
     elif _is_wayfinder_rpc(rpc):

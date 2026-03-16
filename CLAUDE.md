@@ -51,6 +51,8 @@ Simulation / scenario testing (vnet only):
 
 Safety defaults:
 
+- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__execute(kind="swap")`, always call `mcp__wayfinder__quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
+- **Route planning for non-trivial swaps:** Before quoting, assess whether a direct route is likely to exist between the two tokens. If the pair is illiquid, cross-chain, or involves a long-tail token, reason through candidate intermediate hops first (e.g. tokenA → USDC → tokenB, or tokenA → native gas token → tokenB). Quote the most promising paths and compare outputs before presenting to the user. Skip this planning step only for well-known liquid pairs on the same chain (e.g. ETH → USDC on Arbitrum).
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
 - Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
   - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
@@ -87,96 +89,25 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | CCXT (CEX)            | `/using-ccxt-adapter`            |
 | Uniswap (V3)          | `/using-uniswap-adapter`         |
 | ProjectX (V3 fork)    | `/using-projectx-adapter`        |
+| Alpha Lab             | `/using-alpha-lab`               |
 | Delta Lab             | `/using-delta-lab`               |
 | Pools/Tokens/Balances | `/using-pool-token-balance-data` |
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
 | Contract Dev          | `/contract-development`          |
 
-
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
 ## Backtesting Framework
 
-Use the backtesting framework to **validate strategy ideas before production deployment**. The framework provides:
+Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
 
-- Automatic data fetching from Delta Lab and Hyperliquid
-- Realistic transaction costs (fees, slippage, funding)
-- Comprehensive performance metrics (Sharpe, max drawdown, etc.)
-- Liquidation simulation
-- Multi-leverage testing
+**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`.
 
-**Load `/backtest-strategy` skill** before using the framework for full documentation.
+All stats are decimals — format with `:.2%`. Key: `sharpe` (>2.0 excellent), `total_return`, `max_drawdown`, `total_funding` (negative = income received), `trade_count`.
 
-### Quick Start
+Once validated: `just create-strategy "Name"` → implement deposit/update/withdraw/exit → smoke tests → deploy small capital first.
 
-```python
-from wayfinder_paths.core.backtesting import quick_backtest
-
-def my_strategy(prices, ctx):
-    """Define your signal logic."""
-    returns = prices.pct_change(24)  # 24-period momentum
-    ranks = returns.rank(axis=1, pct=True)
-    target = (ranks > 0.5).astype(float) - (ranks < 0.5).astype(float)
-    return target / target.abs().sum(axis=1).fillna(1)
-
-# Run backtest with automatic data fetching
-result = await quick_backtest(
-    strategy_fn=my_strategy,
-    symbols=["BTC", "ETH"],
-    start_date="2025-01-01",
-    end_date="2025-02-01",
-    leverage=2.0
-)
-
-print(result.stats)  # Sharpe, max_drawdown, CAGR, etc.
-```
-
-### Manual Workflow (Full Control)
-
-```python
-from wayfinder_paths.core.backtesting import (
-    fetch_prices,
-    fetch_funding_rates,
-    run_backtest,
-    BacktestConfig,
-)
-
-# Fetch data
-prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01", interval="1h")
-funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
-
-# Generate signals
-target_positions = my_strategy(prices, {"symbols": ["BTC", "ETH"]})
-
-# Configure and run
-config = BacktestConfig(
-    leverage=2.0,
-    fee_rate=0.0004,
-    funding_rates=funding,
-    enable_liquidation=True
-)
-result = run_backtest(prices, target_positions, config)
-```
-
-### Key Metrics
-
-- **`sharpe`** - Risk-adjusted returns (>1.0 good, >2.0 excellent)
-- **`sortino`** - Like Sharpe but only penalizes downside volatility
-- **`cagr`** - Annualized return (%)
-- **`max_drawdown`** - Largest peak-to-trough decline (%)
-- **`profit_factor`** - Gross profit / gross loss (>1.5 good)
-
-### From Backtest to Production
-
-Once validated:
-1. Create strategy class: `just create-strategy "Strategy Name"`
-2. Implement Strategy interface (deposit, update, withdraw, exit)
-3. Add adapters and manifest
-4. Write smoke tests
-5. Deploy with small capital first
-
-See `/backtest-strategy` skill for full guide, common patterns, and gotchas.
 
 ## Contract development
 
@@ -191,6 +122,47 @@ When answering questions about **rates/APYs/funding**:
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
 
+## Alpha Lab MCP resources (alpha discovery)
+
+**Load `/using-alpha-lab` skill for detailed docs.** Quick reference below.
+
+Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). Results ranked by `insightfulness_score` (0-1). Read-only — discovery only, no execution.
+
+**MCP resources:**
+
+- `wayfinder://alpha-lab/types` - List available scan types
+- `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}` - Search insights
+
+**Search params:** use `_` as placeholder to skip optional params.
+
+| Param            | Values                                                                                                                                            | Default |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `query`          | text search or `_` for none                                                                                                                       | `_`     |
+| `scan_type`      | `all`, `twitter_post`, `defi_llama_chain_flow`, `defi_llama_overview`, `defi_llama_protocol`, `delta_lab_top_apy`, `delta_lab_best_delta_neutral` | `all`   |
+| `created_after`  | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
+| `created_before` | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
+| `limit`          | 1-200                                                                                                                                             | `20`    |
+
+**Examples:**
+
+```
+# Top 20 insights (all types)
+uri="wayfinder://alpha-lab/search/_/all/_/_/20"
+
+# Twitter posts only
+uri="wayfinder://alpha-lab/search/_/twitter_post/_/_/10"
+
+# Search for ETH-related insights
+uri="wayfinder://alpha-lab/search/ETH/all/_/_/10"
+
+# Today's insights
+uri="wayfinder://alpha-lab/search/_/all/2026-03-11T00:00:00Z/_/20"
+
+# Serious analysis via client
+from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
+data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)
+```
+
 ## Delta Lab MCP resources (yield discovery)
 
 **Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
@@ -198,6 +170,7 @@ When answering questions about **rates/APYs/funding**:
 **⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
 
 **MCP resources (quick queries):**
+
 - `wayfinder://delta-lab/symbols` - List basis symbols
 - `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
 - `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
@@ -212,6 +185,7 @@ When answering questions about **rates/APYs/funding**:
 - `wayfinder://delta-lab/screen/borrow-routes/{SORT}/{LIMIT}/{BASIS}/{BORROW_BASIS}` - Screen borrow routes (collateral → borrow)
 
 **Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
+
 - **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
 - **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
 - **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
@@ -220,6 +194,7 @@ When answering questions about **rates/APYs/funding**:
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
 **Examples:**
+
 ```
 # Quick queries via MCP
 uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
@@ -260,7 +235,7 @@ When a user asks to run, check, or interact with a strategy:
    - `quote` - Get point-in-time expected APY for the strategy
 
    **Fund-moving actions (require safety review):**
-   - `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`)
+   - `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`). **First deposit?** Always include `gas_token_amount` (e.g. `0.001`) — the strategy wallet starts with no gas.
    - `update` - Rebalance or execute the strategy logic
    - `withdraw` - **Liquidate**: Close all positions and convert to stablecoins (funds stay in strategy wallet)
    - `exit` - **Transfer**: Move funds from strategy wallet to main wallet (call after withdraw)
@@ -295,7 +270,7 @@ When a user asks to run, check, or interact with a strategy:
 
 6. **Safety review** - Fund-moving actions (deposit, update, withdraw, exit) are gated by a safety review hook that shows a preview and asks for confirmation.
 
-7. **Mypy typing** - When adding or modifying Python code, ensure all *new/changed* code is fully type-annotated and does not introduce new mypy errors (existing legacy errors may remain).
+7. **Mypy typing** - When adding or modifying Python code, ensure all _new/changed_ code is fully type-annotated and does not introduce new mypy errors (existing legacy errors may remain).
 
 ## Execution modes (one-off vs recurring)
 
@@ -313,9 +288,17 @@ For anything beyond a simple single swap, follow this checklist:
 
 1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
 2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
-3. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
-4. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
-5. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
+3. **Quote all steps** — For every swap/bridge step, call `mcp__wayfinder__quote_swap` and collect the results. Then display a confirmation table to the user before executing anything:
+
+   | Step | From | To | Est. Output | Fee (USD) | Route |
+   |------|------|----|-------------|-----------|-------|
+   | 1    | ...  | .. | ...         | ...       | ...   |
+
+   Wait for explicit user confirmation before proceeding. Skip this only if the user has explicitly said to (e.g. "just execute").
+
+4. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
+5. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
+6. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
 
 Hyperliquid minimums:
 
@@ -335,12 +318,11 @@ Polymarket quick flows:
 
 Polymarket funding (USDC.e collateral):
 
-- **Have native Polygon USDC (0x3c499c...) on Polygon:** Use `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` to convert it → USDC.e (0x2791...).
-- **Already have USDC.e (0x2791...) on Polygon:** You can trade immediately; skip `bridge_deposit`.
-- **No USDC on Polygon (funds on Base, Arbitrum, etc.):** Use `mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")` to BRAP swap directly to USDC.e.
-- **Alternative (bridge service):** `polymarket_execute bridge_deposit` also supports depositing from other EVM chains/tokens via the Polymarket Bridge fallback; pass `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()` for what’s accepted). BRAP is Polygon-only.
+- **Polygon USDC → USDC.e:** `polymarket_execute(action="bridge_deposit", amount=10)` converts native USDC (0x3c499c...) → USDC.e (0x2791...).
+- **Already have USDC.e:** Trade immediately, skip `bridge_deposit`.
+- **Funds on other chains:** BRAP swap to USDC.e: `execute(kind="swap", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")`. Or use `bridge_deposit` with `from_chain_id` + `from_token_address` (see `PolymarketAdapter.bridge_supported_assets()`).
 
-Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin** (use `usd_amount_kind="notional"|"margin"` on `mcp__wayfinder__hyperliquid_execute`).
+Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X`is **notional** or **margin** (use`usd_amount_kind="notional"|"margin"`on`mcp**wayfinder**hyperliquid_execute`).
 
 **Scripting helper for adapters:**
 
@@ -365,6 +347,7 @@ adapter = get_adapter(PendleAdapter)
 ```
 
 `get_adapter()` auto-loads `config.json`, looks up wallets by label, creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
+
 - `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
 - `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
 
@@ -418,6 +401,7 @@ meta, ctxs = data[0], data[1]
 ```
 
 **Why the difference?**
+
 - **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
 - **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
 
@@ -514,23 +498,11 @@ quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", a
 
 **7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
-**8. Adapter read methods return `(ok, data)` tuples — always destructure**
+**8. Write the script file before calling `run_script`**
 
-```python
-ok, data = await adapter.get_meta_and_asset_ctxs()
-if not ok:
-    raise RuntimeError(data)
-```
+`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`.
 
-**9. Load the protocol skill before writing adapter scripts**
-
-Before writing *any* script that uses a protocol adapter, invoke the matching skill (e.g. `/using-hyperliquid-adapter`, `/using-moonwell-adapter`). Skills document method signatures, return shapes, required parameters, and gotchas that aren't obvious from method names alone. Guessing at adapter APIs wastes iterations. See the protocol skills table above.
-
-**10. Write the script file before calling `run_script`**
-
-`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`. Don't call `run_script` on a path you haven't written to yet.
-
-**11. Funding rate sign (CRITICAL for perp trading)**
+**9. Funding rate sign (CRITICAL for perp trading)**
 
 **CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
 
@@ -550,6 +522,7 @@ else:
 ```
 
 This applies to:
+
 - Hyperliquid perp funding rates
 - Delta Lab perp opportunities
 - Any perp trading strategy analysis
@@ -564,28 +537,10 @@ When a user wants a **repeatable/automated system** (recurring jobs):
 Runner CLI (project-local state in `./.wayfinder/runner/`):
 
 ```bash
-# Start the daemon (recommended: detached/background)
-poetry run wayfinder runner start --detach
-
-# Idempotent: start if needed, otherwise no-op
-poetry run wayfinder runner ensure
-
-# Add an interval job (every 10 minutes)
-poetry run wayfinder runner add-job \
-  --name basis-update \
-  --type strategy \
-  --strategy basis_trading_strategy \
-  --action update \
-  --interval 600 \
-  --config ./config.json
-
-# Inspect / control
-poetry run wayfinder runner status
-poetry run wayfinder runner run-once basis-update
-poetry run wayfinder runner pause basis-update
-poetry run wayfinder runner resume basis-update
-poetry run wayfinder runner delete basis-update
-poetry run wayfinder runner stop
+poetry run wayfinder runner start --detach   # Start daemon
+poetry run wayfinder runner ensure            # Idempotent start
+poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
+poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
 ```
 
 See `RUNNER_ARCHITECTURE.md`.
@@ -598,16 +553,16 @@ Safety note:
 
 Supported chains:
 
-| Chain     | ID    | Code         | Symbol | Native token ID        |
-| --------- | ----- | ------------ | ------ | ---------------------- |
-| Ethereum  | 1     | `ethereum`   | ETH    | `ethereum-ethereum`    |
-| Base      | 8453  | `base`       | ETH    | `ethereum-base`        |
-| Arbitrum  | 42161 | `arbitrum`   | ETH    | `ethereum-arbitrum`    |
-| Polygon   | 137   | `polygon`    | POL    | `polygon-ecosystem-token-polygon`|
-| BSC       | 56    | `bsc`        | BNB    | `binancecoin-bsc`      |
-| Avalanche | 43114 | `avalanche`  | AVAX   | `avalanche-avalanche`|
-| Plasma    | 9745  | `plasma`     | PLASMA | `plasma-plasma`        |
-| HyperEVM  | 999   | `hyperevm`   | HYPE   | `hyperliquid-hyperevm` |
+| Chain     | ID    | Code        | Symbol | Native token ID                   |
+| --------- | ----- | ----------- | ------ | --------------------------------- |
+| Ethereum  | 1     | `ethereum`  | ETH    | `ethereum-ethereum`               |
+| Base      | 8453  | `base`      | ETH    | `ethereum-base`                   |
+| Arbitrum  | 42161 | `arbitrum`  | ETH    | `ethereum-arbitrum`               |
+| Polygon   | 137   | `polygon`   | POL    | `polygon-ecosystem-token-polygon` |
+| BSC       | 56    | `bsc`       | BNB    | `binancecoin-bsc`                 |
+| Avalanche | 43114 | `avalanche` | AVAX   | `avalanche-avalanche`             |
+| Plasma    | 9745  | `plasma`    | PLASMA | `plasma-plasma`                   |
+| HyperEVM  | 999   | `hyperevm`  | HYPE   | `hyperliquid-hyperevm`            |
 
 - **Plasma**: EVM chain where Pendle deploys PT/YT markets. Not Pendle-specific — it's its own chain.
 - **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
@@ -687,13 +642,7 @@ just create-strategy "My Strategy Name"
 # or: poetry run python scripts/create_strategy.py "My Strategy Name"
 ```
 
-Creates under `wayfinder_paths/strategies/<name>/`:
-- `strategy.py` - Strategy class with required method stubs
-- `manifest.yaml` - Strategy manifest (entrypoint, adapters, permissions)
-- `test_strategy.py` - Smoke test template
-- `examples.json` - Test data file
-- `README.md` - Documentation template
-- **Dedicated wallet** added to `config.json` with the strategy name as label
+Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
 
 **New adapter:**
 
@@ -702,14 +651,7 @@ just create-adapter "my_protocol"
 # or: poetry run python scripts/create_adapter.py "my_protocol"
 ```
 
-Creates under `wayfinder_paths/adapters/<name>_adapter/`:
-- `adapter.py` - Adapter class extending `BaseAdapter`
-- `manifest.yaml` - Adapter manifest (entrypoint, capabilities, dependencies)
-- `test_adapter.py` - Basic test template
-- `examples.json` - Test data file
-- `README.md` - Documentation template
-
-Use `--override` flag to replace an existing strategy/adapter.
+Creates `wayfinder_paths/adapters/<name>_adapter/` with adapter.py, manifest.yaml, test, examples.json, README. Use `--override` to replace existing.
 
 ### Manifests
 

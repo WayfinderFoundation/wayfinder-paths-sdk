@@ -4,39 +4,28 @@ Backtesting framework for strategy development and validation.
 Provides simple interfaces for running backtests with realistic costs,
 automatic data fetching, and comprehensive performance metrics.
 
-Quick start:
-    >>> from wayfinder_paths.core.backtesting import quick_backtest
-    >>>
-    >>> def my_strategy(prices, ctx):
-    ...     returns = prices.pct_change()
-    ...     signals = (returns > 0).astype(float)
-    ...     return signals / signals.sum(axis=1).values[:, None]
-    >>>
-    >>> result = await quick_backtest(
-    ...     strategy_fn=my_strategy,
-    ...     symbols=["BTC", "ETH"],
-    ...     start_date="2025-01-01",
-    ...     end_date="2025-02-01",
-    ...     leverage=2.0
-    ... )
-    >>> print(result.stats)
+## Strategy types and which helpers to use
 
-Manual workflow:
-    >>> from wayfinder_paths.core.backtesting import (
-    ...     fetch_prices,
-    ...     fetch_funding_rates,
-    ...     run_backtest,
-    ...     BacktestConfig,
-    ... )
-    >>>
-    >>> prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01")
-    >>> funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
-    >>>
-    >>> # Your signal logic
-    >>> target_positions = ...
-    >>>
+### Perp/spot momentum or trend-following
+    >>> result = await quick_backtest(strategy_fn, symbols, start, end, leverage=2.0)
+
+### Delta-neutral basis carry (long spot + short perp, harvest funding)
+    >>> result = await backtest_delta_neutral(["BTC", "ETH"], start, end, funding_threshold=0.0001)
+
+### Lending yield rotation (USDC across Aave/Moonwell/Morpho)
+    >>> result = await backtest_yield_rotation("USDC", ["aave", "moonwell", "morpho"], start, end)
+
+### Carry trade (borrow cheap, supply expensive)
+    >>> result = await backtest_carry_trade("USDC", start, end, min_spread=0.01)
+
+### Manual workflow (full control over signals and config)
+    >>> prices = await fetch_prices(["BTC", "ETH"], start, end)
+    >>> funding = await fetch_funding_rates(["BTC", "ETH"], start, end)
     >>> config = BacktestConfig(leverage=2.0, funding_rates=funding)
     >>> result = run_backtest(prices, target_positions, config)
+
+## Data availability
+Oldest available: ~August 2025 (Delta Lab + Hyperliquid retain ~7 months).
 """
 
 from wayfinder_paths.core.backtesting.backtester import run_backtest
@@ -45,11 +34,14 @@ from wayfinder_paths.core.backtesting.data import (
     convert_to_spot,
     fetch_borrow_rates,
     fetch_funding_rates,
+    fetch_lending_rates,
     fetch_prices,
+    fetch_supply_rates,
     get_available_date_range,
     validate_date_range,
 )
 from wayfinder_paths.core.backtesting.helpers import (
+    backtest_delta_neutral,
     backtest_with_rates,
     quick_backtest,
 )
@@ -59,24 +51,36 @@ from wayfinder_paths.core.backtesting.types import (
     BacktestResult,
     BacktestStats,
 )
+from wayfinder_paths.core.backtesting.yield_strategies import (
+    backtest_carry_trade,
+    backtest_yield_rotation,
+    build_yield_index,
+)
 
 __all__ = [
-    # Core functions
+    # Core engine
     "run_backtest",
     "run_multi_leverage_backtest",
     "BacktestConfig",
     "BacktestResult",
-    "BacktestStats",  # Type hints for IDE autocomplete
+    "BacktestStats",
+    # End-to-end strategy helpers
+    "quick_backtest",  # Perp/spot momentum (auto data fetch)
+    "backtest_with_rates",  # Perp/spot with explicit funding signal
+    "backtest_delta_neutral",  # Long spot + short perp, harvest funding
+    "backtest_yield_rotation",  # Rotate across lending venues by supply APR
+    "backtest_carry_trade",  # Borrow cheap + supply expensive (net carry)
+    # Synthetic price primitives
+    "build_yield_index",  # Compound APR rates into price index
     # Data fetching
     "fetch_prices",
     "fetch_funding_rates",
     "fetch_borrow_rates",
+    "fetch_supply_rates",  # Supply APRs averaged across venues
+    "fetch_lending_rates",  # Supply + borrow APRs per venue (for rotation/carry)
     "get_available_date_range",
     "validate_date_range",
-    # Delta neutral helpers  ← NEW SECTION
-    "convert_to_spot",  # For spot/perp hedging strategies
     # Utilities
+    "convert_to_spot",  # Spot leg (same prices, zero funding)
     "align_dataframes",
-    "quick_backtest",
-    "backtest_with_rates",
 ]

@@ -110,3 +110,22 @@ def test_web3s_accept_int_rpc_url_keys(restore_global_config: None) -> None:
 
     w3 = get_web3s_from_chain_id(CHAIN_ID_BASE)[0]
     assert w3.provider.endpoint_uri == "https://example.invalid"
+
+
+def test_gorlami_base_url_derived_from_api_base(
+    restore_global_config: None,
+) -> None:
+    from wayfinder_paths.core.clients.GorlamiTestnetClient import GorlamiTestnetClient
+
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+            }
+        }
+    )
+
+    client = GorlamiTestnetClient()
+    assert (
+        client.base_url == "https://strategies.wayfinder.ai/api/v1/blockchain/gorlami"
+    )

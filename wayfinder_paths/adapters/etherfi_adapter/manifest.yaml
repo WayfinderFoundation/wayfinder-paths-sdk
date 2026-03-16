@@ -1,0 +1,11 @@
+schema_version: "0.1"
+entrypoint: "adapters.etherfi_adapter.adapter.EtherfiAdapter"
+capabilities:
+  - "staking.stake"
+  - "staking.wrap"
+  - "staking.unwrap"
+  - "withdrawal.request"
+  - "withdrawal.claim"
+  - "position.read"
+dependencies: []
+
