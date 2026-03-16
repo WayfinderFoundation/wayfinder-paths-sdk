@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -312,6 +313,10 @@ class TestBasisTradingStrategy:
 
     @pytest.mark.asyncio
     async def test_status_handles_string_gas_balance(self, strategy):
+        strategy._get_total_portfolio_value = AsyncMock(return_value=(0.0, 0.0, 0.0))
+        strategy.ledger_adapter.get_strategy_net_deposit = AsyncMock(
+            return_value=(True, 100.0)
+        )
         strategy.balance_adapter.get_balance = AsyncMock(
             return_value=(True, "1230000000000000")
         )
@@ -319,6 +324,7 @@ class TestBasisTradingStrategy:
         status = assert_status_dict(await strategy.status())
 
         assert status["gas_available"] == pytest.approx(0.00123)
+        assert status["gassed_up"] is False
 
     @pytest.mark.asyncio
     async def test_ledger_records_snapshot(self, strategy, tmp_path):
@@ -419,6 +425,29 @@ class TestBasisTradingStrategy:
         perp_margin, spot_usdc = await strategy._get_undeployed_capital()
         assert perp_margin == 50.0
         assert spot_usdc == 25.5
+
+    @pytest.mark.asyncio
+    async def test_get_undeployed_capital_prefers_top_level_withdrawable(
+        self, strategy, mock_hyperliquid_adapter
+    ):
+        mock_hyperliquid_adapter.get_user_state = AsyncMock(
+            return_value=(
+                True,
+                {
+                    "withdrawable": "7.5",
+                    "marginSummary": {"accountValue": "100", "withdrawable": "50"},
+                    "assetPositions": [],
+                },
+            )
+        )
+        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
+            return_value=(True, {"balances": []})
+        )
+
+        perp_margin, spot_usdc = await strategy._get_undeployed_capital()
+
+        assert perp_margin == 7.5
+        assert spot_usdc == 0.0
 
     @pytest.mark.asyncio
     async def test_scale_up_position_no_position(self, strategy):
@@ -544,65 +573,50 @@ class TestBasisTradingStrategy:
             assert success
 
     @pytest.mark.asyncio
-    async def test_scale_up_position_rejects_partial_fill_if_live_book_stays_imbalanced(
+    async def test_scale_up_position_rejects_partial_fill_that_leaves_imbalance(
         self, strategy, mock_hyperliquid_adapter
     ):
         strategy.current_position = BasisPosition(
-            coin="XPL",
+            coin="ETH",
             spot_asset_id=10000,
             perp_asset_id=1,
-            spot_amount=133.0,
-            perp_amount=133.0,
-            entry_price=1.0,
+            spot_amount=1.0,
+            perp_amount=1.0,
+            entry_price=2000.0,
             leverage=2,
             entry_timestamp=1700000000000,
             funding_collected=0.0,
         )
 
         mock_hyperliquid_adapter.get_all_mid_prices = AsyncMock(
-            return_value=(True, {"XPL": 1.0})
+            return_value=(True, {"ETH": 2000.0})
+        )
+        mock_hyperliquid_adapter.get_valid_order_size = MagicMock(
+            side_effect=lambda _aid, sz: sz
         )
         mock_hyperliquid_adapter.get_user_state = AsyncMock(
-            side_effect=[
-                (
-                    True,
-                    {
-                        "marginSummary": {"accountValue": "300", "withdrawable": "300"},
-                        "assetPositions": [
-                            {
-                                "position": {
-                                    "coin": "XPL",
-                                    "szi": "-133",
-                                    "entryPx": "1",
-                                    "liquidationPx": "3",
-                                }
+            return_value=(
+                True,
+                {
+                    "marginSummary": {"accountValue": "100", "withdrawable": "0"},
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "ETH",
+                                "szi": "-1.03",
+                                "entryPx": "2000",
+                                "liquidationPx": "2500",
                             }
-                        ],
-                    },
-                ),
-                (
-                    True,
-                    {
-                        "marginSummary": {"accountValue": "300", "withdrawable": "140"},
-                        "assetPositions": [
-                            {
-                                "position": {
-                                    "coin": "XPL",
-                                    "szi": "-186",
-                                    "entryPx": "1",
-                                    "liquidationPx": "3",
-                                }
-                            }
-                        ],
-                    },
-                ),
-            ]
+                        }
+                    ],
+                },
+            )
         )
         mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
-            side_effect=[
-                (True, {"balances": [{"coin": "USDC", "total": "0"}]}),
-                (True, {"balances": [{"coin": "UXPL", "total": "292.794901"}]}),
-            ]
+            return_value=(True, {"balances": [{"coin": "ETH", "total": "1.08"}]})
+        )
+        strategy._rebalance_usdc_between_perp_and_spot = AsyncMock(
+            return_value=(True, "ok")
         )
 
         with patch(
@@ -610,17 +624,16 @@ class TestBasisTradingStrategy:
         ) as mock_filler_class:
             mock_filler = MagicMock()
             mock_filler.fill_pair_units = AsyncMock(
-                return_value=(159.794901, 53.0, 159.79, 53.0, [], [])
+                return_value=(0.08, 0.03, 160.0, 60.0, [], [])
             )
             mock_filler_class.return_value = mock_filler
 
-            success, msg = await strategy._scale_up_position(240.0)
+            success, msg = await strategy._scale_up_position(120.0)
 
         assert success is False
         assert "imbalanced after fill" in msg
-        assert strategy.current_position is not None
-        assert strategy.current_position.spot_amount == pytest.approx(292.794901)
-        assert strategy.current_position.perp_amount == pytest.approx(186.0)
+        assert strategy.current_position.spot_amount == pytest.approx(1.08)
+        assert strategy.current_position.perp_amount == pytest.approx(1.03)
 
     @pytest.mark.asyncio
     async def test_update_does_not_scale_on_perp_pnl_margin_release(
@@ -675,62 +688,6 @@ class TestBasisTradingStrategy:
         success, _ = assert_status_tuple(await strategy.update())
         assert success
         strategy._scale_up_position.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_monitor_repairs_leg_imbalance_even_during_cooldown(
-        self, strategy, mock_hyperliquid_adapter
-    ):
-        strategy.current_position = BasisPosition(
-            coin="XPL",
-            spot_asset_id=10000,
-            perp_asset_id=1,
-            spot_amount=133.0,
-            perp_amount=133.0,
-            entry_price=1.0,
-            leverage=2,
-            entry_timestamp=1700000000000,
-            funding_collected=0.0,
-        )
-
-        imbalanced_state = {
-            "marginSummary": {
-                "accountValue": "100",
-                "withdrawable": "0",
-                "totalNtlPos": "100",
-            },
-            "assetPositions": [
-                {
-                    "position": {
-                        "coin": "XPL",
-                        "szi": "-186",
-                        "entryPx": "1",
-                        "liquidationPx": "3",
-                    }
-                }
-            ],
-        }
-        mock_hyperliquid_adapter.get_user_state = AsyncMock(
-            side_effect=[(True, imbalanced_state), (True, imbalanced_state)]
-        )
-        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
-            return_value=(True, {"balances": [{"coin": "UXPL", "total": "292.794901"}]})
-        )
-
-        strategy._get_total_portfolio_value = AsyncMock(
-            return_value=(100.0, 100.0, 0.0)
-        )
-        strategy._is_near_liquidation = AsyncMock(return_value=(False, "ok"))
-        strategy._repair_leg_imbalance = AsyncMock(return_value=(True, "shorted more"))
-        strategy._needs_new_position = AsyncMock(
-            return_value=(True, "Position imbalance")
-        )
-        strategy._is_rotation_allowed = AsyncMock(return_value=(False, "cooldown"))
-
-        success, msg = await strategy._monitor_position()
-
-        assert success is True
-        assert "cooldown" in msg
-        strategy._repair_leg_imbalance.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_update_includes_rotation_cooldown_hint(
@@ -788,6 +745,314 @@ class TestBasisTradingStrategy:
         success, msg = assert_status_tuple(await strategy.update())
         assert success
         assert "Rotation: 3d 4h remaining" in msg
+
+    @pytest.mark.asyncio
+    async def test_is_rotation_allowed_falls_back_to_position_entry_timestamp(
+        self, strategy
+    ):
+        entry_time = datetime.now(UTC) - timedelta(days=7)
+        strategy.current_position = BasisPosition(
+            coin="ETH",
+            spot_asset_id=10000,
+            perp_asset_id=1,
+            spot_amount=1.0,
+            perp_amount=1.0,
+            entry_price=2000.0,
+            leverage=2,
+            entry_timestamp=int(entry_time.timestamp() * 1000),
+            funding_collected=0.0,
+        )
+        strategy._get_last_rotation_time = AsyncMock(return_value=None)
+
+        allowed, msg = await strategy._is_rotation_allowed()
+
+        assert allowed is False
+        assert "Rotation cooldown" in msg
+
+    @pytest.mark.asyncio
+    async def test_rotation_cooldown_hint_falls_back_to_position_entry_timestamp(
+        self, strategy
+    ):
+        entry_time = datetime.now(UTC) - timedelta(days=7)
+        strategy.current_position = BasisPosition(
+            coin="ETH",
+            spot_asset_id=10000,
+            perp_asset_id=1,
+            spot_amount=1.0,
+            perp_amount=1.0,
+            entry_price=2000.0,
+            leverage=2,
+            entry_timestamp=int(entry_time.timestamp() * 1000),
+            funding_collected=0.0,
+        )
+        strategy._get_last_rotation_time = AsyncMock(return_value=None)
+
+        hint = await strategy._rotation_cooldown_hint()
+
+        assert "remaining" in hint
+        assert "unlocks" in hint
+
+    @pytest.mark.asyncio
+    async def test_discover_existing_position_reconstructs_entry_timestamp_from_fills(
+        self, strategy, mock_hyperliquid_adapter
+    ):
+        mock_hyperliquid_adapter.get_user_state = AsyncMock(
+            return_value=(
+                True,
+                {
+                    "marginSummary": {"accountValue": "123"},
+                    "assetPositions": [
+                        {
+                            "position": {
+                                "coin": "ETH",
+                                "szi": "-0.75",
+                                "entryPx": "2000",
+                                "cumFunding": {"sinceOpen": "-1.5"},
+                            }
+                        }
+                    ],
+                },
+            )
+        )
+        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
+            return_value=(True, {"balances": [{"coin": "ETH", "total": "0.75"}]})
+        )
+        mock_hyperliquid_adapter.get_user_fills = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {"coin": "ETH", "time": 111},
+                    {"coin": "@1", "time": 222},
+                    {"coin": "BTC", "time": 999},
+                ],
+            )
+        )
+
+        await strategy._discover_existing_position()
+
+        assert strategy.current_position is not None
+        assert strategy.current_position.entry_timestamp == 222
+        assert strategy.current_position.spot_amount == pytest.approx(0.75)
+        assert strategy.current_position.perp_amount == pytest.approx(0.75)
+        assert strategy.deposit_amount == pytest.approx(123.0)
+
+    @pytest.mark.asyncio
+    async def test_monitor_repairs_leg_imbalance_even_when_rebalance_is_in_cooldown(
+        self, strategy, mock_hyperliquid_adapter
+    ):
+        strategy.current_position = BasisPosition(
+            coin="XPL",
+            spot_asset_id=10000,
+            perp_asset_id=1,
+            spot_amount=292.794901,
+            perp_amount=186.0,
+            entry_price=1.0,
+            leverage=2,
+            entry_timestamp=1700000000000,
+            funding_collected=0.0,
+        )
+
+        imbalanced_state = {
+            "marginSummary": {
+                "accountValue": "100",
+                "withdrawable": "0",
+            },
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": "XPL",
+                        "szi": "-186",
+                        "entryPx": "1",
+                        "liquidationPx": "3",
+                    }
+                }
+            ],
+        }
+        mock_hyperliquid_adapter.get_user_state = AsyncMock(
+            side_effect=[(True, imbalanced_state), (True, imbalanced_state)]
+        )
+        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
+            return_value=(True, {"balances": [{"coin": "UXPL", "total": "292.794901"}]})
+        )
+
+        strategy._get_total_portfolio_value = AsyncMock(
+            return_value=(100.0, 100.0, 0.0)
+        )
+        strategy._is_near_liquidation = AsyncMock(return_value=(False, "ok"))
+        strategy._repair_leg_imbalance = AsyncMock(return_value=(True, "shorted more"))
+        strategy._needs_new_position = AsyncMock(
+            return_value=(True, "Funding earned 10 exceeds threshold")
+        )
+        strategy._is_rotation_allowed = AsyncMock(return_value=(False, "cooldown"))
+
+        success, msg = await strategy._monitor_position()
+
+        assert success is True
+        assert "cooldown" in msg
+        strategy._repair_leg_imbalance.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            "Missing perp or spot position",
+            "Perp position is not short",
+            "Position imbalance: spot=1.0, perp=0.6",
+        ],
+    )
+    async def test_monitor_bypasses_cooldown_for_structural_rebalance_reasons(
+        self, strategy, mock_hyperliquid_adapter, reason
+    ):
+        strategy.current_position = BasisPosition(
+            coin="ETH",
+            spot_asset_id=10000,
+            perp_asset_id=1,
+            spot_amount=1.0,
+            perp_amount=1.0,
+            entry_price=2000.0,
+            leverage=2,
+            entry_timestamp=1700000000000,
+            funding_collected=0.0,
+        )
+
+        state = {
+            "marginSummary": {
+                "accountValue": "100",
+                "withdrawable": "0",
+            },
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": "ETH",
+                        "szi": "-1.0",
+                        "entryPx": "2000",
+                        "liquidationPx": "2500",
+                    }
+                }
+            ],
+        }
+        mock_hyperliquid_adapter.get_user_state = AsyncMock(return_value=(True, state))
+
+        strategy._get_total_portfolio_value = AsyncMock(
+            return_value=(100.0, 100.0, 0.0)
+        )
+        strategy._is_near_liquidation = AsyncMock(return_value=(False, "ok"))
+        strategy._verify_leg_balance = AsyncMock(return_value=(True, "ok"))
+        strategy._needs_new_position = AsyncMock(return_value=(True, reason))
+        strategy._is_rotation_allowed = AsyncMock(return_value=(False, "cooldown"))
+        strategy._close_position = AsyncMock(return_value=(True, "closed"))
+        strategy._find_and_open_position = AsyncMock(return_value=(True, "reopened"))
+
+        success, msg = await strategy._monitor_position()
+
+        assert success is True
+        assert msg == "reopened"
+        strategy._close_position.assert_awaited_once()
+        strategy._find_and_open_position.assert_awaited_once_with(
+            rotation_reason=reason
+        )
+        strategy._is_rotation_allowed.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_check_apy_upgrade_scales_hurdle_with_switch_cost(self, strategy):
+        strategy.analyze = AsyncMock(
+            return_value={
+                "success": True,
+                "opportunities": [
+                    {
+                        "coin": "BTC",
+                        "net_apy": 0.12,
+                        "entry_cost_usd": 2.5,
+                        "exit_cost_usd": 2.0,
+                        "avg_hold_hours": 24.0 * 14.0,
+                    },
+                    {
+                        "coin": "ETH",
+                        "net_apy": 0.08,
+                        "entry_cost_usd": 1.0,
+                        "exit_cost_usd": 2.5,
+                        "avg_hold_hours": 24.0 * 14.0,
+                    },
+                ],
+            }
+        )
+
+        should_rotate, msg = await strategy._check_apy_upgrade(
+            "ETH", capital_usdc=1000.0
+        )
+
+        assert should_rotate is False
+        assert "below hurdle" in msg
+        assert "$5.00 switch cost" in msg
+        assert "21.0d" in msg
+
+    @pytest.mark.asyncio
+    async def test_check_apy_upgrade_respects_two_percent_floor(self, strategy):
+        strategy.analyze = AsyncMock(
+            return_value={
+                "success": True,
+                "opportunities": [
+                    {
+                        "coin": "BTC",
+                        "net_apy": 0.059,
+                        "entry_cost_usd": 0.05,
+                        "exit_cost_usd": 0.05,
+                    },
+                    {
+                        "coin": "ETH",
+                        "net_apy": 0.04,
+                        "entry_cost_usd": 0.05,
+                        "exit_cost_usd": 0.05,
+                    },
+                ],
+            }
+        )
+
+        should_rotate, msg = await strategy._check_apy_upgrade(
+            "ETH", capital_usdc=5000.0
+        )
+
+        assert should_rotate is False
+        assert "below hurdle 2.00%" in msg
+
+    @pytest.mark.asyncio
+    async def test_check_apy_upgrade_supports_snapshot_selection_payload(
+        self, strategy
+    ):
+        strategy.analyze = AsyncMock(
+            return_value={
+                "success": True,
+                "opportunities": [
+                    {
+                        "coin": "BTC",
+                        "selection": {
+                            "net_apy": 0.11,
+                            "entry_cost_usd": 0.2,
+                            "exit_cost_usd": 0.2,
+                            "avg_hold_hours": 24.0 * 14.0,
+                        },
+                    },
+                    {
+                        "coin": "ETH",
+                        "selection": {
+                            "net_apy": 0.07,
+                            "entry_cost_usd": 0.2,
+                            "exit_cost_usd": 0.2,
+                            "avg_hold_hours": 24.0 * 14.0,
+                        },
+                    },
+                ],
+            }
+        )
+
+        should_rotate, msg = await strategy._check_apy_upgrade(
+            "ETH", capital_usdc=5000.0
+        )
+
+        assert should_rotate is True
+        assert "BTC" in msg
+        assert "hurdle" in msg
+        assert "21.0d" in msg
 
     @pytest.mark.asyncio
     async def test_ensure_builder_fee_approved_already_approved(
