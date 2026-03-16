@@ -60,10 +60,11 @@ async def test_get_wallet_balances_returns_compact_summary(mock_wallet):
 
     data = json.loads(result)
     assert "error" not in data
-    balances_data = data["balances"]
+    balances_data = data["balance_summary"]
     assert balances_data["total_balance_usd"] == pytest.approx(3.5)
     assert balances_data["chain_breakdown"]["base"] == pytest.approx(1.5)
     assert balances_data["chain_breakdown"]["arbitrum"] == pytest.approx(2.0)
+    assert "balances" not in data
     assert "balances" not in balances_data
     assert balances_data["position_count"] == 2
     assert len(balances_data["top_positions"]) == 2
@@ -125,6 +126,7 @@ async def test_get_wallet_activity_returns_compact_events(mock_wallet):
                     "symbol": "ETH",
                     "timestamp": "2026-01-01T00:00:00Z",
                     "direction": "out",
+                    "hash": "0xabc123",
                     "extra": "ignored",
                 }
             ],
@@ -143,4 +145,5 @@ async def test_get_wallet_activity_returns_compact_events(mock_wallet):
 
     data = json.loads(result)
     assert data["activity"][0]["type"] == "swap"
+    assert data["activity"][0]["hash"] == "0xabc123"
     assert "extra" not in data["activity"][0]

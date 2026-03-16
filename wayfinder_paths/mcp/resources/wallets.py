@@ -77,6 +77,7 @@ def _compact_activity(
                 "symbol": event.get("symbol"),
                 "timestamp": event.get("timestamp"),
                 "direction": event.get("direction"),
+                "hash": event.get("hash"),
             }
         )
     return compact
@@ -137,6 +138,7 @@ async def get_wallet(label: str) -> str:
             "label": label,
             "address": address,
             "profile_summary": profile_summary,
+            "detail_level": "select",
             "detail_uri": f"wayfinder://wallets/{label}/full",
         },
         indent=2,
@@ -173,7 +175,7 @@ async def get_wallet_balances(label: str) -> str:
             {
                 "label": label,
                 "address": address,
-                "balances": {
+                "balance_summary": {
                     "total_balance_usd": data.get("total_balance_usd", 0),
                     "chain_breakdown": data.get("chain_breakdown", {}),
                     "position_count": len(balances_list),

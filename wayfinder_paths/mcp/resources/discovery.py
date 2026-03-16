@@ -152,7 +152,13 @@ async def list_adapters() -> str:
         manifest_path = child / "manifest.yaml"
         if not manifest_path.exists():
             continue
-        items.append(_adapter_select_view(child.name, read_yaml(manifest_path)))
+        items.append(
+            {
+                "name": child.name,
+                "summary": _fallback_summary(child.name, "adapters"),
+                "detail_uri": f"wayfinder://adapters/{child.name}",
+            }
+        )
 
     return json.dumps({"adapters": items, "detail_level": "route"}, indent=2)
 
@@ -168,7 +174,17 @@ async def list_strategies() -> str:
         manifest_path = child / "manifest.yaml"
         if not manifest_path.exists():
             continue
-        items.append(_strategy_select_view(child.name, read_yaml(manifest_path)))
+        manifest = read_yaml(manifest_path)
+        items.append(
+            {
+                "name": child.name,
+                "summary": _fallback_summary(child.name, "strategies"),
+                "status": manifest.get("status", "stable")
+                if isinstance(manifest, dict)
+                else "stable",
+                "detail_uri": f"wayfinder://strategies/{child.name}",
+            }
+        )
 
     return json.dumps({"strategies": items, "detail_level": "route"}, indent=2)
 
