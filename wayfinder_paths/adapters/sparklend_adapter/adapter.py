@@ -162,7 +162,6 @@ class SparkLendAdapter(AaveV3Adapter):
         amount: int,
         rate_mode: int = VARIABLE_RATE_MODE,
     ) -> tuple[bool, Any]:
-
         if rate_mode not in (STABLE_RATE_MODE, VARIABLE_RATE_MODE):
             return False, "rate_mode must be 1 (stable) or 2 (variable)"
 
@@ -174,8 +173,7 @@ class SparkLendAdapter(AaveV3Adapter):
                     chain_id=int(chain_id),
                     native=False,
                 )
-            
-            
+
             if amount <= 0:
                 return False, "amount must be positive"
 
