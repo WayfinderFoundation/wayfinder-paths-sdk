@@ -20,6 +20,7 @@ STRATEGY_ACTIONS = [
 
 ADAPTER_SUMMARIES = {
     "aave_v3_adapter": "Lending and borrowing via Aave V3.",
+    "avantis_adapter": "avUSDC ERC-4626 vault on Base for leveraged trading yield.",
     "balance_adapter": "Wallet balance reads and token transfers.",
     "boros_adapter": "Boros lending and position management.",
     "brap_adapter": "Cross-chain swaps and bridges.",
@@ -126,6 +127,7 @@ def _full_view(name: str, manifest_path: Path, *, kind: str) -> dict[str, Any]:
     out: dict[str, Any] = {
         "name": name,
         "kind": "strategy" if kind == "strategies" else "adapter",
+        "detail_level": "full",
         "manifest": read_yaml(manifest_path),
     }
     readme = read_text_excerpt(target / "README.md")

@@ -1,4 +1,9 @@
 from wayfinder_paths.mcp.resources.catalog import guide_intent, list_intents
+from wayfinder_paths.mcp.resources.contracts import (
+    get_contract,
+    get_contract_full,
+    list_contracts,
+)
 from wayfinder_paths.mcp.resources.discovery import (
     describe_adapter,
     describe_adapter_full,
@@ -43,4 +48,7 @@ __all__ = [
     "get_gas_token",
     "fuzzy_search_tokens",
     "fuzzy_search_tokens_full",
+    "list_contracts",
+    "get_contract",
+    "get_contract_full",
 ]

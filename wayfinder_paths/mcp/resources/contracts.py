@@ -29,7 +29,10 @@ async def list_contracts() -> str:
     """List all locally-deployed contracts from the artifact store."""
     store = ContractArtifactStore.default()
     entries = store.list_deployments()
-    return json.dumps({"contracts": entries, "count": len(entries)}, indent=2)
+    return json.dumps(
+        {"contracts": entries, "count": len(entries), "detail_level": "route"},
+        indent=2,
+    )
 
 
 async def get_contract(chain_id: str, address: str) -> str:
@@ -45,7 +48,7 @@ async def get_contract(chain_id: str, address: str) -> str:
         )
 
     abi = store.get_abi(cid, addr)
-    result: dict[str, Any] = {"metadata": metadata}
+    result: dict[str, Any] = {"metadata": metadata, "detail_level": "select"}
     if abi is not None:
         result["abi_summary"] = _abi_preview(abi)
         result["detail_uri"] = f"wayfinder://contracts/{chain_id}/{address}/full"
