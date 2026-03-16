@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Morpho Blue market and vault operations."
 entrypoint: "adapters.morpho_adapter.adapter.MorphoAdapter"
 capabilities:
   - "market.list"

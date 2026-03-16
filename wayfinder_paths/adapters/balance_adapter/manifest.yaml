@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Wallet balance reads and token transfers."
 entrypoint: "adapters.balance_adapter.adapter.BalanceAdapter"
 capabilities:
   - "balance.read"

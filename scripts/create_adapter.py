@@ -25,6 +25,7 @@ class {class_name}(BaseAdapter):
 """
 
 MANIFEST_YAML = """schema_version: "0.1"
+description: "TODO: one-line summary of this adapter"
 entrypoint: "wayfinder_paths.adapters.{dir_name}.adapter.{class_name}"
 capabilities: []
 dependencies: []

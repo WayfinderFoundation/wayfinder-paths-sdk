@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Batch read calls across contracts."
 entrypoint: "adapters.multicall_adapter.adapter.MulticallAdapter"
 capabilities:
   - "multicall.aggregate"

@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Delta-neutral funding rate capture on Hyperliquid."
 entrypoint: "wayfinder_paths.strategies.basis_trading_strategy.strategy.BasisTradingStrategy"
 permissions:
   policy: |

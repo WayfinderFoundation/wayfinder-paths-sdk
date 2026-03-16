@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Lido staking and withdrawal flows."
 entrypoint: "adapters.lido_adapter.adapter.LidoAdapter"
 capabilities:
   - "staking.stake"

@@ -78,6 +78,7 @@ async def run_strategy(
     gas_token_amount: float = 0.0,
     amount: float | None = None,
 ) -> dict[str, Any]:
+    """Run a packaged strategy action such as status, quote, deposit, or exit."""
     if not strategy.strip():
         return err("invalid_request", "strategy is required")
 

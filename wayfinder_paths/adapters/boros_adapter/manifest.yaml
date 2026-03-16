@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Boros lending and position management."
 entrypoint: "adapters.boros_adapter.adapter.BorosAdapter"
 capabilities:
   - "market.read"

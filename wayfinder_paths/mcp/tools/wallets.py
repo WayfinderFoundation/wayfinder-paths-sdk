@@ -175,6 +175,7 @@ async def wallets(
     parallel: bool = False,
     include_zero_positions: bool = False,
 ) -> dict[str, Any]:
+    """Create wallets, annotate profiles, or discover protocol portfolio state."""
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
 

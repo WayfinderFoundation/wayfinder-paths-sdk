@@ -132,6 +132,7 @@ async def hyperliquid(
     lookback_s: int = 5,
     max_poll_time_s: int = 15 * 60,
 ) -> dict[str, Any]:
+    """Read Hyperliquid market data, account state, and order history."""
     adapter = HyperliquidAdapter()
 
     addr, _ = resolve_wallet_address(
@@ -254,6 +255,7 @@ async def hyperliquid_execute(
     tpsl: Literal["tp", "sl"] | None = None,
     is_market_trigger: bool = True,
 ) -> dict[str, Any]:
+    """Execute Hyperliquid orders, transfers, leverage changes, or withdrawals."""
     want = str(wallet_label or "").strip()
     if not want:
         return err("invalid_request", "wallet_label is required")

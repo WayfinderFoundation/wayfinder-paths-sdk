@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Pool analytics and read-only inspection."
 entrypoint: "adapters.pool_adapter.adapter.PoolAdapter"
 capabilities:
   - "pool.read"
