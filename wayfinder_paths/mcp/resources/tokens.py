@@ -15,6 +15,7 @@ def _compact_token(token: dict[str, Any]) -> dict[str, Any]:
         "name": token.get("name"),
         "chain": token.get("chain"),
         "address": token.get("address"),
+        "decimals": token.get("decimals"),
     }
 
 

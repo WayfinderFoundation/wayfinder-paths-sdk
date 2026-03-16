@@ -32,7 +32,7 @@ async def test_resolve_token_happy_path():
 
     result = json.loads(out)
     assert result["token"]["symbol"] == "USDC"
-    assert "decimals" not in result["token"]
+    assert result["token"]["decimals"] == 6
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_fuzzy_search_tokens_returns_compact_top_results():
     assert result["result_count"] == 7
     assert len(result["results"]) == 5
     assert result["results"][0]["id"] == "foo-0"
-    assert "decimals" not in result["results"][0]
+    assert result["results"][0]["decimals"] == 18
 
 
 @pytest.mark.asyncio

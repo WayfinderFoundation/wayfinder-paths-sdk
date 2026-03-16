@@ -25,7 +25,9 @@ ADAPTER_SUMMARIES = {
     "boros_adapter": "Boros lending and position management.",
     "brap_adapter": "Cross-chain swaps and bridges.",
     "ccxt_adapter": "Multi-exchange CEX trading via CCXT.",
+    "eigencloud_adapter": "EigenCloud AVS and operator management.",
     "ethena_vault_adapter": "Ethena sUSDe staking vault operations.",
+    "etherfi_adapter": "ether.fi liquid restaking and eETH operations.",
     "euler_v2_adapter": "Euler V2 market interactions.",
     "hyperlend_adapter": "HyperLend lending and borrowing.",
     "hyperliquid_adapter": "Hyperliquid market reads and trading actions.",
@@ -47,17 +49,15 @@ STRATEGY_SUMMARIES = {
     "boros_hype_strategy": "HYPE yield with Boros plus hedge management.",
     "hyperlend_stable_yield_strategy": "Stablecoin allocation across HyperLend markets.",
     "moonwell_wsteth_loop_strategy": "Leveraged wstETH carry trade on Base.",
+    "multi_vault_split_strategy": "Multi-vault allocation across lending protocols.",
     "projectx_thbill_usdc_strategy": "USDC allocation into ProjectX T-bill strategy.",
     "stablecoin_yield_strategy": "USDC yield optimization across Base pools.",
 }
 
 
-def _manifest_dirs(kind: str) -> tuple[Path, str] | None:
-    root = repo_root()
-    base = root / "wayfinder_paths" / kind
-    if not base.exists():
-        return None
-    return base, str(base)
+def _manifest_dir(kind: str) -> Path | None:
+    base = repo_root() / "wayfinder_paths" / kind
+    return base if base.exists() else None
 
 
 def _fallback_summary(name: str, kind: str) -> str:
@@ -84,8 +84,7 @@ def _adapter_select_view(name: str, manifest: dict[str, Any]) -> dict[str, Any]:
         "summary": _fallback_summary(name, "adapters"),
         "when_to_use": "Use when you need protocol-specific reads or actions.",
         "mutating": any(
-            "." in cap
-            and cap.split(".", 1)[1].startswith(("execute", "cancel"))
+            ("." in cap and cap.split(".", 1)[1].startswith(("execute", "cancel")))
             or cap in {"transfer", "withdraw"}
             for cap in _capability_preview(capabilities, limit=20)
         ),
@@ -143,11 +142,9 @@ def _full_view(name: str, manifest_path: Path, *, kind: str) -> dict[str, Any]:
 
 
 async def list_adapters() -> str:
-    location = _manifest_dirs("adapters")
-    if location is None:
+    base = _manifest_dir("adapters")
+    if base is None:
         return json.dumps({"error": "Adapters directory not found"})
-
-    base, _ = location
     items: list[dict[str, Any]] = []
     for child in sorted(base.iterdir()):
         if not child.is_dir():
@@ -161,11 +158,9 @@ async def list_adapters() -> str:
 
 
 async def list_strategies() -> str:
-    location = _manifest_dirs("strategies")
-    if location is None:
+    base = _manifest_dir("strategies")
+    if base is None:
         return json.dumps({"error": "Strategies directory not found"})
-
-    base, _ = location
     items: list[dict[str, Any]] = []
     for child in sorted(base.iterdir()):
         if not child.is_dir():
@@ -179,19 +174,17 @@ async def list_strategies() -> str:
 
 
 def _describe(kind: str, name: str, *, full: bool) -> str:
-    location = _manifest_dirs(kind)
-    if location is None:
+    base = _manifest_dir(kind)
+    if base is None:
         return json.dumps({"error": f"{kind.title()} directory not found"})
 
-    base, _ = location
+    singular = "adapter" if kind == "adapters" else "strategy"
     target = base / name
     if not target.exists():
-        singular = "adapter" if kind == "adapters" else "strategy"
         return json.dumps({"error": f"Unknown {singular}: {name}"})
 
     manifest_path = target / "manifest.yaml"
     if not manifest_path.exists():
-        singular = "adapter" if kind == "adapters" else "strategy"
         return json.dumps({"error": f"Missing manifest.yaml for {singular}: {name}"})
 
     manifest = read_yaml(manifest_path)

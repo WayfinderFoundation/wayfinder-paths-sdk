@@ -73,10 +73,7 @@ async def get_contract_full(chain_id: str, address: str) -> str:
         )
 
     abi = store.get_abi(cid, addr)
-    result: dict[str, Any] = {
-        "metadata": metadata,
-        "detail_level": "full",
-    }
+    result: dict[str, Any] = {"metadata": metadata, "detail_level": "full"}
     if abi is not None:
         result["abi"] = abi
 
