@@ -151,10 +151,13 @@ def _parse_openclaw_skill_config(raw_obj: Any) -> PackSkillOpenClawConfig | None
     if obj is None:
         return None
 
-    requires = _ensure_object(
-        obj.get("requires"),
-        name="wfpack.yaml skill.openclaw.requires",
-    ) or {}
+    requires = (
+        _ensure_object(
+            obj.get("requires"),
+            name="wfpack.yaml skill.openclaw.requires",
+        )
+        or {}
+    )
 
     install_raw = obj.get("install") or []
     if not isinstance(install_raw, list):

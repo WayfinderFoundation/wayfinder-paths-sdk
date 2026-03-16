@@ -81,10 +81,18 @@ def _yaml_list(key: str, values: list[str], *, indent: int = 0) -> str:
 
 
 def _wrap_frontmatter(lines: list[str], body: str) -> str:
-    return "---\n" + "\n".join([line for line in lines if line]) + "\n---\n\n" + body.strip() + "\n"
+    return (
+        "---\n"
+        + "\n".join([line for line in lines if line])
+        + "\n---\n\n"
+        + body.strip()
+        + "\n"
+    )
 
 
-def _render_claude_skill(manifest: PackManifest, skill: PackSkillConfig, body: str) -> str:
+def _render_claude_skill(
+    manifest: PackManifest, skill: PackSkillConfig, body: str
+) -> str:
     lines = [
         f"name: {skill.name}",
         f"description: {_quote_yaml(skill.description)}",
@@ -102,7 +110,9 @@ def _render_claude_skill(manifest: PackManifest, skill: PackSkillConfig, body: s
     return _wrap_frontmatter(lines, body)
 
 
-def _render_codex_skill(manifest: PackManifest, skill: PackSkillConfig, body: str) -> str:
+def _render_codex_skill(
+    manifest: PackManifest, skill: PackSkillConfig, body: str
+) -> str:
     lines = [
         f"name: {skill.name}",
         f"description: {_quote_yaml(skill.description)}",

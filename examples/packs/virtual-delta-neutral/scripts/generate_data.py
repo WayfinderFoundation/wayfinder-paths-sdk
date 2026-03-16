@@ -67,13 +67,15 @@ def fetch_data(lookback_days: int = 30) -> list[dict]:
     points = []
     for ts in all_ts:
         f = funding_map.get(ts)
-        points.append({
-            "ts": ts,
-            "price": price_map[ts],
-            "funding_rate": f["funding_rate"] if f else 0,
-            "virtual_supply_apr": virtual_lending_map.get(ts, 0),
-            "usdc_supply_apr": usdc_lending_map.get(ts, 0),
-        })
+        points.append(
+            {
+                "ts": ts,
+                "price": price_map[ts],
+                "funding_rate": f["funding_rate"] if f else 0,
+                "virtual_supply_apr": virtual_lending_map.get(ts, 0),
+                "usdc_supply_apr": usdc_lending_map.get(ts, 0),
+            }
+        )
 
     return points
 

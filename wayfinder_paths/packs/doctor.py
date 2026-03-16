@@ -77,8 +77,7 @@ def _pack_context(manifest: PackManifest) -> dict[str, Any]:
         "slug": manifest.slug,
         "name": manifest.name,
         "version": manifest.version,
-        "summary": manifest.summary.strip()
-        or "TODO: describe what this pack does.",
+        "summary": manifest.summary.strip() or "TODO: describe what this pack does.",
         "primary_kind": manifest.primary_kind,
         "component_path": _component_path(manifest),
     }

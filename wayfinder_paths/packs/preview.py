@@ -68,9 +68,7 @@ def inspect_preview_pack(*, pack_dir: Path) -> PreviewInspection:
 
     applet_manifest_path = (pack_dir / manifest.applet.manifest_path).resolve()
     if not applet_manifest_path.exists():
-        raise PackPreviewError(
-            f"Applet manifest not found: {applet_manifest_path}"
-        )
+        raise PackPreviewError(f"Applet manifest not found: {applet_manifest_path}")
 
     try:
         applet_manifest = json.loads(applet_manifest_path.read_text(encoding="utf-8"))

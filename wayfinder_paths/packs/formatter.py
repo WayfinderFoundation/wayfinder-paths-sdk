@@ -57,9 +57,7 @@ def _skill_dict(manifest: PackManifest) -> dict[str, Any] | None:
     if skill.codex:
         codex: dict[str, Any] = {}
         if skill.codex.allow_implicit_invocation is not None:
-            codex["allow_implicit_invocation"] = (
-                skill.codex.allow_implicit_invocation
-            )
+            codex["allow_implicit_invocation"] = skill.codex.allow_implicit_invocation
         if codex:
             data["codex"] = codex
 

@@ -110,11 +110,11 @@ def test_pack_doctor_provided_skill_requires_skill_md(tmp_path: Path):
     manifest_path = pack_dir / "wfpack.yaml"
     manifest_path.write_text(
         manifest_path.read_text(encoding="utf-8").replace(
-            '  source: generated\n'
+            "  source: generated\n"
             '  name: "provided-skill"\n'
             '  description: "Use the provided-skill pack through Wayfinder."\n'
             '  instructions: "skill/instructions.md"\n',
-            '  source: provided\n'
+            "  source: provided\n"
             '  name: "provided-skill"\n'
             '  description: "Use the provided-skill pack through Wayfinder."\n',
         ),
@@ -161,7 +161,9 @@ def test_build_ignores_dot_build_artifacts(tmp_path: Path):
     )
     render_skill_exports(pack_dir=pack_dir)
 
-    built = PackBuilder.build(pack_dir=pack_dir, out_path=pack_dir / "dist" / "bundle.zip")
+    built = PackBuilder.build(
+        pack_dir=pack_dir, out_path=pack_dir / "dist" / "bundle.zip"
+    )
 
     with ZipFile(built.bundle_path, "r") as zf:
         names = zf.namelist()

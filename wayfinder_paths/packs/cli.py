@@ -52,7 +52,9 @@ def _raise_for_doctor_errors(report: PackDoctorReport) -> None:
     raise click.ClickException(f"Pack doctor found errors\n{details}")
 
 
-def _prepare_pack_for_build(pack_dir: Path) -> tuple[PackDoctorReport, PackSkillRenderReport]:
+def _prepare_pack_for_build(
+    pack_dir: Path,
+) -> tuple[PackDoctorReport, PackSkillRenderReport]:
     try:
         doctor_report = run_doctor(pack_dir=pack_dir, fix=False, overwrite=False)
     except PackDoctorError as exc:
