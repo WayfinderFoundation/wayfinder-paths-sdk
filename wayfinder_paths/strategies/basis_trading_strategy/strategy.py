@@ -1063,9 +1063,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             wallet_address=self._get_strategy_wallet_address(),
         )
 
-        gas_balance = (
-            from_erc20_raw(gas_balance_wei or 0, 18) if success else 0.0
-        )
+        gas_balance = from_erc20_raw(gas_balance_wei or 0, 18) if success else 0.0
 
         return StatusDict(
             portfolio_value=total_value,

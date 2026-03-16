@@ -89,7 +89,9 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
 
 def _get_web3(rpc: str, chain_id: int) -> AsyncWeb3:
     if _is_gorlami_fork_rpc(rpc):
-        provider = _GorlamiProvider(rpc, request_kwargs={"headers": _wayfinder_auth_headers()})
+        provider = _GorlamiProvider(
+            rpc, request_kwargs={"headers": _wayfinder_auth_headers()}
+        )
         web3 = AsyncWeb3(provider)
     elif _is_wayfinder_rpc(rpc):
         web3 = AsyncWeb3(

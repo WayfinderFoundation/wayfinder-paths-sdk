@@ -126,6 +126,7 @@ def write_wallet_mnemonic(mnemonic: str, path: str | Path | None = None) -> Path
 
     return cfg_path
 
+
 def get_etherscan_api_key() -> str | None:
     system = CONFIG.get("system", {})
     api_key = system.get("etherscan_api_key")
