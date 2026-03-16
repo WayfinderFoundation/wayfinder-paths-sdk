@@ -166,6 +166,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `BRAPAdapter` (cross-chain swaps + bridges)
 - `CCXTAdapter` (multi-exchange CEX trading via CCXT)
 - `EthenaVaultAdapter` (Ethena sUSDe staking vault with cooldown withdrawals)
+- `EtherfiAdapter` (ether.fi ETH liquid restaking via eETH / weETH with async withdrawals)
 - `HyperlendAdapter` (HyperLend lending/borrowing)
 - `HyperliquidAdapter` (perps, spot, deposits, withdrawals)
 - `LedgerAdapter` (transaction recording)

@@ -14,6 +14,7 @@ import pandas as pd
 from wayfinder_paths.core.backtesting.backtester import run_backtest
 from wayfinder_paths.core.backtesting.data import (
     align_dataframes,
+    convert_to_spot,
     fetch_funding_rates,
     fetch_prices,
 )
@@ -178,10 +179,143 @@ async def backtest_with_rates(
     }
     target_positions = strategy_fn(prices, funding, context)
 
+    interval_to_periods = {
+        "1m": 365 * 24 * 60,
+        "5m": 365 * 24 * 12,
+        "15m": 365 * 24 * 4,
+        "1h": 365 * 24,
+        "4h": 365 * 6,
+        "1d": 365,
+    }
+    periods_per_year = interval_to_periods.get(interval, 365 * 24)
+
     if config is None:
-        config = BacktestConfig(leverage=leverage, funding_rates=funding)
+        config = BacktestConfig(
+            leverage=leverage, funding_rates=funding, periods_per_year=periods_per_year
+        )
     else:
         config.leverage = leverage
         config.funding_rates = funding
+        config.periods_per_year = periods_per_year
 
     return run_backtest(prices, target_positions, config)
+
+
+async def backtest_delta_neutral(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    funding_threshold: float = 0.0001,
+    leverage: float = 1.0,
+    interval: str = "1h",
+    config: BacktestConfig | None = None,
+) -> BacktestResult:
+    """
+    Delta-neutral basis carry: long spot + short perp, enter when funding is positive.
+
+    Strategy logic:
+    - Short perp (-0.5 weight) + long spot (+0.5 weight) per symbol when funding > threshold
+    - Net delta ≈ 0 (price-neutral); profits from funding payments collected on the short side
+    - Exits when funding drops below threshold (flat)
+
+    Funding sign convention (CRITICAL):
+    - Positive funding (+): longs PAY shorts → short perp RECEIVES funding (good)
+    - Negative funding (-): shorts PAY longs → short perp PAYS funding (bad)
+    - Only enter when funding > threshold to ensure you collect, not pay
+
+    Args:
+        symbols: Perp symbols to trade (e.g. ["BTC", "ETH"])
+        start_date: Start date ("YYYY-MM-DD", oldest ~Aug 2025)
+        end_date: End date ("YYYY-MM-DD")
+        funding_threshold: Per-period funding rate threshold to enter.
+                           Raw per-period value from fetch_funding_rates()
+                           (e.g. 0.0001 = 0.01% per hour ≈ 8.76% annualized for 1h data).
+                           Set to 0.0 to always hold delta-neutral regardless of sign.
+        leverage: Capital leverage multiplier (default 1.0)
+        interval: Price/funding data interval (default "1h")
+        config: Optional BacktestConfig; leverage and funding_rates are always overridden.
+
+    Returns:
+        BacktestResult. Key stats:
+        - total_funding: cumulative funding income (negative = income received)
+        - volatility_ann: should be very low (<5%) for a well-constructed delta-neutral
+        - sharpe: often very high (10-30+) for funding harvesting strategies
+
+    Notes:
+        - Positions use "{symbol}_PERP" and "{symbol}_SPOT" column naming
+        - If funding data is unavailable for a symbol, that symbol gets static delta-neutral
+        - enable_liquidation defaults to False
+
+    Example:
+        >>> result = await backtest_delta_neutral(
+        ...     ["BTC", "ETH"], "2025-08-01", "2026-01-01",
+        ...     funding_threshold=0.0001, leverage=1.5
+        ... )
+        >>> print(f"Funding income: {result.stats['total_funding']:.4f}")
+        >>> print(f"Sharpe: {result.stats['sharpe']:.2f}")
+    """
+    perp_prices = await fetch_prices(symbols, start_date, end_date, interval)
+
+    perp_funding: pd.DataFrame | None = None
+    try:
+        perp_funding = await fetch_funding_rates(symbols, start_date, end_date)
+        perp_prices, perp_funding = await align_dataframes(
+            perp_prices, perp_funding, method="ffill"
+        )
+    except (ValueError, KeyError):
+        pass
+
+    spot_prices, spot_funding = convert_to_spot(perp_prices)
+
+    all_prices = pd.concat(
+        [perp_prices.add_suffix("_PERP"), spot_prices.add_suffix("_SPOT")], axis=1
+    )
+
+    if perp_funding is not None:
+        perp_funding_suffixed = perp_funding.add_suffix("_PERP")
+    else:
+        perp_funding_suffixed = pd.DataFrame(
+            0.0,
+            index=perp_prices.index,
+            columns=[f"{s}_PERP" for s in symbols],
+        )
+    all_funding = pd.concat(
+        [perp_funding_suffixed, spot_funding.add_suffix("_SPOT")], axis=1
+    )
+
+    target = pd.DataFrame(0.0, index=all_prices.index, columns=all_prices.columns)
+    for sym in symbols:
+        perp_col = f"{sym}_PERP"
+        spot_col = f"{sym}_SPOT"
+        if perp_funding is not None and sym in perp_funding.columns:
+            high_funding = perp_funding[sym] > funding_threshold
+            target.loc[high_funding, perp_col] = -0.5
+            target.loc[high_funding, spot_col] = 0.5
+        else:
+            # No funding data: always hold delta-neutral
+            target[perp_col] = -0.5
+            target[spot_col] = 0.5
+
+    interval_to_periods = {
+        "1m": 365 * 24 * 60,
+        "5m": 365 * 24 * 12,
+        "15m": 365 * 24 * 4,
+        "1h": 365 * 24,
+        "4h": 365 * 6,
+        "1d": 365,
+    }
+    periods_per_year = interval_to_periods.get(interval, 365 * 24)
+
+    if config is None:
+        config = BacktestConfig(
+            leverage=leverage,
+            funding_rates=all_funding,
+            periods_per_year=periods_per_year,
+            enable_liquidation=False,
+        )
+    else:
+        config.leverage = leverage
+        config.funding_rates = all_funding
+        config.periods_per_year = periods_per_year
+
+    return run_backtest(all_prices, target, config)

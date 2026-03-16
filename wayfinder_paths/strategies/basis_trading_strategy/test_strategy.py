@@ -631,9 +631,9 @@ class TestBasisTradingStrategy:
             success, msg = await strategy._scale_up_position(120.0)
 
         assert success is False
-        assert "imbalanced" in msg
-        assert strategy.current_position.spot_amount == pytest.approx(1.0)
-        assert strategy.current_position.perp_amount == pytest.approx(1.0)
+        assert "imbalanced after fill" in msg
+        assert strategy.current_position.spot_amount == pytest.approx(1.08)
+        assert strategy.current_position.perp_amount == pytest.approx(1.03)
 
     @pytest.mark.asyncio
     async def test_update_does_not_scale_on_perp_pnl_margin_release(

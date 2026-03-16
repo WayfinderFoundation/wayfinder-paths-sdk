@@ -48,6 +48,63 @@ To deposit HYPE collateral into Boros you need **Arbitrum OFT HYPE**.
    - Some routes yield WHYPE instead of native HYPE.
    - To send HYPE to Hyperliquid or use it as gas, it must be unwrapped first.
 
+## Backtesting
+
+### Yield sources and data availability
+
+This strategy earns from three components, none of which are fully available in Delta Lab:
+
+| Component | Data source | In Delta Lab? |
+|---|---|---|
+| kHYPE staking yield | Kinetiq API (`kinetiq.xyz/api/khype`, field `apy_14d`) | No |
+| lHYPE looped yield | Looping Collective API (`app.loopingcollective.org`, field `reward_rate`) | No |
+| Boros fixed-rate | Boros on-chain markets | No |
+| HL HYPE perp funding | Hyperliquid funding history | **Yes** |
+
+A full end-to-end backtest is not possible from Delta Lab data alone. The most meaningful backtestable component is **whether HL HYPE funding was consistently positive** (validating the delta-hedge income).
+
+### HYPE perp funding backtest
+
+```python
+from wayfinder_paths.core.backtesting import (
+    fetch_funding_rates, fetch_prices, backtest_delta_neutral,
+)
+
+# Check historical HYPE funding — this tells you if the perp short was
+# collecting funding (total_funding <= 0 means income received)
+result = await backtest_delta_neutral(
+    ["HYPE"], "2025-08-01", "2026-02-01",
+    funding_threshold=0.0,   # enter whenever available (no minimum threshold)
+    leverage=float(2),       # MAX_HL_LEVERAGE = 2.0
+)
+print(f"Funding income:  {result.stats.get('total_funding', 0):.2%}")
+print(f"Volatility ann:  {result.stats.get('volatility_ann', 0):.2%}")
+print(f"Max drawdown:    {result.stats['max_drawdown']:.2%}")
+# Health: total_funding <= 0 (income), volatility_ann low (hedge working)
+```
+
+To estimate total strategy APY, add the current kHYPE/lHYPE/Boros APYs on top of the funding income:
+
+```python
+# Fetch live HYPE staking APYs for additive estimation (point-in-time only)
+import aiohttp
+
+async with aiohttp.ClientSession() as session:
+    async with session.get("https://kinetiq.xyz/api/khype") as resp:
+        khype_data = await resp.json()
+        khype_apy = float(khype_data.get("apy_14d", 0))
+
+    async with session.get("https://app.loopingcollective.org/api/external/asset/lhype") as resp:
+        lhype_data = await resp.json()
+        lhype_apy = float((lhype_data.get("result") or {}).get("reward_rate", 0)) / 100.0
+
+print(f"kHYPE APY (14d): {khype_apy:.2%}")
+print(f"lHYPE APY:       {lhype_apy:.2%}")
+# Add the HL funding income from the backtest for a rough total estimate
+```
+
+**Key caveat**: The kHYPE/lHYPE APYs are point-in-time only — there is no historical time series available via Delta Lab. The above estimates represent current conditions, not the historical average over the backtest period.
+
 ## Actions
 
 ```bash
