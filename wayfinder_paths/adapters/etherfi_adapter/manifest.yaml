@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "ether.fi liquid restaking and eETH operations."
 entrypoint: "adapters.etherfi_adapter.adapter.EtherfiAdapter"
 capabilities:
   - "staking.stake"

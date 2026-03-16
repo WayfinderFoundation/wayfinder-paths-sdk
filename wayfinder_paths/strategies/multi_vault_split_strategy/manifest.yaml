@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Multi-vault allocation across lending protocols."
 entrypoint: "wayfinder_paths.strategies.multi_vault_split_strategy.strategy.MultiVaultSplitStrategy"
 permissions:
   policy: |

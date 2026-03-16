@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Leveraged wstETH carry trade on Base."
 entrypoint: "wayfinder_paths.strategies.moonwell_wsteth_loop_strategy.strategy.MoonwellWstethLoopStrategy"
 permissions:
   policy: |

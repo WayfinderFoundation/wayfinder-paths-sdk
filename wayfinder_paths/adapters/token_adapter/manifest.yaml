@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Token metadata and pricing reads."
 entrypoint: "adapters.token_adapter.adapter.TokenAdapter"
 capabilities:
   - "token.read"

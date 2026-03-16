@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Euler V2 market interactions."
 entrypoint: "adapters.euler_v2_adapter.adapter.EulerV2Adapter"
 capabilities:
   - "market.list"

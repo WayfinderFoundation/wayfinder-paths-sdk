@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# Update this catalog when new MCP tool/resource *categories* are registered
+# in server.py. Individual adapters/strategies are auto-discovered from manifests.
 INTENT_CATALOG: dict[str, dict[str, Any]] = {
     "wallet_inspection": {
         "summary": "Inspect wallets, tracked protocols, balances, and recent activity.",

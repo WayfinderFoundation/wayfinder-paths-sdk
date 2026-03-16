@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "HyperLend lending and borrowing."
 entrypoint: "adapters.hyperlend_adapter.adapter.HyperlendAdapter"
 capabilities:
   - "market.list"

@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "USDC yield optimization across Base pools."
 status: wip
 entrypoint: "wayfinder_paths.strategies.stablecoin_yield_strategy.strategy.StablecoinYieldStrategy"
 permissions:

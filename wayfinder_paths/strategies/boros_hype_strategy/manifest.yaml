@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "HYPE yield with Boros plus hedge management."
 entrypoint: "wayfinder_paths.strategies.boros_hype_strategy.strategy.BorosHypeStrategy"
 permissions:
   policy: |

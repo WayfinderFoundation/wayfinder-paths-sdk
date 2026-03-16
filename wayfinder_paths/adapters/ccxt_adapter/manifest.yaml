@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Multi-exchange CEX trading via CCXT."
 entrypoint: "adapters.ccxt_adapter.adapter.CCXTAdapter"
 capabilities:
   - "exchange.factory"

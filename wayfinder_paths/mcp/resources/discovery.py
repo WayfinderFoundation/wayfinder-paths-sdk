@@ -18,53 +18,16 @@ STRATEGY_ACTIONS = [
     "exit",
 ]
 
-ADAPTER_SUMMARIES = {
-    "aave_v3_adapter": "Lending and borrowing via Aave V3.",
-    "avantis_adapter": "avUSDC ERC-4626 vault on Base for leveraged trading yield.",
-    "balance_adapter": "Wallet balance reads and token transfers.",
-    "boros_adapter": "Boros lending and position management.",
-    "brap_adapter": "Cross-chain swaps and bridges.",
-    "ccxt_adapter": "Multi-exchange CEX trading via CCXT.",
-    "eigencloud_adapter": "EigenCloud AVS and operator management.",
-    "ethena_vault_adapter": "Ethena sUSDe staking vault operations.",
-    "etherfi_adapter": "ether.fi liquid restaking and eETH operations.",
-    "euler_v2_adapter": "Euler V2 market interactions.",
-    "hyperlend_adapter": "HyperLend lending and borrowing.",
-    "hyperliquid_adapter": "Hyperliquid market reads and trading actions.",
-    "ledger_adapter": "Strategy transaction ledger storage.",
-    "lido_adapter": "Lido staking and withdrawal flows.",
-    "moonwell_adapter": "Moonwell lending and borrowing.",
-    "morpho_adapter": "Morpho Blue market and vault operations.",
-    "multicall_adapter": "Batch read calls across contracts.",
-    "pendle_adapter": "Pendle PT, YT, and yield market actions.",
-    "polymarket_adapter": "Polymarket market reads and trading actions.",
-    "pool_adapter": "Pool analytics and read-only inspection.",
-    "projectx_adapter": "ProjectX concentrated liquidity management.",
-    "token_adapter": "Token metadata and pricing reads.",
-    "uniswap_adapter": "Uniswap V3 liquidity management.",
-}
-
-STRATEGY_SUMMARIES = {
-    "basis_trading_strategy": "Delta-neutral funding rate capture on Hyperliquid.",
-    "boros_hype_strategy": "HYPE yield with Boros plus hedge management.",
-    "hyperlend_stable_yield_strategy": "Stablecoin allocation across HyperLend markets.",
-    "moonwell_wsteth_loop_strategy": "Leveraged wstETH carry trade on Base.",
-    "multi_vault_split_strategy": "Multi-vault allocation across lending protocols.",
-    "projectx_thbill_usdc_strategy": "USDC allocation into ProjectX T-bill strategy.",
-    "stablecoin_yield_strategy": "USDC yield optimization across Base pools.",
-}
-
 
 def _manifest_dir(kind: str) -> Path | None:
     base = repo_root() / "wayfinder_paths" / kind
     return base if base.exists() else None
 
 
-def _fallback_summary(name: str, kind: str) -> str:
-    lookup = STRATEGY_SUMMARIES if kind == "strategies" else ADAPTER_SUMMARIES
-    summary = lookup.get(name)
-    if summary:
-        return summary
+def _fallback_summary(name: str, manifest: dict[str, Any]) -> str:
+    desc = manifest.get("description", "")
+    if desc:
+        return desc
     return name.replace("_", " ").strip()
 
 
@@ -81,7 +44,7 @@ def _adapter_select_view(name: str, manifest: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": name,
         "kind": "adapter",
-        "summary": _fallback_summary(name, "adapters"),
+        "summary": _fallback_summary(name, manifest),
         "when_to_use": "Use when you need protocol-specific reads or actions.",
         "mutating": any(
             ("." in cap and cap.split(".", 1)[1].startswith(("execute", "cancel")))
@@ -102,7 +65,7 @@ def _strategy_select_view(name: str, manifest: dict[str, Any]) -> dict[str, Any]
     return {
         "name": name,
         "kind": "strategy",
-        "summary": _fallback_summary(name, "strategies"),
+        "summary": _fallback_summary(name, manifest),
         "status": manifest.get("status", "stable"),
         "supported_actions": STRATEGY_ACTIONS,
         "requires_wallet": True,
@@ -152,10 +115,13 @@ async def list_adapters() -> str:
         manifest_path = child / "manifest.yaml"
         if not manifest_path.exists():
             continue
+        manifest = read_yaml(manifest_path)
         items.append(
             {
                 "name": child.name,
-                "summary": _fallback_summary(child.name, "adapters"),
+                "summary": _fallback_summary(
+                    child.name, manifest if isinstance(manifest, dict) else {}
+                ),
                 "detail_uri": f"wayfinder://adapters/{child.name}",
             }
         )
@@ -178,7 +144,9 @@ async def list_strategies() -> str:
         items.append(
             {
                 "name": child.name,
-                "summary": _fallback_summary(child.name, "strategies"),
+                "summary": _fallback_summary(
+                    child.name, manifest if isinstance(manifest, dict) else {}
+                ),
                 "status": manifest.get("status", "stable")
                 if isinstance(manifest, dict)
                 else "stable",

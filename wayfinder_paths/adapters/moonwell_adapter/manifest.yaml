@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Moonwell lending and borrowing."
 entrypoint: "adapters.moonwell_adapter.adapter.MoonwellAdapter"
 capabilities:
   - "lending.lend"

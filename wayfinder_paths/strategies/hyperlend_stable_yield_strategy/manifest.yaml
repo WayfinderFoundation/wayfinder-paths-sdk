@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Stablecoin allocation across HyperLend markets."
 entrypoint: "wayfinder_paths.strategies.hyperlend_stable_yield_strategy.strategy.HyperlendStableYieldStrategy"
 permissions:
   policy: |
