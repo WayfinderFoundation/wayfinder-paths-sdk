@@ -46,6 +46,13 @@ The adapter accepts both forms:
 - Hosted SDK may omit `effectiveApy`/`impliedApy` depending on market state
 - Always handle missing fields with `.get()` defaults
 
+## Expired PT redemption (don't use `execute_swap`)
+
+- **`execute_swap` doesn't work for expired markets** — use `execute_convert` instead
+- **`list_active_pt_yt_markets` filters out expired markets** — use `get_full_user_state_per_chain` to discover expired PT positions
+- **PTs redeem to the SY underlying** (e.g. sUSDai, thBILL), not directly to USDC — plan a follow-up swap to stables if needed
+- See `execution-opportunities.md` for the full redemption pattern
+
 ## Receiver vs signer mismatch
 
 - `receiver` controls where output tokens go

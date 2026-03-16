@@ -125,6 +125,39 @@ class BalanceAdapter(BaseAdapter):
             wallet_address=self.strategy_wallet_address, token_id=token_id
         )
 
+    async def wait_for_balance(
+        self,
+        *,
+        token_id: str,
+        min_balance: float,
+        timeout_seconds: int = 120,
+        poll_interval_seconds: int = 5,
+        wallet_address: str | None = None,
+    ) -> float:
+        target_wallet = wallet_address or self.strategy_wallet_address
+        if not target_wallet:
+            raise ValueError("wallet_address or strategy_wallet_address is required")
+
+        timeout_seconds = max(0, int(timeout_seconds))
+        poll_interval_seconds = max(1, int(poll_interval_seconds))
+        iterations = int(timeout_seconds // poll_interval_seconds) + 1
+
+        latest_balance = 0.0
+        for attempt in range(iterations):
+            ok, details = await self.get_balance_details(
+                wallet_address=target_wallet,
+                token_id=token_id,
+            )
+            if ok and isinstance(details, dict):
+                latest_balance = float(details.get("balance_decimal") or 0.0)
+                if latest_balance >= float(min_balance):
+                    return latest_balance
+
+            if attempt < iterations - 1:
+                await asyncio.sleep(poll_interval_seconds)
+
+        return latest_balance
+
     async def move_from_main_wallet_to_strategy_wallet(
         self,
         token_id: str,
