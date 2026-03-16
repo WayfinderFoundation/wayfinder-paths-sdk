@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0] - 2026-03-16 (a789e2d30d1f1ac540a859ee6d2587649f066cc6)
+
+Added
+
+1. **Alpha Lab integration** (#141, #144): Scored alpha insight feed (`AlphaLabClient`) surfacing actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). MCP resources for search and type listing (`wayfinder://alpha-lab/...`). Claude skill (`/using-alpha-lab`) with docs, gotchas, and response structures.
+2. **Etherfi adapter** (#140): Full protocol adapter with ABI constants, read/write support, Gorlami simulation tests, and unit tests.
+3. **Boros vault split strategy** (#142): `multi_vault_split_strategy` distributing capital across Boros vaults with isolated-only deposit support. Multicall/caching optimizations, strategy logging, expanded Boros adapter with vault workflows, golden tests, and Gorlami simulation tests.
+4. **Yield strategy backtesting** (#139): New `yield_strategies.py` module for carry trade, delta-neutral, and yield rotation backtests. Example scripts, existing-strategy reproduction workflow, and `matplotlib` dependency added.
+
+Changed
+
+1. **Basis strategy rotation hardened** (#147): Improved rotation logic with leg repair flow fixes and 410+ lines of new test coverage.
+2. **Gorlami auth and URL simplification** (#149): Simplified auth and URL handling in `GorlamiTestnetClient` and test helpers.
+3. **Pendle skill wallet label fix** (#146): Fixed wallet label handling and added PT redemption docs.
+4. Claude docs updated: Alpha Lab MCP resources, screening resources, expanded protocol table, refreshed strategy READMEs (#148, #144).
+
 ## [0.8.0] - 2026-03-05 (252e0e018ac10143779785bb4ddba5087267cbb7)
 
 Added
