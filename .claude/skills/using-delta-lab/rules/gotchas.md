@@ -121,6 +121,7 @@ else:
 - Positive funding → `side="SHORT"` `instrument_type="PERP"` receives funding (good for shorts)
 - Negative funding → `side="SHORT"` `instrument_type="PERP"` pays funding (cost for shorts)
 - Delta-neutral candidates typically use `instrument_type="PERP"` and `side="SHORT"` as the hedge leg
+- The APY value is already signed correctly for the direction shown
 
 ## 4. Side vs Sign
 

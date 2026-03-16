@@ -36,6 +36,7 @@ This repo ships:
 - A project-scoped MCP server config at `.mcp.json` (Claude Code will prompt to enable it).
 - A safety review hook at `.claude/settings.json` that forces confirmation before fund-moving calls.
 - Claude Code skills under `.claude/skills/` for strategy development + adapter exploration.
+- A Packs skill under `.claude/skills/developing-wayfinder-packs/` for `wfpack.yaml` + applets + signals (`/developing-wayfinder-packs`).
 - A local, gitignored runs directory at `.wayfinder_runs/` for one-off “execution mode” scripts.
 
 MCP server entrypoint:
@@ -210,6 +211,9 @@ uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD"  # ETH colla
 data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
 # If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
 print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
+
+data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=30)
+data["price"]["price_usd"].plot()
 
 # Client screening with extra filters (venue, min_tvl, etc.)
 data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave", min_tvl=1_000_000)

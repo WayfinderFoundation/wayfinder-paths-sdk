@@ -1,0 +1,26 @@
+# {{name}}
+
+{{summary}}
+
+## What’s inside
+
+- `wfpack.yaml` (pack manifest)
+- `{{component_path}}` (main component)
+- `skill/instructions.md` (canonical skill instructions, optional)
+- `applet/` (static UI, optional)
+
+## Build
+
+```bash
+wayfinder pack fmt --path .
+wayfinder pack doctor --path .
+wayfinder pack render-skill --path .
+wayfinder pack build --path . --out dist/bundle.zip
+```
+
+## Publish
+
+```bash
+export WAYFINDER_PACKS_API_URL="http://localhost:8000"
+wayfinder pack publish --path . --owner-wallet 0xYourWallet
+```
