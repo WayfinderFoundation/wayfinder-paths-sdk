@@ -50,6 +50,8 @@ Simulation / scenario testing (vnet only):
 
 Safety defaults:
 
+- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__execute(kind="swap")`, always call `mcp__wayfinder__quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
+- **Route planning for non-trivial swaps:** Before quoting, assess whether a direct route is likely to exist between the two tokens. If the pair is illiquid, cross-chain, or involves a long-tail token, reason through candidate intermediate hops first (e.g. tokenA → USDC → tokenB, or tokenA → native gas token → tokenB). Quote the most promising paths and compare outputs before presenting to the user. Skip this planning step only for well-known liquid pairs on the same chain (e.g. ETH → USDC on Arbitrum).
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
 - Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
   - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
@@ -97,30 +99,14 @@ Skills contain rules for correct method usage, common gotchas, and high-value re
 
 ## Backtesting Framework
 
-Use the backtesting framework to **validate strategy ideas before production deployment**. The framework provides:
+Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
 
-- Automatic data fetching from Delta Lab and Hyperliquid
-- Realistic transaction costs (fees, slippage, funding)
-- Comprehensive performance metrics (Sharpe, max drawdown, etc.)
-- Liquidation simulation
-- Multi-leverage testing
+**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`.
 
-**Load `/backtest-strategy` skill** before using the framework for full documentation.
+All stats are decimals — format with `:.2%`. Key: `sharpe` (>2.0 excellent), `total_return`, `max_drawdown`, `total_funding` (negative = income received), `trade_count`.
 
-```python
-from wayfinder_paths.core.backtesting import quick_backtest
+Once validated: `just create-strategy "Name"` → implement deposit/update/withdraw/exit → smoke tests → deploy small capital first.
 
-result = await quick_backtest(
-    strategy_fn=my_strategy,  # fn(prices, ctx) -> target_positions DataFrame
-    symbols=["BTC", "ETH"],
-    start_date="2025-01-01",
-    end_date="2025-02-01",
-    leverage=2.0
-)
-print(result.stats)  # sharpe, sortino, cagr, max_drawdown, profit_factor
-```
-
-See `/backtest-strategy` skill for manual workflow, key metrics, and production deployment guide.
 
 ## Contract development
 
@@ -298,9 +284,17 @@ For anything beyond a simple single swap, follow this checklist:
 
 1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
 2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
-3. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
-4. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
-5. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
+3. **Quote all steps** — For every swap/bridge step, call `mcp__wayfinder__quote_swap` and collect the results. Then display a confirmation table to the user before executing anything:
+
+   | Step | From | To | Est. Output | Fee (USD) | Route |
+   |------|------|----|-------------|-----------|-------|
+   | 1    | ...  | .. | ...         | ...       | ...   |
+
+   Wait for explicit user confirmation before proceeding. Skip this only if the user has explicitly said to (e.g. "just execute").
+
+4. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
+5. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
+6. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
 
 Hyperliquid minimums:
 

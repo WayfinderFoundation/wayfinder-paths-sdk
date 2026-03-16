@@ -30,6 +30,8 @@ def _load_strategy_class(strategy_name: str) -> tuple[type[Strategy], str]:
 
 def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
     config = dict(CONFIG.get("strategy", {}))
+    if "strategies" in CONFIG:
+        config["strategies"] = CONFIG["strategies"]
     wallets = {w["label"]: w for w in CONFIG.get("wallets", [])}
 
     if "main_wallet" not in config and "main" in wallets:

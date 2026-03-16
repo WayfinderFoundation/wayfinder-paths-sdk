@@ -34,7 +34,6 @@ def run_multi_leverage_backtest(
         config = BacktestConfig(
             fee_rate=base_config.fee_rate,
             slippage_rate=base_config.slippage_rate,
-            holding_cost_rate=base_config.holding_cost_rate,
             min_trade_notional=base_config.min_trade_notional,
             rebalance_threshold=base_config.rebalance_threshold,
             leverage=lev,
