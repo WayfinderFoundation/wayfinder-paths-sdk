@@ -1,44 +1,5 @@
 # Architecture Deep Dive
 
-## Common Commands
-
-```bash
-# Install dependencies
-poetry install
-
-# Generate test wallets (required before running tests/strategies)
-just create-wallets                    # or: poetry run python scripts/make_wallets.py -n 1
-
-# Run all smoke tests
-just test-smoke                        # or: poetry run pytest -k smoke -v
-
-# Test specific strategy or adapter
-just test-strategy stablecoin_yield_strategy
-just test-adapter pool_adapter
-
-# Run all tests with coverage
-just test-cov                          # or: poetry run pytest --cov=wayfinder-paths --cov-report=html -v
-
-# Lint and format
-just lint                              # or: poetry run ruff check --fix
-just format                            # or: poetry run ruff format
-
-# Validate all manifests
-just validate-manifests
-
-# Create new strategy with dedicated wallet
-just create-strategy "My Strategy Name"
-
-# Create new adapter
-just create-adapter "my_protocol"
-
-# Run a strategy locally
-poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
-
-# Publish to PyPI (main branch only)
-just publish
-```
-
 ## Data Flow
 
 ```

@@ -89,22 +89,6 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
-## Alpha Lab (alpha discovery)
-
-Scored alpha insight feed — tweets, chain flows, APY highlights, delta-neutral signals. Load `/using-alpha-lab` for MCP URIs and client usage.
-
-## Delta Lab (yield discovery)
-
-Multi-protocol APY discovery — basis opportunities, delta-neutral pairs, screening across lending/perp/borrow. APY values are decimal floats (0.98 = 98%). Load `/using-delta-lab` for MCP URIs and client usage.
-
-## Backtesting
-
-**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there.
-
-## Contract Development
-
-Before writing or deploying Solidity contracts, invoke `/contract-development`.
-
 ## Data Accuracy (no guessing)
 
 When answering questions about **rates/APYs/funding**:
@@ -174,11 +158,11 @@ Full reference: @.claude/docs/architecture.md
 ## Scripting
 
 Before writing any `.wayfinder_runs/` script, read:
-- @.claude/docs/scripting-gotchas.md
-- @.claude/docs/execution-modes.md
+- @.claude/reference/scripting-gotchas.md
+- @.claude/reference/execution-modes.md
 
 ## Key Docs
 
-- Execution modes & strategy interface: @.claude/docs/execution-modes.md
-- Scripting gotchas: @.claude/docs/scripting-gotchas.md
+- Execution modes & strategy interface: @.claude/reference/execution-modes.md
+- Scripting gotchas: @.claude/reference/scripting-gotchas.md
 - Architecture deep dive: @.claude/docs/architecture.md
