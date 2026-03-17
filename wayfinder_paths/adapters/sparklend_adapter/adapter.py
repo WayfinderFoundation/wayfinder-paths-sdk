@@ -61,8 +61,7 @@ class SparkLendAdapter(AaveV3Adapter):
     ) -> tuple[str, str, str]:
         underlying = to_checksum_address(underlying)
         cache_key = (chain_id, underlying.lower())
-        cached = self._reserve_tokens_by_chain_underlying.get(cache_key)
-        if cached:
+        if cached := self._reserve_tokens_by_chain_underlying.get(cache_key):
             return cached
 
         entry = self._entry(chain_id)
