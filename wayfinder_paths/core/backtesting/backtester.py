@@ -131,6 +131,7 @@ def run_backtest(
 
     liquidated = False
     liquidation_timestamp: pd.Timestamp | None = None
+    cash_skipped_count = 0
 
     for idx, ts in enumerate(timestamps):
         current_prices = prices.loc[ts]
@@ -173,6 +174,7 @@ def run_backtest(
             transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
 
             if transaction_cost + trade_units * price > cash_balance:
+                cash_skipped_count += 1
                 continue
 
             cash_balance -= trade_units * price
@@ -268,6 +270,19 @@ def run_backtest(
         fee_series.append(period_fees)
         funding_series.append(period_funding)
         position_snapshots.append({sym: float(position_units[sym]) for sym in symbols})
+
+    if cash_skipped_count > 0 and not trades:
+        total_weight = target_positions.abs().sum(axis=1).max()
+        total_cost_rate = config.fee_rate + config.slippage_rate
+        print(
+            f"⚠️  run_backtest: {cash_skipped_count} trades skipped — "
+            f"cash + fees exceeded cash balance on every attempt. "
+            f"With target weight {total_weight:.2f} and fee+slippage={total_cost_rate:.4f}, "
+            f"the first trade costs {total_weight * (1 + total_cost_rate):.4f} but "
+            f"initial_capital={config.initial_capital:.4f}. "
+            f"Fix: reduce target weights (e.g. 0.99 instead of 1.0), "
+            f"or set fee_rate=0 and slippage_rate=0 for yield/lending strategies."
+        )
 
     equity_curve = pd.Series(portfolio_values[: len(timestamps)], index=timestamps)
     returns = equity_curve.pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)

@@ -69,10 +69,12 @@ def calculate_stats(
     end = equity_curve.index[-1]
     duration = end - start
 
-    # Exposure time (% of time with non-zero positions)
-    exposure_count = sum(1 for t in turnover_series if t > 0)
+    # Exposure time (% of periods where any non-zero position is held).
+    # Use the equity curve's return series: a non-zero return implies an open position.
+    # Counting turnover events (trades) would give near-zero for buy-and-hold strategies.
+    nonzero_exposure = (returns != 0) | (returns.shift(1).fillna(0) != 0)
     exposure_time_pct = (
-        exposure_count / len(turnover_series) if turnover_series else 0.0
+        float(nonzero_exposure.mean()) if len(nonzero_exposure) > 0 else 0.0
     )
 
     # Equity metrics
@@ -94,9 +96,10 @@ def calculate_stats(
     volatility_ann = volatility * np.sqrt(periods_per_year)
 
     years = len(returns) / periods_per_year if periods_per_year > 0 else 0
+    initial_equity = float(equity_curve.iloc[0]) if len(equity_curve) > 0 else 1.0
     cagr = (
-        float(equity_curve.iloc[-1] ** (1 / years) - 1)
-        if years > 0 and len(equity_curve) > 0
+        float((equity_curve.iloc[-1] / initial_equity) ** (1 / years) - 1)
+        if years > 0 and len(equity_curve) > 0 and initial_equity > 0
         else 0.0
     )
     return_ann = cagr

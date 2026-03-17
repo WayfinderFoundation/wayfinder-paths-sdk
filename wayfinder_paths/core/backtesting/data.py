@@ -23,13 +23,18 @@ def get_available_date_range() -> tuple[datetime, datetime]:
         (oldest_date, newest_date) tuple
 
     Note:
-        Both Delta Lab and Hyperliquid retain approximately 7 months (~211 days)
-        of historical data. Data older than this will return empty results.
+        Both Delta Lab and Hyperliquid retain approximately 7 months of historical
+        data. A 200-day safe window is used to avoid boundary rejections.
     """
-    # ~7 months of retention (conservative estimate)
+    # 211 days matches confirmed Delta Lab + Hyperliquid retention.
+    # Snap to midnight so that a start_date like "2025-08-11" (midnight) is never rejected
+    # because datetime.now() has a time component that makes midnight appear to fall
+    # before "2025-08-11 14:30:00 - 211 days".
     retention_days = 211
     newest = datetime.now()
-    oldest = newest - timedelta(days=retention_days)
+    oldest = (newest - timedelta(days=retention_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
     return oldest, newest
 
 
@@ -59,9 +64,9 @@ def validate_date_range(start_date: str, end_date: str) -> tuple[bool, str | Non
 
     if start < oldest:
         return False, (
-            f"Start date {start_date} is outside retention window. "
-            f"Data only available from {oldest.date().isoformat()} onwards. "
-            f"Delta Lab and Hyperliquid retain ~7 months of history."
+            f"Start date {start_date} is outside the safe retention window. "
+            f"Use {oldest.date().isoformat()} or later. "
+            f"(Retention is 211 days; window snapped to midnight to avoid time-of-day rejections.)"
         )
 
     if end > newest + timedelta(
@@ -111,11 +116,24 @@ async def fetch_prices(
     end = datetime.fromisoformat(end_date)
     lookback_days = (end - start).days
 
+    _SUB_HOURLY = {"1m", "5m", "15m"}
+    _INTERVAL_TO_FREQ = {"1h": "1h", "4h": "4h", "1d": "1D"}
+
     if source == "auto":
-        source = "delta_lab"
+        source = "hyperliquid" if interval in _SUB_HOURLY else "delta_lab"
 
     if source == "delta_lab":
-        return await _fetch_prices_delta_lab(symbols, lookback_days, end)
+        if interval in _SUB_HOURLY:
+            raise ValueError(
+                f"Delta Lab only provides hourly data; sub-hourly interval '{interval}' "
+                f"is not supported. Use source='hyperliquid' for sub-hourly data."
+            )
+        result = await _fetch_prices_delta_lab(symbols, lookback_days, end)
+        if interval != "1h":
+            freq = _INTERVAL_TO_FREQ.get(interval)
+            if freq:
+                result = result.resample(freq).last().dropna(how="all")
+        return result
     elif source == "hyperliquid":
         return await _fetch_prices_hyperliquid(symbols, start, end, interval)
     else:
@@ -332,6 +350,33 @@ async def align_dataframes(
     if not dfs:
         return ()
 
+    # Warn if DataFrames have very different frequencies — the result will be upsampled
+    # to the finest frequency, which silently breaks periods_per_year assumptions.
+    def _median_seconds(df: pd.DataFrame) -> float | None:
+        if len(df) < 2:
+            return None
+        diffs = pd.Series(df.index).diff().dropna()
+        return float(diffs.median().total_seconds())
+
+    freqs = [_median_seconds(df) for df in dfs]
+    valid_freqs = [(i, f) for i, f in enumerate(freqs) if f is not None]
+    if len(valid_freqs) >= 2:
+        min_secs = min(f for _, f in valid_freqs)
+        max_secs = max(f for _, f in valid_freqs)
+        if max_secs / min_secs > 5:
+
+            def _fmt(s: float) -> str:
+                if s >= 3600:
+                    return f"{s / 3600:.0f}h"
+                return f"{s / 60:.0f}m"
+
+            freq_desc = ", ".join(f"df[{i}]≈{_fmt(s)}" for i, s in valid_freqs)
+            print(
+                f"⚠️  align_dataframes: inputs have different frequencies ({freq_desc}, "
+                f"ratio {max_secs / min_secs:.0f}x). All series forward-filled to finest "
+                f"frequency. Update periods_per_year to match (e.g. 365→8760 if daily→hourly)."
+            )
+
     combined_index = dfs[0].index
     for df in dfs[1:]:
         combined_index = combined_index.union(df.index)
@@ -356,6 +401,155 @@ async def align_dataframes(
         aligned.append(reindexed)
 
     return tuple(aligned)
+
+
+async def fetch_supply_rates(
+    symbols: list[str],
+    start_date: str,
+    end_date: str,
+    protocol: str | None = None,
+) -> pd.DataFrame:
+    """
+    Fetch lending protocol supply (deposit) rates.
+
+    Parallel to fetch_borrow_rates() — returns APR averaged across venues per symbol.
+    For per-venue breakdown (needed for rotation/carry strategies), use fetch_lending_rates().
+
+    Args:
+        symbols: List of asset symbols (e.g., ["USDC", "ETH"])
+        start_date: Start date (ISO format: "2025-08-01")
+        end_date: End date (ISO format: "2026-01-01")
+        protocol: Protocol filter ("aave", "morpho", "moonwell", or None for all)
+
+    Returns:
+        DataFrame with index=timestamps, columns=symbols, values=supply_apr (decimal APR)
+
+    Example:
+        >>> rates = await fetch_supply_rates(["USDC"], "2025-08-01", "2026-01-01")
+        >>> prices = (1 + rates / 365).cumprod()  # Build synthetic yield index
+    """
+    valid, error = validate_date_range(start_date, end_date)
+    if not valid:
+        raise ValueError(error)
+
+    start = datetime.fromisoformat(start_date)
+    end = datetime.fromisoformat(end_date)
+    lookback_days = (end - start).days
+
+    all_rates = []
+
+    for symbol in symbols:
+        data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+            symbol=symbol,
+            lookback_days=lookback_days,
+            limit=10000,
+            as_of=end,
+            series="lending",
+        )
+
+        if "lending" in data:
+            lending_df = data["lending"]
+            if not lending_df.empty:
+                if protocol:
+                    lending_df = lending_df[lending_df["venue"] == protocol]
+                if "supply_apr" in lending_df.columns:
+                    grouped = lending_df.groupby(lending_df.index)["supply_apr"].mean()
+                    all_rates.append(grouped.rename(symbol))
+
+    if not all_rates:
+        raise ValueError("No supply rate data found")
+
+    result = pd.concat(all_rates, axis=1)
+    result.index = pd.to_datetime(result.index)
+    return result.sort_index()
+
+
+async def fetch_lending_rates(
+    symbol: str,
+    start_date: str,
+    end_date: str,
+    venues: list[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """
+    Fetch supply and borrow rates broken down by venue for a single asset.
+
+    Use this for multi-venue strategies (rotation, carry trade) where you need
+    to compare rates across protocols. For a simple averaged rate, use
+    fetch_supply_rates() / fetch_borrow_rates() instead.
+
+    Args:
+        symbol: Asset symbol (e.g., "USDC", "ETH")
+        start_date: Start date (ISO format: "2025-08-01")
+        end_date: End date (ISO format: "2026-01-01")
+        venues: Venue filter (e.g., ["aave", "moonwell", "morpho"]), or None for all
+
+    Returns:
+        Dict with keys "supply" and "borrow", each a DataFrame:
+        - index: timestamps
+        - columns: venue names
+        - values: APR as decimal (0.05 = 5% annually)
+
+    Example:
+        >>> rates = await fetch_lending_rates("USDC", "2025-08-01", "2026-01-01",
+        ...                                   venues=["aave", "moonwell", "morpho"])
+        >>> supply = rates["supply"]  # DataFrame[timestamp × venue]
+        >>> borrow = rates["borrow"]  # DataFrame[timestamp × venue]
+        >>> spread = supply.max(axis=1) - borrow.min(axis=1)  # Best carry spread
+    """
+    valid, error = validate_date_range(start_date, end_date)
+    if not valid:
+        raise ValueError(error)
+
+    start = datetime.fromisoformat(start_date)
+    end = datetime.fromisoformat(end_date)
+    lookback_days = (end - start).days
+
+    data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+        symbol=symbol,
+        lookback_days=lookback_days,
+        limit=10000,
+        as_of=end,
+        series="lending",
+    )
+
+    if "lending" not in data or data["lending"].empty:
+        raise ValueError(f"No lending data found for {symbol}")
+
+    lending_df = data["lending"]
+    if venues:
+        available = (
+            sorted(lending_df["venue"].unique().tolist())
+            if "venue" in lending_df.columns
+            else []
+        )
+        unknown = [v for v in venues if v not in available]
+        if unknown:
+            raise ValueError(
+                f"Unknown venue(s) {unknown} for {symbol}. Available: {available}"
+            )
+        lending_df = lending_df[lending_df["venue"].isin(venues)]
+
+    supply = lending_df.pivot_table(
+        index=lending_df.index, columns="venue", values="supply_apr", aggfunc="mean"
+    )
+    borrow = lending_df.pivot_table(
+        index=lending_df.index, columns="venue", values="borrow_apr", aggfunc="mean"
+    )
+
+    supply.index = pd.to_datetime(supply.index)
+    borrow.index = pd.to_datetime(borrow.index)
+
+    # Resample to hourly and ffill with a 24-hour limit.
+    # Raw snapshots are expected hourly but can have gaps. Without a limit, a single
+    # stale snapshot propagates indefinitely through the series and corrupts backtests.
+    supply = supply.sort_index().resample("1h").last().ffill(limit=24)
+    borrow = borrow.sort_index().resample("1h").last().ffill(limit=24)
+
+    # Strip column axis name (pivot_table sets columns.name="venue") for cleaner access
+    supply.columns.name = None
+    borrow.columns.name = None
+
+    return {"supply": supply, "borrow": borrow}
 
 
 def convert_to_spot(prices: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:

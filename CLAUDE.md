@@ -50,6 +50,8 @@ Simulation / scenario testing (vnet only):
 
 Safety defaults:
 
+- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__execute(kind="swap")`, always call `mcp__wayfinder__quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
+- **Route planning for non-trivial swaps:** Before quoting, assess whether a direct route is likely to exist between the two tokens. If the pair is illiquid, cross-chain, or involves a long-tail token, reason through candidate intermediate hops first (e.g. tokenA → USDC → tokenB, or tokenA → native gas token → tokenB). Quote the most promising paths and compare outputs before presenting to the user. Skip this planning step only for well-known liquid pairs on the same chain (e.g. ETH → USDC on Arbitrum).
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
 - Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
   - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
@@ -97,30 +99,14 @@ Skills contain rules for correct method usage, common gotchas, and high-value re
 
 ## Backtesting Framework
 
-Use the backtesting framework to **validate strategy ideas before production deployment**. The framework provides:
+Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
 
-- Automatic data fetching from Delta Lab and Hyperliquid
-- Realistic transaction costs (fees, slippage, funding)
-- Comprehensive performance metrics (Sharpe, max drawdown, etc.)
-- Liquidation simulation
-- Multi-leverage testing
+**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`.
 
-**Load `/backtest-strategy` skill** before using the framework for full documentation.
+All stats are decimals — format with `:.2%`. Key: `sharpe` (>2.0 excellent), `total_return`, `max_drawdown`, `total_funding` (negative = income received), `trade_count`.
 
-```python
-from wayfinder_paths.core.backtesting import quick_backtest
+Once validated: `just create-strategy "Name"` → implement deposit/update/withdraw/exit → smoke tests → deploy small capital first.
 
-result = await quick_backtest(
-    strategy_fn=my_strategy,  # fn(prices, ctx) -> target_positions DataFrame
-    symbols=["BTC", "ETH"],
-    start_date="2025-01-01",
-    end_date="2025-02-01",
-    leverage=2.0
-)
-print(result.stats)  # sharpe, sortino, cagr, max_drawdown, profit_factor
-```
-
-See `/backtest-strategy` skill for manual workflow, key metrics, and production deployment guide.
 
 ## Contract development
 
@@ -156,25 +142,7 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 | `created_before` | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
 | `limit`          | 1-200                                                                                                                                             | `20`    |
 
-**Examples:**
-
-```
-# Top 20 insights (all types)
-uri="wayfinder://alpha-lab/search/_/all/_/_/20"
-
-# Twitter posts only
-uri="wayfinder://alpha-lab/search/_/twitter_post/_/_/10"
-
-# Search for ETH-related insights
-uri="wayfinder://alpha-lab/search/ETH/all/_/_/10"
-
-# Today's insights
-uri="wayfinder://alpha-lab/search/_/all/2026-03-11T00:00:00Z/_/20"
-
-# Serious analysis via client
-from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
-data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)
-```
+**Examples:** `wayfinder://alpha-lab/search/_/all/_/_/20` (all), `wayfinder://alpha-lab/search/_/twitter_post/_/_/10` (twitter), `wayfinder://alpha-lab/search/ETH/all/_/_/10` (ETH). Client: `await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)`.
 
 ## Delta Lab MCP resources (yield discovery)
 
@@ -206,28 +174,7 @@ data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, li
 
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
-**Examples:**
-
-```
-# Quick queries via MCP
-uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
-uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
-uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
-
-# Screening via MCP
-uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all"  # Top 20 lending rates
-uri="wayfinder://delta-lab/screen/perp/funding_now/20/ETH"  # Top 20 ETH perp funding rates
-uri="wayfinder://delta-lab/screen/price/ret_1d/10/all"  # Top 10 daily movers
-uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD"  # ETH collateral -> USD borrow routes
-
-# Serious analysis via client
-data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
-# If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
-print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
-
-# Client screening with extra filters (venue, min_tvl, etc.)
-data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave", min_tvl=1_000_000)
-```
+**Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
 
 ## Running strategies via MCP
 
@@ -298,9 +245,17 @@ For anything beyond a simple single swap, follow this checklist:
 
 1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
 2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
-3. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
-4. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
-5. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
+3. **Quote all steps** — For every swap/bridge step, call `mcp__wayfinder__quote_swap` and collect the results. Then display a confirmation table to the user before executing anything:
+
+   | Step | From | To | Est. Output | Fee (USD) | Route |
+   |------|------|----|-------------|-----------|-------|
+   | 1    | ...  | .. | ...         | ...       | ...   |
+
+   Wait for explicit user confirmation before proceeding. Skip this only if the user has explicitly said to (e.g. "just execute").
+
+4. **Script** — Write the script under `$WAYFINDER_SCRATCH_DIR`. Use `get_adapter()` and the patterns from the loaded skill.
+5. **Offer simulation** — Use Gorlami forks for **EVM on-chain steps only**. Off-chain protocols (Hyperliquid L1, CEXes) are live-only.
+6. **Execute** — Run the script (or simulate first if requested). Check each step's result before proceeding to the next — don't continue past a failed/reverted transaction.
 
 Hyperliquid minimums:
 
@@ -402,30 +357,9 @@ if not ok:
 meta, ctxs = data[0], data[1]
 ```
 
-**Why the difference?**
+**Rule of thumb:** `wayfinder_paths.core.clients` → data directly. `wayfinder_paths.adapters` → `(ok, data)` tuple.
 
-- **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
-- **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
-
-**Rule of thumb:** If it's in `wayfinder_paths.core.clients`, it returns data directly. If it's in `wayfinder_paths.adapters`, it returns a tuple.
-
-**1. `get_adapter()` already loads config — don't call `load_config()` first**
-
-```python
-# WRONG — redundant, and load_config() returns None anyway
-config = load_config("config.json")
-adapter = MoonwellAdapter(config=config, ...)
-
-# RIGHT — get_adapter() handles config + wallet + signing internally
-from wayfinder_paths.mcp.scripting import get_adapter
-adapter = get_adapter(MoonwellAdapter, "main")
-
-# Dual-wallet adapters (e.g. BalanceAdapter) take two wallet labels:
-adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
-
-# For read-only adapters, omit the wallet label:
-adapter = get_adapter(HyperliquidAdapter)
-```
+**1. `get_adapter()` already loads config — don't call `load_config()` first.** See `get_adapter()` examples in the scripting helper section above.
 
 **2. `load_config()` returns `None` — it mutates a global**
 
