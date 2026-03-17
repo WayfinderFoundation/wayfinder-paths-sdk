@@ -104,6 +104,24 @@ def test_run_backtest_long_short(sample_prices):
 
     assert result is not None
     assert result.stats["trade_count"] > 0
+    assert result.metrics_by_period["gross_exposure"].max() <= 1.0 + 1e-6
+    assert result.metrics_by_period["cash_balance"].min() >= -1e-6
+
+
+def test_short_positions_do_not_create_spendable_cash(sample_prices):
+    """Test that shorts consume budget instead of creating free cash."""
+    target = pd.DataFrame(
+        {"ASSET_A": [-1.0] * len(sample_prices), "ASSET_B": [0.0] * len(sample_prices)},
+        index=sample_prices.index,
+    )
+
+    config = BacktestConfig(leverage=1.0, enable_liquidation=False)
+    result = run_backtest(sample_prices, target, config)
+
+    assert result is not None
+    assert result.stats["trade_count"] > 0
+    assert result.metrics_by_period["gross_exposure"].max() <= 1.0 + 1e-6
+    assert result.metrics_by_period["cash_balance"].max() < 1e-4
 
 
 def test_run_multi_leverage_backtest(sample_prices, sample_target_positions):

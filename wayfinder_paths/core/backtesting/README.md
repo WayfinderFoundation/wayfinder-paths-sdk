@@ -106,6 +106,11 @@ Your strategy function must return a **target positions DataFrame**:
 
 Weights are scaled by the `leverage` parameter.
 
+Budget semantics:
+- `leverage=1.0` means total gross exposure is capped at bankroll.
+- Short positions do not create spendable cash.
+- Reported `cash_balance` diagnostics represent free collateral after margin usage, not broker cash.
+
 ## Key Metrics
 
 ```python
