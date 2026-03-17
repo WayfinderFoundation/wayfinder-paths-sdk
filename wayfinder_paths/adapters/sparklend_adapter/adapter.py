@@ -93,7 +93,7 @@ class SparkLendAdapter(AaveV3Adapter):
         return tokens
 
     async def _reserve_config(
-        self, *, chain_id: int, underlying: str, web3: Any | None = None
+        self, *, chain_id: int, underlying: str, web3: Any
     ) -> dict[str, Any]:
         underlying = to_checksum_address(underlying)
         cache_key = (chain_id, underlying.lower())
@@ -107,46 +107,39 @@ class SparkLendAdapter(AaveV3Adapter):
                 f"protocol_data_provider not configured for chain_id={chain_id}"
             )
 
-        async def _read(w3: Any) -> dict[str, Any]:
-            dp = w3.eth.contract(
-                address=to_checksum_address(data_provider_addr),
-                abi=PROTOCOL_DATA_PROVIDER_ABI,
-            )
-            (
-                decimals,
-                ltv,
-                liq_threshold,
-                liq_bonus,
-                reserve_factor,
-                usage_as_collateral_enabled,
-                borrowing_enabled,
-                stable_borrow_rate_enabled,
-                is_active,
-                is_frozen,
-            ) = await dp.functions.getReserveConfigurationData(underlying).call(
-                block_identifier="pending"
-            )
+        dp = web3.eth.contract(
+            address=to_checksum_address(data_provider_addr),
+            abi=PROTOCOL_DATA_PROVIDER_ABI,
+        )
+        (
+            decimals,
+            ltv,
+            liq_threshold,
+            liq_bonus,
+            reserve_factor,
+            usage_as_collateral_enabled,
+            borrowing_enabled,
+            stable_borrow_rate_enabled,
+            is_active,
+            is_frozen,
+        ) = await dp.functions.getReserveConfigurationData(underlying).call(
+            block_identifier="pending"
+        )
 
-            cfg = {
-                "decimals": decimals,
-                "ltv_bps": ltv,
-                "liquidation_threshold_bps": liq_threshold,
-                "liquidation_bonus_bps": liq_bonus,
-                "reserve_factor_bps": reserve_factor,
-                "usage_as_collateral_enabled": usage_as_collateral_enabled,
-                "borrowing_enabled": borrowing_enabled,
-                "stable_borrow_rate_enabled": stable_borrow_rate_enabled,
-                "is_active": is_active,
-                "is_frozen": is_frozen,
-            }
-            self._reserve_config_by_chain_underlying[cache_key] = cfg
-            return cfg
-
-        if web3 is not None:
-            return await _read(web3)
-
-        async with web3_utils.web3_from_chain_id(chain_id) as w3:
-            return await _read(w3)
+        cfg = {
+            "decimals": decimals,
+            "ltv_bps": ltv,
+            "liquidation_threshold_bps": liq_threshold,
+            "liquidation_bonus_bps": liq_bonus,
+            "reserve_factor_bps": reserve_factor,
+            "usage_as_collateral_enabled": usage_as_collateral_enabled,
+            "borrowing_enabled": borrowing_enabled,
+            "stable_borrow_rate_enabled": stable_borrow_rate_enabled,
+            "is_active": is_active,
+            "is_frozen": is_frozen,
+        }
+        self._reserve_config_by_chain_underlying[cache_key] = cfg
+        return cfg
 
     # ------------------
     # Write / tx methods
@@ -181,7 +174,10 @@ class SparkLendAdapter(AaveV3Adapter):
             pool = entry["pool"]
             asset = to_checksum_address(asset)
 
-            cfg = await self._reserve_config(chain_id=chain_id, underlying=asset)
+            async with web3_utils.web3_from_chain_id(chain_id) as w3:
+                cfg = await self._reserve_config(
+                    chain_id=chain_id, underlying=asset, web3=w3
+                )
             if not cfg.get("stable_borrow_rate_enabled"):
                 return (
                     False,
@@ -707,7 +703,10 @@ class SparkLendAdapter(AaveV3Adapter):
 
             if rate_mode == STABLE_RATE_MODE:
                 wrapped = await self._wrapped_native(chain_id=chain_id)
-                cfg = await self._reserve_config(chain_id=chain_id, underlying=wrapped)
+                async with web3_utils.web3_from_chain_id(chain_id) as w3:
+                    cfg = await self._reserve_config(
+                        chain_id=chain_id, underlying=wrapped, web3=w3
+                    )
                 if not cfg.get("stable_borrow_rate_enabled"):
                     return (
                         False,
