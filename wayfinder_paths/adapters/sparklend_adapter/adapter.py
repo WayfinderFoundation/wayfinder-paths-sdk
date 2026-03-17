@@ -314,15 +314,14 @@ class SparkLendAdapter(AaveV3Adapter):
                     if rewards_for_asset:
                         assets_set.add(token)
 
-            assets = sorted(assets_set)
-            if not assets:
+            if not assets_set:
                 return True, {"claimed": [], "note": "no incentivized assets found"}
 
             tx = await encode_call(
                 target=rewards_controller,
                 abi=REWARDS_CONTROLLER_ABI,
                 fn_name="claimAllRewardsToSelf",
-                args=[assets],
+                args=[assets_set],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
