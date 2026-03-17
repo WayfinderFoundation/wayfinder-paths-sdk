@@ -295,9 +295,11 @@ class SparkLendAdapter(AaveV3Adapter):
                         underlying
                     ).call(block_identifier="pending")
 
-                    for addr in (a_token, stable_debt, variable_debt):
-                        if addr.lower() != ZERO_ADDRESS:
-                            token_candidates.add(to_checksum_address(addr))
+                    token_candidates.update(
+                        cs
+                        for addr in (a_token, stable_debt, variable_debt)
+                        if (cs := to_checksum_address(addr)) != ZERO_ADDRESS
+                    )
 
                 assets_set: set[str] = set()
                 for token in token_candidates:
