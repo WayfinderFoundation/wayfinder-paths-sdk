@@ -88,7 +88,7 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert isinstance(tx, str) and tx.startswith("0x")
 
     # Native supply, enable collateral, borrow USDC, repay-full, withdraw-full.
-    ok, tx = await adapter.lend_native(chain_id=chain_id, amount=native_supply)
+    ok, tx = await adapter.lend(chain_id=chain_id, qty=native_supply, native=True)
     assert ok is True, tx
     assert (
         isinstance(tx, dict)
@@ -132,8 +132,8 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert ok is True, pos
     assert int(pos.get("variable_borrow_raw") or 0) == 0
 
-    ok, tx = await adapter.unlend_native(
-        chain_id=chain_id, amount=0, withdraw_full=True
+    ok, tx = await adapter.unlend(
+        chain_id=chain_id, qty=0, native=True, withdraw_full=True
     )
     assert ok is True, tx
     assert (

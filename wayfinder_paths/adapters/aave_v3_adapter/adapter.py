@@ -690,7 +690,7 @@ class AaveV3Adapter(BaseAdapter):
     async def lend(
         self,
         *,
-        underlying_token: str,
+        underlying_token: str | None = None,
         qty: int,
         chain_id: int,
         native: bool = False,
@@ -741,6 +741,8 @@ class AaveV3Adapter(BaseAdapter):
                 supply_hash = await send_transaction(supply_tx, self.sign_callback)
                 return True, {"wrap_tx": wrap_hash, "supply_tx": supply_hash}
 
+            if underlying_token is None:
+                return False, "underlying_token is required for non-native lend"
             asset = to_checksum_address(underlying_token)
             approved = await ensure_allowance(
                 token_address=asset,
@@ -770,7 +772,7 @@ class AaveV3Adapter(BaseAdapter):
     async def unlend(
         self,
         *,
-        underlying_token: str,
+        underlying_token: str | None = None,
         qty: int,
         chain_id: int,
         native: bool = False,
@@ -821,6 +823,8 @@ class AaveV3Adapter(BaseAdapter):
                 unwrap_hash = await send_transaction(unwrap_tx, self.sign_callback)
                 return True, {"withdraw_tx": withdraw_hash, "unwrap_tx": unwrap_hash}
 
+            if underlying_token is None:
+                return False, "underlying_token is required for non-native unlend"
             asset = to_checksum_address(underlying_token)
             tx = await encode_call(
                 target=pool,

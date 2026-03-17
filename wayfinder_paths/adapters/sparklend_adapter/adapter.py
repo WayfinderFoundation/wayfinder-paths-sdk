@@ -672,30 +672,6 @@ class SparkLendAdapter(AaveV3Adapter):
         except Exception as exc:
             return False, str(exc)
 
-    # -----------------------
-    # Optional native helpers
-    # -----------------------
-
-    @require_wallet
-    async def lend_native(self, *, chain_id: int, amount: int) -> tuple[bool, Any]:
-        wrapped = await self._wrapped_native(chain_id=chain_id)
-        return await self.lend(
-            underlying_token=wrapped, qty=amount, chain_id=chain_id, native=True
-        )
-
-    @require_wallet
-    async def unlend_native(
-        self, *, chain_id: int, amount: int, withdraw_full: bool = False
-    ) -> tuple[bool, Any]:
-        wrapped = await self._wrapped_native(chain_id=chain_id)
-        return await self.unlend(
-            underlying_token=wrapped,
-            qty=amount,
-            chain_id=chain_id,
-            native=True,
-            withdraw_full=withdraw_full,
-        )
-
     @require_wallet
     async def borrow_native(
         self,
