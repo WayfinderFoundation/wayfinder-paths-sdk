@@ -80,7 +80,6 @@ class BacktestConfig:
     Args:
         fee_rate: Trading fee rate per trade (e.g., 0.0004 = 4 bps)
         slippage_rate: Slippage rate per trade (e.g., 0.0002 = 2 bps)
-        holding_cost_rate: Holding cost rate per period
         min_trade_notional: Minimum trade size threshold
         rebalance_threshold: Minimum position change to trigger rebalance
         leverage: Position leverage multiplier (e.g., 2.0 = 2x)
@@ -102,7 +101,6 @@ class BacktestConfig:
 
     fee_rate: float = 0.0004
     slippage_rate: float = 0.0002
-    holding_cost_rate: float = 0.00001
     min_trade_notional: float = 1e-6
     rebalance_threshold: float = 0.0
     leverage: float = 1.0

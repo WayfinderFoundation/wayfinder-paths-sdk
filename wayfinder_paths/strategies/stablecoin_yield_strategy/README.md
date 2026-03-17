@@ -15,17 +15,32 @@ This strategy actively manages USDC deposits by:
 4. Rebalancing to higher-yield pools when APY improvements exceed thresholds
 5. Respecting rotation cooldowns to avoid excessive churn
 
+## How selection works
+
+On every `update`, the strategy:
+1. Queries DeFi Llama (via POOL adapter) for all Base stablecoin pools with no IL risk (`stablecoin=True`, `ilRisk="no"`)
+2. Filters to pools with `tvlUsd > $1M` and `combined_apy_pct > 1%`
+3. Sorts by `combined_apy_pct` (base APY + reward APR) descending
+4. Iterates through the top `SEARCH_DEPTH = 10` candidates and selects the first one that passes:
+   - `new_apy - current_apy >= MINIMUM_APY_IMPROVEMENT` (1% absolute improvement required)
+   - Break-even check: `estimated_profit = 7 * (delta_apy * balance / 365) - fee_cost > 0` (must recover rotation cost within 7 days)
+   - 14-day cooldown has passed since last rotation
+
+The combined APY from DeFi Llama includes protocol reward emissions, not just the base supply rate.
+
 ## Key Parameters
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | `MIN_AMOUNT_USDC` | 2 | Minimum deposit amount |
-| `MIN_TVL` | 1,000,000 | Minimum pool TVL |
+| `MIN_TVL` | 1,000,000 | Minimum pool TVL ($) |
 | `ROTATION_MIN_INTERVAL` | 14 days | Cooldown between rotations |
-| `DUST_APY` | 0.01 (1%) | APY threshold below which pools are ignored |
-| `SEARCH_DEPTH` | 10 | Number of pools to examine |
+| `MINIMUM_APY_IMPROVEMENT` | 0.01 (1%) | Minimum APY edge required to rotate |
+| `MINIMUM_DAYS_UNTIL_PROFIT` | 7 | Break-even payback window (days) |
+| `DUST_APY` | 0.01 (1%) | APY floor below which pools are ignored |
+| `SEARCH_DEPTH` | 10 | Number of candidate pools examined per update |
 | `MIN_GAS` | 0.001 ETH | Minimum gas buffer |
-| `GAS_MAXIMUM` | 0.02 ETH | Maximum gas per deposit |
+| `GAS_MAXIMUM` | 0.001 ETH | Maximum gas per deposit |
 
 ## Adapters Used
 
@@ -85,6 +100,79 @@ poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy \
 - Converts all holdings back to USDC
 - Transfers USDC to main wallet
 - Clears cached pool state
+
+## Backtesting
+
+### Data availability caveat
+
+The live strategy selects pools using **DeFi Llama data via the POOL adapter** — `combined_apy_pct` which includes base APY plus reward token emissions. Delta Lab's `fetch_lending_rates` only covers a subset of Base lending venues and does not include reward APRs. This means:
+
+- The backtest will underestimate yield (no reward emissions)
+- The backtest universe is smaller (only known lending venues vs. any Base stable pool)
+- The backtest uses the simpler "point-in-time supply rate" rather than the rolling pool score
+
+### Simplified backtest
+
+```python
+import pandas as pd
+from wayfinder_paths.core.backtesting import (
+    build_yield_index, fetch_lending_rates, run_backtest, BacktestConfig,
+)
+
+# --- Parameters from strategy source ---
+ROTATION_COOLDOWN_HOURS = 14 * 24   # ROTATION_MIN_INTERVAL
+MINIMUM_APY_IMPROVEMENT = 0.01      # 1% absolute improvement required to rotate
+DUST_APY = 0.01                     # ignore venues below 1% APY
+
+# Discover available Base USDC venues in Delta Lab
+start, end = "2025-08-01", "2026-02-01"
+rates = await fetch_lending_rates("USDC", start, end)
+print("Available venues:", rates["supply"].columns.tolist())
+
+supply_rates = rates["supply"].ffill().bfill().fillna(0)
+# Apply DUST_APY filter to match the live strategy's pool filter
+supply_rates = supply_rates.loc[:, supply_rates.mean() >= DUST_APY]
+venues = supply_rates.columns.tolist()
+
+prices = build_yield_index(supply_rates, periods_per_year=8760)
+
+# Use current supply rate (not rolling average) as signal — live strategy uses
+# the live combined_apy_pct from DeFi Llama at the time of the update call
+target = pd.DataFrame(0.0, index=prices.index, columns=venues)
+current_venue = None
+last_switch_idx = -ROTATION_COOLDOWN_HOURS
+
+for i, ts in enumerate(prices.index):
+    row = supply_rates.loc[ts]
+    best = row.idxmax()
+
+    if current_venue is None:
+        current_venue = best
+        last_switch_idx = i
+    elif best != current_venue and (i - last_switch_idx) >= ROTATION_COOLDOWN_HOURS:
+        # Enforce MINIMUM_APY_IMPROVEMENT (1% gap required)
+        if row[best] - row[current_venue] >= MINIMUM_APY_IMPROVEMENT:
+            current_venue = best
+            last_switch_idx = i
+
+    target.loc[ts, current_venue] = 1.0
+
+config = BacktestConfig(
+    fee_rate=0.0, slippage_rate=0.0,
+    enable_liquidation=False, periods_per_year=8760,
+)
+result = run_backtest(prices, target, config)
+print(f"Total return: {result.stats['total_return']:.2%}")
+print(f"Sharpe:       {result.stats['sharpe']:.2f}")
+print(f"Trade count:  {result.stats['trade_count']}")
+```
+
+**Known gaps vs. live strategy**:
+- Live strategy uses `combined_apy_pct` (base + reward emissions); this backtest uses base supply rate only
+- Live universe is all Base stablecoin pools with >$1M TVL (DeFi Llama); this backtest is limited to Delta Lab venues
+- Live strategy also applies a 7-day break-even profitability check per candidate (accounting for gas cost); this backtest does not
+
+**Key health checks**: `trade_count` should be very low (1% APY gap + 14-day cooldown means infrequent rotation), `sharpe > 2.0`, `max_drawdown` near 0
 
 ## Testing
 
