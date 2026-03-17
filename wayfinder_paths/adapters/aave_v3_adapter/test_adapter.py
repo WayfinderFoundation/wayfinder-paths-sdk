@@ -369,10 +369,24 @@ class TestAaveV3Adapter:
         assert "underlying_token" in msg
 
     @pytest.mark.asyncio
-    @patch("wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction", new_callable=AsyncMock, return_value="0xabc")
-    @patch("wayfinder_paths.adapters.aave_v3_adapter.adapter.ensure_allowance", new_callable=AsyncMock, return_value=(True, "ok"))
-    @patch("wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call", new_callable=AsyncMock, return_value={"to": FAKE_ADDR})
-    async def test_lend_native_without_underlying_token(self, _mock_encode, _mock_allow, _mock_send, adapter):
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        new_callable=AsyncMock,
+        return_value="0xabc",
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.ensure_allowance",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call",
+        new_callable=AsyncMock,
+        return_value={"to": FAKE_ADDR},
+    )
+    async def test_lend_native_without_underlying_token(
+        self, _mock_encode, _mock_allow, _mock_send, adapter
+    ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
         ok, result = await adapter.lend(chain_id=42161, qty=100, native=True)
         assert ok is True
@@ -380,10 +394,24 @@ class TestAaveV3Adapter:
         assert result["supply_tx"] == "0xabc"
 
     @pytest.mark.asyncio
-    @patch("wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction", new_callable=AsyncMock, return_value="0xabc")
-    @patch("wayfinder_paths.adapters.aave_v3_adapter.adapter.get_token_balance", new_callable=AsyncMock, return_value=200)
-    @patch("wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call", new_callable=AsyncMock, return_value={"to": FAKE_ADDR})
-    async def test_unlend_native_without_underlying_token(self, _mock_encode, _mock_balance, _mock_send, adapter):
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        new_callable=AsyncMock,
+        return_value="0xabc",
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.get_token_balance",
+        new_callable=AsyncMock,
+        return_value=200,
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call",
+        new_callable=AsyncMock,
+        return_value={"to": FAKE_ADDR},
+    )
+    async def test_unlend_native_without_underlying_token(
+        self, _mock_encode, _mock_balance, _mock_send, adapter
+    ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
         ok, result = await adapter.unlend(chain_id=42161, qty=100, native=True)
         assert ok is True
