@@ -133,3 +133,18 @@ def get_etherscan_api_key() -> str | None:
     if api_key:
         return str(api_key).strip()
     return os.environ.get("ETHERSCAN_API_KEY")
+
+
+def use_nft_authentication() -> bool:
+    return bool(CONFIG.get("system", {}).get("use_nft_authentication", False))
+
+
+def get_nft_token_id() -> int | None:
+    system = CONFIG.get("system", {})
+    token_id = system.get("nft_token_id")
+    if token_id is not None:
+        return int(token_id)
+    env = os.environ.get("WAYFINDER_NFT_TOKEN_ID")
+    if env:
+        return int(env)
+    return None
