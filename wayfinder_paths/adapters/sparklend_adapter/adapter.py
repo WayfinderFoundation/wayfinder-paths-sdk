@@ -285,28 +285,38 @@ class SparkLendAdapter(AaveV3Adapter):
                     block_identifier="pending"
                 )
 
-                token_candidates: set[str] = set()
-                for row in reserves or []:
-                    underlying = to_checksum_address(row[1])
-                    (
-                        a_token,
-                        stable_debt,
-                        variable_debt,
-                    ) = await dp.functions.getReserveTokensAddresses(
-                        underlying
-                    ).call(block_identifier="pending")
+                token_results = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        Call(dp, "getReserveTokensAddresses", (to_checksum_address(row[1]),))
+                        for row in (reserves or [])
+                    ],
+                    block_identifier="pending",
+                )
 
+                token_candidates: set[str] = set()
+                for token_addrs in token_results:
                     token_candidates.update(
                         cs
-                        for addr in (a_token, stable_debt, variable_debt)
+                        for addr in token_addrs
                         if (cs := to_checksum_address(addr)) != ZERO_ADDRESS
                     )
 
+                reward_results = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        Call(rewards, "getRewardsByAsset", (token,))
+                        for token in token_candidates
+                    ],
+                    block_identifier="pending",
+                )
+
                 assets_set: set[str] = set()
-                for token in token_candidates:
-                    rewards_for_asset = await rewards.functions.getRewardsByAsset(
-                        token
-                    ).call(block_identifier="pending")
+                for token, rewards_for_asset in zip(
+                    token_candidates, reward_results, strict=True
+                ):
                     if rewards_for_asset:
                         assets_set.add(token)
 
