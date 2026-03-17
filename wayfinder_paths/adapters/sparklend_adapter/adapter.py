@@ -594,21 +594,50 @@ class SparkLendAdapter(AaveV3Adapter):
                     abi=PROTOCOL_DATA_PROVIDER_ABI,
                 )
 
-                account_data_tuple = await pool.functions.getUserAccountData(acct).call(
-                    block_identifier="pending"
+                # Batch: getUserAccountData + getAllReservesTokens
+                account_data_tuple, reserves = (
+                    await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=chain_id,
+                        calls=[
+                            Call(pool, "getUserAccountData", (acct,)),
+                            Call(dp, "getAllReservesTokens", ()),
+                        ],
+                        block_identifier="pending",
+                    )
                 )
-                reserves = await dp.functions.getAllReservesTokens().call(
-                    block_identifier="pending"
+
+                # Batch all per-reserve calls: userData + tokenAddrs + config
+                parsed_reserves = [
+                    (str(row[0] or ""), to_checksum_address(row[1]))
+                    for row in (reserves or [])
+                ]
+                per_reserve_calls: list[Call] = []
+                for _, underlying in parsed_reserves:
+                    per_reserve_calls.append(
+                        Call(dp, "getUserReserveData", (underlying, acct))
+                    )
+                    per_reserve_calls.append(
+                        Call(dp, "getReserveTokensAddresses", (underlying,))
+                    )
+                    per_reserve_calls.append(
+                        Call(dp, "getReserveConfigurationData", (underlying,))
+                    )
+
+                per_reserve_results = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=per_reserve_calls,
+                    block_identifier="pending",
                 )
 
                 positions: list[dict[str, Any]] = []
-                for row in reserves or []:
-                    symbol = str(row[0] or "")
-                    underlying = to_checksum_address(row[1])
+                for i, (symbol, underlying) in enumerate(parsed_reserves):
+                    base = i * 3
+                    user_data = per_reserve_results[base]
+                    token_addrs = per_reserve_results[base + 1]
+                    cfg_data = per_reserve_results[base + 2]
 
-                    user_data = await dp.functions.getUserReserveData(
-                        underlying, acct
-                    ).call(block_identifier="pending")
                     supply = user_data[0]
                     stable_debt = user_data[1]
                     variable_debt = user_data[2]
@@ -623,27 +652,30 @@ class SparkLendAdapter(AaveV3Adapter):
                     ):
                         continue
 
-                    (
-                        a_token,
-                        stable_debt_token,
-                        variable_debt_token,
-                    ) = await dp.functions.getReserveTokensAddresses(underlying).call(
-                        block_identifier="pending"
-                    )
-                    cfg = await self._reserve_config(
-                        chain_id=chain_id, underlying=underlying, web3=web3
-                    )
+                    cfg = {
+                        "decimals": cfg_data[0],
+                        "ltv_bps": cfg_data[1],
+                        "liquidation_threshold_bps": cfg_data[2],
+                        "liquidation_bonus_bps": cfg_data[3],
+                        "reserve_factor_bps": cfg_data[4],
+                        "usage_as_collateral_enabled": cfg_data[5],
+                        "borrowing_enabled": cfg_data[6],
+                        "stable_borrow_rate_enabled": cfg_data[7],
+                        "is_active": cfg_data[8],
+                        "is_frozen": cfg_data[9],
+                    }
+                    self._reserve_config_by_chain_underlying[
+                        (chain_id, underlying.lower())
+                    ] = cfg
 
                     positions.append(
                         {
                             "underlying": underlying,
                             "symbol": symbol,
                             "decimals": cfg.get("decimals", 18),
-                            "supply_token": to_checksum_address(a_token),
-                            "stable_debt_token": to_checksum_address(stable_debt_token),
-                            "variable_debt_token": to_checksum_address(
-                                variable_debt_token
-                            ),
+                            "supply_token": to_checksum_address(token_addrs[0]),
+                            "stable_debt_token": to_checksum_address(token_addrs[1]),
+                            "variable_debt_token": to_checksum_address(token_addrs[2]),
                             "supply_raw": supply,
                             "stable_borrow_raw": stable_debt,
                             "variable_borrow_raw": variable_debt,
