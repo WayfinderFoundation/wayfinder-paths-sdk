@@ -3,10 +3,24 @@ import time
 from eth_account import Account
 from eth_account.messages import encode_defunct
 
-from wayfinder_paths.core.config import CONFIG, get_nft_token_id
+from wayfinder_paths.core.config import (
+    CONFIG,
+    get_api_key,
+    get_nft_token_id,
+    use_nft_authentication,
+)
 
 
-def build_nft_auth_headers() -> dict[str, str]:
+def build_auth_headers() -> dict[str, str]:
+    if use_nft_authentication():
+        return _build_nft_auth_headers()
+    api_key = get_api_key()
+    if api_key:
+        return {"X-API-KEY": api_key}
+    return {}
+
+
+def _build_nft_auth_headers() -> dict[str, str]:
     token_id = get_nft_token_id()
     if token_id is None:
         raise ValueError(
@@ -30,8 +44,6 @@ def build_nft_auth_headers() -> dict[str, str]:
 
     return {
         "X-NFT-Token-Id": str(token_id),
-        "X-Wallet-Signature": signed.signature.hex()
-        if signed.signature.hex().startswith("0x")
-        else f"0x{signed.signature.hex()}",
+        "X-Wallet-Signature": f"0x{signed.signature.hex()}",
         "X-Signature-Timestamp": timestamp,
     }
