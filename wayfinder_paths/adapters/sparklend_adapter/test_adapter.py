@@ -104,6 +104,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_lend_native_rejects_zero_amount(self, adapter):
+        adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
         ok, msg = await adapter.lend_native(chain_id=1, amount=0)
         assert ok is False
         assert "positive" in msg
@@ -134,6 +135,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_unlend_native_rejects_zero_without_withdraw_full(self, adapter):
+        adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
         ok, msg = await adapter.unlend_native(chain_id=1, amount=0, withdraw_full=False)
         assert ok is False
         assert "positive" in msg

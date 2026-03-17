@@ -678,8 +678,6 @@ class SparkLendAdapter(AaveV3Adapter):
 
     @require_wallet
     async def lend_native(self, *, chain_id: int, amount: int) -> tuple[bool, Any]:
-        if amount <= 0:
-            return False, "amount must be positive"
         wrapped = await self._wrapped_native(chain_id=chain_id)
         return await self.lend(
             underlying_token=wrapped, qty=amount, chain_id=chain_id, native=True
@@ -689,8 +687,6 @@ class SparkLendAdapter(AaveV3Adapter):
     async def unlend_native(
         self, *, chain_id: int, amount: int, withdraw_full: bool = False
     ) -> tuple[bool, Any]:
-        if amount <= 0 and not withdraw_full:
-            return False, "amount must be positive"
         wrapped = await self._wrapped_native(chain_id=chain_id)
         return await self.unlend(
             underlying_token=wrapped,
