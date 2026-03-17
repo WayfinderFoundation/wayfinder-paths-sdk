@@ -77,8 +77,8 @@ class TestSparkLendAdapter:
         assert "wallet" in msg.lower()
 
     @pytest.mark.asyncio
-    async def test_require_wallet_blocks_supply_native(self, adapter_no_wallet):
-        ok, msg = await adapter_no_wallet.supply_native(chain_id=1, amount=100)
+    async def test_require_wallet_blocks_lend_native(self, adapter_no_wallet):
+        ok, msg = await adapter_no_wallet.lend_native(chain_id=1, amount=100)
         assert ok is False
         assert "wallet" in msg.lower()
 
@@ -103,8 +103,8 @@ class TestSparkLendAdapter:
         assert "positive" in msg
 
     @pytest.mark.asyncio
-    async def test_supply_native_rejects_zero_amount(self, adapter):
-        ok, msg = await adapter.supply_native(chain_id=1, amount=0)
+    async def test_lend_native_rejects_zero_amount(self, adapter):
+        ok, msg = await adapter.lend_native(chain_id=1, amount=0)
         assert ok is False
         assert "positive" in msg
 
@@ -133,8 +133,8 @@ class TestSparkLendAdapter:
         assert "positive" in msg
 
     @pytest.mark.asyncio
-    async def test_withdraw_native_rejects_zero_without_withdraw_full(self, adapter):
-        ok, msg = await adapter.withdraw_native(
+    async def test_unlend_native_rejects_zero_without_withdraw_full(self, adapter):
+        ok, msg = await adapter.unlend_native(
             chain_id=1, amount=0, withdraw_full=False
         )
         assert ok is False

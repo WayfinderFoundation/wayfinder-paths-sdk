@@ -77,24 +77,24 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert isinstance(markets, list) and markets
 
     # Basic ERC20 supply/withdraw.
-    ok, tx = await adapter.lend(chain_id=chain_id, asset=usdc, amount=5 * 10**6)
+    ok, tx = await adapter.lend(chain_id=chain_id, underlying_token=usdc, qty=5 * 10**6)
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
     ok, tx = await adapter.unlend(
-        chain_id=chain_id, asset=usdc, amount=0, withdraw_full=True
+        chain_id=chain_id, underlying_token=usdc, qty=0, withdraw_full=True
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
     # Native supply, enable collateral, borrow USDC, repay-full, withdraw-full.
-    ok, tx = await adapter.supply_native(chain_id=chain_id, amount=native_supply)
+    ok, tx = await adapter.lend_native(chain_id=chain_id, amount=native_supply)
     assert ok is True, tx
-    assert isinstance(tx, str) and tx.startswith("0x")
+    assert isinstance(tx, dict) and tx["wrap_tx"].startswith("0x") and tx["supply_tx"].startswith("0x")
 
     wrapped = await adapter._wrapped_native(chain_id=chain_id)
     ok, tx = await adapter.set_collateral(
-        chain_id=chain_id, asset=wrapped, enabled=True
+        chain_id=chain_id, underlying_token=wrapped, use_as_collateral=True
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
@@ -128,11 +128,11 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert ok is True, pos
     assert int(pos.get("variable_borrow_raw") or 0) == 0
 
-    ok, tx = await adapter.withdraw_native(
+    ok, tx = await adapter.unlend_native(
         chain_id=chain_id, amount=0, withdraw_full=True
     )
     assert ok is True, tx
-    assert isinstance(tx, str) and tx.startswith("0x")
+    assert isinstance(tx, dict) and tx["withdraw_tx"].startswith("0x") and tx["unwrap_tx"].startswith("0x")
 
     # Claim rewards (may be zero, but should be callable).
     ok, tx = await adapter.claim_rewards(chain_id=chain_id)
