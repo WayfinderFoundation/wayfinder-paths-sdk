@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from eth_utils import to_checksum_address
@@ -781,21 +782,22 @@ class SparkLendAdapter(AaveV3Adapter):
                 if debt_token.lower() == ZERO_ADDRESS:
                     return False, "debt token address not found for wrapped native"
 
-                debt = await get_token_balance(
-                    debt_token,
-                    chain_id,
-                    self.wallet_address,
-                    block_identifier="pending",
+                debt, native_balance = await asyncio.gather(
+                    get_token_balance(
+                        debt_token,
+                        chain_id,
+                        self.wallet_address,
+                        block_identifier="pending",
+                    ),
+                    get_token_balance(
+                        None,
+                        chain_id,
+                        self.wallet_address,
+                        block_identifier="pending",
+                    ),
                 )
                 if debt <= 0:
                     return True, None
-
-                native_balance = await get_token_balance(
-                    None,
-                    chain_id,
-                    self.wallet_address,
-                    block_identifier="pending",
-                )
                 buffer_wei = max(1, debt // 10_000)  # 0.01%
                 value = debt + buffer_wei
                 if native_balance < value:
