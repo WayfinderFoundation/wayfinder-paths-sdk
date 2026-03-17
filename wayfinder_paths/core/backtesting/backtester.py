@@ -118,6 +118,9 @@ def run_backtest(
         config.funding_rates = funding_aligned
 
     cash_balance = config.initial_capital
+    debt_balance = pd.DataFrame(
+        0.0, columns=["q", "notional"], index=symbols, dtype=float
+    )
     position_units = pd.Series(0.0, index=symbols, dtype=float)
 
     portfolio_values: list[float] = []
@@ -173,9 +176,25 @@ def run_backtest(
 
             transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
 
-            if transaction_cost + trade_units * price > cash_balance:
+            if (
+                transaction_cost + abs(trade_units * price)
+                > cash_balance - debt_balance["notional"].sum()
+            ):
                 cash_skipped_count += 1
                 continue
+
+            if trade_units < 0:  # adding short, increase debt
+                debt_balance.loc[sym, "q"] -= trade_units
+                debt_balance.loc[sym, "notional"] -= trade_units * price
+            elif debt_balance.loc[sym, "q"] > 0:  # adding long with outstanding debt
+                cover_r = abs(trade_units / debt_balance.loc[sym, "q"])
+                debt_balance.loc[sym, "notional"] -= debt_balance.loc[
+                    sym, "notional"
+                ] * min(cover_r, 1)
+                debt_balance.loc[sym, "q"] -= trade_units
+                debt_balance.loc[sym, "q"] = max(0, debt_balance.loc[sym, "q"])
+            else:
+                pass
 
             cash_balance -= trade_units * price
             cash_balance -= transaction_cost
