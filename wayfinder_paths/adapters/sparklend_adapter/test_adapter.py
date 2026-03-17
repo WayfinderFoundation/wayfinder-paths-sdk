@@ -54,7 +54,9 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_require_wallet_blocks_lend(self, adapter_no_wallet):
-        ok, msg = await adapter_no_wallet.lend(chain_id=1, underlying_token=FAKE_ASSET, qty=100)
+        ok, msg = await adapter_no_wallet.lend(
+            chain_id=1, underlying_token=FAKE_ASSET, qty=100
+        )
         assert ok is False
         assert "wallet" in msg.lower()
 
