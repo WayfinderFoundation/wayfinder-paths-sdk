@@ -54,6 +54,26 @@ class SparkLendAdapter(AaveV3Adapter):
             tuple[int, str], dict[str, Any]
         ] = {}
 
+    def _parse_reserve_config(
+        self, data: tuple[Any, ...], chain_id: int, underlying: str
+    ) -> dict[str, Any]:
+        cfg = {
+            "decimals": data[0],
+            "ltv_bps": data[1],
+            "liquidation_threshold_bps": data[2],
+            "liquidation_bonus_bps": data[3],
+            "reserve_factor_bps": data[4],
+            "usage_as_collateral_enabled": data[5],
+            "borrowing_enabled": data[6],
+            "stable_borrow_rate_enabled": data[7],
+            "is_active": data[8],
+            "is_frozen": data[9],
+        }
+        self._reserve_config_by_chain_underlying[
+            (chain_id, to_checksum_address(underlying).lower())
+        ] = cfg
+        return cfg
+
     def _entry(self, chain_id: int) -> dict[str, str]:
         entry = SPARKLEND_BY_CHAIN.get(int(chain_id))
         if not entry:
@@ -115,34 +135,10 @@ class SparkLendAdapter(AaveV3Adapter):
             address=to_checksum_address(data_provider_addr),
             abi=PROTOCOL_DATA_PROVIDER_ABI,
         )
-        (
-            decimals,
-            ltv,
-            liq_threshold,
-            liq_bonus,
-            reserve_factor,
-            usage_as_collateral_enabled,
-            borrowing_enabled,
-            stable_borrow_rate_enabled,
-            is_active,
-            is_frozen,
-        ) = await dp.functions.getReserveConfigurationData(underlying).call(
+        raw = await dp.functions.getReserveConfigurationData(underlying).call(
             block_identifier="pending"
         )
-
-        cfg = {
-            "decimals": decimals,
-            "ltv_bps": ltv,
-            "liquidation_threshold_bps": liq_threshold,
-            "liquidation_bonus_bps": liq_bonus,
-            "reserve_factor_bps": reserve_factor,
-            "usage_as_collateral_enabled": usage_as_collateral_enabled,
-            "borrowing_enabled": borrowing_enabled,
-            "stable_borrow_rate_enabled": stable_borrow_rate_enabled,
-            "is_active": is_active,
-            "is_frozen": is_frozen,
-        }
-        self._reserve_config_by_chain_underlying[cache_key] = cfg
+        cfg = self._parse_reserve_config(raw, chain_id, underlying)
         return cfg
 
     # ------------------
@@ -397,18 +393,7 @@ class SparkLendAdapter(AaveV3Adapter):
                     reserve_data = results[base + 1]
                     token_addrs = results[base + 2]
 
-                    (
-                        decimals,
-                        ltv,
-                        liq_threshold,
-                        liq_bonus,
-                        reserve_factor,
-                        usage_as_collateral_enabled,
-                        borrowing_enabled,
-                        stable_borrow_rate_enabled,
-                        is_active,
-                        is_frozen,
-                    ) = cfg_data
+                    cfg = self._parse_reserve_config(cfg_data, chain_id, underlying)
 
                     borrow_cap = None
                     supply_cap = None
@@ -434,6 +419,7 @@ class SparkLendAdapter(AaveV3Adapter):
                         (chain_id, underlying.lower())
                     ] = (a_token, stable_debt_token, variable_debt_token)
 
+                    decimals = cfg["decimals"]
                     unit = 10**decimals
 
                     supply_apr = ray_to_apr(liquidity_rate)
@@ -465,15 +451,15 @@ class SparkLendAdapter(AaveV3Adapter):
                             "supply_token": a_token,
                             "stable_debt_token": stable_debt_token,
                             "variable_debt_token": variable_debt_token,
-                            "ltv_bps": ltv,
-                            "liquidation_threshold_bps": liq_threshold,
-                            "liquidation_bonus_bps": liq_bonus,
-                            "reserve_factor_bps": reserve_factor,
-                            "usage_as_collateral_enabled": usage_as_collateral_enabled,
-                            "borrowing_enabled": borrowing_enabled,
-                            "stable_borrow_enabled": stable_borrow_rate_enabled,
-                            "is_active": is_active,
-                            "is_frozen": is_frozen,
+                            "ltv_bps": cfg["ltv_bps"],
+                            "liquidation_threshold_bps": cfg["liquidation_threshold_bps"],
+                            "liquidation_bonus_bps": cfg["liquidation_bonus_bps"],
+                            "reserve_factor_bps": cfg["reserve_factor_bps"],
+                            "usage_as_collateral_enabled": cfg["usage_as_collateral_enabled"],
+                            "borrowing_enabled": cfg["borrowing_enabled"],
+                            "stable_borrow_enabled": cfg["stable_borrow_rate_enabled"],
+                            "is_active": cfg["is_active"],
+                            "is_frozen": cfg["is_frozen"],
                             "supply_cap": supply_cap,
                             "borrow_cap": borrow_cap,
                             "supply_cap_headroom": supply_cap_headroom,
@@ -546,20 +532,7 @@ class SparkLendAdapter(AaveV3Adapter):
 
                 (a_token, stable_debt_token, variable_debt_token) = token_addrs
 
-                cfg = {
-                    "decimals": cfg_data[0],
-                    "ltv_bps": cfg_data[1],
-                    "liquidation_threshold_bps": cfg_data[2],
-                    "liquidation_bonus_bps": cfg_data[3],
-                    "reserve_factor_bps": cfg_data[4],
-                    "usage_as_collateral_enabled": cfg_data[5],
-                    "borrowing_enabled": cfg_data[6],
-                    "stable_borrow_rate_enabled": cfg_data[7],
-                    "is_active": cfg_data[8],
-                    "is_frozen": cfg_data[9],
-                }
-                cache_key = (chain_id, underlying.lower())
-                self._reserve_config_by_chain_underlying[cache_key] = cfg
+                cfg = self._parse_reserve_config(cfg_data, chain_id, underlying)
 
             return True, {
                 "protocol": "sparklend",
@@ -671,21 +644,7 @@ class SparkLendAdapter(AaveV3Adapter):
                     ):
                         continue
 
-                    cfg = {
-                        "decimals": cfg_data[0],
-                        "ltv_bps": cfg_data[1],
-                        "liquidation_threshold_bps": cfg_data[2],
-                        "liquidation_bonus_bps": cfg_data[3],
-                        "reserve_factor_bps": cfg_data[4],
-                        "usage_as_collateral_enabled": cfg_data[5],
-                        "borrowing_enabled": cfg_data[6],
-                        "stable_borrow_rate_enabled": cfg_data[7],
-                        "is_active": cfg_data[8],
-                        "is_frozen": cfg_data[9],
-                    }
-                    self._reserve_config_by_chain_underlying[
-                        (chain_id, underlying.lower())
-                    ] = cfg
+                    cfg = self._parse_reserve_config(cfg_data, chain_id, underlying)
 
                     positions.append(
                         {
