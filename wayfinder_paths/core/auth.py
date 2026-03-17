@@ -14,8 +14,7 @@ from wayfinder_paths.core.config import (
 def build_auth_headers() -> dict[str, str]:
     if use_nft_authentication():
         return _build_nft_auth_headers()
-    api_key = get_api_key()
-    if api_key:
+    if api_key := get_api_key():
         return {"X-API-KEY": api_key}
     return {}
 
