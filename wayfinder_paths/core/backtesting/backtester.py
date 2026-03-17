@@ -29,6 +29,86 @@ from wayfinder_paths.core.backtesting.utils import (
 )
 
 
+def _planned_target_state(
+    *,
+    current_prices: pd.Series,
+    current_units: pd.Series,
+    raw_target_weights: pd.Series,
+    nav_before_trade: float,
+    config: BacktestConfig,
+) -> tuple[pd.Series, pd.Series, float, float]:
+    leverage = max(float(config.leverage), 1e-12)
+    if nav_before_trade <= 0:
+        return (
+            pd.Series(0.0, index=current_units.index, dtype=float),
+            pd.Series(0.0, index=current_units.index, dtype=float),
+            0.0,
+            0.0,
+        )
+
+    weights = raw_target_weights.reindex(current_units.index).fillna(0.0).astype(float).clip(-1.0, 1.0)
+    gross_weight = float(weights.abs().sum())
+    base_scale = min(1.0, 1.0 / gross_weight) if gross_weight > 1.0 else 1.0
+    fee_rate = float(config.fee_rate + config.slippage_rate)
+    current_notionals = current_units * current_prices
+    current_margin_used = float(current_notionals.abs().sum()) / leverage
+    force_rebalance = current_margin_used > nav_before_trade + 1e-12
+
+    def _plan(scale: float) -> tuple[pd.Series, pd.Series, float, float, float]:
+        scaled_weights = weights * scale
+        target_units = current_units.copy()
+        total_turnover = 0.0
+        for sym in current_units.index:
+            price = float(current_prices[sym])
+            if price <= 0:
+                continue
+            desired_weight = float(scaled_weights[sym])
+            desired_notional = desired_weight * leverage * nav_before_trade
+            desired_units = desired_notional / price
+            current_units_sym = float(current_units[sym])
+            trade_units = desired_units - current_units_sym
+            trade_notional = abs(trade_units * price)
+            if trade_notional < config.min_trade_notional:
+                continue
+            current_weight = (
+                (current_units_sym * price) / nav_before_trade if nav_before_trade > 0 else 0.0
+            )
+            weight_change = abs(desired_weight * leverage - current_weight)
+            reducing_gross = abs(desired_notional) < abs(current_units_sym * price) - 1e-12
+            if weight_change < config.rebalance_threshold and not (
+                force_rebalance and reducing_gross
+            ):
+                continue
+            target_units[sym] = desired_units
+            total_turnover += trade_notional
+        gross_notional = float((target_units * current_prices).abs().sum())
+        total_cost = total_turnover * fee_rate
+        return target_units, scaled_weights, total_turnover, total_cost, gross_notional
+
+    target_units, scaled_weights, total_turnover, total_cost, gross_notional = _plan(base_scale)
+    margin_used = gross_notional / leverage
+    if margin_used + total_cost <= nav_before_trade + 1e-12:
+        return target_units, scaled_weights, total_turnover, total_cost
+
+    low = 0.0
+    high = base_scale
+    best_plan = _plan(0.0)
+    for _ in range(24):
+        mid = (low + high) / 2.0
+        candidate_plan = _plan(mid)
+        candidate_gross = candidate_plan[4]
+        candidate_cost = candidate_plan[3]
+        candidate_margin = candidate_gross / leverage
+        if candidate_margin + candidate_cost <= nav_before_trade + 1e-12:
+            low = mid
+            best_plan = candidate_plan
+        else:
+            high = mid
+
+    target_units, scaled_weights, total_turnover, total_cost, _gross_notional = best_plan
+    return target_units, scaled_weights, total_turnover, total_cost
+
+
 def run_backtest(
     prices: pd.DataFrame,
     target_positions: pd.DataFrame,
@@ -117,8 +197,9 @@ def run_backtest(
         ]
         config.funding_rates = funding_aligned
 
-    cash_balance = config.initial_capital
+    equity = float(config.initial_capital)
     position_units = pd.Series(0.0, index=symbols, dtype=float)
+    previous_prices: pd.Series | None = None
 
     portfolio_values: list[float] = []
     position_snapshots: list[dict[str, float]] = []
@@ -126,77 +207,63 @@ def run_backtest(
     turnover_series: list[float] = []
     cost_series: list[float] = []
     exposure_series: list[float] = []
+    net_exposure_series: list[float] = []
+    cash_balance_series: list[float] = []
+    inventory_value_series: list[float] = []
+    maintenance_requirement_series: list[float] = []
+    margin_headroom_series: list[float] = []
     fee_series: list[float] = []
     funding_series: list[float] = []
 
     liquidated = False
     liquidation_timestamp: pd.Timestamp | None = None
-    cash_skipped_count = 0
 
     for idx, ts in enumerate(timestamps):
         current_prices = prices.loc[ts]
         target_weights = target_positions.loc[ts]
-
-        inventory_value = float((position_units * current_prices).sum())
-        portfolio_value = cash_balance + inventory_value
-        nav_before_trade = portfolio_value
+        if previous_prices is not None:
+            equity += float((position_units * (current_prices - previous_prices)).sum())
+        nav_before_trade = equity
 
         total_turnover = 0.0
         total_cost = 0.0
         period_fees = 0.0
         period_funding = 0.0
-
-        for sym in symbols:
-            price = float(current_prices[sym])
-            if not price or price <= 0 or portfolio_value <= 0:
-                continue
-
-            target_weight = float(target_weights[sym])
-            target_notional = target_weight * config.leverage * nav_before_trade
-            target_units = target_notional / price
-
-            current_units = float(position_units[sym])
-            trade_units = target_units - current_units
-            trade_notional = abs(trade_units * price)
-
-            if trade_notional < config.min_trade_notional:
-                continue
-
-            current_weight = (
-                (current_units * price) / nav_before_trade
-                if nav_before_trade > 0
-                else 0
+        if nav_before_trade > 0:
+            planned_units, planned_weights, total_turnover, total_fee = _planned_target_state(
+                current_prices=current_prices,
+                current_units=position_units,
+                raw_target_weights=target_weights,
+                nav_before_trade=nav_before_trade,
+                config=config,
             )
-            weight_change = abs(target_weight * config.leverage - current_weight)
-            if weight_change < config.rebalance_threshold:
-                continue
-
-            transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
-
-            if transaction_cost + trade_units * price > cash_balance:
-                cash_skipped_count += 1
-                continue
-
-            cash_balance -= trade_units * price
-            cash_balance -= transaction_cost
-            position_units[sym] = target_units
-
-            total_turnover += trade_notional
-            total_cost += transaction_cost
-            period_fees += transaction_cost
-
-            trades.append(
-                {
-                    "timestamp": ts,
-                    "symbol": sym,
-                    "price": price,
-                    "units": trade_units,
-                    "notional": trade_units * price,
-                    "target_weight": target_weight,
-                    "cost": transaction_cost,
-                    "leverage": config.leverage,
-                }
-            )
+            for sym in symbols:
+                price = float(current_prices[sym])
+                if price <= 0:
+                    continue
+                current_units_sym = float(position_units[sym])
+                target_units_sym = float(planned_units[sym])
+                trade_units = target_units_sym - current_units_sym
+                trade_notional = abs(trade_units * price)
+                if trade_notional < config.min_trade_notional:
+                    continue
+                transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
+                position_units[sym] = target_units_sym
+                trades.append(
+                    {
+                        "timestamp": ts,
+                        "symbol": sym,
+                        "price": price,
+                        "units": trade_units,
+                        "notional": trade_units * price,
+                        "target_weight": float(planned_weights[sym]),
+                        "cost": transaction_cost,
+                        "leverage": config.leverage,
+                    }
+                )
+            equity -= total_fee
+            total_cost += total_fee
+            period_fees += total_fee
 
         # Apply funding rates (now guaranteed to have matching timestamps)
         if config.funding_rates is not None:
@@ -209,17 +276,22 @@ def run_backtest(
                         * float(current_prices[sym])
                         * float(funding_row[sym])
                     )
-            cash_balance -= funding_charge
+            equity -= funding_charge
             total_cost += funding_charge
             period_funding += funding_charge
 
+        inventory_value = float((position_units * current_prices).sum())
+        portfolio_value = equity
         gross_notional = sum(
             abs(float(position_units[sym]) * float(current_prices[sym]))
             for sym in symbols
         )
+        leverage = max(float(config.leverage), 1e-12)
+        margin_used = gross_notional / leverage
+        cash_balance = portfolio_value - margin_used
+        maintenance_requirement = 0.0
 
         if config.enable_liquidation and portfolio_value > 0:
-            maintenance_requirement = 0.0
             for sym in symbols:
                 price = float(current_prices[sym])
                 if price <= 0:
@@ -235,6 +307,7 @@ def run_backtest(
             ):
                 liquidated = True
                 liquidation_timestamp = ts
+                equity = 0.0
                 cash_balance = 0.0
                 position_units[:] = 0.0
                 portfolio_value = 0.0
@@ -244,6 +317,11 @@ def run_backtest(
                 turnover_series.append(0.0)
                 cost_series.append(0.0)
                 exposure_series.append(0.0)
+                net_exposure_series.append(0.0)
+                cash_balance_series.append(0.0)
+                inventory_value_series.append(0.0)
+                maintenance_requirement_series.append(0.0)
+                margin_headroom_series.append(0.0)
                 fee_series.append(0.0)
                 funding_series.append(0.0)
                 position_snapshots.append(dict.fromkeys(symbols, 0.0))
@@ -252,6 +330,11 @@ def run_backtest(
                     turnover_series.extend([0.0] * remaining)
                     cost_series.extend([0.0] * remaining)
                     exposure_series.extend([0.0] * remaining)
+                    net_exposure_series.extend([0.0] * remaining)
+                    cash_balance_series.extend([0.0] * remaining)
+                    inventory_value_series.extend([0.0] * remaining)
+                    maintenance_requirement_series.extend([0.0] * remaining)
+                    margin_headroom_series.extend([0.0] * remaining)
                     fee_series.extend([0.0] * remaining)
                     funding_series.extend([0.0] * remaining)
                     position_snapshots.extend([dict.fromkeys(symbols, 0.0)] * remaining)
@@ -267,22 +350,19 @@ def run_backtest(
         exposure_series.append(
             gross_notional / portfolio_value if portfolio_value > 0 else 0.0
         )
+        net_exposure_series.append(
+            inventory_value / portfolio_value if portfolio_value > 0 else 0.0
+        )
+        cash_balance_series.append(float(cash_balance))
+        inventory_value_series.append(float(inventory_value))
+        maintenance_requirement_series.append(float(maintenance_requirement))
+        margin_headroom_series.append(
+            float(portfolio_value - maintenance_requirement * (1 + config.liquidation_buffer))
+        )
         fee_series.append(period_fees)
         funding_series.append(period_funding)
         position_snapshots.append({sym: float(position_units[sym]) for sym in symbols})
-
-    if cash_skipped_count > 0 and not trades:
-        total_weight = target_positions.abs().sum(axis=1).max()
-        total_cost_rate = config.fee_rate + config.slippage_rate
-        print(
-            f"⚠️  run_backtest: {cash_skipped_count} trades skipped — "
-            f"cash + fees exceeded cash balance on every attempt. "
-            f"With target weight {total_weight:.2f} and fee+slippage={total_cost_rate:.4f}, "
-            f"the first trade costs {total_weight * (1 + total_cost_rate):.4f} but "
-            f"initial_capital={config.initial_capital:.4f}. "
-            f"Fix: reduce target weights (e.g. 0.99 instead of 1.0), "
-            f"or set fee_rate=0 and slippage_rate=0 for yield/lending strategies."
-        )
+        previous_prices = current_prices
 
     equity_curve = pd.Series(portfolio_values[: len(timestamps)], index=timestamps)
     returns = equity_curve.pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)
@@ -292,7 +372,14 @@ def run_backtest(
             "equity": portfolio_values[: len(timestamps)],
             "turnover": turnover_series[: len(timestamps)],
             "cost": cost_series[: len(timestamps)],
+            "fee_amount": fee_series[: len(timestamps)],
+            "funding_amount": funding_series[: len(timestamps)],
             "gross_exposure": exposure_series[: len(timestamps)],
+            "net_exposure": net_exposure_series[: len(timestamps)],
+            "cash_balance": cash_balance_series[: len(timestamps)],
+            "inventory_value": inventory_value_series[: len(timestamps)],
+            "maintenance_requirement": maintenance_requirement_series[: len(timestamps)],
+            "margin_headroom": margin_headroom_series[: len(timestamps)],
         },
         index=timestamps,
     )

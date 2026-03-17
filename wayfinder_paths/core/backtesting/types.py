@@ -123,7 +123,8 @@ class BacktestResult:
         returns: Period-over-period returns (pd.Series, index=timestamps)
         stats: Performance statistics (BacktestStats TypedDict for IDE autocomplete)
         trades: List of trade events with timestamps, symbols, costs
-        metrics_by_period: DataFrame with equity, turnover, cost, exposure per period
+        metrics_by_period: DataFrame with equity, turnover, cost, exposure, free collateral,
+            and margin diagnostics per period
         positions_over_time: DataFrame of position sizes per symbol over time
         liquidated: Whether the strategy was liquidated
         liquidation_timestamp: Timestamp of liquidation (if occurred)
