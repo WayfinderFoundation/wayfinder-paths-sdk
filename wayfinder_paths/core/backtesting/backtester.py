@@ -29,6 +29,45 @@ from wayfinder_paths.core.backtesting.utils import (
 )
 
 
+def get_atomic_trade_scale(
+    *,
+    symbols: list[str],
+    current_prices: pd.Series,
+    position_units: pd.Series,
+    weights: pd.Series,
+    nav_before_trade: float,
+    free_cash: float,
+    force_rebalance: bool,
+    config: BacktestConfig,
+) -> float:
+    long_cost_at1 = fee_cost_at1 = 0.0
+    for sym in symbols:
+        price = float(current_prices[sym])
+        if not price or price <= 0 or nav_before_trade <= 0:
+            continue
+        target_weight = float(weights[sym])
+        target_units = target_weight * config.leverage * nav_before_trade / price
+        current_units = float(position_units[sym])
+        trade_units = target_units - current_units
+        trade_notional = abs(trade_units * price)
+        if trade_notional < config.min_trade_notional:
+            continue
+        current_weight = (current_units * price) / nav_before_trade
+        weight_change = abs(target_weight * config.leverage - current_weight)
+        reducing_gross = abs(target_units * price) < abs(current_units * price) - 1e-12
+        if weight_change < config.rebalance_threshold and not (
+            force_rebalance and reducing_gross
+        ):
+            continue
+        if trade_units > 0:
+            long_cost_at1 += trade_units * price
+        fee_cost_at1 += trade_notional * (config.fee_rate + config.slippage_rate)
+    total_required = long_cost_at1 + fee_cost_at1
+    return max(
+        0.0, min(1.0, free_cash / total_required) if total_required > 1e-12 else 1.0
+    )
+
+
 def run_backtest(
     prices: pd.DataFrame,
     target_positions: pd.DataFrame,
@@ -118,6 +157,9 @@ def run_backtest(
         config.funding_rates = funding_aligned
 
     cash_balance = config.initial_capital
+    debt_balance = pd.DataFrame(
+        0.0, columns=["q", "notional"], index=symbols, dtype=float
+    )
     position_units = pd.Series(0.0, index=symbols, dtype=float)
 
     portfolio_values: list[float] = []
@@ -131,7 +173,6 @@ def run_backtest(
 
     liquidated = False
     liquidation_timestamp: pd.Timestamp | None = None
-    cash_skipped_count = 0
 
     for idx, ts in enumerate(timestamps):
         current_prices = prices.loc[ts]
@@ -146,17 +187,45 @@ def run_backtest(
         period_fees = 0.0
         period_funding = 0.0
 
+        # Normalize weights if gross exposure > 1 to avoid unintended over-leverage
+        gross_weight = float(target_weights.abs().sum())
+        weights = (
+            target_weights / gross_weight if gross_weight > 1.0 else target_weights
+        )
+
+        # Force-rebalance: allow reducing-gross trades to bypass rebalance_threshold
+        # when current leverage exceeds config.leverage due to adverse price moves
+        current_gross_notional = float((position_units * current_prices).abs().sum())
+        force_rebalance = (
+            config.force_rebalance_if_overleveraged
+            and portfolio_value > 0
+            and current_gross_notional / config.leverage > nav_before_trade + 1e-12
+        )
+
+        free_cash = cash_balance - float(debt_balance["notional"].sum())
+        scale = get_atomic_trade_scale(
+            symbols=symbols,
+            current_prices=current_prices,
+            position_units=position_units,
+            weights=weights,
+            nav_before_trade=nav_before_trade,
+            free_cash=free_cash,
+            force_rebalance=force_rebalance,
+            config=config,
+        )
+
         for sym in symbols:
             price = float(current_prices[sym])
             if not price or price <= 0 or portfolio_value <= 0:
                 continue
 
-            target_weight = float(target_weights[sym])
+            target_weight = float(weights[sym])
             target_notional = target_weight * config.leverage * nav_before_trade
             target_units = target_notional / price
 
             current_units = float(position_units[sym])
-            trade_units = target_units - current_units
+            scaled_target = current_units + scale * (target_units - current_units)
+            trade_units = scaled_target - current_units
             trade_notional = abs(trade_units * price)
 
             if trade_notional < config.min_trade_notional:
@@ -165,21 +234,32 @@ def run_backtest(
             current_weight = (
                 (current_units * price) / nav_before_trade
                 if nav_before_trade > 0
-                else 0
+                else 0.0
             )
             weight_change = abs(target_weight * config.leverage - current_weight)
-            if weight_change < config.rebalance_threshold:
+            reducing_gross = abs(target_notional) < abs(current_units * price) - 1e-12
+            if weight_change < config.rebalance_threshold and not (
+                force_rebalance and reducing_gross
+            ):
                 continue
 
             transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
 
-            if transaction_cost + trade_units * price > cash_balance:
-                cash_skipped_count += 1
-                continue
+            if trade_units < 0:  # adding short, increase debt
+                debt_balance.loc[sym, "q"] -= trade_units
+                debt_balance.loc[sym, "notional"] -= trade_units * price
+            elif debt_balance.loc[sym, "q"] > 0:  # adding long with outstanding debt
+                cover_r = min(abs(trade_units) / debt_balance.loc[sym, "q"], 1.0)
+                debt_balance.loc[sym, "notional"] -= (
+                    debt_balance.loc[sym, "notional"] * cover_r
+                )
+                debt_balance.loc[sym, "q"] = max(
+                    0.0, debt_balance.loc[sym, "q"] - abs(trade_units)
+                )
 
             cash_balance -= trade_units * price
             cash_balance -= transaction_cost
-            position_units[sym] = target_units
+            position_units[sym] = scaled_target
 
             total_turnover += trade_notional
             total_cost += transaction_cost
@@ -217,6 +297,7 @@ def run_backtest(
             abs(float(position_units[sym]) * float(current_prices[sym]))
             for sym in symbols
         )
+        portfolio_value = cash_balance + float((position_units * current_prices).sum())
 
         if config.enable_liquidation and portfolio_value > 0:
             maintenance_requirement = 0.0
@@ -270,19 +351,6 @@ def run_backtest(
         fee_series.append(period_fees)
         funding_series.append(period_funding)
         position_snapshots.append({sym: float(position_units[sym]) for sym in symbols})
-
-    if cash_skipped_count > 0 and not trades:
-        total_weight = target_positions.abs().sum(axis=1).max()
-        total_cost_rate = config.fee_rate + config.slippage_rate
-        print(
-            f"⚠️  run_backtest: {cash_skipped_count} trades skipped — "
-            f"cash + fees exceeded cash balance on every attempt. "
-            f"With target weight {total_weight:.2f} and fee+slippage={total_cost_rate:.4f}, "
-            f"the first trade costs {total_weight * (1 + total_cost_rate):.4f} but "
-            f"initial_capital={config.initial_capital:.4f}. "
-            f"Fix: reduce target weights (e.g. 0.99 instead of 1.0), "
-            f"or set fee_rate=0 and slippage_rate=0 for yield/lending strategies."
-        )
 
     equity_curve = pd.Series(portfolio_values[: len(timestamps)], index=timestamps)
     returns = equity_curve.pct_change().replace([np.inf, -np.inf], 0.0).fillna(0.0)
