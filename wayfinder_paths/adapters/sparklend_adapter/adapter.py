@@ -45,10 +45,6 @@ class SparkLendAdapter(AaveV3Adapter):
         )
         self.name = "sparklend_adapter"
 
-        # Cache: (chain_id, underlying.lower()) -> (aToken, stableDebtToken, variableDebtToken)
-        self._reserve_tokens_by_chain_underlying: dict[
-            tuple[int, str], tuple[str, str, str]
-        ] = {}
         # Cache: (chain_id, underlying.lower()) -> reserve config dict
         self._reserve_config_by_chain_underlying: dict[
             tuple[int, str], dict[str, Any]
@@ -84,10 +80,6 @@ class SparkLendAdapter(AaveV3Adapter):
         self, *, chain_id: int, underlying: str
     ) -> tuple[str, str, str]:
         underlying = to_checksum_address(underlying)
-        cache_key = (chain_id, underlying.lower())
-        if cached := self._reserve_tokens_by_chain_underlying.get(cache_key):
-            return cached
-
         entry = self._entry(chain_id)
         data_provider_addr = entry.get("protocol_data_provider")
         if not data_provider_addr:
@@ -108,13 +100,11 @@ class SparkLendAdapter(AaveV3Adapter):
                 block_identifier="pending"
             )
 
-        tokens = (
+        return (
             to_checksum_address(a_token),
             to_checksum_address(stable_debt),
             to_checksum_address(variable_debt),
         )
-        self._reserve_tokens_by_chain_underlying[cache_key] = tokens
-        return tokens
 
     async def _reserve_config(
         self, *, chain_id: int, underlying: str, web3: Any
@@ -415,10 +405,6 @@ class SparkLendAdapter(AaveV3Adapter):
                     a_token = to_checksum_address(token_addrs[0])
                     stable_debt_token = to_checksum_address(token_addrs[1])
                     variable_debt_token = to_checksum_address(token_addrs[2])
-                    self._reserve_tokens_by_chain_underlying[
-                        (chain_id, underlying.lower())
-                    ] = (a_token, stable_debt_token, variable_debt_token)
-
                     decimals = cfg["decimals"]
                     unit = 10**decimals
 
