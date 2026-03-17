@@ -54,7 +54,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_require_wallet_blocks_lend(self, adapter_no_wallet):
-        ok, msg = await adapter_no_wallet.lend(chain_id=1, asset=FAKE_ASSET, amount=100)
+        ok, msg = await adapter_no_wallet.lend(chain_id=1, underlying_token=FAKE_ASSET, qty=100)
         assert ok is False
         assert "wallet" in msg.lower()
 
@@ -69,7 +69,7 @@ class TestSparkLendAdapter:
     @pytest.mark.asyncio
     async def test_require_wallet_blocks_set_collateral(self, adapter_no_wallet):
         ok, msg = await adapter_no_wallet.set_collateral(
-            chain_id=1, asset=FAKE_ASSET, enabled=True
+            chain_id=1, underlying_token=FAKE_ASSET, use_as_collateral=True
         )
         assert ok is False
         assert "wallet" in msg.lower()
@@ -84,13 +84,13 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_lend_rejects_zero_amount(self, adapter):
-        ok, msg = await adapter.lend(chain_id=1, asset=FAKE_ASSET, amount=0)
+        ok, msg = await adapter.lend(chain_id=1, underlying_token=FAKE_ASSET, qty=0)
         assert ok is False
         assert "positive" in msg
 
     @pytest.mark.asyncio
     async def test_lend_rejects_negative_amount(self, adapter):
-        ok, msg = await adapter.lend(chain_id=1, asset=FAKE_ASSET, amount=-1)
+        ok, msg = await adapter.lend(chain_id=1, underlying_token=FAKE_ASSET, qty=-1)
         assert ok is False
         assert "positive" in msg
 
@@ -117,7 +117,7 @@ class TestSparkLendAdapter:
     @pytest.mark.asyncio
     async def test_unlend_rejects_zero_without_withdraw_full(self, adapter):
         ok, msg = await adapter.unlend(
-            chain_id=1, asset=FAKE_ASSET, amount=0, withdraw_full=False
+            chain_id=1, underlying_token=FAKE_ASSET, qty=0, withdraw_full=False
         )
         assert ok is False
         assert "positive" in msg
