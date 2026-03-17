@@ -17,7 +17,10 @@ from wayfinder_paths.core.constants.sparklend_abi import (
 from wayfinder_paths.core.constants.sparklend_contracts import SPARKLEND_BY_CHAIN
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.interest import apr_to_apy, ray_to_apr
-from wayfinder_paths.core.utils.multicall import Call, read_only_calls_multicall_or_gather
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
@@ -289,7 +292,11 @@ class SparkLendAdapter(AaveV3Adapter):
                     web3=web3,
                     chain_id=chain_id,
                     calls=[
-                        Call(dp, "getReserveTokensAddresses", (to_checksum_address(row[1]),))
+                        Call(
+                            dp,
+                            "getReserveTokensAddresses",
+                            (to_checksum_address(row[1]),),
+                        )
                         for row in (reserves or [])
                     ],
                     block_identifier="pending",
@@ -510,17 +517,19 @@ class SparkLendAdapter(AaveV3Adapter):
                     abi=PROTOCOL_DATA_PROVIDER_ABI,
                 )
 
-                user_data, token_addrs, cfg_data = (
-                    await read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=chain_id,
-                        calls=[
-                            Call(dp, "getUserReserveData", (underlying, acct)),
-                            Call(dp, "getReserveTokensAddresses", (underlying,)),
-                            Call(dp, "getReserveConfigurationData", (underlying,)),
-                        ],
-                        block_identifier="pending",
-                    )
+                (
+                    user_data,
+                    token_addrs,
+                    cfg_data,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        Call(dp, "getUserReserveData", (underlying, acct)),
+                        Call(dp, "getReserveTokensAddresses", (underlying,)),
+                        Call(dp, "getReserveConfigurationData", (underlying,)),
+                    ],
+                    block_identifier="pending",
                 )
 
                 (
@@ -604,17 +613,17 @@ class SparkLendAdapter(AaveV3Adapter):
                     abi=PROTOCOL_DATA_PROVIDER_ABI,
                 )
 
-                # Batch: getUserAccountData + getAllReservesTokens
-                account_data_tuple, reserves = (
-                    await read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=chain_id,
-                        calls=[
-                            Call(pool, "getUserAccountData", (acct,)),
-                            Call(dp, "getAllReservesTokens", ()),
-                        ],
-                        block_identifier="pending",
-                    )
+                (
+                    account_data_tuple,
+                    reserves,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        Call(pool, "getUserAccountData", (acct,)),
+                        Call(dp, "getAllReservesTokens", ()),
+                    ],
+                    block_identifier="pending",
                 )
 
                 # Batch all per-reserve calls: userData + tokenAddrs + config
