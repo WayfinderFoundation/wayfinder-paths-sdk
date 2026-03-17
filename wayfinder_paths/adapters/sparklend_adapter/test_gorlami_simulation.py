@@ -90,7 +90,11 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     # Native supply, enable collateral, borrow USDC, repay-full, withdraw-full.
     ok, tx = await adapter.lend_native(chain_id=chain_id, amount=native_supply)
     assert ok is True, tx
-    assert isinstance(tx, dict) and tx["wrap_tx"].startswith("0x") and tx["supply_tx"].startswith("0x")
+    assert (
+        isinstance(tx, dict)
+        and tx["wrap_tx"].startswith("0x")
+        and tx["supply_tx"].startswith("0x")
+    )
 
     wrapped = await adapter._wrapped_native(chain_id=chain_id)
     ok, tx = await adapter.set_collateral(
@@ -132,7 +136,11 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
         chain_id=chain_id, amount=0, withdraw_full=True
     )
     assert ok is True, tx
-    assert isinstance(tx, dict) and tx["withdraw_tx"].startswith("0x") and tx["unwrap_tx"].startswith("0x")
+    assert (
+        isinstance(tx, dict)
+        and tx["withdraw_tx"].startswith("0x")
+        and tx["unwrap_tx"].startswith("0x")
+    )
 
     # Claim rewards (may be zero, but should be callable).
     ok, tx = await adapter.claim_rewards(chain_id=chain_id)
