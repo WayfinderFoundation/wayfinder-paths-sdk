@@ -286,20 +286,14 @@ class SparkLendAdapter(AaveV3Adapter):
 
                 token_candidates: set[str] = set()
                 for row in reserves or []:
-                    try:
-                        underlying = to_checksum_address(row[1])
-                    except Exception:
-                        continue
-                    try:
-                        (
-                            a_token,
-                            stable_debt,
-                            variable_debt,
-                        ) = await dp.functions.getReserveTokensAddresses(
-                            underlying
-                        ).call(block_identifier="pending")
-                    except Exception:
-                        continue
+                    underlying = to_checksum_address(row[1])
+                    (
+                        a_token,
+                        stable_debt,
+                        variable_debt,
+                    ) = await dp.functions.getReserveTokensAddresses(
+                        underlying
+                    ).call(block_identifier="pending")
 
                     for addr in (a_token, stable_debt, variable_debt):
                         if addr.lower() != ZERO_ADDRESS:
@@ -307,12 +301,9 @@ class SparkLendAdapter(AaveV3Adapter):
 
                 assets_set: set[str] = set()
                 for token in token_candidates:
-                    try:
-                        rewards_for_asset = await rewards.functions.getRewardsByAsset(
-                            token
-                        ).call(block_identifier="pending")
-                    except Exception:
-                        continue
+                    rewards_for_asset = await rewards.functions.getRewardsByAsset(
+                        token
+                    ).call(block_identifier="pending")
                     if rewards_for_asset:
                         assets_set.add(token)
 
