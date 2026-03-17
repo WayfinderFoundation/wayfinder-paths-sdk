@@ -439,10 +439,14 @@ class SparkLendAdapter(AaveV3Adapter):
                             "stable_debt_token": stable_debt_token,
                             "variable_debt_token": variable_debt_token,
                             "ltv_bps": cfg["ltv_bps"],
-                            "liquidation_threshold_bps": cfg["liquidation_threshold_bps"],
+                            "liquidation_threshold_bps": cfg[
+                                "liquidation_threshold_bps"
+                            ],
                             "liquidation_bonus_bps": cfg["liquidation_bonus_bps"],
                             "reserve_factor_bps": cfg["reserve_factor_bps"],
-                            "usage_as_collateral_enabled": cfg["usage_as_collateral_enabled"],
+                            "usage_as_collateral_enabled": cfg[
+                                "usage_as_collateral_enabled"
+                            ],
                             "borrowing_enabled": cfg["borrowing_enabled"],
                             "stable_borrow_enabled": cfg["stable_borrow_rate_enabled"],
                             "is_active": cfg["is_active"],
