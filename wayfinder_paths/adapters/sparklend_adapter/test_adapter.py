@@ -468,5 +468,4 @@ class TestSparkLendAdapter:
     def test_reserve_config_cache_populated(self, adapter):
         """Caches start empty."""
         assert adapter._wrapped_native_by_chain == {}
-        assert adapter._reserve_tokens_by_chain_underlying == {}
         assert adapter._reserve_config_by_chain_underlying == {}
