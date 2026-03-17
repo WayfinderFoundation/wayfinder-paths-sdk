@@ -17,6 +17,7 @@ from wayfinder_paths.core.constants.sparklend_abi import (
 from wayfinder_paths.core.constants.sparklend_contracts import SPARKLEND_BY_CHAIN
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.interest import apr_to_apy, ray_to_apr
+from wayfinder_paths.core.utils.multicall import Call, read_only_calls_multicall_or_gather
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
@@ -489,6 +490,19 @@ class SparkLendAdapter(AaveV3Adapter):
                     abi=PROTOCOL_DATA_PROVIDER_ABI,
                 )
 
+                user_data, token_addrs, cfg_data = (
+                    await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=chain_id,
+                        calls=[
+                            Call(dp, "getUserReserveData", (underlying, acct)),
+                            Call(dp, "getReserveTokensAddresses", (underlying,)),
+                            Call(dp, "getReserveConfigurationData", (underlying,)),
+                        ],
+                        block_identifier="pending",
+                    )
+                )
+
                 (
                     current_a_token_balance,
                     current_stable_debt,
@@ -499,21 +513,24 @@ class SparkLendAdapter(AaveV3Adapter):
                     liquidity_rate,
                     stable_rate_last_updated,
                     usage_as_collateral_enabled_on_user,
-                ) = await dp.functions.getUserReserveData(underlying, acct).call(
-                    block_identifier="pending"
-                )
+                ) = user_data
 
-                (
-                    a_token,
-                    stable_debt_token,
-                    variable_debt_token,
-                ) = await dp.functions.getReserveTokensAddresses(underlying).call(
-                    block_identifier="pending"
-                )
+                (a_token, stable_debt_token, variable_debt_token) = token_addrs
 
-                cfg = await self._reserve_config(
-                    chain_id=chain_id, underlying=underlying, web3=web3
-                )
+                cfg = {
+                    "decimals": cfg_data[0],
+                    "ltv_bps": cfg_data[1],
+                    "liquidation_threshold_bps": cfg_data[2],
+                    "liquidation_bonus_bps": cfg_data[3],
+                    "reserve_factor_bps": cfg_data[4],
+                    "usage_as_collateral_enabled": cfg_data[5],
+                    "borrowing_enabled": cfg_data[6],
+                    "stable_borrow_rate_enabled": cfg_data[7],
+                    "is_active": cfg_data[8],
+                    "is_frozen": cfg_data[9],
+                }
+                cache_key = (chain_id, underlying.lower())
+                self._reserve_config_by_chain_underlying[cache_key] = cfg
 
             return True, {
                 "protocol": "sparklend",
