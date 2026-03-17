@@ -662,83 +662,23 @@ class SparkLendAdapter(AaveV3Adapter):
 
     @require_wallet
     async def supply_native(self, *, chain_id: int, amount: int) -> tuple[bool, Any]:
-        if amount <= 0:
-            return False, "amount must be positive"
-
-        try:
-            entry = self._entry(chain_id)
-            pool = entry.get("pool")
-            gateway = entry.get("wrapped_native_gateway")
-            if not pool:
-                raise ValueError(f"pool not configured for chain_id={chain_id}")
-            if not gateway:
-                raise ValueError(
-                    f"wrapped_native_gateway not configured for chain_id={chain_id}"
-                )
-
-            tx = await encode_call(
-                target=gateway,
-                abi=WETH_GATEWAY_ABI,
-                fn_name="depositETH",
-                args=[to_checksum_address(pool), self.wallet_address, REFERRAL_CODE],
-                from_address=self.wallet_address,
-                chain_id=chain_id,
-                value=amount,
-            )
-            txn_hash = await send_transaction(tx, self.sign_callback)
-            return True, txn_hash
-        except Exception as exc:
-            return False, str(exc)
+        wrapped = await self._wrapped_native(chain_id=chain_id)
+        return await self.lend(
+            underlying_token=wrapped, qty=amount, chain_id=chain_id, native=True
+        )
 
     @require_wallet
     async def withdraw_native(
         self, *, chain_id: int, amount: int, withdraw_full: bool = False
     ) -> tuple[bool, Any]:
-        if amount <= 0 and not withdraw_full:
-            return False, "amount must be positive"
-
-        try:
-            entry = self._entry(chain_id)
-            pool = entry.get("pool")
-            gateway = entry.get("wrapped_native_gateway")
-            if not pool:
-                raise ValueError(f"pool not configured for chain_id={chain_id}")
-            if not gateway:
-                raise ValueError(
-                    f"wrapped_native_gateway not configured for chain_id={chain_id}"
-                )
-
-            wrapped = await self._wrapped_native(chain_id=chain_id)
-            a_token, _, _ = await self._reserve_tokens(
-                chain_id=chain_id, underlying=wrapped
-            )
-
-            allowance_target = MAX_UINT256 if withdraw_full else amount
-            approved = await ensure_allowance(
-                token_address=a_token,
-                owner=self.wallet_address,
-                spender=gateway,
-                amount=allowance_target,
-                chain_id=chain_id,
-                signing_callback=self.sign_callback,
-                approval_amount=MAX_UINT256,
-            )
-            if not approved[0]:
-                return approved
-
-            withdraw_amount = MAX_UINT256 if withdraw_full else amount
-            tx = await encode_call(
-                target=gateway,
-                abi=WETH_GATEWAY_ABI,
-                fn_name="withdrawETH",
-                args=[to_checksum_address(pool), withdraw_amount, self.wallet_address],
-                from_address=self.wallet_address,
-                chain_id=chain_id,
-            )
-            txn_hash = await send_transaction(tx, self.sign_callback)
-            return True, txn_hash
-        except Exception as exc:
-            return False, str(exc)
+        wrapped = await self._wrapped_native(chain_id=chain_id)
+        return await self.unlend(
+            underlying_token=wrapped,
+            qty=amount,
+            chain_id=chain_id,
+            native=True,
+            withdraw_full=withdraw_full,
+        )
 
     @require_wallet
     async def borrow_native(
