@@ -351,10 +351,34 @@ class SparkLendAdapter(AaveV3Adapter):
                     block_identifier="pending"
                 )
 
+                # Build all per-reserve calls in one batch
+                parsed_reserves = [
+                    (str(row[0] or ""), to_checksum_address(row[1]))
+                    for row in (reserves or [])
+                ]
+                calls: list[Call] = []
+                # Per reserve: config, data, tokens (+ caps if requested)
+                calls_per_reserve = 4 if include_caps else 3
+                for _, underlying in parsed_reserves:
+                    calls.append(Call(dp, "getReserveConfigurationData", (underlying,)))
+                    calls.append(Call(dp, "getReserveData", (underlying,)))
+                    calls.append(Call(dp, "getReserveTokensAddresses", (underlying,)))
+                    if include_caps:
+                        calls.append(Call(dp, "getReserveCaps", (underlying,)))
+
+                results = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=calls,
+                    block_identifier="pending",
+                )
+
                 markets: list[dict[str, Any]] = []
-                for row in reserves or []:
-                    symbol = str(row[0] or "")
-                    underlying = to_checksum_address(row[1])
+                for i, (symbol, underlying) in enumerate(parsed_reserves):
+                    base = i * calls_per_reserve
+                    cfg_data = results[base]
+                    reserve_data = results[base + 1]
+                    token_addrs = results[base + 2]
 
                     (
                         decimals,
@@ -367,22 +391,15 @@ class SparkLendAdapter(AaveV3Adapter):
                         stable_borrow_rate_enabled,
                         is_active,
                         is_frozen,
-                    ) = await dp.functions.getReserveConfigurationData(underlying).call(
-                        block_identifier="pending"
-                    )
+                    ) = cfg_data
 
                     borrow_cap = None
                     supply_cap = None
                     if include_caps:
-                        bc, sc = await dp.functions.getReserveCaps(underlying).call(
-                            block_identifier="pending"
-                        )
-                        borrow_cap = bc
-                        supply_cap = sc
+                        caps = results[base + 3]
+                        borrow_cap = caps[0]
+                        supply_cap = caps[1]
 
-                    reserve_data = await dp.functions.getReserveData(underlying).call(
-                        block_identifier="pending"
-                    )
                     # (unbacked, accruedToTreasuryScaled, totalAToken, totalStableDebt, totalVariableDebt,
                     #  liquidityRate, variableBorrowRate, stableBorrowRate, averageStableBorrowRate,
                     #  liquidityIndex, variableBorrowIndex, lastUpdateTimestamp)
@@ -393,16 +410,9 @@ class SparkLendAdapter(AaveV3Adapter):
                     variable_borrow_rate = reserve_data[6]
                     stable_borrow_rate = reserve_data[7]
 
-                    (
-                        a_token,
-                        stable_debt_token,
-                        variable_debt_token,
-                    ) = await dp.functions.getReserveTokensAddresses(underlying).call(
-                        block_identifier="pending"
-                    )
-                    a_token = to_checksum_address(a_token)
-                    stable_debt_token = to_checksum_address(stable_debt_token)
-                    variable_debt_token = to_checksum_address(variable_debt_token)
+                    a_token = to_checksum_address(token_addrs[0])
+                    stable_debt_token = to_checksum_address(token_addrs[1])
+                    variable_debt_token = to_checksum_address(token_addrs[2])
                     self._reserve_tokens_by_chain_underlying[
                         (chain_id, underlying.lower())
                     ] = (a_token, stable_debt_token, variable_debt_token)
