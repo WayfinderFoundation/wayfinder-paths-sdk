@@ -5,6 +5,7 @@ import pytest
 
 from wayfinder_paths.adapters.aave_v3_adapter.adapter import AaveV3Adapter
 from wayfinder_paths.core.constants.aave_v3_abi import UI_POOL_RESERVE_KEYS
+from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 
 FAKE_ADDR = "0x1234567890123456789012345678901234567890"
 FAKE_ASSET = "0x0000000000000000000000000000000000000001"
@@ -354,19 +355,7 @@ class TestAaveV3Adapter:
         assert tx == "0xtx"
         assert mock_encode.await_count == 1
 
-    # ---- lend/unlend underlying_token optional for native ----
-
-    @pytest.mark.asyncio
-    async def test_lend_requires_underlying_token_when_not_native(self, adapter):
-        ok, msg = await adapter.lend(chain_id=42161, qty=100)
-        assert ok is False
-        assert "underlying_token" in msg
-
-    @pytest.mark.asyncio
-    async def test_unlend_requires_underlying_token_when_not_native(self, adapter):
-        ok, msg = await adapter.unlend(chain_id=42161, qty=100)
-        assert ok is False
-        assert "underlying_token" in msg
+    # ---- native via ZERO_ADDRESS ----
 
     @pytest.mark.asyncio
     @patch(
@@ -384,11 +373,11 @@ class TestAaveV3Adapter:
         new_callable=AsyncMock,
         return_value={"to": FAKE_ADDR},
     )
-    async def test_lend_native_without_underlying_token(
+    async def test_lend_native_via_zero_address(
         self, _mock_encode, _mock_allow, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.lend(chain_id=42161, qty=100, native=True)
+        ok, result = await adapter.lend(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
         assert ok is True
         assert result["wrap_tx"] == "0xabc"
         assert result["supply_tx"] == "0xabc"
@@ -409,10 +398,10 @@ class TestAaveV3Adapter:
         new_callable=AsyncMock,
         return_value={"to": FAKE_ADDR},
     )
-    async def test_unlend_native_without_underlying_token(
+    async def test_unlend_native_via_zero_address(
         self, _mock_encode, _mock_balance, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.unlend(chain_id=42161, qty=100, native=True)
+        ok, result = await adapter.unlend(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
         assert ok is True
         assert result["withdraw_tx"] == "0xabc"

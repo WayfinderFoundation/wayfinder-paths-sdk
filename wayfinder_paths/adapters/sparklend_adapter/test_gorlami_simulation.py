@@ -6,6 +6,7 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.sparklend_adapter.adapter import SparkLendAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
+from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
@@ -88,7 +89,7 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert isinstance(tx, str) and tx.startswith("0x")
 
     # Native supply, enable collateral, borrow USDC, repay-full, withdraw-full.
-    ok, tx = await adapter.lend(chain_id=chain_id, qty=native_supply, native=True)
+    ok, tx = await adapter.lend(chain_id=chain_id, underlying_token=ZERO_ADDRESS, qty=native_supply)
     assert ok is True, tx
     assert (
         isinstance(tx, dict)
@@ -133,7 +134,7 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert int(pos.get("variable_borrow_raw") or 0) == 0
 
     ok, tx = await adapter.unlend(
-        chain_id=chain_id, qty=0, native=True, withdraw_full=True
+        chain_id=chain_id, underlying_token=ZERO_ADDRESS, qty=0, withdraw_full=True
     )
     assert ok is True, tx
     assert (

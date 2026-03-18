@@ -9,6 +9,7 @@ from wayfinder_paths.adapters.sparklend_adapter.adapter import (
     VARIABLE_RATE_MODE,
     SparkLendAdapter,
 )
+from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 
 FAKE_ADDR = "0x1234567890123456789012345678901234567890"
 FAKE_ASSET = "0x0000000000000000000000000000000000000001"
@@ -78,23 +79,11 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_require_wallet_blocks_lend_native(self, adapter_no_wallet):
-        ok, msg = await adapter_no_wallet.lend(chain_id=1, qty=100, native=True)
+        ok, msg = await adapter_no_wallet.lend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=100)
         assert ok is False
         assert "wallet" in msg.lower()
 
-    # ---- underlying_token optional when native=True ----
-
-    @pytest.mark.asyncio
-    async def test_lend_requires_underlying_token_when_not_native(self, adapter):
-        ok, msg = await adapter.lend(chain_id=1, qty=100)
-        assert ok is False
-        assert "underlying_token" in msg
-
-    @pytest.mark.asyncio
-    async def test_unlend_requires_underlying_token_when_not_native(self, adapter):
-        ok, msg = await adapter.unlend(chain_id=1, qty=100)
-        assert ok is False
-        assert "underlying_token" in msg
+    # ---- native via ZERO_ADDRESS ----
 
     @pytest.mark.asyncio
     @patch(
@@ -112,11 +101,11 @@ class TestSparkLendAdapter:
         new_callable=AsyncMock,
         return_value={"to": FAKE_ADDR},
     )
-    async def test_lend_native_without_underlying_token(
-        self, mock_encode, mock_allow, mock_send, adapter
+    async def test_lend_native_via_zero_address(
+        self, _mock_encode, _mock_allow, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.lend(chain_id=1, qty=100, native=True)
+        ok, result = await adapter.lend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=100)
         assert ok is True
         assert result["wrap_tx"] == "0xabc"
         assert result["supply_tx"] == "0xabc"
@@ -137,11 +126,11 @@ class TestSparkLendAdapter:
         new_callable=AsyncMock,
         return_value={"to": FAKE_ADDR},
     )
-    async def test_unlend_native_without_underlying_token(
-        self, mock_encode, mock_balance, mock_send, adapter
+    async def test_unlend_native_via_zero_address(
+        self, _mock_encode, _mock_balance, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.unlend(chain_id=1, qty=100, native=True)
+        ok, result = await adapter.unlend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=100)
         assert ok is True
         assert result["withdraw_tx"] == "0xabc"
 
@@ -167,7 +156,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_lend_native_rejects_zero_amount(self, adapter):
-        ok, msg = await adapter.lend(chain_id=1, qty=0, native=True)
+        ok, msg = await adapter.lend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=0)
         assert ok is False
         assert "positive" in msg
 
@@ -198,7 +187,7 @@ class TestSparkLendAdapter:
     @pytest.mark.asyncio
     async def test_unlend_native_rejects_zero_without_withdraw_full(self, adapter):
         ok, msg = await adapter.unlend(
-            chain_id=1, qty=0, native=True, withdraw_full=False
+            chain_id=1, underlying_token=ZERO_ADDRESS, qty=0, withdraw_full=False
         )
         assert ok is False
         assert "positive" in msg

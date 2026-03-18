@@ -154,7 +154,6 @@ class SparkLendAdapter(AaveV3Adapter):
                     underlying_token=str(asset),
                     qty=int(amount),
                     chain_id=int(chain_id),
-                    native=False,
                 )
 
             if amount <= 0:
@@ -210,7 +209,6 @@ class SparkLendAdapter(AaveV3Adapter):
                     underlying_token=str(asset),
                     qty=int(amount),
                     chain_id=int(chain_id),
-                    native=False,
                     repay_full=bool(repay_full),
                 )
 
