@@ -405,3 +405,48 @@ class TestAaveV3Adapter:
         ok, result = await adapter.unlend(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
         assert ok is True
         assert result["withdraw_tx"] == "0xabc"
+
+    @pytest.mark.asyncio
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        new_callable=AsyncMock,
+        return_value="0xabc",
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call",
+        new_callable=AsyncMock,
+        return_value={"to": FAKE_ADDR},
+    )
+    async def test_borrow_native_via_zero_address(
+        self, _mock_encode, _mock_send, adapter
+    ):
+        adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
+        ok, result = await adapter.borrow(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
+        assert ok is True
+        assert result["borrow_tx"] == "0xabc"
+        assert result["unwrap_tx"] == "0xabc"
+
+    @pytest.mark.asyncio
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        new_callable=AsyncMock,
+        return_value="0xabc",
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.ensure_allowance",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call",
+        new_callable=AsyncMock,
+        return_value={"to": FAKE_ADDR},
+    )
+    async def test_repay_native_via_zero_address(
+        self, _mock_encode, _mock_allow, _mock_send, adapter
+    ):
+        adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
+        ok, result = await adapter.repay(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
+        assert ok is True
+        assert result["wrap_tx"] == "0xabc"
+        assert result["repay_tx"] == "0xabc"
