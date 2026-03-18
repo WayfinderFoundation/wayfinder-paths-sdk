@@ -377,7 +377,9 @@ class TestAaveV3Adapter:
         self, _mock_encode, _mock_allow, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.lend(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, result = await adapter.lend(
+            chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is True
         assert result["wrap_tx"] == "0xabc"
         assert result["supply_tx"] == "0xabc"
@@ -402,7 +404,9 @@ class TestAaveV3Adapter:
         self, _mock_encode, _mock_balance, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.unlend(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, result = await adapter.unlend(
+            chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is True
         assert result["withdraw_tx"] == "0xabc"
 
@@ -421,7 +425,9 @@ class TestAaveV3Adapter:
         self, _mock_encode, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.borrow(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, result = await adapter.borrow(
+            chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is True
         assert result["borrow_tx"] == "0xabc"
         assert result["unwrap_tx"] == "0xabc"
@@ -446,7 +452,9 @@ class TestAaveV3Adapter:
         self, _mock_encode, _mock_allow, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.repay(chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, result = await adapter.repay(
+            chain_id=42161, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is True
         assert result["wrap_tx"] == "0xabc"
         assert result["repay_tx"] == "0xabc"

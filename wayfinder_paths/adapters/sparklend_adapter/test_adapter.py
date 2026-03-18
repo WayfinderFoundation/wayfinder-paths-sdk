@@ -79,7 +79,9 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     async def test_require_wallet_blocks_lend_native(self, adapter_no_wallet):
-        ok, msg = await adapter_no_wallet.lend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, msg = await adapter_no_wallet.lend(
+            chain_id=1, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is False
         assert "wallet" in msg.lower()
 
@@ -105,7 +107,9 @@ class TestSparkLendAdapter:
         self, _mock_encode, _mock_allow, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.lend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, result = await adapter.lend(
+            chain_id=1, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is True
         assert result["wrap_tx"] == "0xabc"
         assert result["supply_tx"] == "0xabc"
@@ -130,7 +134,9 @@ class TestSparkLendAdapter:
         self, _mock_encode, _mock_balance, _mock_send, adapter
     ):
         adapter._wrapped_native = AsyncMock(return_value=FAKE_ASSET)
-        ok, result = await adapter.unlend(chain_id=1, underlying_token=ZERO_ADDRESS, qty=100)
+        ok, result = await adapter.unlend(
+            chain_id=1, underlying_token=ZERO_ADDRESS, qty=100
+        )
         assert ok is True
         assert result["withdraw_tx"] == "0xabc"
 

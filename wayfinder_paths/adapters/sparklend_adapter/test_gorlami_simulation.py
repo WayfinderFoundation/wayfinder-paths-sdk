@@ -89,7 +89,9 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
     assert isinstance(tx, str) and tx.startswith("0x")
 
     # Native supply, enable collateral, borrow USDC, repay-full, withdraw-full.
-    ok, tx = await adapter.lend(chain_id=chain_id, underlying_token=ZERO_ADDRESS, qty=native_supply)
+    ok, tx = await adapter.lend(
+        chain_id=chain_id, underlying_token=ZERO_ADDRESS, qty=native_supply
+    )
     assert ok is True, tx
     assert (
         isinstance(tx, dict)
