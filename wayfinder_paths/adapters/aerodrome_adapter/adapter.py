@@ -185,7 +185,7 @@ class AerodromeAdapter(BaseAdapter):
             if pool.lower() == ZERO_ADDRESS:
                 return False, "Pool does not exist"
             return True, pool
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_gauge(
@@ -208,7 +208,7 @@ class AerodromeAdapter(BaseAdapter):
             if gauge.lower() == ZERO_ADDRESS:
                 return False, "Gauge not found for pool"
             return True, gauge
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_reward_contracts(
@@ -248,7 +248,7 @@ class AerodromeAdapter(BaseAdapter):
                 "fees": fees,
                 "bribes": bribes,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_all_markets(
@@ -497,7 +497,7 @@ class AerodromeAdapter(BaseAdapter):
                 "total": total,
                 "markets": markets,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def quote_add_liquidity(
@@ -569,7 +569,7 @@ class AerodromeAdapter(BaseAdapter):
                 "amountB": b,
                 "liquidity": liq,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -750,7 +750,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def quote_remove_liquidity(
@@ -797,7 +797,7 @@ class AerodromeAdapter(BaseAdapter):
             if tA_native or tB_native:
                 return True, {"amount_token": a, "amount_eth": b, "token": token}
             return True, {"amountA": a, "amountB": b}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -956,7 +956,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -991,7 +991,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1059,7 +1059,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1087,7 +1087,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1114,7 +1114,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_user_ve_nfts(
@@ -1161,7 +1161,7 @@ class AerodromeAdapter(BaseAdapter):
                     chunk_size=100,
                 )
             return True, token_ids
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1210,7 +1210,7 @@ class AerodromeAdapter(BaseAdapter):
                 expected_to=owner,
             )
             return True, {"tx": tx_hash, "token_id": token_id}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1261,7 +1261,7 @@ class AerodromeAdapter(BaseAdapter):
                 expected_to=recv,
             )
             return True, {"tx": tx_hash, "token_id": token_id}
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1302,7 +1302,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1329,7 +1329,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1353,7 +1353,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1377,7 +1377,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1401,7 +1401,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1441,7 +1441,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1471,7 +1471,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def _reward_tokens(
@@ -1564,7 +1564,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1616,7 +1616,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_rebase_claimable(
@@ -1637,7 +1637,7 @@ class AerodromeAdapter(BaseAdapter):
                     block_identifier=block_identifier
                 )
             return True, claimable
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1671,7 +1671,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     @require_wallet
@@ -1698,7 +1698,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
 
     async def get_full_user_state(
@@ -1945,5 +1945,5 @@ class AerodromeAdapter(BaseAdapter):
                 "lp_positions": pools_out,
                 "ve_nfts": ve_items,
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  
             return False, str(exc)
