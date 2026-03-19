@@ -5,7 +5,7 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.aave_v3_adapter.adapter import AaveV3Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
-from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC
+from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC, ZERO_ADDRESS
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
@@ -83,9 +83,8 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     # Supply native (wrap+deposit WETH), borrow USDC, repay-full, withdraw-full.
     ok, tx = await adapter.lend(
         chain_id=chain_id,
-        underlying_token=wrapped,
+        underlying_token=ZERO_ADDRESS,
         qty=int(0.01 * 10**18),
-        native=True,
     )
     assert ok is True, tx
 
@@ -141,9 +140,8 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
 
     ok, tx = await adapter.unlend(
         chain_id=chain_id,
-        underlying_token=wrapped,
+        underlying_token=ZERO_ADDRESS,
         qty=0,
-        native=True,
         withdraw_full=True,
     )
     assert ok is True, tx

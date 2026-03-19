@@ -10,7 +10,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.adapters.aave_v3_adapter import AaveV3Adapter
 from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
-from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC
+from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC, ZERO_ADDRESS
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.run_strategy import create_signing_callback, get_strategy_config
 
@@ -94,9 +94,8 @@ async def main() -> None:
 
     ok, tx = await adapter.lend(
         chain_id=chain_id,
-        underlying_token=weth_addr,
+        underlying_token=ZERO_ADDRESS,
         qty=collateral_wei,
-        native=True,
     )
     if not ok:
         raise RuntimeError(f"lend(native->weth) failed: {tx}")
@@ -128,9 +127,8 @@ async def main() -> None:
 
     ok, tx = await adapter.unlend(
         chain_id=chain_id,
-        underlying_token=weth_addr,
+        underlying_token=ZERO_ADDRESS,
         qty=0,
-        native=True,
         withdraw_full=True,
     )
     if not ok:
