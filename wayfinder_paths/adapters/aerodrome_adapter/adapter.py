@@ -153,7 +153,7 @@ class AerodromeAdapter(BaseAdapter):
                 whitelisted = await voter.functions.isWhitelistedNFT(token_id).call(
                     block_identifier="latest"
                 )
-                if not bool(whitelisted):
+                if not whitelisted:
                     return (
                         False,
                         "Voting restricted in the last hour of the epoch unless tokenId is whitelisted",
@@ -225,13 +225,28 @@ class AerodromeAdapter(BaseAdapter):
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
-                fees, bribes = await asyncio.gather(
-                    voter.functions.gaugeToFees(gauge).call(block_identifier="latest"),
-                    voter.functions.gaugeToBribe(gauge).call(block_identifier="latest"),
+                fees, bribes = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=cid,
+                    calls=[
+                        Call(
+                            voter,
+                            "gaugeToFees",
+                            args=(gauge,),
+                            postprocess=to_checksum_address,
+                        ),
+                        Call(
+                            voter,
+                            "gaugeToBribe",
+                            args=(gauge,),
+                            postprocess=to_checksum_address,
+                        ),
+                    ],
+                    block_identifier="latest",
                 )
             return True, {
-                "fees": to_checksum_address(fees),
-                "bribes": to_checksum_address(bribes),
+                "fees": fees,
+                "bribes": bribes,
             }
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -455,7 +470,7 @@ class AerodromeAdapter(BaseAdapter):
                     markets.append(
                         {
                             "pool": to_checksum_address(pool),
-                            "stable": bool(st),
+                            "stable": st,
                             "token0": to_checksum_address(t0),
                             "token1": to_checksum_address(t1),
                             "decimals0": dec0,
@@ -529,7 +544,7 @@ class AerodromeAdapter(BaseAdapter):
                 a, b, liq = await router.functions.quoteAddLiquidity(
                     tokenA_q,
                     tokenB_q,
-                    bool(stable),
+                    stable,
                     to_checksum_address(self.pool_factory),
                     amtA_q,
                     amtB_q,
@@ -648,7 +663,7 @@ class AerodromeAdapter(BaseAdapter):
                     fn_name="addLiquidityETH",
                     args=[
                         token,
-                        bool(stable),
+                        stable,
                         token_amt,
                         token_min,
                         eth_min,
@@ -722,7 +737,7 @@ class AerodromeAdapter(BaseAdapter):
                 args=[
                     tA,
                     tB,
-                    bool(stable),
+                    stable,
                     amountA_desired,
                     amountB_desired,
                     a_min,
@@ -774,7 +789,7 @@ class AerodromeAdapter(BaseAdapter):
                 a, b = await router.functions.quoteRemoveLiquidity(
                     tokenA_q,
                     tokenB_q,
-                    bool(stable),
+                    stable,
                     to_checksum_address(self.pool_factory),
                     liquidity,
                 ).call(block_identifier=block_identifier)
@@ -830,12 +845,12 @@ class AerodromeAdapter(BaseAdapter):
                 if tA_native or tB_native:
                     token = to_checksum_address(tokenB if tA_native else tokenA)
                     pool = await factory.functions.getPool(
-                        token, self.weth, bool(stable)
+                        token, self.weth, stable
                     ).call(block_identifier="latest")
                 else:
                     tA = to_checksum_address(tokenA)
                     tB = to_checksum_address(tokenB)
-                    pool = await factory.functions.getPool(tA, tB, bool(stable)).call(
+                    pool = await factory.functions.getPool(tA, tB, stable).call(
                         block_identifier="latest"
                     )
 
@@ -888,7 +903,7 @@ class AerodromeAdapter(BaseAdapter):
                     fn_name="removeLiquidityETH",
                     args=[
                         token,
-                        bool(stable),
+                        stable,
                         liquidity,
                         token_min,
                         eth_min,
@@ -929,7 +944,7 @@ class AerodromeAdapter(BaseAdapter):
                 args=[
                     to_checksum_address(tokenA),
                     to_checksum_address(tokenB),
-                    bool(stable),
+                    stable,
                     liquidity,
                     a_min,
                     b_min,
@@ -1005,7 +1020,7 @@ class AerodromeAdapter(BaseAdapter):
                 alive = await voter.functions.isAlive(gauge).call(
                     block_identifier="latest"
                 )
-                if not bool(alive):
+                if not alive:
                     return False, "Gauge is not alive (killed/dead)"
 
                 g = web3.eth.contract(address=gauge, abi=AERODROME_GAUGE_ABI)
@@ -1911,7 +1926,7 @@ class AerodromeAdapter(BaseAdapter):
                         item: dict[str, Any] = {
                             "token_id": tid,
                             "voting_power": pwr,
-                            "voted": bool(vflag),
+                            "voted": vflag,
                             "rebase_claimable": cl,
                         }
                         if include_votes:
