@@ -976,9 +976,14 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(cid) as web3:
                 pc = web3.eth.contract(address=pool, abi=AERODROME_POOL_ABI)
-                c0, c1 = await asyncio.gather(
-                    pc.functions.claimable0(acct).call(block_identifier="pending"),
-                    pc.functions.claimable1(acct).call(block_identifier="pending"),
+                c0, c1 = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=cid,
+                    calls=[
+                        Call(pc, "claimable0", args=(acct,)),
+                        Call(pc, "claimable1", args=(acct,)),
+                    ],
+                    block_identifier="pending",
                 )
 
             tx = await encode_call(
@@ -1017,16 +1022,13 @@ class AerodromeAdapter(BaseAdapter):
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
-                alive = await voter.functions.isAlive(gauge).call(
-                    block_identifier="latest"
+                g = web3.eth.contract(address=gauge, abi=AERODROME_GAUGE_ABI)
+                alive, staking_token = await asyncio.gather(
+                    voter.functions.isAlive(gauge).call(block_identifier="latest"),
+                    g.functions.stakingToken().call(block_identifier="latest"),
                 )
                 if not alive:
                     return False, "Gauge is not alive (killed/dead)"
-
-                g = web3.eth.contract(address=gauge, abi=AERODROME_GAUGE_ABI)
-                staking_token = await g.functions.stakingToken().call(
-                    block_identifier="latest"
-                )
 
             approved = await ensure_allowance(
                 token_address=to_checksum_address(staking_token),
