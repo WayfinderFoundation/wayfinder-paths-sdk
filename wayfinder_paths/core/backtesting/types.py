@@ -111,6 +111,7 @@ class BacktestConfig:
     initial_capital: float = 1.0
     periods_per_year: int | None = None  # If None, will auto-detect from data frequency
     funding_rates: pd.DataFrame | None = None
+    force_rebalance_if_overleveraged: bool = True
 
 
 @dataclass

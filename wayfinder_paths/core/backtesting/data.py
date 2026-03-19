@@ -381,10 +381,19 @@ async def align_dataframes(
     for df in dfs[1:]:
         combined_index = combined_index.union(df.index)
 
+    # Drop duplicate timestamps that can arise from upstream data (e.g. funding)
+    # before reindexing — duplicates cause .loc[ts] to return a DataFrame instead
+    # of a Series, breaking the backtester's scalar arithmetic.
+    if combined_index.duplicated().any():
+        combined_index = combined_index[~combined_index.duplicated(keep="first")]
+
     combined_index = combined_index.sort_values()
 
     aligned = []
     for df in dfs:
+        # Deduplicate source index before reindex (keep first occurrence)
+        if df.index.duplicated().any():
+            df = df[~df.index.duplicated(keep="first")]
         reindexed = df.reindex(combined_index)
 
         if method == "ffill":
