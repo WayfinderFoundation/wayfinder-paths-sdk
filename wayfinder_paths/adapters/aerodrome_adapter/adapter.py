@@ -87,7 +87,7 @@ class AerodromeAdapter(BaseAdapter):
         )
 
     def _require_chain(self, chain_id: int | None) -> int:
-        cid = int(chain_id or self.chain_id)
+        cid = chain_id or self.chain_id
         if cid != CHAIN_ID_BASE:
             raise ValueError(
                 f"Aerodrome adapter v1 supports Base only (chain_id={CHAIN_ID_BASE}), got {cid}"
@@ -130,7 +130,7 @@ class AerodromeAdapter(BaseAdapter):
                         continue
                     if to_checksum_address(to_addr).lower() != expected_to_l:
                         continue
-                    return int(token_id)
+                    return token_id
                 except Exception:
                     continue
         return None
@@ -140,7 +140,7 @@ class AerodromeAdapter(BaseAdapter):
     ) -> tuple[bool, str]:
         async with web3_from_chain_id(chain_id) as web3:
             latest = await web3.eth.get_block("latest")
-            ts = int(latest.get("timestamp") or 0)
+            ts = latest.get("timestamp") or 0
 
             epoch_start = (ts // WEEK_SECONDS) * WEEK_SECONDS
             epoch_end = epoch_start + WEEK_SECONDS
@@ -157,7 +157,7 @@ class AerodromeAdapter(BaseAdapter):
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
-                whitelisted = await voter.functions.isWhitelistedNFT(int(token_id)).call(
+                whitelisted = await voter.functions.isWhitelistedNFT(token_id).call(
                     block_identifier="latest"
                 )
                 if not bool(whitelisted):
@@ -449,9 +449,9 @@ class AerodromeAdapter(BaseAdapter):
                         fees_rewards[i] = fee_res[j]
                         bribe_rewards[i] = bribe_res[j]
                         gauge_reward_tokens[i] = reward_token_res[j]
-                        gauge_reward_rates[i] = int(reward_rate_res[j])
-                        gauge_total_supplies[i] = int(total_supply_res[j])
-                        gauge_period_finishes[i] = int(period_finish_res[j])
+                        gauge_reward_rates[i] = reward_rate_res[j]
+                        gauge_total_supplies[i] = total_supply_res[j]
+                        gauge_period_finishes[i] = period_finish_res[j]
                         j += 1
 
                 markets: list[dict[str, Any]] = []
@@ -465,19 +465,19 @@ class AerodromeAdapter(BaseAdapter):
                             "stable": bool(st),
                             "token0": to_checksum_address(t0),
                             "token1": to_checksum_address(t1),
-                            "decimals0": int(dec0),
-                            "decimals1": int(dec1),
-                            "reserve0": int(r0),
-                            "reserve1": int(r1),
+                            "decimals0": dec0,
+                            "decimals1": dec1,
+                            "reserve0": r0,
+                            "reserve1": r1,
                             "gauge": to_checksum_address(gauge),
                             "fees_reward": to_checksum_address(fees_rewards[i]),
                             "bribe_reward": to_checksum_address(bribe_rewards[i]),
                             "gauge_reward_token": to_checksum_address(
                                 gauge_reward_tokens[i]
                             ),
-                            "gauge_reward_rate": int(gauge_reward_rates[i]),
-                            "gauge_total_supply": int(gauge_total_supplies[i]),
-                            "gauge_period_finish": int(gauge_period_finishes[i]),
+                            "gauge_reward_rate": gauge_reward_rates[i],
+                            "gauge_total_supply": gauge_total_supplies[i],
+                            "gauge_period_finish": gauge_period_finishes[i],
                         }
                     )
 
@@ -505,7 +505,7 @@ class AerodromeAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         try:
             cid = self._require_chain(chain_id)
-            if int(amountA_desired) <= 0 or int(amountB_desired) <= 0:
+            if amountA_desired <= 0 or amountB_desired <= 0:
                 return False, "amounts must be positive"
 
             tA_native = is_native_token(tokenA)
@@ -515,19 +515,19 @@ class AerodromeAdapter(BaseAdapter):
 
             if tA_native:
                 token = _as_addr(tokenB)
-                token_amt = int(amountB_desired)
-                eth_amt = int(amountA_desired)
+                token_amt = amountB_desired
+                eth_amt = amountA_desired
                 tokenA_q, tokenB_q = token, self.weth
                 amtA_q, amtB_q = token_amt, eth_amt
             elif tB_native:
                 token = _as_addr(tokenA)
-                token_amt = int(amountA_desired)
-                eth_amt = int(amountB_desired)
+                token_amt = amountA_desired
+                eth_amt = amountB_desired
                 tokenA_q, tokenB_q = token, self.weth
                 amtA_q, amtB_q = token_amt, eth_amt
             else:
                 tokenA_q, tokenB_q = _as_addr(tokenA), _as_addr(tokenB)
-                amtA_q, amtB_q = int(amountA_desired), int(amountB_desired)
+                amtA_q, amtB_q = amountA_desired, amountB_desired
 
             async with web3_from_chain_id(cid) as web3:
                 router = web3.eth.contract(
@@ -538,28 +538,28 @@ class AerodromeAdapter(BaseAdapter):
                     tokenB_q,
                     bool(stable),
                     to_checksum_address(self.pool_factory),
-                    int(amtA_q),
-                    int(amtB_q),
+                    amtA_q,
+                    amtB_q,
                 ).call(block_identifier=block_identifier)
 
             if tA_native:
                 return True, {
-                    "amount_token": int(a),
-                    "amount_eth": int(b),
-                    "liquidity": int(liq),
+                    "amount_token": a,
+                    "amount_eth": b,
+                    "liquidity": liq,
                     "token": token,
                 }
             if tB_native:
                 return True, {
-                    "amount_token": int(a),
-                    "amount_eth": int(b),
-                    "liquidity": int(liq),
+                    "amount_token": a,
+                    "amount_eth": b,
+                    "liquidity": liq,
                     "token": token,
                 }
             return True, {
-                "amountA": int(a),
-                "amountB": int(b),
-                "liquidity": int(liq),
+                "amountA": a,
+                "amountB": b,
+                "liquidity": liq,
             }
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -583,7 +583,7 @@ class AerodromeAdapter(BaseAdapter):
         """
         Add liquidity (ERC20-ERC20) or (ERC20-ETH) when either token is native.
         """
-        if int(amountA_desired) <= 0 or int(amountB_desired) <= 0:
+        if amountA_desired <= 0 or amountB_desired <= 0:
             return False, "amounts must be positive"
 
         if self.sign_callback is None:
@@ -597,13 +597,13 @@ class AerodromeAdapter(BaseAdapter):
                 return False, "tokenA and tokenB cannot both be native"
 
             recipient = _as_addr(to) if to else _as_addr(self.wallet_address)
-            dl = int(deadline) if deadline is not None else default_deadline()
+            dl = deadline if deadline is not None else default_deadline()
 
             # ETH path (token + WETH via addLiquidityETH)
             if tA_native or tB_native:
                 token = _as_addr(tokenB if tA_native else tokenA)
-                token_amt = int(amountB_desired) if tA_native else int(amountA_desired)
-                eth_amt = int(amountA_desired) if tA_native else int(amountB_desired)
+                token_amt = amountB_desired if tA_native else amountA_desired
+                eth_amt = amountA_desired if tA_native else amountB_desired
 
                 ok_q, q = await self.quote_add_liquidity(
                     tokenA=token,
@@ -615,20 +615,20 @@ class AerodromeAdapter(BaseAdapter):
                 )
                 if not ok_q:
                     return False, q
-                amount_token_q = int(q["amountA"])
-                amount_eth_q = int(q["amountB"])
+                amount_token_q = q["amountA"]
+                amount_eth_q = q["amountB"]
 
                 token_min = (
-                    int(amountB_min)
+                    amountB_min
                     if (tA_native and amountB_min is not None)
-                    else int(amountA_min)
+                    else amountA_min
                     if (tB_native and amountA_min is not None)
                     else slippage_min(amount_token_q, slippage_bps)
                 )
                 eth_min = (
-                    int(amountA_min)
+                    amountA_min
                     if (tA_native and amountA_min is not None)
-                    else int(amountB_min)
+                    else amountB_min
                     if (tB_native and amountB_min is not None)
                     else slippage_min(amount_eth_q, slippage_bps)
                 )
@@ -652,15 +652,15 @@ class AerodromeAdapter(BaseAdapter):
                     args=[
                         token,
                         bool(stable),
-                        int(token_amt),
-                        int(token_min),
-                        int(eth_min),
+                        token_amt,
+                        token_min,
+                        eth_min,
                         recipient,
-                        int(dl),
+                        dl,
                     ],
                     from_address=_as_addr(self.wallet_address),
                     chain_id=cid,
-                    value=int(eth_amt),
+                    value=eth_amt,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
                 return True, tx_hash
@@ -673,23 +673,23 @@ class AerodromeAdapter(BaseAdapter):
                 tokenA=tA,
                 tokenB=tB,
                 stable=stable,
-                amountA_desired=int(amountA_desired),
-                amountB_desired=int(amountB_desired),
+                amountA_desired=amountA_desired,
+                amountB_desired=amountB_desired,
                 chain_id=cid,
             )
             if not ok_q:
                 return False, q
 
-            a_q = int(q["amountA"])
-            b_q = int(q["amountB"])
+            a_q = q["amountA"]
+            b_q = q["amountB"]
 
             a_min = (
-                int(amountA_min)
+                amountA_min
                 if amountA_min is not None
                 else slippage_min(a_q, slippage_bps)
             )
             b_min = (
-                int(amountB_min)
+                amountB_min
                 if amountB_min is not None
                 else slippage_min(b_q, slippage_bps)
             )
@@ -698,7 +698,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=tA,
                 owner=_as_addr(self.wallet_address),
                 spender=_as_addr(self.router),
-                amount=int(amountA_desired),
+                amount=amountA_desired,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -710,7 +710,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=tB,
                 owner=_as_addr(self.wallet_address),
                 spender=_as_addr(self.router),
-                amount=int(amountB_desired),
+                amount=amountB_desired,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -726,12 +726,12 @@ class AerodromeAdapter(BaseAdapter):
                     tA,
                     tB,
                     bool(stable),
-                    int(amountA_desired),
-                    int(amountB_desired),
-                    int(a_min),
-                    int(b_min),
+                    amountA_desired,
+                    amountB_desired,
+                    a_min,
+                    b_min,
                     recipient,
-                    int(dl),
+                    dl,
                 ],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
@@ -753,7 +753,7 @@ class AerodromeAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         try:
             cid = self._require_chain(chain_id)
-            if int(liquidity) <= 0:
+            if liquidity <= 0:
                 return False, "liquidity must be positive"
 
             tA_native = is_native_token(tokenA)
@@ -779,12 +779,12 @@ class AerodromeAdapter(BaseAdapter):
                     tokenB_q,
                     bool(stable),
                     to_checksum_address(self.pool_factory),
-                    int(liquidity),
+                    liquidity,
                 ).call(block_identifier=block_identifier)
 
             if tA_native or tB_native:
-                return True, {"amount_token": int(a), "amount_eth": int(b), "token": token}
-            return True, {"amountA": int(a), "amountB": int(b)}
+                return True, {"amount_token": a, "amount_eth": b, "token": token}
+            return True, {"amountA": a, "amountB": b}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -804,7 +804,7 @@ class AerodromeAdapter(BaseAdapter):
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         """Remove liquidity (wallet-held LP only)."""
-        if int(liquidity) <= 0:
+        if liquidity <= 0:
             return False, "liquidity must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -817,7 +817,7 @@ class AerodromeAdapter(BaseAdapter):
                 return False, "tokenA and tokenB cannot both be native"
 
             recipient = _as_addr(to) if to else _as_addr(self.wallet_address)
-            dl = int(deadline) if deadline is not None else default_deadline()
+            dl = deadline if deadline is not None else default_deadline()
 
             async with web3_from_chain_id(cid) as web3:
                 factory = web3.eth.contract(
@@ -846,7 +846,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=pool,
                 owner=_as_addr(self.wallet_address),
                 spender=_as_addr(self.router),
-                amount=int(liquidity),
+                amount=liquidity,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -861,24 +861,24 @@ class AerodromeAdapter(BaseAdapter):
                     tokenA=token,
                     tokenB=self.weth,
                     stable=stable,
-                    liquidity=int(liquidity),
+                    liquidity=liquidity,
                     chain_id=cid,
                 )
                 if not ok_q:
                     return False, q
                 token_min = (
-                    int(amountB_min)
+                    amountB_min
                     if (tA_native and amountB_min is not None)
-                    else int(amountA_min)
+                    else amountA_min
                     if (tB_native and amountA_min is not None)
-                    else slippage_min(int(q["amountA"]), slippage_bps)
+                    else slippage_min(q["amountA"], slippage_bps)
                 )
                 eth_min = (
-                    int(amountA_min)
+                    amountA_min
                     if (tA_native and amountA_min is not None)
-                    else int(amountB_min)
+                    else amountB_min
                     if (tB_native and amountB_min is not None)
-                    else slippage_min(int(q["amountB"]), slippage_bps)
+                    else slippage_min(q["amountB"], slippage_bps)
                 )
 
                 tx = await encode_call(
@@ -888,11 +888,11 @@ class AerodromeAdapter(BaseAdapter):
                     args=[
                         token,
                         bool(stable),
-                        int(liquidity),
-                        int(token_min),
-                        int(eth_min),
+                        liquidity,
+                        token_min,
+                        eth_min,
                         recipient,
-                        int(dl),
+                        dl,
                     ],
                     from_address=_as_addr(self.wallet_address),
                     chain_id=cid,
@@ -904,21 +904,21 @@ class AerodromeAdapter(BaseAdapter):
                 tokenA=_as_addr(tokenA),
                 tokenB=_as_addr(tokenB),
                 stable=stable,
-                liquidity=int(liquidity),
+                liquidity=liquidity,
                 chain_id=cid,
             )
             if not ok_q:
                 return False, q
 
             a_min = (
-                int(amountA_min)
+                amountA_min
                 if amountA_min is not None
-                else slippage_min(int(q["amountA"]), slippage_bps)
+                else slippage_min(q["amountA"], slippage_bps)
             )
             b_min = (
-                int(amountB_min)
+                amountB_min
                 if amountB_min is not None
-                else slippage_min(int(q["amountB"]), slippage_bps)
+                else slippage_min(q["amountB"], slippage_bps)
             )
 
             tx = await encode_call(
@@ -929,11 +929,11 @@ class AerodromeAdapter(BaseAdapter):
                     _as_addr(tokenA),
                     _as_addr(tokenB),
                     bool(stable),
-                    int(liquidity),
-                    int(a_min),
-                    int(b_min),
+                    liquidity,
+                    a_min,
+                    b_min,
                     recipient,
-                    int(dl),
+                    dl,
                 ],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
@@ -974,7 +974,7 @@ class AerodromeAdapter(BaseAdapter):
                 chain_id=cid,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
-            return True, {"tx": tx_hash, "claimable0": int(c0), "claimable1": int(c1)}
+            return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -987,7 +987,7 @@ class AerodromeAdapter(BaseAdapter):
         recipient: str | None = None,
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
-        if int(amount) <= 0:
+        if amount <= 0:
             return False, "amount must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -1016,7 +1016,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=to_checksum_address(staking_token),
                 owner=_as_addr(self.wallet_address),
                 spender=gauge,
-                amount=int(amount),
+                amount=amount,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -1029,9 +1029,9 @@ class AerodromeAdapter(BaseAdapter):
             if recipient_addr and recipient_addr.lower() != _as_addr(
                 self.wallet_address
             ).lower():
-                args = [int(amount), recipient_addr]
+                args = [amount, recipient_addr]
             else:
-                args = [int(amount)]
+                args = [amount]
 
             tx = await encode_call(
                 target=gauge,
@@ -1054,7 +1054,7 @@ class AerodromeAdapter(BaseAdapter):
         amount: int,
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
-        if int(amount) <= 0:
+        if amount <= 0:
             return False, "amount must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -1065,7 +1065,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=gauge,
                 abi=AERODROME_GAUGE_ABI,
                 fn_name="withdraw",
-                args=[int(amount)],
+                args=[amount],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1201,9 +1201,9 @@ class AerodromeAdapter(BaseAdapter):
         receiver: str,
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
-        if int(amount) <= 0:
+        if amount <= 0:
             return False, "amount must be positive"
-        if int(lock_duration) <= 0:
+        if lock_duration <= 0:
             return False, "lock_duration must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -1216,7 +1216,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=self.aero,
                 owner=owner,
                 spender=_as_addr(self.voting_escrow),
-                amount=int(amount),
+                amount=amount,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -1228,7 +1228,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLockFor",
-                args=[int(amount), int(lock_duration), recv],
+                args=[amount, lock_duration, recv],
                 from_address=owner,
                 chain_id=cid,
             )
@@ -1251,7 +1251,7 @@ class AerodromeAdapter(BaseAdapter):
         amount: int,
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
-        if int(amount) <= 0:
+        if amount <= 0:
             return False, "amount must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -1263,7 +1263,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=self.aero,
                 owner=owner,
                 spender=_as_addr(self.voting_escrow),
-                amount=int(amount),
+                amount=amount,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -1275,7 +1275,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseAmount",
-                args=[int(token_id), int(amount)],
+                args=[token_id, amount],
                 from_address=owner,
                 chain_id=cid,
             )
@@ -1292,7 +1292,7 @@ class AerodromeAdapter(BaseAdapter):
         lock_duration: int,
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
-        if int(lock_duration) <= 0:
+        if lock_duration <= 0:
             return False, "lock_duration must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -1302,7 +1302,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseUnlockTime",
-                args=[int(token_id), int(lock_duration)],
+                args=[token_id, lock_duration],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1326,7 +1326,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="withdraw",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1350,7 +1350,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="lockPermanent",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1374,7 +1374,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="unlockPermanent",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1408,13 +1408,13 @@ class AerodromeAdapter(BaseAdapter):
                     return False, reason
 
             pools_cs = [to_checksum_address(p) for p in list(pools)]
-            weights_u = [int(w) for w in list(weights)]
+            weights_u = list(weights)
 
             tx = await encode_call(
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="vote",
-                args=[int(token_id), pools_cs, weights_u],
+                args=[token_id, pools_cs, weights_u],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1444,7 +1444,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="reset",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1537,7 +1537,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimFees",
-                args=[fees, tokens_nested, int(token_id)],
+                args=[fees, tokens_nested, token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1589,7 +1589,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimBribes",
-                args=[bribes, tokens_nested, int(token_id)],
+                args=[bribes, tokens_nested, token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1633,18 +1633,18 @@ class AerodromeAdapter(BaseAdapter):
             cid = self._require_chain(chain_id)
             if skip_if_zero:
                 ok, claimable = await self.get_rebase_claimable(
-                    token_id=int(token_id), chain_id=cid, block_identifier="latest"
+                    token_id=token_id, chain_id=cid, block_identifier="latest"
                 )
                 if not ok:
                     return False, claimable
-                if int(claimable) <= 0:
-                    return True, {"tx": None, "claimable": int(claimable)}
+                if claimable <= 0:
+                    return True, {"tx": None, "claimable": claimable}
 
             tx = await encode_call(
                 target=self.rewards_distributor,
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claim",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=_as_addr(self.wallet_address),
                 chain_id=cid,
             )
@@ -1666,7 +1666,7 @@ class AerodromeAdapter(BaseAdapter):
             return False, "token_ids cannot be empty"
         try:
             cid = self._require_chain(chain_id)
-            ids = [int(i) for i in list(token_ids)]
+            ids = list(token_ids)
             tx = await encode_call(
                 target=self.rewards_distributor,
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
@@ -1802,8 +1802,8 @@ class AerodromeAdapter(BaseAdapter):
                 ):
                     gauge_items[addr_l] = {
                         "gauge": to_checksum_address(contract.address),
-                        "staked_balance": int(bal),
-                        "earned": int(earned),
+                        "staked_balance": bal,
+                        "earned": earned,
                     }
 
                 pools_out: list[dict[str, Any]] = []
@@ -1813,16 +1813,14 @@ class AerodromeAdapter(BaseAdapter):
                     pools_out.append(
                         {
                             "pool": pool_addr,
-                            "wallet_lp_balance": int(bal),
+                            "wallet_lp_balance": bal,
                             "gauge": gauge_addr,
-                            "gauge_staked_balance": int(
-                                gauge_items.get(gauge_addr.lower(), {}).get(
-                                    "staked_balance", 0
-                                )
-                            ),
-                            "gauge_earned": int(
-                                gauge_items.get(gauge_addr.lower(), {}).get("earned", 0)
-                            ),
+                            "gauge_staked_balance": gauge_items.get(
+                                gauge_addr.lower(), {}
+                            ).get("staked_balance", 0),
+                            "gauge_earned": gauge_items.get(
+                                gauge_addr.lower(), {}
+                            ).get("earned", 0),
                         }
                     )
 
