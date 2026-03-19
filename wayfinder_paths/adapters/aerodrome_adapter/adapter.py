@@ -125,7 +125,7 @@ class AerodromeAdapter(BaseAdapter):
                         continue
                     if (
                         to_checksum_address(from_addr).lower()
-                        != ZERO_ADDRESS.lower()
+                        != ZERO_ADDRESS
                     ):
                         continue
                     if to_checksum_address(to_addr).lower() != expected_to_l:
@@ -189,7 +189,7 @@ class AerodromeAdapter(BaseAdapter):
                     block_identifier="latest"
                 )
             pool = to_checksum_address(pool)
-            if pool.lower() == ZERO_ADDRESS.lower():
+            if pool.lower() == ZERO_ADDRESS:
                 return False, "Pool does not exist"
             return True, pool
         except Exception as exc:  # noqa: BLE001
@@ -212,7 +212,7 @@ class AerodromeAdapter(BaseAdapter):
                     block_identifier="latest"
                 )
             gauge = to_checksum_address(gauge)
-            if gauge.lower() == ZERO_ADDRESS.lower():
+            if gauge.lower() == ZERO_ADDRESS:
                 return False, "Gauge not found for pool"
             return True, gauge
         except Exception as exc:  # noqa: BLE001
@@ -343,7 +343,7 @@ class AerodromeAdapter(BaseAdapter):
 
                 if include_gauge_state:
                     gauges_nonzero = [
-                        g for g in gauges if g.lower() != ZERO_ADDRESS.lower()
+                        g for g in gauges if g.lower() != ZERO_ADDRESS
                     ]
                     gauge_contracts = [
                         web3.eth.contract(address=g, abi=AERODROME_GAUGE_ABI)
@@ -444,7 +444,7 @@ class AerodromeAdapter(BaseAdapter):
                     # Map back to original gauge list indices.
                     j = 0
                     for i, g in enumerate(gauges):
-                        if g.lower() == ZERO_ADDRESS.lower():
+                        if g.lower() == ZERO_ADDRESS:
                             continue
                         fees_rewards[i] = fee_res[j]
                         bribe_rewards[i] = bribe_res[j]
@@ -839,7 +839,7 @@ class AerodromeAdapter(BaseAdapter):
                     )
 
             pool = to_checksum_address(pool)
-            if pool.lower() == ZERO_ADDRESS.lower():
+            if pool.lower() == ZERO_ADDRESS:
                 return False, "Pool does not exist"
 
             approved = await ensure_allowance(
@@ -1764,7 +1764,7 @@ class AerodromeAdapter(BaseAdapter):
 
                 gauge_contracts: dict[str, Any] = {}
                 for g in gauges:
-                    if g.lower() == ZERO_ADDRESS.lower():
+                    if g.lower() == ZERO_ADDRESS:
                         continue
                     if g.lower() not in gauge_contracts:
                         gauge_contracts[g.lower()] = web3.eth.contract(
