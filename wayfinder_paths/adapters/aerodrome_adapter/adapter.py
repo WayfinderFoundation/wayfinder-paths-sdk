@@ -80,25 +80,16 @@ class AerodromeAdapter(BaseAdapter):
             to_checksum_address(wallet_address) if wallet_address else None
         )
 
-    def _require_chain(self, chain_id: int | None) -> int:
-        cid = chain_id or self.chain_id
-        if cid != CHAIN_ID_BASE:
-            raise ValueError(
-                f"Aerodrome adapter v1 supports Base only (chain_id={CHAIN_ID_BASE}), got {cid}"
-            )
-        return cid
-
     async def _minted_erc721_token_id(
         self,
         *,
-        chain_id: int,
         nft_contract: str,
         tx_hash: str,
         expected_to: str,
     ) -> int | None:
         nft_l = to_checksum_address(nft_contract).lower()
         expected_to_l = to_checksum_address(expected_to).lower()
-        async with web3_from_chain_id(chain_id) as web3:
+        async with web3_from_chain_id(self.chain_id) as web3:
             receipt = await web3.eth.get_transaction_receipt(tx_hash)
             logs = (receipt or {}).get("logs") or []
             for log in logs if isinstance(logs, list) else []:
@@ -126,10 +117,8 @@ class AerodromeAdapter(BaseAdapter):
                     continue
         return None
 
-    async def _can_vote_now(
-        self, *, chain_id: int, token_id: int | None = None
-    ) -> tuple[bool, str]:
-        async with web3_from_chain_id(chain_id) as web3:
+    async def _can_vote_now(self, *, token_id: int | None = None) -> tuple[bool, str]:
+        async with web3_from_chain_id(self.chain_id) as web3:
             latest = await web3.eth.get_block("latest")
             ts = latest.get("timestamp") or 0
 
@@ -165,13 +154,11 @@ class AerodromeAdapter(BaseAdapter):
         tokenA: str,
         tokenB: str,
         stable: bool,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         try:
-            cid = self._require_chain(chain_id)
             tA = to_checksum_address(tokenA)
             tB = to_checksum_address(tokenB)
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 factory = web3.eth.contract(
                     address=to_checksum_address(self.pool_factory),
                     abi=AERODROME_POOL_FACTORY_ABI,
@@ -190,12 +177,10 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         pool: str,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         try:
-            cid = self._require_chain(chain_id)
             pool = to_checksum_address(pool)
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
@@ -213,19 +198,17 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         gauge: str,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         """Return fee/bribe reward contracts for a gauge via Voter discovery."""
         try:
-            cid = self._require_chain(chain_id)
             gauge = to_checksum_address(gauge)
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
                 fees, bribes = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     calls=[
                         Call(
                             voter,
@@ -252,7 +235,6 @@ class AerodromeAdapter(BaseAdapter):
     async def get_all_markets(
         self,
         *,
-        chain_id: int = CHAIN_ID_BASE,
         start: int = 0,
         limit: int | None = 50,
         include_gauge_state: bool = True,
@@ -266,10 +248,9 @@ class AerodromeAdapter(BaseAdapter):
         - limit: max items; set None to fetch all (can be slow)
         """
         try:
-            cid = self._require_chain(chain_id)
             start_i = max(0, start)
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
@@ -280,7 +261,7 @@ class AerodromeAdapter(BaseAdapter):
                 if total == 0 or start_i >= total:
                     return True, {
                         "protocol": "aerodrome",
-                        "chain_id": cid,
+                        "chain_id": self.chain_id,
                         "start": start_i,
                         "limit": limit,
                         "total": total,
@@ -300,7 +281,7 @@ class AerodromeAdapter(BaseAdapter):
                 ]
                 pools = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     calls=pool_calls,
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -327,14 +308,14 @@ class AerodromeAdapter(BaseAdapter):
                 metadata_list, gauges = await asyncio.gather(
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=cid,
+                        chain_id=self.chain_id,
                         calls=md_calls,
                         block_identifier=block_identifier,
                         chunk_size=50,
                     ),
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=cid,
+                        chain_id=self.chain_id,
                         calls=gauge_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -405,42 +386,42 @@ class AerodromeAdapter(BaseAdapter):
                     ) = await asyncio.gather(
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=fee_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=bribe_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=reward_token_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=reward_rate_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=total_supply_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=period_finish_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -489,7 +470,7 @@ class AerodromeAdapter(BaseAdapter):
 
             return True, {
                 "protocol": "aerodrome",
-                "chain_id": cid,
+                "chain_id": self.chain_id,
                 "start": start_i,
                 "limit": limit,
                 "total": total,
@@ -506,11 +487,9 @@ class AerodromeAdapter(BaseAdapter):
         stable: bool,
         amountA_desired: int,
         amountB_desired: int,
-        chain_id: int = CHAIN_ID_BASE,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
-            cid = self._require_chain(chain_id)
             if amountA_desired <= 0 or amountB_desired <= 0:
                 return False, "amounts must be positive"
 
@@ -538,7 +517,7 @@ class AerodromeAdapter(BaseAdapter):
                 )
                 amtA_q, amtB_q = amountA_desired, amountB_desired
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 router = web3.eth.contract(
                     address=to_checksum_address(self.router), abi=AERODROME_ROUTER_ABI
                 )
@@ -587,7 +566,6 @@ class AerodromeAdapter(BaseAdapter):
         amountB_min: int | None = None,
         to: str | None = None,
         deadline: int | None = None,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         """
         Add liquidity (ERC20-ERC20) or (ERC20-ETH) when either token is native.
@@ -599,7 +577,6 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
 
         try:
-            cid = self._require_chain(chain_id)
             tA_native = is_native_token(tokenA)
             tB_native = is_native_token(tokenB)
             if tA_native and tB_native:
@@ -624,7 +601,6 @@ class AerodromeAdapter(BaseAdapter):
                     stable=stable,
                     amountA_desired=token_amt,
                     amountB_desired=eth_amt,
-                    chain_id=cid,
                 )
                 if not ok_q:
                     return False, q
@@ -651,7 +627,7 @@ class AerodromeAdapter(BaseAdapter):
                     owner=to_checksum_address(self.wallet_address),
                     spender=to_checksum_address(self.router),
                     amount=token_amt,
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     signing_callback=self.sign_callback,
                     approval_amount=MAX_UINT256,
                 )
@@ -672,7 +648,7 @@ class AerodromeAdapter(BaseAdapter):
                         dl,
                     ],
                     from_address=to_checksum_address(self.wallet_address),
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     value=eth_amt,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
@@ -688,7 +664,6 @@ class AerodromeAdapter(BaseAdapter):
                 stable=stable,
                 amountA_desired=amountA_desired,
                 amountB_desired=amountB_desired,
-                chain_id=cid,
             )
             if not ok_q:
                 return False, q
@@ -712,7 +687,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=to_checksum_address(self.wallet_address),
                 spender=to_checksum_address(self.router),
                 amount=amountA_desired,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -724,7 +699,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=to_checksum_address(self.wallet_address),
                 spender=to_checksum_address(self.router),
                 amount=amountB_desired,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -747,7 +722,7 @@ class AerodromeAdapter(BaseAdapter):
                     dl,
                 ],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -761,11 +736,9 @@ class AerodromeAdapter(BaseAdapter):
         tokenB: str | None,
         stable: bool,
         liquidity: int,
-        chain_id: int = CHAIN_ID_BASE,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
-            cid = self._require_chain(chain_id)
             if liquidity <= 0:
                 return False, "liquidity must be positive"
 
@@ -786,7 +759,7 @@ class AerodromeAdapter(BaseAdapter):
                     to_checksum_address(tokenB),
                 )
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 router = web3.eth.contract(
                     address=to_checksum_address(self.router), abi=AERODROME_ROUTER_ABI
                 )
@@ -817,7 +790,6 @@ class AerodromeAdapter(BaseAdapter):
         amountB_min: int | None = None,
         to: str | None = None,
         deadline: int | None = None,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         """Remove liquidity (wallet-held LP only)."""
         if liquidity <= 0:
@@ -826,7 +798,6 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
 
         try:
-            cid = self._require_chain(chain_id)
             tA_native = is_native_token(tokenA)
             tB_native = is_native_token(tokenB)
             if tA_native and tB_native:
@@ -839,7 +810,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             dl = deadline if deadline is not None else default_deadline()
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 factory = web3.eth.contract(
                     address=to_checksum_address(self.pool_factory),
                     abi=AERODROME_POOL_FACTORY_ABI,
@@ -867,7 +838,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=to_checksum_address(self.wallet_address),
                 spender=to_checksum_address(self.router),
                 amount=liquidity,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -882,7 +853,6 @@ class AerodromeAdapter(BaseAdapter):
                     tokenB=self.weth,
                     stable=stable,
                     liquidity=liquidity,
-                    chain_id=cid,
                 )
                 if not ok_q:
                     return False, q
@@ -915,7 +885,7 @@ class AerodromeAdapter(BaseAdapter):
                         dl,
                     ],
                     from_address=to_checksum_address(self.wallet_address),
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
                 return True, tx_hash
@@ -925,7 +895,6 @@ class AerodromeAdapter(BaseAdapter):
                 tokenB=to_checksum_address(tokenB),
                 stable=stable,
                 liquidity=liquidity,
-                chain_id=cid,
             )
             if not ok_q:
                 return False, q
@@ -956,7 +925,7 @@ class AerodromeAdapter(BaseAdapter):
                     dl,
                 ],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -968,21 +937,19 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         pool: str,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         """Claim Pool fees for wallet-held LP (unstaked)."""
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             pool = to_checksum_address(pool)
             acct = to_checksum_address(self.wallet_address)
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 pc = web3.eth.contract(address=pool, abi=AERODROME_POOL_ABI)
                 c0, c1 = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     calls=[
                         Call(pc, "claimable0", args=(acct,)),
                         Call(pc, "claimable1", args=(acct,)),
@@ -996,7 +963,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="claimFees",
                 args=[],
                 from_address=acct,
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
@@ -1010,7 +977,6 @@ class AerodromeAdapter(BaseAdapter):
         gauge: str,
         amount: int,
         recipient: str | None = None,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
@@ -1018,11 +984,10 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
 
         try:
-            cid = self._require_chain(chain_id)
             gauge = to_checksum_address(gauge)
             recipient_addr = to_checksum_address(recipient) if recipient else None
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
@@ -1042,7 +1007,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=to_checksum_address(self.wallet_address),
                 spender=gauge,
                 amount=amount,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1066,7 +1031,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name=fn_name,
                 args=args,
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1079,14 +1044,12 @@ class AerodromeAdapter(BaseAdapter):
         *,
         gauge: str,
         amount: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             gauge = to_checksum_address(gauge)
             tx = await encode_call(
                 target=gauge,
@@ -1094,7 +1057,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="withdraw",
                 args=[amount],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1106,12 +1069,10 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         gauges: Sequence[str],
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             gs = [to_checksum_address(g) for g in list(gauges)]
             if not gs:
                 return False, "gauges cannot be empty"
@@ -1121,7 +1082,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="claimRewards",
                 args=[gs],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1132,11 +1093,9 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         owner: str | None = None,
-        chain_id: int = CHAIN_ID_BASE,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
-            cid = self._require_chain(chain_id)
             if owner:
                 owner_addr = to_checksum_address(owner)
             elif self.wallet_address:
@@ -1144,7 +1103,7 @@ class AerodromeAdapter(BaseAdapter):
             else:
                 raise ValueError("address is required")
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 ve = web3.eth.contract(
                     address=to_checksum_address(self.voting_escrow),
                     abi=AERODROME_VOTING_ESCROW_ABI,
@@ -1166,7 +1125,7 @@ class AerodromeAdapter(BaseAdapter):
                 ]
                 token_ids = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     calls=id_calls,
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -1181,7 +1140,6 @@ class AerodromeAdapter(BaseAdapter):
         *,
         amount: int,
         lock_duration: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
@@ -1190,7 +1148,6 @@ class AerodromeAdapter(BaseAdapter):
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             owner = to_checksum_address(self.wallet_address)
 
             approved = await ensure_allowance(
@@ -1198,7 +1155,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=owner,
                 spender=to_checksum_address(self.voting_escrow),
                 amount=amount,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1211,11 +1168,10 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="createLock",
                 args=[amount, lock_duration],
                 from_address=owner,
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
-                chain_id=cid,
                 nft_contract=self.voting_escrow,
                 tx_hash=tx_hash,
                 expected_to=owner,
@@ -1231,7 +1187,6 @@ class AerodromeAdapter(BaseAdapter):
         amount: int,
         lock_duration: int,
         receiver: str,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
@@ -1240,7 +1195,6 @@ class AerodromeAdapter(BaseAdapter):
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             owner = to_checksum_address(self.wallet_address)
             recv = to_checksum_address(receiver)
 
@@ -1249,7 +1203,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=owner,
                 spender=to_checksum_address(self.voting_escrow),
                 amount=amount,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1262,11 +1216,10 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="createLockFor",
                 args=[amount, lock_duration, recv],
                 from_address=owner,
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
-                chain_id=cid,
                 nft_contract=self.voting_escrow,
                 tx_hash=tx_hash,
                 expected_to=recv,
@@ -1281,14 +1234,12 @@ class AerodromeAdapter(BaseAdapter):
         *,
         token_id: int,
         amount: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             owner = to_checksum_address(self.wallet_address)
 
             approved = await ensure_allowance(
@@ -1296,7 +1247,7 @@ class AerodromeAdapter(BaseAdapter):
                 owner=owner,
                 spender=to_checksum_address(self.voting_escrow),
                 amount=amount,
-                chain_id=cid,
+                chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1309,7 +1260,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="increaseAmount",
                 args=[token_id, amount],
                 from_address=owner,
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1322,21 +1273,19 @@ class AerodromeAdapter(BaseAdapter):
         *,
         token_id: int,
         lock_duration: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if lock_duration <= 0:
             return False, "lock_duration must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             tx = await encode_call(
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseUnlockTime",
                 args=[token_id, lock_duration],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1348,19 +1297,17 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_id: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             tx = await encode_call(
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="withdraw",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1372,19 +1319,17 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_id: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             tx = await encode_call(
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="lockPermanent",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1396,19 +1341,17 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_id: int,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             tx = await encode_call(
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="unlockPermanent",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1422,7 +1365,6 @@ class AerodromeAdapter(BaseAdapter):
         token_id: int,
         pools: Sequence[str],
         weights: Sequence[int],
-        chain_id: int = CHAIN_ID_BASE,
         check_window: bool = True,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
@@ -1432,10 +1374,8 @@ class AerodromeAdapter(BaseAdapter):
         if len(pools) != len(weights):
             return False, "pools and weights length mismatch"
         try:
-            cid = self._require_chain(chain_id)
-
             if check_window:
-                ok, reason = await self._can_vote_now(chain_id=cid, token_id=token_id)
+                ok, reason = await self._can_vote_now(token_id=token_id)
                 if not ok:
                     return False, reason
 
@@ -1448,7 +1388,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="vote",
                 args=[token_id, pools_cs, weights_u],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1460,15 +1400,13 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_id: int,
-        chain_id: int = CHAIN_ID_BASE,
         check_window: bool = True,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             if check_window:
-                ok, reason = await self._can_vote_now(chain_id=cid, token_id=token_id)
+                ok, reason = await self._can_vote_now(token_id=token_id)
                 if not ok:
                     return False, reason
 
@@ -1478,7 +1416,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="reset",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1489,7 +1427,6 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         reward_contract: str,
-        chain_id: int,
         web3: Any,
         block_identifier: str | int = "latest",
     ) -> list[str]:
@@ -1512,7 +1449,7 @@ class AerodromeAdapter(BaseAdapter):
         ]
         tokens = await read_only_calls_multicall_or_gather(
             web3=web3,
-            chain_id=chain_id,
+            chain_id=self.chain_id,
             calls=calls,
             block_identifier=block_identifier,
             chunk_size=100,
@@ -1526,14 +1463,12 @@ class AerodromeAdapter(BaseAdapter):
         token_id: int,
         fee_reward_contracts: Sequence[str],
         token_lists: Sequence[Sequence[str]] | None = None,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         if not fee_reward_contracts:
             return False, "fee_reward_contracts cannot be empty"
         try:
-            cid = self._require_chain(chain_id)
             fees = [to_checksum_address(a) for a in list(fee_reward_contracts)]
 
             tokens_nested: list[list[str]]
@@ -1545,12 +1480,11 @@ class AerodromeAdapter(BaseAdapter):
                     for tokens in list(token_lists)
                 ]
             else:
-                async with web3_from_chain_id(cid) as web3:
+                async with web3_from_chain_id(self.chain_id) as web3:
                     toks = await asyncio.gather(
                         *[
                             self._reward_tokens(
                                 reward_contract=a,
-                                chain_id=cid,
                                 web3=web3,
                             )
                             for a in fees
@@ -1564,7 +1498,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="claimFees",
                 args=[fees, tokens_nested, token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1578,14 +1512,12 @@ class AerodromeAdapter(BaseAdapter):
         token_id: int,
         bribe_reward_contracts: Sequence[str],
         token_lists: Sequence[Sequence[str]] | None = None,
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         if not bribe_reward_contracts:
             return False, "bribe_reward_contracts cannot be empty"
         try:
-            cid = self._require_chain(chain_id)
             bribes = [to_checksum_address(a) for a in list(bribe_reward_contracts)]
 
             tokens_nested: list[list[str]]
@@ -1597,12 +1529,11 @@ class AerodromeAdapter(BaseAdapter):
                     for tokens in list(token_lists)
                 ]
             else:
-                async with web3_from_chain_id(cid) as web3:
+                async with web3_from_chain_id(self.chain_id) as web3:
                     toks = await asyncio.gather(
                         *[
                             self._reward_tokens(
                                 reward_contract=a,
-                                chain_id=cid,
                                 web3=web3,
                             )
                             for a in bribes
@@ -1616,7 +1547,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="claimBribes",
                 args=[bribes, tokens_nested, token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1627,12 +1558,10 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_id: int,
-        chain_id: int = CHAIN_ID_BASE,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
-            cid = self._require_chain(chain_id)
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 rd = web3.eth.contract(
                     address=to_checksum_address(self.rewards_distributor),
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
@@ -1649,16 +1578,14 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_id: int,
-        chain_id: int = CHAIN_ID_BASE,
         skip_if_zero: bool = True,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         try:
-            cid = self._require_chain(chain_id)
             if skip_if_zero:
                 ok, claimable = await self.get_rebase_claimable(
-                    token_id=token_id, chain_id=cid, block_identifier="latest"
+                    token_id=token_id, block_identifier="latest"
                 )
                 if not ok:
                     return False, claimable
@@ -1671,7 +1598,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="claim",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1683,14 +1610,12 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         token_ids: Sequence[int],
-        chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         if not token_ids:
             return False, "token_ids cannot be empty"
         try:
-            cid = self._require_chain(chain_id)
             ids = list(token_ids)
             tx = await encode_call(
                 target=self.rewards_distributor,
@@ -1698,7 +1623,7 @@ class AerodromeAdapter(BaseAdapter):
                 fn_name="claimMany",
                 args=[ids],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=cid,
+                chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1709,7 +1634,6 @@ class AerodromeAdapter(BaseAdapter):
         self,
         *,
         account: str,
-        chain_id: int = CHAIN_ID_BASE,
         start: int = 0,
         limit: int | None = 200,
         include_votes: bool = False,
@@ -1723,11 +1647,10 @@ class AerodromeAdapter(BaseAdapter):
         - For large scans, increase `limit` and page with `start`.
         """
         try:
-            cid = self._require_chain(chain_id)
             acct = to_checksum_address(account)
             start_i = max(0, start)
 
-            async with web3_from_chain_id(cid) as web3:
+            async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
@@ -1753,7 +1676,7 @@ class AerodromeAdapter(BaseAdapter):
                 ]
                 pools = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=cid,
+                    chain_id=self.chain_id,
                     calls=pool_calls,
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -1773,14 +1696,14 @@ class AerodromeAdapter(BaseAdapter):
                 pool_balances, gauges = await asyncio.gather(
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=cid,
+                        chain_id=self.chain_id,
                         calls=pool_bal_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
                     ),
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=cid,
+                        chain_id=self.chain_id,
                         calls=gauge_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -1807,14 +1730,14 @@ class AerodromeAdapter(BaseAdapter):
                 (g_bal, g_earned) = await asyncio.gather(
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=cid,
+                        chain_id=self.chain_id,
                         calls=gauge_bal_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
                     ),
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=cid,
+                        chain_id=self.chain_id,
                         calls=gauge_earned_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -1850,7 +1773,7 @@ class AerodromeAdapter(BaseAdapter):
                     )
 
                 ok_ids, token_ids_any = await self.get_user_ve_nfts(
-                    owner=acct, chain_id=cid, block_identifier=block_identifier
+                    owner=acct, block_identifier=block_identifier
                 )
                 if not ok_ids:
                     return False, token_ids_any
@@ -1873,21 +1796,21 @@ class AerodromeAdapter(BaseAdapter):
                     (powers, voted_flags, claimables) = await asyncio.gather(
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=power_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=voted_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=claimable_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -1910,7 +1833,7 @@ class AerodromeAdapter(BaseAdapter):
                                 )
                         vote_values = await read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=cid,
+                            chain_id=self.chain_id,
                             calls=vote_calls,
                             block_identifier=block_identifier,
                             chunk_size=200,
@@ -1939,7 +1862,7 @@ class AerodromeAdapter(BaseAdapter):
 
             return True, {
                 "protocol": "aerodrome",
-                "chain_id": cid,
+                "chain_id": self.chain_id,
                 "account": acct,
                 "markets_scan": {
                     "start": start_i,

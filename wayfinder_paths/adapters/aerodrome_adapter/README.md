@@ -1,6 +1,6 @@
 # Aerodrome Adapter (Base)
 
-This adapter supports Aerodrome’s classic **Pool / Gauge / veAERO** stack on **Base mainnet** (`chain_id=8453`).
+This adapter supports Aerodrome’s classic **Pool / Gauge / veAERO** stack on **Base mainnet**.
 
 ## Supported flows (v1)
 

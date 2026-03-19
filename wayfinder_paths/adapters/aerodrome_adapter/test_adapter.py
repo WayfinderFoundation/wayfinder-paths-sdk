@@ -9,8 +9,8 @@ def test_adapter_type():
     assert adapter.adapter_type == "AERODROME"
 
 
-def test_constructor_ignores_chain_id_config():
-    adapter = AerodromeAdapter(config={"chain_id": 1})
+def test_constructor_is_base_only():
+    adapter = AerodromeAdapter()
     assert adapter.chain_id == CHAIN_ID_BASE
 
 
