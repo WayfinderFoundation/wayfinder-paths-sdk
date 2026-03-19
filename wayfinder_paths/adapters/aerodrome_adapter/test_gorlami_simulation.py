@@ -1,0 +1,170 @@
+from __future__ import annotations
+
+import pytest
+from eth_account import Account
+
+from wayfinder_paths.adapters.aerodrome_adapter.adapter import AerodromeAdapter, WEEK_SECONDS
+from wayfinder_paths.core.constants.aerodrome_abi import AERODROME_GAUGE_ABI, AERODROME_POOL_ABI
+from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
+from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.contracts import BASE_WETH
+from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing.gorlami import gorlami_configured
+
+pytestmark = pytest.mark.skipif(
+    not gorlami_configured(),
+    reason="api_key not configured (needed for gorlami fork proxy)",
+)
+
+CHAIN_ID = CHAIN_ID_BASE
+ENTRY = AERODROME_BY_CHAIN[CHAIN_ID]
+AERO = ENTRY["aero"]
+WETH = BASE_WETH
+
+
+def _make_adapter(acct: Account) -> AerodromeAdapter:
+    async def sign_cb(tx: dict) -> bytes:
+        signed = acct.sign_transaction(tx)
+        return signed.raw_transaction
+
+    return AerodromeAdapter(
+        sign_callback=sign_cb,
+        wallet_address=acct.address,
+    )
+
+
+async def _ensure_fork(gorlami) -> str:
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        assert await web3.eth.chain_id == int(CHAIN_ID)
+    fork_info = gorlami.forks.get(str(CHAIN_ID))
+    assert fork_info is not None
+    return fork_info["fork_id"]
+
+
+@pytest.mark.asyncio
+async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
+    fork_id = await _ensure_fork(gorlami)
+
+    acct = Account.create()
+    adapter = _make_adapter(acct)
+
+    # Fund account on fork: ETH for gas + liquidity, AERO for liquidity + lock.
+    await gorlami.set_native_balance(fork_id, acct.address, 10 * 10**18)
+    await gorlami.set_erc20_balance(fork_id, AERO, acct.address, 50_000 * 10**18)
+
+    # Discover pool/gauge via on-chain registry calls.
+    ok, pool = await adapter.get_pool(tokenA=AERO, tokenB=WETH, stable=False)
+    assert ok is True, pool
+
+    ok, gauge = await adapter.get_gauge(pool=pool)
+    assert ok is True, gauge
+
+    ok, rewards = await adapter.get_reward_contracts(gauge=gauge)
+    assert ok is True, rewards
+    assert rewards["fees"].startswith("0x")
+    assert rewards["bribes"].startswith("0x")
+    print("TEST:::1")
+
+    # Sanity check gauge->staking token is the pool (LP token).
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        gauge_c = web3.eth.contract(address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI)
+        staking_token = await gauge_c.functions.stakingToken().call(block_identifier="latest")
+    assert staking_token.lower() == pool.lower()
+    print("TEST:::2")
+
+    # Add liquidity: AERO + native ETH (router addLiquidityETH).
+    ok, tx = await adapter.add_liquidity(
+        tokenA=AERO,
+        tokenB=None,  # native ETH
+        stable=False,
+        amountA_desired=1_000 * 10**18,
+        amountB_desired=10**17,  # 0.1 ETH
+        slippage_bps=200,
+    )
+    print("TEST:::3")
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        pool_c = web3.eth.contract(address=web3.to_checksum_address(pool), abi=AERODROME_POOL_ABI)
+        lp_balance = await pool_c.functions.balanceOf(acct.address).call(block_identifier="pending")
+    print("TEST:::4")
+    lp_balance = int(lp_balance)
+    assert lp_balance > 0
+
+    # Stake LP into gauge.
+    ok, tx = await adapter.stake_lp(gauge=gauge, amount=lp_balance)
+    assert ok is True, tx
+
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        gauge_c = web3.eth.contract(address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI)
+        staked = await gauge_c.functions.balanceOf(acct.address).call(block_identifier="pending")
+    assert int(staked) == lp_balance
+
+    # Claim rewards (may be zero, but call should succeed).
+    ok, tx = await adapter.claim_gauge_rewards(gauges=[gauge])
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    # Unstake LP.
+    ok, tx = await adapter.unstake_lp(gauge=gauge, amount=lp_balance)
+    assert ok is True, tx
+    print("TEST:::5")
+
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        gauge_c2 = web3.eth.contract(
+            address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI
+        )
+        pool_c2 = web3.eth.contract(
+            address=web3.to_checksum_address(pool), abi=AERODROME_POOL_ABI
+        )
+        staked_after = await gauge_c2.functions.balanceOf(acct.address).call(
+            block_identifier="pending"
+        )
+        lp_balance_after = await pool_c2.functions.balanceOf(acct.address).call(
+            block_identifier="pending"
+        )
+    assert int(staked_after) == 0
+    assert int(lp_balance_after) == lp_balance
+
+    # Remove liquidity back to AERO + ETH.
+    ok, tx = await adapter.remove_liquidity(
+        tokenA=AERO,
+        tokenB=None,  # native ETH
+        stable=False,
+        liquidity=lp_balance,
+        slippage_bps=200,
+    )
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+    print("TEST:::6")
+
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        pool_c3 = web3.eth.contract(
+            address=web3.to_checksum_address(pool), abi=AERODROME_POOL_ABI
+        )
+        lp_balance_final = await pool_c3.functions.balanceOf(acct.address).call(
+            block_identifier="pending"
+        )
+    assert int(lp_balance_final) == 0
+
+    # veAERO: create lock and verify enumeration works.
+    ok, res = await adapter.create_lock(amount=10 * 10**18, lock_duration=4 * WEEK_SECONDS)
+    assert ok is True, res
+    assert isinstance(res, dict)
+    assert res["tx"].startswith("0x")
+    token_id = res["token_id"]
+    assert token_id is not None
+
+    ok, token_ids = await adapter.get_user_ve_nfts(owner=acct.address)
+    assert ok is True, token_ids
+    assert int(token_id) in [int(x) for x in token_ids]
+    print("TEST:::7")
+
+    # Bump amount and unlock time (should both succeed on a fresh lock).
+    ok, tx = await adapter.increase_lock_amount(token_id=int(token_id), amount=1 * 10**18)
+    assert ok is True, tx
+    ok, tx = await adapter.increase_unlock_time(
+        token_id=int(token_id), lock_duration=8 * WEEK_SECONDS
+    )
+    assert ok is True, tx
