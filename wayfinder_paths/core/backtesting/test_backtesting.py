@@ -271,7 +271,7 @@ async def test_delta_neutral_funding_arbitrage():
     # Verify results
     assert result.stats["sharpe"] is not None
     assert result.stats["total_funding"] <= 0, (
-        "Should receive funding (negative = income)"
+        "Should receive funding (total_funding_paid: negative = income received)"
     )
     assert not result.liquidated, "Should not be liquidated with conservative leverage"
     assert result.stats["volatility_ann"] < 0.05, (
