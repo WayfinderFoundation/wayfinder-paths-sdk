@@ -1,0 +1,22 @@
+schema_version: "0.1"
+entrypoint: "adapters.aerodrome_adapter.adapter.AerodromeAdapter"
+capabilities:
+  - "aerodrome.markets.list"
+  - "aerodrome.liquidity.add"
+  - "aerodrome.liquidity.remove"
+  - "aerodrome.pool.fees.claim"
+  - "aerodrome.gauge.stake"
+  - "aerodrome.gauge.unstake"
+  - "aerodrome.gauge.claim"
+  - "aerodrome.ve.list"
+  - "aerodrome.ve.lock.create"
+  - "aerodrome.ve.lock.increase"
+  - "aerodrome.ve.lock.withdraw"
+  - "aerodrome.vote.cast"
+  - "aerodrome.vote.reset"
+  - "aerodrome.rewards.claim_fees"
+  - "aerodrome.rewards.claim_bribes"
+  - "aerodrome.rewards.claim_rebases"
+  - "position.read"
+dependencies: []
+
