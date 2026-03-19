@@ -1026,13 +1026,16 @@ class AerodromeAdapter(BaseAdapter):
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
-                g = web3.eth.contract(address=gauge, abi=AERODROME_GAUGE_ABI)
-                alive, staking_token = await asyncio.gather(
-                    voter.functions.isAlive(gauge).call(block_identifier="latest"),
-                    g.functions.stakingToken().call(block_identifier="latest"),
+                alive = await voter.functions.isAlive(gauge).call(
+                    block_identifier="latest"
                 )
                 if not alive:
                     return False, "Gauge is not alive (killed/dead)"
+
+                g = web3.eth.contract(address=gauge, abi=AERODROME_GAUGE_ABI)
+                staking_token = await g.functions.stakingToken().call(
+                    block_identifier="latest"
+                )
 
             approved = await ensure_allowance(
                 token_address=to_checksum_address(staking_token),
