@@ -1,6 +1,7 @@
 import pytest
 
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import AerodromeAdapter
+from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 
 def test_adapter_type():
@@ -10,7 +11,7 @@ def test_adapter_type():
 
 def test_constructor_ignores_chain_id_config():
     adapter = AerodromeAdapter(config={"chain_id": 1})
-    assert adapter.chain_id == 8453
+    assert adapter.chain_id == CHAIN_ID_BASE
 
 
 @pytest.mark.asyncio
