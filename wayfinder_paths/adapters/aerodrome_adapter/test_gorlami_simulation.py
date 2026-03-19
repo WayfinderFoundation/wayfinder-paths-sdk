@@ -69,7 +69,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     assert ok is True, rewards
     assert rewards["fees"].startswith("0x")
     assert rewards["bribes"].startswith("0x")
-    print("TEST:::1")
 
     # Sanity check gauge->staking token is the pool (LP token).
     async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
@@ -80,7 +79,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
             block_identifier="latest"
         )
     assert staking_token.lower() == pool.lower()
-    print("TEST:::2")
 
     # Add liquidity: AERO + native ETH (router addLiquidityETH).
     ok, tx = await adapter.add_liquidity(
@@ -91,7 +89,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
         amountB_desired=10**17,  # 0.1 ETH
         slippage_bps=200,
     )
-    print("TEST:::3")
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
@@ -102,7 +99,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
         lp_balance = await pool_c.functions.balanceOf(acct.address).call(
             block_identifier="pending"
         )
-    print("TEST:::4")
     lp_balance = int(lp_balance)
     assert lp_balance > 0
 
@@ -127,7 +123,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     # Unstake LP.
     ok, tx = await adapter.unstake_lp(gauge=gauge, amount=lp_balance)
     assert ok is True, tx
-    print("TEST:::5")
 
     async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
         gauge_c2 = web3.eth.contract(
@@ -155,7 +150,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
-    print("TEST:::6")
 
     async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
         pool_c3 = web3.eth.contract(
@@ -179,7 +173,6 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     ok, token_ids = await adapter.get_user_ve_nfts(owner=acct.address)
     assert ok is True, token_ids
     assert int(token_id) in [int(x) for x in token_ids]
-    print("TEST:::7")
 
     # Bump amount and unlock time (should both succeed on a fresh lock).
     ok, tx = await adapter.increase_lock_amount(
