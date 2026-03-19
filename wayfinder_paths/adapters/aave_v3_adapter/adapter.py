@@ -16,6 +16,7 @@ from wayfinder_paths.core.constants.aave_v3_abi import (
 )
 from wayfinder_paths.core.constants.aave_v3_contracts import AAVE_V3_BY_CHAIN
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
+from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
@@ -693,7 +694,6 @@ class AaveV3Adapter(BaseAdapter):
         underlying_token: str,
         qty: int,
         chain_id: int,
-        native: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
         if not strategy:
@@ -704,8 +704,7 @@ class AaveV3Adapter(BaseAdapter):
 
         try:
             pool = self._entry(int(chain_id))["pool"]
-
-            if native:
+            if underlying_token == ZERO_ADDRESS:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 wrap_tx = await encode_call(
                     target=wrapped,
@@ -773,7 +772,6 @@ class AaveV3Adapter(BaseAdapter):
         underlying_token: str,
         qty: int,
         chain_id: int,
-        native: bool = False,
         withdraw_full: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
@@ -786,8 +784,7 @@ class AaveV3Adapter(BaseAdapter):
         try:
             pool = self._entry(int(chain_id))["pool"]
             amount = MAX_UINT256 if withdraw_full else qty
-
-            if native:
+            if underlying_token == ZERO_ADDRESS:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 before = await get_token_balance(
                     wrapped, int(chain_id), strategy, block_identifier="pending"
@@ -841,7 +838,6 @@ class AaveV3Adapter(BaseAdapter):
         underlying_token: str,
         qty: int,
         chain_id: int,
-        native: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
         if not strategy:
@@ -852,7 +848,7 @@ class AaveV3Adapter(BaseAdapter):
 
         try:
             pool = self._entry(int(chain_id))["pool"]
-            if native:
+            if underlying_token == ZERO_ADDRESS:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 borrow_tx = await encode_call(
                     target=pool,
@@ -895,7 +891,6 @@ class AaveV3Adapter(BaseAdapter):
         underlying_token: str,
         qty: int,
         chain_id: int,
-        native: bool = False,
         repay_full: bool = False,
     ) -> tuple[bool, Any]:
         strategy = self.wallet_address
@@ -907,8 +902,7 @@ class AaveV3Adapter(BaseAdapter):
 
         try:
             pool = self._entry(int(chain_id))["pool"]
-
-            if native:
+            if underlying_token == ZERO_ADDRESS:
                 wrapped = await self._wrapped_native(chain_id=int(chain_id))
                 repay_amount = MAX_UINT256 if repay_full else qty
 
