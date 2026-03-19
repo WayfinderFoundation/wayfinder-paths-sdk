@@ -4,12 +4,15 @@ import pytest
 from eth_account import Account
 
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
+    EPOCH_SPECIAL_WINDOW_SECONDS,
     WEEK_SECONDS,
     AerodromeAdapter,
 )
 from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_GAUGE_ABI,
     AERODROME_POOL_ABI,
+    AERODROME_VOTER_ABI,
+    AERODROME_VOTING_ESCROW_ABI,
 )
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
@@ -45,6 +48,68 @@ async def _ensure_fork(gorlami) -> str:
     fork_info = gorlami.forks.get(str(CHAIN_ID))
     assert fork_info is not None
     return fork_info["fork_id"]
+
+
+async def _try_time_travel(gorlami, fork_id: str, *, target_ts: int) -> bool:
+    candidates = [
+        ("evm_setNextBlockTimestamp", [target_ts]),
+        ("anvil_setNextBlockTimestamp", [target_ts]),
+        ("hardhat_setNextBlockTimestamp", [target_ts]),
+    ]
+    for method, params in candidates:
+        try:
+            await gorlami.send_rpc(fork_id, method, params)
+            await gorlami.send_rpc(fork_id, "evm_mine", [])
+            return True
+        except Exception:
+            continue
+
+    try:
+        block = await gorlami.send_rpc(
+            fork_id, "eth_getBlockByNumber", ["latest", False]
+        )
+        now = int(block.get("timestamp") or "0x0", 16) if isinstance(block, dict) else 0
+    except Exception:
+        now = 0
+
+    delta = max(0, int(target_ts) - int(now))
+    if delta <= 0:
+        return True
+
+    for method in ("evm_increaseTime", "anvil_increaseTime", "hardhat_increaseTime"):
+        try:
+            await gorlami.send_rpc(fork_id, method, [delta])
+            await gorlami.send_rpc(fork_id, "evm_mine", [])
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _move_to_safe_vote_window(gorlami, fork_id: str) -> bool:
+    block = await gorlami.send_rpc(fork_id, "eth_getBlockByNumber", ["latest", False])
+    now = int(block.get("timestamp") or "0x0", 16) if isinstance(block, dict) else 0
+
+    epoch_start = (now // WEEK_SECONDS) * WEEK_SECONDS
+    window_start = epoch_start + EPOCH_SPECIAL_WINDOW_SECONDS + 5
+    window_end = epoch_start + WEEK_SECONDS - EPOCH_SPECIAL_WINDOW_SECONDS - 5
+
+    if now < window_start:
+        target_ts = window_start
+    elif now >= window_end:
+        target_ts = epoch_start + WEEK_SECONDS + EPOCH_SPECIAL_WINDOW_SECONDS + 5
+    else:
+        return True
+
+    return await _try_time_travel(gorlami, fork_id, target_ts=target_ts)
+
+
+async def _move_to_next_safe_vote_window(gorlami, fork_id: str) -> bool:
+    block = await gorlami.send_rpc(fork_id, "eth_getBlockByNumber", ["latest", False])
+    now = int(block.get("timestamp") or "0x0", 16) if isinstance(block, dict) else 0
+    next_epoch_start = ((now // WEEK_SECONDS) + 1) * WEEK_SECONDS
+    target_ts = next_epoch_start + EPOCH_SPECIAL_WINDOW_SECONDS + 5
+    return await _try_time_travel(gorlami, fork_id, target_ts=target_ts)
 
 
 @pytest.mark.asyncio
@@ -183,3 +248,93 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
         token_id=int(token_id), lock_duration=8 * WEEK_SECONDS
     )
     assert ok is True, tx
+
+
+@pytest.mark.asyncio
+async def test_gorlami_aerodrome_vote_reset_and_state(gorlami):
+    fork_id = await _ensure_fork(gorlami)
+
+    acct = Account.create()
+    adapter = _make_adapter(acct)
+
+    await gorlami.set_native_balance(fork_id, acct.address, 10 * 10**18)
+    await gorlami.set_erc20_balance(fork_id, AERO, acct.address, 5_000 * 10**18)
+
+    ok, pool = await adapter.get_pool(tokenA=AERO, tokenB=WETH, stable=False)
+    assert ok is True, pool
+
+    ok, res = await adapter.create_lock(
+        amount=25 * 10**18, lock_duration=4 * WEEK_SECONDS
+    )
+    assert ok is True, res
+    token_id = int(res["token_id"])
+
+    advanced = await _move_to_safe_vote_window(gorlami, fork_id)
+    if not advanced:
+        pytest.skip(
+            "Gorlami fork backend does not support Aerodrome vote-window time travel"
+        )
+
+    ok, tx = await adapter.vote(
+        token_id=token_id,
+        pools=[pool],
+        weights=[10_000],
+    )
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        voter = web3.eth.contract(
+            address=web3.to_checksum_address(ENTRY["voter"]), abi=AERODROME_VOTER_ABI
+        )
+        ve = web3.eth.contract(
+            address=web3.to_checksum_address(ENTRY["voting_escrow"]),
+            abi=AERODROME_VOTING_ESCROW_ABI,
+        )
+        vote_weight = await voter.functions.votes(token_id, pool).call(
+            block_identifier="pending"
+        )
+        voted_flag = await ve.functions.voted(token_id).call(block_identifier="pending")
+
+    assert int(vote_weight) > 0
+    assert voted_flag is True
+
+    ok, state = await adapter.get_full_user_state(
+        account=acct.address,
+        include_votes=True,
+        limit=20,
+    )
+    assert ok is True, state
+    ve_nft = next(
+        item for item in state["ve_nfts"] if int(item["token_id"]) == int(token_id)
+    )
+    assert isinstance(ve_nft["votes"], dict)
+    assert ve_nft["voted"] is True
+
+    advanced = await _move_to_next_safe_vote_window(gorlami, fork_id)
+    if not advanced:
+        pytest.skip(
+            "Gorlami fork backend does not support Aerodrome next-epoch time travel"
+        )
+
+    ok, tx = await adapter.reset_vote(token_id=token_id)
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
+        voter = web3.eth.contract(
+            address=web3.to_checksum_address(ENTRY["voter"]), abi=AERODROME_VOTER_ABI
+        )
+        ve = web3.eth.contract(
+            address=web3.to_checksum_address(ENTRY["voting_escrow"]),
+            abi=AERODROME_VOTING_ESCROW_ABI,
+        )
+        vote_weight_after = await voter.functions.votes(token_id, pool).call(
+            block_identifier="pending"
+        )
+        voted_flag_after = await ve.functions.voted(token_id).call(
+            block_identifier="pending"
+        )
+
+    assert int(vote_weight_after) == 0
+    assert voted_flag_after is False
