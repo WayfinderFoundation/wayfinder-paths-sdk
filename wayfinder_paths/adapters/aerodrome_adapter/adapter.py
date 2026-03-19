@@ -40,13 +40,6 @@ EPOCH_SPECIAL_WINDOW_SECONDS = 60 * 60  # first/last hour restrictions
 
 _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
 
-
-def _as_addr(addr: str | None) -> str:
-    if not addr:
-        raise ValueError("address is required")
-    return to_checksum_address(addr)
-
-
 class AerodromeAdapter(BaseAdapter):
     """
     Aerodrome classic pool/gauge/veAERO adapter (Base mainnet only).
@@ -1118,9 +1111,12 @@ class AerodromeAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         try:
             cid = self._require_chain(chain_id)
-            owner_addr = (
-                to_checksum_address(owner) if owner else _as_addr(self.wallet_address)
-            )
+            if owner:
+                owner_addr = to_checksum_address(owner)
+            elif self.wallet_address:
+                owner_addr = to_checksum_address(self.wallet_address)
+            else:
+                raise ValueError("address is required")
 
             async with web3_from_chain_id(cid) as web3:
                 ve = web3.eth.contract(
