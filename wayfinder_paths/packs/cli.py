@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 from datetime import UTC, datetime
@@ -10,7 +9,7 @@ from zipfile import ZipFile
 
 import click
 
-from wayfinder_paths.packs.builder import PackBuilder, PackBuildError
+from wayfinder_paths.packs.builder import PackBuilder, PackBuildError, _sha256_file
 from wayfinder_paths.packs.client import PacksApiClient, PacksApiError
 from wayfinder_paths.packs.doctor import PackDoctorError, PackDoctorReport, run_doctor
 from wayfinder_paths.packs.formatter import PackFormatError, format_pack
@@ -522,14 +521,6 @@ def _safe_extract_zip(zip_path: Path, *, dest_dir: Path) -> list[str]:
             extracted.append(rel.as_posix())
     extracted.sort()
     return extracted
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 @pack_cli.command(name="install", help="Download and unpack a pack bundle locally.")

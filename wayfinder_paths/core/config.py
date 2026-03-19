@@ -108,10 +108,11 @@ def get_packs_api_base_url() -> str:
     if env_url:
         return str(env_url).strip().rstrip("/")
 
-    # Fallback: derive from api_base_url when it's set to ".../api"
+    # Fallback: derive from api_base_url by stripping known API path suffixes
     base = get_api_base_url().strip().rstrip("/")
-    if base.endswith("/api"):
-        return base[: -len("/api")]
+    for suffix in ("/api/v1", "/api"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
     return base
 
 

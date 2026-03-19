@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -8,6 +7,7 @@ from typing import Any
 import httpx
 
 from wayfinder_paths.core.config import get_api_key, get_packs_api_base_url
+from wayfinder_paths.packs.builder import _sha256_file
 
 
 class PacksApiError(Exception):
@@ -239,11 +239,7 @@ class PacksApiClient:
 
     @staticmethod
     def sha256_file(path: Path) -> str:
-        h = hashlib.sha256()
-        with path.open("rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
+        return _sha256_file(path)
 
     def fork_pack(
         self,

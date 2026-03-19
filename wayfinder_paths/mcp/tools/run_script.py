@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.packs.builder import _sha256_file
 from wayfinder_paths.mcp.preview import build_run_script_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.state.runs import runs_root
@@ -66,14 +66,6 @@ def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]
         )
 
     return True, resolved
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _truncate(text: str, *, max_chars: int = 20_000) -> str:
