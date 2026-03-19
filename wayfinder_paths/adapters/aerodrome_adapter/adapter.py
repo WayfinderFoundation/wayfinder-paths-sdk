@@ -1481,41 +1481,34 @@ class AerodromeAdapter(BaseAdapter):
         *,
         reward_contract: str,
         chain_id: int,
-        web3: Any | None = None,
+        web3: Any,
         block_identifier: str | int = "latest",
     ) -> list[str]:
         rc = to_checksum_address(reward_contract)
 
-        async def _read(w3: Any) -> list[str]:
-            reward = w3.eth.contract(address=rc, abi=AERODROME_REWARD_ABI)
-            n = await reward.functions.rewardsListLength().call(
-                block_identifier=block_identifier
+        reward = web3.eth.contract(address=rc, abi=AERODROME_REWARD_ABI)
+        n = await reward.functions.rewardsListLength().call(
+            block_identifier=block_identifier
+        )
+        if n <= 0:
+            return []
+        calls = [
+            Call(
+                reward,
+                "rewards",
+                args=(i,),
+                postprocess=lambda a: to_checksum_address(a),
             )
-            if n <= 0:
-                return []
-            calls = [
-                Call(
-                    reward,
-                    "rewards",
-                    args=(i,),
-                    postprocess=lambda a: to_checksum_address(a),
-                )
-                for i in range(n)
-            ]
-            tokens = await read_only_calls_multicall_or_gather(
-                web3=w3,
-                chain_id=chain_id,
-                calls=calls,
-                block_identifier=block_identifier,
-                chunk_size=100,
-            )
-            return [to_checksum_address(t) for t in tokens]
-
-        if web3 is not None:
-            return await _read(web3)
-
-        async with web3_from_chain_id(chain_id) as w3:
-            return await _read(w3)
+            for i in range(n)
+        ]
+        tokens = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=chain_id,
+            calls=calls,
+            block_identifier=block_identifier,
+            chunk_size=100,
+        )
+        return [to_checksum_address(t) for t in tokens]
 
     @require_wallet
     async def claim_fees(
