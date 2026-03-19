@@ -261,14 +261,14 @@ class AerodromeAdapter(BaseAdapter):
         """
         try:
             cid = self._require_chain(chain_id)
-            start_i = max(0, int(start))
+            start_i = max(0, start)
 
             async with web3_from_chain_id(cid) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
                 )
-                total = int(
-                    await voter.functions.length().call(block_identifier=block_identifier)
+                total = await voter.functions.length().call(
+                    block_identifier=block_identifier
                 )
 
                 if total == 0 or start_i >= total:
@@ -276,18 +276,18 @@ class AerodromeAdapter(BaseAdapter):
                         "protocol": "aerodrome",
                         "chain_id": cid,
                         "start": start_i,
-                        "limit": None if limit is None else int(limit),
+                        "limit": limit,
                         "total": total,
                         "markets": [],
                     }
 
-                end_i = total if limit is None else min(total, start_i + int(limit))
+                end_i = total if limit is None else min(total, start_i + limit)
 
                 pool_calls = [
                     Call(
                         voter,
                         "pools",
-                        args=(int(i),),
+                        args=(i,),
                         postprocess=lambda a: to_checksum_address(a),
                     )
                     for i in range(start_i, end_i)
@@ -485,7 +485,7 @@ class AerodromeAdapter(BaseAdapter):
                 "protocol": "aerodrome",
                 "chain_id": cid,
                 "start": start_i,
-                "limit": None if limit is None else int(limit),
+                "limit": limit,
                 "total": total,
                 "markets": markets,
             }
@@ -1117,10 +1117,8 @@ class AerodromeAdapter(BaseAdapter):
                     address=to_checksum_address(self.voting_escrow),
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
-                bal = int(
-                    await ve.functions.balanceOf(owner_addr).call(
-                        block_identifier=block_identifier
-                    )
+                bal = await ve.functions.balanceOf(owner_addr).call(
+                    block_identifier=block_identifier
                 )
                 if bal <= 0:
                     return True, []
@@ -1129,7 +1127,7 @@ class AerodromeAdapter(BaseAdapter):
                     Call(
                         ve,
                         "ownerToNFTokenIdList",
-                        args=(owner_addr, int(i)),
+                        args=(owner_addr, i),
                         postprocess=int,
                     )
                     for i in range(bal)
@@ -1141,7 +1139,7 @@ class AerodromeAdapter(BaseAdapter):
                     block_identifier=block_identifier,
                     chunk_size=100,
                 )
-            return True, [int(i) for i in token_ids]
+            return True, token_ids
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -1153,9 +1151,9 @@ class AerodromeAdapter(BaseAdapter):
         lock_duration: int,
         chain_id: int = CHAIN_ID_BASE,
     ) -> tuple[bool, Any]:
-        if int(amount) <= 0:
+        if amount <= 0:
             return False, "amount must be positive"
-        if int(lock_duration) <= 0:
+        if lock_duration <= 0:
             return False, "lock_duration must be positive"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -1167,7 +1165,7 @@ class AerodromeAdapter(BaseAdapter):
                 token_address=self.aero,
                 owner=owner,
                 spender=_as_addr(self.voting_escrow),
-                amount=int(amount),
+                amount=amount,
                 chain_id=cid,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -1179,7 +1177,7 @@ class AerodromeAdapter(BaseAdapter):
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLock",
-                args=[int(amount), int(lock_duration)],
+                args=[amount, lock_duration],
                 from_address=owner,
                 chain_id=cid,
             )
@@ -1467,10 +1465,8 @@ class AerodromeAdapter(BaseAdapter):
 
         async def _read(w3: Any) -> list[str]:
             reward = w3.eth.contract(address=rc, abi=AERODROME_REWARD_ABI)
-            n = int(
-                await reward.functions.rewardsListLength().call(
-                    block_identifier=block_identifier
-                )
+            n = await reward.functions.rewardsListLength().call(
+                block_identifier=block_identifier
             )
             if n <= 0:
                 return []
@@ -1478,7 +1474,7 @@ class AerodromeAdapter(BaseAdapter):
                 Call(
                     reward,
                     "rewards",
-                    args=(int(i),),
+                    args=(i,),
                     postprocess=lambda a: to_checksum_address(a),
                 )
                 for i in range(n)
@@ -1616,10 +1612,10 @@ class AerodromeAdapter(BaseAdapter):
                     address=to_checksum_address(self.rewards_distributor),
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
-                claimable = await rd.functions.claimable(int(token_id)).call(
+                claimable = await rd.functions.claimable(token_id).call(
                     block_identifier=block_identifier
                 )
-            return True, int(claimable)
+            return True, claimable
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -1704,7 +1700,7 @@ class AerodromeAdapter(BaseAdapter):
         try:
             cid = self._require_chain(chain_id)
             acct = _as_addr(account)
-            start_i = max(0, int(start))
+            start_i = max(0, start)
 
             async with web3_from_chain_id(cid) as web3:
                 voter = web3.eth.contract(
@@ -1719,15 +1715,15 @@ class AerodromeAdapter(BaseAdapter):
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
 
-                total = int(
-                    await voter.functions.length().call(block_identifier=block_identifier)
+                total = await voter.functions.length().call(
+                    block_identifier=block_identifier
                 )
-                end_i = total if limit is None else min(total, start_i + int(limit))
+                end_i = total if limit is None else min(total, start_i + limit)
                 if start_i >= total:
                     end_i = start_i
 
                 pool_calls = [
-                    Call(voter, "pools", args=(int(i),), postprocess=to_checksum_address)
+                    Call(voter, "pools", args=(i,), postprocess=to_checksum_address)
                     for i in range(start_i, end_i)
                 ]
                 pools = await read_only_calls_multicall_or_gather(
@@ -1835,20 +1831,20 @@ class AerodromeAdapter(BaseAdapter):
                 )
                 if not ok_ids:
                     return False, token_ids_any
-                token_ids = [int(i) for i in token_ids_any]
+                token_ids = token_ids_any
 
                 ve_items: list[dict[str, Any]] = []
                 if token_ids:
                     power_calls = [
-                        Call(ve, "balanceOfNFT", args=(int(tid),), postprocess=int)
+                        Call(ve, "balanceOfNFT", args=(tid,), postprocess=int)
                         for tid in token_ids
                     ]
                     voted_calls = [
-                        Call(ve, "voted", args=(int(tid),), postprocess=bool)
+                        Call(ve, "voted", args=(tid,), postprocess=bool)
                         for tid in token_ids
                     ]
                     claimable_calls = [
-                        Call(rd, "claimable", args=(int(tid),), postprocess=int)
+                        Call(rd, "claimable", args=(tid,), postprocess=int)
                         for tid in token_ids
                     ]
                     (powers, voted_flags, claimables) = await asyncio.gather(
@@ -1885,7 +1881,7 @@ class AerodromeAdapter(BaseAdapter):
                                     Call(
                                         voter,
                                         "votes",
-                                        args=(int(tid), to_checksum_address(p)),
+                                        args=(tid, to_checksum_address(p)),
                                         postprocess=int,
                                     )
                                 )
@@ -1900,22 +1896,22 @@ class AerodromeAdapter(BaseAdapter):
                         for tid in token_ids:
                             votes_by_token[tid] = {}
                             for p in pools:
-                                votes_by_token[tid][to_checksum_address(p)] = int(
-                                    vote_values[k]
-                                )
+                                votes_by_token[tid][to_checksum_address(p)] = vote_values[
+                                    k
+                                ]
                                 k += 1
 
                     for tid, pwr, vflag, cl in zip(
                         token_ids, powers, voted_flags, claimables, strict=True
                     ):
                         item: dict[str, Any] = {
-                            "token_id": int(tid),
-                            "voting_power": int(pwr),
+                            "token_id": tid,
+                            "voting_power": pwr,
                             "voted": bool(vflag),
-                            "rebase_claimable": int(cl),
+                            "rebase_claimable": cl,
                         }
                         if include_votes:
-                            item["votes"] = votes_by_token.get(int(tid), {})
+                            item["votes"] = votes_by_token.get(tid, {})
                         ve_items.append(item)
 
             return True, {
@@ -1924,8 +1920,8 @@ class AerodromeAdapter(BaseAdapter):
                 "account": acct,
                 "markets_scan": {
                     "start": start_i,
-                    "limit": None if limit is None else int(limit),
-                    "total": int(total),
+                    "limit": limit,
+                    "total": total,
                 },
                 "lp_positions": pools_out,
                 "ve_nfts": ve_items,
