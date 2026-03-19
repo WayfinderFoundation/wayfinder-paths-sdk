@@ -726,4 +726,3 @@ AERODROME_REWARD_ABI: list[dict[str, Any]] = [
         "outputs": [],
     },
 ]
-

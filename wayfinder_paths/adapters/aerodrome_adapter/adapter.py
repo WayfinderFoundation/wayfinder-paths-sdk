@@ -40,6 +40,7 @@ EPOCH_SPECIAL_WINDOW_SECONDS = 60 * 60  # first/last hour restrictions
 
 _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
 
+
 class AerodromeAdapter(BaseAdapter):
     """
     Aerodrome classic pool/gauge/veAERO adapter (Base mainnet only).
@@ -116,10 +117,7 @@ class AerodromeAdapter(BaseAdapter):
                     token_id = args.get("tokenId")
                     if not from_addr or not to_addr or token_id is None:
                         continue
-                    if (
-                        to_checksum_address(from_addr).lower()
-                        != ZERO_ADDRESS
-                    ):
+                    if to_checksum_address(from_addr).lower() != ZERO_ADDRESS:
                         continue
                     if to_checksum_address(to_addr).lower() != expected_to_l:
                         continue
@@ -185,7 +183,7 @@ class AerodromeAdapter(BaseAdapter):
             if pool.lower() == ZERO_ADDRESS:
                 return False, "Pool does not exist"
             return True, pool
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_gauge(
@@ -208,7 +206,7 @@ class AerodromeAdapter(BaseAdapter):
             if gauge.lower() == ZERO_ADDRESS:
                 return False, "Gauge not found for pool"
             return True, gauge
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_reward_contracts(
@@ -248,7 +246,7 @@ class AerodromeAdapter(BaseAdapter):
                 "fees": fees,
                 "bribes": bribes,
             }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_all_markets(
@@ -313,7 +311,8 @@ class AerodromeAdapter(BaseAdapter):
                 ]
 
                 md_calls = [
-                    Call(pc, "metadata") for pc in pool_contracts  # (dec0,dec1,r0,r1,st,t0,t1)
+                    Call(pc, "metadata")
+                    for pc in pool_contracts  # (dec0,dec1,r0,r1,st,t0,t1)
                 ]
                 gauge_calls = [
                     Call(
@@ -350,9 +349,7 @@ class AerodromeAdapter(BaseAdapter):
                 gauge_period_finishes: list[int] = [0] * len(gauges)
 
                 if include_gauge_state:
-                    gauges_nonzero = [
-                        g for g in gauges if g.lower() != ZERO_ADDRESS
-                    ]
+                    gauges_nonzero = [g for g in gauges if g.lower() != ZERO_ADDRESS]
                     gauge_contracts = [
                         web3.eth.contract(address=g, abi=AERODROME_GAUGE_ABI)
                         for g in gauges_nonzero
@@ -386,7 +383,8 @@ class AerodromeAdapter(BaseAdapter):
                         for gc in gauge_contracts
                     ]
                     reward_rate_calls = [
-                        Call(gc, "rewardRate", postprocess=int) for gc in gauge_contracts
+                        Call(gc, "rewardRate", postprocess=int)
+                        for gc in gauge_contracts
                     ]
                     total_supply_calls = [
                         Call(gc, "totalSupply", postprocess=int)
@@ -497,7 +495,7 @@ class AerodromeAdapter(BaseAdapter):
                 "total": total,
                 "markets": markets,
             }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def quote_add_liquidity(
@@ -534,7 +532,10 @@ class AerodromeAdapter(BaseAdapter):
                 tokenA_q, tokenB_q = token, self.weth
                 amtA_q, amtB_q = token_amt, eth_amt
             else:
-                tokenA_q, tokenB_q = to_checksum_address(tokenA), to_checksum_address(tokenB)
+                tokenA_q, tokenB_q = (
+                    to_checksum_address(tokenA),
+                    to_checksum_address(tokenB),
+                )
                 amtA_q, amtB_q = amountA_desired, amountB_desired
 
             async with web3_from_chain_id(cid) as web3:
@@ -569,7 +570,7 @@ class AerodromeAdapter(BaseAdapter):
                 "amountB": b,
                 "liquidity": liq,
             }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -750,7 +751,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def quote_remove_liquidity(
@@ -780,7 +781,10 @@ class AerodromeAdapter(BaseAdapter):
                 token = to_checksum_address(tokenA)
                 tokenA_q, tokenB_q = token, self.weth
             else:
-                tokenA_q, tokenB_q = to_checksum_address(tokenA), to_checksum_address(tokenB)
+                tokenA_q, tokenB_q = (
+                    to_checksum_address(tokenA),
+                    to_checksum_address(tokenB),
+                )
 
             async with web3_from_chain_id(cid) as web3:
                 router = web3.eth.contract(
@@ -797,7 +801,7 @@ class AerodromeAdapter(BaseAdapter):
             if tA_native or tB_native:
                 return True, {"amount_token": a, "amount_eth": b, "token": token}
             return True, {"amountA": a, "amountB": b}
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -956,7 +960,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -996,7 +1000,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1044,9 +1048,11 @@ class AerodromeAdapter(BaseAdapter):
 
             fn_name = "deposit"
             args: list[Any]
-            if recipient_addr and recipient_addr.lower() != to_checksum_address(
-                self.wallet_address
-            ).lower():
+            if (
+                recipient_addr
+                and recipient_addr.lower()
+                != to_checksum_address(self.wallet_address).lower()
+            ):
                 args = [amount, recipient_addr]
             else:
                 args = [amount]
@@ -1061,7 +1067,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1089,7 +1095,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1116,7 +1122,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_user_ve_nfts(
@@ -1163,7 +1169,7 @@ class AerodromeAdapter(BaseAdapter):
                     chunk_size=100,
                 )
             return True, token_ids
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1212,7 +1218,7 @@ class AerodromeAdapter(BaseAdapter):
                 expected_to=owner,
             )
             return True, {"tx": tx_hash, "token_id": token_id}
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1263,7 +1269,7 @@ class AerodromeAdapter(BaseAdapter):
                 expected_to=recv,
             )
             return True, {"tx": tx_hash, "token_id": token_id}
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1304,7 +1310,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1331,7 +1337,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1355,7 +1361,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1379,7 +1385,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1403,7 +1409,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1443,7 +1449,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1473,7 +1479,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def _reward_tokens(
@@ -1559,7 +1565,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1611,7 +1617,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_rebase_claimable(
@@ -1632,7 +1638,7 @@ class AerodromeAdapter(BaseAdapter):
                     block_identifier=block_identifier
                 )
             return True, claimable
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1666,7 +1672,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     @require_wallet
@@ -1693,7 +1699,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(
@@ -1834,9 +1840,9 @@ class AerodromeAdapter(BaseAdapter):
                             "gauge_staked_balance": gauge_items.get(
                                 gauge_addr.lower(), {}
                             ).get("staked_balance", 0),
-                            "gauge_earned": gauge_items.get(
-                                gauge_addr.lower(), {}
-                            ).get("earned", 0),
+                            "gauge_earned": gauge_items.get(gauge_addr.lower(), {}).get(
+                                "earned", 0
+                            ),
                         }
                     )
 
@@ -1910,9 +1916,9 @@ class AerodromeAdapter(BaseAdapter):
                         for tid in token_ids:
                             votes_by_token[tid] = {}
                             for p in pools:
-                                votes_by_token[tid][to_checksum_address(p)] = vote_values[
-                                    k
-                                ]
+                                votes_by_token[tid][to_checksum_address(p)] = (
+                                    vote_values[k]
+                                )
                                 k += 1
 
                     for tid, pwr, vflag, cl in zip(
@@ -1940,5 +1946,5 @@ class AerodromeAdapter(BaseAdapter):
                 "lp_positions": pools_out,
                 "ve_nfts": ve_items,
             }
-        except Exception as exc:  
+        except Exception as exc:
             return False, str(exc)

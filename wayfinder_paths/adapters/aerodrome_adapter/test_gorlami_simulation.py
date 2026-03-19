@@ -3,8 +3,14 @@ from __future__ import annotations
 import pytest
 from eth_account import Account
 
-from wayfinder_paths.adapters.aerodrome_adapter.adapter import AerodromeAdapter, WEEK_SECONDS
-from wayfinder_paths.core.constants.aerodrome_abi import AERODROME_GAUGE_ABI, AERODROME_POOL_ABI
+from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
+    WEEK_SECONDS,
+    AerodromeAdapter,
+)
+from wayfinder_paths.core.constants.aerodrome_abi import (
+    AERODROME_GAUGE_ABI,
+    AERODROME_POOL_ABI,
+)
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_WETH
@@ -67,8 +73,12 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
 
     # Sanity check gauge->staking token is the pool (LP token).
     async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
-        gauge_c = web3.eth.contract(address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI)
-        staking_token = await gauge_c.functions.stakingToken().call(block_identifier="latest")
+        gauge_c = web3.eth.contract(
+            address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI
+        )
+        staking_token = await gauge_c.functions.stakingToken().call(
+            block_identifier="latest"
+        )
     assert staking_token.lower() == pool.lower()
     print("TEST:::2")
 
@@ -86,8 +96,12 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     assert isinstance(tx, str) and tx.startswith("0x")
 
     async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
-        pool_c = web3.eth.contract(address=web3.to_checksum_address(pool), abi=AERODROME_POOL_ABI)
-        lp_balance = await pool_c.functions.balanceOf(acct.address).call(block_identifier="pending")
+        pool_c = web3.eth.contract(
+            address=web3.to_checksum_address(pool), abi=AERODROME_POOL_ABI
+        )
+        lp_balance = await pool_c.functions.balanceOf(acct.address).call(
+            block_identifier="pending"
+        )
     print("TEST:::4")
     lp_balance = int(lp_balance)
     assert lp_balance > 0
@@ -97,8 +111,12 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     assert ok is True, tx
 
     async with web3_utils.web3_from_chain_id(CHAIN_ID) as web3:
-        gauge_c = web3.eth.contract(address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI)
-        staked = await gauge_c.functions.balanceOf(acct.address).call(block_identifier="pending")
+        gauge_c = web3.eth.contract(
+            address=web3.to_checksum_address(gauge), abi=AERODROME_GAUGE_ABI
+        )
+        staked = await gauge_c.functions.balanceOf(acct.address).call(
+            block_identifier="pending"
+        )
     assert int(staked) == lp_balance
 
     # Claim rewards (may be zero, but call should succeed).
@@ -149,7 +167,9 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     assert int(lp_balance_final) == 0
 
     # veAERO: create lock and verify enumeration works.
-    ok, res = await adapter.create_lock(amount=10 * 10**18, lock_duration=4 * WEEK_SECONDS)
+    ok, res = await adapter.create_lock(
+        amount=10 * 10**18, lock_duration=4 * WEEK_SECONDS
+    )
     assert ok is True, res
     assert isinstance(res, dict)
     assert res["tx"].startswith("0x")
@@ -162,7 +182,9 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     print("TEST:::7")
 
     # Bump amount and unlock time (should both succeed on a fresh lock).
-    ok, tx = await adapter.increase_lock_amount(token_id=int(token_id), amount=1 * 10**18)
+    ok, tx = await adapter.increase_lock_amount(
+        token_id=int(token_id), amount=1 * 10**18
+    )
     assert ok is True, tx
     ok, tx = await adapter.increase_unlock_time(
         token_id=int(token_id), lock_duration=8 * WEEK_SECONDS
