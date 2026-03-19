@@ -237,7 +237,7 @@ async def backtest_delta_neutral(
 
     Returns:
         BacktestResult. Key stats:
-        - total_funding: cumulative funding income (negative = income received)
+        - total_funding: cumulative funding paid (negative = income received / profit)
         - volatility_ann: should be very low (<5%) for a well-constructed delta-neutral
         - sharpe: often very high (10-30+) for funding harvesting strategies
 
