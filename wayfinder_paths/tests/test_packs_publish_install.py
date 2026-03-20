@@ -34,6 +34,10 @@ def test_pack_publish_uploads_rendered_skill_exports(tmp_path: Path, monkeypatch
             return {
                 "pack": {"slug": "skill-demo"},
                 "version": {"version": "0.1.0"},
+                "claimRequired": True,
+                "riskTier": "interactive",
+                "manageUrl": "https://app.example/packs/skill-demo/manage",
+                "packId": "0xabc123",
             }
 
     monkeypatch.setattr("wayfinder_paths.packs.cli.PacksApiClient", FakePublishClient)
@@ -54,6 +58,10 @@ def test_pack_publish_uploads_rendered_skill_exports(tmp_path: Path, monkeypatch
     assert result.exit_code == 0, result.output
     assert len(FakePublishClient.calls) == 1
     call = FakePublishClient.calls[0]
+
+    # owner_wallet must NOT be passed in publish kwargs
+    assert "owner_wallet" not in call
+
     exports_manifest = call["exports_manifest"]
     skill_exports = call["skill_exports"]
 
@@ -68,6 +76,10 @@ def test_pack_publish_uploads_rendered_skill_exports(tmp_path: Path, monkeypatch
     with ZipFile(io.BytesIO(skill_exports["codex"]), "r") as zf:
         names = set(zf.namelist())
     assert "skill/agents/openai.yaml" in names
+
+    # Claim URL should be printed to stderr when claimRequired is true
+    assert "Claim ownership and bond at:" in result.output
+    assert "https://app.example/packs/skill-demo/manage" in result.output
 
 
 def test_pack_install_requests_intent_and_submits_receipt(tmp_path: Path, monkeypatch):

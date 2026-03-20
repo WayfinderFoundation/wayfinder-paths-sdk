@@ -365,16 +365,12 @@ def build_cmd(pack_path: str, out_path: str) -> None:
 @click.option("--out", "out_path", default="dist/bundle.zip", show_default=True)
 @click.option("--api-url", "api_url", default=None, help="Override Packs API base URL.")
 @click.option(
-    "--owner-wallet", default=None, help="Owner wallet address for new packs."
-)
-@click.option(
     "--source", "source_path", default=None, help="Optional source.zip to upload."
 )
 def publish_cmd(
     pack_path: str,
     out_path: str,
     api_url: str | None,
-    owner_wallet: str | None,
     source_path: str | None,
 ) -> None:
     pack_dir = Path(pack_path)
@@ -393,7 +389,6 @@ def publish_cmd(
     try:
         resp = client.publish(
             bundle_path=built.bundle_path,
-            owner_wallet=owner_wallet,
             source_path=Path(source_path) if source_path else None,
             exports_manifest=exports_manifest,
             skill_exports=skill_exports,
@@ -402,6 +397,9 @@ def publish_cmd(
         raise click.ClickException(str(exc)) from exc
 
     _echo_json({"ok": True, "result": resp})
+    if resp.get("claimRequired"):
+        manage_url = resp.get("manageUrl", "")
+        click.echo(f"\nClaim ownership and bond at: {manage_url}", err=True)
 
 
 @pack_cli.command(name="search", help="Search packs in the registry.")

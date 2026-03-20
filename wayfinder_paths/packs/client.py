@@ -36,15 +36,12 @@ class PacksApiClient:
         self,
         *,
         bundle_path: Path,
-        owner_wallet: str | None = None,
         source_path: Path | None = None,
         exports_manifest: dict[str, Any] | None = None,
         skill_exports: dict[str, bytes] | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/packs/publish/"
         data: dict[str, str] = {}
-        if owner_wallet:
-            data["owner_wallet"] = owner_wallet
 
         files: dict[str, tuple[str, bytes, str]] = {
             "bundle": ("bundle.zip", bundle_path.read_bytes(), "application/zip")
