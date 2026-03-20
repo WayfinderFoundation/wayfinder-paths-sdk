@@ -111,6 +111,9 @@ class BacktestConfig:
     initial_capital: float = 1.0
     periods_per_year: int | None = None  # If None, will auto-detect from data frequency
     funding_rates: pd.DataFrame | None = None
+    # Per-symbol fee function: symbol → (price, side) → fee_rate. Overrides flat fee_rate.
+    fee_fn_by_symbol: dict[str, Any] | None = None
+    force_rebalance_if_overleveraged: bool = False
 
 
 @dataclass
