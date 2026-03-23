@@ -64,17 +64,11 @@ class AerodromeAdapter(BaseAdapter):
         self.sign_callback = sign_callback
         self.chain_id = CHAIN_ID_BASE
 
-        entry = AERODROME_BY_CHAIN.get(CHAIN_ID_BASE)
-        if not entry:
+        deployment = AERODROME_BY_CHAIN.get(CHAIN_ID_BASE)
+        if not deployment:
             raise ValueError("Aerodrome Base deployment constants missing")
 
-        self.aero = entry["aero"]
-        self.router = entry["router"]
-        self.pool_factory = entry["pool_factory"]
-        self.voter = entry["voter"]
-        self.voting_escrow = entry["voting_escrow"]
-        self.rewards_distributor = entry["rewards_distributor"]
-        self.weth = BASE_WETH
+        self.deployment: dict[str, str] = deployment
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
@@ -135,7 +129,8 @@ class AerodromeAdapter(BaseAdapter):
                         "Voting restricted in the last hour of the epoch (token_id required to check whitelist)",
                     )
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
+                    address=to_checksum_address(self.deployment["voter"]),
+                    abi=AERODROME_VOTER_ABI,
                 )
                 whitelisted = await voter.functions.isWhitelistedNFT(token_id).call(
                     block_identifier="latest"
@@ -160,7 +155,7 @@ class AerodromeAdapter(BaseAdapter):
             tB = to_checksum_address(tokenB)
             async with web3_from_chain_id(self.chain_id) as web3:
                 factory = web3.eth.contract(
-                    address=to_checksum_address(self.pool_factory),
+                    address=to_checksum_address(self.deployment["pool_factory"]),
                     abi=AERODROME_POOL_FACTORY_ABI,
                 )
                 pool = await factory.functions.getPool(tA, tB, stable).call(
@@ -182,7 +177,8 @@ class AerodromeAdapter(BaseAdapter):
             pool = to_checksum_address(pool)
             async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
+                    address=to_checksum_address(self.deployment["voter"]),
+                    abi=AERODROME_VOTER_ABI,
                 )
                 gauge = await voter.functions.gauges(pool).call(
                     block_identifier="latest"
@@ -204,7 +200,8 @@ class AerodromeAdapter(BaseAdapter):
             gauge = to_checksum_address(gauge)
             async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
+                    address=to_checksum_address(self.deployment["voter"]),
+                    abi=AERODROME_VOTER_ABI,
                 )
                 fees, bribes = await read_only_calls_multicall_or_gather(
                     web3=web3,
@@ -252,7 +249,8 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
+                    address=to_checksum_address(self.deployment["voter"]),
+                    abi=AERODROME_VOTER_ABI,
                 )
                 total = await voter.functions.length().call(
                     block_identifier=block_identifier
@@ -502,13 +500,13 @@ class AerodromeAdapter(BaseAdapter):
                 token = to_checksum_address(tokenB)
                 token_amt = amountB_desired
                 eth_amt = amountA_desired
-                tokenA_q, tokenB_q = token, self.weth
+                tokenA_q, tokenB_q = token, BASE_WETH
                 amtA_q, amtB_q = token_amt, eth_amt
             elif tB_native:
                 token = to_checksum_address(tokenA)
                 token_amt = amountA_desired
                 eth_amt = amountB_desired
-                tokenA_q, tokenB_q = token, self.weth
+                tokenA_q, tokenB_q = token, BASE_WETH
                 amtA_q, amtB_q = token_amt, eth_amt
             else:
                 tokenA_q, tokenB_q = (
@@ -519,13 +517,14 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 router = web3.eth.contract(
-                    address=to_checksum_address(self.router), abi=AERODROME_ROUTER_ABI
+                    address=to_checksum_address(self.deployment["router"]),
+                    abi=AERODROME_ROUTER_ABI,
                 )
                 a, b, liq = await router.functions.quoteAddLiquidity(
                     tokenA_q,
                     tokenB_q,
                     stable,
-                    to_checksum_address(self.pool_factory),
+                    to_checksum_address(self.deployment["pool_factory"]),
                     amtA_q,
                     amtB_q,
                 ).call(block_identifier=block_identifier)
@@ -597,7 +596,7 @@ class AerodromeAdapter(BaseAdapter):
 
                 ok_q, q = await self.quote_add_liquidity(
                     tokenA=token,
-                    tokenB=self.weth,
+                    tokenB=BASE_WETH,
                     stable=stable,
                     amountA_desired=token_amt,
                     amountB_desired=eth_amt,
@@ -625,7 +624,7 @@ class AerodromeAdapter(BaseAdapter):
                 approved = await ensure_allowance(
                     token_address=token,
                     owner=to_checksum_address(self.wallet_address),
-                    spender=to_checksum_address(self.router),
+                    spender=to_checksum_address(self.deployment["router"]),
                     amount=token_amt,
                     chain_id=self.chain_id,
                     signing_callback=self.sign_callback,
@@ -635,7 +634,7 @@ class AerodromeAdapter(BaseAdapter):
                     return approved
 
                 tx = await encode_call(
-                    target=self.router,
+                    target=self.deployment["router"],
                     abi=AERODROME_ROUTER_ABI,
                     fn_name="addLiquidityETH",
                     args=[
@@ -685,7 +684,7 @@ class AerodromeAdapter(BaseAdapter):
             approvedA = await ensure_allowance(
                 token_address=tA,
                 owner=to_checksum_address(self.wallet_address),
-                spender=to_checksum_address(self.router),
+                spender=to_checksum_address(self.deployment["router"]),
                 amount=amountA_desired,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -697,7 +696,7 @@ class AerodromeAdapter(BaseAdapter):
             approvedB = await ensure_allowance(
                 token_address=tB,
                 owner=to_checksum_address(self.wallet_address),
-                spender=to_checksum_address(self.router),
+                spender=to_checksum_address(self.deployment["router"]),
                 amount=amountB_desired,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -707,7 +706,7 @@ class AerodromeAdapter(BaseAdapter):
                 return approvedB
 
             tx = await encode_call(
-                target=self.router,
+                target=self.deployment["router"],
                 abi=AERODROME_ROUTER_ABI,
                 fn_name="addLiquidity",
                 args=[
@@ -749,10 +748,10 @@ class AerodromeAdapter(BaseAdapter):
 
             if tA_native:
                 token = to_checksum_address(tokenB)
-                tokenA_q, tokenB_q = token, self.weth
+                tokenA_q, tokenB_q = token, BASE_WETH
             elif tB_native:
                 token = to_checksum_address(tokenA)
-                tokenA_q, tokenB_q = token, self.weth
+                tokenA_q, tokenB_q = token, BASE_WETH
             else:
                 tokenA_q, tokenB_q = (
                     to_checksum_address(tokenA),
@@ -761,13 +760,14 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 router = web3.eth.contract(
-                    address=to_checksum_address(self.router), abi=AERODROME_ROUTER_ABI
+                    address=to_checksum_address(self.deployment["router"]),
+                    abi=AERODROME_ROUTER_ABI,
                 )
                 a, b = await router.functions.quoteRemoveLiquidity(
                     tokenA_q,
                     tokenB_q,
                     stable,
-                    to_checksum_address(self.pool_factory),
+                    to_checksum_address(self.deployment["pool_factory"]),
                     liquidity,
                 ).call(block_identifier=block_identifier)
 
@@ -812,7 +812,7 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 factory = web3.eth.contract(
-                    address=to_checksum_address(self.pool_factory),
+                    address=to_checksum_address(self.deployment["pool_factory"]),
                     abi=AERODROME_POOL_FACTORY_ABI,
                 )
 
@@ -820,7 +820,7 @@ class AerodromeAdapter(BaseAdapter):
                 if tA_native or tB_native:
                     token = to_checksum_address(tokenB if tA_native else tokenA)
                     pool = await factory.functions.getPool(
-                        token, self.weth, stable
+                        token, BASE_WETH, stable
                     ).call(block_identifier="latest")
                 else:
                     tA = to_checksum_address(tokenA)
@@ -836,7 +836,7 @@ class AerodromeAdapter(BaseAdapter):
             approved = await ensure_allowance(
                 token_address=pool,
                 owner=to_checksum_address(self.wallet_address),
-                spender=to_checksum_address(self.router),
+                spender=to_checksum_address(self.deployment["router"]),
                 amount=liquidity,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -850,7 +850,7 @@ class AerodromeAdapter(BaseAdapter):
                 token = to_checksum_address(tokenB if tA_native else tokenA)
                 ok_q, q = await self.quote_remove_liquidity(
                     tokenA=token,
-                    tokenB=self.weth,
+                    tokenB=BASE_WETH,
                     stable=stable,
                     liquidity=liquidity,
                 )
@@ -872,7 +872,7 @@ class AerodromeAdapter(BaseAdapter):
                 )
 
                 tx = await encode_call(
-                    target=self.router,
+                    target=self.deployment["router"],
                     abi=AERODROME_ROUTER_ABI,
                     fn_name="removeLiquidityETH",
                     args=[
@@ -911,7 +911,7 @@ class AerodromeAdapter(BaseAdapter):
             )
 
             tx = await encode_call(
-                target=self.router,
+                target=self.deployment["router"],
                 abi=AERODROME_ROUTER_ABI,
                 fn_name="removeLiquidity",
                 args=[
@@ -989,7 +989,8 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
+                    address=to_checksum_address(self.deployment["voter"]),
+                    abi=AERODROME_VOTER_ABI,
                 )
                 alive = await voter.functions.isAlive(gauge).call(
                     block_identifier="latest"
@@ -1077,7 +1078,7 @@ class AerodromeAdapter(BaseAdapter):
             if not gs:
                 return False, "gauges cannot be empty"
             tx = await encode_call(
-                target=self.voter,
+                target=self.deployment["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimRewards",
                 args=[gs],
@@ -1105,7 +1106,7 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 ve = web3.eth.contract(
-                    address=to_checksum_address(self.voting_escrow),
+                    address=to_checksum_address(self.deployment["voting_escrow"]),
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
                 bal = await ve.functions.balanceOf(owner_addr).call(
@@ -1151,9 +1152,9 @@ class AerodromeAdapter(BaseAdapter):
             owner = to_checksum_address(self.wallet_address)
 
             approved = await ensure_allowance(
-                token_address=self.aero,
+                token_address=self.deployment["aero"],
                 owner=owner,
-                spender=to_checksum_address(self.voting_escrow),
+                spender=to_checksum_address(self.deployment["voting_escrow"]),
                 amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -1163,7 +1164,7 @@ class AerodromeAdapter(BaseAdapter):
                 return approved
 
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLock",
                 args=[amount, lock_duration],
@@ -1172,7 +1173,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
-                nft_contract=self.voting_escrow,
+                nft_contract=self.deployment["voting_escrow"],
                 tx_hash=tx_hash,
                 expected_to=owner,
             )
@@ -1199,9 +1200,9 @@ class AerodromeAdapter(BaseAdapter):
             recv = to_checksum_address(receiver)
 
             approved = await ensure_allowance(
-                token_address=self.aero,
+                token_address=self.deployment["aero"],
                 owner=owner,
-                spender=to_checksum_address(self.voting_escrow),
+                spender=to_checksum_address(self.deployment["voting_escrow"]),
                 amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -1211,7 +1212,7 @@ class AerodromeAdapter(BaseAdapter):
                 return approved
 
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLockFor",
                 args=[amount, lock_duration, recv],
@@ -1220,7 +1221,7 @@ class AerodromeAdapter(BaseAdapter):
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
-                nft_contract=self.voting_escrow,
+                nft_contract=self.deployment["voting_escrow"],
                 tx_hash=tx_hash,
                 expected_to=recv,
             )
@@ -1243,9 +1244,9 @@ class AerodromeAdapter(BaseAdapter):
             owner = to_checksum_address(self.wallet_address)
 
             approved = await ensure_allowance(
-                token_address=self.aero,
+                token_address=self.deployment["aero"],
                 owner=owner,
-                spender=to_checksum_address(self.voting_escrow),
+                spender=to_checksum_address(self.deployment["voting_escrow"]),
                 amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -1255,7 +1256,7 @@ class AerodromeAdapter(BaseAdapter):
                 return approved
 
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseAmount",
                 args=[token_id, amount],
@@ -1280,7 +1281,7 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseUnlockTime",
                 args=[token_id, lock_duration],
@@ -1302,7 +1303,7 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="withdraw",
                 args=[token_id],
@@ -1324,7 +1325,7 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="lockPermanent",
                 args=[token_id],
@@ -1346,7 +1347,7 @@ class AerodromeAdapter(BaseAdapter):
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.deployment["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="unlockPermanent",
                 args=[token_id],
@@ -1383,7 +1384,7 @@ class AerodromeAdapter(BaseAdapter):
             weights_u = list(weights)
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.deployment["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="vote",
                 args=[token_id, pools_cs, weights_u],
@@ -1411,7 +1412,7 @@ class AerodromeAdapter(BaseAdapter):
                     return False, reason
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.deployment["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="reset",
                 args=[token_id],
@@ -1493,7 +1494,7 @@ class AerodromeAdapter(BaseAdapter):
                     tokens_nested = [list(x) for x in toks]
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.deployment["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimFees",
                 args=[fees, tokens_nested, token_id],
@@ -1542,7 +1543,7 @@ class AerodromeAdapter(BaseAdapter):
                     tokens_nested = [list(x) for x in toks]
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.deployment["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimBribes",
                 args=[bribes, tokens_nested, token_id],
@@ -1563,7 +1564,7 @@ class AerodromeAdapter(BaseAdapter):
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 rd = web3.eth.contract(
-                    address=to_checksum_address(self.rewards_distributor),
+                    address=to_checksum_address(self.deployment["rewards_distributor"]),
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
                 claimable = await rd.functions.claimable(token_id).call(
@@ -1593,7 +1594,7 @@ class AerodromeAdapter(BaseAdapter):
                     return True, {"tx": None, "claimable": claimable}
 
             tx = await encode_call(
-                target=self.rewards_distributor,
+                target=self.deployment["rewards_distributor"],
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claim",
                 args=[token_id],
@@ -1618,7 +1619,7 @@ class AerodromeAdapter(BaseAdapter):
         try:
             ids = list(token_ids)
             tx = await encode_call(
-                target=self.rewards_distributor,
+                target=self.deployment["rewards_distributor"],
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claimMany",
                 args=[ids],
@@ -1652,14 +1653,15 @@ class AerodromeAdapter(BaseAdapter):
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter), abi=AERODROME_VOTER_ABI
+                    address=to_checksum_address(self.deployment["voter"]),
+                    abi=AERODROME_VOTER_ABI,
                 )
                 ve = web3.eth.contract(
-                    address=to_checksum_address(self.voting_escrow),
+                    address=to_checksum_address(self.deployment["voting_escrow"]),
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
                 rd = web3.eth.contract(
-                    address=to_checksum_address(self.rewards_distributor),
+                    address=to_checksum_address(self.deployment["rewards_distributor"]),
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
 
