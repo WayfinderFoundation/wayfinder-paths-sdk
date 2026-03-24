@@ -192,13 +192,27 @@ class AerodromeSlipstreamAdapter(
 
         matches: list[tuple[str, str, str]] = []
         async with web3_from_chain_id(self.chain_id) as web3:
-            for variant, pm in candidates:
-                npm = web3.eth.contract(address=pm, abi=AERODROME_SLIPSTREAM_NPM_ABI)
-                try:
-                    owner = await npm.functions.ownerOf(token_id).call(
+            candidate_contracts = [
+                (
+                    variant,
+                    pm,
+                    web3.eth.contract(address=pm, abi=AERODROME_SLIPSTREAM_NPM_ABI),
+                )
+                for variant, pm in candidates
+            ]
+            owners = await asyncio.gather(
+                *[
+                    npm.functions.ownerOf(token_id).call(
                         block_identifier=block_identifier
                     )
-                except Exception:
+                    for _, _, npm in candidate_contracts
+                ],
+                return_exceptions=True,
+            )
+            for (variant, pm, _), owner in zip(
+                candidate_contracts, owners, strict=True
+            ):
+                if isinstance(owner, Exception):
                     continue
                 matches.append((variant, pm, to_checksum_address(owner)))
 
@@ -335,32 +349,29 @@ class AerodromeSlipstreamAdapter(
             voter_gauge,
             swap_fee,
             unstaked_fee,
-        ) = await asyncio.gather(
-            pool_contract.functions.token0().call(block_identifier=block_identifier),
-            pool_contract.functions.token1().call(block_identifier=block_identifier),
-            pool_contract.functions.gauge().call(block_identifier=block_identifier),
-            pool_contract.functions.nft().call(block_identifier=block_identifier),
-            pool_contract.functions.tickSpacing().call(block_identifier=block_identifier),
-            pool_contract.functions.slot0().call(block_identifier=block_identifier),
-            pool_contract.functions.fee().call(block_identifier=block_identifier),
-            pool_contract.functions.unstakedFee().call(block_identifier=block_identifier),
-            pool_contract.functions.liquidity().call(block_identifier=block_identifier),
-            pool_contract.functions.stakedLiquidity().call(
-                block_identifier=block_identifier
-            ),
-            pool_contract.functions.rewardRate().call(block_identifier=block_identifier),
-            pool_contract.functions.rewardReserve().call(
-                block_identifier=block_identifier
-            ),
-            pool_contract.functions.periodFinish().call(
-                block_identifier=block_identifier
-            ),
-            pool_contract.functions.lastUpdated().call(block_identifier=block_identifier),
-            voter.functions.gauges(pool_addr).call(block_identifier=block_identifier),
-            factory.functions.getSwapFee(pool_addr).call(block_identifier=block_identifier),
-            factory.functions.getUnstakedFee(pool_addr).call(
-                block_identifier=block_identifier
-            ),
+        ) = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=self.chain_id,
+            calls=[
+                Call(pool_contract, "token0"),
+                Call(pool_contract, "token1"),
+                Call(pool_contract, "gauge"),
+                Call(pool_contract, "nft"),
+                Call(pool_contract, "tickSpacing"),
+                Call(pool_contract, "slot0"),
+                Call(pool_contract, "fee"),
+                Call(pool_contract, "unstakedFee"),
+                Call(pool_contract, "liquidity"),
+                Call(pool_contract, "stakedLiquidity"),
+                Call(pool_contract, "rewardRate"),
+                Call(pool_contract, "rewardReserve"),
+                Call(pool_contract, "periodFinish"),
+                Call(pool_contract, "lastUpdated"),
+                Call(voter, "gauges", args=(pool_addr,)),
+                Call(factory, "getSwapFee", args=(pool_addr,)),
+                Call(factory, "getUnstakedFee", args=(pool_addr,)),
+            ],
+            block_identifier=block_identifier,
         )
 
         pool_gauge_addr = _checksum_or_zero(pool_gauge)
@@ -387,31 +398,29 @@ class AerodromeSlipstreamAdapter(
         is_alive = False
 
         if gauge != ZERO_ADDRESS and include_gauge_state:
-            (
-                fee_reward,
-                bribe_reward,
-                is_alive,
-            ) = await asyncio.gather(
-                voter.functions.gaugeToFees(gauge).call(block_identifier=block_identifier),
-                voter.functions.gaugeToBribe(gauge).call(
-                    block_identifier=block_identifier
-                ),
-                voter.functions.isAlive(gauge).call(block_identifier=block_identifier),
-            )
             gauge_contract = web3.eth.contract(
                 address=gauge,
                 abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
             )
-            gauge_reward_token, gauge_reward_rate, gauge_period_finish = await asyncio.gather(
-                gauge_contract.functions.rewardToken().call(
-                    block_identifier=block_identifier
-                ),
-                gauge_contract.functions.rewardRate().call(
-                    block_identifier=block_identifier
-                ),
-                gauge_contract.functions.periodFinish().call(
-                    block_identifier=block_identifier
-                ),
+            (
+                fee_reward,
+                bribe_reward,
+                is_alive,
+                gauge_reward_token,
+                gauge_reward_rate,
+                gauge_period_finish,
+            ) = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=self.chain_id,
+                calls=[
+                    Call(voter, "gaugeToFees", args=(gauge,)),
+                    Call(voter, "gaugeToBribe", args=(gauge,)),
+                    Call(voter, "isAlive", args=(gauge,)),
+                    Call(gauge_contract, "rewardToken"),
+                    Call(gauge_contract, "rewardRate"),
+                    Call(gauge_contract, "periodFinish"),
+                ],
+                block_identifier=block_identifier,
             )
 
         return {
@@ -459,9 +468,14 @@ class AerodromeSlipstreamAdapter(
         deployment = self._deployment(deployment_variant)
         npm_address = to_checksum_address(position_manager)
         npm = web3.eth.contract(address=npm_address, abi=AERODROME_SLIPSTREAM_NPM_ABI)
-        raw_pos, owner = await asyncio.gather(
-            npm.functions.positions(token_id).call(block_identifier=block_identifier),
-            npm.functions.ownerOf(token_id).call(block_identifier=block_identifier),
+        raw_pos, owner_addr = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=self.chain_id,
+            calls=[
+                Call(npm, "positions", args=(token_id,)),
+                Call(npm, "ownerOf", args=(token_id,), postprocess=to_checksum_address),
+            ],
+            block_identifier=block_identifier,
         )
 
         token0 = to_checksum_address(raw_pos[2])
@@ -472,8 +486,6 @@ class AerodromeSlipstreamAdapter(
         liquidity = raw_pos[7]
         tokens_owed0 = raw_pos[10]
         tokens_owed1 = raw_pos[11]
-        owner_addr = to_checksum_address(owner)
-
         pool, gauge = await self._pool_and_gauge_for_position(
             web3=web3,
             deployment=deployment,
@@ -525,15 +537,14 @@ class AerodromeSlipstreamAdapter(
                 address=gauge,
                 abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
             )
-            contains, earned = await asyncio.gather(
-                gauge_contract.functions.stakedContains(
-                    account_addr,
-                    token_id,
-                ).call(block_identifier=block_identifier),
-                gauge_contract.functions.earned(
-                    account_addr,
-                    token_id,
-                ).call(block_identifier=block_identifier),
+            contains, earned = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=self.chain_id,
+                calls=[
+                    Call(gauge_contract, "stakedContains", args=(account_addr, token_id)),
+                    Call(gauge_contract, "earned", args=(account_addr, token_id)),
+                ],
+                block_identifier=block_identifier,
             )
             staked_for_account = contains
             gauge_rewards_claimable = earned if contains else None
@@ -580,52 +591,72 @@ class AerodromeSlipstreamAdapter(
         deployments: Sequence[str],
         block_identifier: str | int = "latest",
     ) -> list[dict[str, Any]]:
-        lengths: list[tuple[str, int]] = []
+        factory_specs: list[tuple[str, dict[str, str], Any]] = []
         for variant in deployments:
             deployment = self._deployment(variant)
-            factory = web3.eth.contract(
-                address=deployment["pool_factory"],
-                abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
+            factory_specs.append(
+                (
+                    variant,
+                    deployment,
+                    web3.eth.contract(
+                        address=deployment["pool_factory"],
+                        abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
+                    ),
+                )
             )
-            length = await factory.functions.allPoolsLength().call(
-                block_identifier=block_identifier
-            )
-            lengths.append((variant, length))
 
-        results: list[dict[str, Any]] = []
-        for variant, length in lengths:
+        lengths = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=self.chain_id,
+            calls=[Call(factory, "allPoolsLength") for _, _, factory in factory_specs],
+            block_identifier=block_identifier,
+        )
+
+        pool_call_specs: list[tuple[str, dict[str, str], int, Call]] = []
+        for (variant, deployment, factory), length in zip(
+            factory_specs, lengths, strict=True
+        ):
             if length <= 0:
                 continue
-            deployment = self._deployment(variant)
-            factory = web3.eth.contract(
-                address=deployment["pool_factory"],
-                abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
-            )
-            pools = await read_only_calls_multicall_or_gather(
-                web3=web3,
-                chain_id=self.chain_id,
-                calls=[
+            pool_call_specs.extend(
+                (
+                    variant,
+                    deployment,
+                    i,
                     Call(
                         factory,
                         "allPools",
                         args=(i,),
-                        postprocess=lambda a: to_checksum_address(a),
-                    )
-                    for i in range(length)
-                ],
-                block_identifier=block_identifier,
-                chunk_size=100,
-            )
-            for index, pool in enumerate(pools):
-                results.append(
-                    {
-                        "deployment_variant": variant,
-                        "cl_factory": deployment["pool_factory"],
-                        "position_manager": deployment["nonfungible_position_manager"],
-                        "pool": to_checksum_address(pool),
-                        "deployment_index": index,
-                    }
+                        postprocess=to_checksum_address,
+                    ),
                 )
+                for i in range(length)
+            )
+
+        if not pool_call_specs:
+            return []
+
+        pools = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=self.chain_id,
+            calls=[spec[3] for spec in pool_call_specs],
+            block_identifier=block_identifier,
+            chunk_size=100,
+        )
+
+        results: list[dict[str, Any]] = []
+        for (variant, deployment, index, _), pool in zip(
+            pool_call_specs, pools, strict=True
+        ):
+            results.append(
+                {
+                    "deployment_variant": variant,
+                    "cl_factory": deployment["pool_factory"],
+                    "position_manager": deployment["nonfungible_position_manager"],
+                    "pool": pool,
+                    "deployment_index": index,
+                }
+            )
         return results
 
     async def find_pools(
@@ -643,38 +674,65 @@ class AerodromeSlipstreamAdapter(
             results: list[dict[str, Any]] = []
 
             async with web3_from_chain_id(self.chain_id) as web3:
+                deployment_specs: list[tuple[str, dict[str, str], Any]] = []
                 for variant in self._resolve_deployments(deployments):
                     deployment = self._deployment(variant)
-                    factory = web3.eth.contract(
-                        address=deployment["pool_factory"],
-                        abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
-                    )
-                    spacings = (
-                        tick_spacings
-                        if tick_spacings is not None
-                        else await factory.functions.tickSpacings().call(
-                            block_identifier=block_identifier
+                    deployment_specs.append(
+                        (
+                            variant,
+                            deployment,
+                            web3.eth.contract(
+                                address=deployment["pool_factory"],
+                                abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
+                            ),
                         )
                     )
-                    if not spacings:
-                        continue
 
-                    pools = await read_only_calls_multicall_or_gather(
+                if tick_spacings is None:
+                    spacing_groups = await read_only_calls_multicall_or_gather(
                         web3=web3,
                         chain_id=self.chain_id,
                         calls=[
+                            Call(factory, "tickSpacings")
+                            for _, _, factory in deployment_specs
+                        ],
+                        block_identifier=block_identifier,
+                    )
+                else:
+                    spacing_groups = [tick_spacings] * len(deployment_specs)
+
+                pool_call_specs: list[tuple[str, dict[str, str], int, Call]] = []
+                for (variant, deployment, factory), spacings in zip(
+                    deployment_specs, spacing_groups, strict=True
+                ):
+                    if not spacings:
+                        continue
+                    pool_call_specs.extend(
+                        (
+                            variant,
+                            deployment,
+                            spacing,
                             Call(
                                 factory,
                                 "getPool",
                                 args=(tA, tB, spacing),
-                                postprocess=lambda a: _checksum_or_zero(a),
-                            )
-                            for spacing in spacings
-                        ],
+                                postprocess=_checksum_or_zero,
+                            ),
+                        )
+                        for spacing in spacings
+                    )
+
+                if pool_call_specs:
+                    pools = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=self.chain_id,
+                        calls=[spec[3] for spec in pool_call_specs],
                         block_identifier=block_identifier,
                         chunk_size=100,
                     )
-                    for spacing, pool in zip(spacings, pools, strict=True):
+                    for (variant, deployment, spacing, _), pool in zip(
+                        pool_call_specs, pools, strict=True
+                    ):
                         if pool == ZERO_ADDRESS:
                             continue
                         results.append(
@@ -781,19 +839,34 @@ class AerodromeSlipstreamAdapter(
             deployment_names = self._resolve_deployments(deployments)
 
             async with web3_from_chain_id(self.chain_id) as web3:
-                lengths: list[tuple[str, int]] = []
+                factory_specs: list[tuple[str, dict[str, str], Any]] = []
                 for variant in deployment_names:
                     deployment = self._deployment(variant)
-                    factory = web3.eth.contract(
-                        address=deployment["pool_factory"],
-                        abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
+                    factory_specs.append(
+                        (
+                            variant,
+                            deployment,
+                            web3.eth.contract(
+                                address=deployment["pool_factory"],
+                                abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
+                            ),
+                        )
                     )
-                    length = await factory.functions.allPoolsLength().call(
-                        block_identifier=block_identifier
-                    )
-                    lengths.append((variant, length))
 
-                total = sum(length for _, length in lengths)
+                length_values = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[Call(factory, "allPoolsLength") for _, _, factory in factory_specs],
+                    block_identifier=block_identifier,
+                )
+                lengths = [
+                    (variant, deployment, factory, length)
+                    for (variant, deployment, factory), length in zip(
+                        factory_specs, length_values, strict=True
+                    )
+                ]
+
+                total = sum(length for _, _, _, length in lengths)
                 if total == 0 or start_i >= total:
                     return True, {
                         "protocol": "aerodrome_slipstream",
@@ -807,38 +880,41 @@ class AerodromeSlipstreamAdapter(
                     }
 
                 end_i = total if limit is None else min(total, start_i + limit)
-                selected: list[tuple[str, int, int]] = []
+                selected: list[tuple[str, Any, int, int]] = []
                 cursor = 0
-                for variant, length in lengths:
+                for variant, _, factory, length in lengths:
                     dep_start = max(0, start_i - cursor)
                     dep_end = min(length, end_i - cursor)
                     if dep_start < dep_end:
-                        selected.append((variant, dep_start, dep_end))
+                        selected.append((variant, factory, dep_start, dep_end))
                     cursor += length
 
-                pool_refs: list[tuple[str, str]] = []
-                for variant, dep_start, dep_end in selected:
-                    deployment = self._deployment(variant)
-                    factory = web3.eth.contract(
-                        address=deployment["pool_factory"],
-                        abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
-                    )
-                    pools = await read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=self.chain_id,
-                        calls=[
+                pool_call_specs: list[tuple[str, Call]] = []
+                for variant, factory, dep_start, dep_end in selected:
+                    pool_call_specs.extend(
+                        (
+                            variant,
                             Call(
                                 factory,
                                 "allPools",
                                 args=(i,),
-                                postprocess=lambda a: to_checksum_address(a),
-                            )
-                            for i in range(dep_start, dep_end)
-                        ],
-                        block_identifier=block_identifier,
-                        chunk_size=100,
+                                postprocess=to_checksum_address,
+                            ),
+                        )
+                        for i in range(dep_start, dep_end)
                     )
-                    pool_refs.extend((variant, p) for p in pools)
+
+                pools = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[spec[1] for spec in pool_call_specs],
+                    block_identifier=block_identifier,
+                    chunk_size=100,
+                )
+                pool_refs = [
+                    (variant, pool)
+                    for (variant, _), pool in zip(pool_call_specs, pools, strict=True)
+                ]
 
                 markets = await asyncio.gather(
                     *[
@@ -1342,36 +1418,61 @@ class AerodromeSlipstreamAdapter(
             deployment_names = self._resolve_deployments(deployments)
 
             async with web3_from_chain_id(self.chain_id) as web3:
-                wallet_refs: list[tuple[str, str, int]] = []
+                deployment_specs: list[tuple[str, str, Any]] = []
                 for variant in deployment_names:
                     deployment = self._deployment(variant)
                     npm_address = deployment["nonfungible_position_manager"]
-                    npm = web3.eth.contract(
-                        address=npm_address,
-                        abi=AERODROME_SLIPSTREAM_NPM_ABI,
+                    deployment_specs.append(
+                        (
+                            variant,
+                            npm_address,
+                            web3.eth.contract(
+                                address=npm_address,
+                                abi=AERODROME_SLIPSTREAM_NPM_ABI,
+                            ),
+                        )
                     )
-                    balance = await npm.functions.balanceOf(acct).call(
-                        block_identifier=block_identifier
-                    )
+
+                balances = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[
+                        Call(npm, "balanceOf", args=(acct,))
+                        for _, _, npm in deployment_specs
+                    ],
+                    block_identifier=block_identifier,
+                )
+
+                wallet_index_specs: list[tuple[str, str, Call]] = []
+                for (variant, npm_address, npm), balance in zip(
+                    deployment_specs, balances, strict=True
+                ):
                     if balance <= 0:
                         continue
-                    token_ids = await read_only_calls_multicall_or_gather(
+                    wallet_index_specs.extend(
+                        (
+                            variant,
+                            npm_address,
+                            Call(npm, "tokenOfOwnerByIndex", args=(acct, i)),
+                        )
+                        for i in range(balance)
+                    )
+
+                wallet_refs: list[tuple[str, str, int]] = []
+                if wallet_index_specs:
+                    wallet_token_ids = await read_only_calls_multicall_or_gather(
                         web3=web3,
                         chain_id=self.chain_id,
-                        calls=[
-                            Call(
-                                npm,
-                                "tokenOfOwnerByIndex",
-                                args=(acct, i),
-                            )
-                            for i in range(balance)
-                        ],
+                        calls=[spec[2] for spec in wallet_index_specs],
                         block_identifier=block_identifier,
                         chunk_size=100,
                     )
-                    wallet_refs.extend(
-                        (variant, npm_address, token_id) for token_id in token_ids
-                    )
+                    wallet_refs = [
+                        (variant, npm_address, token_id)
+                        for (variant, npm_address, _), token_id in zip(
+                            wallet_index_specs, wallet_token_ids, strict=True
+                        )
+                    ]
 
                 all_pools = await self._enumerate_all_pools(
                     web3=web3,
@@ -1406,34 +1507,60 @@ class AerodromeSlipstreamAdapter(
 
                 staked_refs: list[tuple[str, str, int]] = []
                 unique_gauges = [to_checksum_address(g) for g in gauge_meta]
+                gauge_specs: list[tuple[str, str, str, Any]] = []
                 for gauge_addr in unique_gauges:
                     variant, npm_address = gauge_meta[gauge_addr.lower()]
-                    gauge_contract = web3.eth.contract(
-                        address=gauge_addr,
-                        abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
+                    gauge_specs.append(
+                        (
+                            gauge_addr,
+                            variant,
+                            npm_address,
+                            web3.eth.contract(
+                                address=gauge_addr,
+                                abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
+                            ),
+                        )
                     )
-                    staked_len = await gauge_contract.functions.stakedLength(acct).call(
-                        block_identifier=block_identifier
-                    )
+
+                staked_lengths = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=self.chain_id,
+                    calls=[
+                        Call(gauge_contract, "stakedLength", args=(acct,))
+                        for _, _, _, gauge_contract in gauge_specs
+                    ],
+                    block_identifier=block_identifier,
+                )
+
+                staked_index_specs: list[tuple[str, str, Call]] = []
+                for (_, variant, npm_address, gauge_contract), staked_len in zip(
+                    gauge_specs, staked_lengths, strict=True
+                ):
                     if staked_len <= 0:
                         continue
-                    token_ids = await read_only_calls_multicall_or_gather(
+                    staked_index_specs.extend(
+                        (
+                            variant,
+                            npm_address,
+                            Call(gauge_contract, "stakedByIndex", args=(acct, i)),
+                        )
+                        for i in range(staked_len)
+                    )
+
+                if staked_index_specs:
+                    staked_token_ids = await read_only_calls_multicall_or_gather(
                         web3=web3,
                         chain_id=self.chain_id,
-                        calls=[
-                            Call(
-                                gauge_contract,
-                                "stakedByIndex",
-                                args=(acct, i),
-                            )
-                            for i in range(staked_len)
-                        ],
+                        calls=[spec[2] for spec in staked_index_specs],
                         block_identifier=block_identifier,
                         chunk_size=100,
                     )
-                    staked_refs.extend(
-                        (variant, npm_address, token_id) for token_id in token_ids
-                    )
+                    staked_refs = [
+                        (variant, npm_address, token_id)
+                        for (variant, npm_address, _), token_id in zip(
+                            staked_index_specs, staked_token_ids, strict=True
+                        )
+                    ]
 
                 refs_by_key: dict[tuple[str, int], tuple[str, str, int]] = {}
                 for variant, npm_address, token_id in wallet_refs + staked_refs:
