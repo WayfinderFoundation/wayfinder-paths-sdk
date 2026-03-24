@@ -41,14 +41,14 @@ MAX_UINT128 = (1 << 128) - 1
 def _checksum_or_zero(value: str | None) -> str:
     if not value:
         return ZERO_ADDRESS
-    if str(value).lower() == ZERO_ADDRESS:
+    if value.lower() == ZERO_ADDRESS:
         return ZERO_ADDRESS
-    return to_checksum_address(str(value))
+    return to_checksum_address(value)
 
 
 def _resolve_amount_min(amount_min: int | None) -> int:
     # Slipstream desired amounts are max inputs, not a safe quote basis for bps mins.
-    return 0 if amount_min is None else int(amount_min)
+    return 0 if amount_min is None else amount_min
 
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -75,23 +75,21 @@ class AerodromeSlipstreamAdapter(
         entry = AERODROME_SLIPSTREAM_BY_CHAIN.get(CHAIN_ID_BASE)
         if not entry:
             raise ValueError("Aerodrome Slipstream Base deployment constants missing")
-        
-        self.chain_name = str(entry["chain_name"])
-        self.aero = to_checksum_address(str(entry["aero"]))
-        self.voter = to_checksum_address(str(entry["voter"]))
-        self.voting_escrow = to_checksum_address(str(entry["voting_escrow"]))
-        self.rewards_distributor = to_checksum_address(
-            str(entry["rewards_distributor"])
-        )
-        self.weth = to_checksum_address(str(entry["weth"]))
+
+        self.chain_name = entry["chain_name"]
+        self.aero = to_checksum_address(entry["aero"])
+        self.voter = to_checksum_address(entry["voter"])
+        self.voting_escrow = to_checksum_address(entry["voting_escrow"])
+        self.rewards_distributor = to_checksum_address(entry["rewards_distributor"])
+        self.weth = to_checksum_address(entry["weth"])
 
         deployments = entry.get("deployments")
         if not isinstance(deployments, dict) or not deployments:
             raise ValueError("Aerodrome Slipstream deployment map missing")
 
         self.supported_deployments: dict[str, dict[str, str]] = {
-            str(name): {
-                str(key): to_checksum_address(str(val))
+            name: {
+                key: to_checksum_address(val)
                 for key, val in values.items()
                 if isinstance(val, str)
             }
@@ -104,7 +102,7 @@ class AerodromeSlipstreamAdapter(
             and self.config.get("deployments")
             else AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
         )
-        self.write_deployment = str(
+        self.write_deployment = (
             self.config.get("write_deployment") or self.default_deployments[0]
         )
         if self.write_deployment not in self.supported_deployments:
@@ -129,14 +127,14 @@ class AerodromeSlipstreamAdapter(
         self,
         deployments: Sequence[str] | None = None,
     ) -> list[str]:
-        raw = list(deployments) if deployments is not None else list(self.default_deployments)
+        raw = deployments if deployments is not None else self.default_deployments
         if not raw:
-            raw = list(AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS)
+            raw = AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
 
         normalized: list[str] = []
         seen: set[str] = set()
         for variant in raw:
-            name = str(variant)
+            name = variant
             if name not in self.supported_deployments:
                 raise ValueError(f"Unknown Slipstream deployment: {name}")
             if name in seen:
@@ -168,7 +166,7 @@ class AerodromeSlipstreamAdapter(
             variant = self._deployment_from_position_manager(pm)
             return variant, self._deployment(variant), pm
 
-        variant = str(deployment_variant or self.write_deployment)
+        variant = deployment_variant or self.write_deployment
         deployment = self._deployment(variant)
         return variant, deployment, deployment["nonfungible_position_manager"]
 
@@ -180,8 +178,7 @@ class AerodromeSlipstreamAdapter(
         deployments: Sequence[str] | None = None,
         block_identifier: str | int = "latest",
     ) -> tuple[str, dict[str, str], str, str]:
-        token_id_i = int(token_id)
-        if token_id_i <= 0:
+        if token_id <= 0:
             raise ValueError("token_id must be positive")
 
         candidates: list[tuple[str, str]] = []
@@ -198,7 +195,7 @@ class AerodromeSlipstreamAdapter(
             for variant, pm in candidates:
                 npm = web3.eth.contract(address=pm, abi=AERODROME_SLIPSTREAM_NPM_ABI)
                 try:
-                    owner = await npm.functions.ownerOf(token_id_i).call(
+                    owner = await npm.functions.ownerOf(token_id).call(
                         block_identifier=block_identifier
                     )
                 except Exception:
@@ -207,7 +204,7 @@ class AerodromeSlipstreamAdapter(
 
         if not matches:
             raise ValueError(
-                f"token_id {token_id_i} was not found in any configured position manager"
+                f"token_id {token_id} was not found in any configured position manager"
             )
         if len(matches) > 1 and position_manager is None:
             raise ValueError(
@@ -232,21 +229,19 @@ class AerodromeSlipstreamAdapter(
         async with web3_from_chain_id(self.chain_id) as web3:
             nft = web3.eth.contract(address=nft_contract, abi=AERODROME_SLIPSTREAM_NPM_ABI)
             approved, approved_for_all = await asyncio.gather(
-                nft.functions.getApproved(int(token_id)).call(block_identifier="pending"),
+                nft.functions.getApproved(token_id).call(block_identifier="pending"),
                 nft.functions.isApprovedForAll(owner, operator).call(
                     block_identifier="pending"
                 ),
             )
-            if _checksum_or_zero(approved).lower() == operator.lower() or bool(
-                approved_for_all
-            ):
+            if _checksum_or_zero(approved).lower() == operator.lower() or approved_for_all:
                 return True, {}
 
         tx = await encode_call(
             target=nft_contract,
             abi=AERODROME_SLIPSTREAM_NPM_ABI,
             fn_name="approve",
-            args=[operator, int(token_id)],
+            args=[operator, token_id],
             from_address=owner,
             chain_id=self.chain_id,
         )
@@ -271,7 +266,7 @@ class AerodromeSlipstreamAdapter(
         pool = await factory.functions.getPool(
             to_checksum_address(token0),
             to_checksum_address(token1),
-            int(tick_spacing),
+            tick_spacing,
         ).call(block_identifier=block_identifier)
         pool_addr = _checksum_or_zero(pool)
         if pool_addr == ZERO_ADDRESS:
@@ -426,28 +421,28 @@ class AerodromeSlipstreamAdapter(
             "pool": pool_addr,
             "token0": to_checksum_address(token0),
             "token1": to_checksum_address(token1),
-            "tick_spacing": int(tick_spacing),
-            "swap_fee": int(swap_fee),
-            "unstaked_fee": int(unstaked_fee),
-            "pool_fee": int(pool_fee),
-            "pool_unstaked_fee": int(pool_unstaked_fee),
+            "tick_spacing": tick_spacing,
+            "swap_fee": swap_fee,
+            "unstaked_fee": unstaked_fee,
+            "pool_fee": pool_fee,
+            "pool_unstaked_fee": pool_unstaked_fee,
             "gauge": gauge,
             "fee_reward": _checksum_or_zero(fee_reward),
             "bribe_reward": _checksum_or_zero(bribe_reward),
             "slot0": {
-                "sqrtPriceX96": int(slot0[0]),
-                "tick": int(slot0[1]),
+                "sqrtPriceX96": slot0[0],
+                "tick": slot0[1],
             },
-            "liquidity": int(liquidity),
-            "staked_liquidity": int(staked_liquidity),
-            "pool_reward_rate": int(pool_reward_rate),
-            "pool_reward_reserve": int(pool_reward_reserve),
-            "pool_period_finish": int(pool_period_finish),
-            "pool_last_updated": int(pool_last_updated),
+            "liquidity": liquidity,
+            "staked_liquidity": staked_liquidity,
+            "pool_reward_rate": pool_reward_rate,
+            "pool_reward_reserve": pool_reward_reserve,
+            "pool_period_finish": pool_period_finish,
+            "pool_last_updated": pool_last_updated,
             "gauge_reward_token": _checksum_or_zero(gauge_reward_token),
-            "gauge_reward_rate": int(gauge_reward_rate),
-            "gauge_period_finish": int(gauge_period_finish),
-            "is_alive": bool(is_alive),
+            "gauge_reward_rate": gauge_reward_rate,
+            "gauge_period_finish": gauge_period_finish,
+            "is_alive": is_alive,
         }
 
     async def _read_position_state(
@@ -465,18 +460,18 @@ class AerodromeSlipstreamAdapter(
         npm_address = to_checksum_address(position_manager)
         npm = web3.eth.contract(address=npm_address, abi=AERODROME_SLIPSTREAM_NPM_ABI)
         raw_pos, owner = await asyncio.gather(
-            npm.functions.positions(int(token_id)).call(block_identifier=block_identifier),
-            npm.functions.ownerOf(int(token_id)).call(block_identifier=block_identifier),
+            npm.functions.positions(token_id).call(block_identifier=block_identifier),
+            npm.functions.ownerOf(token_id).call(block_identifier=block_identifier),
         )
 
         token0 = to_checksum_address(raw_pos[2])
         token1 = to_checksum_address(raw_pos[3])
-        tick_spacing = int(raw_pos[4])
-        tick_lower = int(raw_pos[5])
-        tick_upper = int(raw_pos[6])
-        liquidity = int(raw_pos[7])
-        tokens_owed0 = int(raw_pos[10])
-        tokens_owed1 = int(raw_pos[11])
+        tick_spacing = raw_pos[4]
+        tick_lower = raw_pos[5]
+        tick_upper = raw_pos[6]
+        liquidity = raw_pos[7]
+        tokens_owed0 = raw_pos[10]
+        tokens_owed1 = raw_pos[11]
         owner_addr = to_checksum_address(owner)
 
         pool, gauge = await self._pool_and_gauge_for_position(
@@ -510,15 +505,15 @@ class AerodromeSlipstreamAdapter(
             )
             fee_reward = market["fee_reward"]
             bribe_reward = market["bribe_reward"]
-            swap_fee = int(market["swap_fee"])
-            unstaked_fee = int(market["unstaked_fee"])
-            slot0_dict = dict(market["slot0"])
-            pool_liquidity = int(market["liquidity"])
-            staked_liquidity = int(market["staked_liquidity"])
+            swap_fee = market["swap_fee"]
+            unstaked_fee = market["unstaked_fee"]
+            slot0_dict = market["slot0"]
+            pool_liquidity = market["liquidity"]
+            staked_liquidity = market["staked_liquidity"]
             gauge_reward_token = market["gauge_reward_token"]
-            gauge_reward_rate = int(market["gauge_reward_rate"])
-            gauge_period_finish = int(market["gauge_period_finish"])
-            is_alive = bool(market["is_alive"])
+            gauge_reward_rate = market["gauge_reward_rate"]
+            gauge_period_finish = market["gauge_period_finish"]
+            is_alive = market["is_alive"]
 
         staked = gauge != ZERO_ADDRESS and owner_addr.lower() == gauge.lower()
         account_addr = to_checksum_address(account) if account else None
@@ -533,21 +528,21 @@ class AerodromeSlipstreamAdapter(
             contains, earned = await asyncio.gather(
                 gauge_contract.functions.stakedContains(
                     account_addr,
-                    int(token_id),
+                    token_id,
                 ).call(block_identifier=block_identifier),
                 gauge_contract.functions.earned(
                     account_addr,
-                    int(token_id),
+                    token_id,
                 ).call(block_identifier=block_identifier),
             )
-            staked_for_account = bool(contains)
-            gauge_rewards_claimable = int(earned) if contains else None
+            staked_for_account = contains
+            gauge_rewards_claimable = earned if contains else None
 
         return {
             "protocol": "aerodrome_slipstream",
             "chain_id": self.chain_id,
             "chain_name": self.chain_name,
-            "token_id": int(token_id),
+            "token_id": token_id,
             "deployment_variant": deployment_variant,
             "position_manager": npm_address,
             "owner": owner_addr,
@@ -575,7 +570,7 @@ class AerodromeSlipstreamAdapter(
             "gauge_reward_rate": gauge_reward_rate,
             "gauge_period_finish": gauge_period_finish,
             "is_alive": is_alive,
-            "include_usd": bool(include_usd),
+            "include_usd": include_usd,
         }
 
     async def _enumerate_all_pools(
@@ -595,7 +590,7 @@ class AerodromeSlipstreamAdapter(
             length = await factory.functions.allPoolsLength().call(
                 block_identifier=block_identifier
             )
-            lengths.append((variant, int(length)))
+            lengths.append((variant, length))
 
         results: list[dict[str, Any]] = []
         for variant, length in lengths:
@@ -655,14 +650,11 @@ class AerodromeSlipstreamAdapter(
                         abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
                     )
                     spacings = (
-                        [int(v) for v in tick_spacings]
+                        tick_spacings
                         if tick_spacings is not None
-                        else [
-                            int(v)
-                            for v in await factory.functions.tickSpacings().call(
-                                block_identifier=block_identifier
-                            )
-                        ]
+                        else await factory.functions.tickSpacings().call(
+                            block_identifier=block_identifier
+                        )
                     )
                     if not spacings:
                         continue
@@ -674,7 +666,7 @@ class AerodromeSlipstreamAdapter(
                             Call(
                                 factory,
                                 "getPool",
-                                args=(tA, tB, int(spacing)),
+                                args=(tA, tB, spacing),
                                 postprocess=lambda a: _checksum_or_zero(a),
                             )
                             for spacing in spacings
@@ -692,7 +684,7 @@ class AerodromeSlipstreamAdapter(
                                 "position_manager": deployment[
                                     "nonfungible_position_manager"
                                 ],
-                                "tick_spacing": int(spacing),
+                                "tick_spacing": spacing,
                                 "pool": pool,
                             }
                         )
@@ -715,7 +707,7 @@ class AerodromeSlipstreamAdapter(
             ok, matches = await self.find_pools(
                 tokenA=tokenA,
                 tokenB=tokenB,
-                tick_spacings=[int(tick_spacing)],
+                tick_spacings=[tick_spacing],
                 deployments=deployments,
                 block_identifier=block_identifier,
             )
@@ -785,7 +777,7 @@ class AerodromeSlipstreamAdapter(
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
-            start_i = max(0, int(start))
+            start_i = max(0, start)
             deployment_names = self._resolve_deployments(deployments)
 
             async with web3_from_chain_id(self.chain_id) as web3:
@@ -799,7 +791,7 @@ class AerodromeSlipstreamAdapter(
                     length = await factory.functions.allPoolsLength().call(
                         block_identifier=block_identifier
                     )
-                    lengths.append((variant, int(length)))
+                    lengths.append((variant, length))
 
                 total = sum(length for _, length in lengths)
                 if total == 0 or start_i >= total:
@@ -814,7 +806,7 @@ class AerodromeSlipstreamAdapter(
                         "markets": [],
                     }
 
-                end_i = total if limit is None else min(total, start_i + int(limit))
+                end_i = total if limit is None else min(total, start_i + limit)
                 selected: list[tuple[str, int, int]] = []
                 cursor = 0
                 for variant, length in lengths:
@@ -896,7 +888,7 @@ class AerodromeSlipstreamAdapter(
     ) -> tuple[bool, Any]:
         if amount0_desired <= 0 or amount1_desired <= 0:
             return False, "amounts must be positive"
-        if int(tick_upper) <= int(tick_lower):
+        if tick_upper <= tick_lower:
             return False, "tick_upper must be greater than tick_lower"
         if self.sign_callback is None:
             return False, "sign_callback is required"
@@ -908,7 +900,7 @@ class AerodromeSlipstreamAdapter(
             )
             owner = to_checksum_address(self.wallet_address)
             recipient_addr = to_checksum_address(recipient) if recipient else owner
-            dl = int(deadline) if deadline is not None else default_deadline()
+            dl = deadline if deadline is not None else default_deadline()
             a0_min = _resolve_amount_min(amount0_min)
             a1_min = _resolve_amount_min(amount1_min)
 
@@ -916,7 +908,7 @@ class AerodromeSlipstreamAdapter(
                 token_address=to_checksum_address(token0),
                 owner=owner,
                 spender=npm_address,
-                amount=int(amount0_desired),
+                amount=amount0_desired,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -928,7 +920,7 @@ class AerodromeSlipstreamAdapter(
                 token_address=to_checksum_address(token1),
                 owner=owner,
                 spender=npm_address,
-                amount=int(amount1_desired),
+                amount=amount1_desired,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -939,16 +931,16 @@ class AerodromeSlipstreamAdapter(
             params = (
                 to_checksum_address(token0),
                 to_checksum_address(token1),
-                int(tick_spacing),
-                int(tick_lower),
-                int(tick_upper),
-                int(amount0_desired),
-                int(amount1_desired),
-                int(a0_min),
-                int(a1_min),
+                tick_spacing,
+                tick_lower,
+                tick_upper,
+                amount0_desired,
+                amount1_desired,
+                a0_min,
+                a1_min,
                 recipient_addr,
                 dl,
-                int(sqrt_price_x96),
+                sqrt_price_x96,
             )
             tx = await encode_call(
                 target=npm_address,
@@ -988,7 +980,7 @@ class AerodromeSlipstreamAdapter(
 
         try:
             variant, _, npm_address, owner = await self._resolve_token_manager(
-                token_id=int(token_id),
+                token_id=token_id,
                 position_manager=position_manager,
             )
             wallet = to_checksum_address(self.wallet_address)
@@ -1000,7 +992,7 @@ class AerodromeSlipstreamAdapter(
                     address=npm_address,
                     abi=AERODROME_SLIPSTREAM_NPM_ABI,
                 )
-                pos = await npm.functions.positions(int(token_id)).call(
+                pos = await npm.functions.positions(token_id).call(
                     block_identifier="latest"
                 )
                 token0 = to_checksum_address(pos[2])
@@ -1010,7 +1002,7 @@ class AerodromeSlipstreamAdapter(
                 token_address=token0,
                 owner=wallet,
                 spender=npm_address,
-                amount=int(amount0_desired),
+                amount=amount0_desired,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -1022,7 +1014,7 @@ class AerodromeSlipstreamAdapter(
                 token_address=token1,
                 owner=wallet,
                 spender=npm_address,
-                amount=int(amount1_desired),
+                amount=amount1_desired,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -1031,12 +1023,12 @@ class AerodromeSlipstreamAdapter(
                 return approved1
 
             params = (
-                int(token_id),
-                int(amount0_desired),
-                int(amount1_desired),
+                token_id,
+                amount0_desired,
+                amount1_desired,
                 _resolve_amount_min(amount0_min),
                 _resolve_amount_min(amount1_min),
-                int(deadline) if deadline is not None else default_deadline(),
+                deadline if deadline is not None else default_deadline(),
             )
             tx = await encode_call(
                 target=npm_address,
@@ -1073,7 +1065,7 @@ class AerodromeSlipstreamAdapter(
 
         try:
             variant, _, npm_address, owner = await self._resolve_token_manager(
-                token_id=int(token_id),
+                token_id=token_id,
                 position_manager=position_manager,
             )
             wallet = to_checksum_address(self.wallet_address)
@@ -1081,11 +1073,11 @@ class AerodromeSlipstreamAdapter(
                 return False, "wallet does not currently own token_id"
 
             params = (
-                int(token_id),
-                int(liquidity),
-                int(amount0_min),
-                int(amount1_min),
-                int(deadline) if deadline is not None else default_deadline(),
+                token_id,
+                liquidity,
+                amount0_min,
+                amount1_min,
+                deadline if deadline is not None else default_deadline(),
             )
             tx = await encode_call(
                 target=npm_address,
@@ -1119,7 +1111,7 @@ class AerodromeSlipstreamAdapter(
 
         try:
             variant, _, npm_address, owner = await self._resolve_token_manager(
-                token_id=int(token_id),
+                token_id=token_id,
                 position_manager=position_manager,
             )
             wallet = to_checksum_address(self.wallet_address)
@@ -1128,10 +1120,10 @@ class AerodromeSlipstreamAdapter(
 
             recipient_addr = to_checksum_address(recipient) if recipient else wallet
             params = (
-                int(token_id),
+                token_id,
                 recipient_addr,
-                int(amount0_max),
-                int(amount1_max),
+                amount0_max,
+                amount1_max,
             )
             tx = await encode_call(
                 target=npm_address,
@@ -1162,7 +1154,7 @@ class AerodromeSlipstreamAdapter(
 
         try:
             variant, _, npm_address, owner = await self._resolve_token_manager(
-                token_id=int(token_id),
+                token_id=token_id,
                 position_manager=position_manager,
             )
             wallet = to_checksum_address(self.wallet_address)
@@ -1173,7 +1165,7 @@ class AerodromeSlipstreamAdapter(
                 target=npm_address,
                 abi=AERODROME_SLIPSTREAM_NPM_ABI,
                 fn_name="burn",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
@@ -1215,7 +1207,7 @@ class AerodromeSlipstreamAdapter(
 
             nft_addr = to_checksum_address(nft_address)
             _, _, _, owner = await self._resolve_token_manager(
-                token_id=int(token_id),
+                token_id=token_id,
                 position_manager=nft_addr,
             )
             if owner.lower() != wallet.lower():
@@ -1223,7 +1215,7 @@ class AerodromeSlipstreamAdapter(
 
             approved = await self._ensure_erc721_approval(
                 nft_contract=nft_addr,
-                token_id=int(token_id),
+                token_id=token_id,
                 operator=gauge_addr,
                 owner=wallet,
             )
@@ -1234,7 +1226,7 @@ class AerodromeSlipstreamAdapter(
                 target=gauge_addr,
                 abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
                 fn_name="deposit",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
@@ -1257,7 +1249,7 @@ class AerodromeSlipstreamAdapter(
                 target=to_checksum_address(gauge),
                 abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
                 fn_name="withdraw",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -1280,7 +1272,7 @@ class AerodromeSlipstreamAdapter(
                 target=to_checksum_address(gauge),
                 abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
                 fn_name="getReward",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -1300,7 +1292,7 @@ class AerodromeSlipstreamAdapter(
     ) -> tuple[bool, Any]:
         try:
             variant, _, npm_address, _ = await self._resolve_token_manager(
-                token_id=int(token_id),
+                token_id=token_id,
                 position_manager=position_manager,
                 block_identifier=block_identifier,
             )
@@ -1309,7 +1301,7 @@ class AerodromeSlipstreamAdapter(
                     web3=web3,
                     deployment_variant=variant,
                     position_manager=npm_address,
-                    token_id=int(token_id),
+                    token_id=token_id,
                     account=account,
                     include_usd=include_usd,
                     block_identifier=block_identifier,
@@ -1361,7 +1353,7 @@ class AerodromeSlipstreamAdapter(
                     balance = await npm.functions.balanceOf(acct).call(
                         block_identifier=block_identifier
                     )
-                    if int(balance) <= 0:
+                    if balance <= 0:
                         continue
                     token_ids = await read_only_calls_multicall_or_gather(
                         web3=web3,
@@ -1371,15 +1363,14 @@ class AerodromeSlipstreamAdapter(
                                 npm,
                                 "tokenOfOwnerByIndex",
                                 args=(acct, i),
-                                postprocess=int,
                             )
-                            for i in range(int(balance))
+                            for i in range(balance)
                         ],
                         block_identifier=block_identifier,
                         chunk_size=100,
                     )
                     wallet_refs.extend(
-                        (variant, npm_address, int(token_id)) for token_id in token_ids
+                        (variant, npm_address, token_id) for token_id in token_ids
                     )
 
                 all_pools = await self._enumerate_all_pools(
@@ -1409,8 +1400,8 @@ class AerodromeSlipstreamAdapter(
                     if gauge == ZERO_ADDRESS:
                         continue
                     gauge_meta[gauge.lower()] = (
-                        str(entry["deployment_variant"]),
-                        str(entry["position_manager"]),
+                        entry["deployment_variant"],
+                        entry["position_manager"],
                     )
 
                 staked_refs: list[tuple[str, str, int]] = []
@@ -1424,7 +1415,7 @@ class AerodromeSlipstreamAdapter(
                     staked_len = await gauge_contract.functions.stakedLength(acct).call(
                         block_identifier=block_identifier
                     )
-                    if int(staked_len) <= 0:
+                    if staked_len <= 0:
                         continue
                     token_ids = await read_only_calls_multicall_or_gather(
                         web3=web3,
@@ -1434,23 +1425,22 @@ class AerodromeSlipstreamAdapter(
                                 gauge_contract,
                                 "stakedByIndex",
                                 args=(acct, i),
-                                postprocess=int,
                             )
-                            for i in range(int(staked_len))
+                            for i in range(staked_len)
                         ],
                         block_identifier=block_identifier,
                         chunk_size=100,
                     )
                     staked_refs.extend(
-                        (variant, npm_address, int(token_id)) for token_id in token_ids
+                        (variant, npm_address, token_id) for token_id in token_ids
                     )
 
                 refs_by_key: dict[tuple[str, int], tuple[str, str, int]] = {}
                 for variant, npm_address, token_id in wallet_refs + staked_refs:
-                    refs_by_key[(npm_address.lower(), int(token_id))] = (
+                    refs_by_key[(npm_address.lower(), token_id)] = (
                         variant,
                         npm_address,
-                        int(token_id),
+                        token_id,
                     )
 
                 positions = await asyncio.gather(
@@ -1472,11 +1462,11 @@ class AerodromeSlipstreamAdapter(
                     positions = [
                         pos
                         for pos in positions
-                        if bool(pos["staked"])
-                        or int(pos["liquidity"]) > 0
-                        or int(pos["tokens_owed0"]) > 0
-                        or int(pos["tokens_owed1"]) > 0
-                        or int(pos.get("gauge_rewards_claimable") or 0) > 0
+                        if pos["staked"]
+                        or pos["liquidity"] > 0
+                        or pos["tokens_owed0"] > 0
+                        or pos["tokens_owed1"] > 0
+                        or (pos.get("gauge_rewards_claimable") or 0) > 0
                     ]
 
                 ok_ids, token_ids_any = await self.get_user_ve_nfts(
@@ -1485,7 +1475,7 @@ class AerodromeSlipstreamAdapter(
                 )
                 if not ok_ids:
                     return False, token_ids_any
-                ve_token_ids = [int(tid) for tid in token_ids_any]
+                ve_token_ids = token_ids_any
 
                 ve_items: list[dict[str, Any]] = []
                 if ve_token_ids:
@@ -1502,8 +1492,7 @@ class AerodromeSlipstreamAdapter(
                             web3=web3,
                             chain_id=self.chain_id,
                             calls=[
-                                Call(ve, "balanceOfNFT", args=(tid,), postprocess=int)
-                                for tid in ve_token_ids
+                                Call(ve, "balanceOfNFT", args=(tid,)) for tid in ve_token_ids
                             ],
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -1512,8 +1501,7 @@ class AerodromeSlipstreamAdapter(
                             web3=web3,
                             chain_id=self.chain_id,
                             calls=[
-                                Call(ve, "voted", args=(tid,), postprocess=bool)
-                                for tid in ve_token_ids
+                                Call(ve, "voted", args=(tid,)) for tid in ve_token_ids
                             ],
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -1526,7 +1514,6 @@ class AerodromeSlipstreamAdapter(
                                     rd,
                                     "claimable",
                                     args=(tid,),
-                                    postprocess=int,
                                 )
                                 for tid in ve_token_ids
                             ],
@@ -1541,7 +1528,6 @@ class AerodromeSlipstreamAdapter(
                                     voter,
                                     "usedWeights",
                                     args=(tid,),
-                                    postprocess=int,
                                 )
                                 for tid in ve_token_ids
                             ],
@@ -1556,7 +1542,6 @@ class AerodromeSlipstreamAdapter(
                                     voter,
                                     "lastVoted",
                                     args=(tid,),
-                                    postprocess=int,
                                 )
                                 for tid in ve_token_ids
                             ],
@@ -1576,7 +1561,6 @@ class AerodromeSlipstreamAdapter(
                                     voter,
                                     "votes",
                                     args=(tid, pool_addr),
-                                    postprocess=int,
                                 )
                                 for tid in ve_token_ids
                                 for pool_addr in slipstream_pools
@@ -1588,7 +1572,7 @@ class AerodromeSlipstreamAdapter(
                         for tid in ve_token_ids:
                             votes_by_token[tid] = {}
                             for pool_addr in slipstream_pools:
-                                votes_by_token[tid][pool_addr] = int(vote_values[idx])
+                                votes_by_token[tid][pool_addr] = vote_values[idx]
                                 idx += 1
 
                     for tid, power, voted, claimable, used_weight, voted_ts in zip(
@@ -1601,15 +1585,15 @@ class AerodromeSlipstreamAdapter(
                         strict=True,
                     ):
                         item = {
-                            "token_id": int(tid),
-                            "voting_power": int(power),
-                            "voted": bool(voted),
-                            "used_weight": int(used_weight),
-                            "last_voted": int(voted_ts),
-                            "rebase_claimable": int(claimable),
+                            "token_id": tid,
+                            "voting_power": power,
+                            "voted": voted,
+                            "used_weight": used_weight,
+                            "last_voted": voted_ts,
+                            "rebase_claimable": claimable,
                         }
                         if include_votes:
-                            item["votes"] = votes_by_token.get(int(tid), {})
+                            item["votes"] = votes_by_token.get(tid, {})
                         ve_items.append(item)
 
             return True, {
