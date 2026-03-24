@@ -233,7 +233,6 @@ async def test_gorlami_aerodrome_slipstream_position_lifecycle(gorlami):
         amount0_desired=amount0,
         amount1_desired=amount1,
         deployment_variant=deployment_variant,
-        slippage_bps=200,
     )
     assert ok is True, minted
     assert isinstance(minted, dict)
