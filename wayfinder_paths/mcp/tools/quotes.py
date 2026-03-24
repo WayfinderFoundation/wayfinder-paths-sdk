@@ -69,6 +69,7 @@ async def quote_swap(
     recipient: str | None = None,
     include_calldata: bool = False,
 ) -> dict[str, Any]:
+    """Fetch a read-only swap quote for a wallet and token pair."""
     w = find_wallet_by_label(wallet_label)
     if not w:
         return err("not_found", f"Unknown wallet_label: {wallet_label}")

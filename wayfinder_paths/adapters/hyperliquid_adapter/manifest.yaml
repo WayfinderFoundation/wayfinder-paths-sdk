@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Hyperliquid market reads and trading actions."
 entrypoint: "adapters.hyperliquid_adapter.adapter.HyperliquidAdapter"
 capabilities:
   - "market.read"

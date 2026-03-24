@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "ProjectX concentrated liquidity management."
 entrypoint: "adapters.projectx_adapter.adapter.ProjectXLiquidityAdapter"
 capabilities:
   - "position.read"

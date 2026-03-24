@@ -262,6 +262,7 @@ async def execute(
     token: str | None = None,
     chain_id: int | None = None,
 ) -> dict[str, Any]:
+    """Execute a wallet send, swap, or Hyperliquid deposit."""
     request_data = {
         "kind": kind,
         "wallet_label": wallet_label,

@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Lending and borrowing via Aave V3."
 entrypoint: "adapters.aave_v3_adapter.adapter.AaveV3Adapter"
 capabilities:
   - "market.list"

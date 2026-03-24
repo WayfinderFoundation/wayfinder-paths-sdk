@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Uniswap V3 liquidity management."
 entrypoint: "adapters.uniswap_adapter.adapter.UniswapAdapter"
 capabilities:
   - "uniswap.liquidity.add"

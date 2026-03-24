@@ -183,6 +183,7 @@ async def polymarket(
     end_ts: int | None = None,
     fidelity: int | None = None,
 ) -> dict[str, Any]:
+    """Search Polymarket events, check positions, and read order history."""
     want, waddr, _pk = _resolve_wallet(wallet_label=wallet_label)
 
     acct = normalize_address(account) or normalize_address(wallet_address) or waddr
@@ -399,6 +400,7 @@ async def polymarket_execute(
     # redeem
     condition_id: str | None = None,
 ) -> dict[str, Any]:
+    """Execute Polymarket trades, bridge deposits, limit orders, or redemptions."""
     want, sender, pk = _resolve_wallet(wallet_label=wallet_label)
     if not want:
         return err("invalid_request", "wallet_label is required")

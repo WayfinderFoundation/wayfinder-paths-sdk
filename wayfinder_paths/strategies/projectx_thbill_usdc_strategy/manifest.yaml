@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "USDC allocation into ProjectX T-bill strategy."
 status: wip
 entrypoint: "wayfinder_paths.strategies.projectx_thbill_usdc_strategy.strategy.ProjectXThbillUsdcStrategy"
 permissions:

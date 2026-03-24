@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Polymarket market reads and trading actions."
 entrypoint: "adapters.polymarket_adapter.adapter.PolymarketAdapter"
 capabilities:
   - "market.read"

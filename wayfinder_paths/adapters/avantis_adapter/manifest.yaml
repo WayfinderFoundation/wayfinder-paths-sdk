@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "avUSDC ERC-4626 vault on Base for leveraged trading yield."
 entrypoint: "adapters.avantis_adapter.adapter.AvantisAdapter"
 capabilities:
   - "market.list"

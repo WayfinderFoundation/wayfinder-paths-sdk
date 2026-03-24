@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "Pendle PT, YT, and yield market actions."
 entrypoint: "adapters.pendle_adapter.adapter.PendleAdapter"
 capabilities:
   - "position.read"

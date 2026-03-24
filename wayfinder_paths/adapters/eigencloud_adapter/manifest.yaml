@@ -1,4 +1,5 @@
 schema_version: "0.1"
+description: "EigenCloud AVS and operator management."
 entrypoint: "adapters.eigencloud_adapter.adapter.EigenCloudAdapter"
 capabilities:
   - "market.list"

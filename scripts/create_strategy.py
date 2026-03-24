@@ -52,6 +52,7 @@ class {class_name}(Strategy):
 """
 
 MANIFEST_YAML = """schema_version: "0.1"
+description: "TODO: one-line summary of this strategy"
 status: wip
 entrypoint: "wayfinder_paths.strategies.{dir_name}.strategy.{class_name}"
 adapters: []
