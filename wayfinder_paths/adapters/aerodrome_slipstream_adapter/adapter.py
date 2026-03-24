@@ -963,7 +963,6 @@ class AerodromeSlipstreamAdapter(
         position_manager: str | None = None,
         amount0_min: int | None = None,
         amount1_min: int | None = None,
-        slippage_bps: int = 0,
         recipient: str | None = None,
         deadline: int | None = None,
         sqrt_price_x96: int = 0,
@@ -1052,7 +1051,6 @@ class AerodromeSlipstreamAdapter(
         position_manager: str | None = None,
         amount0_min: int | None = None,
         amount1_min: int | None = None,
-        slippage_bps: int = 0,
         deadline: int | None = None,
     ) -> tuple[bool, Any]:
         if amount0_desired <= 0 or amount1_desired <= 0:
