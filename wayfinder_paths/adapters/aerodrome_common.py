@@ -33,6 +33,8 @@ _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_
 
 
 class AerodromeVotingRewardsMixin:
+    core_contracts: dict[str, str]
+
     async def _minted_erc721_token_id(
         self,
         *,
@@ -86,7 +88,7 @@ class AerodromeVotingRewardsMixin:
                         "Voting restricted in the last hour of the epoch (token_id required to check whitelist)",
                     )
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter),
+                    address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
                 )
                 whitelisted = await voter.functions.isWhitelistedNFT(token_id).call(
@@ -109,7 +111,7 @@ class AerodromeVotingRewardsMixin:
             gauge_addr = to_checksum_address(gauge)
             async with web3_from_chain_id(self.chain_id) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.voter),
+                    address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
                 )
                 fees, bribes = await read_only_calls_multicall_or_gather(
@@ -148,7 +150,7 @@ class AerodromeVotingRewardsMixin:
         try:
             gauge_addrs = [to_checksum_address(g) for g in gauges]
             tx = await encode_call(
-                target=self.voter,
+                target=self.core_contracts["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimRewards",
                 args=[gauge_addrs],
@@ -176,7 +178,7 @@ class AerodromeVotingRewardsMixin:
 
             async with web3_from_chain_id(self.chain_id) as web3:
                 ve = web3.eth.contract(
-                    address=to_checksum_address(self.voting_escrow),
+                    address=to_checksum_address(self.core_contracts["voting_escrow"]),
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
                 bal = await ve.functions.balanceOf(owner_addr).call(
@@ -220,9 +222,9 @@ class AerodromeVotingRewardsMixin:
         try:
             owner = to_checksum_address(self.wallet_address)
             approved = await ensure_allowance(
-                token_address=self.aero,
+                token_address=self.core_contracts["aero"],
                 owner=owner,
-                spender=self.voting_escrow,
+                spender=self.core_contracts["voting_escrow"],
                 amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -232,7 +234,7 @@ class AerodromeVotingRewardsMixin:
                 return approved
 
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLock",
                 args=[amount, lock_duration],
@@ -241,7 +243,7 @@ class AerodromeVotingRewardsMixin:
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
-                nft_contract=self.voting_escrow,
+                nft_contract=self.core_contracts["voting_escrow"],
                 tx_hash=tx_hash,
                 expected_to=owner,
             )
@@ -268,9 +270,9 @@ class AerodromeVotingRewardsMixin:
             owner = to_checksum_address(self.wallet_address)
             receiver_addr = to_checksum_address(receiver)
             approved = await ensure_allowance(
-                token_address=self.aero,
+                token_address=self.core_contracts["aero"],
                 owner=owner,
-                spender=self.voting_escrow,
+                spender=self.core_contracts["voting_escrow"],
                 amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -280,7 +282,7 @@ class AerodromeVotingRewardsMixin:
                 return approved
 
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLockFor",
                 args=[amount, lock_duration, receiver_addr],
@@ -289,7 +291,7 @@ class AerodromeVotingRewardsMixin:
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
-                nft_contract=self.voting_escrow,
+                nft_contract=self.core_contracts["voting_escrow"],
                 tx_hash=tx_hash,
                 expected_to=receiver_addr,
             )
@@ -312,9 +314,9 @@ class AerodromeVotingRewardsMixin:
         try:
             owner = to_checksum_address(self.wallet_address)
             approved = await ensure_allowance(
-                token_address=self.aero,
+                token_address=self.core_contracts["aero"],
                 owner=owner,
-                spender=self.voting_escrow,
+                spender=self.core_contracts["voting_escrow"],
                 amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
@@ -324,7 +326,7 @@ class AerodromeVotingRewardsMixin:
                 return approved
 
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseAmount",
                 args=[token_id, amount],
@@ -349,7 +351,7 @@ class AerodromeVotingRewardsMixin:
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseUnlockTime",
                 args=[token_id, lock_duration],
@@ -371,7 +373,7 @@ class AerodromeVotingRewardsMixin:
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="withdraw",
                 args=[token_id],
@@ -393,7 +395,7 @@ class AerodromeVotingRewardsMixin:
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="lockPermanent",
                 args=[token_id],
@@ -415,7 +417,7 @@ class AerodromeVotingRewardsMixin:
             return False, "sign_callback is required"
         try:
             tx = await encode_call(
-                target=self.voting_escrow,
+                target=self.core_contracts["voting_escrow"],
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="unlockPermanent",
                 args=[token_id],
@@ -450,7 +452,7 @@ class AerodromeVotingRewardsMixin:
                     return False, reason
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.core_contracts["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="vote",
                 args=[
@@ -482,7 +484,7 @@ class AerodromeVotingRewardsMixin:
                     return False, reason
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.core_contracts["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="reset",
                 args=[token_id],
@@ -563,7 +565,7 @@ class AerodromeVotingRewardsMixin:
                 tokens_nested = nested
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.core_contracts["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimFees",
                 args=[fees, tokens_nested, token_id],
@@ -612,7 +614,7 @@ class AerodromeVotingRewardsMixin:
                 tokens_nested = nested
 
             tx = await encode_call(
-                target=self.voter,
+                target=self.core_contracts["voter"],
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimBribes",
                 args=[bribes, tokens_nested, token_id],
@@ -633,7 +635,9 @@ class AerodromeVotingRewardsMixin:
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 rd = web3.eth.contract(
-                    address=to_checksum_address(self.rewards_distributor),
+                    address=to_checksum_address(
+                        self.core_contracts["rewards_distributor"]
+                    ),
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
                 claimable = await rd.functions.claimable(token_id).call(
@@ -665,7 +669,7 @@ class AerodromeVotingRewardsMixin:
                     return True, {"tx": None, "claimable": claimable}
 
             tx = await encode_call(
-                target=self.rewards_distributor,
+                target=self.core_contracts["rewards_distributor"],
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claim",
                 args=[token_id],
@@ -689,7 +693,7 @@ class AerodromeVotingRewardsMixin:
             return False, "token_ids cannot be empty"
         try:
             tx = await encode_call(
-                target=self.rewards_distributor,
+                target=self.core_contracts["rewards_distributor"],
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claimMany",
                 args=[token_ids],

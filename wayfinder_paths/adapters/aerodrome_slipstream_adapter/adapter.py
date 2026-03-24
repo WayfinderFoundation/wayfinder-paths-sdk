@@ -76,12 +76,14 @@ class AerodromeSlipstreamAdapter(
         if not entry:
             raise ValueError("Aerodrome Slipstream Base deployment constants missing")
 
-        self.chain_name = entry["chain_name"]
-        self.aero = to_checksum_address(entry["aero"])
-        self.voter = to_checksum_address(entry["voter"])
-        self.voting_escrow = to_checksum_address(entry["voting_escrow"])
-        self.rewards_distributor = to_checksum_address(entry["rewards_distributor"])
-        self.weth = to_checksum_address(entry["weth"])
+        self.core_contracts: dict[str, str] = {
+            "chain_name": entry["chain_name"],
+            "aero": entry["aero"],
+            "voter": entry["voter"],
+            "voting_escrow": entry["voting_escrow"],
+            "rewards_distributor": entry["rewards_distributor"],
+            "weth": entry["weth"],
+        }
 
         deployments = entry.get("deployments")
         if not isinstance(deployments, dict) or not deployments:
@@ -276,7 +278,10 @@ class AerodromeSlipstreamAdapter(
             address=deployment["pool_factory"],
             abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
         )
-        voter = web3.eth.contract(address=self.voter, abi=AERODROME_VOTER_ABI)
+        voter = web3.eth.contract(
+            address=self.core_contracts["voter"],
+            abi=AERODROME_VOTER_ABI,
+        )
         pool = await factory.functions.getPool(
             to_checksum_address(token0),
             to_checksum_address(token1),
@@ -325,7 +330,10 @@ class AerodromeSlipstreamAdapter(
             address=deployment["pool_factory"],
             abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
         )
-        voter = web3.eth.contract(address=self.voter, abi=AERODROME_VOTER_ABI)
+        voter = web3.eth.contract(
+            address=self.core_contracts["voter"],
+            abi=AERODROME_VOTER_ABI,
+        )
         pool_contract = web3.eth.contract(
             address=pool_addr,
             abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
@@ -552,7 +560,7 @@ class AerodromeSlipstreamAdapter(
         return {
             "protocol": "aerodrome_slipstream",
             "chain_id": self.chain_id,
-            "chain_name": self.chain_name,
+            "chain_name": self.core_contracts["chain_name"],
             "token_id": token_id,
             "deployment_variant": deployment_variant,
             "position_manager": npm_address,
@@ -795,7 +803,10 @@ class AerodromeSlipstreamAdapter(
                     address=pool_addr,
                     abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
                 )
-                voter = web3.eth.contract(address=self.voter, abi=AERODROME_VOTER_ABI)
+                voter = web3.eth.contract(
+                    address=self.core_contracts["voter"],
+                    abi=AERODROME_VOTER_ABI,
+                )
                 pool_gauge, voter_gauge = await asyncio.gather(
                     pool_contract.functions.gauge().call(
                         block_identifier=block_identifier
@@ -871,7 +882,7 @@ class AerodromeSlipstreamAdapter(
                     return True, {
                         "protocol": "aerodrome_slipstream",
                         "chain_id": self.chain_id,
-                        "chain_name": self.chain_name,
+                        "chain_name": self.core_contracts["chain_name"],
                         "deployments": deployment_names,
                         "start": start_i,
                         "limit": limit,
@@ -932,7 +943,7 @@ class AerodromeSlipstreamAdapter(
             return True, {
                 "protocol": "aerodrome_slipstream",
                 "chain_id": self.chain_id,
-                "chain_name": self.chain_name,
+                "chain_name": self.core_contracts["chain_name"],
                 "deployments": deployment_names,
                 "start": start_i,
                 "limit": limit,
@@ -1269,7 +1280,10 @@ class AerodromeSlipstreamAdapter(
             gauge_addr = to_checksum_address(gauge)
 
             async with web3_from_chain_id(self.chain_id) as web3:
-                voter = web3.eth.contract(address=self.voter, abi=AERODROME_VOTER_ABI)
+                voter = web3.eth.contract(
+                    address=self.core_contracts["voter"],
+                    abi=AERODROME_VOTER_ABI,
+                )
                 gauge_contract = web3.eth.contract(
                     address=gauge_addr,
                     abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
@@ -1479,7 +1493,10 @@ class AerodromeSlipstreamAdapter(
                     deployments=deployment_names,
                     block_identifier=block_identifier,
                 )
-                voter = web3.eth.contract(address=self.voter, abi=AERODROME_VOTER_ABI)
+                voter = web3.eth.contract(
+                    address=self.core_contracts["voter"],
+                    abi=AERODROME_VOTER_ABI,
+                )
                 pool_to_gauge = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=self.chain_id,
@@ -1607,11 +1624,11 @@ class AerodromeSlipstreamAdapter(
                 ve_items: list[dict[str, Any]] = []
                 if ve_token_ids:
                     ve = web3.eth.contract(
-                        address=self.voting_escrow,
+                        address=self.core_contracts["voting_escrow"],
                         abi=AERODROME_VOTING_ESCROW_ABI,
                     )
                     rd = web3.eth.contract(
-                        address=self.rewards_distributor,
+                        address=self.core_contracts["rewards_distributor"],
                         abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                     )
                     powers, voted_flags, claimables, used_weights, last_voted = await asyncio.gather(
@@ -1726,7 +1743,7 @@ class AerodromeSlipstreamAdapter(
             return True, {
                 "protocol": "aerodrome_slipstream",
                 "chain_id": self.chain_id,
-                "chain_name": self.chain_name,
+                "chain_name": self.core_contracts["chain_name"],
                 "account": acct,
                 "deployments": deployment_names,
                 "positions": positions,
