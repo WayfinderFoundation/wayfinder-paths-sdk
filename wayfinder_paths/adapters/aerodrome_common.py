@@ -63,7 +63,7 @@ class AerodromeVotingRewardsMixin:
                         continue
                     if to_checksum_address(to_addr).lower() != expected_to_l:
                         continue
-                    return int(token_id)
+                    return token_id
                 except Exception:
                     continue
         return None
@@ -71,7 +71,7 @@ class AerodromeVotingRewardsMixin:
     async def _can_vote_now(self, *, token_id: int | None = None) -> tuple[bool, str]:
         async with web3_from_chain_id(self.chain_id) as web3:
             latest = await web3.eth.get_block("latest")
-            ts = int(latest.get("timestamp") or 0)
+            ts = latest.get("timestamp") or 0
 
             epoch_start = (ts // WEEK_SECONDS) * WEEK_SECONDS
             epoch_end = epoch_start + WEEK_SECONDS
@@ -89,7 +89,7 @@ class AerodromeVotingRewardsMixin:
                     address=to_checksum_address(self.voter),
                     abi=AERODROME_VOTER_ABI,
                 )
-                whitelisted = await voter.functions.isWhitelistedNFT(int(token_id)).call(
+                whitelisted = await voter.functions.isWhitelistedNFT(token_id).call(
                     block_identifier="latest"
                 )
                 if not whitelisted:
@@ -146,7 +146,7 @@ class AerodromeVotingRewardsMixin:
         if not gauges:
             return False, "gauges cannot be empty"
         try:
-            gauge_addrs = [to_checksum_address(g) for g in list(gauges)]
+            gauge_addrs = [to_checksum_address(g) for g in gauges]
             tx = await encode_call(
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
@@ -182,7 +182,7 @@ class AerodromeVotingRewardsMixin:
                 bal = await ve.functions.balanceOf(owner_addr).call(
                     block_identifier=block_identifier
                 )
-                if int(bal) <= 0:
+                if bal <= 0:
                     return True, []
 
                 token_ids = await read_only_calls_multicall_or_gather(
@@ -193,9 +193,8 @@ class AerodromeVotingRewardsMixin:
                             ve,
                             "ownerToNFTokenIdList",
                             args=(owner_addr, i),
-                            postprocess=int,
                         )
-                        for i in range(int(bal))
+                        for i in range(bal)
                     ],
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -224,7 +223,7 @@ class AerodromeVotingRewardsMixin:
                 token_address=self.aero,
                 owner=owner,
                 spender=self.voting_escrow,
-                amount=int(amount),
+                amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -236,7 +235,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLock",
-                args=[int(amount), int(lock_duration)],
+                args=[amount, lock_duration],
                 from_address=owner,
                 chain_id=self.chain_id,
             )
@@ -272,7 +271,7 @@ class AerodromeVotingRewardsMixin:
                 token_address=self.aero,
                 owner=owner,
                 spender=self.voting_escrow,
-                amount=int(amount),
+                amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -284,7 +283,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="createLockFor",
-                args=[int(amount), int(lock_duration), receiver_addr],
+                args=[amount, lock_duration, receiver_addr],
                 from_address=owner,
                 chain_id=self.chain_id,
             )
@@ -316,7 +315,7 @@ class AerodromeVotingRewardsMixin:
                 token_address=self.aero,
                 owner=owner,
                 spender=self.voting_escrow,
-                amount=int(amount),
+                amount=amount,
                 chain_id=self.chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
@@ -328,7 +327,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseAmount",
-                args=[int(token_id), int(amount)],
+                args=[token_id, amount],
                 from_address=owner,
                 chain_id=self.chain_id,
             )
@@ -353,7 +352,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="increaseUnlockTime",
-                args=[int(token_id), int(lock_duration)],
+                args=[token_id, lock_duration],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -375,7 +374,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="withdraw",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -397,7 +396,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="lockPermanent",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -419,7 +418,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voting_escrow,
                 abi=AERODROME_VOTING_ESCROW_ABI,
                 fn_name="unlockPermanent",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -446,7 +445,7 @@ class AerodromeVotingRewardsMixin:
 
         try:
             if check_window:
-                ok, reason = await self._can_vote_now(token_id=int(token_id))
+                ok, reason = await self._can_vote_now(token_id=token_id)
                 if not ok:
                     return False, reason
 
@@ -455,9 +454,9 @@ class AerodromeVotingRewardsMixin:
                 abi=AERODROME_VOTER_ABI,
                 fn_name="vote",
                 args=[
-                    int(token_id),
-                    [to_checksum_address(p) for p in list(pools)],
-                    [int(w) for w in list(weights)],
+                    token_id,
+                    [to_checksum_address(p) for p in pools],
+                    [w for w in weights],
                 ],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
@@ -478,7 +477,7 @@ class AerodromeVotingRewardsMixin:
             return False, "sign_callback is required"
         try:
             if check_window:
-                ok, reason = await self._can_vote_now(token_id=int(token_id))
+                ok, reason = await self._can_vote_now(token_id=token_id)
                 if not ok:
                     return False, reason
 
@@ -486,7 +485,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="reset",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -507,7 +506,7 @@ class AerodromeVotingRewardsMixin:
         n = await reward.functions.rewardsListLength().call(
             block_identifier=block_identifier
         )
-        if int(n) <= 0:
+        if n <= 0:
             return []
         calls = [
             Call(
@@ -516,7 +515,7 @@ class AerodromeVotingRewardsMixin:
                 args=(i,),
                 postprocess=lambda a: to_checksum_address(a),
             )
-            for i in range(int(n))
+            for i in range(n)
         ]
         tokens = await read_only_calls_multicall_or_gather(
             web3=web3,
@@ -540,15 +539,15 @@ class AerodromeVotingRewardsMixin:
         if not fee_reward_contracts:
             return False, "fee_reward_contracts cannot be empty"
         try:
-            fees = [to_checksum_address(a) for a in list(fee_reward_contracts)]
+            fees = [to_checksum_address(a) for a in fee_reward_contracts]
 
             tokens_nested: list[list[str]]
             if token_lists is not None:
                 if len(token_lists) != len(fees):
                     return False, "token_lists length mismatch"
                 tokens_nested = [
-                    [to_checksum_address(t) for t in list(tokens)]
-                    for tokens in list(token_lists)
+                    [to_checksum_address(t) for t in tokens]
+                    for tokens in token_lists
                 ]
             else:
                 async with web3_from_chain_id(self.chain_id) as web3:
@@ -561,13 +560,13 @@ class AerodromeVotingRewardsMixin:
                             for contract in fees
                         ]
                     )
-                tokens_nested = [list(x) for x in nested]
+                tokens_nested = nested
 
             tx = await encode_call(
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimFees",
-                args=[fees, tokens_nested, int(token_id)],
+                args=[fees, tokens_nested, token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -589,15 +588,15 @@ class AerodromeVotingRewardsMixin:
         if not bribe_reward_contracts:
             return False, "bribe_reward_contracts cannot be empty"
         try:
-            bribes = [to_checksum_address(a) for a in list(bribe_reward_contracts)]
+            bribes = [to_checksum_address(a) for a in bribe_reward_contracts]
 
             tokens_nested: list[list[str]]
             if token_lists is not None:
                 if len(token_lists) != len(bribes):
                     return False, "token_lists length mismatch"
                 tokens_nested = [
-                    [to_checksum_address(t) for t in list(tokens)]
-                    for tokens in list(token_lists)
+                    [to_checksum_address(t) for t in tokens]
+                    for tokens in token_lists
                 ]
             else:
                 async with web3_from_chain_id(self.chain_id) as web3:
@@ -610,13 +609,13 @@ class AerodromeVotingRewardsMixin:
                             for contract in bribes
                         ]
                     )
-                tokens_nested = [list(x) for x in nested]
+                tokens_nested = nested
 
             tx = await encode_call(
                 target=self.voter,
                 abi=AERODROME_VOTER_ABI,
                 fn_name="claimBribes",
-                args=[bribes, tokens_nested, int(token_id)],
+                args=[bribes, tokens_nested, token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -637,10 +636,10 @@ class AerodromeVotingRewardsMixin:
                     address=to_checksum_address(self.rewards_distributor),
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
-                claimable = await rd.functions.claimable(int(token_id)).call(
+                claimable = await rd.functions.claimable(token_id).call(
                     block_identifier=block_identifier
                 )
-            return True, int(claimable)
+            return True, claimable
         except Exception as exc:
             return False, str(exc)
 
@@ -657,19 +656,19 @@ class AerodromeVotingRewardsMixin:
         try:
             if skip_if_zero:
                 ok, claimable = await self.get_rebase_claimable(
-                    token_id=int(token_id),
+                    token_id=token_id,
                     block_identifier="latest",
                 )
                 if not ok:
                     return False, claimable
-                if int(claimable) <= 0:
-                    return True, {"tx": None, "claimable": int(claimable)}
+                if claimable <= 0:
+                    return True, {"tx": None, "claimable": claimable}
 
             tx = await encode_call(
                 target=self.rewards_distributor,
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claim",
-                args=[int(token_id)],
+                args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
@@ -693,7 +692,7 @@ class AerodromeVotingRewardsMixin:
                 target=self.rewards_distributor,
                 abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 fn_name="claimMany",
-                args=[[int(x) for x in list(token_ids)]],
+                args=[token_ids],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
