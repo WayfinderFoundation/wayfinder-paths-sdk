@@ -1393,23 +1393,6 @@ class AerodromeSlipstreamAdapter(
         except Exception as exc:
             return False, str(exc)
 
-    async def get_position(
-        self,
-        *,
-        token_id: int,
-        position_manager: str | None = None,
-        account: str | None = None,
-        include_usd: bool = False,
-        block_identifier: str | int = "latest",
-    ) -> tuple[bool, Any]:
-        return await self.get_pos(
-            token_id=token_id,
-            position_manager=position_manager,
-            account=account,
-            include_usd=include_usd,
-            block_identifier=block_identifier,
-        )
-
     async def get_full_user_state(
         self,
         *,

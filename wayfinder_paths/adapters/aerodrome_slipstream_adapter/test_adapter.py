@@ -68,7 +68,6 @@ def test_constructor_is_base_only():
         "claim_position_rewards",
         "claim_gauge_rewards",
         "get_pos",
-        "get_position",
         "get_user_ve_nfts",
         "create_lock",
         "create_lock_for",
