@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import wayfinder_paths.adapters.aerodrome_adapter.adapter as aerodrome_adapter_module
+import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
     EPOCH_SPECIAL_WINDOW_SECONDS,
     WEEK_SECONDS,
@@ -129,7 +130,7 @@ async def test_can_vote_now_rejects_first_hour():
     mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": WEEK_SECONDS + 1})
 
     with patch.object(
-        aerodrome_adapter_module,
+        aerodrome_common_module,
         "web3_from_chain_id",
         _web3_ctx(mock_web3),
     ):
@@ -148,7 +149,7 @@ async def test_can_vote_now_rejects_last_hour_without_token_id():
     )
 
     with patch.object(
-        aerodrome_adapter_module,
+        aerodrome_common_module,
         "web3_from_chain_id",
         _web3_ctx(mock_web3),
     ):
@@ -171,7 +172,7 @@ async def test_can_vote_now_allows_whitelisted_nft_in_last_hour():
     mock_web3.eth.contract = MagicMock(return_value=voter)
 
     with patch.object(
-        aerodrome_adapter_module,
+        aerodrome_common_module,
         "web3_from_chain_id",
         _web3_ctx(mock_web3),
     ):
