@@ -489,11 +489,6 @@ class AerodromeSlipstreamAdapter(
         token0 = to_checksum_address(raw_pos[2])
         token1 = to_checksum_address(raw_pos[3])
         tick_spacing = raw_pos[4]
-        tick_lower = raw_pos[5]
-        tick_upper = raw_pos[6]
-        liquidity = raw_pos[7]
-        tokens_owed0 = raw_pos[10]
-        tokens_owed1 = raw_pos[11]
         pool, gauge = await self._pool_and_gauge_for_position(
             web3=web3,
             deployment=deployment,
@@ -570,11 +565,11 @@ class AerodromeSlipstreamAdapter(
             "token0": token0,
             "token1": token1,
             "tick_spacing": tick_spacing,
-            "tick_lower": tick_lower,
-            "tick_upper": tick_upper,
-            "liquidity": liquidity,
-            "tokens_owed0": tokens_owed0,
-            "tokens_owed1": tokens_owed1,
+            "tick_lower": raw_pos[5],
+            "tick_upper": raw_pos[6],
+            "liquidity": raw_pos[7],
+            "tokens_owed0": raw_pos[10],
+            "tokens_owed1": raw_pos[11],
             "staked": staked,
             "staked_for_account": staked_for_account,
             "gauge_rewards_claimable": gauge_rewards_claimable,
