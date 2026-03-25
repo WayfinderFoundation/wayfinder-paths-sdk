@@ -21,9 +21,9 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_abi import (
     AERODROME_SLIPSTREAM_NPM_ABI,
 )
 from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
+    AERODROME_SLIPSTREAM_BY_CHAIN,
     AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
     AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
-    AERODROME_SLIPSTREAM_BY_CHAIN,
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE

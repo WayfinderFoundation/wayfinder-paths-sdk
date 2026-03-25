@@ -414,5 +414,7 @@ async def test_gorlami_aerodrome_slipstream_vote_and_state(gorlami):
 
     assert int(vote_weight_after) == 0
     assert voted_flag_after is False
+
+
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
 WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
