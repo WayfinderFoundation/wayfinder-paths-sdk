@@ -3,9 +3,8 @@ from __future__ import annotations
 import pytest
 from eth_account import Account
 
+import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
-    EPOCH_SPECIAL_WINDOW_SECONDS,
-    WEEK_SECONDS,
     AerodromeAdapter,
 )
 from wayfinder_paths.core.constants.aerodrome_abi import (
@@ -19,6 +18,9 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_WETH
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
+
+EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
+WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
 
 pytestmark = pytest.mark.skipif(
     not gorlami_configured(),

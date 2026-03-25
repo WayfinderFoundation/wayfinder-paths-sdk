@@ -7,11 +7,12 @@ import pytest
 import wayfinder_paths.adapters.aerodrome_adapter.adapter as aerodrome_adapter_module
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
-    EPOCH_SPECIAL_WINDOW_SECONDS,
-    WEEK_SECONDS,
     AerodromeAdapter,
 )
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+
+EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
+WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
 
 FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 FAKE_POOL = "0x0000000000000000000000000000000000000001"
