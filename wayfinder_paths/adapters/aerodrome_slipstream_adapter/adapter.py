@@ -63,6 +63,17 @@ def _explicit_amount_min(amount_min: int | None) -> int | None:
     return value
 
 
+def _shared_core_contracts(entry: dict[str, object]) -> dict[str, str]:
+    return {
+        "chain_name": entry["chain_name"],
+        "aero": entry["aero"],
+        "voter": entry["voter"],
+        "voting_escrow": entry["voting_escrow"],
+        "rewards_distributor": entry["rewards_distributor"],
+        "weth": entry["weth"],
+    }
+
+
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common.EPOCH_SPECIAL_WINDOW_SECONDS
 WEEK_SECONDS = aerodrome_common.WEEK_SECONDS
 
@@ -88,14 +99,7 @@ class AerodromeSlipstreamAdapter(
         if not entry:
             raise ValueError("Aerodrome Slipstream Base deployment constants missing")
 
-        self.core_contracts: dict[str, str] = {
-            "chain_name": entry["chain_name"],
-            "aero": entry["aero"],
-            "voter": entry["voter"],
-            "voting_escrow": entry["voting_escrow"],
-            "rewards_distributor": entry["rewards_distributor"],
-            "weth": entry["weth"],
-        }
+        self.core_contracts: dict[str, str] = _shared_core_contracts(entry)
 
         deployments = entry.get("deployments")
         if not isinstance(deployments, dict) or not deployments:
