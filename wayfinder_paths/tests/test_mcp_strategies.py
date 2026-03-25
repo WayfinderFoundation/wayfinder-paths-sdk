@@ -65,7 +65,7 @@ def _patch_config():
 
 def _patch_signing():
     return patch(
-        "wayfinder_paths.mcp.tools.strategies._create_signing_callback",
+        "wayfinder_paths.mcp.tools.strategies.make_sign_callback",
         return_value=AsyncMock(),
     )
 
