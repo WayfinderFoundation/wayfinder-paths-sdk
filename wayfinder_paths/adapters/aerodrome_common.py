@@ -458,7 +458,7 @@ class AerodromeVotingRewardsMixin:
                 args=[
                     token_id,
                     [to_checksum_address(p) for p in pools],
-                    [w for w in weights],
+                    weights,
                 ],
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
@@ -548,8 +548,7 @@ class AerodromeVotingRewardsMixin:
                 if len(token_lists) != len(fees):
                     return False, "token_lists length mismatch"
                 tokens_nested = [
-                    [to_checksum_address(t) for t in tokens]
-                    for tokens in token_lists
+                    [to_checksum_address(t) for t in tokens] for tokens in token_lists
                 ]
             else:
                 async with web3_from_chain_id(self.chain_id) as web3:
@@ -597,8 +596,7 @@ class AerodromeVotingRewardsMixin:
                 if len(token_lists) != len(bribes):
                     return False, "token_lists length mismatch"
                 tokens_nested = [
-                    [to_checksum_address(t) for t in tokens]
-                    for tokens in token_lists
+                    [to_checksum_address(t) for t in tokens] for tokens in token_lists
                 ]
             else:
                 async with web3_from_chain_id(self.chain_id) as web3:

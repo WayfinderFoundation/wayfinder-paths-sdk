@@ -34,10 +34,12 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
-    deadline as default_deadline,
     liq_for_amounts,
     slippage_min,
     sqrt_price_x96_from_tick,
+)
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    deadline as default_deadline,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -274,9 +276,7 @@ class AerodromeSlipstreamAdapter(
         if initial_sqrt_price_x96 is not None and int(initial_sqrt_price_x96) > 0:
             return int(initial_sqrt_price_x96)
 
-        raise ValueError(
-            "amount mins are required when pool price cannot be resolved"
-        )
+        raise ValueError("amount mins are required when pool price cannot be resolved")
 
     async def _resolve_position_amount_mins(
         self,
@@ -391,14 +391,19 @@ class AerodromeSlipstreamAdapter(
         owner = to_checksum_address(owner)
 
         async with web3_from_chain_id(self.chain_id) as web3:
-            nft = web3.eth.contract(address=nft_contract, abi=AERODROME_SLIPSTREAM_NPM_ABI)
+            nft = web3.eth.contract(
+                address=nft_contract, abi=AERODROME_SLIPSTREAM_NPM_ABI
+            )
             approved, approved_for_all = await asyncio.gather(
                 nft.functions.getApproved(token_id).call(block_identifier="pending"),
                 nft.functions.isApprovedForAll(owner, operator).call(
                     block_identifier="pending"
                 ),
             )
-            if _checksum_or_zero(approved).lower() == operator.lower() or approved_for_all:
+            if (
+                _checksum_or_zero(approved).lower() == operator.lower()
+                or approved_for_all
+            ):
                 return True, {}
 
         tx = await encode_call(
@@ -458,9 +463,7 @@ class AerodromeSlipstreamAdapter(
                 f"Pool gauge mismatch for {pool_addr}: pool={pool_gauge_addr} voter={voter_gauge_addr}"
             )
         return pool_addr, (
-            pool_gauge_addr
-            if pool_gauge_addr != ZERO_ADDRESS
-            else voter_gauge_addr
+            pool_gauge_addr if pool_gauge_addr != ZERO_ADDRESS else voter_gauge_addr
         )
 
     async def _read_market(
@@ -540,11 +543,7 @@ class AerodromeSlipstreamAdapter(
             raise ValueError(
                 f"Pool gauge mismatch for {pool_addr}: pool={pool_gauge_addr} voter={voter_gauge_addr}"
             )
-        gauge = (
-            pool_gauge_addr
-            if pool_gauge_addr != ZERO_ADDRESS
-            else voter_gauge_addr
-        )
+        gauge = pool_gauge_addr if pool_gauge_addr != ZERO_ADDRESS else voter_gauge_addr
 
         fee_reward = ZERO_ADDRESS
         bribe_reward = ZERO_ADDRESS
@@ -692,7 +691,9 @@ class AerodromeSlipstreamAdapter(
                 web3=web3,
                 chain_id=self.chain_id,
                 calls=[
-                    Call(gauge_contract, "stakedContains", args=(account_addr, token_id)),
+                    Call(
+                        gauge_contract, "stakedContains", args=(account_addr, token_id)
+                    ),
                     Call(gauge_contract, "earned", args=(account_addr, token_id)),
                 ],
                 block_identifier=block_identifier,
@@ -969,9 +970,7 @@ class AerodromeSlipstreamAdapter(
                 return False, "Pool gauge mismatch with voter registry"
 
             gauge = (
-                pool_gauge_addr
-                if pool_gauge_addr != ZERO_ADDRESS
-                else voter_gauge_addr
+                pool_gauge_addr if pool_gauge_addr != ZERO_ADDRESS else voter_gauge_addr
             )
             if gauge == ZERO_ADDRESS:
                 return False, "Gauge not found for pool"
@@ -1010,7 +1009,10 @@ class AerodromeSlipstreamAdapter(
                 length_values = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=self.chain_id,
-                    calls=[Call(factory, "allPoolsLength") for _, _, factory in factory_specs],
+                    calls=[
+                        Call(factory, "allPoolsLength")
+                        for _, _, factory in factory_specs
+                    ],
                     block_identifier=block_identifier,
                 )
                 lengths = [
@@ -1243,20 +1245,21 @@ class AerodromeSlipstreamAdapter(
                 tick_lower = int(pos[5])
                 tick_upper = int(pos[6])
 
-            amount0_min_resolved, amount1_min_resolved = (
-                await self._resolve_position_amount_mins(
-                    deployment=deployment,
-                    token0=token0,
-                    token1=token1,
-                    tick_spacing=tick_spacing,
-                    tick_lower=tick_lower,
-                    tick_upper=tick_upper,
-                    amount0_desired=amount0_desired,
-                    amount1_desired=amount1_desired,
-                    amount0_min=amount0_min,
-                    amount1_min=amount1_min,
-                    slippage_bps=slippage_bps,
-                )
+            (
+                amount0_min_resolved,
+                amount1_min_resolved,
+            ) = await self._resolve_position_amount_mins(
+                deployment=deployment,
+                token0=token0,
+                token1=token1,
+                tick_spacing=tick_spacing,
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                amount0_desired=amount0_desired,
+                amount1_desired=amount1_desired,
+                amount0_min=amount0_min,
+                amount1_min=amount1_min,
+                slippage_bps=slippage_bps,
             )
 
             approved0 = await ensure_allowance(
@@ -1348,19 +1351,20 @@ class AerodromeSlipstreamAdapter(
                 tick_lower = int(pos[5])
                 tick_upper = int(pos[6])
 
-            amount0_min_resolved, amount1_min_resolved = (
-                await self._resolve_liquidity_amount_mins(
-                    deployment=deployment,
-                    token0=token0,
-                    token1=token1,
-                    tick_spacing=tick_spacing,
-                    tick_lower=tick_lower,
-                    tick_upper=tick_upper,
-                    liquidity=liquidity,
-                    amount0_min=amount0_min,
-                    amount1_min=amount1_min,
-                    slippage_bps=slippage_bps,
-                )
+            (
+                amount0_min_resolved,
+                amount1_min_resolved,
+            ) = await self._resolve_liquidity_amount_mins(
+                deployment=deployment,
+                token0=token0,
+                token1=token1,
+                tick_spacing=tick_spacing,
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                liquidity=liquidity,
+                amount0_min=amount0_min,
+                amount1_min=amount1_min,
+                slippage_bps=slippage_bps,
             )
 
             params = (
@@ -1818,12 +1822,19 @@ class AerodromeSlipstreamAdapter(
                         address=self.core_contracts["rewards_distributor"],
                         abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                     )
-                    powers, voted_flags, claimables, used_weights, last_voted = await asyncio.gather(
+                    (
+                        powers,
+                        voted_flags,
+                        claimables,
+                        used_weights,
+                        last_voted,
+                    ) = await asyncio.gather(
                         read_only_calls_multicall_or_gather(
                             web3=web3,
                             chain_id=self.chain_id,
                             calls=[
-                                Call(ve, "balanceOfNFT", args=(tid,)) for tid in ve_token_ids
+                                Call(ve, "balanceOfNFT", args=(tid,))
+                                for tid in ve_token_ids
                             ],
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -1883,7 +1894,9 @@ class AerodromeSlipstreamAdapter(
 
                     votes_by_token: dict[int, dict[str, int]] = {}
                     if include_votes and all_pools:
-                        slipstream_pools = [to_checksum_address(entry["pool"]) for entry in all_pools]
+                        slipstream_pools = [
+                            to_checksum_address(entry["pool"]) for entry in all_pools
+                        ]
                         vote_values = await read_only_calls_multicall_or_gather(
                             web3=web3,
                             chain_id=self.chain_id,

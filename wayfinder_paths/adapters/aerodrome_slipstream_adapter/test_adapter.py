@@ -143,7 +143,9 @@ async def test_can_vote_now_rejects_first_hour():
     mock_web3 = MagicMock()
     mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": WEEK_SECONDS + 1})
 
-    with patch.object(aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)):
+    with patch.object(
+        aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)
+    ):
         ok, msg = await adapter._can_vote_now()
 
     assert ok is False
@@ -158,7 +160,9 @@ async def test_can_vote_now_rejects_last_hour_without_token_id():
         return_value={"timestamp": (2 * WEEK_SECONDS) - EPOCH_SPECIAL_WINDOW_SECONDS}
     )
 
-    with patch.object(aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)):
+    with patch.object(
+        aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)
+    ):
         ok, msg = await adapter._can_vote_now()
 
     assert ok is False
@@ -177,7 +181,9 @@ async def test_can_vote_now_allows_whitelisted_nft_in_last_hour():
     )
     mock_web3.eth.contract = MagicMock(return_value=voter)
 
-    with patch.object(aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)):
+    with patch.object(
+        aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)
+    ):
         ok, msg = await adapter._can_vote_now(token_id=123)
 
     assert ok is True
@@ -224,13 +230,20 @@ async def test_stake_position_dead_gauge_returns_clean_error(adapter_with_signer
 
 @pytest.mark.asyncio
 async def test_get_pool_returns_multiple_match_error_without_variant():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial", "gauge_caps"]})
+    adapter = AerodromeSlipstreamAdapter(
+        config={"deployments": ["initial", "gauge_caps"]}
+    )
     matches = [
         {"deployment_variant": "initial", "pool": FAKE_POOL},
-        {"deployment_variant": "gauge_caps", "pool": "0x0000000000000000000000000000000000000004"},
+        {
+            "deployment_variant": "gauge_caps",
+            "pool": "0x0000000000000000000000000000000000000004",
+        },
     ]
 
-    with patch.object(adapter, "find_pools", new=AsyncMock(return_value=(True, matches))):
+    with patch.object(
+        adapter, "find_pools", new=AsyncMock(return_value=(True, matches))
+    ):
         ok, msg = await adapter.get_pool(
             tokenA="0x0000000000000000000000000000000000000001",
             tokenB="0x0000000000000000000000000000000000000002",
@@ -285,7 +298,9 @@ async def test_claim_fees_auto_discovers_reward_tokens(adapter_with_signer):
     mock_web3.eth.contract = MagicMock(return_value=MagicMock())
 
     with (
-        patch.object(aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)
+        ),
         patch.object(
             adapter_with_signer,
             "_reward_tokens",
@@ -315,7 +330,9 @@ async def test_claim_fees_auto_discovers_reward_tokens(adapter_with_signer):
 
 
 @pytest.mark.asyncio
-async def test_resolve_position_amount_mins_derives_from_current_price(adapter_with_signer):
+async def test_resolve_position_amount_mins_derives_from_current_price(
+    adapter_with_signer,
+):
     sqrt_price_x96 = sqrt_price_x96_from_tick(0)
     tick_lower = -120
     tick_upper = 120
@@ -327,7 +344,10 @@ async def test_resolve_position_amount_mins_derives_from_current_price(adapter_w
         "_current_sqrt_price_x96",
         new=AsyncMock(return_value=sqrt_price_x96),
     ):
-        amount0_min, amount1_min = await adapter_with_signer._resolve_position_amount_mins(
+        (
+            amount0_min,
+            amount1_min,
+        ) = await adapter_with_signer._resolve_position_amount_mins(
             deployment=adapter_with_signer._deployment("initial"),
             token0="0x0000000000000000000000000000000000000001",
             token1="0x0000000000000000000000000000000000000002",
@@ -363,7 +383,9 @@ async def test_resolve_position_amount_mins_derives_from_current_price(adapter_w
 
 
 @pytest.mark.asyncio
-async def test_resolve_liquidity_amount_mins_derives_from_current_price(adapter_with_signer):
+async def test_resolve_liquidity_amount_mins_derives_from_current_price(
+    adapter_with_signer,
+):
     sqrt_price_x96 = sqrt_price_x96_from_tick(0)
     tick_lower = -120
     tick_upper = 120
@@ -374,7 +396,10 @@ async def test_resolve_liquidity_amount_mins_derives_from_current_price(adapter_
         "_current_sqrt_price_x96",
         new=AsyncMock(return_value=sqrt_price_x96),
     ):
-        amount0_min, amount1_min = await adapter_with_signer._resolve_liquidity_amount_mins(
+        (
+            amount0_min,
+            amount1_min,
+        ) = await adapter_with_signer._resolve_liquidity_amount_mins(
             deployment=adapter_with_signer._deployment("initial"),
             token0="0x0000000000000000000000000000000000000001",
             token1="0x0000000000000000000000000000000000000002",

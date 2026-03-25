@@ -17,9 +17,7 @@ AERODROME_SLIPSTREAM_BY_CHAIN: dict[int, dict[str, object]] = {
         "aero": AERODROME_BY_CHAIN[CHAIN_ID_BASE]["aero"],
         "voter": AERODROME_BY_CHAIN[CHAIN_ID_BASE]["voter"],
         "voting_escrow": AERODROME_BY_CHAIN[CHAIN_ID_BASE]["voting_escrow"],
-        "rewards_distributor": AERODROME_BY_CHAIN[CHAIN_ID_BASE][
-            "rewards_distributor"
-        ],
+        "rewards_distributor": AERODROME_BY_CHAIN[CHAIN_ID_BASE]["rewards_distributor"],
         "weth": BASE_WETH,
         "deployments": {
             "initial": {

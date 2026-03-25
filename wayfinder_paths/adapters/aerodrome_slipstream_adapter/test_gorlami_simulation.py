@@ -124,7 +124,9 @@ def _round_tick_down(tick: int, spacing: int) -> int:
     return (int(tick) // int(spacing)) * int(spacing)
 
 
-async def _discover_live_market(adapter: AerodromeSlipstreamAdapter) -> tuple[dict, str]:
+async def _discover_live_market(
+    adapter: AerodromeSlipstreamAdapter,
+) -> tuple[dict, str]:
     ok, matches = await adapter.find_pools(tokenA=AERO, tokenB=WETH)
     assert ok is True, matches
     assert matches, "No Slipstream AERO/WETH pools discovered"
@@ -212,7 +214,9 @@ async def test_gorlami_aerodrome_slipstream_position_lifecycle(gorlami):
             address=web3.to_checksum_address(gauge),
             abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
         )
-        npm_address = await gauge_contract.functions.nft().call(block_identifier="latest")
+        npm_address = await gauge_contract.functions.nft().call(
+            block_identifier="latest"
+        )
         npm = web3.eth.contract(
             address=web3.to_checksum_address(npm_address),
             abi=AERODROME_SLIPSTREAM_NPM_ABI,
@@ -222,7 +226,9 @@ async def test_gorlami_aerodrome_slipstream_position_lifecycle(gorlami):
         tick_spacing = await pool_contract.functions.tickSpacing().call(
             block_identifier="latest"
         )
-        amount0, amount1, tick_lower, tick_upper = await _position_amounts(pool_contract)
+        amount0, amount1, tick_lower, tick_upper = await _position_amounts(
+            pool_contract
+        )
 
     ok, minted = await adapter.mint_position(
         token0=token0,
@@ -254,7 +260,9 @@ async def test_gorlami_aerodrome_slipstream_position_lifecycle(gorlami):
     assert owner_before_stake.lower() == acct.address.lower()
     assert int(pos_before[7]) > 0
 
-    ok, pos = await adapter.get_pos(token_id=int(token_id), position_manager=npm_address)
+    ok, pos = await adapter.get_pos(
+        token_id=int(token_id), position_manager=npm_address
+    )
     assert ok is True, pos
     assert pos["pool"].lower() == pool.lower()
     assert pos["gauge"].lower() == gauge.lower()
