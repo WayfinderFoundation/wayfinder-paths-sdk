@@ -209,7 +209,7 @@ class AerodromeSlipstreamAdapter(
                 candidates.append((variant, deployment["nonfungible_position_manager"]))
 
         matches: list[tuple[str, str, str]] = []
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             candidate_contracts = [
                 (
                     variant,
@@ -255,7 +255,7 @@ class AerodromeSlipstreamAdapter(
         tick_spacing: int,
         initial_sqrt_price_x96: int | None = None,
     ) -> int:
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             factory = web3.eth.contract(
                 address=deployment["pool_factory"],
                 abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
@@ -394,7 +394,7 @@ class AerodromeSlipstreamAdapter(
         operator = to_checksum_address(operator)
         owner = to_checksum_address(owner)
 
-        async with web3_from_chain_id(self.chain_id) as web3:
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             nft = web3.eth.contract(
                 address=nft_contract, abi=AERODROME_SLIPSTREAM_NPM_ABI
             )
@@ -416,7 +416,7 @@ class AerodromeSlipstreamAdapter(
             fn_name="approve",
             args=[operator, token_id],
             from_address=owner,
-            chain_id=self.chain_id,
+            chain_id=CHAIN_ID_BASE,
         )
         tx_hash = await send_transaction(tx, self.sign_callback)
         return True, tx_hash
@@ -514,7 +514,7 @@ class AerodromeSlipstreamAdapter(
             unstaked_fee,
         ) = await read_only_calls_multicall_or_gather(
             web3=web3,
-            chain_id=self.chain_id,
+            chain_id=CHAIN_ID_BASE,
             calls=[
                 Call(pool_contract, "token0"),
                 Call(pool_contract, "token1"),
@@ -570,7 +570,7 @@ class AerodromeSlipstreamAdapter(
                 gauge_period_finish,
             ) = await read_only_calls_multicall_or_gather(
                 web3=web3,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 calls=[
                     Call(voter, "gaugeToFees", args=(gauge,)),
                     Call(voter, "gaugeToBribe", args=(gauge,)),
@@ -629,7 +629,7 @@ class AerodromeSlipstreamAdapter(
         npm = web3.eth.contract(address=npm_address, abi=AERODROME_SLIPSTREAM_NPM_ABI)
         raw_pos, owner_addr = await read_only_calls_multicall_or_gather(
             web3=web3,
-            chain_id=self.chain_id,
+            chain_id=CHAIN_ID_BASE,
             calls=[
                 Call(npm, "positions", args=(token_id,)),
                 Call(npm, "ownerOf", args=(token_id,), postprocess=to_checksum_address),
@@ -693,7 +693,7 @@ class AerodromeSlipstreamAdapter(
             )
             contains, earned = await read_only_calls_multicall_or_gather(
                 web3=web3,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 calls=[
                     Call(
                         gauge_contract, "stakedContains", args=(account_addr, token_id)
@@ -707,7 +707,7 @@ class AerodromeSlipstreamAdapter(
 
         return {
             "protocol": "aerodrome_slipstream",
-            "chain_id": self.chain_id,
+            "chain_id": CHAIN_ID_BASE,
             "chain_name": self.core_contracts["chain_name"],
             "token_id": token_id,
             "deployment_variant": deployment_variant,
@@ -763,7 +763,7 @@ class AerodromeSlipstreamAdapter(
 
         lengths = await read_only_calls_multicall_or_gather(
             web3=web3,
-            chain_id=self.chain_id,
+            chain_id=CHAIN_ID_BASE,
             calls=[Call(factory, "allPoolsLength") for _, _, factory in factory_specs],
             block_identifier=block_identifier,
         )
@@ -794,7 +794,7 @@ class AerodromeSlipstreamAdapter(
 
         pools = await read_only_calls_multicall_or_gather(
             web3=web3,
-            chain_id=self.chain_id,
+            chain_id=CHAIN_ID_BASE,
             calls=[spec[3] for spec in pool_call_specs],
             block_identifier=block_identifier,
             chunk_size=100,
@@ -829,7 +829,7 @@ class AerodromeSlipstreamAdapter(
             tB = to_checksum_address(tokenB)
             results: list[dict[str, Any]] = []
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 deployment_specs: list[tuple[str, dict[str, str], Any]] = []
                 for variant in self._resolve_deployments(deployments):
                     deployment = self._deployment(variant)
@@ -847,7 +847,7 @@ class AerodromeSlipstreamAdapter(
                 if tick_spacings is None:
                     spacing_groups = await read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=[
                             Call(factory, "tickSpacings")
                             for _, _, factory in deployment_specs
@@ -881,7 +881,7 @@ class AerodromeSlipstreamAdapter(
                 if pool_call_specs:
                     pools = await read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=[spec[3] for spec in pool_call_specs],
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -946,7 +946,7 @@ class AerodromeSlipstreamAdapter(
     ) -> tuple[bool, Any]:
         try:
             pool_addr = to_checksum_address(pool)
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 pool_contract = web3.eth.contract(
                     address=pool_addr,
                     abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
@@ -995,7 +995,7 @@ class AerodromeSlipstreamAdapter(
             start_i = max(0, start)
             deployment_names = self._resolve_deployments(deployments)
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 factory_specs: list[tuple[str, dict[str, str], Any]] = []
                 for variant in deployment_names:
                     deployment = self._deployment(variant)
@@ -1012,7 +1012,7 @@ class AerodromeSlipstreamAdapter(
 
                 length_values = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=[
                         Call(factory, "allPoolsLength")
                         for _, _, factory in factory_specs
@@ -1030,7 +1030,7 @@ class AerodromeSlipstreamAdapter(
                 if total == 0 or start_i >= total:
                     return True, {
                         "protocol": "aerodrome_slipstream",
-                        "chain_id": self.chain_id,
+                        "chain_id": CHAIN_ID_BASE,
                         "chain_name": self.core_contracts["chain_name"],
                         "deployments": deployment_names,
                         "start": start_i,
@@ -1066,7 +1066,7 @@ class AerodromeSlipstreamAdapter(
 
                 pools = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=[spec[1] for spec in pool_call_specs],
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -1091,7 +1091,7 @@ class AerodromeSlipstreamAdapter(
 
             return True, {
                 "protocol": "aerodrome_slipstream",
-                "chain_id": self.chain_id,
+                "chain_id": CHAIN_ID_BASE,
                 "chain_name": self.core_contracts["chain_name"],
                 "deployments": deployment_names,
                 "start": start_i,
@@ -1157,7 +1157,7 @@ class AerodromeSlipstreamAdapter(
                 owner=owner,
                 spender=npm_address,
                 amount=amount0_desired,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1169,7 +1169,7 @@ class AerodromeSlipstreamAdapter(
                 owner=owner,
                 spender=npm_address,
                 amount=amount1_desired,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1196,7 +1196,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="mint",
                 args=[params],
                 from_address=owner,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
@@ -1235,7 +1235,7 @@ class AerodromeSlipstreamAdapter(
             if owner.lower() != wallet.lower():
                 return False, "wallet does not currently own token_id"
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 npm = web3.eth.contract(
                     address=npm_address,
                     abi=AERODROME_SLIPSTREAM_NPM_ABI,
@@ -1271,7 +1271,7 @@ class AerodromeSlipstreamAdapter(
                 owner=wallet,
                 spender=npm_address,
                 amount=amount0_desired,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1283,7 +1283,7 @@ class AerodromeSlipstreamAdapter(
                 owner=wallet,
                 spender=npm_address,
                 amount=amount1_desired,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1304,7 +1304,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="increaseLiquidity",
                 args=[params],
                 from_address=wallet,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {
@@ -1341,7 +1341,7 @@ class AerodromeSlipstreamAdapter(
             if owner.lower() != wallet.lower():
                 return False, "wallet does not currently own token_id"
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 npm = web3.eth.contract(
                     address=npm_address,
                     abi=AERODROME_SLIPSTREAM_NPM_ABI,
@@ -1384,7 +1384,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="decreaseLiquidity",
                 args=[params],
                 from_address=wallet,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {
@@ -1430,7 +1430,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="collect",
                 args=[params],
                 from_address=wallet,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {
@@ -1466,7 +1466,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="burn",
                 args=[token_id],
                 from_address=wallet,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {
@@ -1491,7 +1491,7 @@ class AerodromeSlipstreamAdapter(
             wallet = to_checksum_address(self.wallet_address)
             gauge_addr = to_checksum_address(gauge)
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
                     address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
@@ -1530,7 +1530,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="deposit",
                 args=[token_id],
                 from_address=wallet,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1553,7 +1553,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="withdraw",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1576,7 +1576,7 @@ class AerodromeSlipstreamAdapter(
                 fn_name="getReward",
                 args=[token_id],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -1598,7 +1598,7 @@ class AerodromeSlipstreamAdapter(
                 position_manager=position_manager,
                 block_identifier=block_identifier,
             )
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 pos = await self._read_position_state(
                     web3=web3,
                     deployment_variant=variant,
@@ -1626,7 +1626,7 @@ class AerodromeSlipstreamAdapter(
             acct = to_checksum_address(account)
             deployment_names = self._resolve_deployments(deployments)
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 deployment_specs: list[tuple[str, str, Any]] = []
                 for variant in deployment_names:
                     deployment = self._deployment(variant)
@@ -1644,7 +1644,7 @@ class AerodromeSlipstreamAdapter(
 
                 balances = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=[
                         Call(npm, "balanceOf", args=(acct,))
                         for _, _, npm in deployment_specs
@@ -1671,7 +1671,7 @@ class AerodromeSlipstreamAdapter(
                 if wallet_index_specs:
                     wallet_token_ids = await read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=[spec[2] for spec in wallet_index_specs],
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -1694,7 +1694,7 @@ class AerodromeSlipstreamAdapter(
                 )
                 pool_to_gauge = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=[
                         Call(
                             voter,
@@ -1736,7 +1736,7 @@ class AerodromeSlipstreamAdapter(
 
                 staked_lengths = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=[
                         Call(gauge_contract, "stakedLength", args=(acct,))
                         for _, _, _, gauge_contract in gauge_specs
@@ -1762,7 +1762,7 @@ class AerodromeSlipstreamAdapter(
                 if staked_index_specs:
                     staked_token_ids = await read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=[spec[2] for spec in staked_index_specs],
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -1835,7 +1835,7 @@ class AerodromeSlipstreamAdapter(
                     ) = await asyncio.gather(
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=[
                                 Call(ve, "balanceOfNFT", args=(tid,))
                                 for tid in ve_token_ids
@@ -1845,7 +1845,7 @@ class AerodromeSlipstreamAdapter(
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=[
                                 Call(ve, "voted", args=(tid,)) for tid in ve_token_ids
                             ],
@@ -1854,7 +1854,7 @@ class AerodromeSlipstreamAdapter(
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=[
                                 Call(
                                     rd,
@@ -1868,7 +1868,7 @@ class AerodromeSlipstreamAdapter(
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=[
                                 Call(
                                     voter,
@@ -1882,7 +1882,7 @@ class AerodromeSlipstreamAdapter(
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=[
                                 Call(
                                     voter,
@@ -1903,7 +1903,7 @@ class AerodromeSlipstreamAdapter(
                         ]
                         vote_values = await read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=[
                                 Call(
                                     voter,
@@ -1946,7 +1946,7 @@ class AerodromeSlipstreamAdapter(
 
             return True, {
                 "protocol": "aerodrome_slipstream",
-                "chain_id": self.chain_id,
+                "chain_id": CHAIN_ID_BASE,
                 "chain_name": self.core_contracts["chain_name"],
                 "account": acct,
                 "deployments": deployment_names,

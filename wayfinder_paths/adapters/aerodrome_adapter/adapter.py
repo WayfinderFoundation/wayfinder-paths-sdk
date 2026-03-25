@@ -79,7 +79,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         try:
             tA = to_checksum_address(tokenA)
             tB = to_checksum_address(tokenB)
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 factory = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["pool_factory"]),
                     abi=AERODROME_POOL_FACTORY_ABI,
@@ -101,7 +101,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
     ) -> tuple[bool, Any]:
         try:
             pool = to_checksum_address(pool)
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
@@ -134,7 +134,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         try:
             start_i = max(0, start)
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
@@ -146,7 +146,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 if total == 0 or start_i >= total:
                     return True, {
                         "protocol": "aerodrome",
-                        "chain_id": self.chain_id,
+                        "chain_id": CHAIN_ID_BASE,
                         "start": start_i,
                         "limit": limit,
                         "total": total,
@@ -166,7 +166,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 ]
                 pools = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=pool_calls,
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -193,14 +193,14 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 metadata_list, gauges = await asyncio.gather(
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=md_calls,
                         block_identifier=block_identifier,
                         chunk_size=50,
                     ),
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=gauge_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -271,42 +271,42 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     ) = await asyncio.gather(
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=fee_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=bribe_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=reward_token_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=reward_rate_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=total_supply_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=period_finish_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -355,7 +355,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             return True, {
                 "protocol": "aerodrome",
-                "chain_id": self.chain_id,
+                "chain_id": CHAIN_ID_BASE,
                 "start": start_i,
                 "limit": limit,
                 "total": total,
@@ -402,7 +402,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 )
                 amtA_q, amtB_q = amountA_desired, amountB_desired
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 router = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["router"]),
                     abi=AERODROME_ROUTER_ABI,
@@ -513,7 +513,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     owner=to_checksum_address(self.wallet_address),
                     spender=to_checksum_address(self.core_contracts["router"]),
                     amount=token_amt,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     signing_callback=self.sign_callback,
                     approval_amount=MAX_UINT256,
                 )
@@ -534,7 +534,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                         dl,
                     ],
                     from_address=to_checksum_address(self.wallet_address),
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     value=eth_amt,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
@@ -573,7 +573,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 owner=to_checksum_address(self.wallet_address),
                 spender=to_checksum_address(self.core_contracts["router"]),
                 amount=amountA_desired,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -585,7 +585,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 owner=to_checksum_address(self.wallet_address),
                 spender=to_checksum_address(self.core_contracts["router"]),
                 amount=amountB_desired,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -608,7 +608,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     dl,
                 ],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -645,7 +645,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     to_checksum_address(tokenB),
                 )
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 router = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["router"]),
                     abi=AERODROME_ROUTER_ABI,
@@ -697,7 +697,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             )
             dl = deadline if deadline is not None else default_deadline()
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 factory = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["pool_factory"]),
                     abi=AERODROME_POOL_FACTORY_ABI,
@@ -725,7 +725,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 owner=to_checksum_address(self.wallet_address),
                 spender=to_checksum_address(self.core_contracts["router"]),
                 amount=liquidity,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -772,7 +772,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                         dl,
                     ],
                     from_address=to_checksum_address(self.wallet_address),
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                 )
                 tx_hash = await send_transaction(tx, self.sign_callback)
                 return True, tx_hash
@@ -812,7 +812,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     dl,
                 ],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -832,11 +832,11 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             pool = to_checksum_address(pool)
             acct = to_checksum_address(self.wallet_address)
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 pc = web3.eth.contract(address=pool, abi=AERODROME_POOL_ABI)
                 c0, c1 = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=[
                         Call(pc, "claimable0", args=(acct,)),
                         Call(pc, "claimable1", args=(acct,)),
@@ -850,7 +850,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 fn_name="claimFees",
                 args=[],
                 from_address=acct,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
@@ -874,7 +874,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             gauge = to_checksum_address(gauge)
             recipient_addr = to_checksum_address(recipient) if recipient else None
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
@@ -895,7 +895,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 owner=to_checksum_address(self.wallet_address),
                 spender=gauge,
                 amount=amount,
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -919,7 +919,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 fn_name=fn_name,
                 args=args,
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -945,7 +945,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 fn_name="withdraw",
                 args=[amount],
                 from_address=to_checksum_address(self.wallet_address),
-                chain_id=self.chain_id,
+                chain_id=CHAIN_ID_BASE,
             )
             tx_hash = await send_transaction(tx, self.sign_callback)
             return True, tx_hash
@@ -972,7 +972,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             acct = to_checksum_address(account)
             start_i = max(0, start)
 
-            async with web3_from_chain_id(self.chain_id) as web3:
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
                     address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
@@ -1001,7 +1001,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 ]
                 pools = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=self.chain_id,
+                    chain_id=CHAIN_ID_BASE,
                     calls=pool_calls,
                     block_identifier=block_identifier,
                     chunk_size=100,
@@ -1021,14 +1021,14 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 pool_balances, gauges = await asyncio.gather(
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=pool_bal_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
                     ),
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=gauge_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -1055,14 +1055,14 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 (g_bal, g_earned) = await asyncio.gather(
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=gauge_bal_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
                     ),
                     read_only_calls_multicall_or_gather(
                         web3=web3,
-                        chain_id=self.chain_id,
+                        chain_id=CHAIN_ID_BASE,
                         calls=gauge_earned_calls,
                         block_identifier=block_identifier,
                         chunk_size=100,
@@ -1121,21 +1121,21 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     (powers, voted_flags, claimables) = await asyncio.gather(
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=power_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=voted_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
                         ),
                         read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=claimable_calls,
                             block_identifier=block_identifier,
                             chunk_size=100,
@@ -1158,7 +1158,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                                 )
                         vote_values = await read_only_calls_multicall_or_gather(
                             web3=web3,
-                            chain_id=self.chain_id,
+                            chain_id=CHAIN_ID_BASE,
                             calls=vote_calls,
                             block_identifier=block_identifier,
                             chunk_size=200,
@@ -1187,7 +1187,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             return True, {
                 "protocol": "aerodrome",
-                "chain_id": self.chain_id,
+                "chain_id": CHAIN_ID_BASE,
                 "account": acct,
                 "markets_scan": {
                     "start": start_i,
