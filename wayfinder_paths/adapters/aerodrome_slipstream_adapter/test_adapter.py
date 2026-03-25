@@ -29,7 +29,7 @@ FAKE_NPM = "0x0000000000000000000000000000000000000003"
 @pytest.fixture
 def adapter_with_signer():
     return AerodromeSlipstreamAdapter(
-        config={"deployments": ["initial"]},
+        config={"deployments": ("initial",)},
         sign_callback=AsyncMock(return_value="0xsigned"),
         wallet_address=FAKE_WALLET,
     )
@@ -48,12 +48,12 @@ def _web3_ctx(web3):
 
 
 def test_adapter_type():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     assert adapter.adapter_type == "AERODROME_SLIPSTREAM"
 
 
 def test_constructor_is_base_only():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     assert adapter.chain_id == CHAIN_ID_BASE
 
 
@@ -131,7 +131,7 @@ def test_public_methods_do_not_accept_chain_id(method_name):
     ],
 )
 async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     ok, msg = await getattr(adapter, method)(**kwargs)
     assert ok is False
     assert msg == "wallet address not configured"
@@ -139,7 +139,7 @@ async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
 
 @pytest.mark.asyncio
 async def test_can_vote_now_rejects_first_hour():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     mock_web3 = MagicMock()
     mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": WEEK_SECONDS + 1})
 
@@ -154,7 +154,7 @@ async def test_can_vote_now_rejects_first_hour():
 
 @pytest.mark.asyncio
 async def test_can_vote_now_rejects_last_hour_without_token_id():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     mock_web3 = MagicMock()
     mock_web3.eth.get_block = AsyncMock(
         return_value={"timestamp": (2 * WEEK_SECONDS) - EPOCH_SPECIAL_WINDOW_SECONDS}
@@ -171,7 +171,7 @@ async def test_can_vote_now_rejects_last_hour_without_token_id():
 
 @pytest.mark.asyncio
 async def test_can_vote_now_allows_whitelisted_nft_in_last_hour():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     voter = MagicMock()
     voter.functions.isWhitelistedNFT = MagicMock(return_value=_mock_call(True))
 
@@ -193,7 +193,7 @@ async def test_can_vote_now_allows_whitelisted_nft_in_last_hour():
 
 @pytest.mark.asyncio
 async def test_get_all_markets_empty_result_uses_base_chain():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     factory = MagicMock()
     factory.functions.allPoolsLength = MagicMock(return_value=_mock_call(0))
 
@@ -231,7 +231,7 @@ async def test_stake_position_dead_gauge_returns_clean_error(adapter_with_signer
 @pytest.mark.asyncio
 async def test_get_pool_returns_multiple_match_error_without_variant():
     adapter = AerodromeSlipstreamAdapter(
-        config={"deployments": ["initial", "gauge_caps"]}
+        config={"deployments": ("initial", "gauge_caps")}
     )
     matches = [
         {"deployment_variant": "initial", "pool": FAKE_POOL},
@@ -256,7 +256,7 @@ async def test_get_pool_returns_multiple_match_error_without_variant():
 
 @pytest.mark.asyncio
 async def test_get_pos_reads_resolved_position_state():
-    adapter = AerodromeSlipstreamAdapter(config={"deployments": ["initial"]})
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     mock_web3 = MagicMock()
 
     with (

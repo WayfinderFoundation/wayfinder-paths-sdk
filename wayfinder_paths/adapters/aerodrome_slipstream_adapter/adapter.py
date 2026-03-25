@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import Any, TypedDict
 
 from eth_utils import to_checksum_address
 
@@ -74,6 +74,11 @@ def _shared_core_contracts(entry: dict[str, object]) -> dict[str, str]:
     }
 
 
+class AerodromeSlipstreamAdapterConfig(TypedDict, total=False):
+    deployments: tuple[str, ...]
+    write_deployment: str
+
+
 class AerodromeSlipstreamAdapter(
     aerodrome_common.AerodromeVotingRewardsMixin,
     BaseAdapter,
@@ -83,7 +88,7 @@ class AerodromeSlipstreamAdapter(
 
     def __init__(
         self,
-        config: dict[str, Any] | None = None,
+        config: AerodromeSlipstreamAdapterConfig | None = None,
         *,
         sign_callback: Callable | None = None,
         wallet_address: str | None = None,
@@ -111,13 +116,11 @@ class AerodromeSlipstreamAdapter(
             if isinstance(values, dict)
         }
         self.default_deployments: tuple[str, ...] = (
-            tuple(self.config.get("deployments", []))
-            if isinstance(self.config.get("deployments"), list)
-            and self.config.get("deployments")
-            else AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
+            (config or {}).get("deployments")
+            or AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
         )
         self.write_deployment = (
-            self.config.get("write_deployment") or self.default_deployments[0]
+            (config or {}).get("write_deployment") or self.default_deployments[0]
         )
         if self.write_deployment not in self.supported_deployments:
             raise ValueError(
