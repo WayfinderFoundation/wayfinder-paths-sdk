@@ -32,6 +32,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import deadline as default_deadl
 from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
+
 class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter):
     """
     Aerodrome classic pool/gauge/veAERO adapter (Base mainnet only).

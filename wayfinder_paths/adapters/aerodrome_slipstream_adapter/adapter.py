@@ -115,13 +115,12 @@ class AerodromeSlipstreamAdapter(
             for name, values in deployments.items()
             if isinstance(values, dict)
         }
-        self.default_deployments: tuple[str, ...] = (
-            (config or {}).get("deployments")
-            or AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
-        )
-        self.write_deployment = (
-            (config or {}).get("write_deployment") or self.default_deployments[0]
-        )
+        self.default_deployments: tuple[str, ...] = (config or {}).get(
+            "deployments"
+        ) or AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
+        self.write_deployment = (config or {}).get(
+            "write_deployment"
+        ) or self.default_deployments[0]
         if self.write_deployment not in self.supported_deployments:
             raise ValueError(
                 f"Unknown Slipstream write deployment: {self.write_deployment}"
