@@ -83,6 +83,7 @@ class AerodromeSlipstreamAdapter(
     BaseAdapter,
 ):
     adapter_type = "AERODROME_SLIPSTREAM"
+    chain_id = CHAIN_ID_BASE
 
     def __init__(
         self,
@@ -93,7 +94,6 @@ class AerodromeSlipstreamAdapter(
     ) -> None:
         super().__init__("aerodrome_slipstream_adapter", config or {})
         self.sign_callback = sign_callback
-        self.chain_id = CHAIN_ID_BASE
 
         entry = AERODROME_SLIPSTREAM_BY_CHAIN.get(CHAIN_ID_BASE)
         if not entry:

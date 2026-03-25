@@ -47,6 +47,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
     """
 
     adapter_type = "AERODROME"
+    chain_id = CHAIN_ID_BASE
 
     def __init__(
         self,
@@ -57,7 +58,6 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
     ) -> None:
         super().__init__("aerodrome_adapter", config or {})
         self.sign_callback = sign_callback
-        self.chain_id = CHAIN_ID_BASE
 
         deployment = AERODROME_BY_CHAIN.get(CHAIN_ID_BASE)
         if not deployment:
