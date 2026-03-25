@@ -10,11 +10,6 @@ import yaml
 
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     find_wallet_by_label,
-    get_private_key,
-    get_wallet_signing_callback,
-    load_wallets,
-    make_sign_typed_data_callback,
-    resolve_wallet,
 )
 
 getcontext().prec = 78
