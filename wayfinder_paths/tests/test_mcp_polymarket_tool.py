@@ -7,7 +7,6 @@ import pytest
 
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 
-
 _FIND_WALLET = "wayfinder_paths.core.utils.wallets.find_wallet_by_label"
 
 
@@ -17,7 +16,10 @@ async def test_polymarket_status_uses_adapter_full_state():
 
     with (
         patch(_FIND_WALLET, return_value=wallet),
-        patch("wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label", return_value=wallet),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
+            return_value=wallet,
+        ),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_full_user_state",
