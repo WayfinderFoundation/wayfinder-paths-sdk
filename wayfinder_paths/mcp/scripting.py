@@ -41,7 +41,9 @@ def get_adapter[T](
                         f"{adapter_class.__name__} requires a strategy wallet. "
                         "Pass strategy_wallet_label."
                     )
-                strategy_cb, strategy_addr = get_wallet_signing_callback(strategy_wallet_label)
+                strategy_cb, strategy_addr = get_wallet_signing_callback(
+                    strategy_wallet_label
+                )
                 adapter_kwargs["strategy_sign_callback"] = strategy_cb
                 if "strategy_wallet_address" in params:
                     adapter_kwargs["strategy_wallet_address"] = strategy_addr

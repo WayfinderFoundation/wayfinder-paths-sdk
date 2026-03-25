@@ -175,14 +175,10 @@ class PolymarketAdapter(BaseAdapter):
             self.sign_callback = None
 
         timeout = httpx.Timeout(http_timeout_s)
-        self._gamma_http = httpx.AsyncClient(
-            base_url=gamma_base_url, timeout=timeout)
-        self._clob_http = httpx.AsyncClient(
-            base_url=clob_base_url, timeout=timeout)
-        self._data_http = httpx.AsyncClient(
-            base_url=data_base_url, timeout=timeout)
-        self._bridge_http = httpx.AsyncClient(
-            base_url=bridge_base_url, timeout=timeout)
+        self._gamma_http = httpx.AsyncClient(base_url=gamma_base_url, timeout=timeout)
+        self._clob_http = httpx.AsyncClient(base_url=clob_base_url, timeout=timeout)
+        self._data_http = httpx.AsyncClient(base_url=data_base_url, timeout=timeout)
+        self._bridge_http = httpx.AsyncClient(base_url=bridge_base_url, timeout=timeout)
 
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
@@ -286,8 +282,7 @@ class PolymarketAdapter(BaseAdapter):
                 return False, f"Unexpected /events/slug response: {type(data).__name__}"
             if "markets" in data:
                 data = dict(data)
-                data["markets"] = [self._normalize_market(
-                    m) for m in data["markets"]]
+                data["markets"] = [self._normalize_market(m) for m in data["markets"]]
             return True, data
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -371,8 +366,7 @@ class PolymarketAdapter(BaseAdapter):
             return max(
                 _fuzzy_score(query, str(m.get("question") or "")),
                 _fuzzy_score(query, str(m.get("slug") or "")),
-                _fuzzy_score(query, str(
-                    (m.get("_event") or {}).get("title") or "")),
+                _fuzzy_score(query, str((m.get("_event") or {}).get("title") or "")),
             )
 
         markets.sort(key=score, reverse=True)
@@ -446,8 +440,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, market
 
-        ok_tid, token_id = self.resolve_clob_token_id(
-            market=market, outcome=outcome)
+        ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
         if not ok_tid:
             return False, token_id
 
@@ -468,8 +461,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, market
 
-        ok_tid, token_id = self.resolve_clob_token_id(
-            market=market, outcome=outcome)
+        ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
         if not ok_tid:
             return False, token_id
 
@@ -493,8 +485,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, market
 
-        ok_tid, token_id = self.resolve_clob_token_id(
-            market=market, outcome=outcome)
+        ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
         if not ok_tid:
             return False, token_id
 
@@ -793,10 +784,8 @@ class PolymarketAdapter(BaseAdapter):
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
-                            Call(usdce, "balanceOf", args=(
-                                acct,), postprocess=int),
-                            Call(usdc, "balanceOf", args=(
-                                acct,), postprocess=int),
+                            Call(usdce, "balanceOf", args=(acct,), postprocess=int),
+                            Call(usdc, "balanceOf", args=(acct,), postprocess=int),
                         ],
                         block_identifier="pending",
                     )
@@ -925,7 +914,8 @@ class PolymarketAdapter(BaseAdapter):
     def _require_wallet_address(self) -> str:
         if not self.wallet_address:
             raise ValueError(
-                "wallet_address is required. Use get_adapter(PolymarketAdapter, wallet_label).")
+                "wallet_address is required. Use get_adapter(PolymarketAdapter, wallet_label)."
+            )
         return self.wallet_address
 
     def _require_funder(self) -> str:
@@ -937,7 +927,8 @@ class PolymarketAdapter(BaseAdapter):
         addr = self._require_wallet_address()
         if not self.sign_callback:
             raise ValueError(
-                "sign_callback is required. Use get_adapter(PolymarketAdapter, wallet_label).")
+                "sign_callback is required. Use get_adapter(PolymarketAdapter, wallet_label)."
+            )
         return addr, self.sign_callback
 
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
@@ -1112,8 +1103,7 @@ class PolymarketAdapter(BaseAdapter):
             params = None
             if token_id:
                 # CLOB uses `asset_id` for the outcome token id returned by Gamma `clobTokenIds`.
-                params = OpenOrderParams(
-                    asset_id=token_id)  # type: ignore[misc]
+                params = OpenOrderParams(asset_id=token_id)  # type: ignore[misc]
             data = await asyncio.to_thread(self.clob_client.get_orders, params)
             if isinstance(data, list):
                 return True, data
@@ -1186,8 +1176,7 @@ class PolymarketAdapter(BaseAdapter):
                     web3=web3,
                     chain_id=POLYGON_CHAIN_ID,
                     calls=[
-                        Call(usdce, "balanceOf", args=(
-                            addr,), postprocess=int),
+                        Call(usdce, "balanceOf", args=(addr,), postprocess=int),
                         Call(usdc, "balanceOf", args=(addr,), postprocess=int),
                     ],
                     block_identifier="pending",
@@ -1221,11 +1210,9 @@ class PolymarketAdapter(BaseAdapter):
         if include_orders:
             coros.append(_fetch_orders())
         if include_activity:
-            coros.append(self.get_activity(
-                user=addr, limit=activity_limit, offset=0))
+            coros.append(self.get_activity(user=addr, limit=activity_limit, offset=0))
         if include_trades:
-            coros.append(self.get_trades(
-                user=addr, limit=trades_limit, offset=0))
+            coros.append(self.get_trades(user=addr, limit=trades_limit, offset=0))
 
         results = await asyncio.gather(*coros, return_exceptions=True)
 
@@ -1248,16 +1235,14 @@ class PolymarketAdapter(BaseAdapter):
                 total_current_value = sum(
                     _pnl_float(p.get("currentValue")) for p in positions
                 )
-                total_cash_pnl = sum(_pnl_float(p.get("cashPnl"))
-                                     for p in positions)
+                total_cash_pnl = sum(_pnl_float(p.get("cashPnl")) for p in positions)
                 total_realized_pnl = sum(
                     _pnl_float(p.get("realizedPnl")) for p in positions
                 )
 
                 total_percent_pnl: float | None = None
                 if total_initial_value:
-                    total_percent_pnl = (
-                        total_cash_pnl / total_initial_value) * 100.0
+                    total_percent_pnl = (total_cash_pnl / total_initial_value) * 100.0
 
                 redeemable_count = sum(
                     1 for p in positions if p.get("redeemable") is True
@@ -1429,8 +1414,7 @@ class PolymarketAdapter(BaseAdapter):
             stakeholder_topic: HexBytes | None = None
             if stakeholder:
                 try:
-                    stakeholder_topic = HexBytes(
-                        stakeholder).rjust(32, b"\x00")
+                    stakeholder_topic = HexBytes(stakeholder).rjust(32, b"\x00")
                 except Exception:
                     stakeholder_topic = None
 
@@ -1488,8 +1472,7 @@ class PolymarketAdapter(BaseAdapter):
 
                 for logs in (split_logs, merge_logs):
                     if logs:
-                        parent = HexBytes(
-                            logs[-1]["topics"][2]).rjust(32, b"\x00")
+                        parent = HexBytes(logs[-1]["topics"][2]).rjust(32, b"\x00")
                         if parent.hex() != HexBytes(ZERO32_STR).hex():
                             return bytes(parent)
 
@@ -1517,8 +1500,7 @@ class PolymarketAdapter(BaseAdapter):
         index_sets = await self._outcome_index_sets(condition_id=condition_id)
 
         async def _try_parent(parent: bytes) -> tuple[bool, dict[str, Any] | str]:
-            ctf_addr = self._contract_addrs(neg_risk=False)[
-                "conditional_tokens"]
+            ctf_addr = self._contract_addrs(neg_risk=False)["conditional_tokens"]
             async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
                 ctf = web3.eth.contract(
                     address=to_checksum_address(ctf_addr),

@@ -24,11 +24,14 @@ STRATEGY_WALLET = {
     "private_key_hex": TEST_PK_2,
 }
 
+
 def _mock_find(wallets: dict[str, dict]):
     def find(label):
         return wallets.get(label)
 
-    return patch("wayfinder_paths.core.utils.wallets.find_wallet_by_label", side_effect=find)
+    return patch(
+        "wayfinder_paths.core.utils.wallets.find_wallet_by_label", side_effect=find
+    )
 
 
 def _mock_config(config=None):
