@@ -201,19 +201,17 @@ async def polymarket(
         return err("invalid_request", "wallet_label is required for open_orders")
 
     config: dict[str, Any] | None = None
-    wallet_pk: str | None = None
+    sign_cb = None
     if want and waddr:
         w = find_wallet_by_label(want)
-        wallet_pk = get_private_key(w) if w else None
+        pk = get_private_key(w) if w else None
+        sign_cb = make_sign_callback(pk) if pk else None
         config = dict(CONFIG)
-        wobj: dict[str, Any] = {"address": waddr}
-        if wallet_pk:
-            wobj["private_key_hex"] = wallet_pk
-        config["strategy_wallet"] = wobj
+        config["strategy_wallet"] = {"address": waddr}
 
     adapter = PolymarketAdapter(
         config=config,
-        sign_callback=make_sign_callback(wallet_pk) if wallet_pk else None,
+        sign_callback=sign_cb,
         wallet_address=waddr,
     )
     try:
@@ -339,7 +337,7 @@ async def polymarket(
         if action == "open_orders":
             if not want or not waddr:
                 return err("not_found", f"Unknown wallet_label: {wallet_label}")
-            if not wallet_pk:
+            if not sign_cb:
                 return err(
                     "invalid_wallet",
                     "Wallet must include private_key_hex in config.json to fetch open orders",
