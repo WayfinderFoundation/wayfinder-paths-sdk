@@ -150,9 +150,7 @@ class AerodromeSlipstreamAdapter(
         self,
         deployments: Sequence[str] | None = None,
     ) -> list[str]:
-        raw = list(
-            deployments if deployments is not None else self.default_deployments
-        )
+        raw = list(deployments if deployments is not None else self.default_deployments)
 
         normalized: list[str] = []
         seen: set[str] = set()
