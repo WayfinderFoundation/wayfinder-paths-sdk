@@ -6,10 +6,8 @@ from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAI
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_WETH
 
-AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS: tuple[str, ...] = (
-    "initial",
-    "gauge_caps",
-)
+AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL = "initial"
+AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS = "gauge_caps"
 
 AERODROME_SLIPSTREAM_BY_CHAIN: dict[int, dict[str, object]] = {
     CHAIN_ID_BASE: {

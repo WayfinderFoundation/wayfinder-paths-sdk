@@ -21,8 +21,9 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_abi import (
     AERODROME_SLIPSTREAM_NPM_ABI,
 )
 from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
+    AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+    AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
     AERODROME_SLIPSTREAM_BY_CHAIN,
-    AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS,
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
@@ -74,8 +75,12 @@ def _shared_core_contracts(entry: dict[str, object]) -> dict[str, str]:
     }
 
 
+EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common.EPOCH_SPECIAL_WINDOW_SECONDS
+WEEK_SECONDS = aerodrome_common.WEEK_SECONDS
+
+
 class AerodromeSlipstreamAdapterConfig(TypedDict, total=False):
-    deployments: tuple[str, ...]
+    deployments: Sequence[str]
     write_deployment: str
 
 
@@ -115,12 +120,9 @@ class AerodromeSlipstreamAdapter(
             for name, values in deployments.items()
             if isinstance(values, dict)
         }
-        self.default_deployments: tuple[str, ...] = (config or {}).get(
-            "deployments"
-        ) or AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
         self.write_deployment = (config or {}).get(
             "write_deployment"
-        ) or self.default_deployments[0]
+        ) or AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL
         if self.write_deployment not in self.supported_deployments:
             raise ValueError(
                 f"Unknown Slipstream write deployment: {self.write_deployment}"
@@ -143,9 +145,15 @@ class AerodromeSlipstreamAdapter(
         self,
         deployments: Sequence[str] | None = None,
     ) -> list[str]:
-        raw = deployments if deployments is not None else self.default_deployments
-        if not raw:
-            raw = AERODROME_SLIPSTREAM_DEFAULT_DEPLOYMENTS
+        raw = list(
+            deployments
+            if deployments is not None
+            else (self.config or {}).get("deployments")
+            or [
+                AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
+                AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+            ]
+        )
 
         normalized: list[str] = []
         seen: set[str] = set()
