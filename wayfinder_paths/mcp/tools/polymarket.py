@@ -210,7 +210,11 @@ async def polymarket(
             wobj["private_key_hex"] = wallet_pk
         config["strategy_wallet"] = wobj
 
-    adapter = PolymarketAdapter(config=config)
+    adapter = PolymarketAdapter(
+        config=config,
+        wallet_address=waddr,
+        private_key_hex=wallet_pk,
+    )
     try:
         if action == "status":
             ok_state, state = await adapter.get_full_user_state(
@@ -436,7 +440,11 @@ async def polymarket_execute(
     cfg["strategy_wallet"] = {"address": sender, "private_key_hex": pk}
 
     effects: list[dict[str, Any]] = []
-    adapter = PolymarketAdapter(config=cfg)
+    adapter = PolymarketAdapter(
+        config=cfg,
+        wallet_address=sender,
+        private_key_hex=pk,
+    )
     try:
 
         def _done(status: str) -> dict[str, Any]:

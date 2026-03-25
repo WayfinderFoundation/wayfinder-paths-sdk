@@ -39,7 +39,7 @@ def make_sign_typed_data_callback(private_key: str):
         msg = json.loads(payload) if isinstance(payload, str) else payload
         signable = encode_typed_data(full_message=msg)
         signed = account.sign_message(signable)
-        return signed.signature.hex()
+        return "0x" + signed.signature.hex()
 
     return sign_typed_data
 
