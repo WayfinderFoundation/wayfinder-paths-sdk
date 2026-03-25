@@ -60,7 +60,7 @@ If some vault lens calls fail, the adapter logs warnings and returns:
 
 `EulerV2Adapter` uses a non-standard signing callback arg (`strategy_wallet_signing_callback`), so:
 - **Don’t** call `get_adapter(EulerV2Adapter, "main")` (it will error)
-- **Do** wire it via `_resolve_wallet(...)` and `config_overrides` as shown in `rules/execution-opportunities.md`
+- **Do** wire it via `get_wallet_signing_callback(...)` and `config_overrides` as shown in `rules/execution-opportunities.md`
 
 ## Approvals are large by default
 

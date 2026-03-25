@@ -173,7 +173,7 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+            adapter, "_require_signer", lambda: (from_address, sign_cb)
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
@@ -232,7 +232,7 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+            adapter, "_require_signer", lambda: (from_address, sign_cb)
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
@@ -294,7 +294,7 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+            adapter, "_require_signer", lambda: (from_address, sign_cb)
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
@@ -434,7 +434,7 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+            adapter, "_require_signer", lambda: (from_address, sign_cb)
         )
 
         best_quote = {
@@ -488,7 +488,7 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
+            adapter, "_require_signer", lambda: (from_address, sign_cb)
         )
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,

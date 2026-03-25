@@ -4,11 +4,9 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from aiocache import Cache
-from eth_account import Account
-from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
 from hyperliquid.exchange import Exchange, get_timestamp_ms
 from hyperliquid.utils.signing import (
@@ -30,9 +28,6 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
-from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
-    create_local_signer,
-)
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import (
@@ -45,6 +40,11 @@ from wayfinder_paths.core.constants.hyperliquid import (
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.wallets import (
+    account_from_key,
+    get_private_key,
+    make_sign_typed_data_callback,
+)
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
@@ -74,37 +74,29 @@ class HyperliquidAdapter(BaseAdapter):
             or ZERO_ADDRESS
         )
 
-        if sign_callback is not None:
-            self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
-            self._signing_type: Literal["eip712", "local"] = "eip712"
-        elif config:
-            self._sign_callback = create_local_signer(config)
-            self._signing_type = "local"
-        else:
-            self._sign_callback = None
-            self._signing_type = "local"
-
         self._local_account = self._build_local_account(config or {})
         self._exchange = (
             Exchange(self._local_account) if self._local_account is not None else None
         )
 
+        if sign_callback is not None:
+            self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
+        elif self._local_account is not None:
+            self._sign_callback = make_sign_typed_data_callback(
+                self._local_account.key.hex()
+            )
+        else:
+            self._sign_callback = None
+
     @staticmethod
     def _build_local_account(config: dict[str, Any]) -> Any | None:
-        strategy_wallet = config.get("strategy_wallet") or {}
-        main_wallet = config.get("main_wallet") or {}
-        private_key = (
-            strategy_wallet.get("private_key_hex")
-            or strategy_wallet.get("private_key")
-            or main_wallet.get("private_key_hex")
-            or main_wallet.get("private_key")
-        )
-        if not private_key:
-            return None
-        private_key = (
-            private_key if str(private_key).startswith("0x") else f"0x{private_key}"
-        )
-        return Account.from_key(str(private_key))
+        for key in ("strategy_wallet", "main_wallet"):
+            w = config.get(key) or {}
+            if isinstance(w, dict):
+                pk = get_private_key(w)
+                if pk:
+                    return account_from_key(pk)
+        return None
 
     def _require_exchange(self) -> Exchange:
         if self._exchange is None:
@@ -196,19 +188,12 @@ class HyperliquidAdapter(BaseAdapter):
         self, payload: str, action: dict[str, Any], address: str
     ) -> dict[str, Any] | None:
         if self._sign_callback is None:
-            raise ValueError(
-                "Config required for local signing (no sign_callback provided)"
-            )
+            raise ValueError("No sign_callback configured")
 
-        if self._signing_type == "eip712":
-            sig_hex = await self._sign_callback(payload)
-            if not sig_hex:
-                return None
-            return self._sig_hex_to_hl_signature(sig_hex)
-
-        encoded_payload = encode_typed_data(full_message=payload)
-        result = await self._sign_callback(action, encoded_payload, address)
-        return cast(dict[str, Any] | None, result)
+        sig_hex = await self._sign_callback(payload)
+        if not sig_hex:
+            return None
+        return self._sig_hex_to_hl_signature(sig_hex)
 
     async def _sign_and_broadcast_hypecore(
         self, action: dict[str, Any], address: str

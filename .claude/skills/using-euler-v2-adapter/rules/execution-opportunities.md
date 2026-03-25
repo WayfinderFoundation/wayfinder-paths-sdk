@@ -17,10 +17,11 @@ In ad-hoc scripts under `.wayfinder_runs/`, wire it like this:
 
 ```python
 """Create a write-enabled EulerV2Adapter from a local wallet label."""
-from wayfinder_paths.mcp.scripting import get_adapter, _resolve_wallet
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.euler_v2_adapter import EulerV2Adapter
 
-sign_cb, addr = _resolve_wallet("main")
+sign_cb, addr = get_wallet_signing_callback("main")
 adapter = get_adapter(
     EulerV2Adapter,
     config_overrides={"strategy_wallet": {"address": addr}},
@@ -34,7 +35,8 @@ adapter = get_adapter(
 
 ```python
 import asyncio
-from wayfinder_paths.mcp.scripting import get_adapter, _resolve_wallet
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.euler_v2_adapter import EulerV2Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
@@ -42,7 +44,7 @@ COLLATERAL_VAULT = "0x0000000000000000000000000000000000000000"
 AMOUNT = 1_000_000  # raw underlying units (example: 1 USDC if 6 decimals)
 
 async def main():
-    sign_cb, addr = _resolve_wallet("main")
+    sign_cb, addr = get_wallet_signing_callback("main")
     adapter = get_adapter(
         EulerV2Adapter,
         config_overrides={"strategy_wallet": {"address": addr}},

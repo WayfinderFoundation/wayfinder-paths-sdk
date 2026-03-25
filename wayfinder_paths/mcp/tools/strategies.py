@@ -10,7 +10,7 @@ from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_address
 from wayfinder_paths.core.utils.web3 import get_transaction_chain_id, web3_from_chain_id
-from wayfinder_paths.mcp.utils import err, ok, repo_root
+from wayfinder_paths.mcp.utils import err, get_private_key, ok, repo_root
 
 
 def _strategy_dir(name: str) -> Path:
@@ -43,7 +43,7 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
     for key in ("main_wallet", "strategy_wallet"):
         if wallet := config.get(key):
             if entry := by_addr.get(wallet.get("address", "").lower()):
-                if pk := entry.get("private_key") or entry.get("private_key_hex"):
+                if pk := get_private_key(entry):
                     wallet["private_key_hex"] = pk
     return config
 

@@ -3,22 +3,80 @@ from pathlib import Path
 from typing import Any
 
 from eth_account import Account
+from eth_account.messages import encode_typed_data
 
-from wayfinder_paths.core.config import load_wallet_mnemonic, write_wallet_mnemonic
+from wayfinder_paths.core.config import (
+    CONFIG,
+    load_wallet_mnemonic,
+    write_wallet_mnemonic,
+)
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
 Account.enable_unaudited_hdwallet_features()
 
 
+def account_from_key(private_key: str) -> Account:
+    pk = private_key.strip()
+    return Account.from_key(pk if pk.startswith("0x") else f"0x{pk}")
+
+
 def make_sign_callback(private_key: str):
-    account = Account.from_key(private_key)
+    account = account_from_key(private_key)
 
     async def sign_callback(transaction: dict) -> bytes:
         signed = account.sign_transaction(transaction)
         return signed.raw_transaction
 
     return sign_callback
+
+
+def make_sign_typed_data_callback(private_key: str):
+    """EIP-712 typed data signer. Accepts JSON string or dict. Returns async callback -> hex_signature."""
+    account = account_from_key(private_key)
+
+    async def sign_typed_data(payload: str | dict) -> str:
+        msg = json.loads(payload) if isinstance(payload, str) else payload
+        signable = encode_typed_data(full_message=msg)
+        signed = account.sign_message(signable)
+        return signed.signature.hex()
+
+    return sign_typed_data
+
+
+def get_private_key(wallet: dict[str, Any]) -> str | None:
+    pk = wallet.get("private_key") or wallet.get("private_key_hex")
+    return str(pk).strip() if pk else None
+
+
+def resolve_wallet(label: str) -> tuple[str, str]:
+    """Look up wallet by label, return (address, private_key). Raises on failure."""
+    wallet = find_wallet_by_label(label)
+    if not wallet:
+        raise ValueError(f"Wallet '{label}' not found in config.json.")
+    address = wallet.get("address")
+    if not address:
+        raise ValueError(f"Wallet '{label}' has no address.")
+    pk = get_private_key(wallet)
+    if not pk:
+        raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
+    return str(address).strip(), pk
+
+
+def get_wallet_signing_callback(label: str):
+    """Look up wallet by label, return (sign_callback, address). Raises on failure."""
+    address, pk = resolve_wallet(label)
+    return make_sign_callback(pk), address
+
+
+def find_wallet_by_label(label: str) -> dict[str, Any] | None:
+    want = str(label).strip()
+    if not want:
+        return None
+    for w in load_wallets():
+        if str(w.get("label", "")).strip() == want:
+            return w
+    return None
 
 
 def make_random_wallet() -> dict[str, str]:
@@ -211,6 +269,11 @@ def write_wallet_to_json(
 
 
 def load_wallets(
-    out_dir: str | Path = ".", filename: str = "config.json"
+    out_dir: str | Path | None = None, filename: str = "config.json"
 ) -> list[dict[str, Any]]:
-    return _load_existing_wallets(Path(out_dir) / filename)
+    if out_dir is not None:
+        return _load_existing_wallets(Path(out_dir) / filename)
+    wallets = CONFIG.get("wallets")
+    if isinstance(wallets, list):
+        return [w for w in wallets if isinstance(w, dict)]
+    return []

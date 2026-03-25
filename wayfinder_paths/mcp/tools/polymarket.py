@@ -14,8 +14,10 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
     find_wallet_by_label,
+    get_private_key,
     normalize_address,
     ok,
+    resolve_wallet,
 )
 
 _TRIM_MARKET_FIELDS: set[str] = {
@@ -99,23 +101,15 @@ def _trim_market(m: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _resolve_wallet(
-    *, wallet_label: str | None
-) -> tuple[str | None, str | None, str | None]:
-    want = (wallet_label or "").strip()
+def _find_wallet_address(label: str | None) -> tuple[str | None, str | None]:
+    """Return (label, address) or (label, None) if not found. Soft lookup for read-only paths."""
+    want = (label or "").strip()
     if not want:
-        return None, None, None
+        return None, None
     w = find_wallet_by_label(want)
     if not w:
-        return want, None, None
-    addr = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    pk_s = str(pk).strip() if pk else None
-    return want, addr, pk_s
+        return want, None
+    return want, normalize_address(w.get("address"))
 
 
 def _annotate(
@@ -183,11 +177,11 @@ async def polymarket(
     end_ts: int | None = None,
     fidelity: int | None = None,
 ) -> dict[str, Any]:
-    want, waddr, _pk = _resolve_wallet(wallet_label=wallet_label)
+    want, waddr = _find_wallet_address(wallet_label)
 
     acct = normalize_address(account) or normalize_address(wallet_address) or waddr
 
-    if (wallet_label or "").strip() and want and not waddr:
+    if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
 
     # Most actions require an account; search/data-only actions do not.
@@ -206,11 +200,14 @@ async def polymarket(
         return err("invalid_request", "wallet_label is required for open_orders")
 
     config: dict[str, Any] | None = None
+    wallet_pk: str | None = None
     if want and waddr:
+        w = find_wallet_by_label(want)
+        wallet_pk = get_private_key(w) if w else None
         config = dict(CONFIG)
         wobj: dict[str, Any] = {"address": waddr}
-        if _pk:
-            wobj["private_key_hex"] = _pk
+        if wallet_pk:
+            wobj["private_key_hex"] = wallet_pk
         config["strategy_wallet"] = wobj
 
     adapter = PolymarketAdapter(config=config)
@@ -337,7 +334,7 @@ async def polymarket(
         if action == "open_orders":
             if not want or not waddr:
                 return err("not_found", f"Unknown wallet_label: {wallet_label}")
-            if not _pk:
+            if not wallet_pk:
                 return err(
                     "invalid_wallet",
                     "Wallet must include private_key_hex in config.json to fetch open orders",
@@ -399,15 +396,11 @@ async def polymarket_execute(
     # redeem
     condition_id: str | None = None,
 ) -> dict[str, Any]:
-    want, sender, pk = _resolve_wallet(wallet_label=wallet_label)
-    if not want:
-        return err("invalid_request", "wallet_label is required")
-    if not sender or not pk:
-        return err(
-            "invalid_wallet",
-            "Wallet must include address and private_key_hex in config.json (local dev only)",
-            {"wallet_label": want},
-        )
+    try:
+        sender, pk = resolve_wallet(wallet_label or "")
+    except ValueError as e:
+        return err("invalid_wallet", str(e))
+    want = wallet_label
 
     tool_input = {
         "action": action,
