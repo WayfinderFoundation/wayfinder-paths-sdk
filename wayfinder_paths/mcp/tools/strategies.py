@@ -8,9 +8,8 @@ from typing import Any, Literal
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
-from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_address
-from wayfinder_paths.core.utils.web3 import get_transaction_chain_id, web3_from_chain_id
-from wayfinder_paths.mcp.utils import err, get_private_key, ok, repo_root
+from wayfinder_paths.core.utils.wallets import get_private_key, make_sign_callback
+from wayfinder_paths.mcp.utils import err, ok, repo_root
 
 
 def _strategy_dir(name: str) -> Path:
@@ -46,17 +45,6 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
                 if pk := get_private_key(entry):
                     wallet["private_key_hex"] = pk
     return config
-
-
-def _create_signing_callback(address: str, config: dict[str, Any]):
-    async def sign(transaction: dict) -> str:
-        pk = resolve_private_key_for_from_address(address, config)
-        async with web3_from_chain_id(get_transaction_chain_id(transaction)) as web3:
-            return web3.eth.account.sign_transaction(
-                transaction, pk
-            ).raw_transaction.hex()
-
-    return sign
 
 
 async def run_strategy(
@@ -115,9 +103,9 @@ async def run_strategy(
     config = _get_strategy_config(strategy)
 
     def signing_cb(key: str):
-        if addr := config.get(key, {}).get("address"):
-            return _create_signing_callback(addr, config)
-        return None
+        wallet = config.get(key, {})
+        pk = get_private_key(wallet) if isinstance(wallet, dict) else None
+        return make_sign_callback(pk) if pk else None
 
     try:
         strategy_obj = strategy_class(

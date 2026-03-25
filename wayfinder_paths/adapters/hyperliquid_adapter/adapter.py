@@ -40,10 +40,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.wallets import (
-    get_private_key,
-    make_sign_typed_data_callback,
-)
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
@@ -73,21 +69,7 @@ class HyperliquidAdapter(BaseAdapter):
             or ZERO_ADDRESS
         )
 
-        if sign_callback is not None:
-            self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
-        else:
-            pk = self._resolve_private_key(config or {})
-            self._sign_callback = make_sign_typed_data_callback(pk) if pk else None
-
-    @staticmethod
-    def _resolve_private_key(config: dict[str, Any]) -> str | None:
-        for key in ("strategy_wallet", "main_wallet"):
-            w = config.get(key) or {}
-            if isinstance(w, dict):
-                pk = get_private_key(w)
-                if pk:
-                    return pk
-        return None
+        self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
 
     async def _post_across_dexes(
         self,

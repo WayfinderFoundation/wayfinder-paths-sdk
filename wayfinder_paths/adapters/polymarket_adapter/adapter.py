@@ -49,7 +49,6 @@ from wayfinder_paths.core.utils.tokens import (
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.units import to_erc20_raw
-from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
@@ -149,7 +148,6 @@ class PolymarketAdapter(BaseAdapter):
         *,
         sign_callback=None,
         wallet_address: str | None = None,
-        private_key_hex: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
         gamma_base_url: str = POLYMARKET_GAMMA_BASE_URL,
@@ -163,16 +161,9 @@ class PolymarketAdapter(BaseAdapter):
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
-        self._private_key_hex = private_key_hex
+        self.sign_callback = sign_callback
         self._funder_override = funder
         self._signature_type = signature_type
-
-        if sign_callback is not None:
-            self.sign_callback = sign_callback
-        elif private_key_hex:
-            self.sign_callback = make_sign_callback(private_key_hex)
-        else:
-            self.sign_callback = None
 
         timeout = httpx.Timeout(http_timeout_s)
         self._gamma_http = httpx.AsyncClient(base_url=gamma_base_url, timeout=timeout)
@@ -942,14 +933,18 @@ class PolymarketAdapter(BaseAdapter):
     @property
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
         if self._clob_client is None:
-            pk = self._resolve_private_key()
+            addr = self._require_wallet_address()
+            if not self.sign_callback:
+                raise ValueError("sign_callback is required for CLOB trading.")
             funder = self._require_funder()
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
                 chain_id=POLYGON_CHAIN_ID,
-                key=pk,
+                key="0x" + "00" * 32,
                 signature_type=self._signature_type,
                 funder=funder,
+                address_override=addr,
+                sign_callback_override=self.sign_callback,
             )
         return self._clob_client  # type: ignore[return-value]
 

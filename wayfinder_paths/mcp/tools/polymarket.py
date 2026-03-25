@@ -9,6 +9,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
     POLYGON_USDC_ADDRESS,
 )
+from wayfinder_paths.core.utils.wallets import make_sign_callback
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -212,8 +213,8 @@ async def polymarket(
 
     adapter = PolymarketAdapter(
         config=config,
+        sign_callback=make_sign_callback(wallet_pk) if wallet_pk else None,
         wallet_address=waddr,
-        private_key_hex=wallet_pk,
     )
     try:
         if action == "status":
@@ -442,8 +443,8 @@ async def polymarket_execute(
     effects: list[dict[str, Any]] = []
     adapter = PolymarketAdapter(
         config=cfg,
+        sign_callback=make_sign_callback(pk),
         wallet_address=sender,
-        private_key_hex=pk,
     )
     try:
 
