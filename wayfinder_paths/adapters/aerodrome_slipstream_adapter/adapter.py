@@ -116,6 +116,15 @@ class AerodromeSlipstreamAdapter(
             for name, values in deployments.items()
             if isinstance(values, dict)
         }
+        configured_deployments = (config or {}).get("deployments")
+        self.default_deployments: list[str] = list(
+            configured_deployments
+            if configured_deployments is not None
+            else [
+                AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
+                AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+            ]
+        )
         self.write_deployment = (config or {}).get(
             "write_deployment"
         ) or AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL
@@ -142,13 +151,7 @@ class AerodromeSlipstreamAdapter(
         deployments: Sequence[str] | None = None,
     ) -> list[str]:
         raw = list(
-            deployments
-            if deployments is not None
-            else (self.config or {}).get("deployments")
-            or [
-                AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
-                AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
-            ]
+            deployments if deployments is not None else self.default_deployments
         )
 
         normalized: list[str] = []
