@@ -7,8 +7,6 @@ import pytest
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 import wayfinder_paths.adapters.aerodrome_slipstream_adapter.adapter as slipstream_module
 from wayfinder_paths.adapters.aerodrome_slipstream_adapter.adapter import (
-    EPOCH_SPECIAL_WINDOW_SECONDS,
-    WEEK_SECONDS,
     AerodromeSlipstreamAdapter,
 )
 from wayfinder_paths.core.constants import ZERO_ADDRESS
@@ -19,6 +17,9 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     slippage_min,
     sqrt_price_x96_from_tick,
 )
+
+EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
+WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
 
 FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 FAKE_POOL = "0x0000000000000000000000000000000000000001"

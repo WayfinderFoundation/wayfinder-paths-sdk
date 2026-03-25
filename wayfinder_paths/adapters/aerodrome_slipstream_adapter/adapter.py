@@ -75,10 +75,6 @@ def _shared_core_contracts(entry: dict[str, object]) -> dict[str, str]:
     }
 
 
-EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common.EPOCH_SPECIAL_WINDOW_SECONDS
-WEEK_SECONDS = aerodrome_common.WEEK_SECONDS
-
-
 class AerodromeSlipstreamAdapterConfig(TypedDict, total=False):
     deployments: Sequence[str]
     write_deployment: str

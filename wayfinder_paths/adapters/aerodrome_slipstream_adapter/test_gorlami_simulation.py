@@ -5,9 +5,8 @@ from decimal import Decimal, getcontext
 import pytest
 from eth_account import Account
 
+import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 from wayfinder_paths.adapters.aerodrome_slipstream_adapter.adapter import (
-    EPOCH_SPECIAL_WINDOW_SECONDS,
-    WEEK_SECONDS,
     AerodromeSlipstreamAdapter,
 )
 from wayfinder_paths.core.constants.aerodrome_abi import (
@@ -415,3 +414,5 @@ async def test_gorlami_aerodrome_slipstream_vote_and_state(gorlami):
 
     assert int(vote_weight_after) == 0
     assert voted_flag_after is False
+EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
+WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
