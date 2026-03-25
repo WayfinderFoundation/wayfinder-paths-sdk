@@ -11,7 +11,7 @@ Adapter for EigenCloud (EigenLayer) restaking on Ethereum mainnet.
 - Deposit into whitelisted strategies via `deposit()` with automatic ERC-20 approval
 - Read delegation state via `get_delegation_state()`
 - Delegate, undelegate, and redelegate via `delegate()`, `undelegate()`, and `redelegate()`
-- Queue withdrawals, decode `withdrawal_roots`, inspect queued withdrawals, and complete matured withdrawals
+- Queue withdrawals, decode `withdrawal_roots`, inspect queued withdrawals, and submit withdrawal completion transactions for eligible queued withdrawals
 - Read positions and combined account state via `get_pos()` and `get_full_user_state()`
 - Rewards helpers: read metadata, set claimer, validate prepared claims, and submit prepared claims or raw calldata
 
@@ -19,6 +19,7 @@ Adapter for EigenCloud (EigenLayer) restaking on Ethereum mainnet.
 
 - Ethereum mainnet only
 - Write methods require `wallet_address` and `sign_callback`
+- Withdrawal eligibility is enforced onchain by EigenLayer; `complete_withdrawal()` submits the completion transaction but does not pre-check the delay
 - Rewards proof generation is not implemented here; claim methods expect a prepared claim struct or calldata
 
 ## Quick Usage
