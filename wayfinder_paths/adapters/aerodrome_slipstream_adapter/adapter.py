@@ -32,7 +32,13 @@ from wayfinder_paths.core.utils.multicall import (
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.uniswap_v3_math import deadline as default_deadline
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    amounts_for_liq_inrange,
+    deadline as default_deadline,
+    liq_for_amounts,
+    slippage_min,
+    sqrt_price_x96_from_tick,
+)
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 MAX_UINT128 = (1 << 128) - 1
@@ -46,9 +52,13 @@ def _checksum_or_zero(value: str | None) -> str:
     return to_checksum_address(value)
 
 
-def _resolve_amount_min(amount_min: int | None) -> int:
-    # Slipstream desired amounts are max inputs, not a safe quote basis for bps mins.
-    return 0 if amount_min is None else amount_min
+def _explicit_amount_min(amount_min: int | None) -> int | None:
+    if amount_min is None:
+        return None
+    value = int(amount_min)
+    if value < 0:
+        raise ValueError("amount mins must be non-negative")
+    return value
 
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -229,6 +239,144 @@ class AerodromeSlipstreamAdapter(
 
         variant, pm, owner = matches[0]
         return variant, self._deployment(variant), pm, owner
+
+    async def _current_sqrt_price_x96(
+        self,
+        *,
+        deployment: dict[str, str],
+        token0: str,
+        token1: str,
+        tick_spacing: int,
+        initial_sqrt_price_x96: int | None = None,
+    ) -> int:
+        async with web3_from_chain_id(self.chain_id) as web3:
+            factory = web3.eth.contract(
+                address=deployment["pool_factory"],
+                abi=AERODROME_SLIPSTREAM_CL_FACTORY_ABI,
+            )
+            pool = await factory.functions.getPool(
+                to_checksum_address(token0),
+                to_checksum_address(token1),
+                int(tick_spacing),
+            ).call(block_identifier="latest")
+            pool_addr = _checksum_or_zero(pool)
+
+            if pool_addr != ZERO_ADDRESS:
+                pool_contract = web3.eth.contract(
+                    address=pool_addr,
+                    abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
+                )
+                slot0 = await pool_contract.functions.slot0().call(
+                    block_identifier="latest"
+                )
+                return int(slot0[0])
+
+        if initial_sqrt_price_x96 is not None and int(initial_sqrt_price_x96) > 0:
+            return int(initial_sqrt_price_x96)
+
+        raise ValueError(
+            "amount mins are required when pool price cannot be resolved"
+        )
+
+    async def _resolve_position_amount_mins(
+        self,
+        *,
+        deployment: dict[str, str],
+        token0: str,
+        token1: str,
+        tick_spacing: int,
+        tick_lower: int,
+        tick_upper: int,
+        amount0_desired: int,
+        amount1_desired: int,
+        amount0_min: int | None,
+        amount1_min: int | None,
+        slippage_bps: int,
+        initial_sqrt_price_x96: int | None = None,
+    ) -> tuple[int, int]:
+        explicit0 = _explicit_amount_min(amount0_min)
+        explicit1 = _explicit_amount_min(amount1_min)
+        if explicit0 is not None and explicit1 is not None:
+            return explicit0, explicit1
+
+        sqrt_price_x96 = await self._current_sqrt_price_x96(
+            deployment=deployment,
+            token0=token0,
+            token1=token1,
+            tick_spacing=tick_spacing,
+            initial_sqrt_price_x96=initial_sqrt_price_x96,
+        )
+        sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
+        sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+        liquidity = liq_for_amounts(
+            int(sqrt_price_x96),
+            sqrt_lower,
+            sqrt_upper,
+            int(amount0_desired),
+            int(amount1_desired),
+        )
+        expected0, expected1 = amounts_for_liq_inrange(
+            int(sqrt_price_x96),
+            sqrt_lower,
+            sqrt_upper,
+            liquidity,
+        )
+        if expected0 <= 0 and expected1 <= 0:
+            raise ValueError("could not derive non-zero amount mins from current price")
+
+        return (
+            explicit0
+            if explicit0 is not None
+            else slippage_min(expected0, slippage_bps),
+            explicit1
+            if explicit1 is not None
+            else slippage_min(expected1, slippage_bps),
+        )
+
+    async def _resolve_liquidity_amount_mins(
+        self,
+        *,
+        deployment: dict[str, str],
+        token0: str,
+        token1: str,
+        tick_spacing: int,
+        tick_lower: int,
+        tick_upper: int,
+        liquidity: int,
+        amount0_min: int | None,
+        amount1_min: int | None,
+        slippage_bps: int,
+    ) -> tuple[int, int]:
+        explicit0 = _explicit_amount_min(amount0_min)
+        explicit1 = _explicit_amount_min(amount1_min)
+        if explicit0 is not None and explicit1 is not None:
+            return explicit0, explicit1
+
+        sqrt_price_x96 = await self._current_sqrt_price_x96(
+            deployment=deployment,
+            token0=token0,
+            token1=token1,
+            tick_spacing=tick_spacing,
+        )
+        sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
+        sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+        expected0, expected1 = amounts_for_liq_inrange(
+            int(sqrt_price_x96),
+            sqrt_lower,
+            sqrt_upper,
+            int(liquidity),
+        )
+        if expected0 <= 0 and expected1 <= 0:
+            raise ValueError("could not derive non-zero amount mins from current price")
+
+        return (
+            explicit0
+            if explicit0 is not None
+            else slippage_min(expected0, slippage_bps),
+            explicit1
+            if explicit1 is not None
+            else slippage_min(expected1, slippage_bps),
+        )
 
     async def _ensure_erc721_approval(
         self,
@@ -963,6 +1111,7 @@ class AerodromeSlipstreamAdapter(
         position_manager: str | None = None,
         amount0_min: int | None = None,
         amount1_min: int | None = None,
+        slippage_bps: int = 50,
         recipient: str | None = None,
         deadline: int | None = None,
         sqrt_price_x96: int = 0,
@@ -975,15 +1124,27 @@ class AerodromeSlipstreamAdapter(
             return False, "sign_callback is required"
 
         try:
-            _, _, npm_address = self._select_write_target(
+            _, deployment, npm_address = self._select_write_target(
                 deployment_variant=deployment_variant,
                 position_manager=position_manager,
             )
             owner = to_checksum_address(self.wallet_address)
             recipient_addr = to_checksum_address(recipient) if recipient else owner
             dl = deadline if deadline is not None else default_deadline()
-            a0_min = _resolve_amount_min(amount0_min)
-            a1_min = _resolve_amount_min(amount1_min)
+            a0_min, a1_min = await self._resolve_position_amount_mins(
+                deployment=deployment,
+                token0=token0,
+                token1=token1,
+                tick_spacing=tick_spacing,
+                tick_lower=tick_lower,
+                tick_upper=tick_upper,
+                amount0_desired=amount0_desired,
+                amount1_desired=amount1_desired,
+                amount0_min=amount0_min,
+                amount1_min=amount1_min,
+                slippage_bps=slippage_bps,
+                initial_sqrt_price_x96=sqrt_price_x96,
+            )
 
             approved0 = await ensure_allowance(
                 token_address=to_checksum_address(token0),
@@ -1051,6 +1212,7 @@ class AerodromeSlipstreamAdapter(
         position_manager: str | None = None,
         amount0_min: int | None = None,
         amount1_min: int | None = None,
+        slippage_bps: int = 50,
         deadline: int | None = None,
     ) -> tuple[bool, Any]:
         if amount0_desired <= 0 or amount1_desired <= 0:
@@ -1059,7 +1221,7 @@ class AerodromeSlipstreamAdapter(
             return False, "sign_callback is required"
 
         try:
-            variant, _, npm_address, owner = await self._resolve_token_manager(
+            variant, deployment, npm_address, owner = await self._resolve_token_manager(
                 token_id=token_id,
                 position_manager=position_manager,
             )
@@ -1077,6 +1239,25 @@ class AerodromeSlipstreamAdapter(
                 )
                 token0 = to_checksum_address(pos[2])
                 token1 = to_checksum_address(pos[3])
+                tick_spacing = int(pos[4])
+                tick_lower = int(pos[5])
+                tick_upper = int(pos[6])
+
+            amount0_min_resolved, amount1_min_resolved = (
+                await self._resolve_position_amount_mins(
+                    deployment=deployment,
+                    token0=token0,
+                    token1=token1,
+                    tick_spacing=tick_spacing,
+                    tick_lower=tick_lower,
+                    tick_upper=tick_upper,
+                    amount0_desired=amount0_desired,
+                    amount1_desired=amount1_desired,
+                    amount0_min=amount0_min,
+                    amount1_min=amount1_min,
+                    slippage_bps=slippage_bps,
+                )
+            )
 
             approved0 = await ensure_allowance(
                 token_address=token0,
@@ -1106,8 +1287,8 @@ class AerodromeSlipstreamAdapter(
                 token_id,
                 amount0_desired,
                 amount1_desired,
-                _resolve_amount_min(amount0_min),
-                _resolve_amount_min(amount1_min),
+                amount0_min_resolved,
+                amount1_min_resolved,
                 deadline if deadline is not None else default_deadline(),
             )
             tx = await encode_call(
@@ -1134,8 +1315,9 @@ class AerodromeSlipstreamAdapter(
         token_id: int,
         liquidity: int,
         position_manager: str | None = None,
-        amount0_min: int = 0,
-        amount1_min: int = 0,
+        amount0_min: int | None = None,
+        amount1_min: int | None = None,
+        slippage_bps: int = 50,
         deadline: int | None = None,
     ) -> tuple[bool, Any]:
         if liquidity <= 0:
@@ -1144,7 +1326,7 @@ class AerodromeSlipstreamAdapter(
             return False, "sign_callback is required"
 
         try:
-            variant, _, npm_address, owner = await self._resolve_token_manager(
+            variant, deployment, npm_address, owner = await self._resolve_token_manager(
                 token_id=token_id,
                 position_manager=position_manager,
             )
@@ -1152,11 +1334,40 @@ class AerodromeSlipstreamAdapter(
             if owner.lower() != wallet.lower():
                 return False, "wallet does not currently own token_id"
 
+            async with web3_from_chain_id(self.chain_id) as web3:
+                npm = web3.eth.contract(
+                    address=npm_address,
+                    abi=AERODROME_SLIPSTREAM_NPM_ABI,
+                )
+                pos = await npm.functions.positions(token_id).call(
+                    block_identifier="latest"
+                )
+                token0 = to_checksum_address(pos[2])
+                token1 = to_checksum_address(pos[3])
+                tick_spacing = int(pos[4])
+                tick_lower = int(pos[5])
+                tick_upper = int(pos[6])
+
+            amount0_min_resolved, amount1_min_resolved = (
+                await self._resolve_liquidity_amount_mins(
+                    deployment=deployment,
+                    token0=token0,
+                    token1=token1,
+                    tick_spacing=tick_spacing,
+                    tick_lower=tick_lower,
+                    tick_upper=tick_upper,
+                    liquidity=liquidity,
+                    amount0_min=amount0_min,
+                    amount1_min=amount1_min,
+                    slippage_bps=slippage_bps,
+                )
+            )
+
             params = (
                 token_id,
                 liquidity,
-                amount0_min,
-                amount1_min,
+                amount0_min_resolved,
+                amount1_min_resolved,
                 deadline if deadline is not None else default_deadline(),
             )
             tx = await encode_call(

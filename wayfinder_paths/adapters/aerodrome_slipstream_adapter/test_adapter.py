@@ -11,7 +11,14 @@ from wayfinder_paths.adapters.aerodrome_slipstream_adapter.adapter import (
     WEEK_SECONDS,
     AerodromeSlipstreamAdapter,
 )
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    amounts_for_liq_inrange,
+    liq_for_amounts,
+    slippage_min,
+    sqrt_price_x96_from_tick,
+)
 
 FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 FAKE_POOL = "0x0000000000000000000000000000000000000001"
@@ -305,3 +312,304 @@ async def test_claim_fees_auto_discovers_reward_tokens(adapter_with_signer):
     args = mock_encode.await_args.kwargs["args"]
     assert args[2] == 1
     assert args[1] == [["0x0000000000000000000000000000000000000005"]]
+
+
+@pytest.mark.asyncio
+async def test_resolve_position_amount_mins_derives_from_current_price(adapter_with_signer):
+    sqrt_price_x96 = sqrt_price_x96_from_tick(0)
+    tick_lower = -120
+    tick_upper = 120
+    amount0_desired = 1_000_000
+    amount1_desired = 1_000_000
+
+    with patch.object(
+        adapter_with_signer,
+        "_current_sqrt_price_x96",
+        new=AsyncMock(return_value=sqrt_price_x96),
+    ):
+        amount0_min, amount1_min = await adapter_with_signer._resolve_position_amount_mins(
+            deployment=adapter_with_signer._deployment("initial"),
+            token0="0x0000000000000000000000000000000000000001",
+            token1="0x0000000000000000000000000000000000000002",
+            tick_spacing=60,
+            tick_lower=tick_lower,
+            tick_upper=tick_upper,
+            amount0_desired=amount0_desired,
+            amount1_desired=amount1_desired,
+            amount0_min=None,
+            amount1_min=None,
+            slippage_bps=50,
+        )
+
+    sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+    sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
+    liquidity = liq_for_amounts(
+        sqrt_price_x96,
+        sqrt_lower,
+        sqrt_upper,
+        amount0_desired,
+        amount1_desired,
+    )
+    expected0, expected1 = amounts_for_liq_inrange(
+        sqrt_price_x96,
+        sqrt_lower,
+        sqrt_upper,
+        liquidity,
+    )
+    assert amount0_min == slippage_min(expected0, 50)
+    assert amount1_min == slippage_min(expected1, 50)
+    assert amount0_min > 0
+    assert amount1_min > 0
+
+
+@pytest.mark.asyncio
+async def test_resolve_liquidity_amount_mins_derives_from_current_price(adapter_with_signer):
+    sqrt_price_x96 = sqrt_price_x96_from_tick(0)
+    tick_lower = -120
+    tick_upper = 120
+    liquidity = 100_000
+
+    with patch.object(
+        adapter_with_signer,
+        "_current_sqrt_price_x96",
+        new=AsyncMock(return_value=sqrt_price_x96),
+    ):
+        amount0_min, amount1_min = await adapter_with_signer._resolve_liquidity_amount_mins(
+            deployment=adapter_with_signer._deployment("initial"),
+            token0="0x0000000000000000000000000000000000000001",
+            token1="0x0000000000000000000000000000000000000002",
+            tick_spacing=60,
+            tick_lower=tick_lower,
+            tick_upper=tick_upper,
+            liquidity=liquidity,
+            amount0_min=None,
+            amount1_min=None,
+            slippage_bps=50,
+        )
+
+    sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+    sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
+    expected0, expected1 = amounts_for_liq_inrange(
+        sqrt_price_x96,
+        sqrt_lower,
+        sqrt_upper,
+        liquidity,
+    )
+    assert amount0_min == slippage_min(expected0, 50)
+    assert amount1_min == slippage_min(expected1, 50)
+    assert amount0_min > 0
+    assert amount1_min > 0
+
+
+@pytest.mark.asyncio
+async def test_mint_position_uses_derived_mins_when_omitted(adapter_with_signer):
+    with (
+        patch.object(
+            adapter_with_signer,
+            "_resolve_position_amount_mins",
+            new=AsyncMock(return_value=(111, 222)),
+        ),
+        patch.object(
+            slipstream_module,
+            "ensure_allowance",
+            new=AsyncMock(return_value=(True, {})),
+        ),
+        patch.object(
+            slipstream_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            slipstream_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+        patch.object(
+            adapter_with_signer,
+            "_minted_erc721_token_id",
+            new=AsyncMock(return_value=7),
+        ),
+    ):
+        ok, data = await adapter_with_signer.mint_position(
+            token0="0x0000000000000000000000000000000000000001",
+            token1="0x0000000000000000000000000000000000000002",
+            tick_spacing=60,
+            tick_lower=-120,
+            tick_upper=120,
+            amount0_desired=1_000,
+            amount1_desired=2_000,
+        )
+
+    assert ok is True
+    params = mock_encode.await_args.kwargs["args"][0]
+    assert params[7] == 111
+    assert params[8] == 222
+    assert data["token_id"] == 7
+
+
+@pytest.mark.asyncio
+async def test_increase_liquidity_uses_derived_mins_when_omitted(adapter_with_signer):
+    positions_call = _mock_call(
+        (
+            0,
+            ZERO_ADDRESS,
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+            60,
+            -120,
+            120,
+            123,
+            0,
+            0,
+            0,
+            0,
+        )
+    )
+    npm = MagicMock()
+    npm.functions.positions = MagicMock(return_value=positions_call)
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=npm)
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter_with_signer,
+            "_resolve_token_manager",
+            new=AsyncMock(return_value=("initial", {}, FAKE_NPM, FAKE_WALLET)),
+        ),
+        patch.object(
+            adapter_with_signer,
+            "_resolve_position_amount_mins",
+            new=AsyncMock(return_value=(333, 444)),
+        ),
+        patch.object(
+            slipstream_module,
+            "ensure_allowance",
+            new=AsyncMock(return_value=(True, {})),
+        ),
+        patch.object(
+            slipstream_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            slipstream_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, _ = await adapter_with_signer.increase_liquidity(
+            token_id=42,
+            amount0_desired=1_000,
+            amount1_desired=2_000,
+        )
+
+    assert ok is True
+    params = mock_encode.await_args.kwargs["args"][0]
+    assert params[3] == 333
+    assert params[4] == 444
+
+
+@pytest.mark.asyncio
+async def test_decrease_liquidity_uses_derived_mins_when_omitted(adapter_with_signer):
+    positions_call = _mock_call(
+        (
+            0,
+            ZERO_ADDRESS,
+            "0x0000000000000000000000000000000000000001",
+            "0x0000000000000000000000000000000000000002",
+            60,
+            -120,
+            120,
+            123,
+            0,
+            0,
+            0,
+            0,
+        )
+    )
+    npm = MagicMock()
+    npm.functions.positions = MagicMock(return_value=positions_call)
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=npm)
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter_with_signer,
+            "_resolve_token_manager",
+            new=AsyncMock(return_value=("initial", {}, FAKE_NPM, FAKE_WALLET)),
+        ),
+        patch.object(
+            adapter_with_signer,
+            "_resolve_liquidity_amount_mins",
+            new=AsyncMock(return_value=(555, 666)),
+        ),
+        patch.object(
+            slipstream_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            slipstream_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, _ = await adapter_with_signer.decrease_liquidity(
+            token_id=42,
+            liquidity=50,
+        )
+
+    assert ok is True
+    params = mock_encode.await_args.kwargs["args"][0]
+    assert params[2] == 555
+    assert params[3] == 666
+
+
+@pytest.mark.asyncio
+async def test_mint_position_preserves_explicit_zero_mins(adapter_with_signer):
+    with (
+        patch.object(
+            adapter_with_signer,
+            "_resolve_position_amount_mins",
+            new=AsyncMock(return_value=(0, 0)),
+        ) as mock_resolve,
+        patch.object(
+            slipstream_module,
+            "ensure_allowance",
+            new=AsyncMock(return_value=(True, {})),
+        ),
+        patch.object(
+            slipstream_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            slipstream_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+        patch.object(
+            adapter_with_signer,
+            "_minted_erc721_token_id",
+            new=AsyncMock(return_value=7),
+        ),
+    ):
+        ok, _ = await adapter_with_signer.mint_position(
+            token0="0x0000000000000000000000000000000000000001",
+            token1="0x0000000000000000000000000000000000000002",
+            tick_spacing=60,
+            tick_lower=-120,
+            tick_upper=120,
+            amount0_desired=1_000,
+            amount1_desired=2_000,
+            amount0_min=0,
+            amount1_min=0,
+        )
+
+    assert ok is True
+    params = mock_encode.await_args.kwargs["args"][0]
+    assert params[7] == 0
+    assert params[8] == 0
+    mock_resolve.assert_awaited_once()
