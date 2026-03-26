@@ -8,8 +8,8 @@ import pytest
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 
 _FIND_WALLET = "wayfinder_paths.mcp.utils.find_wallet_by_label"
-_GET_SIGN_CB = "wayfinder_paths.core.utils.wallets.get_wallet_signing_callback"
-_GET_HASH_CB = "wayfinder_paths.core.utils.wallets.get_wallet_sign_hash_callback"
+_GET_SIGN_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_signing_callback"
+_GET_HASH_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_sign_hash_callback"
 
 _ADDR = "0x000000000000000000000000000000000000dEaD"
 _WALLET = {"address": _ADDR, "private_key_hex": "0x" + "11" * 32}
