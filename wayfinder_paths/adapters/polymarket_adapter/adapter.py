@@ -147,6 +147,7 @@ class PolymarketAdapter(BaseAdapter):
         config: dict[str, Any] | None = None,
         *,
         sign_callback=None,
+        sign_hash_callback=None,
         wallet_address: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
@@ -162,6 +163,7 @@ class PolymarketAdapter(BaseAdapter):
             to_checksum_address(wallet_address) if wallet_address else None
         )
         self.sign_callback = sign_callback
+        self.sign_hash_callback = sign_hash_callback
         self._funder_override = funder
         self._signature_type = signature_type
 
@@ -934,8 +936,6 @@ class PolymarketAdapter(BaseAdapter):
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
         if self._clob_client is None:
             addr = self._require_wallet_address()
-            if not self.sign_callback:
-                raise ValueError("sign_callback is required for CLOB trading.")
             funder = self._require_funder()
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
@@ -944,7 +944,7 @@ class PolymarketAdapter(BaseAdapter):
                 signature_type=self._signature_type,
                 funder=funder,
                 address_override=addr,
-                sign_callback_override=self.sign_callback,
+                sign_callback_override=self.sign_hash_callback,
             )
         return self._clob_client  # type: ignore[return-value]
 
@@ -953,7 +953,7 @@ class PolymarketAdapter(BaseAdapter):
             if self._api_creds_set:
                 return True, {"ok": True}
 
-            creds = await asyncio.to_thread(self.clob_client.create_or_derive_api_creds)
+            creds = await self.clob_client.create_or_derive_api_creds()
             self.clob_client.set_api_creds(creds)
             self._api_creds_set = True
             return True, {"ok": True}
@@ -1035,10 +1035,8 @@ class PolymarketAdapter(BaseAdapter):
                 size=size,
                 side=side,
             )  # type: ignore[misc]
-            order = await asyncio.to_thread(self.clob_client.create_order, order_args)
-            resp = await asyncio.to_thread(
-                self.clob_client.post_order, order, "GTC", post_only
-            )
+            order = await self.clob_client.create_order(order_args)
+            resp = self.clob_client.post_order(order, "GTC", post_only)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1066,12 +1064,8 @@ class PolymarketAdapter(BaseAdapter):
                 amount=amount,
                 price=price or 0.0,
             )
-            order = await asyncio.to_thread(
-                self.clob_client.create_market_order, order_args
-            )
-            resp = await asyncio.to_thread(
-                self.clob_client.post_order, order, order_args.order_type, False
-            )
+            order = await self.clob_client.create_market_order(order_args)
+            resp = self.clob_client.post_order(order, order_args.order_type, False)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1081,7 +1075,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
-            resp = await asyncio.to_thread(self.clob_client.cancel, order_id)
+            resp = self.clob_client.cancel(order_id)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1099,7 +1093,7 @@ class PolymarketAdapter(BaseAdapter):
             if token_id:
                 # CLOB uses `asset_id` for the outcome token id returned by Gamma `clobTokenIds`.
                 params = OpenOrderParams(asset_id=token_id)  # type: ignore[misc]
-            data = await asyncio.to_thread(self.clob_client.get_orders, params)
+            data = self.clob_client.get_orders(params)
             if isinstance(data, list):
                 return True, data
             if isinstance(data, dict) and isinstance(data.get("data"), list):

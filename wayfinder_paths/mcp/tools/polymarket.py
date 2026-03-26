@@ -9,7 +9,10 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
     POLYGON_USDC_ADDRESS,
 )
-from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.core.utils.wallets import (
+    get_wallet_sign_hash_callback,
+    get_wallet_signing_callback,
+)
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -188,9 +191,14 @@ async def polymarket(
 
     config: dict[str, Any] | None = None
     sign_cb = None
+    sign_hash_cb = None
     if want and waddr:
         try:
             sign_cb, _ = await get_wallet_signing_callback(want)
+        except ValueError:
+            pass
+        try:
+            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
         except ValueError:
             pass
         config = dict(CONFIG)
@@ -199,6 +207,7 @@ async def polymarket(
     adapter = PolymarketAdapter(
         config=config,
         sign_callback=sign_cb,
+        sign_hash_callback=sign_hash_cb,
         wallet_address=waddr,
     )
     try:
@@ -390,6 +399,10 @@ async def polymarket_execute(
         sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
     except ValueError as e:
         return err("invalid_wallet", str(e))
+    try:
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
+    except ValueError:
+        sign_hash_cb = None
     want = wallet_label
 
     tool_input = {
@@ -429,6 +442,7 @@ async def polymarket_execute(
     adapter = PolymarketAdapter(
         config=cfg,
         sign_callback=sign_callback,
+        sign_hash_callback=sign_hash_cb,
         wallet_address=sender,
     )
     try:

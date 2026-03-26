@@ -177,7 +177,7 @@ async def wallets(
     parallel: bool = False,
     include_zero_positions: bool = False,
     remote: bool = False,
-    policies: list[dict] | str = "*",
+    policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
     config_path = resolve_config_path()
     store = WalletProfileStore.default()

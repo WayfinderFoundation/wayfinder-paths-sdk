@@ -39,5 +39,15 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("POST", url, json={"typed_data": typed_data})
         return resp.json()["signature"]
 
+    async def sign_hash(self, wallet_address: str, hash_hex: str) -> str:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-hash/"
+        resp = await self._authed_request("POST", url, json={"hash": hash_hex})
+        return resp.json()["signature"]
+
+    async def personal_sign(self, wallet_address: str, message: str) -> str:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/personal-sign/"
+        resp = await self._authed_request("POST", url, json={"message": message})
+        return resp.json()["signature"]
+
 
 WALLET_CLIENT = WalletClient()

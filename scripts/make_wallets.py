@@ -73,8 +73,8 @@ async def main():
     )
     parser.add_argument(
         "--policies",
-        default="*",
-        help="Policies for remote wallet: '*' for allow-all (default), or JSON list",
+        default="[]",
+        help="Policies for remote wallet: '[]' for no policies (default), or JSON list",
     )
     args = parser.parse_args()
 
@@ -157,9 +157,7 @@ async def main():
 
     if args.remote or not allow_local_wallets():
         for label in labels_to_create:
-            policies = args.policies
-            if policies != "*":
-                policies = json.loads(policies)
+            policies = json.loads(args.policies)
             result = await create_remote_wallet(label=label, policies=policies)
             print(
                 f"[remote] {result['wallet_address']}  (label: {result.get('label', label)})"

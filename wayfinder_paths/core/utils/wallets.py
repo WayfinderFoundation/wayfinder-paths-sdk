@@ -14,7 +14,6 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-from wayfinder_paths.policies.anything import anything
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -122,27 +121,89 @@ def get_local_sign_typed_data_callback(private_key: str):
     return sign_typed_data
 
 
+def get_local_sign_hash_callback(private_key: str):
+    account = account_from_key(private_key)
+
+    async def sign_hash(hash_hex: str) -> str:
+        h = hash_hex if hash_hex.startswith("0x") else f"0x{hash_hex}"
+        signed = account.unsafe_sign_hash(bytes.fromhex(h[2:]))
+        return "0x" + signed.signature.hex()
+
+    return sign_hash
+
+
 # ---------------------------------------------------------------------------
 # Signing callbacks (remote)
 # ---------------------------------------------------------------------------
 
 
+def _prepare_tx_for_privy(transaction: dict) -> dict:
+    """Prepare a transaction dict for Privy: infer type, hex-encode large ints."""
+
+    # privy wants transaction type
+    tx = dict(transaction)
+    if "type" not in tx:
+        if "maxFeePerGas" in tx:
+            tx["type"] = 2
+        elif "gasPrice" in tx:
+            tx["type"] = 0
+
+    # privy wants hexes for large ints
+    for key in (
+        "value",
+        "gas",
+        "gasPrice",
+        "maxFeePerGas",
+        "maxPriorityFeePerGas",
+        "nonce",
+        "chainId",
+    ):
+        val = tx.get(key)
+        if isinstance(val, int):
+            tx[key] = hex(val)
+    return tx
+
+
 def get_remote_sign_callback(wallet_address: str):
     async def sign_callback(transaction: dict) -> bytes:
         transaction["from"] = wallet_address
-        hex_str = await WALLET_CLIENT.sign_transaction(wallet_address, transaction)
+        hex_str = await WALLET_CLIENT.sign_transaction(
+            wallet_address, _prepare_tx_for_privy(transaction)
+        )
         return bytes.fromhex(hex_str.removeprefix("0x"))
 
     return sign_callback
 
 
+def _sanitize_typed_data(obj: Any) -> Any:
+    """Recursively hex-encode bytes for JSON serialization of EIP-712 payloads."""
+    if isinstance(obj, bytes):
+        return "0x" + obj.hex()
+    if isinstance(obj, dict):
+        return {k: _sanitize_typed_data(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_typed_data(v) for v in obj]
+    return obj
+
+
 def get_remote_sign_typed_data_callback(wallet_address: str):
     async def sign_typed_data(payload: str | dict) -> str:
         msg = json.loads(payload) if isinstance(payload, str) else payload
-        sig = await WALLET_CLIENT.sign_typed_data(wallet_address, msg)
+        sig = await WALLET_CLIENT.sign_typed_data(
+            wallet_address, _sanitize_typed_data(msg)
+        )
         return sig if sig.startswith("0x") else f"0x{sig}"
 
     return sign_typed_data
+
+
+def get_remote_sign_hash_callback(wallet_address: str):
+    async def sign_hash(hash_hex: str) -> str:
+        h = hash_hex if hash_hex.startswith("0x") else f"0x{hash_hex}"
+        sig = await WALLET_CLIENT.sign_hash(wallet_address, h)
+        return sig if sig.startswith("0x") else f"0x{sig}"
+
+    return sign_hash
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +239,16 @@ def _build_typed_data_callback(wallet: dict[str, Any], label: str):
     return get_local_sign_typed_data_callback(pk), address
 
 
+def _build_sign_hash_callback(wallet: dict[str, Any], label: str):
+    address = _require_wallet_address(wallet, label)
+    if wallet.get("type") == "remote":
+        return get_remote_sign_hash_callback(address), address
+    pk = get_private_key(wallet)
+    if not pk:
+        raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
+    return get_local_sign_hash_callback(pk), address
+
+
 async def resolve_wallet(label: str) -> tuple[str, str]:
     """Look up wallet by label, return (address, private_key). Local only."""
     wallet = await find_wallet_by_label(label)
@@ -210,6 +281,14 @@ async def get_wallet_sign_typed_data_callback(label: str):
     return _build_typed_data_callback(wallet, label)
 
 
+async def get_wallet_sign_hash_callback(label: str):
+    """Async — local + remote. Returns (sign_hash_callback, address)."""
+    wallet = await find_wallet_by_label(label)
+    if not wallet:
+        raise ValueError(f"Wallet '{label}' not found.")
+    return _build_sign_hash_callback(wallet, label)
+
+
 # ---------------------------------------------------------------------------
 # Creating wallets
 # ---------------------------------------------------------------------------
@@ -218,10 +297,8 @@ async def get_wallet_sign_typed_data_callback(label: str):
 async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
-    policies: list[dict] | str | None = None,
+    policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
-    if policies == "*":
-        policies = anything()
     return await WALLET_CLIENT.create_wallet(
         chain_type=chain_type, policies=policies, label=label
     )
