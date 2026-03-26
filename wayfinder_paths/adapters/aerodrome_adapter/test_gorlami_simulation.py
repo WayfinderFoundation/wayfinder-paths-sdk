@@ -270,9 +270,7 @@ async def test_gorlami_aerodrome_sugar_reads_and_ranking(gorlami):
 
     adapter = AerodromeAdapter()
 
-    pools = await _await_or_skip_on_sugar_backend_limit(
-        adapter.list_pools(max_pools=1)
-    )
+    pools = await _await_or_skip_on_sugar_backend_limit(adapter.list_pools(max_pools=1))
     assert pools, "Expected at least one Sugar pool row"
     first_pool = pools[0]
     assert first_pool.lp.startswith("0x")

@@ -380,8 +380,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.all(limit, offset).call(
-                transaction={"gas": _SUGAR_CALL_GAS},
-                block_identifier="latest"
+                transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
             )
         return [self._parse_sugar_pool(row) for row in rows]
 
@@ -444,8 +443,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.epochsLatest(limit, offset).call(
-                transaction={"gas": _SUGAR_CALL_GAS},
-                block_identifier="latest"
+                transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
             )
         return [self._parse_sugar_epoch(row) for row in rows]
 
@@ -462,9 +460,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
-            rows = await sugar.functions.epochsByAddress(
-                limit, offset, pool
-            ).call(
+            rows = await sugar.functions.epochsByAddress(limit, offset, pool).call(
                 transaction={"gas": _SUGAR_CALL_GAS},
                 block_identifier="latest",
             )
@@ -1437,9 +1433,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 )
 
                 total, ve_balance = await asyncio.gather(
-                    voter.functions.length().call(
-                        block_identifier=block_identifier
-                    ),
+                    voter.functions.length().call(block_identifier=block_identifier),
                     ve.functions.balanceOf(acct).call(
                         block_identifier=block_identifier
                     ),
