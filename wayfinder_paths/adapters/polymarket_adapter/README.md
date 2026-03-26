@@ -59,7 +59,7 @@ Most methods return `(ok: bool, data_or_error: Any | str)`.
 
 You need:
 
-- A configured wallet with a private key (`wallets[].private_key_hex` in `config.json`, or pass `private_key_hex=...`)
+- A configured wallet (local with `private_key_hex` or remote via Privy)
 - A Polygon RPC URL (`strategy.rpc_urls["137"]`)
 - Some native Polygon gas token for transactions
 
@@ -69,7 +69,7 @@ Convenient pattern used by repo scripts:
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
+adapter = await get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
 ```
 
 ## End-to-end cycle (USDC → USDC.e → buy → sell/redeem → USDC)

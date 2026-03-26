@@ -11,7 +11,7 @@ Adapter for cross-chain swaps and bridges via the BRAP (Bridge/Router/Adapter Pr
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = get_adapter(BRAPAdapter, "main")
+adapter = await get_adapter(BRAPAdapter, "main")
 ```
 
 ## Methods

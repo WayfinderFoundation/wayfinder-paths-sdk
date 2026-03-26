@@ -57,7 +57,7 @@ The adapter normalizes them into Python lists, but if you bypass the adapter and
 
 ## Open orders require the signing wallet
 
-- CLOB open orders require Level-2 auth, which requires a configured signing wallet (`private_key_hex`).
+- CLOB open orders require Level-2 auth, which requires a configured signing wallet (local or remote).
 - In MCP, pass `wallet_label="main"` to `mcp__wayfinder__polymarket(action="status", ...)` to include open orders.
 
 ## Redemption requires the right `conditionId`

@@ -20,7 +20,7 @@ BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 AMOUNT = 10_000_000  # 10 USDC (6 decimals)
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
     ok, result = await adapter.lend(mtoken=USDC_MTOKEN, underlying_token=BASE_USDC, amount=AMOUNT)
     print(f"Success: {ok}, TX: {result}")
 
@@ -42,7 +42,7 @@ from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 USDC_MTOKEN = "0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22"
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
 
     # Get max withdrawable (returns dict with mToken and underlying amounts)
     ok, info = await adapter.max_withdrawable_mtoken(mtoken=USDC_MTOKEN)
@@ -68,7 +68,7 @@ from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 USDC_MTOKEN = "0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22"
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
     ok, result = await adapter.set_collateral(mtoken=USDC_MTOKEN)
     print(f"Success: {ok}, TX: {result}")
 
@@ -88,7 +88,7 @@ WETH_MTOKEN = "0x628ff693426583D9a7FB391E54366292F509D457"
 AMOUNT = 10**16  # 0.01 WETH (18 decimals)
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
     # get_borrowable_amount returns account liquidity in USD (no mtoken param)
     ok, liquidity_usd = await adapter.get_borrowable_amount()
     print(f"Account liquidity: ${liquidity_usd / 1e18:.2f}")
@@ -118,7 +118,7 @@ BASE_WETH = "0x4200000000000000000000000000000000000006"
 AMOUNT = 10**16  # 0.01 WETH
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
     ok, result = await adapter.repay(mtoken=WETH_MTOKEN, underlying_token=BASE_WETH, amount=AMOUNT)
     print(f"Success: {ok}, TX: {result}")
 
@@ -135,7 +135,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
     # claim_rewards returns dict of claimed rewards, not tx hash
     ok, rewards = await adapter.claim_rewards(min_rewards_usd=0.0)
     print(f"Success: {ok}, Rewards: {rewards}")
@@ -156,7 +156,7 @@ from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 AMOUNT = 10**16  # 0.01 ETH
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")
+    adapter = await get_adapter(MoonwellAdapter, "main")
     ok, result = await adapter.wrap_eth(amount=AMOUNT)
     print(f"Success: {ok}, TX: {result}")
 

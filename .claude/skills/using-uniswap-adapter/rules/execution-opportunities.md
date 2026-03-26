@@ -23,7 +23,7 @@ TICK_SPACING = 10
 BAND_BPS = 500  # ±5%
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
 
     _, pool_address = await adapter.get_pool(BASE_WETH, BASE_USDC, FEE)
     slot0 = await get_pool_slot0(pool_address, CHAIN_ID, 18, 6)
@@ -63,7 +63,7 @@ from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter
 TOKEN_ID = 12345
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
     _, pos = await adapter.get_position(TOKEN_ID)
     print(f"Liquidity: {pos['liquidity']}")
 
@@ -88,7 +88,7 @@ from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter
 TOKEN_ID = 12345
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
     _, pos = await adapter.get_position(TOKEN_ID)
     half = pos['liquidity'] // 2
 
@@ -114,7 +114,7 @@ from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter
 TOKEN_ID = 12345
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
     _, tx_hash = await adapter.increase_liquidity(
         token_id=TOKEN_ID,
         amount0_desired=500_000_000_000_000,  # 0.0005 WETH
@@ -137,7 +137,7 @@ from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter
 TOKEN_ID = 12345
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
     _, tx_hash = await adapter.collect_fees(TOKEN_ID)
     print(f"Collected! TX: {tx_hash}")
 

@@ -21,7 +21,7 @@ from wayfinder_paths.adapters.morpho_adapter import MorphoAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 async def main():
-    adapter = get_adapter(MorphoAdapter)  # read-only
+    adapter = await get_adapter(MorphoAdapter)  # read-only
     ok, markets = await adapter.get_all_markets(chain_id=CHAIN_ID_BASE)
     if not ok:
         raise RuntimeError(markets)
@@ -43,7 +43,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(MorphoAdapter)
+    adapter = await get_adapter(MorphoAdapter)
     ok, state = await adapter.get_full_user_state_per_chain(chain_id=CHAIN_ID_BASE, account=USER)
     if not ok:
         raise RuntimeError(state)

@@ -30,7 +30,7 @@ from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityA
 
 # Pool address is already wired into the strategy wallet config; pass it explicitly for standalone use
 from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
-adapter = get_adapter(ProjectXLiquidityAdapter)
+adapter = await get_adapter(ProjectXLiquidityAdapter)
 adapter.pool_address = THBILL_USDC_POOL  # set if not already configured
 
 # 1. Fee tier

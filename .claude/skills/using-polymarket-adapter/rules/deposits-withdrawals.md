@@ -30,7 +30,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID, POLYGON_USDC_ADDRESS
 
-adapter = get_adapter(PolymarketAdapter, wallet_label="main")
+adapter = await get_adapter(PolymarketAdapter, wallet_label="main")
 ok, res = await adapter.bridge_deposit(
     from_chain_id=POLYGON_CHAIN_ID,
     from_token_address=POLYGON_USDC_ADDRESS,

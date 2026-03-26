@@ -293,20 +293,21 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
 # Single-wallet adapter (sign_callback + wallet_address)
-adapter = get_adapter(MoonwellAdapter, "main")
+adapter = await get_adapter(MoonwellAdapter, "main")
 await adapter.set_collateral(mtoken=USDC_MTOKEN)
 
 # Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
 from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
-adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
+adapter = await get_adapter(BalanceAdapter, "main", "my_strategy")
 
 # Read-only (no wallet needed)
-adapter = get_adapter(PendleAdapter)
+adapter = await get_adapter(PendleAdapter)
 ```
 
-`get_adapter()` auto-loads `config.json`, looks up wallets by label, creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
+`get_adapter()` auto-loads `config.json`, looks up wallets by label (local or remote), creates signing callbacks, and wires them into the adapter constructor. Works transparently for both local wallets (`private_key_hex`) and remote wallets (Privy server). It introspects the adapter's `__init__` signature to determine the wiring:
 
 - `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
+- `sign_hash_callback` → also wired if the adapter accepts it (e.g. PolymarketAdapter for CLOB signing)
 - `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
 
 For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_chain_id(chain_id)` from `wayfinder_paths.core.utils.web3` — it's an **async context manager** (see gotchas below):
@@ -346,7 +347,7 @@ token = await TOKEN_CLIENT.get_token_details(...)  # ✅ TokenDetails
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 
-adapter = get_adapter(HyperliquidAdapter)
+adapter = await get_adapter(HyperliquidAdapter)
 
 # WRONG — adapters always return tuples
 data = await adapter.get_meta_and_asset_ctxs()  # ❌ data is actually (True, {...})
