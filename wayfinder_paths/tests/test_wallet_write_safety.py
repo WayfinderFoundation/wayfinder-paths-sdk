@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.utils.wallets import (
     load_wallets,
     make_wallet_from_mnemonic,
@@ -9,7 +10,8 @@ from wayfinder_paths.core.utils.wallets import (
 )
 
 
-def test_write_wallet_to_json_is_idempotent_for_same_wallet(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_write_wallet_to_json_is_idempotent_for_same_wallet(tmp_path) -> None:
     mnemonic = "test test test test test test test test test test test junk"
     w = make_wallet_from_mnemonic(mnemonic, account_index=0)
     w["label"] = "main"
@@ -17,7 +19,7 @@ def test_write_wallet_to_json_is_idempotent_for_same_wallet(tmp_path) -> None:
     write_wallet_to_json(w, out_dir=tmp_path, filename="config.json")
     write_wallet_to_json(w, out_dir=tmp_path, filename="config.json")
 
-    wallets = load_wallets(tmp_path, "config.json")
+    wallets = await load_wallets()
     assert len(wallets) == 1
     assert wallets[0]["address"].lower() == w["address"].lower()
     assert wallets[0]["label"] == "main"
