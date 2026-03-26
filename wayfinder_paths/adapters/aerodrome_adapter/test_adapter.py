@@ -752,3 +752,134 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
     assert ranked[0][1].lp.lower() == lp_a.lower()
     assert ranked[1][1].lp.lower() == lp_b.lower()
     assert ranked[0][0] > ranked[1][0]
+
+
+@pytest.mark.asyncio
+async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypatch):
+    adapter = AerodromeAdapter()
+    lp_a = "0x" + "11" * 20
+    lp_b = "0x" + "22" * 20
+    token = "0x" + "33" * 20
+
+    pools = [
+        SugarPool(
+            lp=lp_a,
+            symbol="A/B",
+            lp_decimals=18,
+            lp_total_supply=100,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=token,
+            reserve0=1,
+            staked0=1,
+            token1=token,
+            reserve1=1,
+            staked1=1,
+            gauge="0x" + "44" * 20,
+            gauge_liquidity=1,
+            gauge_alive=True,
+            fee="0x" + "55" * 20,
+            bribe="0x" + "66" * 20,
+            factory="0x" + "77" * 20,
+            emissions_per_sec=0,
+            emissions_token=token,
+            pool_fee_pips=30,
+            unstaked_fee_pips=5,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_b,
+            symbol="C/D",
+            lp_decimals=18,
+            lp_total_supply=100,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=token,
+            reserve0=1,
+            staked0=1,
+            token1=token,
+            reserve1=1,
+            staked1=1,
+            gauge="0x" + "88" * 20,
+            gauge_liquidity=1,
+            gauge_alive=True,
+            fee="0x" + "99" * 20,
+            bribe="0x" + "aa" * 20,
+            factory="0x" + "bb" * 20,
+            emissions_per_sec=0,
+            emissions_token=token,
+            pool_fee_pips=30,
+            unstaked_fee_pips=5,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+    ]
+
+    epoch_a = SugarEpoch(
+        ts=100,
+        lp=lp_a,
+        votes=10,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+    epoch_b = SugarEpoch(
+        ts=100,
+        lp=lp_b,
+        votes=20,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+
+    async def _fake_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
+        assert limit == 2
+        assert offset == 0
+        raise RuntimeError("out of gas")
+
+    async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
+        assert max_pools == 2
+        return pools
+
+    async def _fake_epochs_by_address(
+        *,
+        pool: str,
+        limit: int,
+        offset: int,
+    ) -> list[SugarEpoch]:
+        assert limit == 1
+        assert offset == 0
+        if pool.lower() == lp_a.lower():
+            return [epoch_a]
+        if pool.lower() == lp_b.lower():
+            return [epoch_b]
+        return []
+
+    async def _fake_total_usdc(
+        epoch: SugarEpoch,
+        *,
+        require_all_prices: bool,
+    ) -> float | None:
+        assert require_all_prices is True
+        if epoch.lp.lower() == lp_a.lower():
+            return 100.0
+        if epoch.lp.lower() == lp_b.lower():
+            return 50.0
+        return None
+
+    monkeypatch.setattr(adapter, "sugar_epochs_latest", _fake_epochs_latest)
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
+    monkeypatch.setattr(adapter, "epoch_total_incentives_usdc", _fake_total_usdc)
+
+    ranked = await adapter.rank_pools_by_usdc_per_ve(top_n=10, limit=2)
+
+    assert len(ranked) == 2
+    assert ranked[0][1].lp.lower() == lp_a.lower()
+    assert ranked[1][1].lp.lower() == lp_b.lower()
+    assert ranked[0][0] > ranked[1][0]

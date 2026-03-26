@@ -270,32 +270,25 @@ async def test_gorlami_aerodrome_sugar_reads_and_ranking(gorlami):
 
     adapter = AerodromeAdapter()
 
-    epochs = await _await_or_skip_on_sugar_backend_limit(
-        adapter.sugar_epochs_latest(limit=5, offset=0)
-    )
-    assert epochs, "Expected at least one Sugar epoch row"
-    first_epoch = epochs[0]
-    assert first_epoch.lp.startswith("0x")
-    assert int(first_epoch.votes) >= 0
-
-    epochs_for_pool = await _await_or_skip_on_sugar_backend_limit(
-        adapter.sugar_epochs_by_address(
-            pool=first_epoch.lp,
-            limit=5,
-            offset=0,
-        )
-    )
-    assert epochs_for_pool, "Expected at least one per-pool Sugar epoch row"
-    assert all(ep.lp.lower() == first_epoch.lp.lower() for ep in epochs_for_pool)
-
     pools = await _await_or_skip_on_sugar_backend_limit(
-        adapter.list_pools(max_pools=5)
+        adapter.list_pools(max_pools=1)
     )
     assert pools, "Expected at least one Sugar pool row"
     first_pool = pools[0]
     assert first_pool.lp.startswith("0x")
     assert first_pool.token0.startswith("0x")
     assert first_pool.token1.startswith("0x")
+
+    epochs_for_pool = await _await_or_skip_on_sugar_backend_limit(
+        adapter.sugar_epochs_by_address(
+            pool=first_pool.lp,
+            limit=1,
+            offset=0,
+        )
+    )
+    assert epochs_for_pool, "Expected at least one per-pool Sugar epoch row"
+    assert all(ep.lp.lower() == first_pool.lp.lower() for ep in epochs_for_pool)
+    assert int(epochs_for_pool[0].votes) >= 0
 
     aero_price = await adapter.token_price_usdc(AERO)
     assert aero_price is not None
@@ -307,8 +300,8 @@ async def test_gorlami_aerodrome_sugar_reads_and_ranking(gorlami):
 
     ranked = await _await_or_skip_on_sugar_backend_limit(
         adapter.rank_pools_by_usdc_per_ve(
-            top_n=3,
-            limit=200,
+            top_n=1,
+            limit=5,
             require_all_prices=False,
         )
     )

@@ -470,6 +470,40 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             )
         return [self._parse_sugar_epoch(row) for row in rows]
 
+    @staticmethod
+    def _is_out_of_gas_error(exc: Exception) -> bool:
+        return "out of gas" in str(exc).lower()
+
+    async def _latest_epochs_for_ranking(self, *, limit: int) -> list[SugarEpoch]:
+        try:
+            return await self.sugar_epochs_latest(limit=limit, offset=0)
+        except Exception as exc:
+            if not self._is_out_of_gas_error(exc):
+                raise
+
+        if self._sugar_pools_cache is not None:
+            pools = self._sugar_pools_cache[:limit]
+        else:
+            pools = await self.list_pools(max_pools=limit)
+
+        epochs: list[SugarEpoch] = []
+        for i in range(0, len(pools), 25):
+            pool_batch = pools[i : i + 25]
+            batch_results = await asyncio.gather(
+                *[
+                    self.sugar_epochs_by_address(
+                        pool=pool.lp,
+                        limit=1,
+                        offset=0,
+                    )
+                    for pool in pool_batch
+                ]
+            )
+            for rows in batch_results:
+                if rows:
+                    epochs.append(rows[0])
+        return epochs
+
     async def token_amount_usdc(self, *, token: str, amount_raw: int) -> float | None:
         if amount_raw == 0:
             return 0.0
@@ -518,7 +552,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         limit: int = 1000,
         require_all_prices: bool = True,
     ) -> list[tuple[float, SugarEpoch, float]]:
-        epochs = await self.sugar_epochs_latest(limit=limit, offset=0)
+        epochs = await self._latest_epochs_for_ranking(limit=limit)
         latest_by_lp: dict[str, SugarEpoch] = {}
         for epoch in epochs:
             if epoch.lp not in latest_by_lp:
