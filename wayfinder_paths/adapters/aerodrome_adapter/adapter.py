@@ -52,7 +52,7 @@ class Route:
         return (
             to_checksum_address(self.from_token),
             to_checksum_address(self.to_token),
-            bool(self.stable),
+            self.stable,
             to_checksum_address(self.factory),
         )
 
@@ -104,15 +104,15 @@ class SugarPool:
 
     @property
     def is_cl(self) -> bool:
-        return int(self.pool_type) > 0
+        return self.pool_type > 0
 
     @property
     def is_v2(self) -> bool:
-        return int(self.pool_type) <= 0
+        return self.pool_type <= 0
 
     @property
     def stable(self) -> bool:
-        return int(self.pool_type) == 0
+        return self.pool_type == 0
 
 
 class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter):
@@ -154,7 +154,6 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         self._sugar_pools_by_lp_cache: dict[str, SugarPool] | None = None
 
     async def get_amounts_out(self, amount_in: int, routes: list[Route]) -> list[int]:
-        amount_in = int(amount_in)
         if amount_in <= 0:
             raise ValueError("amount_in must be positive")
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -166,7 +165,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 amount_in,
                 [route.as_tuple() for route in routes],
             ).call(block_identifier="latest")
-        return [int(amount) for amount in amounts]
+        return amounts
 
     async def quote_best_route(
         self,
@@ -176,7 +175,6 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         token_out: str,
         intermediates: list[str] | None = None,
     ) -> tuple[list[Route], int]:
-        amount_in = int(amount_in)
         token_in = to_checksum_address(token_in)
         token_out = to_checksum_address(token_out)
         if token_in == token_out:
@@ -239,7 +237,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
         if best_routes is None or best_out <= 0:
             raise ValueError("No viable Aerodrome route found")
-        return best_routes, int(best_out)
+        return best_routes, best_out
 
     async def _load_token_metadata(self, token: str) -> tuple[str, int]:
         token = to_checksum_address(token)
@@ -252,8 +250,8 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             symbol, _name, decimals = await get_erc20_metadata(token, web3=web3)
 
         self._token_symbol_cache[token] = symbol
-        self._token_decimals_cache[token] = int(decimals)
-        return symbol, int(decimals)
+        self._token_decimals_cache[token] = decimals
+        return symbol, decimals
 
     async def token_decimals(self, token: str) -> int:
         token = to_checksum_address(token)
@@ -292,7 +290,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             self._token_price_usdc_cache[token] = None
             return None
 
-        price = float(out / 10**6)
+        price = out / 10**6
         self._token_price_usdc_cache[token] = price
         return price
 
@@ -307,7 +305,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             out.append(
                 SugarReward(
                     token=to_checksum_address(row[0]),
-                    amount=int(row[1]),
+                    amount=row[1],
                 )
             )
         return out
@@ -320,10 +318,10 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             raise ValueError(f"Unexpected Sugar epoch tuple length: {len(row)}")
 
         return SugarEpoch(
-            ts=int(row[0]),
+            ts=row[0],
             lp=to_checksum_address(row[1]),
-            votes=int(row[2]),
-            emissions=int(row[3]),
+            votes=row[2],
+            emissions=row[3],
             bribes=cls._parse_sugar_rewards(row[4]),
             fees=cls._parse_sugar_rewards(row[5]),
         )
@@ -337,31 +335,31 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
         return SugarPool(
             lp=to_checksum_address(row[0]),
-            symbol=str(row[1]),
-            lp_decimals=int(row[2]),
-            lp_total_supply=int(row[3]),
-            pool_type=int(row[4]),
-            tick=int(row[5]),
-            sqrt_ratio=int(row[6]),
+            symbol=row[1],
+            lp_decimals=row[2],
+            lp_total_supply=row[3],
+            pool_type=row[4],
+            tick=row[5],
+            sqrt_ratio=row[6],
             token0=to_checksum_address(row[7]),
-            reserve0=int(row[8]),
-            staked0=int(row[9]),
+            reserve0=row[8],
+            staked0=row[9],
             token1=to_checksum_address(row[10]),
-            reserve1=int(row[11]),
-            staked1=int(row[12]),
+            reserve1=row[11],
+            staked1=row[12],
             gauge=to_checksum_address(row[13]),
-            gauge_liquidity=int(row[14]),
-            gauge_alive=bool(row[15]),
+            gauge_liquidity=row[14],
+            gauge_alive=row[15],
             fee=to_checksum_address(row[16]),
             bribe=to_checksum_address(row[17]),
             factory=to_checksum_address(row[18]),
-            emissions_per_sec=int(row[19]),
+            emissions_per_sec=row[19],
             emissions_token=to_checksum_address(row[20]),
-            pool_fee_pips=int(row[21]),
-            unstaked_fee_pips=int(row[22]),
-            token0_fees=int(row[23]),
-            token1_fees=int(row[24]),
-            created_at=int(row[25]),
+            pool_fee_pips=row[21],
+            unstaked_fee_pips=row[22],
+            token0_fees=row[23],
+            token1_fees=row[24],
+            created_at=row[25],
         )
 
     async def sugar_all(self, *, limit: int = 500, offset: int = 0) -> list[SugarPool]:
@@ -370,7 +368,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 address=to_checksum_address(self.core_contracts["sugar"]),
                 abi=AERODROME_SUGAR_ABI,
             )
-            rows = await sugar.functions.all(int(limit), int(offset)).call(
+            rows = await sugar.functions.all(limit, offset).call(
                 transaction={"gas": _SUGAR_CALL_GAS},
                 block_identifier="latest"
             )
@@ -385,11 +383,11 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         out: list[SugarPool] = []
         offset = 0
         while True:
-            remaining = None if max_pools is None else max(0, int(max_pools) - len(out))
+            remaining = None if max_pools is None else max(0, max_pools - len(out))
             if remaining is not None and remaining == 0:
                 break
 
-            batch_limit = int(page_size)
+            batch_limit = page_size
             if remaining is not None:
                 batch_limit = min(batch_limit, remaining)
 
@@ -434,7 +432,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 address=to_checksum_address(self.core_contracts["sugar"]),
                 abi=AERODROME_SUGAR_ABI,
             )
-            rows = await sugar.functions.epochsLatest(int(limit), int(offset)).call(
+            rows = await sugar.functions.epochsLatest(limit, offset).call(
                 transaction={"gas": _SUGAR_CALL_GAS},
                 block_identifier="latest"
             )
@@ -454,7 +452,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.epochsByAddress(
-                int(limit), int(offset), pool
+                limit, offset, pool
             ).call(
                 transaction={"gas": _SUGAR_CALL_GAS},
                 block_identifier="latest",
@@ -462,7 +460,6 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         return [self._parse_sugar_epoch(row) for row in rows]
 
     async def token_amount_usdc(self, *, token: str, amount_raw: int) -> float | None:
-        amount_raw = int(amount_raw)
         if amount_raw == 0:
             return 0.0
         if amount_raw < 0:
@@ -472,7 +469,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         price_usdc = await self.token_price_usdc(token)
         if price_usdc is None or price_usdc <= 0:
             return None
-        return float((amount_raw / (10**decimals)) * price_usdc)
+        return (amount_raw / (10**decimals)) * price_usdc
 
     async def epoch_total_incentives_usdc(
         self,
@@ -490,7 +487,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 if require_all_prices:
                     return None
                 continue
-            total += float(value)
+            total += value
         return total
 
     async def rank_pools_by_usdc_per_ve(
@@ -500,7 +497,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         limit: int = 1000,
         require_all_prices: bool = True,
     ) -> list[tuple[float, SugarEpoch, float]]:
-        epochs = await self.sugar_epochs_latest(limit=int(limit), offset=0)
+        epochs = await self.sugar_epochs_latest(limit=limit, offset=0)
         latest_by_lp: dict[str, SugarEpoch] = {}
         for epoch in epochs:
             if epoch.lp not in latest_by_lp:
@@ -516,11 +513,11 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             )
             if total_usdc is None or total_usdc <= 0:
                 continue
-            usdc_per_ve = (total_usdc * 1e18) / float(epoch.votes)
-            ranked.append((float(usdc_per_ve), epoch, float(total_usdc)))
+            usdc_per_ve = (total_usdc * 1e18) / epoch.votes
+            ranked.append((usdc_per_ve, epoch, total_usdc))
 
         ranked.sort(key=lambda item: item[0], reverse=True)
-        return ranked[: max(1, int(top_n))]
+        return ranked[: max(1, top_n)]
 
     async def get_pool(
         self,
