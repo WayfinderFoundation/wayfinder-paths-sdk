@@ -211,6 +211,89 @@ async def test_get_all_markets_empty_result_uses_base_chain():
 
 
 @pytest.mark.asyncio
+async def test_get_all_markets_batches_related_reads():
+    adapter = AerodromeAdapter()
+    pool0 = "0x" + "11" * 20
+    pool1 = "0x" + "22" * 20
+    gauge0 = "0x" + "33" * 20
+    gauge1 = "0x" + "44" * 20
+    token0 = "0x" + "55" * 20
+    token1 = "0x" + "66" * 20
+    token2 = "0x" + "77" * 20
+    token3 = "0x" + "88" * 20
+    fee0 = "0x" + "99" * 20
+    fee1 = "0x" + "aa" * 20
+    bribe0 = "0x" + "bb" * 20
+    bribe1 = "0x" + "cc" * 20
+    reward0 = "0x" + "dd" * 20
+    reward1 = "0x" + "ee" * 20
+
+    voter = MagicMock()
+    voter.functions.length = MagicMock(return_value=_mock_call(2))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            voter,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+        ]
+    )
+
+    with (
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            aerodrome_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [pool0, pool1],
+                    [
+                        (18, 6, 100, 200, False, token0, token1),
+                        gauge0,
+                        (6, 18, 300, 400, True, token2, token3),
+                        gauge1,
+                    ],
+                    [
+                        fee0,
+                        bribe0,
+                        reward0,
+                        11,
+                        12,
+                        13,
+                        fee1,
+                        bribe1,
+                        reward1,
+                        21,
+                        22,
+                        23,
+                    ],
+                ]
+            ),
+        ) as mock_read,
+    ):
+        ok, data = await adapter.get_all_markets(limit=2)
+
+    assert ok is True
+    assert mock_read.await_count == 3
+    assert len(data["markets"]) == 2
+    assert data["markets"][0]["pool"].lower() == pool0.lower()
+    assert data["markets"][0]["gauge"].lower() == gauge0.lower()
+    assert data["markets"][0]["fees_reward"].lower() == fee0.lower()
+    assert data["markets"][0]["gauge_reward_rate"] == 11
+    assert data["markets"][1]["pool"].lower() == pool1.lower()
+    assert data["markets"][1]["gauge"].lower() == gauge1.lower()
+    assert data["markets"][1]["bribe_reward"].lower() == bribe1.lower()
+    assert data["markets"][1]["gauge_total_supply"] == 22
+
+
+@pytest.mark.asyncio
 async def test_stake_lp_dead_gauge_returns_clean_error(adapter_with_signer):
     voter = MagicMock()
     voter.functions.isAlive = MagicMock(return_value=_mock_call(False))
@@ -269,6 +352,106 @@ async def test_claim_pool_fees_unstaked_reads_pending_claimables(adapter_with_si
     assert mock_read.await_args.kwargs["block_identifier"] == "pending"
     assert mock_read.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
     assert mock_encode.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_state_batches_related_reads():
+    adapter = AerodromeAdapter()
+    pool0 = "0x" + "11" * 20
+    pool1 = "0x" + "22" * 20
+    gauge0 = "0x" + "33" * 20
+    gauge1 = "0x" + "44" * 20
+
+    voter = MagicMock()
+    voter.functions.length = MagicMock(return_value=_mock_call(2))
+
+    ve = MagicMock()
+    ve.functions.balanceOf = MagicMock(return_value=_mock_call(2))
+
+    rd = MagicMock()
+
+    gauge_contract0 = MagicMock()
+    gauge_contract0.address = gauge0
+    gauge_contract1 = MagicMock()
+    gauge_contract1.address = gauge1
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            voter,
+            ve,
+            rd,
+            MagicMock(),
+            MagicMock(),
+            gauge_contract0,
+            gauge_contract1,
+        ]
+    )
+
+    with (
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            adapter,
+            "get_user_ve_nfts",
+            new=AsyncMock(side_effect=AssertionError("unexpected helper call")),
+        ),
+        patch.object(
+            aerodrome_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [pool0, pool1],
+                    [101, 202],
+                    [50, gauge0, 60, gauge1],
+                    [500, 5, 600, 6],
+                    [700, True, 70, 800, False, 80],
+                ]
+            ),
+        ) as mock_read,
+    ):
+        ok, data = await adapter.get_full_user_state(
+            account=FAKE_WALLET,
+            limit=2,
+            include_votes=False,
+        )
+
+    assert ok is True
+    assert mock_read.await_count == 5
+    assert data["markets_scan"]["total"] == 2
+    assert data["lp_positions"] == [
+        {
+            "pool": pool0,
+            "wallet_lp_balance": 50,
+            "gauge": gauge0,
+            "gauge_staked_balance": 500,
+            "gauge_earned": 5,
+        },
+        {
+            "pool": pool1,
+            "wallet_lp_balance": 60,
+            "gauge": gauge1,
+            "gauge_staked_balance": 600,
+            "gauge_earned": 6,
+        },
+    ]
+    assert data["ve_nfts"] == [
+        {
+            "token_id": 101,
+            "voting_power": 700,
+            "voted": True,
+            "rebase_claimable": 70,
+        },
+        {
+            "token_id": 202,
+            "voting_power": 800,
+            "voted": False,
+            "rebase_claimable": 80,
+        },
+    ]
 
 
 def test_parse_sugar_epoch():

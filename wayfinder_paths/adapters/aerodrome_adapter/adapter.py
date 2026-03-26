@@ -158,7 +158,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             raise ValueError("amount_in must be positive")
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             router = web3.eth.contract(
-                address=to_checksum_address(self.core_contracts["router"]),
+                address=self.core_contracts["router"],
                 abi=AERODROME_ROUTER_ABI,
             )
             amounts = await router.functions.getAmountsOut(
@@ -180,7 +180,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         if token_in == token_out:
             return [], amount_in
 
-        factory = to_checksum_address(self.core_contracts["pool_factory"])
+        factory = self.core_contracts["pool_factory"]
         mids = [to_checksum_address(token) for token in (intermediates or [])]
 
         candidates: list[list[Route]] = [
@@ -226,11 +226,16 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
         best_out = 0
         best_routes: list[Route] | None = None
-        for routes in candidates:
-            try:
-                out = (await self.get_amounts_out(amount_in, routes))[-1]
-            except Exception:
+        # Quote route candidates concurrently. Some paths legitimately revert when a
+        # hop does not exist, so keep failures isolated per candidate.
+        quote_results = await asyncio.gather(
+            *[self.get_amounts_out(amount_in, routes) for routes in candidates],
+            return_exceptions=True,
+        )
+        for routes, result in zip(candidates, quote_results, strict=True):
+            if isinstance(result, Exception):
                 continue
+            out = result[-1]
             if out > best_out:
                 best_out = out
                 best_routes = routes
@@ -365,7 +370,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
     async def sugar_all(self, *, limit: int = 500, offset: int = 0) -> list[SugarPool]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
-                address=to_checksum_address(self.core_contracts["sugar"]),
+                address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.all(limit, offset).call(
@@ -429,7 +434,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
     ) -> list[SugarEpoch]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
-                address=to_checksum_address(self.core_contracts["sugar"]),
+                address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.epochsLatest(limit, offset).call(
@@ -448,7 +453,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         pool = to_checksum_address(pool)
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
-                address=to_checksum_address(self.core_contracts["sugar"]),
+                address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
             rows = await sugar.functions.epochsByAddress(
@@ -477,12 +482,22 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         *,
         require_all_prices: bool = True,
     ) -> float | None:
+        rewards = [*epoch.bribes, *epoch.fees]
+        if not rewards:
+            return 0.0
+
+        values = await asyncio.gather(
+            *[
+                self.token_amount_usdc(
+                    token=reward.token,
+                    amount_raw=reward.amount,
+                )
+                for reward in rewards
+            ]
+        )
+
         total = 0.0
-        for reward in [*epoch.bribes, *epoch.fees]:
-            value = await self.token_amount_usdc(
-                token=reward.token,
-                amount_raw=reward.amount,
-            )
+        for value in values:
             if value is None:
                 if require_all_prices:
                     return None
@@ -504,17 +519,23 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 latest_by_lp[epoch.lp] = epoch
 
         ranked: list[tuple[float, SugarEpoch, float]] = []
-        for epoch in latest_by_lp.values():
-            if epoch.votes <= 0:
-                continue
-            total_usdc = await self.epoch_total_incentives_usdc(
-                epoch,
-                require_all_prices=require_all_prices,
+        epochs_to_rank = [epoch for epoch in latest_by_lp.values() if epoch.votes > 0]
+        for i in range(0, len(epochs_to_rank), 50):
+            epoch_batch = epochs_to_rank[i : i + 50]
+            totals = await asyncio.gather(
+                *[
+                    self.epoch_total_incentives_usdc(
+                        epoch,
+                        require_all_prices=require_all_prices,
+                    )
+                    for epoch in epoch_batch
+                ]
             )
-            if total_usdc is None or total_usdc <= 0:
-                continue
-            usdc_per_ve = (total_usdc * 1e18) / epoch.votes
-            ranked.append((usdc_per_ve, epoch, total_usdc))
+            for epoch, total_usdc in zip(epoch_batch, totals, strict=True):
+                if total_usdc is None or total_usdc <= 0:
+                    continue
+                usdc_per_ve = (total_usdc * 1e18) / epoch.votes
+                ranked.append((usdc_per_ve, epoch, total_usdc))
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         return ranked[: max(1, top_n)]
@@ -531,7 +552,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             tB = to_checksum_address(tokenB)
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 factory = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["pool_factory"]),
+                    address=self.core_contracts["pool_factory"],
                     abi=AERODROME_POOL_FACTORY_ABI,
                 )
                 pool = await factory.functions.getPool(tA, tB, stable).call(
@@ -553,7 +574,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             pool = to_checksum_address(pool)
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["voter"]),
+                    address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
                 )
                 gauge = await voter.functions.gauges(pool).call(
@@ -586,7 +607,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["voter"]),
+                    address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
                 )
                 total = await voter.functions.length().call(
@@ -625,37 +646,28 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 pool_contracts = [
                     web3.eth.contract(address=p, abi=AERODROME_POOL_ABI) for p in pools
                 ]
-
-                md_calls = [
-                    Call(pc, "metadata")
-                    for pc in pool_contracts  # (dec0,dec1,r0,r1,st,t0,t1)
-                ]
-                gauge_calls = [
-                    Call(
-                        voter,
-                        "gauges",
-                        args=(p,),
-                        postprocess=lambda a: to_checksum_address(a),
+                market_state_calls: list[Call] = []
+                for pc, pool in zip(pool_contracts, pools, strict=True):
+                    market_state_calls.extend(
+                        [
+                            Call(pc, "metadata"),
+                            Call(
+                                voter,
+                                "gauges",
+                                args=(pool,),
+                                postprocess=lambda a: to_checksum_address(a),
+                            ),
+                        ]
                     )
-                    for p in pools
-                ]
-
-                metadata_list, gauges = await asyncio.gather(
-                    read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=md_calls,
-                        block_identifier=block_identifier,
-                        chunk_size=50,
-                    ),
-                    read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=gauge_calls,
-                        block_identifier=block_identifier,
-                        chunk_size=100,
-                    ),
+                market_state = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=market_state_calls,
+                    block_identifier=block_identifier,
+                    chunk_size=100,
                 )
+                metadata_list = market_state[0::2]
+                gauges = market_state[1::2]
 
                 fees_rewards: list[str] = [ZERO_ADDRESS] * len(gauges)
                 bribe_rewards: list[str] = [ZERO_ADDRESS] * len(gauges)
@@ -671,97 +683,45 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                         for g in gauges_nonzero
                     ]
 
-                    # voter mappings for each gauge
-                    fee_calls = [
-                        Call(
-                            voter,
-                            "gaugeToFees",
-                            args=(g,),
-                            postprocess=lambda a: to_checksum_address(a),
+                    gauge_state_calls: list[Call] = []
+                    for g, gc in zip(gauges_nonzero, gauge_contracts, strict=True):
+                        gauge_state_calls.extend(
+                            [
+                                Call(
+                                    voter,
+                                    "gaugeToFees",
+                                    args=(g,),
+                                    postprocess=lambda a: to_checksum_address(a),
+                                ),
+                                Call(
+                                    voter,
+                                    "gaugeToBribe",
+                                    args=(g,),
+                                    postprocess=lambda a: to_checksum_address(a),
+                                ),
+                                Call(
+                                    gc,
+                                    "rewardToken",
+                                    postprocess=lambda a: to_checksum_address(a),
+                                ),
+                                Call(gc, "rewardRate", postprocess=int),
+                                Call(gc, "totalSupply", postprocess=int),
+                                Call(gc, "periodFinish", postprocess=int),
+                            ]
                         )
-                        for g in gauges_nonzero
-                    ]
-                    bribe_calls = [
-                        Call(
-                            voter,
-                            "gaugeToBribe",
-                            args=(g,),
-                            postprocess=lambda a: to_checksum_address(a),
-                        )
-                        for g in gauges_nonzero
-                    ]
-                    reward_token_calls = [
-                        Call(
-                            gc,
-                            "rewardToken",
-                            postprocess=lambda a: to_checksum_address(a),
-                        )
-                        for gc in gauge_contracts
-                    ]
-                    reward_rate_calls = [
-                        Call(gc, "rewardRate", postprocess=int)
-                        for gc in gauge_contracts
-                    ]
-                    total_supply_calls = [
-                        Call(gc, "totalSupply", postprocess=int)
-                        for gc in gauge_contracts
-                    ]
-                    period_finish_calls = [
-                        Call(gc, "periodFinish", postprocess=int)
-                        for gc in gauge_contracts
-                    ]
-
-                    (
-                        fee_res,
-                        bribe_res,
-                        reward_token_res,
-                        reward_rate_res,
-                        total_supply_res,
-                        period_finish_res,
-                    ) = await asyncio.gather(
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=fee_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=bribe_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=reward_token_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=reward_rate_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=total_supply_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=period_finish_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
+                    gauge_state = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=CHAIN_ID_BASE,
+                        calls=gauge_state_calls,
+                        block_identifier=block_identifier,
+                        chunk_size=300,
                     )
+                    fee_res = gauge_state[0::6]
+                    bribe_res = gauge_state[1::6]
+                    reward_token_res = gauge_state[2::6]
+                    reward_rate_res = gauge_state[3::6]
+                    total_supply_res = gauge_state[4::6]
+                    period_finish_res = gauge_state[5::6]
 
                     # Map back to original gauge list indices.
                     j = 0
@@ -854,14 +814,14 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 router = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["router"]),
+                    address=self.core_contracts["router"],
                     abi=AERODROME_ROUTER_ABI,
                 )
                 a, b, liq = await router.functions.quoteAddLiquidity(
                     tokenA_q,
                     tokenB_q,
                     stable,
-                    to_checksum_address(self.core_contracts["pool_factory"]),
+                    self.core_contracts["pool_factory"],
                     amtA_q,
                     amtB_q,
                 ).call(block_identifier=block_identifier)
@@ -961,7 +921,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 approved = await ensure_allowance(
                     token_address=token,
                     owner=to_checksum_address(self.wallet_address),
-                    spender=to_checksum_address(self.core_contracts["router"]),
+                    spender=self.core_contracts["router"],
                     amount=token_amt,
                     chain_id=CHAIN_ID_BASE,
                     signing_callback=self.sign_callback,
@@ -1021,7 +981,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             approvedA = await ensure_allowance(
                 token_address=tA,
                 owner=to_checksum_address(self.wallet_address),
-                spender=to_checksum_address(self.core_contracts["router"]),
+                spender=self.core_contracts["router"],
                 amount=amountA_desired,
                 chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
@@ -1033,7 +993,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             approvedB = await ensure_allowance(
                 token_address=tB,
                 owner=to_checksum_address(self.wallet_address),
-                spender=to_checksum_address(self.core_contracts["router"]),
+                spender=self.core_contracts["router"],
                 amount=amountB_desired,
                 chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
@@ -1097,14 +1057,14 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 router = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["router"]),
+                    address=self.core_contracts["router"],
                     abi=AERODROME_ROUTER_ABI,
                 )
                 a, b = await router.functions.quoteRemoveLiquidity(
                     tokenA_q,
                     tokenB_q,
                     stable,
-                    to_checksum_address(self.core_contracts["pool_factory"]),
+                    self.core_contracts["pool_factory"],
                     liquidity,
                 ).call(block_identifier=block_identifier)
 
@@ -1149,7 +1109,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 factory = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["pool_factory"]),
+                    address=self.core_contracts["pool_factory"],
                     abi=AERODROME_POOL_FACTORY_ABI,
                 )
 
@@ -1173,7 +1133,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             approved = await ensure_allowance(
                 token_address=pool,
                 owner=to_checksum_address(self.wallet_address),
-                spender=to_checksum_address(self.core_contracts["router"]),
+                spender=self.core_contracts["router"],
                 amount=liquidity,
                 chain_id=CHAIN_ID_BASE,
                 signing_callback=self.sign_callback,
@@ -1326,7 +1286,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["voter"]),
+                    address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
                 )
                 alive = await voter.functions.isAlive(gauge).call(
@@ -1424,22 +1384,25 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 voter = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["voter"]),
+                    address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
                 )
                 ve = web3.eth.contract(
-                    address=to_checksum_address(self.core_contracts["voting_escrow"]),
+                    address=self.core_contracts["voting_escrow"],
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
                 rd = web3.eth.contract(
-                    address=to_checksum_address(
-                        self.core_contracts["rewards_distributor"]
-                    ),
+                    address=self.core_contracts["rewards_distributor"],
                     abi=AERODROME_REWARDS_DISTRIBUTOR_ABI,
                 )
 
-                total = await voter.functions.length().call(
-                    block_identifier=block_identifier
+                total, ve_balance = await asyncio.gather(
+                    voter.functions.length().call(
+                        block_identifier=block_identifier
+                    ),
+                    ve.functions.balanceOf(acct).call(
+                        block_identifier=block_identifier
+                    ),
                 )
                 end_i = total if limit is None else min(total, start_i + limit)
                 if start_i >= total:
@@ -1457,33 +1420,56 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     chunk_size=100,
                 )
 
+                token_ids: list[int] = []
+                token_ids_coro = None
+                if ve_balance > 0:
+                    token_ids_coro = read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=CHAIN_ID_BASE,
+                        calls=[
+                            Call(
+                                ve,
+                                "ownerToNFTokenIdList",
+                                args=(acct, i),
+                            )
+                            for i in range(ve_balance)
+                        ],
+                        block_identifier=block_identifier,
+                        chunk_size=100,
+                    )
+
                 pool_contracts = [
                     web3.eth.contract(address=p, abi=AERODROME_POOL_ABI) for p in pools
                 ]
-                pool_bal_calls = [
-                    Call(pc, "balanceOf", args=(acct,), postprocess=int)
-                    for pc in pool_contracts
-                ]
-                gauge_calls = [
-                    Call(voter, "gauges", args=(p,), postprocess=to_checksum_address)
-                    for p in pools
-                ]
-                pool_balances, gauges = await asyncio.gather(
-                    read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=pool_bal_calls,
-                        block_identifier=block_identifier,
-                        chunk_size=100,
-                    ),
-                    read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=gauge_calls,
-                        block_identifier=block_identifier,
-                        chunk_size=100,
-                    ),
+                pool_state_calls: list[Call] = []
+                for pc, pool in zip(pool_contracts, pools, strict=True):
+                    pool_state_calls.extend(
+                        [
+                            Call(pc, "balanceOf", args=(acct,), postprocess=int),
+                            Call(
+                                voter,
+                                "gauges",
+                                args=(pool,),
+                                postprocess=to_checksum_address,
+                            ),
+                        ]
+                    )
+                pool_state_coro = read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=pool_state_calls,
+                    block_identifier=block_identifier,
+                    chunk_size=200,
                 )
+                if token_ids_coro is None:
+                    pool_state = await pool_state_coro
+                else:
+                    token_ids, pool_state = await asyncio.gather(
+                        token_ids_coro,
+                        pool_state_coro,
+                    )
+                pool_balances = pool_state[0::2]
+                gauges = pool_state[1::2]
 
                 gauge_contracts: dict[str, Any] = {}
                 for g in gauges:
@@ -1494,30 +1480,22 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                             address=to_checksum_address(g), abi=AERODROME_GAUGE_ABI
                         )
 
-                gauge_bal_calls = [
-                    Call(g, "balanceOf", args=(acct,), postprocess=int)
-                    for g in gauge_contracts.values()
-                ]
-                gauge_earned_calls = [
-                    Call(g, "earned", args=(acct,), postprocess=int)
-                    for g in gauge_contracts.values()
-                ]
-                (g_bal, g_earned) = await asyncio.gather(
-                    read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=gauge_bal_calls,
-                        block_identifier=block_identifier,
-                        chunk_size=100,
-                    ),
-                    read_only_calls_multicall_or_gather(
-                        web3=web3,
-                        chain_id=CHAIN_ID_BASE,
-                        calls=gauge_earned_calls,
-                        block_identifier=block_identifier,
-                        chunk_size=100,
-                    ),
+                gauge_state = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        item
+                        for g in gauge_contracts.values()
+                        for item in (
+                            Call(g, "balanceOf", args=(acct,), postprocess=int),
+                            Call(g, "earned", args=(acct,), postprocess=int),
+                        )
+                    ],
+                    block_identifier=block_identifier,
+                    chunk_size=200,
                 )
+                g_bal = gauge_state[0::2]
+                g_earned = gauge_state[1::2]
 
                 gauge_items: dict[str, dict[str, Any]] = {}
                 for (addr_l, contract), bal, earned in zip(
@@ -1547,50 +1525,31 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                         }
                     )
 
-                ok_ids, token_ids_any = await self.get_user_ve_nfts(
-                    owner=acct, block_identifier=block_identifier
-                )
-                if not ok_ids:
-                    return False, token_ids_any
-                token_ids = token_ids_any
-
                 ve_items: list[dict[str, Any]] = []
                 if token_ids:
-                    power_calls = [
-                        Call(ve, "balanceOfNFT", args=(tid,), postprocess=int)
-                        for tid in token_ids
-                    ]
-                    voted_calls = [
-                        Call(ve, "voted", args=(tid,), postprocess=bool)
-                        for tid in token_ids
-                    ]
-                    claimable_calls = [
-                        Call(rd, "claimable", args=(tid,), postprocess=int)
-                        for tid in token_ids
-                    ]
-                    (powers, voted_flags, claimables) = await asyncio.gather(
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=power_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=voted_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
-                        read_only_calls_multicall_or_gather(
-                            web3=web3,
-                            chain_id=CHAIN_ID_BASE,
-                            calls=claimable_calls,
-                            block_identifier=block_identifier,
-                            chunk_size=100,
-                        ),
+                    ve_state = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=CHAIN_ID_BASE,
+                        calls=[
+                            item
+                            for tid in token_ids
+                            for item in (
+                                Call(ve, "balanceOfNFT", args=(tid,), postprocess=int),
+                                Call(ve, "voted", args=(tid,), postprocess=bool),
+                                Call(
+                                    rd,
+                                    "claimable",
+                                    args=(tid,),
+                                    postprocess=int,
+                                ),
+                            )
+                        ],
+                        block_identifier=block_identifier,
+                        chunk_size=300,
                     )
+                    powers = ve_state[0::3]
+                    voted_flags = ve_state[1::3]
+                    claimables = ve_state[2::3]
 
                     votes_by_token: dict[int, dict[str, int]] = {}
                     if include_votes and pools:
