@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.packs.builder import _sha256_file
 from wayfinder_paths.mcp.preview import build_run_script_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.state.runs import runs_root
@@ -17,6 +16,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     repo_root,
 )
+from wayfinder_paths.packs.builder import _sha256_file
 
 
 def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]:

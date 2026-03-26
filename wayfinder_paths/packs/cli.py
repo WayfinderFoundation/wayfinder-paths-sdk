@@ -113,6 +113,25 @@ def _collect_skill_export_uploads(
     return exports_manifest, skill_exports
 
 
+def _load_applet_meta(pack_dir: Path, manifest: PackManifest) -> dict[str, Any]:
+    if manifest.applet is None:
+        return {}
+    applet_manifest_path = pack_dir / manifest.applet.manifest_path
+    if not applet_manifest_path.exists():
+        return {}
+    try:
+        parsed = json.loads(applet_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        "build_dir": manifest.applet.build_dir,
+        "applet_manifest": manifest.applet.manifest_path,
+        **parsed,
+    }
+
+
 def _prepare_pack_for_build(
     pack_dir: Path,
 ) -> tuple[PackDoctorReport, PackSkillRenderReport]:
@@ -379,8 +398,17 @@ def version_cmd() -> None:
 
 
 @pack_cli.command(name="exec", help="Execute a pack component from a pack directory.")
-@click.option("--pack-dir", "pack_dir", required=True, help="Path to the exported or local pack directory.")
-@click.option("--component", default=None, help="Component id (defaults to the runtime/default component).")
+@click.option(
+    "--pack-dir",
+    "pack_dir",
+    required=True,
+    help="Path to the exported or local pack directory.",
+)
+@click.option(
+    "--component",
+    default=None,
+    help="Component id (defaults to the runtime/default component).",
+)
 @click.argument("args", nargs=-1, type=click.UNPROCESSED)
 def exec_cmd(pack_dir: str, component: str | None, args: tuple[str, ...]) -> None:
     rc = _run_pack_component(
@@ -391,12 +419,16 @@ def exec_cmd(pack_dir: str, component: str | None, args: tuple[str, ...]) -> Non
     raise SystemExit(rc)
 
 
-@pack_cli.command(name="export-skill", help="Generate a single thin skill export for one host.")
+@pack_cli.command(
+    name="export-skill", help="Generate a single thin skill export for one host."
+)
 @click.option("--path", "pack_path", default=".", show_default=True)
 @click.option(
     "--host",
     required=True,
-    type=click.Choice(["claude", "codex", "openclaw", "portable"], case_sensitive=False),
+    type=click.Choice(
+        ["claude", "codex", "openclaw", "portable"], case_sensitive=False
+    ),
 )
 def export_skill_cmd(pack_path: str, host: str) -> None:
     doctor_report, render_report = _export_single_skill(
@@ -419,15 +451,25 @@ def export_skill_cmd(pack_path: str, host: str) -> None:
     )
 
 
-@pack_cli.command(name="activate", help="Install a rendered skill export into a host skill directory.")
+@pack_cli.command(
+    name="activate", help="Install a rendered skill export into a host skill directory."
+)
 @click.option(
     "--host",
     required=True,
     type=click.Choice(["claude", "codex", "openclaw"], case_sensitive=False),
 )
-@click.option("--scope", required=True, help="Host scope (e.g. project, personal, repo, user, admin, workspace, shared).")
-@click.option("--path", "pack_path", default=None, help="Local pack directory to render from.")
-@click.option("--export-path", default=None, help="Existing rendered skill export directory.")
+@click.option(
+    "--scope",
+    required=True,
+    help="Host scope (e.g. project, personal, repo, user, admin, workspace, shared).",
+)
+@click.option(
+    "--path", "pack_path", default=None, help="Local pack directory to render from."
+)
+@click.option(
+    "--export-path", default=None, help="Existing rendered skill export directory."
+)
 def activate_cmd(
     host: str,
     scope: str,
@@ -454,7 +496,9 @@ def activate_cmd(
             raise click.ClickException(f"Rendered export not found: {source_dir}")
         skill_name = source_dir.name
 
-    destination_root = _activate_destination(normalized_host, normalized_scope, cwd=Path.cwd())
+    destination_root = _activate_destination(
+        normalized_host, normalized_scope, cwd=Path.cwd()
+    )
     dest = destination_root / skill_name
     _copy_export_tree(source_dir, dest)
     _echo_json(
@@ -607,9 +651,13 @@ def publish_cmd(
     except PackBuildError as exc:
         raise click.ClickException(str(exc)) from exc
 
-    resolved_source_path = Path(source_path) if source_path else built.bundle_path.parent / "source.zip"
+    resolved_source_path = (
+        Path(source_path) if source_path else built.bundle_path.parent / "source.zip"
+    )
     try:
-        PackBuilder.build_source_archive(pack_dir=pack_dir, out_path=resolved_source_path)
+        PackBuilder.build_source_archive(
+            pack_dir=pack_dir, out_path=resolved_source_path
+        )
     except PackBuildError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -624,6 +672,11 @@ def publish_cmd(
             source_path=resolved_source_path,
             exports_manifest=exports_manifest,
             skill_exports=skill_exports,
+            manifest=built.manifest.raw,
+            applet_meta=_load_applet_meta(pack_dir, built.manifest),
+            has_skill=bool(
+                built.manifest.skill or (pack_dir / "skill" / "SKILL.md").exists()
+            ),
             owner_wallet=owner_wallet,
             bonded=bonded,
             risk_tier=risk_tier.lower() if risk_tier else None,
@@ -649,8 +702,7 @@ def publish_cmd(
         )
     if resp.get("requiredUpgradePendingBond"):
         click.echo(
-            "Required upgrade pending bond: "
-            f"{resp['requiredUpgradePendingBond']}",
+            f"Required upgrade pending bond: {resp['requiredUpgradePendingBond']}",
             err=True,
         )
     if bonded and resp.get("contractArgs"):
@@ -974,7 +1026,9 @@ def install_cmd(
     )
 
 
-@pack_cli.command(name="pull", help="Alias for install: download and unpack a pack locally.")
+@pack_cli.command(
+    name="pull", help="Alias for install: download and unpack a pack locally."
+)
 @click.option("--slug", required=True, help="Pack slug.")
 @click.option(
     "--version", "pack_version", default=None, help="Pack version (defaults to latest)."

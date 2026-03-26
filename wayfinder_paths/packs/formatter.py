@@ -93,9 +93,7 @@ def _skill_dict(manifest: PackManifest) -> dict[str, Any] | None:
         if skill.runtime.fallback_bootstrap:
             runtime["fallback_bootstrap"] = skill.runtime.fallback_bootstrap
         if skill.runtime.prefer_existing_runtime is not None:
-            runtime["prefer_existing_runtime"] = (
-                skill.runtime.prefer_existing_runtime
-            )
+            runtime["prefer_existing_runtime"] = skill.runtime.prefer_existing_runtime
         if skill.runtime.require_api_key is not None:
             runtime["require_api_key"] = skill.runtime.require_api_key
         if skill.runtime.api_key_env:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
@@ -32,7 +33,11 @@ class PacksApiClient:
             headers["X-API-Key"] = api_key
         return headers
 
-    def publish(
+    @staticmethod
+    def _sha256_bytes(data: bytes) -> str:
+        return hashlib.sha256(data).hexdigest()
+
+    def _publish_legacy(
         self,
         *,
         bundle_path: Path,
@@ -79,6 +84,211 @@ class PacksApiClient:
         if resp.status_code >= 400:
             raise PacksApiError(f"Publish failed ({resp.status_code}): {resp.text}")
         return resp.json()
+
+    def publish_init(
+        self,
+        *,
+        bundle_path: Path,
+        source_path: Path,
+        manifest: dict[str, Any],
+        applet_meta: dict[str, Any] | None = None,
+        has_skill: bool = False,
+        exports_manifest: dict[str, Any] | None = None,
+        skill_exports: dict[str, bytes] | None = None,
+        owner_wallet: str | None = None,
+        bonded: bool = False,
+        risk_tier: str | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}/api/v1/packs/publish/init/"
+        bundle_size = bundle_path.stat().st_size
+        source_size = source_path.stat().st_size
+        payload: dict[str, Any] = {
+            "manifest": manifest,
+            "applet_meta": applet_meta or {},
+            "has_skill": bool(has_skill),
+            "bundle_sha256": _sha256_file(bundle_path),
+            "bundle_size": bundle_size,
+            "source_sha256": _sha256_file(source_path),
+            "source_size": source_size,
+        }
+        if owner_wallet:
+            payload["owner_wallet"] = owner_wallet
+        if bonded:
+            payload["bonded"] = True
+        if risk_tier:
+            payload["risk_tier"] = risk_tier
+
+        if exports_manifest and skill_exports:
+            payload["doctor"] = exports_manifest.get("doctor") or {
+                "status": "ok",
+                "warnings": [],
+            }
+            exports_payload: dict[str, Any] = {}
+            for target, export_bytes in skill_exports.items():
+                info = (
+                    exports_manifest.get("exports", {}).get(target, {})
+                    if isinstance(exports_manifest.get("exports"), dict)
+                    else {}
+                )
+                exports_payload[target] = {
+                    "filename": info.get("filename") or f"skill-{target}-thin.zip",
+                    "mode": info.get("mode") or "thin",
+                    "runtime": info.get("runtime") or {},
+                    "export": info.get("export") or {},
+                    "warnings": list(info.get("warnings") or []),
+                    "size": len(export_bytes),
+                    "sha256": self._sha256_bytes(export_bytes),
+                }
+            payload["skill_exports"] = exports_payload
+
+        resp = self._client.post(url, json=payload, headers=self._headers())
+        if resp.status_code in {404, 405}:
+            raise PacksApiError(f"Publish init unavailable ({resp.status_code})")
+        if resp.status_code >= 400:
+            raise PacksApiError(
+                f"Publish init failed ({resp.status_code}): {resp.text}"
+            )
+        return resp.json()
+
+    def publish_finalize(
+        self, *, upload_id: str, finalize_token: str
+    ) -> dict[str, Any]:
+        url = f"{self.base_url}/api/v1/packs/publish/finalize/"
+        resp = self._client.post(
+            url,
+            json={"upload_id": upload_id, "finalize_token": finalize_token},
+            headers=self._headers(),
+        )
+        if resp.status_code >= 400:
+            raise PacksApiError(
+                f"Publish finalize failed ({resp.status_code}): {resp.text}"
+            )
+        return resp.json()
+
+    def _upload_signed_artifact(
+        self,
+        *,
+        upload_url: str,
+        headers: dict[str, str] | None,
+        data: bytes,
+    ) -> None:
+        resp = self._client.put(
+            upload_url,
+            content=data,
+            headers=headers or {},
+        )
+        if resp.status_code >= 400:
+            raise PacksApiError(
+                f"Artifact upload failed ({resp.status_code}): {resp.text}"
+            )
+
+    def publish(
+        self,
+        *,
+        bundle_path: Path,
+        source_path: Path | None = None,
+        exports_manifest: dict[str, Any] | None = None,
+        skill_exports: dict[str, bytes] | None = None,
+        manifest: dict[str, Any] | None = None,
+        applet_meta: dict[str, Any] | None = None,
+        has_skill: bool = False,
+        owner_wallet: str | None = None,
+        bonded: bool = False,
+        risk_tier: str | None = None,
+    ) -> dict[str, Any]:
+        if source_path is None or manifest is None:
+            return self._publish_legacy(
+                bundle_path=bundle_path,
+                source_path=source_path,
+                exports_manifest=exports_manifest,
+                skill_exports=skill_exports,
+                owner_wallet=owner_wallet,
+                bonded=bonded,
+                risk_tier=risk_tier,
+            )
+
+        try:
+            init = self.publish_init(
+                bundle_path=bundle_path,
+                source_path=source_path,
+                manifest=manifest,
+                applet_meta=applet_meta or {},
+                has_skill=has_skill,
+                exports_manifest=exports_manifest,
+                skill_exports=skill_exports,
+                owner_wallet=owner_wallet,
+                bonded=bonded,
+                risk_tier=risk_tier,
+            )
+        except PacksApiError as exc:
+            if "unavailable (404)" in str(exc) or "unavailable (405)" in str(exc):
+                return self._publish_legacy(
+                    bundle_path=bundle_path,
+                    source_path=source_path,
+                    exports_manifest=exports_manifest,
+                    skill_exports=skill_exports,
+                    owner_wallet=owner_wallet,
+                    bonded=bonded,
+                    risk_tier=risk_tier,
+                )
+            raise
+
+        artifacts = (
+            init.get("artifacts") if isinstance(init.get("artifacts"), dict) else {}
+        )
+        bundle_artifact = (
+            artifacts.get("bundle") if isinstance(artifacts.get("bundle"), dict) else {}
+        )
+        source_artifact = (
+            artifacts.get("source") if isinstance(artifacts.get("source"), dict) else {}
+        )
+        bundle_upload_url = str(bundle_artifact.get("uploadUrl") or "").strip()
+        source_upload_url = str(source_artifact.get("uploadUrl") or "").strip()
+        if not bundle_upload_url or not source_upload_url:
+            raise PacksApiError(
+                "Publish init response is missing bundle/source upload URLs"
+            )
+
+        self._upload_signed_artifact(
+            upload_url=bundle_upload_url,
+            headers=bundle_artifact.get("headers")
+            if isinstance(bundle_artifact.get("headers"), dict)
+            else {},
+            data=bundle_path.read_bytes(),
+        )
+        self._upload_signed_artifact(
+            upload_url=source_upload_url,
+            headers=source_artifact.get("headers")
+            if isinstance(source_artifact.get("headers"), dict)
+            else {},
+            data=source_path.read_bytes(),
+        )
+        for target, export_bytes in (skill_exports or {}).items():
+            export_artifact = (
+                artifacts.get("skillExports", {}).get(target, {})
+                if isinstance(artifacts.get("skillExports"), dict)
+                else {}
+            )
+            upload_url = str(export_artifact.get("uploadUrl") or "").strip()
+            if not upload_url:
+                raise PacksApiError(
+                    f"Publish init response is missing upload URL for skill export '{target}'"
+                )
+            self._upload_signed_artifact(
+                upload_url=upload_url,
+                headers=export_artifact.get("headers")
+                if isinstance(export_artifact.get("headers"), dict)
+                else {},
+                data=export_bytes,
+            )
+
+        upload_id = str(init.get("uploadId") or "").strip()
+        finalize_token = str(init.get("finalizeToken") or "").strip()
+        if not upload_id or not finalize_token:
+            raise PacksApiError(
+                "Publish init response is missing upload session details"
+            )
+        return self.publish_finalize(upload_id=upload_id, finalize_token=finalize_token)
 
     def create_install_intent(
         self,

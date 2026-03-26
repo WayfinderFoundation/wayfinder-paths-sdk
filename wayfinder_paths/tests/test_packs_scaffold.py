@@ -144,28 +144,28 @@ def test_pack_doctor_warns_on_legacy_skill_portable(tmp_path: Path):
     manifest_path = pack_dir / "wfpack.yaml"
     manifest_path.write_text(
         manifest_path.read_text(encoding="utf-8").replace(
-            '  runtime:\n'
-            '    mode: thin\n'
+            "  runtime:\n"
+            "    mode: thin\n"
             '    package: "wayfinder-paths"\n'
             '    version: "0.8.0"\n'
             '    python: ">=3.12,<3.13"\n'
             '    component: "main"\n'
-            '    bootstrap: uv\n'
-            '    fallback_bootstrap: pipx\n'
-            '    prefer_existing_runtime: true\n'
-            '    require_api_key: false\n'
+            "    bootstrap: uv\n"
+            "    fallback_bootstrap: pipx\n"
+            "    prefer_existing_runtime: true\n"
+            "    require_api_key: false\n"
             '    api_key_env: "WAYFINDER_API_KEY"\n'
             '    config_path_env: "WAYFINDER_CONFIG_PATH"\n',
-            '  portable:\n'
-            '    python: ">=3.12,<3.13"\n'
-            '    package: "wayfinder-paths"\n',
+            '  portable:\n    python: ">=3.12,<3.13"\n    package: "wayfinder-paths"\n',
         ),
         encoding="utf-8",
     )
 
     report = run_doctor(pack_dir=pack_dir, fix=False)
     assert report.ok is True
-    assert any("skill.portable is deprecated" in issue.message for issue in report.warnings)
+    assert any(
+        "skill.portable is deprecated" in issue.message for issue in report.warnings
+    )
 
 
 def test_pack_doctor_rejects_embedded_skill_runtime_mode(tmp_path: Path):

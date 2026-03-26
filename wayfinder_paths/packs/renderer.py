@@ -665,11 +665,15 @@ def _write_host_artifacts(
     export_manifest = _export_manifest(manifest, skill, host, runtime_manifest)
 
     runtime_manifest_path = export_dir / "runtime" / "manifest.json"
-    _write_text(runtime_manifest_path, json.dumps(runtime_manifest, indent=2, sort_keys=True))
+    _write_text(
+        runtime_manifest_path, json.dumps(runtime_manifest, indent=2, sort_keys=True)
+    )
     written.append(runtime_manifest_path.relative_to(output_root).as_posix())
 
     export_manifest_path = export_dir / "runtime" / "export.json"
-    _write_text(export_manifest_path, json.dumps(export_manifest, indent=2, sort_keys=True))
+    _write_text(
+        export_manifest_path, json.dumps(export_manifest, indent=2, sort_keys=True)
+    )
     written.append(export_manifest_path.relative_to(output_root).as_posix())
 
     bootstrap_path = export_dir / "scripts" / "wf_bootstrap.py"

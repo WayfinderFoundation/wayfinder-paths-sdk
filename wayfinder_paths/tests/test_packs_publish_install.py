@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zipfile import ZipFile
 
+import httpx
 from click.testing import CliRunner
 
 from wayfinder_paths.packs.builder import PackBuilder
@@ -88,7 +90,9 @@ def test_pack_publish_uploads_rendered_skill_exports_and_bond_metadata(
     assert exports_manifest is not None
     assert exports_manifest["targets"] == ["claude", "codex", "openclaw", "portable"]
     assert set(skill_exports) == {"claude", "codex", "openclaw", "portable"}
-    assert exports_manifest["exports"]["portable"]["filename"] == "skill-portable-thin.zip"
+    assert (
+        exports_manifest["exports"]["portable"]["filename"] == "skill-portable-thin.zip"
+    )
     assert exports_manifest["exports"]["portable"]["mode"] == "thin"
     assert exports_manifest["exports"]["portable"]["runtime"]["component"] == "main"
 
@@ -107,11 +111,139 @@ def test_pack_publish_uploads_rendered_skill_exports_and_bond_metadata(
     assert "skill/agents/openai.yaml" in names
 
     assert "Link owner wallet and bond at:" in result.output
-    assert "https://app.example/packs/submissions/skill-demo?version=0.1.0" in result.output
+    assert (
+        "https://app.example/packs/submissions/skill-demo?version=0.1.0"
+        in result.output
+    )
     assert "Effective risk tier: interactive" in result.output
     assert "Required initial bond: 1000" in result.output
     assert "Required upgrade pending bond: 1000" in result.output
     assert "Bond contract args:" in result.output
+
+
+def test_packs_api_client_publish_uses_direct_upload_flow(tmp_path: Path):
+    bundle_path = tmp_path / "bundle.zip"
+    source_path = tmp_path / "source.zip"
+    bundle_bytes = b"bundle-bytes"
+    source_bytes = b"source-bytes"
+    bundle_path.write_bytes(bundle_bytes)
+    source_path.write_bytes(source_bytes)
+    export_bytes = b"export-bytes"
+    requests: list[tuple[str, str, dict[str, str], bytes | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.read()
+        requests.append((request.method, str(request.url), dict(request.headers), body))
+        if (
+            request.method == "POST"
+            and request.url.path == "/api/v1/packs/publish/init/"
+        ):
+            payload = json.loads(body.decode("utf-8"))
+            assert payload["manifest"]["slug"] == "skill-demo"
+            assert payload["bundle_sha256"] == hashlib.sha256(bundle_bytes).hexdigest()
+            assert payload["source_sha256"] == hashlib.sha256(source_bytes).hexdigest()
+            assert (
+                payload["skill_exports"]["claude"]["sha256"]
+                == hashlib.sha256(export_bytes).hexdigest()
+            )
+            return httpx.Response(
+                201,
+                json={
+                    "uploadId": "upload-1",
+                    "finalizeToken": "token-1",
+                    "artifacts": {
+                        "bundle": {
+                            "uploadUrl": "https://uploads.example/bundle",
+                            "headers": {"Content-Type": "application/zip"},
+                        },
+                        "source": {
+                            "uploadUrl": "https://uploads.example/source",
+                            "headers": {"Content-Type": "application/zip"},
+                        },
+                        "skillExports": {
+                            "claude": {
+                                "uploadUrl": "https://uploads.example/claude",
+                                "headers": {"Content-Type": "application/zip"},
+                            }
+                        },
+                    },
+                },
+            )
+        if (
+            request.method == "PUT"
+            and str(request.url) == "https://uploads.example/bundle"
+        ):
+            assert body == bundle_bytes
+            return httpx.Response(200)
+        if (
+            request.method == "PUT"
+            and str(request.url) == "https://uploads.example/source"
+        ):
+            assert body == source_bytes
+            return httpx.Response(200)
+        if (
+            request.method == "PUT"
+            and str(request.url) == "https://uploads.example/claude"
+        ):
+            assert body == export_bytes
+            return httpx.Response(200)
+        if (
+            request.method == "POST"
+            and request.url.path == "/api/v1/packs/publish/finalize/"
+        ):
+            payload = json.loads(body.decode("utf-8"))
+            assert payload == {"upload_id": "upload-1", "finalize_token": "token-1"}
+            return httpx.Response(
+                201,
+                json={"pack": {"slug": "skill-demo"}, "version": {"version": "0.1.0"}},
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    client = PacksApiClient(
+        api_base_url="https://packs.example",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    resp = client.publish(
+        bundle_path=bundle_path,
+        source_path=source_path,
+        exports_manifest={
+            "doctor": {"status": "ok", "warnings": []},
+            "exports": {
+                "claude": {
+                    "filename": "skill-claude-thin.zip",
+                    "mode": "thin",
+                    "runtime": {"component": "main"},
+                    "export": {"host": "claude"},
+                }
+            },
+        },
+        skill_exports={"claude": export_bytes},
+        manifest={
+            "schema_version": "0.1",
+            "slug": "skill-demo",
+            "name": "Skill Demo",
+            "version": "0.1.0",
+            "summary": "Demo",
+            "primary_kind": "monitor",
+        },
+        applet_meta={},
+        has_skill=True,
+    )
+
+    assert resp["pack"]["slug"] == "skill-demo"
+    assert any(
+        method == "POST" and url.endswith("/publish/init/")
+        for method, url, _headers, _body in requests
+    )
+    assert any(
+        method == "PUT" and url == "https://uploads.example/bundle"
+        for method, url, _headers, _body in requests
+    )
+    assert any(
+        method == "POST" and url.endswith("/publish/finalize/")
+        for method, url, _headers, _body in requests
+    )
 
 
 def test_pack_build_is_deterministic(tmp_path: Path):

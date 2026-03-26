@@ -38,9 +38,9 @@ def _iter_files(root: Path, *, ignore_dirs: set[str]) -> Iterable[Path]:
         rel_dir = Path(dirpath).relative_to(root)
         dirnames[:] = sorted(
             [
-            d
-            for d in dirnames
-            if d not in ignore_dirs and not (rel_dir == Path(".") and d == "dist")
+                d
+                for d in dirnames
+                if d not in ignore_dirs and not (rel_dir == Path(".") and d == "dist")
             ]
         )
         for filename in sorted(filenames):
@@ -82,7 +82,10 @@ class PackBuilder:
         ignore = set(ignore_dirs or _DEFAULT_IGNORE_DIRS)
         out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        files = sorted(_iter_files(pack_dir, ignore_dirs=ignore), key=lambda path: path.relative_to(pack_dir).as_posix())
+        files = sorted(
+            _iter_files(pack_dir, ignore_dirs=ignore),
+            key=lambda path: path.relative_to(pack_dir).as_posix(),
+        )
         if not files:
             raise PackBuildError("No files found to bundle")
 
@@ -105,7 +108,10 @@ class PackBuilder:
 
         ignore = set(ignore_dirs or _DEFAULT_IGNORE_DIRS)
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        files = sorted(_iter_files(pack_dir, ignore_dirs=ignore), key=lambda path: path.relative_to(pack_dir).as_posix())
+        files = sorted(
+            _iter_files(pack_dir, ignore_dirs=ignore),
+            key=lambda path: path.relative_to(pack_dir).as_posix(),
+        )
         if not files:
             raise PackBuildError("No files found to archive")
 

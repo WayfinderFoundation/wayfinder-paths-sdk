@@ -257,7 +257,11 @@ def _validate_runtime_skill_contract(
             path=skill_doc_path,
         )
 
-    if runtime.require_api_key and runtime.api_key_env and runtime.api_key_env not in body:
+    if (
+        runtime.require_api_key
+        and runtime.api_key_env
+        and runtime.api_key_env not in body
+    ):
         _record_issue(
             warnings,
             level="warning",

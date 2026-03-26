@@ -227,11 +227,15 @@ def _parse_runtime_skill_config(raw_obj: Any) -> PackSkillRuntimeConfig | None:
 
     mode = str(obj.get("mode", "")).strip() or None
     if mode is not None and mode not in _RUNTIME_MODES:
-        raise PackManifestError("wfpack.yaml skill.runtime.mode must be one of: thin, embedded")
+        raise PackManifestError(
+            "wfpack.yaml skill.runtime.mode must be one of: thin, embedded"
+        )
 
     bootstrap = str(obj.get("bootstrap", "")).strip() or None
     if bootstrap is not None and bootstrap not in _BOOTSTRAP_MODES:
-        raise PackManifestError("wfpack.yaml skill.runtime.bootstrap must be one of: uv, pipx, venv")
+        raise PackManifestError(
+            "wfpack.yaml skill.runtime.bootstrap must be one of: uv, pipx, venv"
+        )
 
     fallback_bootstrap = str(obj.get("fallback_bootstrap", "")).strip() or None
     if fallback_bootstrap is not None and fallback_bootstrap not in _BOOTSTRAP_MODES:
@@ -473,17 +477,23 @@ def resolve_skill_runtime(manifest: PackManifest) -> PackSkillRuntimeConfig:
     skill = manifest.skill
     runtime = skill.runtime if skill else None
     package = (
-        runtime.package
-        if runtime and runtime.package
-        else _DEFAULT_RUNTIME_PACKAGE
+        runtime.package if runtime and runtime.package else _DEFAULT_RUNTIME_PACKAGE
     )
     return PackSkillRuntimeConfig(
         mode=runtime.mode if runtime and runtime.mode else "thin",
         package=package,
-        version=runtime.version if runtime and runtime.version else _package_version_or_default(package),
-        python=runtime.python if runtime and runtime.python else _DEFAULT_RUNTIME_PYTHON,
-        component=runtime.component if runtime and runtime.component else manifest.default_component_id(),
-        bootstrap=runtime.bootstrap if runtime and runtime.bootstrap else _DEFAULT_BOOTSTRAP,
+        version=runtime.version
+        if runtime and runtime.version
+        else _package_version_or_default(package),
+        python=runtime.python
+        if runtime and runtime.python
+        else _DEFAULT_RUNTIME_PYTHON,
+        component=runtime.component
+        if runtime and runtime.component
+        else manifest.default_component_id(),
+        bootstrap=runtime.bootstrap
+        if runtime and runtime.bootstrap
+        else _DEFAULT_BOOTSTRAP,
         fallback_bootstrap=(
             runtime.fallback_bootstrap
             if runtime and runtime.fallback_bootstrap
@@ -499,7 +509,9 @@ def resolve_skill_runtime(manifest: PackManifest) -> PackSkillRuntimeConfig:
             if runtime and runtime.require_api_key is not None
             else False
         ),
-        api_key_env=runtime.api_key_env if runtime and runtime.api_key_env else _DEFAULT_API_KEY_ENV,
+        api_key_env=runtime.api_key_env
+        if runtime and runtime.api_key_env
+        else _DEFAULT_API_KEY_ENV,
         config_path_env=(
             runtime.config_path_env
             if runtime and runtime.config_path_env
