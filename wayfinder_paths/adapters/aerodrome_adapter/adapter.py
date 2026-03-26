@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _SUGAR_CALL_GAS = 30_000_000
+_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 
 
 @dataclass(frozen=True)
@@ -149,7 +151,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         )
         self._token_decimals_cache: dict[str, int] = {}
         self._token_symbol_cache: dict[str, str] = {}
-        self._token_price_usdc_cache: dict[str, float | None] = {}
+        self._token_price_usdc_cache: dict[str, tuple[float, float | None]] = {}
         self._sugar_pools_cache: list[SugarPool] | None = None
         self._sugar_pools_by_lp_cache: dict[str, SugarPool] | None = None
 
@@ -276,8 +278,12 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         token = to_checksum_address(token)
         if token == BASE_USDC:
             return 1.0
-        if token in self._token_price_usdc_cache:
-            return self._token_price_usdc_cache[token]
+        now = time.monotonic()
+        cached = self._token_price_usdc_cache.get(token)
+        if cached is not None:
+            cached_at, cached_price = cached
+            if now - cached_at <= _TOKEN_PRICE_USDC_TTL_SECONDS:
+                return cached_price
 
         decimals = await self.token_decimals(token)
         try:
@@ -288,15 +294,15 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 intermediates=[BASE_WETH],
             )
         except Exception:
-            self._token_price_usdc_cache[token] = None
+            self._token_price_usdc_cache[token] = (time.monotonic(), None)
             return None
 
         if out <= 0:
-            self._token_price_usdc_cache[token] = None
+            self._token_price_usdc_cache[token] = (time.monotonic(), None)
             return None
 
         price = out / 10**6
-        self._token_price_usdc_cache[token] = price
+        self._token_price_usdc_cache[token] = (time.monotonic(), price)
         return price
 
     @staticmethod
