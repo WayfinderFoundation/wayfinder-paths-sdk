@@ -689,6 +689,126 @@ AERODROME_REWARDS_DISTRIBUTOR_ABI: list[dict[str, Any]] = [
 ]
 
 
+AERODROME_SUGAR_ABI: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": "all",
+        "stateMutability": "view",
+        "inputs": [
+            {"name": "_limit", "type": "uint256"},
+            {"name": "_offset", "type": "uint256"},
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "tuple[]",
+                "components": [
+                    {"name": "lp", "type": "address"},
+                    {"name": "symbol", "type": "string"},
+                    {"name": "decimals", "type": "uint8"},
+                    {"name": "liquidity", "type": "uint256"},
+                    {"name": "type", "type": "int24"},
+                    {"name": "tick", "type": "int24"},
+                    {"name": "sqrt_ratio", "type": "uint160"},
+                    {"name": "token0", "type": "address"},
+                    {"name": "reserve0", "type": "uint256"},
+                    {"name": "staked0", "type": "uint256"},
+                    {"name": "token1", "type": "address"},
+                    {"name": "reserve1", "type": "uint256"},
+                    {"name": "staked1", "type": "uint256"},
+                    {"name": "gauge", "type": "address"},
+                    {"name": "gauge_liquidity", "type": "uint256"},
+                    {"name": "gauge_alive", "type": "bool"},
+                    {"name": "fee", "type": "address"},
+                    {"name": "bribe", "type": "address"},
+                    {"name": "factory", "type": "address"},
+                    {"name": "emissions", "type": "uint256"},
+                    {"name": "emissions_token", "type": "address"},
+                    {"name": "pool_fee", "type": "uint256"},
+                    {"name": "unstaked_fee", "type": "uint256"},
+                    {"name": "token0_fees", "type": "uint256"},
+                    {"name": "token1_fees", "type": "uint256"},
+                    {"name": "created_at", "type": "uint256"},
+                ],
+            }
+        ],
+    },
+    {
+        "type": "function",
+        "name": "epochsLatest",
+        "stateMutability": "view",
+        "inputs": [
+            {"name": "_limit", "type": "uint256"},
+            {"name": "_offset", "type": "uint256"},
+        ],
+        "outputs": [
+            {
+                "type": "tuple[]",
+                "components": [
+                    {"name": "ts", "type": "uint256"},
+                    {"name": "lp", "type": "address"},
+                    {"name": "votes", "type": "uint256"},
+                    {"name": "emissions", "type": "uint256"},
+                    {
+                        "name": "bribes",
+                        "type": "tuple[]",
+                        "components": [
+                            {"name": "token", "type": "address"},
+                            {"name": "amount", "type": "uint256"},
+                        ],
+                    },
+                    {
+                        "name": "fees",
+                        "type": "tuple[]",
+                        "components": [
+                            {"name": "token", "type": "address"},
+                            {"name": "amount", "type": "uint256"},
+                        ],
+                    },
+                ],
+            }
+        ],
+    },
+    {
+        "type": "function",
+        "name": "epochsByAddress",
+        "stateMutability": "view",
+        "inputs": [
+            {"name": "_limit", "type": "uint256"},
+            {"name": "_offset", "type": "uint256"},
+            {"name": "_address", "type": "address"},
+        ],
+        "outputs": [
+            {
+                "type": "tuple[]",
+                "components": [
+                    {"name": "ts", "type": "uint256"},
+                    {"name": "lp", "type": "address"},
+                    {"name": "votes", "type": "uint256"},
+                    {"name": "emissions", "type": "uint256"},
+                    {
+                        "name": "bribes",
+                        "type": "tuple[]",
+                        "components": [
+                            {"name": "token", "type": "address"},
+                            {"name": "amount", "type": "uint256"},
+                        ],
+                    },
+                    {
+                        "name": "fees",
+                        "type": "tuple[]",
+                        "components": [
+                            {"name": "token", "type": "address"},
+                            {"name": "amount", "type": "uint256"},
+                        ],
+                    },
+                ],
+            }
+        ],
+    },
+]
+
+
 AERODROME_REWARD_ABI: list[dict[str, Any]] = [
     {
         "type": "function",

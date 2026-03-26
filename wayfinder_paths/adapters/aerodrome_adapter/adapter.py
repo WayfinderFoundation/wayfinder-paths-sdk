@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from eth_utils import to_checksum_address
@@ -15,22 +16,103 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_POOL_FACTORY_ABI,
     AERODROME_REWARDS_DISTRIBUTOR_ABI,
     AERODROME_ROUTER_ABI,
+    AERODROME_SUGAR_ABI,
     AERODROME_VOTER_ABI,
     AERODROME_VOTING_ESCROW_ABI,
 )
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-from wayfinder_paths.core.constants.contracts import BASE_WETH
+from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WETH
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance, is_native_token
+from wayfinder_paths.core.utils.tokens import (
+    ensure_allowance,
+    get_erc20_metadata,
+    is_native_token,
+)
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import deadline as default_deadline
 from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+_SUGAR_CALL_GAS = 30_000_000
+
+
+@dataclass(frozen=True)
+class Route:
+    from_token: str
+    to_token: str
+    stable: bool
+    factory: str = ZERO_ADDRESS
+
+    def as_tuple(self) -> tuple[str, str, bool, str]:
+        return (
+            to_checksum_address(self.from_token),
+            to_checksum_address(self.to_token),
+            bool(self.stable),
+            to_checksum_address(self.factory),
+        )
+
+
+@dataclass(frozen=True)
+class SugarReward:
+    token: str
+    amount: int
+
+
+@dataclass(frozen=True)
+class SugarEpoch:
+    ts: int
+    lp: str
+    votes: int
+    emissions: int
+    bribes: list[SugarReward]
+    fees: list[SugarReward]
+
+
+@dataclass(frozen=True)
+class SugarPool:
+    lp: str
+    symbol: str
+    lp_decimals: int
+    lp_total_supply: int
+    pool_type: int
+    tick: int
+    sqrt_ratio: int
+    token0: str
+    reserve0: int
+    staked0: int
+    token1: str
+    reserve1: int
+    staked1: int
+    gauge: str
+    gauge_liquidity: int
+    gauge_alive: bool
+    fee: str
+    bribe: str
+    factory: str
+    emissions_per_sec: int
+    emissions_token: str
+    pool_fee_pips: int
+    unstaked_fee_pips: int
+    token0_fees: int
+    token1_fees: int
+    created_at: int
+
+    @property
+    def is_cl(self) -> bool:
+        return int(self.pool_type) > 0
+
+    @property
+    def is_v2(self) -> bool:
+        return int(self.pool_type) <= 0
+
+    @property
+    def stable(self) -> bool:
+        return int(self.pool_type) == 0
 
 
 class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter):
@@ -65,6 +147,380 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
+        self._token_decimals_cache: dict[str, int] = {}
+        self._token_symbol_cache: dict[str, str] = {}
+        self._token_price_usdc_cache: dict[str, float | None] = {}
+        self._sugar_pools_cache: list[SugarPool] | None = None
+        self._sugar_pools_by_lp_cache: dict[str, SugarPool] | None = None
+
+    async def get_amounts_out(self, amount_in: int, routes: list[Route]) -> list[int]:
+        amount_in = int(amount_in)
+        if amount_in <= 0:
+            raise ValueError("amount_in must be positive")
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            router = web3.eth.contract(
+                address=to_checksum_address(self.core_contracts["router"]),
+                abi=AERODROME_ROUTER_ABI,
+            )
+            amounts = await router.functions.getAmountsOut(
+                amount_in,
+                [route.as_tuple() for route in routes],
+            ).call(block_identifier="latest")
+        return [int(amount) for amount in amounts]
+
+    async def quote_best_route(
+        self,
+        *,
+        amount_in: int,
+        token_in: str,
+        token_out: str,
+        intermediates: list[str] | None = None,
+    ) -> tuple[list[Route], int]:
+        amount_in = int(amount_in)
+        token_in = to_checksum_address(token_in)
+        token_out = to_checksum_address(token_out)
+        if token_in == token_out:
+            return [], amount_in
+
+        factory = to_checksum_address(self.core_contracts["pool_factory"])
+        mids = [to_checksum_address(token) for token in (intermediates or [])]
+
+        candidates: list[list[Route]] = [
+            [
+                Route(
+                    from_token=token_in,
+                    to_token=token_out,
+                    stable=False,
+                    factory=factory,
+                )
+            ],
+            [
+                Route(
+                    from_token=token_in,
+                    to_token=token_out,
+                    stable=True,
+                    factory=factory,
+                )
+            ],
+        ]
+
+        for mid in mids:
+            if mid in (token_in, token_out):
+                continue
+            for stable0 in (False, True):
+                for stable1 in (False, True):
+                    candidates.append(
+                        [
+                            Route(
+                                from_token=token_in,
+                                to_token=mid,
+                                stable=stable0,
+                                factory=factory,
+                            ),
+                            Route(
+                                from_token=mid,
+                                to_token=token_out,
+                                stable=stable1,
+                                factory=factory,
+                            ),
+                        ]
+                    )
+
+        best_out = 0
+        best_routes: list[Route] | None = None
+        for routes in candidates:
+            try:
+                out = (await self.get_amounts_out(amount_in, routes))[-1]
+            except Exception:
+                continue
+            if out > best_out:
+                best_out = out
+                best_routes = routes
+
+        if best_routes is None or best_out <= 0:
+            raise ValueError("No viable Aerodrome route found")
+        return best_routes, int(best_out)
+
+    async def _load_token_metadata(self, token: str) -> tuple[str, int]:
+        token = to_checksum_address(token)
+        symbol = self._token_symbol_cache.get(token)
+        decimals = self._token_decimals_cache.get(token)
+        if symbol is not None and decimals is not None:
+            return symbol, decimals
+
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            symbol, _name, decimals = await get_erc20_metadata(token, web3=web3)
+
+        self._token_symbol_cache[token] = symbol
+        self._token_decimals_cache[token] = int(decimals)
+        return symbol, int(decimals)
+
+    async def token_decimals(self, token: str) -> int:
+        token = to_checksum_address(token)
+        if token in self._token_decimals_cache:
+            return self._token_decimals_cache[token]
+        _symbol, decimals = await self._load_token_metadata(token)
+        return decimals
+
+    async def token_symbol(self, token: str) -> str:
+        token = to_checksum_address(token)
+        if token in self._token_symbol_cache:
+            return self._token_symbol_cache[token]
+        symbol, _decimals = await self._load_token_metadata(token)
+        return symbol
+
+    async def token_price_usdc(self, token: str) -> float | None:
+        token = to_checksum_address(token)
+        if token == BASE_USDC:
+            return 1.0
+        if token in self._token_price_usdc_cache:
+            return self._token_price_usdc_cache[token]
+
+        decimals = await self.token_decimals(token)
+        try:
+            _routes, out = await self.quote_best_route(
+                amount_in=10**decimals,
+                token_in=token,
+                token_out=BASE_USDC,
+                intermediates=[BASE_WETH],
+            )
+        except Exception:
+            self._token_price_usdc_cache[token] = None
+            return None
+
+        if out <= 0:
+            self._token_price_usdc_cache[token] = None
+            return None
+
+        price = float(out / 10**6)
+        self._token_price_usdc_cache[token] = price
+        return price
+
+    @staticmethod
+    def _parse_sugar_rewards(rows: Any) -> list[SugarReward]:
+        if not rows:
+            return []
+        out: list[SugarReward] = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)) or len(row) < 2:
+                continue
+            out.append(
+                SugarReward(
+                    token=to_checksum_address(row[0]),
+                    amount=int(row[1]),
+                )
+            )
+        return out
+
+    @classmethod
+    def _parse_sugar_epoch(cls, row: Any) -> SugarEpoch:
+        if not isinstance(row, (list, tuple)):
+            raise TypeError("Sugar epoch row must be a tuple/list")
+        if len(row) < 6:
+            raise ValueError(f"Unexpected Sugar epoch tuple length: {len(row)}")
+
+        return SugarEpoch(
+            ts=int(row[0]),
+            lp=to_checksum_address(row[1]),
+            votes=int(row[2]),
+            emissions=int(row[3]),
+            bribes=cls._parse_sugar_rewards(row[4]),
+            fees=cls._parse_sugar_rewards(row[5]),
+        )
+
+    @staticmethod
+    def _parse_sugar_pool(row: Any) -> SugarPool:
+        if not isinstance(row, (list, tuple)):
+            raise TypeError("Sugar pool row must be a tuple/list")
+        if len(row) < 26:
+            raise ValueError(f"Unexpected Sugar pool tuple length: {len(row)}")
+
+        return SugarPool(
+            lp=to_checksum_address(row[0]),
+            symbol=str(row[1]),
+            lp_decimals=int(row[2]),
+            lp_total_supply=int(row[3]),
+            pool_type=int(row[4]),
+            tick=int(row[5]),
+            sqrt_ratio=int(row[6]),
+            token0=to_checksum_address(row[7]),
+            reserve0=int(row[8]),
+            staked0=int(row[9]),
+            token1=to_checksum_address(row[10]),
+            reserve1=int(row[11]),
+            staked1=int(row[12]),
+            gauge=to_checksum_address(row[13]),
+            gauge_liquidity=int(row[14]),
+            gauge_alive=bool(row[15]),
+            fee=to_checksum_address(row[16]),
+            bribe=to_checksum_address(row[17]),
+            factory=to_checksum_address(row[18]),
+            emissions_per_sec=int(row[19]),
+            emissions_token=to_checksum_address(row[20]),
+            pool_fee_pips=int(row[21]),
+            unstaked_fee_pips=int(row[22]),
+            token0_fees=int(row[23]),
+            token1_fees=int(row[24]),
+            created_at=int(row[25]),
+        )
+
+    async def sugar_all(self, *, limit: int = 500, offset: int = 0) -> list[SugarPool]:
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            sugar = web3.eth.contract(
+                address=to_checksum_address(self.core_contracts["sugar"]),
+                abi=AERODROME_SUGAR_ABI,
+            )
+            rows = await sugar.functions.all(int(limit), int(offset)).call(
+                transaction={"gas": _SUGAR_CALL_GAS},
+                block_identifier="latest"
+            )
+        return [self._parse_sugar_pool(row) for row in rows]
+
+    async def list_pools(
+        self,
+        *,
+        page_size: int = 500,
+        max_pools: int | None = None,
+    ) -> list[SugarPool]:
+        out: list[SugarPool] = []
+        offset = 0
+        while True:
+            remaining = None if max_pools is None else max(0, int(max_pools) - len(out))
+            if remaining is not None and remaining == 0:
+                break
+
+            batch_limit = int(page_size)
+            if remaining is not None:
+                batch_limit = min(batch_limit, remaining)
+
+            try:
+                batch = await self.sugar_all(limit=batch_limit, offset=offset)
+            except Exception as exc:
+                msg = str(exc).lower()
+                if (
+                    "execution reverted" in msg
+                    or "revert" in msg
+                    or "out of bounds" in msg
+                ):
+                    break
+                raise
+
+            if not batch:
+                break
+            out.extend(batch)
+            offset += batch_limit
+
+        return out
+
+    async def _ensure_sugar_pools_cache(self) -> list[SugarPool]:
+        if self._sugar_pools_cache is None:
+            self._sugar_pools_cache = await self.list_pools()
+        return self._sugar_pools_cache
+
+    async def pools_by_lp(self) -> dict[str, SugarPool]:
+        if self._sugar_pools_by_lp_cache is None:
+            pools = await self._ensure_sugar_pools_cache()
+            self._sugar_pools_by_lp_cache = {pool.lp: pool for pool in pools}
+        return self._sugar_pools_by_lp_cache
+
+    async def sugar_epochs_latest(
+        self,
+        *,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[SugarEpoch]:
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            sugar = web3.eth.contract(
+                address=to_checksum_address(self.core_contracts["sugar"]),
+                abi=AERODROME_SUGAR_ABI,
+            )
+            rows = await sugar.functions.epochsLatest(int(limit), int(offset)).call(
+                transaction={"gas": _SUGAR_CALL_GAS},
+                block_identifier="latest"
+            )
+        return [self._parse_sugar_epoch(row) for row in rows]
+
+    async def sugar_epochs_by_address(
+        self,
+        *,
+        pool: str,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[SugarEpoch]:
+        pool = to_checksum_address(pool)
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            sugar = web3.eth.contract(
+                address=to_checksum_address(self.core_contracts["sugar"]),
+                abi=AERODROME_SUGAR_ABI,
+            )
+            rows = await sugar.functions.epochsByAddress(
+                int(limit), int(offset), pool
+            ).call(
+                transaction={"gas": _SUGAR_CALL_GAS},
+                block_identifier="latest",
+            )
+        return [self._parse_sugar_epoch(row) for row in rows]
+
+    async def token_amount_usdc(self, *, token: str, amount_raw: int) -> float | None:
+        amount_raw = int(amount_raw)
+        if amount_raw == 0:
+            return 0.0
+        if amount_raw < 0:
+            return None
+
+        decimals = await self.token_decimals(token)
+        price_usdc = await self.token_price_usdc(token)
+        if price_usdc is None or price_usdc <= 0:
+            return None
+        return float((amount_raw / (10**decimals)) * price_usdc)
+
+    async def epoch_total_incentives_usdc(
+        self,
+        epoch: SugarEpoch,
+        *,
+        require_all_prices: bool = True,
+    ) -> float | None:
+        total = 0.0
+        for reward in [*epoch.bribes, *epoch.fees]:
+            value = await self.token_amount_usdc(
+                token=reward.token,
+                amount_raw=reward.amount,
+            )
+            if value is None:
+                if require_all_prices:
+                    return None
+                continue
+            total += float(value)
+        return total
+
+    async def rank_pools_by_usdc_per_ve(
+        self,
+        *,
+        top_n: int = 10,
+        limit: int = 1000,
+        require_all_prices: bool = True,
+    ) -> list[tuple[float, SugarEpoch, float]]:
+        epochs = await self.sugar_epochs_latest(limit=int(limit), offset=0)
+        latest_by_lp: dict[str, SugarEpoch] = {}
+        for epoch in epochs:
+            if epoch.lp not in latest_by_lp:
+                latest_by_lp[epoch.lp] = epoch
+
+        ranked: list[tuple[float, SugarEpoch, float]] = []
+        for epoch in latest_by_lp.values():
+            if epoch.votes <= 0:
+                continue
+            total_usdc = await self.epoch_total_incentives_usdc(
+                epoch,
+                require_all_prices=require_all_prices,
+            )
+            if total_usdc is None or total_usdc <= 0:
+                continue
+            usdc_per_ve = (total_usdc * 1e18) / float(epoch.votes)
+            ranked.append((float(usdc_per_ve), epoch, float(total_usdc)))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return ranked[: max(1, int(top_n))]
 
     async def get_pool(
         self,

@@ -8,6 +8,10 @@ import wayfinder_paths.adapters.aerodrome_adapter.adapter as aerodrome_adapter_m
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
     AerodromeAdapter,
+    Route,
+    SugarEpoch,
+    SugarPool,
+    SugarReward,
 )
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
@@ -265,3 +269,303 @@ async def test_claim_pool_fees_unstaked_reads_pending_claimables(adapter_with_si
     assert mock_read.await_args.kwargs["block_identifier"] == "pending"
     assert mock_read.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
     assert mock_encode.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
+
+
+def test_parse_sugar_epoch():
+    token0 = "0x" + "11" * 20
+    token1 = "0x" + "22" * 20
+    lp = "0x" + "33" * 20
+
+    epoch = AerodromeAdapter._parse_sugar_epoch(
+        [
+            123,
+            lp,
+            10,
+            0,
+            [(token0, 5), (token1, 7)],
+            [(token1, 1)],
+        ]
+    )
+
+    assert epoch.ts == 123
+    assert epoch.lp.lower() == lp.lower()
+    assert epoch.votes == 10
+    assert epoch.emissions == 0
+    assert epoch.bribes == [
+        SugarReward(token=token0, amount=5),
+        SugarReward(token=token1, amount=7),
+    ]
+    assert epoch.fees == [SugarReward(token=token1, amount=1)]
+
+
+def test_parse_sugar_pool():
+    token0 = "0x" + "11" * 20
+    token1 = "0x" + "22" * 20
+    lp = "0x" + "33" * 20
+    gauge = "0x" + "44" * 20
+    fee = "0x" + "55" * 20
+    bribe = "0x" + "66" * 20
+    factory = "0x" + "77" * 20
+    emissions_token = "0x" + "88" * 20
+
+    pool = AerodromeAdapter._parse_sugar_pool(
+        [
+            lp,
+            "AERO/USDC",
+            18,
+            1000,
+            0,
+            0,
+            0,
+            token0,
+            10,
+            2,
+            token1,
+            20,
+            4,
+            gauge,
+            500,
+            True,
+            fee,
+            bribe,
+            factory,
+            123,
+            emissions_token,
+            30,
+            5,
+            7,
+            11,
+            999,
+        ]
+    )
+
+    assert pool.lp.lower() == lp.lower()
+    assert pool.symbol == "AERO/USDC"
+    assert pool.gauge.lower() == gauge.lower()
+    assert pool.emissions_token.lower() == emissions_token.lower()
+    assert pool.is_v2 is True
+    assert pool.is_cl is False
+    assert pool.stable is True
+
+
+@pytest.mark.asyncio
+async def test_quote_best_route_picks_best_candidate(monkeypatch):
+    adapter = AerodromeAdapter()
+    token_in = "0x" + "11" * 20
+    token_out = "0x" + "22" * 20
+    mid = "0x" + "33" * 20
+
+    async def _fake_amounts_out(amount_in: int, routes: list[Route]) -> list[int]:
+        if len(routes) == 1 and routes[0].stable:
+            return [amount_in, 50]
+        if len(routes) == 1 and not routes[0].stable:
+            return [amount_in, 40]
+        if len(routes) == 2 and routes[0].stable and routes[1].stable:
+            return [amount_in, 100]
+        return [amount_in, 60]
+
+    monkeypatch.setattr(adapter, "get_amounts_out", _fake_amounts_out)
+
+    routes, out = await adapter.quote_best_route(
+        amount_in=1,
+        token_in=token_in,
+        token_out=token_out,
+        intermediates=[mid],
+    )
+
+    assert out == 100
+    assert len(routes) == 2
+    assert routes[0].to_token.lower() == mid.lower()
+    assert routes[1].to_token.lower() == token_out.lower()
+
+
+@pytest.mark.asyncio
+async def test_token_price_usdc_caches_none_on_failed_quote(monkeypatch):
+    adapter = AerodromeAdapter()
+    token = "0x" + "11" * 20
+
+    async def _fake_decimals(_token: str) -> int:
+        return 18
+
+    async def _fake_quote_best_route(**_kwargs):
+        raise RuntimeError("no route")
+
+    monkeypatch.setattr(adapter, "token_decimals", _fake_decimals)
+    monkeypatch.setattr(adapter, "quote_best_route", _fake_quote_best_route)
+
+    assert await adapter.token_price_usdc(token) is None
+
+    async def _should_not_be_called(**_kwargs):
+        raise AssertionError("unexpected cache miss")
+
+    monkeypatch.setattr(adapter, "quote_best_route", _should_not_be_called)
+    assert await adapter.token_price_usdc(token) is None
+
+
+@pytest.mark.asyncio
+async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
+    adapter = AerodromeAdapter()
+
+    pool = SugarPool(
+        lp="0x" + "11" * 20,
+        symbol="A/B",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0="0x" + "22" * 20,
+        reserve0=1,
+        staked0=1,
+        token1="0x" + "33" * 20,
+        reserve1=1,
+        staked1=1,
+        gauge="0x" + "44" * 20,
+        gauge_liquidity=1,
+        gauge_alive=True,
+        fee="0x" + "55" * 20,
+        bribe="0x" + "66" * 20,
+        factory="0x" + "77" * 20,
+        emissions_per_sec=0,
+        emissions_token="0x" + "88" * 20,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+
+    calls = 0
+
+    async def _fake_sugar_all(*, limit: int, offset: int) -> list[SugarPool]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            assert limit == 500
+            assert offset == 0
+            return [pool]
+        raise RuntimeError("execution reverted: out of bounds")
+
+    monkeypatch.setattr(adapter, "sugar_all", _fake_sugar_all)
+
+    pools = await adapter.list_pools()
+    assert pools == [pool]
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_token_amount_usdc(monkeypatch):
+    adapter = AerodromeAdapter()
+    token = "0x" + "44" * 20
+
+    async def _fake_decimals(_token: str) -> int:
+        return 6
+
+    async def _fake_price(_token: str) -> float | None:
+        return 2.0
+
+    monkeypatch.setattr(adapter, "token_decimals", _fake_decimals)
+    monkeypatch.setattr(adapter, "token_price_usdc", _fake_price)
+
+    assert await adapter.token_amount_usdc(token=token, amount_raw=0) == 0.0
+    assert await adapter.token_amount_usdc(token=token, amount_raw=-1) is None
+    assert await adapter.token_amount_usdc(token=token, amount_raw=1_500_000) == (
+        pytest.approx(3.0)
+    )
+
+
+@pytest.mark.asyncio
+async def test_epoch_total_incentives_usdc(monkeypatch):
+    adapter = AerodromeAdapter()
+    token_ok = "0x" + "11" * 20
+    token_bad = "0x" + "22" * 20
+    epoch = SugarEpoch(
+        ts=0,
+        lp="0x" + "33" * 20,
+        votes=1,
+        emissions=0,
+        bribes=[
+            SugarReward(token=token_ok, amount=1),
+            SugarReward(token=token_bad, amount=1),
+        ],
+        fees=[],
+    )
+
+    async def _fake_token_amount_usdc(
+        *,
+        token: str,
+        amount_raw: int,
+    ) -> float | None:
+        if token.lower() == token_ok.lower():
+            return 1.0
+        return None
+
+    monkeypatch.setattr(adapter, "token_amount_usdc", _fake_token_amount_usdc)
+
+    assert (
+        await adapter.epoch_total_incentives_usdc(epoch, require_all_prices=True)
+        is None
+    )
+    assert await adapter.epoch_total_incentives_usdc(
+        epoch,
+        require_all_prices=False,
+    ) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_rank_pools_by_usdc_per_ve(monkeypatch):
+    adapter = AerodromeAdapter()
+    lp_a = "0x" + "11" * 20
+    lp_b = "0x" + "22" * 20
+
+    epoch_a_latest = SugarEpoch(
+        ts=100,
+        lp=lp_a,
+        votes=10,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+    epoch_a_old = SugarEpoch(
+        ts=50,
+        lp=lp_a,
+        votes=10,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+    epoch_b_latest = SugarEpoch(
+        ts=100,
+        lp=lp_b,
+        votes=20,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+
+    async def _fake_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
+        assert limit == 1000
+        assert offset == 0
+        return [epoch_a_latest, epoch_a_old, epoch_b_latest]
+
+    async def _fake_total_usdc(
+        epoch: SugarEpoch,
+        *,
+        require_all_prices: bool,
+    ) -> float | None:
+        assert require_all_prices is True
+        if epoch.lp.lower() == lp_a.lower():
+            return 100.0
+        if epoch.lp.lower() == lp_b.lower():
+            return 50.0
+        return None
+
+    monkeypatch.setattr(adapter, "sugar_epochs_latest", _fake_epochs_latest)
+    monkeypatch.setattr(adapter, "epoch_total_incentives_usdc", _fake_total_usdc)
+
+    ranked = await adapter.rank_pools_by_usdc_per_ve(top_n=10, limit=1000)
+
+    assert len(ranked) == 2
+    assert ranked[0][1].lp.lower() == lp_a.lower()
+    assert ranked[1][1].lp.lower() == lp_b.lower()
+    assert ranked[0][0] > ranked[1][0]
