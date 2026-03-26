@@ -7,7 +7,7 @@ import pytest
 
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 
-_FIND_WALLET = "wayfinder_paths.core.utils.wallets.find_wallet_by_label"
+_FIND_WALLET = "wayfinder_paths.mcp.utils.find_wallet_by_label"
 _GET_SIGN_CB = "wayfinder_paths.core.utils.wallets.get_wallet_signing_callback"
 _GET_HASH_CB = "wayfinder_paths.core.utils.wallets.get_wallet_sign_hash_callback"
 
