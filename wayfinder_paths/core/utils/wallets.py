@@ -4,16 +4,90 @@ from typing import Any
 
 from eth_account import Account
 from eth_account.messages import encode_typed_data
+from loguru import logger
 
+from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
+    get_api_key,
+    load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
+from wayfinder_paths.policies.anything import anything
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
 Account.enable_unaudited_hdwallet_features()
+
+
+# ---------------------------------------------------------------------------
+# Loading wallets
+# ---------------------------------------------------------------------------
+
+
+def _load_local_wallets() -> list[dict[str, Any]]:
+    wallets = CONFIG.get("wallets")
+    if isinstance(wallets, list):
+        return [w for w in wallets if isinstance(w, dict)]
+    return []
+
+
+async def load_remote_wallets() -> list[dict[str, Any]]:
+    api_key = get_api_key()
+    if not api_key:
+        return []
+    try:
+        raw = await WALLET_CLIENT.list_wallets()
+        wallets = []
+        for i, w in enumerate(raw):
+            addr = w.get("wallet_address")
+            if not addr:
+                continue
+            wallets.append(
+                {
+                    "address": addr,
+                    "label": w.get("label") or f"remote-{i}",
+                    "type": "remote",
+                    "chain_type": w.get("chain_type", "ethereum"),
+                }
+            )
+        return wallets
+    except Exception as exc:
+        logger.debug(f"Failed to fetch remote wallets: {exc}")
+        return []
+
+
+async def load_wallets() -> list[dict[str, Any]]:
+    """Load local + remote wallets."""
+    local = _load_local_wallets()
+    remote = await load_remote_wallets()
+    local_addrs = {str(w.get("address", "")).lower() for w in local}
+    for w in remote:
+        if str(w.get("address", "")).lower() not in local_addrs:
+            local.append(w)
+    return local
+
+
+# ---------------------------------------------------------------------------
+# Finding wallets by label
+# ---------------------------------------------------------------------------
+
+
+async def find_wallet_by_label(label: str) -> dict[str, Any] | None:
+    """Async lookup — local + remote wallets."""
+    want = str(label).strip()
+    if not want:
+        return None
+    for w in await load_wallets():
+        if str(w.get("label", "")).strip() == want:
+            return w
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Signing callbacks (local)
+# ---------------------------------------------------------------------------
 
 
 def account_from_key(private_key: str) -> Account:
@@ -21,7 +95,12 @@ def account_from_key(private_key: str) -> Account:
     return Account.from_key(pk if pk.startswith("0x") else f"0x{pk}")
 
 
-def make_sign_callback(private_key: str):
+def get_private_key(wallet: dict[str, Any]) -> str | None:
+    pk = wallet.get("private_key") or wallet.get("private_key_hex")
+    return str(pk).strip() if pk else None
+
+
+def get_local_sign_callback(private_key: str):
     account = account_from_key(private_key)
 
     async def sign_callback(transaction: dict) -> bytes:
@@ -31,8 +110,7 @@ def make_sign_callback(private_key: str):
     return sign_callback
 
 
-def make_sign_typed_data_callback(private_key: str):
-    """EIP-712 typed data signer. Accepts JSON string or dict. Returns async callback -> hex_signature."""
+def get_local_sign_typed_data_callback(private_key: str):
     account = account_from_key(private_key)
 
     async def sign_typed_data(payload: str | dict) -> str:
@@ -44,39 +122,109 @@ def make_sign_typed_data_callback(private_key: str):
     return sign_typed_data
 
 
-def get_private_key(wallet: dict[str, Any]) -> str | None:
-    pk = wallet.get("private_key") or wallet.get("private_key_hex")
-    return str(pk).strip() if pk else None
+# ---------------------------------------------------------------------------
+# Signing callbacks (remote)
+# ---------------------------------------------------------------------------
 
 
-def resolve_wallet(label: str) -> tuple[str, str]:
-    """Look up wallet by label, return (address, private_key). Raises on failure."""
-    wallet = find_wallet_by_label(label)
-    if not wallet:
-        raise ValueError(f"Wallet '{label}' not found in config.json.")
+def get_remote_sign_callback(wallet_address: str):
+    async def sign_callback(transaction: dict) -> bytes:
+        transaction["from"] = wallet_address
+        hex_str = await WALLET_CLIENT.sign_transaction(wallet_address, transaction)
+        return bytes.fromhex(hex_str.removeprefix("0x"))
+
+    return sign_callback
+
+
+def get_remote_sign_typed_data_callback(wallet_address: str):
+    async def sign_typed_data(payload: str | dict) -> str:
+        msg = json.loads(payload) if isinstance(payload, str) else payload
+        sig = await WALLET_CLIENT.sign_typed_data(wallet_address, msg)
+        return sig if sig.startswith("0x") else f"0x{sig}"
+
+    return sign_typed_data
+
+
+# ---------------------------------------------------------------------------
+# Wallet resolution → signing callback (unified local/remote)
+# ---------------------------------------------------------------------------
+
+
+def _require_wallet_address(wallet: dict[str, Any], label: str) -> str:
     address = wallet.get("address")
     if not address:
         raise ValueError(f"Wallet '{label}' has no address.")
+    return str(address).strip()
+
+
+def _build_signing_callback(wallet: dict[str, Any], label: str):
+    address = _require_wallet_address(wallet, label)
+    if wallet.get("type") == "remote":
+        return get_remote_sign_callback(address), address
+    else:
+        pk = get_private_key(wallet)
+        if not pk:
+            raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
+        return get_local_sign_callback(pk), address
+
+
+def _build_typed_data_callback(wallet: dict[str, Any], label: str):
+    address = _require_wallet_address(wallet, label)
+    if wallet.get("type") == "remote":
+        return get_remote_sign_typed_data_callback(address), address
     pk = get_private_key(wallet)
     if not pk:
         raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
-    return str(address).strip(), pk
+    return get_local_sign_typed_data_callback(pk), address
 
 
-def get_wallet_signing_callback(label: str):
-    """Look up wallet by label, return (sign_callback, address). Raises on failure."""
-    address, pk = resolve_wallet(label)
-    return make_sign_callback(pk), address
+async def resolve_wallet(label: str) -> tuple[str, str]:
+    """Look up wallet by label, return (address, private_key). Local only."""
+    wallet = await find_wallet_by_label(label)
+    if not wallet:
+        raise ValueError(f"Wallet '{label}' not found.")
+    if wallet.get("type") == "remote":
+        raise ValueError(
+            f"Wallet '{label}' is remote — use get_wallet_signing_callback instead."
+        )
+    address = _require_wallet_address(wallet, label)
+    pk = get_private_key(wallet)
+    if not pk:
+        raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
+    return address, pk
 
 
-def find_wallet_by_label(label: str) -> dict[str, Any] | None:
-    want = str(label).strip()
-    if not want:
-        return None
-    for w in load_wallets():
-        if str(w.get("label", "")).strip() == want:
-            return w
-    return None
+async def get_wallet_signing_callback(label: str):
+    """Async — local + remote. Returns (sign_callback, address)."""
+    wallet = await find_wallet_by_label(label)
+    if not wallet:
+        raise ValueError(f"Wallet '{label}' not found.")
+    return _build_signing_callback(wallet, label)
+
+
+async def get_wallet_sign_typed_data_callback(label: str):
+    """Async — local + remote. Returns (sign_typed_data_callback, address)."""
+    wallet = await find_wallet_by_label(label)
+    if not wallet:
+        raise ValueError(f"Wallet '{label}' not found.")
+    return _build_typed_data_callback(wallet, label)
+
+
+# ---------------------------------------------------------------------------
+# Creating wallets
+# ---------------------------------------------------------------------------
+
+
+async def create_remote_wallet(
+    label: str = "",
+    chain_type: str = "ethereum",
+    policies: list[dict] | str | None = None,
+) -> dict[str, Any]:
+    if policies == "*":
+        policies = anything()
+    return await WALLET_CLIENT.create_wallet(
+        chain_type=chain_type, policies=policies, label=label
+    )
 
 
 def make_random_wallet() -> dict[str, str]:
@@ -92,10 +240,6 @@ def make_wallet_from_mnemonic(
     *,
     account_index: int = 0,
 ) -> dict[str, Any]:
-    """Derive an EVM wallet from a BIP-39 mnemonic.
-
-    Uses MetaMask's default derivation path: ``m/44'/60'/0'/0/{account_index}``.
-    """
     path = _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE.format(index=account_index)
     acct = Account.from_mnemonic(mnemonic, account_path=path)
     return {
@@ -106,70 +250,12 @@ def make_wallet_from_mnemonic(
     }
 
 
-def generate_wallet_mnemonic(*, num_words: int = 12) -> str:
-    _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
-    return " ".join(str(mnemonic).strip().split())
-
-
-def validate_wallet_mnemonic(mnemonic: str) -> str:
-    phrase = " ".join(str(mnemonic).strip().split())
-    if not phrase:
-        raise ValueError("mnemonic is empty")
-    # Raises if the phrase is not a valid mnemonic.
-    make_wallet_from_mnemonic(phrase, account_index=0)
-    return phrase
-
-
-def ensure_wallet_mnemonic(
-    *,
-    config_path: str | Path = "config.json",
-    num_words: int = 12,
-) -> str:
-    existing = load_wallet_mnemonic(config_path)
-    if existing:
-        return existing
-    mnemonic = validate_wallet_mnemonic(generate_wallet_mnemonic(num_words=num_words))
-    write_wallet_mnemonic(mnemonic, config_path)
-    return mnemonic
-
-
-def _next_derivation_index_for_mnemonic(
-    mnemonic: str,
-    wallets: list[dict[str, Any]],
-    *,
-    start: int = 1,
-    max_tries: int = 10_000,
-) -> int:
-    """Find the next unused derivation index for a mnemonic.
-
-    This avoids clobbering existing wallets even if they don't have derivation
-    metadata by checking derived addresses against addresses already in config.
-    """
-    existing_addrs = {
-        str(w.get("address", "")).lower()
-        for w in wallets
-        if isinstance(w, dict) and w.get("address")
-    }
-
-    for i in range(start, start + max_tries):
-        derived = make_wallet_from_mnemonic(mnemonic, account_index=i)
-        if str(derived.get("address", "")).lower() not in existing_addrs:
-            return i
-
-    raise RuntimeError("Unable to find an unused derivation index")
-
-
 def make_local_wallet(
     *,
     label: str,
     existing_wallets: list[dict[str, Any]] | None = None,
     mnemonic: str | None = None,
 ) -> dict[str, Any]:
-    """Create a local dev wallet.
-
-    - If a mnemonic is provided, derive MetaMask-style accounts.
-    - Otherwise, generate a random wallet.
-    """
     wallets = existing_wallets or []
     if mnemonic:
         derivation_index = (
@@ -194,31 +280,59 @@ def make_local_wallet(
     return wallet
 
 
-def _load_existing_wallets(file_path: Path) -> list[dict[str, Any]]:
-    if not file_path.exists():
-        return []
-    try:
-        parsed = json.loads(file_path.read_text())
-        if isinstance(parsed, dict):
-            wallets = parsed.get("wallets")
-            if isinstance(wallets, list):
-                return wallets
-        return []
-    except Exception:
-        return []
+# ---------------------------------------------------------------------------
+# Mnemonic helpers
+# ---------------------------------------------------------------------------
 
 
-def _save_wallets(file_path: Path, wallets: list[dict[str, Any]]) -> None:
-    config = {}
-    if file_path.exists():
-        try:
-            config = json.loads(file_path.read_text())
-        except Exception:
-            pass
+def generate_wallet_mnemonic(*, num_words: int = 12) -> str:
+    _acct, mnemonic = Account.create_with_mnemonic(num_words=num_words)
+    return " ".join(str(mnemonic).strip().split())
 
-    sorted_wallets = sorted(wallets, key=lambda w: w.get("address", ""))
-    config["wallets"] = sorted_wallets
-    file_path.write_text(json.dumps(config, indent=2))
+
+def validate_wallet_mnemonic(mnemonic: str) -> str:
+    phrase = " ".join(str(mnemonic).strip().split())
+    if not phrase:
+        raise ValueError("mnemonic is empty")
+    make_wallet_from_mnemonic(phrase, account_index=0)
+    return phrase
+
+
+def ensure_wallet_mnemonic(
+    *,
+    config_path: str | Path = "config.json",
+    num_words: int = 12,
+) -> str:
+    existing = load_wallet_mnemonic(config_path)
+    if existing:
+        return existing
+    mnemonic = validate_wallet_mnemonic(generate_wallet_mnemonic(num_words=num_words))
+    write_wallet_mnemonic(mnemonic, config_path)
+    return mnemonic
+
+
+def _next_derivation_index_for_mnemonic(
+    mnemonic: str,
+    wallets: list[dict[str, Any]],
+    *,
+    start: int = 1,
+    max_tries: int = 10_000,
+) -> int:
+    existing_addrs = {
+        str(w.get("address", "")).lower()
+        for w in wallets
+        if isinstance(w, dict) and w.get("address")
+    }
+    for i in range(start, start + max_tries):
+        derived = make_wallet_from_mnemonic(mnemonic, account_index=i)
+        if str(derived.get("address", "")).lower() not in existing_addrs:
+            return i
+    raise RuntimeError("Unable to find an unused derivation index")
+
+
+# ---------------------------------------------------------------------------
+# Config file I/O
+# ---------------------------------------------------------------------------
 
 
 def write_wallet_to_json(
@@ -228,7 +342,10 @@ def write_wallet_to_json(
     out_dir_path.mkdir(parents=True, exist_ok=True)
     file_path = out_dir_path / filename
 
-    existing = _load_existing_wallets(file_path)
+    config = load_config_json(file_path)
+    existing: list[dict[str, Any]] = config.get("wallets", [])
+    if not isinstance(existing, list):
+        existing = []
     addr = wallet.get("address")
     if not isinstance(addr, str) or not addr.strip():
         raise ValueError("wallet.address is required")
@@ -263,17 +380,6 @@ def write_wallet_to_json(
             )
 
     existing.append(wallet)
-
-    _save_wallets(file_path, existing)
+    config["wallets"] = sorted(existing, key=lambda w: w.get("address", ""))
+    file_path.write_text(json.dumps(config, indent=2))
     return file_path
-
-
-def load_wallets(
-    out_dir: str | Path | None = None, filename: str = "config.json"
-) -> list[dict[str, Any]]:
-    if out_dir is not None:
-        return _load_existing_wallets(Path(out_dir) / filename)
-    wallets = CONFIG.get("wallets")
-    if isinstance(wallets, list):
-        return [w for w in wallets if isinstance(w, dict)]
-    return []
