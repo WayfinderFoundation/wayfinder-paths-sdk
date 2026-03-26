@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.utils.wallets import (
     load_wallets,
     make_wallet_from_mnemonic,
