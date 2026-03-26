@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from typing import Any
+
+from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
+from wayfinder_paths.core.config import get_api_base_url
+
+
+class WalletClient(WayfinderClient):
+    async def list_wallets(self) -> list[dict[str, Any]]:
+        url = f"{get_api_base_url()}/wallets/"
+        resp = await self._authed_request("GET", url)
+        return resp.json()
+
+    async def create_wallet(
+        self,
+        chain_type: str = "ethereum",
+        policies: list[dict] = [],  # noqa: B006
+        label: str = "",
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/"
+        body: dict[str, Any] = {
+            "chain_type": chain_type,
+            "policies": policies,
+            "label": label,
+        }
+        resp = await self._authed_request("POST", url, json=body)
+        return resp.json()
+
+    async def sign_transaction(self, wallet_address: str, transaction: dict) -> str:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-evm-transaction/"
+        resp = await self._authed_request(
+            "POST", url, json={"transaction": transaction}
+        )
+        return resp.json()["signed_transaction"]
+
+    async def sign_typed_data(self, wallet_address: str, typed_data: dict) -> str:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-typed-data/"
+        resp = await self._authed_request("POST", url, json={"typed_data": typed_data})
+        return resp.json()["signature"]
+
+
+WALLET_CLIENT = WalletClient()
