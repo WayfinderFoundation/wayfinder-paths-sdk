@@ -161,6 +161,9 @@ def _prepare_tx_for_privy(transaction: dict) -> dict:
         val = tx.get(key)
         if isinstance(val, int):
             tx[key] = hex(val)
+    # web3py sets `to` = b'' for contract deploys; Privy wants it omitted
+    if isinstance(tx.get("to"), bytes) and not tx["to"]:
+        del tx["to"]
     return tx
 
 

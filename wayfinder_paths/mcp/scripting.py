@@ -4,7 +4,11 @@ import inspect
 from typing import Any
 
 from wayfinder_paths.core.config import CONFIG
-from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.core.utils.wallets import (
+    get_wallet_sign_hash_callback,
+    get_wallet_sign_typed_data_callback,
+    get_wallet_signing_callback,
+)
 
 
 async def get_adapter[T](
@@ -29,6 +33,9 @@ async def get_adapter[T](
             adapter_kwargs["sign_callback"] = sign_cb
             if "wallet_address" in params:
                 adapter_kwargs["wallet_address"] = address
+            if "sign_hash_callback" in params:
+                hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label)
+                adapter_kwargs["sign_hash_callback"] = hash_cb
 
         elif "main_sign_callback" in params:
             adapter_kwargs["main_sign_callback"] = sign_cb
