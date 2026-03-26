@@ -65,6 +65,10 @@ def _skill_dict(manifest: PackManifest) -> dict[str, Any] | None:
         openclaw: dict[str, Any] = {}
         if skill.openclaw.user_invocable is not None:
             openclaw["user_invocable"] = skill.openclaw.user_invocable
+        if skill.openclaw.disable_model_invocation is not None:
+            openclaw["disable_model_invocation"] = (
+                skill.openclaw.disable_model_invocation
+            )
         if skill.openclaw.requires:
             openclaw["requires"] = skill.openclaw.requires
         if skill.openclaw.install:
@@ -72,7 +76,35 @@ def _skill_dict(manifest: PackManifest) -> dict[str, Any] | None:
         if openclaw:
             data["openclaw"] = openclaw
 
-    if skill.portable:
+    if skill.runtime:
+        runtime: dict[str, Any] = {}
+        if skill.runtime.mode:
+            runtime["mode"] = skill.runtime.mode
+        if skill.runtime.package:
+            runtime["package"] = skill.runtime.package
+        if skill.runtime.version:
+            runtime["version"] = skill.runtime.version
+        if skill.runtime.python:
+            runtime["python"] = skill.runtime.python
+        if skill.runtime.component:
+            runtime["component"] = skill.runtime.component
+        if skill.runtime.bootstrap:
+            runtime["bootstrap"] = skill.runtime.bootstrap
+        if skill.runtime.fallback_bootstrap:
+            runtime["fallback_bootstrap"] = skill.runtime.fallback_bootstrap
+        if skill.runtime.prefer_existing_runtime is not None:
+            runtime["prefer_existing_runtime"] = (
+                skill.runtime.prefer_existing_runtime
+            )
+        if skill.runtime.require_api_key is not None:
+            runtime["require_api_key"] = skill.runtime.require_api_key
+        if skill.runtime.api_key_env:
+            runtime["api_key_env"] = skill.runtime.api_key_env
+        if skill.runtime.config_path_env:
+            runtime["config_path_env"] = skill.runtime.config_path_env
+        if runtime:
+            data["runtime"] = runtime
+    elif skill.portable:
         portable: dict[str, Any] = {}
         if skill.portable.python:
             portable["python"] = skill.portable.python

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -46,6 +48,9 @@ def test_pack_init_creates_expected_files(tmp_path: Path):
     assert manifest.skill.enabled is True
     assert manifest.skill.source == "generated"
     assert manifest.skill.instructions_path == "skill/instructions.md"
+    assert manifest.skill.runtime is not None
+    assert manifest.skill.runtime.mode == "thin"
+    assert manifest.skill.runtime.component == "main"
 
 
 def test_pack_init_no_skill_omits_skill_source(tmp_path: Path):
@@ -127,6 +132,68 @@ def test_pack_doctor_provided_skill_requires_skill_md(tmp_path: Path):
     assert any("skill/SKILL.md" in (issue.path or "") for issue in report.errors)
 
 
+def test_pack_doctor_warns_on_legacy_skill_portable(tmp_path: Path):
+    pack_dir = tmp_path / "portable-legacy"
+    init_pack(
+        pack_dir=pack_dir,
+        slug="portable-legacy",
+        primary_kind="monitor",
+        with_applet=False,
+    )
+
+    manifest_path = pack_dir / "wfpack.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            '  runtime:\n'
+            '    mode: thin\n'
+            '    package: "wayfinder-paths"\n'
+            '    version: "0.8.0"\n'
+            '    python: ">=3.12,<3.13"\n'
+            '    component: "main"\n'
+            '    bootstrap: uv\n'
+            '    fallback_bootstrap: pipx\n'
+            '    prefer_existing_runtime: true\n'
+            '    require_api_key: false\n'
+            '    api_key_env: "WAYFINDER_API_KEY"\n'
+            '    config_path_env: "WAYFINDER_CONFIG_PATH"\n',
+            '  portable:\n'
+            '    python: ">=3.12,<3.13"\n'
+            '    package: "wayfinder-paths"\n',
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(pack_dir=pack_dir, fix=False)
+    assert report.ok is True
+    assert any("skill.portable is deprecated" in issue.message for issue in report.warnings)
+
+
+def test_pack_doctor_rejects_embedded_skill_runtime_mode(tmp_path: Path):
+    pack_dir = tmp_path / "embedded-mode"
+    init_pack(
+        pack_dir=pack_dir,
+        slug="embedded-mode",
+        primary_kind="monitor",
+        with_applet=False,
+    )
+
+    manifest_path = pack_dir / "wfpack.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            "    mode: thin\n",
+            "    mode: embedded\n",
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(pack_dir=pack_dir, fix=False)
+    assert report.ok is False
+    assert any(
+        "Only skill.runtime.mode=thin is supported" in issue.message
+        for issue in report.errors
+    )
+
+
 def test_render_skill_exports_writes_all_hosts(tmp_path: Path):
     pack_dir = tmp_path / "render-demo"
     init_pack(
@@ -147,8 +214,59 @@ def test_render_skill_exports_writes_all_hosts(tmp_path: Path):
     assert (report.output_root / "openclaw" / "render-demo" / "SKILL.md").exists()
     assert (report.output_root / "portable" / "render-demo" / "SKILL.md").exists()
     assert (
-        report.output_root / "portable" / "render-demo" / "scripts" / "run_pack.py"
+        report.output_root / "portable" / "render-demo" / "scripts" / "wf_bootstrap.py"
     ).exists()
+    assert (
+        report.output_root / "portable" / "render-demo" / "scripts" / "wf_run.py"
+    ).exists()
+    assert (
+        report.output_root / "portable" / "render-demo" / "runtime" / "manifest.json"
+    ).exists()
+    assert (
+        report.output_root / "portable" / "render-demo" / "runtime" / "export.json"
+    ).exists()
+    assert (
+        report.output_root / "portable" / "render-demo" / "pack" / "wfpack.yaml"
+    ).exists()
+    runtime_manifest = json.loads(
+        (
+            report.output_root
+            / "portable"
+            / "render-demo"
+            / "runtime"
+            / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert runtime_manifest["version"]
+    assert runtime_manifest["pack_version"] == "0.1.0"
+
+
+def test_rendered_portable_export_runs_without_original_pack_tree(tmp_path: Path):
+    pack_dir = tmp_path / "portable-demo"
+    init_pack(
+        pack_dir=pack_dir,
+        slug="portable-demo",
+        primary_kind="monitor",
+        with_applet=False,
+    )
+
+    report = render_skill_exports(pack_dir=pack_dir)
+    export_dir = report.exports["portable"].export_dir
+    copied_export = tmp_path / "standalone-skill"
+    import shutil
+
+    shutil.copytree(export_dir, copied_export)
+    shutil.rmtree(pack_dir)
+
+    result = subprocess.run(
+        [sys.executable, str(copied_export / "scripts" / "wf_bootstrap.py")],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "TODO: implement pack script logic" in result.stdout
 
 
 def test_build_ignores_dot_build_artifacts(tmp_path: Path):

@@ -29,6 +29,7 @@ click = "^8.1.7"
 py-clob-client = "^0.34.5"
 py-solc-x = "^2.0.0"
 matplotlib = "^3.10.8"
+packaging = "^25.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"

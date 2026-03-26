@@ -219,6 +219,7 @@ class PacksApiClient:
         *,
         owner_wallet: str | None = None,
         tag: str | None = None,
+        bonded_only: bool = True,
     ) -> list[dict[str, Any]]:
         url = f"{self.base_url}/api/v1/packs/"
         params: dict[str, str] = {}
@@ -234,7 +235,23 @@ class PacksApiClient:
         packs = data.get("packs", [])
         if not isinstance(packs, list):
             return []
+        if bonded_only:
+            packs = [pack for pack in packs if self._is_bonded_pack(pack)]
         return packs
+
+    @staticmethod
+    def _is_bonded_pack(pack: dict[str, Any]) -> bool:
+        trust = pack.get("trust")
+        if isinstance(trust, dict):
+            tier = str(trust.get("tier") or "").strip().lower()
+            if tier:
+                return tier == "bonded"
+
+        trust_state = str(pack.get("trust_state") or "").strip().lower()
+        if trust_state:
+            return trust_state != "unbonded"
+
+        return bool(str(pack.get("active_bonded_version") or "").strip())
 
     def get_pack(self, *, slug: str) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/packs/{slug}/"

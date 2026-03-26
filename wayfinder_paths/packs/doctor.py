@@ -11,11 +11,24 @@ from wayfinder_paths.packs.manifest import (
     PackManifest,
     PackManifestError,
     PackSkillConfig,
+    resolve_skill_runtime,
 )
 from wayfinder_paths.packs.scaffold import slugify
 
 _ROOT_ASSET_RE = re.compile(r"""(?:src|href)=["']/(assets|_next)/""")
 _SERVICE_WORKER_RE = re.compile(r"serviceWorker", re.IGNORECASE)
+_REPO_NATIVE_CMD_RE = re.compile(r"\b(poetry run|python -m wayfinder_paths)\b")
+_PATH_ESCAPE_RE = re.compile(r"(^|[\s`])(\.\./|/Users/|/home/)")
+_RUNTIME_EXCLUDED_PREFIXES = (
+    "applet/",
+    "skill/",
+    ".build/",
+    "dist/",
+    ".git/",
+    ".venv/",
+    "node_modules/",
+    ".wayfinder/",
+)
 
 
 class PackDoctorError(Exception):
@@ -164,6 +177,95 @@ def _validate_skill(
             level="error",
             message="Missing skill/SKILL.md for skill.source=provided",
             path=provided_skill_path,
+        )
+
+
+def _validate_runtime_skill_contract(
+    *,
+    pack_dir: Path,
+    manifest: PackManifest,
+    errors: list[DoctorIssue],
+    warnings: list[DoctorIssue],
+) -> None:
+    skill = manifest.skill
+    if not skill or not skill.enabled:
+        return
+
+    runtime = resolve_skill_runtime(manifest)
+    if runtime.mode != "thin":
+        _record_issue(
+            errors,
+            level="error",
+            message="Only skill.runtime.mode=thin is supported for host skill exports",
+            path=pack_dir / "wfpack.yaml",
+        )
+        return
+
+    if skill.uses_portable_alias:
+        _record_issue(
+            warnings,
+            level="warning",
+            message="skill.portable is deprecated; use skill.runtime instead",
+            path=pack_dir / "wfpack.yaml",
+        )
+
+    try:
+        component = manifest.resolve_component(runtime.component)
+    except PackManifestError as exc:
+        _record_issue(
+            errors,
+            level="error",
+            message=str(exc),
+            path=pack_dir / "wfpack.yaml",
+        )
+        return
+
+    component_path = str(component.get("path") or "").strip()
+    if any(component_path.startswith(prefix) for prefix in _RUNTIME_EXCLUDED_PREFIXES):
+        _record_issue(
+            errors,
+            level="error",
+            message=(
+                "The configured runtime component is excluded from thin skill exports "
+                f"and cannot be executed: {component_path}"
+            ),
+            path=pack_dir / component_path,
+        )
+
+    skill_doc_path = (
+        pack_dir / "skill" / "SKILL.md"
+        if skill.source == "provided"
+        else pack_dir / (skill.instructions_path or "")
+    )
+    if not skill_doc_path.exists():
+        return
+
+    body = skill_doc_path.read_text(encoding="utf-8", errors="ignore")
+    if _REPO_NATIVE_CMD_RE.search(body):
+        _record_issue(
+            warnings,
+            level="warning",
+            message="Skill docs contain repo-native commands; use export-local runtime commands instead",
+            path=skill_doc_path,
+        )
+
+    if _PATH_ESCAPE_RE.search(body):
+        _record_issue(
+            errors,
+            level="error",
+            message="Skill docs reference paths outside the exported skill root",
+            path=skill_doc_path,
+        )
+
+    if runtime.require_api_key and runtime.api_key_env and runtime.api_key_env not in body:
+        _record_issue(
+            warnings,
+            level="warning",
+            message=(
+                "Skill runtime requires an API key, but the instructions do not mention "
+                f"{runtime.api_key_env}"
+            ),
+            path=skill_doc_path,
         )
 
 
@@ -415,6 +517,12 @@ def run_doctor(
             errors=errors,
             warnings=warnings,
             created_files=created_files,
+        )
+        _validate_runtime_skill_contract(
+            pack_dir=pack_dir,
+            manifest=manifest,
+            errors=errors,
+            warnings=warnings,
         )
 
         _validate_applet(

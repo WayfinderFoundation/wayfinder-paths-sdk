@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from importlib import metadata as importlib_metadata
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -45,6 +46,13 @@ def _read_template(relative_path: str) -> str:
     root = resources.files("wayfinder_paths.packs")
     template_path = root.joinpath("templates").joinpath(relative_path)
     return template_path.read_text(encoding="utf-8")
+
+
+def _runtime_package_version(package: str = "wayfinder-paths") -> str:
+    try:
+        return importlib_metadata.version(package)
+    except importlib_metadata.PackageNotFoundError:
+        return "0.0.0"
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,18 @@ def _build_wfpack_yaml(
         lines.append(f"  name: {_yaml_quote(slug)}")
         lines.append(f"  description: {_yaml_quote(description)}")
         lines.append('  instructions: "skill/instructions.md"')
+        lines.append("  runtime:")
+        lines.append("    mode: thin")
+        lines.append('    package: "wayfinder-paths"')
+        lines.append(f'    version: "{_runtime_package_version()}"')
+        lines.append('    python: ">=3.12,<3.13"')
+        lines.append('    component: "main"')
+        lines.append("    bootstrap: uv")
+        lines.append("    fallback_bootstrap: pipx")
+        lines.append("    prefer_existing_runtime: true")
+        lines.append("    require_api_key: false")
+        lines.append('    api_key_env: "WAYFINDER_API_KEY"')
+        lines.append('    config_path_env: "WAYFINDER_CONFIG_PATH"')
 
     lines.append("")
     return "\n".join(lines)

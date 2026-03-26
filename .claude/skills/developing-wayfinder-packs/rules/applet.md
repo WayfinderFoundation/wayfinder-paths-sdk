@@ -51,6 +51,38 @@ export default defineConfig({
 });
 ```
 
+## Wayfinder Bridge (parent communication)
+
+Applets communicate with the host page via `postMessage`. The host sends a `wf:hello` message; the applet replies with `wf:hello_ack` and can exchange state via `wf:state`.
+
+**Important: never use `'*'` as the target origin.** The OPA review will flag wildcard origins. Instead, capture the parent origin from the `wf:hello` event and use it for all replies:
+
+```js
+let parentOrigin = null;
+
+window.addEventListener('message', e => {
+  const d = e.data;
+  if (!d || typeof d !== 'object') return;
+
+  if (d.type === 'wf:hello') {
+    parentOrigin = e.origin;
+    window.parent.postMessage({ type: 'wf:hello_ack' }, parentOrigin);
+  }
+
+  if (d.type === 'wf:state') {
+    // apply incoming state
+  }
+});
+```
+
+When emitting state back to the host, always use the captured origin:
+
+```js
+if (parentOrigin) {
+  window.parent.postMessage({ type: 'wf:state', state }, parentOrigin);
+}
+```
+
 ## MVP constraints
 
 For now:

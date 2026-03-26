@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import shutil
+import subprocess
+import sys
 from datetime import UTC, datetime
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 from zipfile import ZipFile
@@ -14,6 +19,10 @@ from wayfinder_paths.packs.client import PacksApiClient, PacksApiError
 from wayfinder_paths.packs.doctor import PackDoctorError, PackDoctorReport, run_doctor
 from wayfinder_paths.packs.formatter import PackFormatError, format_pack
 from wayfinder_paths.packs.hooks import PackHooksError, install_pack_hooks
+from wayfinder_paths.packs.manifest import (
+    PackManifest,
+    PackManifestError,
+)
 from wayfinder_paths.packs.preview import (
     PackPreviewError,
     inspect_preview_pack,
@@ -78,18 +87,20 @@ def _collect_skill_export_uploads(
         return None, {}
 
     skill_exports: dict[str, bytes] = {}
+    exports_detail: dict[str, Any] = {}
     for host in render_report.rendered_hosts:
-        host_root = render_report.output_root / host
-        export_dirs = (
-            [path for path in host_root.iterdir() if path.is_dir()]
-            if host_root.exists()
-            else []
-        )
-        if len(export_dirs) != 1:
+        info = render_report.exports.get(host)
+        if info is None:
             raise click.ClickException(
-                f"Expected exactly one rendered skill directory for host '{host}', found {len(export_dirs)}"
+                f"Missing rendered export metadata for host '{host}'"
             )
-        skill_exports[host] = _zip_skill_export_dir(export_dirs[0])
+        skill_exports[host] = _zip_skill_export_dir(info.export_dir)
+        exports_detail[host] = {
+            "filename": info.filename,
+            "mode": info.mode,
+            "runtime": info.runtime_manifest,
+            "export": info.export_manifest,
+        }
 
     exports_manifest = {
         "targets": render_report.rendered_hosts,
@@ -97,6 +108,7 @@ def _collect_skill_export_uploads(
             "status": "warn" if doctor_report.warnings else "ok",
             "warnings": _skill_export_warning_strings(doctor_report),
         },
+        "exports": exports_detail,
     }
     return exports_manifest, skill_exports
 
@@ -116,6 +128,101 @@ def _prepare_pack_for_build(
         raise click.ClickException(str(exc)) from exc
 
     return doctor_report, render_report
+
+
+def _load_pack_manifest(pack_dir: Path) -> PackManifest:
+    try:
+        return PackManifest.load((pack_dir / "wfpack.yaml").resolve())
+    except PackManifestError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _resolve_component_execution_target(
+    manifest: PackManifest,
+    *,
+    component_id: str | None = None,
+) -> tuple[str, str]:
+    component = manifest.resolve_component(component_id)
+    component_id_value = str(component.get("id") or "").strip() or "main"
+    component_path = str(component.get("path") or "").strip()
+    if not component_path:
+        raise click.ClickException(f"Component '{component_id_value}' is missing path")
+    return component_id_value, component_path
+
+
+def _run_pack_component(
+    *,
+    pack_dir: Path,
+    component_id: str | None,
+    args: tuple[str, ...] | list[str],
+) -> int:
+    manifest = _load_pack_manifest(pack_dir)
+    resolved_component_id, component_path = _resolve_component_execution_target(
+        manifest,
+        component_id=component_id,
+    )
+    target = (pack_dir / component_path).resolve()
+    if not target.exists():
+        raise click.ClickException(
+            f"Component path not found for '{resolved_component_id}': {target}"
+        )
+
+    env = os.environ.copy()
+    current_pythonpath = env.get("PYTHONPATH", "").strip()
+    env["PYTHONPATH"] = (
+        str(pack_dir)
+        if not current_pythonpath
+        else str(pack_dir) + os.pathsep + current_pythonpath
+    )
+    cmd = [sys.executable, str(target), *list(args)]
+    return subprocess.call(cmd, cwd=str(pack_dir), env=env)
+
+
+def _export_single_skill(
+    *,
+    pack_dir: Path,
+    host: str,
+) -> tuple[PackDoctorReport, PackSkillRenderReport]:
+    try:
+        doctor_report = run_doctor(pack_dir=pack_dir, fix=False, overwrite=False)
+    except PackDoctorError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _raise_for_doctor_errors(doctor_report)
+
+    try:
+        render_report = render_skill_exports(pack_dir=pack_dir, hosts=[host])
+    except PackSkillRenderError as exc:
+        raise click.ClickException(str(exc)) from exc
+    return doctor_report, render_report
+
+
+def _copy_export_tree(src: Path, dest: Path) -> None:
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dest)
+
+
+def _activate_destination(host: str, scope: str, *, cwd: Path) -> Path:
+    if host == "claude":
+        if scope == "project":
+            return cwd / ".claude" / "skills"
+        if scope == "personal":
+            return Path.home() / ".claude" / "skills"
+    elif host == "codex":
+        if scope == "repo":
+            return cwd / ".agents" / "skills"
+        if scope == "user":
+            return Path.home() / ".agents" / "skills"
+        if scope == "admin":
+            return Path("/etc/codex/skills")
+    elif host == "openclaw":
+        if scope == "workspace":
+            return cwd / "skills"
+        if scope == "shared":
+            return Path.home() / ".openclaw" / "skills"
+
+    raise click.ClickException(f"Unsupported host/scope combination: {host}/{scope}")
 
 
 @click.group(name="pack", help="Build, publish, and emit signals for Packs.")
@@ -258,6 +365,107 @@ def render_skill_cmd(pack_path: str) -> None:
                 "output_root": str(report.output_root),
                 "rendered_hosts": report.rendered_hosts,
                 "written_files": report.written_files,
+            },
+        }
+    )
+
+
+@pack_cli.command(name="version", help="Print the installed wayfinder-paths version.")
+def version_cmd() -> None:
+    try:
+        click.echo(importlib_metadata.version("wayfinder-paths"))
+    except importlib_metadata.PackageNotFoundError:
+        click.echo("0.0.0")
+
+
+@pack_cli.command(name="exec", help="Execute a pack component from a pack directory.")
+@click.option("--pack-dir", "pack_dir", required=True, help="Path to the exported or local pack directory.")
+@click.option("--component", default=None, help="Component id (defaults to the runtime/default component).")
+@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+def exec_cmd(pack_dir: str, component: str | None, args: tuple[str, ...]) -> None:
+    rc = _run_pack_component(
+        pack_dir=Path(pack_dir).expanduser().resolve(),
+        component_id=component,
+        args=args,
+    )
+    raise SystemExit(rc)
+
+
+@pack_cli.command(name="export-skill", help="Generate a single thin skill export for one host.")
+@click.option("--path", "pack_path", default=".", show_default=True)
+@click.option(
+    "--host",
+    required=True,
+    type=click.Choice(["claude", "codex", "openclaw", "portable"], case_sensitive=False),
+)
+def export_skill_cmd(pack_path: str, host: str) -> None:
+    doctor_report, render_report = _export_single_skill(
+        pack_dir=Path(pack_path),
+        host=host.lower(),
+    )
+    info = render_report.exports[host.lower()]
+    _echo_json(
+        {
+            "ok": True,
+            "result": {
+                "host": host.lower(),
+                "export_dir": str(info.export_dir),
+                "filename": info.filename,
+                "mode": info.mode,
+                "runtime": info.runtime_manifest,
+                "warnings": _skill_export_warning_strings(doctor_report),
+            },
+        }
+    )
+
+
+@pack_cli.command(name="activate", help="Install a rendered skill export into a host skill directory.")
+@click.option(
+    "--host",
+    required=True,
+    type=click.Choice(["claude", "codex", "openclaw"], case_sensitive=False),
+)
+@click.option("--scope", required=True, help="Host scope (e.g. project, personal, repo, user, admin, workspace, shared).")
+@click.option("--path", "pack_path", default=None, help="Local pack directory to render from.")
+@click.option("--export-path", default=None, help="Existing rendered skill export directory.")
+def activate_cmd(
+    host: str,
+    scope: str,
+    pack_path: str | None,
+    export_path: str | None,
+) -> None:
+    if bool(pack_path) == bool(export_path):
+        raise click.ClickException("Provide exactly one of --path or --export-path")
+
+    normalized_host = host.lower()
+    normalized_scope = scope.strip().lower()
+    source_dir: Path
+
+    if pack_path:
+        _, render_report = _export_single_skill(
+            pack_dir=Path(pack_path),
+            host=normalized_host,
+        )
+        source_dir = render_report.exports[normalized_host].export_dir
+        skill_name = render_report.skill_name or source_dir.name
+    else:
+        source_dir = Path(export_path or "").expanduser().resolve()
+        if not (source_dir / "SKILL.md").exists():
+            raise click.ClickException(f"Rendered export not found: {source_dir}")
+        skill_name = source_dir.name
+
+    destination_root = _activate_destination(normalized_host, normalized_scope, cwd=Path.cwd())
+    dest = destination_root / skill_name
+    _copy_export_tree(source_dir, dest)
+    _echo_json(
+        {
+            "ok": True,
+            "result": {
+                "host": normalized_host,
+                "scope": normalized_scope,
+                "source": str(source_dir),
+                "dest": str(dest),
+                "mode": "copy",
             },
         }
     )
@@ -569,22 +777,8 @@ def _safe_extract_zip(zip_path: Path, *, dest_dir: Path) -> list[str]:
     return extracted
 
 
-@pack_cli.command(name="install", help="Download and unpack a pack bundle locally.")
-@click.option("--slug", required=True, help="Pack slug.")
-@click.option(
-    "--version", "pack_version", default=None, help="Pack version (defaults to latest)."
-)
-@click.option(
-    "--dir",
-    "install_dir",
-    default=".wayfinder/packs",
-    show_default=True,
-    help="Base install directory.",
-)
-@click.option("--force", is_flag=True, help="Overwrite existing files.")
-@click.option("--no-verify", is_flag=True, help="Skip bundle SHA-256 verification.")
-@click.option("--api-url", "api_url", default=None, help="Override Packs API base URL.")
-def install_cmd(
+def _install_pack(
+    *,
     slug: str,
     pack_version: str | None,
     install_dir: str,
@@ -744,6 +938,72 @@ def install_cmd(
                 "warnings": warnings,
             },
         }
+    )
+
+
+@pack_cli.command(name="install", help="Download and unpack a pack bundle locally.")
+@click.option("--slug", required=True, help="Pack slug.")
+@click.option(
+    "--version", "pack_version", default=None, help="Pack version (defaults to latest)."
+)
+@click.option(
+    "--dir",
+    "install_dir",
+    default=".wayfinder/packs",
+    show_default=True,
+    help="Base install directory.",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing files.")
+@click.option("--no-verify", is_flag=True, help="Skip bundle SHA-256 verification.")
+@click.option("--api-url", "api_url", default=None, help="Override Packs API base URL.")
+def install_cmd(
+    slug: str,
+    pack_version: str | None,
+    install_dir: str,
+    force: bool,
+    no_verify: bool,
+    api_url: str | None,
+) -> None:
+    _install_pack(
+        slug=slug,
+        pack_version=pack_version,
+        install_dir=install_dir,
+        force=force,
+        no_verify=no_verify,
+        api_url=api_url,
+    )
+
+
+@pack_cli.command(name="pull", help="Alias for install: download and unpack a pack locally.")
+@click.option("--slug", required=True, help="Pack slug.")
+@click.option(
+    "--version", "pack_version", default=None, help="Pack version (defaults to latest)."
+)
+@click.option(
+    "--dir",
+    "install_dir",
+    default=".wayfinder/packs",
+    show_default=True,
+    help="Base install directory.",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing files.")
+@click.option("--no-verify", is_flag=True, help="Skip bundle SHA-256 verification.")
+@click.option("--api-url", "api_url", default=None, help="Override Packs API base URL.")
+def pull_cmd(
+    slug: str,
+    pack_version: str | None,
+    install_dir: str,
+    force: bool,
+    no_verify: bool,
+    api_url: str | None,
+) -> None:
+    _install_pack(
+        slug=slug,
+        pack_version=pack_version,
+        install_dir=install_dir,
+        force=force,
+        no_verify=no_verify,
+        api_url=api_url,
     )
 
 

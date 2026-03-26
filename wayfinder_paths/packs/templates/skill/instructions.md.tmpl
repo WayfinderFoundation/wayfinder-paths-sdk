@@ -4,12 +4,12 @@ Use this skill when you need to inspect, install, or operate the `{{slug}}` pack
 
 ## What this skill does
 - Explains what the pack is for
-- Points to the main component and supporting files
-- Describes how to validate and build the pack
+- Points to the main component and supporting files in `pack/`
+- Uses the bundled runtime entrypoint in `scripts/wf_run.py`
 - Summarizes the expected result of running the pack
 
 ## Steps
 1. Verify the pack manifest and any required configuration.
-2. Inspect the main component at `{{component_path}}`.
-3. Run the requested validation, build, or execution path.
+2. Inspect the main component at `pack/{{component_path}}`.
+3. Run the requested execution path with `python scripts/wf_run.py -- --help` or the task-specific arguments you need.
 4. Summarize what changed and any next actions.

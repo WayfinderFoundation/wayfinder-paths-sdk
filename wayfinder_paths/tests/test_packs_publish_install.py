@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from wayfinder_paths.packs.builder import PackBuilder
 from wayfinder_paths.packs.cli import pack_cli
+from wayfinder_paths.packs.client import PacksApiClient
 from wayfinder_paths.packs.scaffold import init_pack
 
 
@@ -87,10 +88,19 @@ def test_pack_publish_uploads_rendered_skill_exports_and_bond_metadata(
     assert exports_manifest is not None
     assert exports_manifest["targets"] == ["claude", "codex", "openclaw", "portable"]
     assert set(skill_exports) == {"claude", "codex", "openclaw", "portable"}
+    assert exports_manifest["exports"]["portable"]["filename"] == "skill-portable-thin.zip"
+    assert exports_manifest["exports"]["portable"]["mode"] == "thin"
+    assert exports_manifest["exports"]["portable"]["runtime"]["component"] == "main"
 
     with ZipFile(io.BytesIO(skill_exports["claude"]), "r") as zf:
         names = set(zf.namelist())
     assert "skill/SKILL.md" in names
+    assert "skill/runtime/manifest.json" in names
+    assert "skill/runtime/export.json" in names
+    assert "skill/scripts/wf_bootstrap.py" in names
+    assert "skill/scripts/wf_run.py" in names
+    assert "skill/pack/wfpack.yaml" in names
+    assert not any(name.startswith("skill/applet/") for name in names)
 
     with ZipFile(io.BytesIO(skill_exports["codex"]), "r") as zf:
         names = set(zf.namelist())
@@ -154,6 +164,83 @@ def test_pack_publish_requires_owner_wallet_for_bonded(tmp_path: Path):
 
     assert result.exit_code != 0
     assert "--owner-wallet is required with --bonded" in result.output
+
+
+def test_pack_activate_copies_rendered_export_to_host_scope(tmp_path: Path):
+    pack_dir = tmp_path / "activate-demo"
+    init_pack(
+        pack_dir=pack_dir,
+        slug="activate-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            pack_cli,
+            [
+                "activate",
+                "--host",
+                "claude",
+                "--scope",
+                "project",
+                "--path",
+                str(pack_dir),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        dest = Path(payload["result"]["dest"])
+        assert dest.name == "activate-demo"
+        assert (dest / "SKILL.md").exists()
+        assert (dest / "runtime" / "manifest.json").exists()
+        assert (dest / "scripts" / "wf_bootstrap.py").exists()
+        assert (dest / "pack" / "wfpack.yaml").exists()
+
+
+def test_packs_api_client_list_packs_defaults_to_bonded_only():
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {
+                "packs": [
+                    {
+                        "slug": "bonded-pack",
+                        "trust": {"tier": "bonded"},
+                        "trust_state": "active",
+                        "active_bonded_version": "1.0.0",
+                    },
+                    {
+                        "slug": "unbonded-pack",
+                        "trust": {"tier": "unbonded"},
+                        "trust_state": "unbonded",
+                        "active_bonded_version": None,
+                    },
+                ]
+            }
+
+    class FakeHttpClient:
+        def get(self, url, params=None, headers=None):
+            return FakeResponse()
+
+    client = PacksApiClient(
+        api_base_url="https://packs.example",
+        client=FakeHttpClient(),
+    )
+
+    bonded = client.list_packs()
+    assert [pack["slug"] for pack in bonded] == ["bonded-pack"]
+
+    all_packs = client.list_packs(bonded_only=False)
+    assert [pack["slug"] for pack in all_packs] == ["bonded-pack", "unbonded-pack"]
 
 
 def test_pack_install_requests_intent_and_submits_receipt(tmp_path: Path, monkeypatch):

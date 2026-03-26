@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,14 @@ _SKILL_NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SKILL_MAX_NAME_LENGTH = 64
 _SKILL_MAX_DESCRIPTION_LENGTH = 1024
 _SKILL_SOURCES = {"generated", "provided"}
+_RUNTIME_MODES = {"thin", "embedded"}
+_BOOTSTRAP_MODES = {"uv", "pipx", "venv"}
+_DEFAULT_RUNTIME_PACKAGE = "wayfinder-paths"
+_DEFAULT_RUNTIME_PYTHON = ">=3.12,<3.13"
+_DEFAULT_BOOTSTRAP = "uv"
+_DEFAULT_FALLBACK_BOOTSTRAP = "pipx"
+_DEFAULT_API_KEY_ENV = "WAYFINDER_API_KEY"
+_DEFAULT_CONFIG_PATH_ENV = "WAYFINDER_CONFIG_PATH"
 
 
 def _slugify(value: str) -> str:
@@ -94,6 +103,7 @@ class PackSkillCodexConfig:
 @dataclass(frozen=True)
 class PackSkillOpenClawConfig:
     user_invocable: bool | None
+    disable_model_invocation: bool | None
     requires: dict[str, Any]
     install: list[dict[str, Any]]
 
@@ -102,6 +112,21 @@ class PackSkillOpenClawConfig:
 class PackSkillPortableConfig:
     python: str | None
     package: str | None
+
+
+@dataclass(frozen=True)
+class PackSkillRuntimeConfig:
+    mode: str | None
+    package: str | None
+    version: str | None
+    python: str | None
+    component: str | None
+    bootstrap: str | None
+    fallback_bootstrap: str | None
+    prefer_existing_runtime: bool | None
+    require_api_key: bool | None
+    api_key_env: str | None
+    config_path_env: str | None
 
 
 @dataclass(frozen=True)
@@ -114,7 +139,9 @@ class PackSkillConfig:
     claude: PackSkillClaudeConfig | None
     codex: PackSkillCodexConfig | None
     openclaw: PackSkillOpenClawConfig | None
+    runtime: PackSkillRuntimeConfig | None
     portable: PackSkillPortableConfig | None
+    uses_portable_alias: bool
     raw: dict[str, Any]
 
 
@@ -175,6 +202,10 @@ def _parse_openclaw_skill_config(raw_obj: Any) -> PackSkillOpenClawConfig | None
             obj.get("user_invocable"),
             name="wfpack.yaml skill.openclaw.user_invocable",
         ),
+        disable_model_invocation=_parse_bool(
+            obj.get("disable_model_invocation"),
+            name="wfpack.yaml skill.openclaw.disable_model_invocation",
+        ),
         requires=dict(requires),
         install=install,
     )
@@ -189,6 +220,66 @@ def _parse_portable_skill_config(raw_obj: Any) -> PackSkillPortableConfig | None
     return PackSkillPortableConfig(python=python, package=package)
 
 
+def _parse_runtime_skill_config(raw_obj: Any) -> PackSkillRuntimeConfig | None:
+    obj = _ensure_object(raw_obj, name="wfpack.yaml skill.runtime")
+    if obj is None:
+        return None
+
+    mode = str(obj.get("mode", "")).strip() or None
+    if mode is not None and mode not in _RUNTIME_MODES:
+        raise PackManifestError("wfpack.yaml skill.runtime.mode must be one of: thin, embedded")
+
+    bootstrap = str(obj.get("bootstrap", "")).strip() or None
+    if bootstrap is not None and bootstrap not in _BOOTSTRAP_MODES:
+        raise PackManifestError("wfpack.yaml skill.runtime.bootstrap must be one of: uv, pipx, venv")
+
+    fallback_bootstrap = str(obj.get("fallback_bootstrap", "")).strip() or None
+    if fallback_bootstrap is not None and fallback_bootstrap not in _BOOTSTRAP_MODES:
+        raise PackManifestError(
+            "wfpack.yaml skill.runtime.fallback_bootstrap must be one of: uv, pipx, venv"
+        )
+
+    return PackSkillRuntimeConfig(
+        mode=mode,
+        package=str(obj.get("package", "")).strip() or None,
+        version=str(obj.get("version", "")).strip() or None,
+        python=str(obj.get("python", "")).strip() or None,
+        component=str(obj.get("component", "")).strip() or None,
+        bootstrap=bootstrap,
+        fallback_bootstrap=fallback_bootstrap,
+        prefer_existing_runtime=_parse_bool(
+            obj.get("prefer_existing_runtime"),
+            name="wfpack.yaml skill.runtime.prefer_existing_runtime",
+        ),
+        require_api_key=_parse_bool(
+            obj.get("require_api_key"),
+            name="wfpack.yaml skill.runtime.require_api_key",
+        ),
+        api_key_env=str(obj.get("api_key_env", "")).strip() or None,
+        config_path_env=str(obj.get("config_path_env", "")).strip() or None,
+    )
+
+
+def _runtime_from_portable_config(
+    portable: PackSkillPortableConfig | None,
+) -> PackSkillRuntimeConfig | None:
+    if portable is None:
+        return None
+    return PackSkillRuntimeConfig(
+        mode="thin",
+        package=portable.package,
+        version=None,
+        python=portable.python,
+        component=None,
+        bootstrap=None,
+        fallback_bootstrap=None,
+        prefer_existing_runtime=None,
+        require_api_key=None,
+        api_key_env=None,
+        config_path_env=None,
+    )
+
+
 def _parse_skill_config(raw_obj: Any) -> PackSkillConfig | None:
     obj = _ensure_object(raw_obj, name="wfpack.yaml skill")
     if obj is None:
@@ -201,6 +292,11 @@ def _parse_skill_config(raw_obj: Any) -> PackSkillConfig | None:
     name = str(obj.get("name", "")).strip()
     description = str(obj.get("description", "")).strip()
     instructions_path = str(obj.get("instructions", "")).strip() or None
+    portable = _parse_portable_skill_config(obj.get("portable"))
+    runtime = _parse_runtime_skill_config(obj.get("runtime"))
+    uses_portable_alias = runtime is None and portable is not None
+    if runtime is None:
+        runtime = _runtime_from_portable_config(portable)
 
     if enabled:
         if source not in _SKILL_SOURCES:
@@ -238,7 +334,9 @@ def _parse_skill_config(raw_obj: Any) -> PackSkillConfig | None:
         claude=_parse_claude_skill_config(obj.get("claude")),
         codex=_parse_codex_skill_config(obj.get("codex")),
         openclaw=_parse_openclaw_skill_config(obj.get("openclaw")),
-        portable=_parse_portable_skill_config(obj.get("portable")),
+        runtime=runtime,
+        portable=portable,
+        uses_portable_alias=uses_portable_alias,
         raw=dict(obj),
     )
 
@@ -255,6 +353,45 @@ class PackManifest:
     applet: PackAppletConfig | None
     skill: PackSkillConfig | None
     raw: dict[str, Any]
+
+    @property
+    def components(self) -> list[dict[str, Any]]:
+        raw_components = self.raw.get("components")
+        if not isinstance(raw_components, list):
+            return []
+        return [item for item in raw_components if isinstance(item, dict)]
+
+    def resolve_component(self, component_id: str | None = None) -> dict[str, Any]:
+        components = self.components
+        if not components:
+            raise PackManifestError("wfpack.yaml must define at least one component")
+
+        if component_id is None:
+            first = components[0]
+            if not str(first.get("path") or "").strip():
+                raise PackManifestError("wfpack.yaml first component is missing path")
+            return first
+
+        needle = str(component_id).strip()
+        for component in components:
+            if str(component.get("id") or "").strip() == needle:
+                if not str(component.get("path") or "").strip():
+                    raise PackManifestError(
+                        f"wfpack.yaml component '{needle}' is missing path"
+                    )
+                return component
+
+        raise PackManifestError(f"wfpack.yaml component not found: {needle}")
+
+    def default_component_id(self) -> str:
+        if self.skill and self.skill.runtime and self.skill.runtime.component:
+            return self.skill.runtime.component
+
+        component = self.resolve_component()
+        component_id = str(component.get("id") or "").strip()
+        if component_id:
+            return component_id
+        return "main"
 
     @staticmethod
     def load(path: Path) -> PackManifest:
@@ -323,3 +460,49 @@ class PackManifest:
             skill=skill,
             raw=raw_obj,
         )
+
+
+def _package_version_or_default(package: str) -> str:
+    try:
+        return importlib_metadata.version(package)
+    except importlib_metadata.PackageNotFoundError:
+        return "0.0.0"
+
+
+def resolve_skill_runtime(manifest: PackManifest) -> PackSkillRuntimeConfig:
+    skill = manifest.skill
+    runtime = skill.runtime if skill else None
+    package = (
+        runtime.package
+        if runtime and runtime.package
+        else _DEFAULT_RUNTIME_PACKAGE
+    )
+    return PackSkillRuntimeConfig(
+        mode=runtime.mode if runtime and runtime.mode else "thin",
+        package=package,
+        version=runtime.version if runtime and runtime.version else _package_version_or_default(package),
+        python=runtime.python if runtime and runtime.python else _DEFAULT_RUNTIME_PYTHON,
+        component=runtime.component if runtime and runtime.component else manifest.default_component_id(),
+        bootstrap=runtime.bootstrap if runtime and runtime.bootstrap else _DEFAULT_BOOTSTRAP,
+        fallback_bootstrap=(
+            runtime.fallback_bootstrap
+            if runtime and runtime.fallback_bootstrap
+            else _DEFAULT_FALLBACK_BOOTSTRAP
+        ),
+        prefer_existing_runtime=(
+            runtime.prefer_existing_runtime
+            if runtime and runtime.prefer_existing_runtime is not None
+            else True
+        ),
+        require_api_key=(
+            runtime.require_api_key
+            if runtime and runtime.require_api_key is not None
+            else False
+        ),
+        api_key_env=runtime.api_key_env if runtime and runtime.api_key_env else _DEFAULT_API_KEY_ENV,
+        config_path_env=(
+            runtime.config_path_env
+            if runtime and runtime.config_path_env
+            else _DEFAULT_CONFIG_PATH_ENV
+        ),
+    )
