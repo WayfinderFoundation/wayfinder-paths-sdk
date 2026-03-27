@@ -17,6 +17,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     liq_for_amounts,
     slippage_min,
     sqrt_price_x96_from_tick,
+    tick_to_price_decimal,
 )
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -93,8 +94,6 @@ def test_constructor_is_base_only():
         "claim_rebases",
         "claim_rebases_many",
         "get_full_user_state",
-        "token_decimals",
-        "token_price_usdc",
         "slipstream_best_pool_for_pair",
         "slipstream_pool_state",
         "slipstream_range_metrics",
@@ -231,8 +230,8 @@ async def test_token_price_usdc_uses_client_and_cache():
         "get_token_details",
         new=AsyncMock(return_value={"current_price": 1.23}),
     ) as mock_get_token_details:
-        price1 = await adapter.token_price_usdc(token)
-        price2 = await adapter.token_price_usdc(token)
+        price1 = await adapter._token_price_usdc(token)
+        price2 = await adapter._token_price_usdc(token)
 
     assert price1 == pytest.approx(1.23)
     assert price2 == pytest.approx(1.23)
@@ -312,7 +311,7 @@ async def test_slipstream_pool_state_reads_expected_fields():
         ),
         patch.object(
             adapter,
-            "token_decimals",
+            "_token_decimals",
             new=AsyncMock(side_effect=[6, 6]),
         ),
     ):
@@ -433,7 +432,7 @@ async def test_slipstream_volume_usdc_per_day_uses_price_overrides():
         ),
         patch.object(
             adapter,
-            "token_decimals",
+            "_token_decimals",
             new=AsyncMock(side_effect=[6, 6]),
         ),
         patch.object(
@@ -470,7 +469,7 @@ async def test_slipstream_fee_apr_percent_uses_price_overrides():
 
     with patch.object(
         adapter,
-        "token_decimals",
+        "_token_decimals",
         new=AsyncMock(side_effect=[6, 6, 6, 6]),
     ):
         ok, data = await adapter.slipstream_fee_apr_percent(
@@ -579,7 +578,7 @@ async def test_slipstream_sigma_annual_from_swaps_uses_swap_prices():
         ),
         patch.object(
             adapter,
-            "token_decimals",
+            "_token_decimals",
             new=AsyncMock(side_effect=[6, 6]),
         ),
         patch.object(
@@ -620,7 +619,7 @@ async def test_slipstream_prob_in_range_week_matches_gaussian_estimate():
         ),
         patch.object(
             adapter,
-            "token_decimals",
+            "_token_decimals",
             new=AsyncMock(side_effect=[6, 6]),
         ),
     ):
@@ -631,16 +630,8 @@ async def test_slipstream_prob_in_range_week_matches_gaussian_estimate():
             sigma_annual=sigma_annual,
         )
 
-    price_low = AerodromeSlipstreamAdapter.q96_to_price_token1_per_token0(
-        sqrt_price_x96=sqrt_price_x96_from_tick(-60),
-        decimals0=6,
-        decimals1=6,
-    )
-    price_high = AerodromeSlipstreamAdapter.q96_to_price_token1_per_token0(
-        sqrt_price_x96=sqrt_price_x96_from_tick(60),
-        decimals0=6,
-        decimals1=6,
-    )
+    price_low = tick_to_price_decimal(-60, 6, 6)
+    price_high = tick_to_price_decimal(60, 6, 6)
     denom = sigma_annual * math.sqrt(7.0 / 365.0)
     expected = max(
         0.0,

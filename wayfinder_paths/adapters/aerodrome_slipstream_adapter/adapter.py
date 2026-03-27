@@ -35,15 +35,18 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance, get_erc20_metadata
+from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_decimals
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
-    deadline as default_deadline,
     liq_for_amounts,
     slippage_min,
     sqrt_price_x96_from_tick,
     sqrt_price_x96_to_price,
+    tick_to_price_decimal,
+)
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    deadline as default_deadline,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
@@ -145,10 +148,6 @@ class AerodromeSlipstreamAdapter(
             cfg["nonfungible_position_manager"].lower(): variant
             for variant, cfg in self.supported_deployments.items()
         }
-        self._variant_by_factory = {
-            cfg["pool_factory"].lower(): variant
-            for variant, cfg in self.supported_deployments.items()
-        }
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
@@ -186,19 +185,18 @@ class AerodromeSlipstreamAdapter(
             raise ValueError(f"Unknown Slipstream position manager: {pm}")
         return variant
 
-    async def token_decimals(self, token: str) -> int:
+    async def _token_decimals(self, token: str) -> int:
         token_addr = to_checksum_address(token)
         cached = self._token_decimals_cache.get(token_addr)
         if cached is not None:
             return cached
 
-        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
-            _symbol, _name, decimals = await get_erc20_metadata(token_addr, web3=web3)
+        decimals = await get_token_decimals(token_addr, CHAIN_ID_BASE)
         decimals_i = int(decimals)
         self._token_decimals_cache[token_addr] = decimals_i
         return decimals_i
 
-    async def token_price_usdc(self, token: str) -> float | None:
+    async def _token_price_usdc(self, token: str) -> float | None:
         token_addr = to_checksum_address(token)
         if token_addr == BASE_USDC:
             return 1.0
@@ -238,35 +236,6 @@ class AerodromeSlipstreamAdapter(
 
         self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
         return price
-
-    @staticmethod
-    def q96_to_price_token1_per_token0(
-        *,
-        sqrt_price_x96: int,
-        decimals0: int,
-        decimals1: int,
-    ) -> float:
-        return float(
-            sqrt_price_x96_to_price(
-                int(sqrt_price_x96),
-                int(decimals0),
-                int(decimals1),
-            )
-        )
-
-    @staticmethod
-    def floor_tick_to_spacing(tick: int, spacing: int) -> int:
-        spacing_i = int(spacing)
-        if spacing_i <= 0:
-            raise ValueError("spacing must be positive")
-        return (int(tick) // spacing_i) * spacing_i
-
-    @staticmethod
-    def ceil_tick_to_spacing(tick: int, spacing: int) -> int:
-        spacing_i = int(spacing)
-        if spacing_i <= 0:
-            raise ValueError("spacing must be positive")
-        return int((-(-int(tick) // spacing_i)) * spacing_i)
 
     def _select_write_target(
         self,
@@ -1276,17 +1245,19 @@ class AerodromeSlipstreamAdapter(
                     block_identifier=block_identifier,
                 )
             decimals0, decimals1 = await asyncio.gather(
-                self.token_decimals(token0),
-                self.token_decimals(token1),
+                self._token_decimals(token0),
+                self._token_decimals(token1),
             )
             deployment_variant = self._variant_by_npm.get(
                 str(position_manager).lower()
             )
             sqrt_price_x96 = int(slot0[0])
-            price = self.q96_to_price_token1_per_token0(
-                sqrt_price_x96=sqrt_price_x96,
-                decimals0=decimals0,
-                decimals1=decimals1,
+            price = float(
+                sqrt_price_x96_to_price(
+                    sqrt_price_x96,
+                    decimals0,
+                    decimals1,
+                )
             )
             return True, {
                 "protocol": "aerodrome_slipstream",
@@ -1416,18 +1387,18 @@ class AerodromeSlipstreamAdapter(
             token0 = str(state["token0"])
             token1 = str(state["token1"])
             decimals0, decimals1 = await asyncio.gather(
-                self.token_decimals(token0),
-                self.token_decimals(token1),
+                self._token_decimals(token0),
+                self._token_decimals(token1),
             )
             price0 = (
                 float(token0_price_usdc)
                 if token0_price_usdc is not None
-                else await self.token_price_usdc(token0)
+                else await self._token_price_usdc(token0)
             )
             price1 = (
                 float(token1_price_usdc)
                 if token1_price_usdc is not None
-                else await self.token_price_usdc(token1)
+                else await self._token_price_usdc(token1)
             )
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -1526,18 +1497,18 @@ class AerodromeSlipstreamAdapter(
             token0 = to_checksum_address(str(metrics["token0"]))
             token1 = to_checksum_address(str(metrics["token1"]))
             decimals0, decimals1 = await asyncio.gather(
-                self.token_decimals(token0),
-                self.token_decimals(token1),
+                self._token_decimals(token0),
+                self._token_decimals(token1),
             )
             price0 = (
                 float(token0_price_usdc)
                 if token0_price_usdc is not None
-                else await self.token_price_usdc(token0)
+                else await self._token_price_usdc(token0)
             )
             price1 = (
                 float(token1_price_usdc)
                 if token1_price_usdc is not None
-                else await self.token_price_usdc(token1)
+                else await self._token_price_usdc(token1)
             )
 
             position_value_usdc: float | None = None
@@ -1602,8 +1573,8 @@ class AerodromeSlipstreamAdapter(
                 return False, state
 
             decimals0, decimals1 = await asyncio.gather(
-                self.token_decimals(str(state["token0"])),
-                self.token_decimals(str(state["token1"])),
+                self._token_decimals(str(state["token0"])),
+                self._token_decimals(str(state["token1"])),
             )
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -1645,10 +1616,12 @@ class AerodromeSlipstreamAdapter(
                     if block_number_i not in timestamp_by_block:
                         block = await web3.eth.get_block(block_number_i)
                         timestamp_by_block[block_number_i] = int(block["timestamp"])
-                    price = self.q96_to_price_token1_per_token0(
-                        sqrt_price_x96=int(sqrt_price_x96),
-                        decimals0=decimals0,
-                        decimals1=decimals1,
+                    price = float(
+                        sqrt_price_x96_to_price(
+                            int(sqrt_price_x96),
+                            decimals0,
+                            decimals1,
+                        )
                     )
                     if price > 0:
                         prices.append((timestamp_by_block[block_number_i], price))
@@ -1778,20 +1751,12 @@ class AerodromeSlipstreamAdapter(
                 return False, state
 
             decimals0, decimals1 = await asyncio.gather(
-                self.token_decimals(str(state["token0"])),
-                self.token_decimals(str(state["token1"])),
+                self._token_decimals(str(state["token0"])),
+                self._token_decimals(str(state["token1"])),
             )
             price_now = float(state["price_token1_per_token0"])
-            price_low = self.q96_to_price_token1_per_token0(
-                sqrt_price_x96=sqrt_price_x96_from_tick(int(tick_lower)),
-                decimals0=decimals0,
-                decimals1=decimals1,
-            )
-            price_high = self.q96_to_price_token1_per_token0(
-                sqrt_price_x96=sqrt_price_x96_from_tick(int(tick_upper)),
-                decimals0=decimals0,
-                decimals1=decimals1,
-            )
+            price_low = tick_to_price_decimal(int(tick_lower), decimals0, decimals1)
+            price_high = tick_to_price_decimal(int(tick_upper), decimals0, decimals1)
             if price_now <= 0 or price_low <= 0 or price_high <= 0:
                 return True, {
                     "pool": state["pool"],

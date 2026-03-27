@@ -24,6 +24,11 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    ceil_tick_to_spacing,
+    round_tick_to_spacing,
+    sqrt_price_x96_to_price,
+)
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -120,10 +125,6 @@ async def _move_to_next_safe_vote_window(gorlami, fork_id: str) -> bool:
     return await _try_time_travel(gorlami, fork_id, target_ts=target_ts)
 
 
-def _round_tick_down(tick: int, spacing: int) -> int:
-    return (int(tick) // int(spacing)) * int(spacing)
-
-
 async def _discover_live_market(
     adapter: AerodromeSlipstreamAdapter,
 ) -> tuple[dict, str]:
@@ -158,14 +159,14 @@ async def _position_amounts(pool_contract) -> tuple[int, int, int, int]:
     )
     tick_current = int(slot0[1])
     spacing = int(tick_spacing)
-    tick_lower = _round_tick_down(tick_current, spacing) - (10 * spacing)
-    tick_upper = _round_tick_down(tick_current, spacing) + (10 * spacing)
+    tick_lower = round_tick_to_spacing(tick_current, spacing) - (10 * spacing)
+    tick_upper = round_tick_to_spacing(tick_current, spacing) + (10 * spacing)
     if tick_upper <= tick_lower:
         tick_upper = tick_lower + spacing
 
     sqrt_price_x96 = int(slot0[0])
-    price_token1_per_token0 = (
-        Decimal(sqrt_price_x96) * Decimal(sqrt_price_x96) / Decimal(2**192)
+    price_token1_per_token0 = Decimal(
+        str(sqrt_price_x96_to_price(sqrt_price_x96, 18, 18))
     )
 
     weth_amount = 10**16  # 0.01 WETH
@@ -355,12 +356,8 @@ async def test_gorlami_aerodrome_slipstream_read_analytics(gorlami):
 
     tick_spacing = int(pool_state["tick_spacing"])
     current_tick = int(pool_state["tick"])
-    tick_lower = adapter.floor_tick_to_spacing(current_tick, tick_spacing) - (
-        5 * tick_spacing
-    )
-    tick_upper = adapter.ceil_tick_to_spacing(current_tick, tick_spacing) + (
-        5 * tick_spacing
-    )
+    tick_lower = round_tick_to_spacing(current_tick, tick_spacing) - (5 * tick_spacing)
+    tick_upper = ceil_tick_to_spacing(current_tick, tick_spacing) + (5 * tick_spacing)
     if tick_upper <= tick_lower:
         tick_upper = tick_lower + tick_spacing
 

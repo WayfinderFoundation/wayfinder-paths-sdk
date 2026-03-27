@@ -8,6 +8,7 @@ import pytest
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     MAX_UINT128,
+    ceil_tick_to_spacing,
     collect_params,
     deadline,
     enumerate_token_ids,
@@ -192,6 +193,13 @@ def test_round_tick_to_spacing():
     assert round_tick_to_spacing(-23, 10) == -30
     assert round_tick_to_spacing(0, 10) == 0
     assert round_tick_to_spacing(5, 0) == 5
+
+
+def test_ceil_tick_to_spacing():
+    assert ceil_tick_to_spacing(23, 10) == 30
+    assert ceil_tick_to_spacing(-23, 10) == -20
+    assert ceil_tick_to_spacing(0, 10) == 0
+    assert ceil_tick_to_spacing(5, 0) == 5
 
 
 def _pos(
