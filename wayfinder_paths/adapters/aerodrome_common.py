@@ -66,7 +66,7 @@ class AerodromeTokenHelpersMixin:
         if cached is not None:
             return cached
 
-        decimals = int(await self._fetch_token_decimals(token_addr))
+        decimals = await self._fetch_token_decimals(token_addr)
         self._token_decimals_cache[token_addr] = decimals
         return decimals
 
@@ -90,10 +90,9 @@ class AerodromeTokenHelpersMixin:
         if resolved_price is None:
             return None
 
-        price_f = float(resolved_price)
-        if not math.isfinite(price_f) or price_f <= 0:
+        if not math.isfinite(resolved_price) or resolved_price <= 0:
             return None
-        return (amount_raw / (10**decimals)) * price_f
+        return (amount_raw / (10**decimals)) * resolved_price
 
     async def token_price_usdc(self, token: str) -> float | None:
         return await self._resolve_token_price_usdc(token)
@@ -192,10 +191,10 @@ class AerodromeVotingRewardsMixin:
                     address=to_checksum_address(self.core_contracts["voting_escrow"]),
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
-                balance = await ve.functions.balanceOfNFT(int(token_id)).call(
+                balance = await ve.functions.balanceOfNFT(token_id).call(
                     block_identifier=block_identifier
                 )
-            return True, int(balance)
+            return True, balance
         except Exception as exc:
             return False, str(exc)
 
@@ -211,7 +210,7 @@ class AerodromeVotingRewardsMixin:
                     address=to_checksum_address(self.core_contracts["voting_escrow"]),
                     abi=AERODROME_VOTING_ESCROW_ABI,
                 )
-                locked = await ve.functions.locked(int(token_id)).call(
+                locked = await ve.functions.locked(token_id).call(
                     block_identifier=block_identifier
                 )
             if (
@@ -222,9 +221,9 @@ class AerodromeVotingRewardsMixin:
                 locked = locked[0]
             amount, end, is_permanent = locked
             return True, {
-                "amount": int(amount),
-                "end": int(end),
-                "is_permanent": bool(is_permanent),
+                "amount": amount,
+                "end": end,
+                "is_permanent": is_permanent,
             }
         except Exception as exc:
             return False, str(exc)
@@ -238,7 +237,7 @@ class AerodromeVotingRewardsMixin:
         try:
             async with web3_from_chain_id(self.chain_id) as web3:
                 latest = await web3.eth.get_block(block_identifier)
-                now = int(latest.get("timestamp") or 0)
+                now = latest.get("timestamp") or 0
                 epoch_start = (now // WEEK_SECONDS) * WEEK_SECONDS
                 next_epoch_start = epoch_start + WEEK_SECONDS
 
@@ -246,13 +245,13 @@ class AerodromeVotingRewardsMixin:
                     address=to_checksum_address(self.core_contracts["voter"]),
                     abi=AERODROME_VOTER_ABI,
                 )
-                last_voted = await voter.functions.lastVoted(int(token_id)).call(
+                last_voted = await voter.functions.lastVoted(token_id).call(
                     block_identifier=block_identifier
                 )
 
             return True, {
-                "can_vote": int(last_voted) < epoch_start,
-                "last_voted": int(last_voted),
+                "can_vote": last_voted < epoch_start,
+                "last_voted": last_voted,
                 "epoch_start": epoch_start,
                 "next_epoch_start": next_epoch_start,
             }
@@ -265,12 +264,10 @@ class AerodromeVotingRewardsMixin:
         aero_amount_raw: int,
         lock_duration: int,
     ) -> tuple[bool, Any]:
-        amount = int(aero_amount_raw)
-        duration = int(lock_duration)
-        if amount <= 0 or duration <= 0:
+        if aero_amount_raw <= 0 or lock_duration <= 0:
             return True, 0
-        effective_duration = min(duration, VE_MAXTIME_SECONDS)
-        return True, int(amount * effective_duration // VE_MAXTIME_SECONDS)
+        effective_duration = min(lock_duration, VE_MAXTIME_SECONDS)
+        return True, aero_amount_raw * effective_duration // VE_MAXTIME_SECONDS
 
     async def estimate_ve_apr_percent(
         self,
@@ -279,9 +276,7 @@ class AerodromeVotingRewardsMixin:
         votes_raw: int,
         aero_locked_raw: int,
     ) -> tuple[bool, Any]:
-        votes = int(votes_raw)
-        aero_locked = int(aero_locked_raw)
-        if votes <= 0 or aero_locked <= 0:
+        if votes_raw <= 0 or aero_locked_raw <= 0:
             return True, None
 
         aero_price = await self.token_price_usdc(self.core_contracts["aero"])
@@ -289,12 +284,12 @@ class AerodromeVotingRewardsMixin:
             return True, None
 
         aero_decimals = await self.token_decimals(self.core_contracts["aero"])
-        locked_value_usdc = (aero_locked / (10**aero_decimals)) * float(aero_price)
+        locked_value_usdc = (aero_locked_raw / (10**aero_decimals)) * aero_price
         if locked_value_usdc <= 0:
             return True, None
 
-        weekly_reward_usdc = (float(votes) / 1e18) * float(usdc_per_ve)
-        return True, float((weekly_reward_usdc * 52.0 / locked_value_usdc) * 100.0)
+        weekly_reward_usdc = (votes_raw / 1e18) * usdc_per_ve
+        return True, (weekly_reward_usdc * 52.0 / locked_value_usdc) * 100.0
 
     async def get_reward_contracts(
         self,
