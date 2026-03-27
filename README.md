@@ -271,6 +271,70 @@ poetry run python wayfinder_paths/run_strategy.py --script .wayfinder_runs/my_fl
 
 Uses your existing Wayfinder API key — no extra config needed. See the `/simulation-dry-run` skill for full details.
 
+## Packs
+
+Wayfinder packs bundle a manifest, runtime component, optional applet, and optional host skill exports into a publishable artifact.
+
+### Publish a pack
+
+```bash
+export WAYFINDER_PACKS_API_URL="https://strategies-dev.wayfinder.ai"
+export WAYFINDER_API_KEY="wk_..."
+
+poetry run wayfinder pack fmt --path examples/packs/virtual-delta-neutral-v2
+poetry run wayfinder pack doctor --path examples/packs/virtual-delta-neutral-v2
+poetry run wayfinder pack publish --path examples/packs/virtual-delta-neutral-v2
+```
+
+For bonded publishes, add the owner wallet and requested risk tier:
+
+```bash
+poetry run wayfinder pack publish \
+  --path examples/packs/virtual-delta-neutral-v2 \
+  --bonded \
+  --owner-wallet 0xYourWallet \
+  --risk-tier execution
+```
+
+What `wayfinder pack publish` does now:
+
+- builds `bundle.zip` and `source.zip`
+- renders thin host skill exports when the pack has a skill
+- calls `POST /api/v1/packs/publish/init/`
+- uploads artifacts directly to signed object-storage URLs
+- calls `POST /api/v1/packs/publish/finalize/`
+- prints the resulting `manageUrl`, `reviewState`, `publishState`, and `nextAction`
+
+The backend no longer proxies archive bytes during ingest. Uploaded artifacts land in quarantine storage first, then E2B performs review and rebuild verification before approved artifacts are promoted to the published bucket.
+
+### Agent Guidance
+
+If you are automating pack publication:
+
+- prefer `wayfinder pack publish` over custom multipart upload scripts
+- run `wayfinder pack fmt` and `wayfinder pack doctor` before publish
+- assume `WAYFINDER_PACKS_API_URL` points at the Strategies backend and `WAYFINDER_API_KEY` provides auth when required
+- surface `manageUrl`, `ownerLinkRequired`, `reviewState`, `publishState`, and `nextAction` exactly as returned
+- if `ownerLinkRequired` is `true`, the next step is owner wallet linking and bonding, not another publish
+- if `reviewState` is `review`, direct the owner to the submissions page to read the recommended changes
+
+### Delta Lab For Applets
+
+Use two different Delta Lab access patterns depending on what is running:
+
+- SDK scripts, MCP tools, and agent-side Python should use `DELTA_LAB_CLIENT` with `system.api_base_url`, for example `https://strategies.wayfinder.ai/api/v1/delta-lab/...`
+- presentation applets shown on the public pack page should use the public browser-safe timeseries endpoint:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+
+For applet authors and agents:
+
+- if the applet is served by the pack page on Strategies, same-origin `/api/v1/delta-lab/public/assets/...` is acceptable
+- if the applet may run in preview, E2B, or any static host, prefer one explicit absolute base URL instead of probing multiple origins
+- do not probe both dev and prod from the same applet build
+- do not call `/api/v1/delta-lab/symbols/`; that route does not exist
+- use the public `.../public/assets/<symbol>/timeseries/` route for presentation data, and reserve authenticated Delta Lab routes for SDK/server-side use
+
 ## Claude MCP Integration
 
 The repo includes an MCP server for Claude Code (see `.mcp.json`).

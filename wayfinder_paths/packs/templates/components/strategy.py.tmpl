@@ -1,0 +1,28 @@
+from __future__ import annotations
+
+
+def wfpack_meta() -> dict:
+    return {
+        "name": "{{name}}",
+        "kind": "strategy",
+        "ui_mode": "auto",
+        "tracking_mode": "hybrid",
+    }
+
+
+def wfpack_state() -> dict:
+    return {
+        "status": "idle",
+        "selection": {},
+        "metrics": {},
+        "positions": [],
+    }
+
+
+def wfpack_decision() -> dict:
+    return {
+        "summary": "TODO: describe the latest selection and why.",
+        "selected": {},
+        "candidates": [],
+    }
+

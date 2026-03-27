@@ -7,6 +7,9 @@ authors = ["Wayfinder <dev@wayfinder.ai>"]
 packages = [
     { include = "wayfinder_paths", from = "." },
 ]
+include = [
+    { path = "wayfinder_paths/packs/templates", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -26,6 +29,7 @@ click = "^8.1.7"
 py-clob-client-felix = ">=0.23.3"
 py-solc-x = "^2.0.0"
 matplotlib = "^3.10.8"
+packaging = "^25.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"

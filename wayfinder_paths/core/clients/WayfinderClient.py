@@ -30,7 +30,9 @@ class WayfinderClient:
 
         # Pass API key to all endpoints (including public ones) for rate limiting
         if not self.headers.get("X-API-KEY"):
-            self.headers["X-API-KEY"] = get_api_key()
+            api_key = get_api_key()
+            if api_key:
+                self.headers["X-API-KEY"] = api_key
 
         merged_headers = dict(self.headers)
         if headers:

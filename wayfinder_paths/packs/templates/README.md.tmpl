@@ -1,0 +1,46 @@
+# {{name}}
+
+{{summary}}
+
+## What’s inside
+
+- `wfpack.yaml` (pack manifest)
+- `{{component_path}}` (main component)
+- `skill/instructions.md` (canonical skill instructions, optional)
+- `applet/` (static UI, optional)
+
+## Build
+
+```bash
+wayfinder pack fmt --path .
+wayfinder pack doctor --path .
+wayfinder pack render-skill --path .
+wayfinder pack build --path . --out dist/bundle.zip
+```
+
+## Publish
+
+```bash
+export WAYFINDER_PACKS_API_URL="https://strategies-dev.wayfinder.ai"
+export WAYFINDER_API_KEY="wk_..."
+wayfinder pack publish --path .
+```
+
+For bonded publishes:
+
+```bash
+wayfinder pack publish --path . --bonded --owner-wallet 0xYourWallet --risk-tier execution
+```
+
+`wayfinder pack publish` builds `bundle.zip` and `source.zip`, generates thin skill exports when this pack has a skill, requests signed upload URLs from the Packs API, uploads artifacts directly to storage, then finalizes the submission and prints a manage URL plus the next required action.
+
+## Delta Lab applets
+
+If this pack includes a presentation applet:
+
+- use the public Delta Lab timeseries endpoint for browser reads:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+- if the applet is embedded by the Strategies pack page, same-origin `/api/v1/delta-lab/public/assets/<symbol>/timeseries/` is acceptable
+- do not probe both dev and prod from the same applet build
+- do not call `/api/v1/delta-lab/symbols/`; it does not exist
