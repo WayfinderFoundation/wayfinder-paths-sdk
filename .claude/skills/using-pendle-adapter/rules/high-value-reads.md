@@ -37,7 +37,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
 async def main():
-    adapter = get_adapter(PendleAdapter)
+    adapter = await get_adapter(PendleAdapter)
     markets = await adapter.list_active_pt_yt_markets(chain=8453)  # or "base"
 
     print(f"Found {len(markets)} markets")
@@ -65,7 +65,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
 async def main():
-    adapter = get_adapter(PendleAdapter)
+    adapter = await get_adapter(PendleAdapter)
     result = await adapter.fetch_markets(chain_id=8453, is_active=True)
 
     for m in result.get("markets", []):
@@ -87,7 +87,7 @@ from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 MARKET = "0x5d6e67fce4ad099363d062815b784d281460c49b"  # yoETH on Base
 
 async def main():
-    adapter = get_adapter(PendleAdapter)
+    adapter = await get_adapter(PendleAdapter)
     snapshot = await adapter.fetch_market_snapshot(chain_id=8453, market_address=MARKET)
     print(snapshot)
 
@@ -106,7 +106,7 @@ from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 MARKET = "0x5d6e67fce4ad099363d062815b784d281460c49b"
 
 async def main():
-    adapter = get_adapter(PendleAdapter)
+    adapter = await get_adapter(PendleAdapter)
     history = await adapter.fetch_market_history(
         chain_id=8453,
         market_address=MARKET,
@@ -130,7 +130,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
 async def main():
-    adapter = get_adapter(PendleAdapter, "main")
+    adapter = await get_adapter(PendleAdapter, "main")
     wallet = adapter._strategy_address()
 
     ok, state = await adapter.get_full_user_state_per_chain(

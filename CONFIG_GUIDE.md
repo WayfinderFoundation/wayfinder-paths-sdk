@@ -103,13 +103,17 @@ Notes:
 Optional: you can add a `wallet_mnemonic` (BIP-39) to deterministically derive wallets using MetaMask's default derivation path (`m/44'/60'/0'/0/N`) when generating local dev wallets.
 Newly generated mnemonics are 12 words by default.
 
-Wallets are stored in the `wallets` array. Each wallet has:
+**Local wallets** are stored in the `wallets` array in `config.json`:
 
 | Field | Description |
 |-------|-------------|
 | `label` | Wallet identifier (e.g., `"main"`, `"stablecoin_yield_strategy"`) |
 | `address` | Ethereum address |
 | `private_key_hex` | Private key (hex format with `0x` prefix) |
+
+**Remote wallets** (Privy server wallets) are fetched automatically from the vault backend when `system.api_key` is configured. They don't require `private_key_hex` — signing happens via API. Create them with `create_remote_wallet(label="my_agent")` or `make_wallets.py --remote`.
+
+Both wallet types work transparently with `get_wallet_signing_callback(label)` and `get_adapter()`.
 
 ### Wallet Lookup
 

@@ -21,7 +21,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 
 
 async def main():
-    adapter = get_adapter(ProjectXLiquidityAdapter, "main")
+    adapter = await get_adapter(ProjectXLiquidityAdapter, "main")
 
     ok, state = await adapter.get_full_user_state()
     print("ok:", ok)
@@ -43,7 +43,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},
@@ -95,7 +95,7 @@ from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
 from wayfinder_paths.mcp.scripting import get_adapter
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},
@@ -123,7 +123,7 @@ from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
 from wayfinder_paths.mcp.scripting import get_adapter
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},
@@ -151,7 +151,7 @@ from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
 from wayfinder_paths.mcp.scripting import get_adapter
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},

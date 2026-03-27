@@ -27,7 +27,7 @@ from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 USDC_MTOKEN = "0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22"
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter)  # read-only, no wallet needed
+    adapter = await get_adapter(MoonwellAdapter)  # read-only, no wallet needed
     ok, supply_apy = await adapter.get_apy(mtoken=USDC_MTOKEN, apy_type="supply", include_rewards=True)
     ok, borrow_apy = await adapter.get_apy(mtoken=USDC_MTOKEN, apy_type="borrow", include_rewards=True)
     print(f"Supply: {supply_apy:.2%}, Borrow: {borrow_apy:.2%}")
@@ -45,7 +45,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter)  # read-only, no wallet needed
+    adapter = await get_adapter(MoonwellAdapter)  # read-only, no wallet needed
     ok, markets = await adapter.get_all_markets()
     if not ok:
         raise RuntimeError(f"Failed to fetch markets: {markets}")
@@ -73,7 +73,7 @@ from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 USDC_MTOKEN = "0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22"
 
 async def main():
-    adapter = get_adapter(MoonwellAdapter, "main")  # wallet needed for account lookup
+    adapter = await get_adapter(MoonwellAdapter, "main")  # wallet needed for account lookup
 
     # For all positions, use get_full_user_state()
     ok, state = await adapter.get_full_user_state()
