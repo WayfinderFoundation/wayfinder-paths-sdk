@@ -189,7 +189,7 @@ class AerodromeSlipstreamAdapter(
     async def _token_decimals(self, token: str) -> int:
         return await self.token_decimals(token)
 
-    async def _token_price_usdc(self, token: str) -> float | None:
+    async def token_price_usdc(self, token: str) -> float | None:
         token_addr = to_checksum_address(token)
         if token_addr == BASE_USDC:
             return 1.0
@@ -232,16 +232,6 @@ class AerodromeSlipstreamAdapter(
 
         self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
         return price
-
-    async def _resolve_token_price_usdc(
-        self,
-        token: str,
-        *,
-        price_usdc: float | None = None,
-    ) -> float | None:
-        if price_usdc is not None:
-            return price_usdc
-        return await self._token_price_usdc(token)
 
     def _select_write_target(
         self,
@@ -1387,18 +1377,25 @@ class AerodromeSlipstreamAdapter(
 
             token0 = state["token0"]
             token1 = state["token1"]
-            decimals0, decimals1, price0, price1 = await asyncio.gather(
+            tasks = [
                 self._token_decimals(token0),
                 self._token_decimals(token1),
-                self._resolve_token_price_usdc(
-                    token0,
-                    price_usdc=token0_price_usdc,
-                ),
-                self._resolve_token_price_usdc(
-                    token1,
-                    price_usdc=token1_price_usdc,
-                ),
-            )
+            ]
+            if token0_price_usdc is None:
+                tasks.append(self.token_price_usdc(token0))
+            if token1_price_usdc is None:
+                tasks.append(self.token_price_usdc(token1))
+            results = list(await asyncio.gather(*tasks))
+
+            decimals0, decimals1 = results[:2]
+            next_result = 2
+            price0 = token0_price_usdc
+            if price0 is None:
+                price0 = results[next_result]
+                next_result += 1
+            price1 = token1_price_usdc
+            if price1 is None:
+                price1 = results[next_result]
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
                 latest = await web3.eth.block_number
@@ -1493,18 +1490,25 @@ class AerodromeSlipstreamAdapter(
         try:
             token0 = to_checksum_address(metrics["token0"])
             token1 = to_checksum_address(metrics["token1"])
-            decimals0, decimals1, price0, price1 = await asyncio.gather(
+            tasks = [
                 self._token_decimals(token0),
                 self._token_decimals(token1),
-                self._resolve_token_price_usdc(
-                    token0,
-                    price_usdc=token0_price_usdc,
-                ),
-                self._resolve_token_price_usdc(
-                    token1,
-                    price_usdc=token1_price_usdc,
-                ),
-            )
+            ]
+            if token0_price_usdc is None:
+                tasks.append(self.token_price_usdc(token0))
+            if token1_price_usdc is None:
+                tasks.append(self.token_price_usdc(token1))
+            results = list(await asyncio.gather(*tasks))
+
+            decimals0, decimals1 = results[:2]
+            next_result = 2
+            price0 = token0_price_usdc
+            if price0 is None:
+                price0 = results[next_result]
+                next_result += 1
+            price1 = token1_price_usdc
+            if price1 is None:
+                price1 = results[next_result]
 
             position_value_usdc: float | None = None
             if (

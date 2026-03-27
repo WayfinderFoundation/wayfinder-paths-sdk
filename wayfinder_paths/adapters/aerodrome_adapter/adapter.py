@@ -308,16 +308,6 @@ class AerodromeAdapter(
         self._token_price_usdc_cache[token] = (time.monotonic(), price)
         return price
 
-    async def _resolve_token_price_usdc(
-        self,
-        token: str,
-        *,
-        price_usdc: float | None = None,
-    ) -> float | None:
-        if price_usdc is not None:
-            return price_usdc
-        return await self.token_price_usdc(token)
-
     @staticmethod
     def _parse_sugar_rewards(rows: Any) -> list[SugarReward]:
         if not rows:

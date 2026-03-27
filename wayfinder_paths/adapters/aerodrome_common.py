@@ -52,14 +52,6 @@ class AerodromeTokenHelpersMixin:
             symbol, _name, _decimals = await get_erc20_metadata(token_addr, web3=web3)
         return symbol
 
-    async def _resolve_token_price_usdc(
-        self,
-        token: str,
-        *,
-        price_usdc: float | None = None,
-    ) -> float | None:
-        raise NotImplementedError
-
     async def token_decimals(self, token: str) -> int:
         token_addr = to_checksum_address(token)
         cached = self._token_decimals_cache.get(token_addr)
@@ -83,9 +75,8 @@ class AerodromeTokenHelpersMixin:
             return None
 
         decimals = await self.token_decimals(token)
-        resolved_price = await self._resolve_token_price_usdc(
-            token,
-            price_usdc=price_usdc,
+        resolved_price = (
+            price_usdc if price_usdc is not None else await self.token_price_usdc(token)
         )
         if resolved_price is None:
             return None
@@ -95,7 +86,7 @@ class AerodromeTokenHelpersMixin:
         return (amount_raw / (10**decimals)) * resolved_price
 
     async def token_price_usdc(self, token: str) -> float | None:
-        return await self._resolve_token_price_usdc(token)
+        raise NotImplementedError
 
     async def token_symbol(self, token: str) -> str:
         token_addr = to_checksum_address(token)

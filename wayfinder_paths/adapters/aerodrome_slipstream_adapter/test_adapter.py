@@ -230,8 +230,8 @@ async def test_token_price_usdc_uses_client_and_cache():
         "get_token_details",
         new=AsyncMock(return_value={"current_price": 1.23}),
     ) as mock_get_token_details:
-        price1 = await adapter._token_price_usdc(token)
-        price2 = await adapter._token_price_usdc(token)
+        price1 = await adapter.token_price_usdc(token)
+        price2 = await adapter.token_price_usdc(token)
 
     assert price1 == pytest.approx(1.23)
     assert price2 == pytest.approx(1.23)
