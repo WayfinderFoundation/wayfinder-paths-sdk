@@ -7,7 +7,6 @@ from difflib import SequenceMatcher
 from typing import Any, Literal
 
 import httpx
-from eth_account import Account
 from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from py_clob_client.client import ClobClient  # type: ignore[import-untyped]
@@ -149,7 +148,6 @@ class PolymarketAdapter(BaseAdapter):
         *,
         sign_callback=None,
         wallet_address: str | None = None,
-        private_key_hex: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
         gamma_base_url: str = POLYMARKET_GAMMA_BASE_URL,
@@ -160,11 +158,10 @@ class PolymarketAdapter(BaseAdapter):
     ) -> None:
         super().__init__("polymarket_adapter", config)
 
-        self.sign_callback = sign_callback
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
-        self._private_key_hex = private_key_hex
+        self.sign_callback = sign_callback
         self._funder_override = funder
         self._signature_type = signature_type
 
@@ -746,7 +743,7 @@ class PolymarketAdapter(BaseAdapter):
         Fallback (async, bridge service): Polymarket Bridge deposit address transfer
         from `from_chain_id` (see `bridge_supported_assets()`).
         """
-        from_address, sign_cb = self._resolve_wallet_signer()
+        from_address, sign_cb = self._require_signer()
         from_token = to_checksum_address(from_token_address)
         base_units = to_erc20_raw(amount, token_decimals)
 
@@ -851,7 +848,7 @@ class PolymarketAdapter(BaseAdapter):
         Preferred path (fast, on-chain): BRAP swap USDC.e -> USDC on Polygon, when possible.
         Fallback (async, bridge service): Polymarket Bridge withdraw address transfer.
         """
-        from_address, sign_cb = self._resolve_wallet_signer()
+        from_address, sign_cb = self._require_signer()
         base_units = to_erc20_raw(amount_usdce, token_decimals)
 
         rcpt = to_checksum_address(recipient_addr)
@@ -905,65 +902,25 @@ class PolymarketAdapter(BaseAdapter):
             "recipient_addr": to_checksum_address(recipient_addr),
         }
 
-    def _resolve_wallet(self) -> dict[str, Any]:
-        cfg = self.config or {}
-        for key in ("strategy_wallet", "main_wallet"):
-            w = cfg.get(key)
-            if isinstance(w, dict) and w.get("address"):
-                return w
-
-        wallets = cfg.get("wallets")
-        if isinstance(wallets, list) and wallets:
-            for w in wallets:
-                if isinstance(w, dict) and str(w.get("label", "")).lower() == "main":
-                    return w
-            for w in wallets:
-                if isinstance(w, dict) and w.get("address"):
-                    return w
-
-        raise ValueError(
-            "No wallet configured. Provide config.strategy_wallet or pass wallet via get_adapter(..., wallet_label=...)."
-        )
-
-    def _resolve_private_key(self) -> str:
-        if self._private_key_hex:
-            return self._private_key_hex.removeprefix("0x")
-        wallet = self._resolve_wallet()
-        pk = wallet.get("private_key_hex") or wallet.get("private_key")
-        if not pk:
+    def _require_wallet_address(self) -> str:
+        if not self.wallet_address:
             raise ValueError(
-                "Wallet is missing private_key_hex (required for CLOB trading)."
+                "wallet_address is required. Use get_adapter(PolymarketAdapter, wallet_label)."
             )
-        return str(pk).removeprefix("0x")
+        return self.wallet_address
 
-    def _resolve_funder(self) -> str:
+    def _require_funder(self) -> str:
         if self._funder_override:
             return to_checksum_address(self._funder_override)
-        if self.wallet_address:
-            return self.wallet_address
-        wallet = self._resolve_wallet()
-        addr = wallet.get("address")
-        if not addr:
-            raise ValueError("Wallet missing address")
-        return to_checksum_address(str(addr))
+        return self._require_wallet_address()
 
-    def _resolve_wallet_signer(self) -> tuple[str, Any]:
-        from_address = self.wallet_address or to_checksum_address(
-            str(self._resolve_wallet().get("address"))
-        )
-
-        sign_cb = self.sign_callback
-        if sign_cb is None:
-            pk = self._resolve_private_key()
-            account = Account.from_key(pk)
-
-            async def _sign_cb(tx: dict) -> bytes:
-                signed = account.sign_transaction(tx)
-                return signed.raw_transaction
-
-            sign_cb = _sign_cb
-
-        return from_address, sign_cb
+    def _require_signer(self) -> tuple[str, Any]:
+        addr = self._require_wallet_address()
+        if not self.sign_callback:
+            raise ValueError(
+                "sign_callback is required. Use get_adapter(PolymarketAdapter, wallet_label)."
+            )
+        return addr, self.sign_callback
 
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
         cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=neg_risk)
@@ -976,14 +933,18 @@ class PolymarketAdapter(BaseAdapter):
     @property
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
         if self._clob_client is None:
-            pk = self._resolve_private_key()
-            funder = self._resolve_funder()
+            addr = self._require_wallet_address()
+            if not self.sign_callback:
+                raise ValueError("sign_callback is required for CLOB trading.")
+            funder = self._require_funder()
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
                 chain_id=POLYGON_CHAIN_ID,
-                key=pk,
+                key="0x" + "00" * 32,
                 signature_type=self._signature_type,
                 funder=funder,
+                address_override=addr,
+                sign_callback_override=self.sign_callback,
             )
         return self._clob_client  # type: ignore[return-value]
 
@@ -1000,7 +961,7 @@ class PolymarketAdapter(BaseAdapter):
             return False, str(exc)
 
     async def ensure_onchain_approvals(self) -> tuple[bool, dict[str, Any] | str]:
-        from_address, sign_cb = self._resolve_wallet_signer()
+        from_address, sign_cb = self._require_signer()
 
         cfg = self._contract_addrs(neg_risk=False)
         cfg_nr = self._contract_addrs(neg_risk=True)
@@ -1232,7 +1193,7 @@ class PolymarketAdapter(BaseAdapter):
 
         async def _fetch_orders() -> tuple[bool, list[dict[str, Any]] | str]:
             # CLOB requires Level-2 auth; only works for the configured signing wallet.
-            signer_addr = self._resolve_funder()
+            signer_addr = self._require_funder()
             if to_checksum_address(signer_addr) != addr:
                 return (
                     False,
@@ -1633,7 +1594,7 @@ class PolymarketAdapter(BaseAdapter):
         condition_id: str,
         holder: str,
     ) -> tuple[bool, dict[str, Any] | str]:
-        holder_addr, sign_cb = self._resolve_wallet_signer()
+        holder_addr, sign_cb = self._require_signer()
         if holder and to_checksum_address(holder) != holder_addr:
             return False, "holder must match the configured signing wallet"
 

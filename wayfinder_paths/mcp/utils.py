@@ -8,7 +8,14 @@ from typing import Any
 
 import yaml
 
-from wayfinder_paths.core.config import CONFIG
+from wayfinder_paths.core.utils.wallets import (  # noqa: F401
+    find_wallet_by_label,
+    get_private_key,
+    get_wallet_signing_callback,
+    load_wallets,
+    make_sign_typed_data_callback,
+    resolve_wallet,
+)
 
 getcontext().prec = 78
 
@@ -86,22 +93,6 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
     if len(text) <= max_chars:
         return text
     return text[: max_chars - 3] + "..."
-
-
-def load_wallets() -> list[dict[str, Any]]:
-    if isinstance(CONFIG.get("wallets"), list):
-        return [w for w in CONFIG["wallets"] if isinstance(w, dict)]
-    return []
-
-
-def find_wallet_by_label(label: str) -> dict[str, Any] | None:
-    want = str(label).strip()
-    if not want:
-        return None
-    for w in load_wallets():
-        if str(w.get("label", "")).strip() == want:
-            return w
-    return None
 
 
 def normalize_address(addr: str | None) -> str | None:

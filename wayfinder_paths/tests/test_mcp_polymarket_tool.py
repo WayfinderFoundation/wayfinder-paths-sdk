@@ -7,12 +7,15 @@ import pytest
 
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 
+_FIND_WALLET = "wayfinder_paths.core.utils.wallets.find_wallet_by_label"
+
 
 @pytest.mark.asyncio
 async def test_polymarket_status_uses_adapter_full_state():
     wallet = {"address": "0x000000000000000000000000000000000000dEaD"}
 
     with (
+        patch(_FIND_WALLET, return_value=wallet),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
             return_value=wallet,
@@ -56,7 +59,7 @@ async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
@@ -88,7 +91,7 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.find_wallet_by_label",
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
