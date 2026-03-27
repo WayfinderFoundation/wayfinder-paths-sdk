@@ -69,7 +69,7 @@ def _checksum_or_zero(value: str | None) -> str:
 def _explicit_amount_min(amount_min: int | None) -> int | None:
     if amount_min is None:
         return None
-    value = int(amount_min)
+    value = amount_min
     if value < 0:
         raise ValueError("amount mins must be non-negative")
     return value
@@ -192,9 +192,8 @@ class AerodromeSlipstreamAdapter(
             return cached
 
         decimals = await get_token_decimals(token_addr, CHAIN_ID_BASE)
-        decimals_i = int(decimals)
-        self._token_decimals_cache[token_addr] = decimals_i
-        return decimals_i
+        self._token_decimals_cache[token_addr] = decimals
+        return decimals
 
     async def _token_price_usdc(self, token: str) -> float | None:
         token_addr = to_checksum_address(token)
@@ -209,7 +208,7 @@ class AerodromeSlipstreamAdapter(
                 return cached_price
 
         price: float | None = None
-        chain_name = str(self.core_contracts["chain_name"]).lower()
+        chain_name = self.core_contracts["chain_name"].lower()
         queries: tuple[tuple[str, dict[str, Any]], ...] = (
             (f"{chain_name}_{token_addr}", {"market_data": True}),
             (
@@ -327,7 +326,7 @@ class AerodromeSlipstreamAdapter(
             pool = await factory.functions.getPool(
                 to_checksum_address(token0),
                 to_checksum_address(token1),
-                int(tick_spacing),
+                tick_spacing,
             ).call(block_identifier="latest")
             pool_addr = _checksum_or_zero(pool)
 
@@ -339,10 +338,10 @@ class AerodromeSlipstreamAdapter(
                 slot0 = await pool_contract.functions.slot0().call(
                     block_identifier="latest"
                 )
-                return int(slot0[0])
+                return slot0[0]
 
-        if initial_sqrt_price_x96 is not None and int(initial_sqrt_price_x96) > 0:
-            return int(initial_sqrt_price_x96)
+        if initial_sqrt_price_x96 is not None and initial_sqrt_price_x96 > 0:
+            return initial_sqrt_price_x96
 
         raise ValueError("amount mins are required when pool price cannot be resolved")
 
@@ -374,17 +373,17 @@ class AerodromeSlipstreamAdapter(
             tick_spacing=tick_spacing,
             initial_sqrt_price_x96=initial_sqrt_price_x96,
         )
-        sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
-        sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+        sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+        sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
         liquidity = liq_for_amounts(
-            int(sqrt_price_x96),
+            sqrt_price_x96,
             sqrt_lower,
             sqrt_upper,
-            int(amount0_desired),
-            int(amount1_desired),
+            amount0_desired,
+            amount1_desired,
         )
         expected0, expected1 = amounts_for_liq_inrange(
-            int(sqrt_price_x96),
+            sqrt_price_x96,
             sqrt_lower,
             sqrt_upper,
             liquidity,
@@ -426,13 +425,13 @@ class AerodromeSlipstreamAdapter(
             token1=token1,
             tick_spacing=tick_spacing,
         )
-        sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
-        sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+        sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+        sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
         expected0, expected1 = amounts_for_liq_inrange(
-            int(sqrt_price_x96),
+            sqrt_price_x96,
             sqrt_lower,
             sqrt_upper,
-            int(liquidity),
+            liquidity,
         )
         if expected0 <= 0 and expected1 <= 0:
             raise ValueError("could not derive non-zero amount mins from current price")
@@ -1191,8 +1190,8 @@ class AerodromeSlipstreamAdapter(
                     *[
                         self._read_market(
                             web3=web3,
-                            deployment_variant=str(match["deployment_variant"]),
-                            pool=str(match["pool"]),
+                            deployment_variant=match["deployment_variant"],
+                            pool=match["pool"],
                             include_gauge_state=False,
                             block_identifier=block_identifier,
                         )
@@ -1200,8 +1199,8 @@ class AerodromeSlipstreamAdapter(
                     ]
                 )
 
-            best_market = max(markets, key=lambda market: int(market["liquidity"]))
-            if int(best_market["liquidity"]) <= 0:
+            best_market = max(markets, key=lambda market: market["liquidity"])
+            if best_market["liquidity"] <= 0:
                 return False, "Slipstream pools exist but none have liquidity > 0"
             return True, best_market
         except Exception as exc:
@@ -1248,16 +1247,12 @@ class AerodromeSlipstreamAdapter(
                 self._token_decimals(token0),
                 self._token_decimals(token1),
             )
-            deployment_variant = self._variant_by_npm.get(
-                str(position_manager).lower()
-            )
-            sqrt_price_x96 = int(slot0[0])
-            price = float(
-                sqrt_price_x96_to_price(
-                    sqrt_price_x96,
-                    decimals0,
-                    decimals1,
-                )
+            deployment_variant = self._variant_by_npm.get(position_manager.lower())
+            sqrt_price_x96 = slot0[0]
+            price = sqrt_price_x96_to_price(
+                sqrt_price_x96,
+                decimals0,
+                decimals1,
             )
             return True, {
                 "protocol": "aerodrome_slipstream",
@@ -1269,11 +1264,11 @@ class AerodromeSlipstreamAdapter(
                 "token0": token0,
                 "token1": token1,
                 "sqrt_price_x96": sqrt_price_x96,
-                "tick": int(slot0[1]),
-                "tick_spacing": int(tick_spacing),
-                "liquidity": int(liquidity),
-                "fee_pips": int(fee_pips),
-                "unstaked_fee_pips": int(unstaked_fee_pips),
+                "tick": slot0[1],
+                "tick_spacing": tick_spacing,
+                "liquidity": liquidity,
+                "fee_pips": fee_pips,
+                "unstaked_fee_pips": unstaked_fee_pips,
                 "price_token1_per_token0": price,
             }
         except Exception as exc:
@@ -1289,11 +1284,9 @@ class AerodromeSlipstreamAdapter(
         amount1_raw: int,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
-        if int(tick_lower) >= int(tick_upper):
+        if tick_lower >= tick_upper:
             return False, "tick_lower must be < tick_upper"
-        amount0_i = int(amount0_raw)
-        amount1_i = int(amount1_raw)
-        if amount0_i < 0 or amount1_i < 0:
+        if amount0_raw < 0 or amount1_raw < 0:
             return False, "amount0_raw and amount1_raw must be non-negative"
 
         try:
@@ -1304,31 +1297,31 @@ class AerodromeSlipstreamAdapter(
             if not ok:
                 return False, pool_state
 
-            sqrt_price_x96 = int(pool_state["sqrt_price_x96"])
-            sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
-            sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+            sqrt_price_x96 = pool_state["sqrt_price_x96"]
+            sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+            sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
             liquidity_position = liq_for_amounts(
                 sqrt_price_x96,
                 sqrt_lower,
                 sqrt_upper,
-                amount0_i,
-                amount1_i,
+                amount0_raw,
+                amount1_raw,
             )
             amount0_now, amount1_now = amounts_for_liq_inrange(
                 sqrt_price_x96,
                 sqrt_lower,
                 sqrt_upper,
-                int(liquidity_position),
+                liquidity_position,
             )
-            liquidity_total = int(pool_state["liquidity"])
+            liquidity_total = pool_state["liquidity"]
             share_of_active_liquidity = (
-                float(liquidity_position) / float(liquidity_total)
+                liquidity_position / liquidity_total
                 if liquidity_total > 0
                 else 0.0
             )
             effective_fee_fraction_for_unstaked = (
-                float(pool_state["fee_pips"]) / 1e6
-            ) * (1.0 - float(pool_state["unstaked_fee_pips"]) / 1e6)
+                pool_state["fee_pips"] / 1e6
+            ) * (1.0 - pool_state["unstaked_fee_pips"] / 1e6)
 
             return True, {
                 "protocol": "aerodrome_slipstream",
@@ -1339,23 +1332,19 @@ class AerodromeSlipstreamAdapter(
                 "position_manager": pool_state["position_manager"],
                 "token0": pool_state["token0"],
                 "token1": pool_state["token1"],
-                "tick_lower": int(tick_lower),
-                "tick_upper": int(tick_upper),
-                "current_tick": int(pool_state["tick"]),
-                "in_range": int(tick_lower)
-                <= int(pool_state["tick"])
-                < int(tick_upper),
+                "tick_lower": tick_lower,
+                "tick_upper": tick_upper,
+                "current_tick": pool_state["tick"],
+                "in_range": tick_lower <= pool_state["tick"] < tick_upper,
                 "sqrt_price_x96": sqrt_price_x96,
-                "price_token1_per_token0": float(
-                    pool_state["price_token1_per_token0"]
-                ),
+                "price_token1_per_token0": pool_state["price_token1_per_token0"],
                 "liquidity_total": liquidity_total,
-                "liquidity_position": int(liquidity_position),
+                "liquidity_position": liquidity_position,
                 "share_of_active_liquidity": share_of_active_liquidity,
-                "amount0_now": int(amount0_now),
-                "amount1_now": int(amount1_now),
-                "fee_pips": int(pool_state["fee_pips"]),
-                "unstaked_fee_pips": int(pool_state["unstaked_fee_pips"]),
+                "amount0_now": amount0_now,
+                "amount1_now": amount1_now,
+                "fee_pips": pool_state["fee_pips"],
+                "unstaked_fee_pips": pool_state["unstaked_fee_pips"],
                 "effective_fee_fraction_for_unstaked": (
                     effective_fee_fraction_for_unstaked
                 ),
@@ -1372,11 +1361,9 @@ class AerodromeSlipstreamAdapter(
         token0_price_usdc: float | None = None,
         token1_price_usdc: float | None = None,
     ) -> tuple[bool, Any]:
-        lookback_blocks_i = int(lookback_blocks)
-        max_logs_i = int(max_logs)
-        if lookback_blocks_i <= 0:
+        if lookback_blocks <= 0:
             return False, "lookback_blocks must be > 0"
-        if max_logs_i <= 0:
+        if max_logs <= 0:
             return False, "max_logs must be > 0"
 
         try:
@@ -1384,33 +1371,33 @@ class AerodromeSlipstreamAdapter(
             if not ok:
                 return False, state
 
-            token0 = str(state["token0"])
-            token1 = str(state["token1"])
+            token0 = state["token0"]
+            token1 = state["token1"]
             decimals0, decimals1 = await asyncio.gather(
                 self._token_decimals(token0),
                 self._token_decimals(token1),
             )
             price0 = (
-                float(token0_price_usdc)
+                token0_price_usdc
                 if token0_price_usdc is not None
                 else await self._token_price_usdc(token0)
             )
             price1 = (
-                float(token1_price_usdc)
+                token1_price_usdc
                 if token1_price_usdc is not None
                 else await self._token_price_usdc(token1)
             )
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
-                latest = int(await web3.eth.block_number)
-                from_block = max(0, latest - lookback_blocks_i)
+                latest = await web3.eth.block_number
+                from_block = max(0, latest - lookback_blocks)
                 logs = await self._get_logs_bounded(
                     web3,
                     from_block=from_block,
                     to_block=latest,
-                    address=str(state["pool"]),
+                    address=state["pool"],
                     topics=[SLIPSTREAM_SWAP_TOPIC0],
-                    max_logs=max_logs_i,
+                    max_logs=max_logs,
                 )
                 if not logs:
                     return True, {
@@ -1421,7 +1408,7 @@ class AerodromeSlipstreamAdapter(
                     }
 
                 block_numbers = [
-                    int(log["blockNumber"])
+                    log["blockNumber"]
                     for log in logs
                     if log.get("blockNumber") is not None
                 ]
@@ -1440,7 +1427,7 @@ class AerodromeSlipstreamAdapter(
                 )
                 seconds_covered = max(
                     1,
-                    int(block1["timestamp"]) - int(block0["timestamp"]),
+                    block1["timestamp"] - block0["timestamp"],
                 )
 
                 total_usdc = 0.0
@@ -1458,10 +1445,10 @@ class AerodromeSlipstreamAdapter(
 
                     value0 = float("nan")
                     value1 = float("nan")
-                    if price0 is not None and math.isfinite(float(price0)) and price0 > 0:
-                        value0 = abs(int(amount0)) / (10**decimals0) * float(price0)
-                    if price1 is not None and math.isfinite(float(price1)) and price1 > 0:
-                        value1 = abs(int(amount1)) / (10**decimals1) * float(price1)
+                    if price0 is not None and math.isfinite(price0) and price0 > 0:
+                        value0 = abs(amount0) / (10**decimals0) * price0
+                    if price1 is not None and math.isfinite(price1) and price1 > 0:
+                        value1 = abs(amount1) / (10**decimals1) * price1
 
                     if math.isfinite(value0) and math.isfinite(value1):
                         total_usdc += max(value0, value1)
@@ -1472,9 +1459,7 @@ class AerodromeSlipstreamAdapter(
 
             return True, {
                 "pool": state["pool"],
-                "volume_usdc_per_day": float(
-                    total_usdc * 86400.0 / float(seconds_covered)
-                ),
+                "volume_usdc_per_day": total_usdc * 86400.0 / seconds_covered,
                 "swap_count": len(logs),
                 "seconds_covered": seconds_covered,
             }
@@ -1490,23 +1475,23 @@ class AerodromeSlipstreamAdapter(
         token0_price_usdc: float | None = None,
         token1_price_usdc: float | None = None,
     ) -> tuple[bool, Any]:
-        if float(volume_usdc_per_day) < 0:
+        if volume_usdc_per_day < 0:
             return False, "volume_usdc_per_day must be non-negative"
 
         try:
-            token0 = to_checksum_address(str(metrics["token0"]))
-            token1 = to_checksum_address(str(metrics["token1"]))
+            token0 = to_checksum_address(metrics["token0"])
+            token1 = to_checksum_address(metrics["token1"])
             decimals0, decimals1 = await asyncio.gather(
                 self._token_decimals(token0),
                 self._token_decimals(token1),
             )
             price0 = (
-                float(token0_price_usdc)
+                token0_price_usdc
                 if token0_price_usdc is not None
                 else await self._token_price_usdc(token0)
             )
             price1 = (
-                float(token1_price_usdc)
+                token1_price_usdc
                 if token1_price_usdc is not None
                 else await self._token_price_usdc(token1)
             )
@@ -1519,30 +1504,28 @@ class AerodromeSlipstreamAdapter(
                 and math.isfinite(price1)
             ):
                 position_value_usdc = (
-                    (int(metrics["amount0_now"]) / (10**decimals0)) * price0
-                ) + ((int(metrics["amount1_now"]) / (10**decimals1)) * price1)
+                    (metrics["amount0_now"] / (10**decimals0)) * price0
+                ) + ((metrics["amount1_now"] / (10**decimals1)) * price1)
                 if position_value_usdc <= 0:
                     position_value_usdc = None
 
             fees_per_day_usdc = 0.0
             apr_percent: float | None
-            if float(volume_usdc_per_day) <= 0:
+            if volume_usdc_per_day <= 0:
                 apr_percent = 0.0
             elif position_value_usdc is None:
                 apr_percent = None
             else:
-                in_range_fraction = float(expected_in_range_fraction)
-                if not bool(metrics.get("in_range")):
+                in_range_fraction = expected_in_range_fraction
+                if not metrics.get("in_range"):
                     in_range_fraction = 0.0
                 fees_per_day_usdc = (
-                    float(volume_usdc_per_day)
-                    * float(metrics["effective_fee_fraction_for_unstaked"])
-                    * float(metrics["share_of_active_liquidity"])
+                    volume_usdc_per_day
+                    * metrics["effective_fee_fraction_for_unstaked"]
+                    * metrics["share_of_active_liquidity"]
                     * in_range_fraction
                 )
-                apr_percent = float(
-                    fees_per_day_usdc * 365.0 / position_value_usdc * 100.0
-                )
+                apr_percent = fees_per_day_usdc * 365.0 / position_value_usdc * 100.0
 
             return True, {
                 "pool": metrics.get("pool"),
@@ -1560,11 +1543,9 @@ class AerodromeSlipstreamAdapter(
         lookback_blocks: int = 20_000,
         max_logs: int = 5000,
     ) -> tuple[bool, Any]:
-        lookback_blocks_i = int(lookback_blocks)
-        max_logs_i = int(max_logs)
-        if lookback_blocks_i <= 0:
+        if lookback_blocks <= 0:
             return False, "lookback_blocks must be > 0"
-        if max_logs_i <= 0:
+        if max_logs <= 0:
             return False, "max_logs must be > 0"
 
         try:
@@ -1573,20 +1554,20 @@ class AerodromeSlipstreamAdapter(
                 return False, state
 
             decimals0, decimals1 = await asyncio.gather(
-                self._token_decimals(str(state["token0"])),
-                self._token_decimals(str(state["token1"])),
+                self._token_decimals(state["token0"]),
+                self._token_decimals(state["token1"]),
             )
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
-                latest = int(await web3.eth.block_number)
-                from_block = max(0, latest - lookback_blocks_i)
+                latest = await web3.eth.block_number
+                from_block = max(0, latest - lookback_blocks)
                 logs = await self._get_logs_bounded(
                     web3,
                     from_block=from_block,
                     to_block=latest,
-                    address=str(state["pool"]),
+                    address=state["pool"],
                     topics=[SLIPSTREAM_SWAP_TOPIC0],
-                    max_logs=max_logs_i,
+                    max_logs=max_logs,
                 )
                 if not logs:
                     return True, {
@@ -1612,16 +1593,14 @@ class AerodromeSlipstreamAdapter(
                         )
                     except Exception:
                         continue
-                    block_number_i = int(block_number)
+                    block_number_i = block_number
                     if block_number_i not in timestamp_by_block:
                         block = await web3.eth.get_block(block_number_i)
-                        timestamp_by_block[block_number_i] = int(block["timestamp"])
-                    price = float(
-                        sqrt_price_x96_to_price(
-                            int(sqrt_price_x96),
-                            decimals0,
-                            decimals1,
-                        )
+                        timestamp_by_block[block_number_i] = block["timestamp"]
+                    price = sqrt_price_x96_to_price(
+                        sqrt_price_x96,
+                        decimals0,
+                        decimals1,
                     )
                     if price > 0:
                         prices.append((timestamp_by_block[block_number_i], price))
@@ -1636,16 +1615,16 @@ class AerodromeSlipstreamAdapter(
 
             prices.sort(key=lambda item: item[0])
             sum_r2 = 0.0
-            sum_dt = 0.0
+            sum_dt = 0
             for i in range(1, len(prices)):
                 timestamp0, price0 = prices[i - 1]
                 timestamp1, price1 = prices[i]
-                dt = int(timestamp1) - int(timestamp0)
+                dt = timestamp1 - timestamp0
                 if dt <= 0:
                     continue
-                log_return = math.log(float(price1) / float(price0))
-                sum_r2 += float(log_return * log_return)
-                sum_dt += float(dt)
+                log_return = math.log(price1 / price0)
+                sum_r2 += log_return * log_return
+                sum_dt += dt
 
             if sum_dt <= 0:
                 return True, {
@@ -1658,9 +1637,9 @@ class AerodromeSlipstreamAdapter(
             sigma_per_second = math.sqrt(sum_r2 / sum_dt)
             return True, {
                 "pool": state["pool"],
-                "sigma_annual": float(sigma_per_second * math.sqrt(SECONDS_PER_YEAR)),
+                "sigma_annual": sigma_per_second * math.sqrt(SECONDS_PER_YEAR),
                 "sample_count": len(prices),
-                "seconds_covered": int(sum_dt),
+                "seconds_covered": sum_dt,
             }
         except Exception as exc:
             return False, str(exc)
@@ -1678,20 +1657,20 @@ class AerodromeSlipstreamAdapter(
     ) -> list[Any]:
         from web3.exceptions import Web3RPCError
 
-        if int(max_logs) <= 0:
+        if max_logs <= 0:
             return []
 
         address_cs = to_checksum_address(address)
-        from_block_i = int(from_block)
-        to_block_i = int(to_block)
+        from_block_i = from_block
+        to_block_i = to_block
         if from_block_i > to_block_i:
             return []
 
         logs: list[Any] = []
-        chunk_size = max(1, int(initial_chunk_size))
+        chunk_size = max(1, initial_chunk_size)
         current_to = to_block_i
 
-        while current_to >= from_block_i and len(logs) < int(max_logs):
+        while current_to >= from_block_i and len(logs) < max_logs:
             current_from = max(from_block_i, current_to - chunk_size + 1)
             try:
                 batch = await web3.eth.get_logs(
@@ -1712,12 +1691,12 @@ class AerodromeSlipstreamAdapter(
                 logs.extend(batch)
                 logs.sort(
                     key=lambda log: (
-                        int(log.get("blockNumber", 0)),
-                        int(log.get("logIndex", 0)),
+                        log.get("blockNumber", 0),
+                        log.get("logIndex", 0),
                     )
                 )
-                if len(logs) > int(max_logs):
-                    logs = logs[-int(max_logs) :]
+                if len(logs) > max_logs:
+                    logs = logs[-max_logs:]
 
             current_to = current_from - 1
 
@@ -1725,7 +1704,7 @@ class AerodromeSlipstreamAdapter(
 
     @staticmethod
     def _phi(x: float) -> float:
-        return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
     async def slipstream_prob_in_range_week(
         self,
@@ -1736,9 +1715,9 @@ class AerodromeSlipstreamAdapter(
         sigma_annual: float,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
-        if int(tick_lower) >= int(tick_upper):
+        if tick_lower >= tick_upper:
             return False, "tick_lower must be < tick_upper"
-        sigma = float(sigma_annual)
+        sigma = sigma_annual
         if not math.isfinite(sigma) or sigma <= 0:
             return False, "sigma_annual must be positive and finite"
 
@@ -1751,12 +1730,12 @@ class AerodromeSlipstreamAdapter(
                 return False, state
 
             decimals0, decimals1 = await asyncio.gather(
-                self._token_decimals(str(state["token0"])),
-                self._token_decimals(str(state["token1"])),
+                self._token_decimals(state["token0"]),
+                self._token_decimals(state["token1"]),
             )
-            price_now = float(state["price_token1_per_token0"])
-            price_low = tick_to_price_decimal(int(tick_lower), decimals0, decimals1)
-            price_high = tick_to_price_decimal(int(tick_upper), decimals0, decimals1)
+            price_now = state["price_token1_per_token0"]
+            price_low = tick_to_price_decimal(tick_lower, decimals0, decimals1)
+            price_high = tick_to_price_decimal(tick_upper, decimals0, decimals1)
             if price_now <= 0 or price_low <= 0 or price_high <= 0:
                 return True, {
                     "pool": state["pool"],
@@ -1776,10 +1755,10 @@ class AerodromeSlipstreamAdapter(
             prob = max(0.0, min(1.0, self._phi(z2) - self._phi(z1)))
             return True, {
                 "pool": state["pool"],
-                "tick_lower": int(tick_lower),
-                "tick_upper": int(tick_upper),
+                "tick_lower": tick_lower,
+                "tick_upper": tick_upper,
                 "sigma_annual": sigma,
-                "prob_in_range_week": float(prob),
+                "prob_in_range_week": prob,
             }
         except Exception as exc:
             return False, str(exc)
@@ -1927,9 +1906,9 @@ class AerodromeSlipstreamAdapter(
                 )
                 token0 = to_checksum_address(pos[2])
                 token1 = to_checksum_address(pos[3])
-                tick_spacing = int(pos[4])
-                tick_lower = int(pos[5])
-                tick_upper = int(pos[6])
+                tick_spacing = pos[4]
+                tick_lower = pos[5]
+                tick_upper = pos[6]
 
             (
                 amount0_min_resolved,
@@ -2033,9 +2012,9 @@ class AerodromeSlipstreamAdapter(
                 )
                 token0 = to_checksum_address(pos[2])
                 token1 = to_checksum_address(pos[3])
-                tick_spacing = int(pos[4])
-                tick_lower = int(pos[5])
-                tick_upper = int(pos[6])
+                tick_spacing = pos[4]
+                tick_lower = pos[5]
+                tick_upper = pos[6]
 
             (
                 amount0_min_resolved,
