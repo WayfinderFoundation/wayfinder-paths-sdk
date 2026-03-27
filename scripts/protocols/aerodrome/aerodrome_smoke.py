@@ -97,7 +97,7 @@ async def main() -> int:
     ok, pool = await adapter.get_pool(
         tokenA=BASE_USDC,
         tokenB=AERO,
-        stable=bool(args.pool_stable),
+        stable=args.pool_stable,
     )
     if not ok:
         raise SystemExit(pool)
@@ -117,7 +117,7 @@ async def main() -> int:
     ok, tx_hash = await adapter.add_liquidity(
         tokenA=BASE_USDC,
         tokenB=AERO,
-        stable=bool(args.pool_stable),
+        stable=args.pool_stable,
         amountA_desired=usdc_liq_raw,
         amountB_desired=aero_now,
     )
@@ -144,7 +144,7 @@ async def main() -> int:
         )
 
     ok, tx_hash = await adapter.vote(
-        token_id=int(token_id),
+        token_id=token_id,
         pools=[pool],
         weights=[10_000],
     )

@@ -20,12 +20,10 @@ def fmt_amount(amount_raw: int, decimals: int) -> str:
 
 
 async def erc20_balance(chain_id: int, token: str, wallet: str) -> int:
-    return int(
-        await get_token_balance(
-            token_address=to_checksum_address(token),
-            chain_id=chain_id,
-            wallet_address=to_checksum_address(wallet),
-        )
+    return await get_token_balance(
+        token_address=to_checksum_address(token),
+        chain_id=chain_id,
+        wallet_address=to_checksum_address(wallet),
     )
 
 
@@ -77,8 +75,8 @@ def ticks_for_percent_range(
     pct = range_pct / 100.0
     if pct <= 0 or pct >= 1.0:
         raise ValueError("range_pct must be in (0, 100)")
-    tick_lower = int(current_tick + math.floor(math.log(1.0 - pct) / math.log(1.0001)))
-    tick_upper = int(current_tick + math.ceil(math.log(1.0 + pct) / math.log(1.0001)))
+    tick_lower = current_tick + math.floor(math.log(1.0 - pct) / math.log(1.0001))
+    tick_upper = current_tick + math.ceil(math.log(1.0 + pct) / math.log(1.0001))
     return (
         round_tick_to_spacing(tick_lower, tick_spacing),
         ceil_tick_to_spacing(tick_upper, tick_spacing),

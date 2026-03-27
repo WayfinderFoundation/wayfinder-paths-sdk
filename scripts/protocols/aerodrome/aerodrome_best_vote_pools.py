@@ -76,7 +76,7 @@ async def main() -> int:
     ranked = await adapter.rank_pools_by_usdc_per_ve(
         top_n=max(args.top_n, args.pick + 1),
         limit=args.limit,
-        require_all_prices=bool(args.require_all_prices),
+        require_all_prices=args.require_all_prices,
     )
     if not ranked:
         raise SystemExit("No pools ranked")
@@ -90,13 +90,13 @@ async def main() -> int:
         symbol1 = await _safe_symbol(adapter, pool.token1 if pool else None)
 
         if args.token_id is not None:
-            ok, votes_raw = await adapter.ve_balance_of_nft(token_id=int(args.token_id))
+            ok, votes_raw = await adapter.ve_balance_of_nft(token_id=args.token_id)
             if not ok:
                 raise SystemExit(votes_raw)
-            ok, locked = await adapter.ve_locked(token_id=int(args.token_id))
+            ok, locked = await adapter.ve_locked(token_id=args.token_id)
             if not ok:
                 raise SystemExit(locked)
-            aero_locked_raw = abs(int(locked["amount"]))
+            aero_locked_raw = abs(locked["amount"])
         else:
             aero_locked_raw = int(args.lock_aero * (10**aero_decimals))
             ok, votes_raw = await adapter.estimate_votes_for_lock(
@@ -107,9 +107,9 @@ async def main() -> int:
                 raise SystemExit(votes_raw)
 
         ok, apr = await adapter.estimate_ve_apr_percent(
-            usdc_per_ve=float(usdc_per_ve),
-            votes_raw=int(votes_raw),
-            aero_locked_raw=int(aero_locked_raw),
+            usdc_per_ve=usdc_per_ve,
+            votes_raw=votes_raw,
+            aero_locked_raw=aero_locked_raw,
         )
         if not ok:
             raise SystemExit(apr)
@@ -125,7 +125,7 @@ async def main() -> int:
     if args.token_id is None and not args.create_lock:
         raise SystemExit("--vote requires --token-id or --create-lock")
 
-    token_id = int(args.token_id) if args.token_id is not None else None
+    token_id = args.token_id
 
     usdc_swap_raw = int(args.usdc_swap * (10**usdc_decimals))
     if args.create_lock and usdc_swap_raw > 0:
@@ -155,7 +155,7 @@ async def main() -> int:
         )
         if not ok:
             raise SystemExit(res)
-        token_id = int(res["token_id"])
+        token_id = res["token_id"]
         print(
             "createLock tx",
             res["tx"],
@@ -166,11 +166,11 @@ async def main() -> int:
     if token_id is None:
         raise SystemExit("No token_id available to vote with")
 
-    pick = int(args.pick)
+    pick = args.pick
     if pick < 0 or pick >= len(ranked):
         raise SystemExit(f"--pick out of range (0..{len(ranked) - 1})")
 
-    ok, vote_window = await adapter.can_vote_now(token_id=int(token_id))
+    ok, vote_window = await adapter.can_vote_now(token_id=token_id)
     if not ok:
         raise SystemExit(vote_window)
     if not vote_window["can_vote"]:
@@ -184,9 +184,9 @@ async def main() -> int:
 
     _score, epoch, _total = ranked[pick]
     ok, tx_hash = await adapter.vote(
-        token_id=int(token_id),
+        token_id=token_id,
         pools=[epoch.lp],
-        weights=[int(args.vote_weight)],
+        weights=[args.vote_weight],
     )
     if not ok:
         raise SystemExit(tx_hash)

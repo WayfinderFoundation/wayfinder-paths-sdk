@@ -58,13 +58,13 @@ async def main() -> int:
     )
 
     if args.tick_lower is not None and args.tick_upper is not None:
-        tick_lower = int(args.tick_lower)
-        tick_upper = int(args.tick_upper)
+        tick_lower = args.tick_lower
+        tick_upper = args.tick_upper
     else:
         tick_lower, tick_upper = ticks_for_percent_range(
-            int(state["tick"]),
-            int(state["tick_spacing"]),
-            float(args.range_pct),
+            state["tick"],
+            state["tick_spacing"],
+            args.range_pct,
         )
     if tick_lower >= tick_upper:
         raise SystemExit("Computed invalid tick bounds")
@@ -77,14 +77,14 @@ async def main() -> int:
         raise SystemExit("Unable to price token0/token1 to USDC")
 
     if args.amount0 is not None and args.amount1 is not None:
-        amount0_raw = int(float(args.amount0) * (10**decimals0))
-        amount1_raw = int(float(args.amount1) * (10**decimals1))
+        amount0_raw = int(args.amount0 * (10**decimals0))
+        amount1_raw = int(args.amount1 * (10**decimals1))
     else:
-        budget = float(args.deposit_usdc)
+        budget = args.deposit_usdc
         if budget <= 0:
             raise SystemExit("--deposit-usdc must be > 0")
-        amount0_raw = int(((budget / 2.0) / float(price0)) * (10**decimals0))
-        amount1_raw = int(((budget / 2.0) / float(price1)) * (10**decimals1))
+        amount0_raw = int(((budget / 2.0) / price0) * (10**decimals0))
+        amount1_raw = int(((budget / 2.0) / price1) * (10**decimals1))
 
     print(
         f"bounds=[{tick_lower}, {tick_upper}) deposit="
@@ -102,9 +102,9 @@ async def main() -> int:
     if not ok:
         raise SystemExit(metrics)
 
-    position_value = (metrics["amount0_now"] / (10**decimals0)) * float(price0) + (
+    position_value = (metrics["amount0_now"] / (10**decimals0)) * price0 + (
         metrics["amount1_now"] / (10**decimals1)
-    ) * float(price1)
+    ) * price1
     print(
         f"inRange={metrics['in_range']} L_pos={metrics['liquidity_position']} "
         f"share={metrics['share_of_active_liquidity']:.8f} value≈${position_value:,.2f}"
@@ -116,17 +116,17 @@ async def main() -> int:
 
     ok, volume = await adapter.slipstream_volume_usdc_per_day(
         pool=pool,
-        lookback_blocks=int(args.lookback_blocks),
-        max_logs=int(args.max_logs),
+        lookback_blocks=args.lookback_blocks,
+        max_logs=args.max_logs,
     )
     if not ok:
         raise SystemExit(volume)
-    print(f"volume_usdc_per_day≈${float(volume['volume_usdc_per_day'] or 0.0):,.2f}")
+    print(f"volume_usdc_per_day≈${volume['volume_usdc_per_day'] or 0.0:,.2f}")
 
     ok, sigma = await adapter.slipstream_sigma_annual_from_swaps(
         pool=pool,
-        lookback_blocks=int(args.sigma_lookback_blocks),
-        max_logs=int(args.max_logs),
+        lookback_blocks=args.sigma_lookback_blocks,
+        max_logs=args.max_logs,
     )
     if not ok:
         raise SystemExit(sigma)
@@ -137,7 +137,7 @@ async def main() -> int:
             pool=pool,
             tick_lower=tick_lower,
             tick_upper=tick_upper,
-            sigma_annual=float(sigma["sigma_annual"]),
+            sigma_annual=sigma["sigma_annual"],
         )
         if not ok:
             raise SystemExit(prob)
@@ -148,8 +148,8 @@ async def main() -> int:
 
     ok, fee_apr = await adapter.slipstream_fee_apr_percent(
         metrics=metrics,
-        volume_usdc_per_day=float(volume["volume_usdc_per_day"] or 0.0),
-        expected_in_range_fraction=float(
+        volume_usdc_per_day=volume["volume_usdc_per_day"] or 0.0,
+        expected_in_range_fraction=(
             prob["prob_in_range_week"]
             if prob and prob["prob_in_range_week"] is not None
             else 1.0

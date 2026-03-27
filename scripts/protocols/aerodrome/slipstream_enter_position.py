@@ -88,7 +88,7 @@ async def _maybe_bridge_arb_usdc_to_base(
     loop = asyncio.get_running_loop()
     start = loop.time()
     while True:
-        if loop.time() - start > float(timeout_s):
+        if loop.time() - start > timeout_s:
             raise SystemExit("Timed out waiting for bridged USDC to arrive on Base")
         current = await erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
         if current > base_before:
@@ -123,12 +123,12 @@ async def main() -> int:
     if not wallet:
         raise SystemExit(f"Wallet '{args.wallet_label}' missing address in config")
 
-    if float(args.bridge_arb_usdc) > 0:
+    if args.bridge_arb_usdc > 0:
         await _maybe_bridge_arb_usdc_to_base(
             brap=brap,
             wallet=wallet,
-            amount_usdc=float(args.bridge_arb_usdc),
-            timeout_s=int(args.bridge_timeout_s),
+            amount_usdc=args.bridge_arb_usdc,
+            timeout_s=args.bridge_timeout_s,
         )
 
     token_a, token_b = _select_pair_tokens(args.pair)
@@ -155,7 +155,7 @@ async def main() -> int:
 
     usdc_decimals = await slipstream.token_decimals(BASE_USDC)
     usdc_raw = await erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
-    deposit_usdc = min(float(args.deposit_usdc), usdc_raw / (10**usdc_decimals))
+    deposit_usdc = min(args.deposit_usdc, usdc_raw / (10**usdc_decimals))
     if deposit_usdc <= 0:
         raise SystemExit("No USDC on Base to deploy")
 
@@ -171,7 +171,7 @@ async def main() -> int:
             chain_id=CHAIN_ID_BASE,
             from_address=wallet,
             amount_raw=half_raw,
-            slippage_bps=int(args.slippage_bps),
+            slippage_bps=args.slippage_bps,
         )
         print(
             "swap0 tx",
@@ -187,7 +187,7 @@ async def main() -> int:
             chain_id=CHAIN_ID_BASE,
             from_address=wallet,
             amount_raw=half_raw,
-            slippage_bps=int(args.slippage_bps),
+            slippage_bps=args.slippage_bps,
         )
         print(
             "swap1 tx",
@@ -207,9 +207,9 @@ async def main() -> int:
     )
 
     tick_lower, tick_upper = ticks_for_percent_range(
-        int(state["tick"]),
-        int(state["tick_spacing"]),
-        float(args.range_pct),
+        state["tick"],
+        state["tick_spacing"],
+        args.range_pct,
     )
     if tick_lower >= tick_upper:
         raise SystemExit("Computed invalid tick bounds")
@@ -217,12 +217,12 @@ async def main() -> int:
     ok, minted = await slipstream.mint_position(
         token0=state["token0"],
         token1=state["token1"],
-        tick_spacing=int(state["tick_spacing"]),
+        tick_spacing=state["tick_spacing"],
         tick_lower=tick_lower,
         tick_upper=tick_upper,
         amount0_desired=balance0,
         amount1_desired=balance1,
-        deployment_variant=str(state["deployment_variant"]),
+        deployment_variant=state["deployment_variant"],
     )
     if not ok:
         raise SystemExit(minted)
@@ -240,7 +240,7 @@ async def main() -> int:
             raise SystemExit(gauge)
         ok, tx_hash = await slipstream.stake_position(
             gauge=gauge,
-            token_id=int(token_id),
+            token_id=token_id,
         )
         if not ok:
             raise SystemExit(tx_hash)

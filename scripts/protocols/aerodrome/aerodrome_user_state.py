@@ -32,7 +32,7 @@ async def main() -> int:
         account=wallet,
         start=args.start,
         limit=args.limit,
-        include_votes=bool(args.include_votes),
+        include_votes=args.include_votes,
     )
     if not ok:
         raise SystemExit(state)
