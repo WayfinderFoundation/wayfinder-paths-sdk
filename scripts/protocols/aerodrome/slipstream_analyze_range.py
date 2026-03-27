@@ -7,11 +7,11 @@ import asyncio
 
 from eth_utils import to_checksum_address
 
+from scripts.protocols.aerodrome._common import fmt_amount, ticks_for_percent_range
 from wayfinder_paths.adapters.aerodrome_slipstream_adapter import (
     AerodromeSlipstreamAdapter,
 )
 from wayfinder_paths.core.config import load_config
-from scripts.protocols.aerodrome._common import fmt_amount, ticks_for_percent_range
 
 
 async def main() -> int:
@@ -150,7 +150,9 @@ async def main() -> int:
         metrics=metrics,
         volume_usdc_per_day=float(volume["volume_usdc_per_day"] or 0.0),
         expected_in_range_fraction=float(
-            prob["prob_in_range_week"] if prob and prob["prob_in_range_week"] is not None else 1.0
+            prob["prob_in_range_week"]
+            if prob and prob["prob_in_range_week"] is not None
+            else 1.0
         ),
     )
     if not ok:

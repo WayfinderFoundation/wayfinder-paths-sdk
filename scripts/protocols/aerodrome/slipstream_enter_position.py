@@ -8,6 +8,11 @@ import math
 
 from eth_utils import to_checksum_address
 
+from scripts.protocols.aerodrome._common import (
+    erc20_balance,
+    swap_via_brap,
+    ticks_for_percent_range,
+)
 from wayfinder_paths.adapters.aerodrome_slipstream_adapter import (
     AerodromeSlipstreamAdapter,
 )
@@ -28,11 +33,6 @@ from wayfinder_paths.core.constants.tokens import (
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.tokens import get_token_decimals
 from wayfinder_paths.mcp.scripting import get_adapter
-from scripts.protocols.aerodrome._common import (
-    erc20_balance,
-    swap_via_brap,
-    ticks_for_percent_range,
-)
 
 BASE_AERO = AERODROME_BY_CHAIN[CHAIN_ID_BASE]["aero"]
 BASE_CBBTC = to_checksum_address("0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf")

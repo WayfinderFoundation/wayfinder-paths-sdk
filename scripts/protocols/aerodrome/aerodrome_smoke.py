@@ -5,6 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 
+from scripts.protocols.aerodrome._common import (
+    erc20_balance,
+    fmt_amount,
+    swap_via_brap,
+)
 from wayfinder_paths.adapters.aerodrome_adapter import AerodromeAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.core.config import load_config
@@ -13,11 +18,6 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.mcp.scripting import get_adapter
-from scripts.protocols.aerodrome._common import (
-    erc20_balance,
-    fmt_amount,
-    swap_via_brap,
-)
 
 AERO = AERODROME_BY_CHAIN[CHAIN_ID_BASE]["aero"]
 
@@ -76,7 +76,9 @@ async def main() -> int:
 
     lock_duration = args.lock_weeks * 7 * 24 * 60 * 60
     requested_lock_raw = int(args.lock_aero * (10**aero_decimals))
-    min_left_for_lp_raw = int(0.1 * (10**aero_decimals)) if args.usdc_liquidity > 0 else 0
+    min_left_for_lp_raw = (
+        int(0.1 * (10**aero_decimals)) if args.usdc_liquidity > 0 else 0
+    )
     lock_raw = min(requested_lock_raw, max(aero_after_swap - min_left_for_lp_raw, 0))
     if lock_raw <= 0:
         raise SystemExit("Not enough AERO available after swap to create a lock")
