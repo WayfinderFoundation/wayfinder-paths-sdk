@@ -35,7 +35,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_decimals
+from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
@@ -92,6 +92,7 @@ class AerodromeSlipstreamAdapterConfig(TypedDict, total=False):
 
 
 class AerodromeSlipstreamAdapter(
+    aerodrome_common.AerodromeTokenHelpersMixin,
     aerodrome_common.AerodromeVotingRewardsMixin,
     BaseAdapter,
 ):
@@ -186,14 +187,7 @@ class AerodromeSlipstreamAdapter(
         return variant
 
     async def _token_decimals(self, token: str) -> int:
-        token_addr = to_checksum_address(token)
-        cached = self._token_decimals_cache.get(token_addr)
-        if cached is not None:
-            return cached
-
-        decimals = await get_token_decimals(token_addr, CHAIN_ID_BASE)
-        self._token_decimals_cache[token_addr] = decimals
-        return decimals
+        return await self.token_decimals(token)
 
     async def _token_price_usdc(self, token: str) -> float | None:
         token_addr = to_checksum_address(token)
