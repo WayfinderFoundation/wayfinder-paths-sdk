@@ -236,6 +236,16 @@ class AerodromeSlipstreamAdapter(
         self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
         return price
 
+    async def _resolve_token_price_usdc(
+        self,
+        token: str,
+        *,
+        price_usdc: float | None = None,
+    ) -> float | None:
+        if price_usdc is not None:
+            return price_usdc
+        return await self._token_price_usdc(token)
+
     def _select_write_target(
         self,
         *,
@@ -461,11 +471,14 @@ class AerodromeSlipstreamAdapter(
             nft = web3.eth.contract(
                 address=nft_contract, abi=AERODROME_SLIPSTREAM_NPM_ABI
             )
-            approved, approved_for_all = await asyncio.gather(
-                nft.functions.getApproved(token_id).call(block_identifier="pending"),
-                nft.functions.isApprovedForAll(owner, operator).call(
-                    block_identifier="pending"
-                ),
+            approved, approved_for_all = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=CHAIN_ID_BASE,
+                calls=[
+                    Call(nft, "getApproved", args=(token_id,)),
+                    Call(nft, "isApprovedForAll", args=(owner, operator)),
+                ],
+                block_identifier="pending",
             )
             if (
                 _checksum_or_zero(approved).lower() == operator.lower()
@@ -515,9 +528,14 @@ class AerodromeSlipstreamAdapter(
             address=pool_addr,
             abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
         )
-        pool_gauge, voter_gauge = await asyncio.gather(
-            pool_contract.functions.gauge().call(block_identifier=block_identifier),
-            voter.functions.gauges(pool_addr).call(block_identifier=block_identifier),
+        pool_gauge, voter_gauge = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=CHAIN_ID_BASE,
+            calls=[
+                Call(pool_contract, "gauge"),
+                Call(voter, "gauges", args=(pool_addr,)),
+            ],
+            block_identifier=block_identifier,
         )
         pool_gauge_addr = _checksum_or_zero(pool_gauge)
         voter_gauge_addr = _checksum_or_zero(voter_gauge)
@@ -1018,13 +1036,14 @@ class AerodromeSlipstreamAdapter(
                     address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
                 )
-                pool_gauge, voter_gauge = await asyncio.gather(
-                    pool_contract.functions.gauge().call(
-                        block_identifier=block_identifier
-                    ),
-                    voter.functions.gauges(pool_addr).call(
-                        block_identifier=block_identifier
-                    ),
+                pool_gauge, voter_gauge = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(pool_contract, "gauge"),
+                        Call(voter, "gauges", args=(pool_addr,)),
+                    ],
+                    block_identifier=block_identifier,
                 )
 
             pool_gauge_addr = _checksum_or_zero(pool_gauge)
@@ -1373,19 +1392,17 @@ class AerodromeSlipstreamAdapter(
 
             token0 = state["token0"]
             token1 = state["token1"]
-            decimals0, decimals1 = await asyncio.gather(
+            decimals0, decimals1, price0, price1 = await asyncio.gather(
                 self._token_decimals(token0),
                 self._token_decimals(token1),
-            )
-            price0 = (
-                token0_price_usdc
-                if token0_price_usdc is not None
-                else await self._token_price_usdc(token0)
-            )
-            price1 = (
-                token1_price_usdc
-                if token1_price_usdc is not None
-                else await self._token_price_usdc(token1)
+                self._resolve_token_price_usdc(
+                    token0,
+                    price_usdc=token0_price_usdc,
+                ),
+                self._resolve_token_price_usdc(
+                    token1,
+                    price_usdc=token1_price_usdc,
+                ),
             )
 
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -1481,19 +1498,17 @@ class AerodromeSlipstreamAdapter(
         try:
             token0 = to_checksum_address(metrics["token0"])
             token1 = to_checksum_address(metrics["token1"])
-            decimals0, decimals1 = await asyncio.gather(
+            decimals0, decimals1, price0, price1 = await asyncio.gather(
                 self._token_decimals(token0),
                 self._token_decimals(token1),
-            )
-            price0 = (
-                token0_price_usdc
-                if token0_price_usdc is not None
-                else await self._token_price_usdc(token0)
-            )
-            price1 = (
-                token1_price_usdc
-                if token1_price_usdc is not None
-                else await self._token_price_usdc(token1)
+                self._resolve_token_price_usdc(
+                    token0,
+                    price_usdc=token0_price_usdc,
+                ),
+                self._resolve_token_price_usdc(
+                    token1,
+                    price_usdc=token1_price_usdc,
+                ),
             )
 
             position_value_usdc: float | None = None
@@ -1578,7 +1593,7 @@ class AerodromeSlipstreamAdapter(
                     }
 
                 timestamp_by_block: dict[int, int] = {}
-                prices: list[tuple[int, float]] = []
+                observations: list[tuple[int, int]] = []
                 for log in logs:
                     data = log.get("data")
                     block_number = log.get("blockNumber")
@@ -1594,9 +1609,29 @@ class AerodromeSlipstreamAdapter(
                     except Exception:
                         continue
                     block_number_i = block_number
-                    if block_number_i not in timestamp_by_block:
-                        block = await web3.eth.get_block(block_number_i)
+                    observations.append((block_number_i, sqrt_price_x96))
+
+                missing_blocks = sorted(
+                    {
+                        block_number_i
+                        for block_number_i, _ in observations
+                        if block_number_i not in timestamp_by_block
+                    }
+                )
+                if missing_blocks:
+                    blocks = await asyncio.gather(
+                        *[
+                            web3.eth.get_block(block_number_i)
+                            for block_number_i in missing_blocks
+                        ]
+                    )
+                    for block_number_i, block in zip(
+                        missing_blocks, blocks, strict=True
+                    ):
                         timestamp_by_block[block_number_i] = block["timestamp"]
+
+                prices: list[tuple[int, float]] = []
+                for block_number_i, sqrt_price_x96 in observations:
                     price = sqrt_price_x96_to_price(
                         sqrt_price_x96,
                         decimals0,
@@ -2161,9 +2196,14 @@ class AerodromeSlipstreamAdapter(
                     address=gauge_addr,
                     abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
                 )
-                alive, nft_address = await asyncio.gather(
-                    voter.functions.isAlive(gauge_addr).call(block_identifier="latest"),
-                    gauge_contract.functions.nft().call(block_identifier="latest"),
+                alive, nft_address = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(voter, "isAlive", args=(gauge_addr,)),
+                        Call(gauge_contract, "nft"),
+                    ],
+                    block_identifier="latest",
                 )
                 if not alive:
                     return False, "Gauge is not alive (killed/dead)"

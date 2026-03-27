@@ -285,6 +285,24 @@ async def test_slipstream_best_pool_for_pair_prefers_highest_liquidity():
 
 
 @pytest.mark.asyncio
+async def test_get_gauge_returns_consistent_pool_gauge():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    pool_contract = MagicMock()
+    pool_contract.functions.gauge = MagicMock(return_value=_mock_call(FAKE_GAUGE))
+    voter = MagicMock()
+    voter.functions.gauges = MagicMock(return_value=_mock_call(FAKE_GAUGE))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(side_effect=[pool_contract, voter])
+
+    with patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)):
+        ok, gauge = await adapter.get_gauge(pool=FAKE_POOL)
+
+    assert ok is True
+    assert gauge == FAKE_GAUGE
+
+
+@pytest.mark.asyncio
 async def test_slipstream_pool_state_reads_expected_fields():
     adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     deployment = adapter._deployment("initial")
@@ -662,6 +680,37 @@ async def test_stake_position_dead_gauge_returns_clean_error(adapter_with_signer
 
     assert ok is False
     assert "not alive" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_ensure_erc721_approval_skips_tx_when_operator_already_approved(
+    adapter_with_signer,
+):
+    nft = MagicMock()
+    nft.functions.getApproved = MagicMock(return_value=_mock_call(ZERO_ADDRESS))
+    nft.functions.isApprovedForAll = MagicMock(return_value=_mock_call(True))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=nft)
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(slipstream_module, "encode_call", new=AsyncMock()) as mock_encode,
+        patch.object(
+            slipstream_module, "send_transaction", new=AsyncMock()
+        ) as mock_send,
+    ):
+        ok, result = await adapter_with_signer._ensure_erc721_approval(
+            nft_contract=FAKE_NPM,
+            token_id=1,
+            operator=FAKE_GAUGE,
+            owner=FAKE_WALLET,
+        )
+
+    assert ok is True
+    assert result == {}
+    mock_encode.assert_not_awaited()
+    mock_send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
