@@ -75,7 +75,7 @@ def round_tick_to_spacing(tick: int, spacing: int) -> int:
 def ceil_tick_to_spacing(tick: int, spacing: int) -> int:
     if spacing <= 0:
         return tick
-    return int((-(-int(tick) // int(spacing))) * int(spacing))
+    return math.ceil(tick / spacing) * spacing
 
 
 def band_from_bps(mid_price: float, bps_width: float) -> tuple[float, float]:
