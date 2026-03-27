@@ -29,6 +29,7 @@ from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
 EPOCH_SPECIAL_WINDOW_SECONDS = 60 * 60
+AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 
 _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
 

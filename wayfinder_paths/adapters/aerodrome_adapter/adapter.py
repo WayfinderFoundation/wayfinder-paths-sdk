@@ -40,7 +40,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _SUGAR_CALL_GAS = 30_000_000
-_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 
 
 @dataclass(frozen=True)
@@ -283,7 +282,10 @@ class AerodromeAdapter(
         cached = self._token_price_usdc_cache.get(token)
         if cached is not None:
             cached_at, cached_price = cached
-            if now - cached_at <= _TOKEN_PRICE_USDC_TTL_SECONDS:
+            if (
+                now - cached_at
+                <= aerodrome_common.AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS
+            ):
                 return cached_price
 
         decimals = await self.token_decimals(token)

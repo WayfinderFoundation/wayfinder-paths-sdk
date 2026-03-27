@@ -38,6 +38,7 @@ from wayfinder_paths.core.utils.multicall import (
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
+    MAX_UINT128,
     amounts_for_liq_inrange,
     liq_for_amounts,
     slippage_min,
@@ -50,8 +51,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-MAX_UINT128 = (1 << 128) - 1
-_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 SLIPSTREAM_SWAP_TOPIC0 = (
     "0x"
     + keccak(text="Swap(address,address,int256,int256,uint160,uint128,int24)").hex()
@@ -198,7 +197,10 @@ class AerodromeSlipstreamAdapter(
         cached = self._token_price_usdc_cache.get(token_addr)
         if cached is not None:
             cached_at, cached_price = cached
-            if now - cached_at <= _TOKEN_PRICE_USDC_TTL_SECONDS:
+            if (
+                now - cached_at
+                <= aerodrome_common.AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS
+            ):
                 return cached_price
 
         price: float | None = None
