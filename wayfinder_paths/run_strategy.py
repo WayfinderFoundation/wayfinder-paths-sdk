@@ -54,16 +54,6 @@ def get_strategy_config(
     return config
 
 
-def _signing_cb_for_label(label: str | None):
-    if not label:
-        return None
-    try:
-        cb, _ = get_wallet_signing_callback(label)
-        return cb
-    except ValueError:
-        return None
-
-
 def find_strategy_class(module) -> type[Strategy]:
     for _, obj in inspect.getmembers(module, inspect.isclass):
         if issubclass(obj, Strategy) and obj is not Strategy:
@@ -135,8 +125,8 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         main_wallet_label=main_wallet_label,
     )
 
-    main_cb = _signing_cb_for_label(main_wallet_label or "main")
-    strat_cb = _signing_cb_for_label(wallet_label or strategy_name)
+    main_cb, _ = await get_wallet_signing_callback(main_wallet_label or "main")
+    strat_cb, _ = await get_wallet_signing_callback(wallet_label or strategy_name)
 
     module = importlib.import_module(
         f"wayfinder_paths.strategies.{strategy_name}.strategy"

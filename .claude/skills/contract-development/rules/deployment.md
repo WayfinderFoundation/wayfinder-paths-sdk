@@ -72,7 +72,7 @@ contract MyToken is ERC20 {
 async def main():
     from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 
-    sign_callback, address = get_wallet_signing_callback("main")
+    sign_callback, address = await get_wallet_signing_callback("main")
 
     result = await deploy_contract(
         source_code=SOURCE,

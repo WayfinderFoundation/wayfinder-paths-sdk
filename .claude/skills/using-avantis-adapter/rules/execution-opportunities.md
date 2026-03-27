@@ -19,7 +19,7 @@ This adapter uses standard args, so `get_adapter(AvantisAdapter, wallet_label)` 
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.avantis_adapter import AvantisAdapter
 
-adapter = get_adapter(AvantisAdapter, "main")
+adapter = await get_adapter(AvantisAdapter, "main")
 ```
 
 ## Common flows (adapter methods)
@@ -36,7 +36,7 @@ from wayfinder_paths.core.constants.contracts import AVANTIS_AVUSDC, BASE_USDC
 AMOUNT_USDC = 10 * 10**6  # 10 USDC (6 decimals)
 
 async def main():
-    adapter = get_adapter(AvantisAdapter, "main")
+    adapter = await get_adapter(AvantisAdapter, "main")
     ok, tx = await adapter.deposit(vault_address=AVANTIS_AVUSDC, underlying_token=BASE_USDC, amount=AMOUNT_USDC)
     if not ok:
         raise RuntimeError(tx)
@@ -56,7 +56,7 @@ from wayfinder_paths.adapters.avantis_adapter import AvantisAdapter
 from wayfinder_paths.core.constants.contracts import AVANTIS_AVUSDC
 
 async def main():
-    adapter = get_adapter(AvantisAdapter, "main")
+    adapter = await get_adapter(AvantisAdapter, "main")
     ok, tx = await adapter.withdraw(vault_address=AVANTIS_AVUSDC, amount=0, redeem_full=True)
     if not ok:
         raise RuntimeError(tx)

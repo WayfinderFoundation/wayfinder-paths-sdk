@@ -1,11 +1,17 @@
 import argparse
+import asyncio
 import json
 from pathlib import Path
 
 from eth_account import Account
 
-from wayfinder_paths.core.config import load_wallet_mnemonic, write_wallet_mnemonic
+from wayfinder_paths.core.config import (
+    allow_local_wallets,
+    load_wallet_mnemonic,
+    write_wallet_mnemonic,
+)
 from wayfinder_paths.core.utils.wallets import (
+    create_remote_wallet,
     ensure_wallet_mnemonic,
     load_wallets,
     make_local_wallet,
@@ -18,7 +24,7 @@ def to_keystore_json(private_key_hex: str, password: str):
     return Account.encrypt(private_key_hex, password)
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description="Generate local dev wallets")
     parser.add_argument(
         "-n",
@@ -59,6 +65,16 @@ def main():
         "--default",
         action="store_true",
         help="Create a default 'main' wallet if none exists (used by CI)",
+    )
+    parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="Create a remote wallet via the API instead of a local wallet",
+    )
+    parser.add_argument(
+        "--policies",
+        default="[]",
+        help="Policies for remote wallet: '[]' for no policies (default), or JSON list",
     )
     args = parser.parse_args()
 
@@ -101,7 +117,7 @@ def main():
                     "config.json already contains wallet_mnemonic; refusing to overwrite"
                 )
 
-    existing = load_wallets(args.out_dir, "config.json")
+    existing = await load_wallets()
     existing_was_empty = not existing
     has_main = any(w.get("label") in ("main", "default") for w in existing)
 
@@ -139,6 +155,15 @@ def main():
             existing_temp_numbers.add(next_temp_num)
             next_temp_num += 1
 
+    if args.remote or not allow_local_wallets():
+        for label in labels_to_create:
+            policies = json.loads(args.policies)
+            result = await create_remote_wallet(label=label, policies=policies)
+            print(
+                f"[remote] {result['wallet_address']}  (label: {result.get('label', label)})"
+            )
+        return
+
     for i, label in enumerate(labels_to_create):
         w = make_local_wallet(
             label=label,
@@ -162,4 +187,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -37,7 +37,7 @@ Before looking up external docs, consult this repo's own adapter surfaces first:
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
-adapter = get_adapter(PendleAdapter, "main")
+adapter = await get_adapter(PendleAdapter, "main")
 
 success, result = await adapter.execute_swap(
     chain="base",
@@ -70,7 +70,7 @@ success, result = await adapter.execute_swap(
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
-adapter = get_adapter(PendleAdapter, "main")
+adapter = await get_adapter(PendleAdapter, "main")
 
 # Find markets on Base
 markets = await adapter.list_active_pt_yt_markets(
@@ -127,10 +127,10 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 
 # With wallet (for execution)
-adapter = get_adapter(PendleAdapter, "main")
+adapter = await get_adapter(PendleAdapter, "main")
 
 # Read-only (no wallet needed)
-adapter = get_adapter(PendleAdapter)
+adapter = await get_adapter(PendleAdapter)
 ```
 
 ## Redeem expired/matured PTs (convert PT → underlying)
@@ -166,7 +166,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 from wayfinder_paths.core.utils.tokens import get_token_balance
 
-adapter = get_adapter(PendleAdapter, "main")
+adapter = await get_adapter(PendleAdapter, "main")
 wallet = adapter._strategy_address()
 
 CHAIN = 42161  # Arbitrum

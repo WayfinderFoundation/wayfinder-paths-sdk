@@ -8,7 +8,7 @@
 ## Preconditions (for write paths)
 
 - Polygon RPC configured (`strategy.rpc_urls["137"]`)
-- Wallet configured with `private_key_hex`
+- Wallet configured (local with `private_key_hex` or remote via Privy)
 - Have Polygon gas token for tx fees
 - Have **USDC.e** balance (see `rules/deposits-withdrawals.md`)
 

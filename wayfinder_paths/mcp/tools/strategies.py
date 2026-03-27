@@ -8,7 +8,7 @@ from typing import Any, Literal
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
-from wayfinder_paths.core.utils.wallets import get_private_key, make_sign_callback
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.utils import err, ok, repo_root
 
 
@@ -37,13 +37,6 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
         config["main_wallet"] = {"address": wallets["main"]["address"]}
     if "strategy_wallet" not in config and strategy_name in wallets:
         config["strategy_wallet"] = {"address": wallets[strategy_name]["address"]}
-
-    by_addr = {w["address"].lower(): w for w in CONFIG.get("wallets", [])}
-    for key in ("main_wallet", "strategy_wallet"):
-        if wallet := config.get(key):
-            if entry := by_addr.get(wallet.get("address", "").lower()):
-                if pk := get_private_key(entry):
-                    wallet["private_key_hex"] = pk
     return config
 
 
@@ -102,16 +95,20 @@ async def run_strategy(
 
     config = _get_strategy_config(strategy)
 
-    def signing_cb(key: str):
-        wallet = config.get(key, {})
-        pk = get_private_key(wallet) if isinstance(wallet, dict) else None
-        return make_sign_callback(pk) if pk else None
+    try:
+        main_cb, _ = await get_wallet_signing_callback("main")
+    except ValueError:
+        main_cb = None
+    try:
+        strategy_cb, _ = await get_wallet_signing_callback(strategy)
+    except ValueError:
+        strategy_cb = None
 
     try:
         strategy_obj = strategy_class(
             config,
-            main_wallet_signing_callback=signing_cb("main_wallet"),
-            strategy_wallet_signing_callback=signing_cb("strategy_wallet"),
+            main_wallet_signing_callback=main_cb,
+            strategy_wallet_signing_callback=strategy_cb,
         )
     except TypeError:
         try:

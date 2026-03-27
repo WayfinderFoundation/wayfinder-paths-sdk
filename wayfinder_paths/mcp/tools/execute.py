@@ -287,11 +287,11 @@ async def execute(
     tool_input = {
         "request": req.model_dump(mode="json"),
     }
-    preview_obj = build_execution_preview(tool_input)
+    preview_obj = await build_execution_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
     try:
-        sign_callback, sender = get_wallet_signing_callback(req.wallet_label)
+        sign_callback, sender = await get_wallet_signing_callback(req.wallet_label)
     except ValueError as e:
         return err("invalid_wallet", str(e))
 

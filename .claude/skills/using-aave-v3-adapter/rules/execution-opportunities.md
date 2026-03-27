@@ -19,7 +19,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
 from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC
 
 async def main():
-    adapter = get_adapter(AaveV3Adapter, "main")  # wallet required for signing
+    adapter = await get_adapter(AaveV3Adapter, "main")  # wallet required for signing
 
     ok, tx = await adapter.lend(chain_id=CHAIN_ID_ARBITRUM, underlying_token=ARBITRUM_USDC, qty=10 * 10**6)
     if not ok:

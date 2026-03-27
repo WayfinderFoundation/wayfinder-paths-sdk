@@ -55,7 +55,7 @@ from wayfinder_paths.adapters.sparklend_adapter.adapter import SparkLendAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 
 async def main():
-    adapter = get_adapter(SparkLendAdapter)  # read-only
+    adapter = await get_adapter(SparkLendAdapter)  # read-only
     ok, markets = await adapter.get_all_markets(
         chain_id=CHAIN_ID_ETHEREUM,
         include_caps=True,
@@ -87,7 +87,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(SparkLendAdapter)  # read-only if account is explicit
+    adapter = await get_adapter(SparkLendAdapter)  # read-only if account is explicit
     ok, state = await adapter.get_full_user_state(
         chain_id=CHAIN_ID_ETHEREUM,
         account=USER,
@@ -121,7 +121,7 @@ USER = "0x0000000000000000000000000000000000000000"
 USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
 async def main():
-    adapter = get_adapter(SparkLendAdapter)
+    adapter = await get_adapter(SparkLendAdapter)
     ok, pos = await adapter.get_pos(
         chain_id=CHAIN_ID_ETHEREUM,
         asset=USDC,

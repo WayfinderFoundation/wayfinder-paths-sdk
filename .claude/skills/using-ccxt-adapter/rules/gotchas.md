@@ -5,7 +5,7 @@
 Each exchange holds open HTTP sessions. Not closing leaks connections and triggers warnings.
 
 ```python
-adapter = get_adapter(CCXTAdapter)
+adapter = await get_adapter(CCXTAdapter)
 try:
     ...
 finally:

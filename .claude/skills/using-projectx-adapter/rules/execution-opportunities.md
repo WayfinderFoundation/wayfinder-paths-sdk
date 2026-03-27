@@ -23,7 +23,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 BAND_BPS = 50  # ±0.5%
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},
@@ -55,7 +55,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 TOKEN_ID = 123
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},
@@ -89,7 +89,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 TOKEN_ID = 123
 
 async def main():
-    adapter = get_adapter(ProjectXLiquidityAdapter, "main")
+    adapter = await get_adapter(ProjectXLiquidityAdapter, "main")
     ok, tx = await adapter.burn_position(TOKEN_ID)
     print(ok, tx)
 
@@ -112,7 +112,7 @@ from wayfinder_paths.core.constants.projectx import THBILL_TOKEN, THBILL_USDC_PO
 from wayfinder_paths.mcp.scripting import get_adapter
 
 async def main():
-    adapter = get_adapter(
+    adapter = await get_adapter(
         ProjectXLiquidityAdapter,
         "main",
         config_overrides={"pool_address": THBILL_USDC_POOL},
