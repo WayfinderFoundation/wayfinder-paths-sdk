@@ -160,7 +160,7 @@ The repository ships with several strategies. Each strategy folder contains a RE
 Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific logic:
 
 - `AaveV3Adapter` (Aave V3 lending/borrowing across Ethereum, Base, and Arbitrum)
-- `AerodromeAdapter` (Aerodrome classic Pool/Gauge/veAERO on Base)
+- `AerodromeAdapter` (Aerodrome classic Pool/Gauge/veAERO on Base, including Sugar read analytics)
 - `AerodromeSlipstreamAdapter` (Aerodrome Slipstream concentrated liquidity, CL gauges, and veAERO on Base)
 - `AvantisAdapter` (Avantis avUSDC ERC-4626 vault on Base)
 - `BalanceAdapter` (wallet balances + transfers)

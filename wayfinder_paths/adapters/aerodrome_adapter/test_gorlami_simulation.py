@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from eth_account import Account
+from web3.exceptions import Web3RPCError
 
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common_module
 from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
@@ -112,6 +113,17 @@ async def _move_to_next_safe_vote_window(gorlami, fork_id: str) -> bool:
     next_epoch_start = ((now // WEEK_SECONDS) + 1) * WEEK_SECONDS
     target_ts = next_epoch_start + EPOCH_SPECIAL_WINDOW_SECONDS + 5
     return await _try_time_travel(gorlami, fork_id, target_ts=target_ts)
+
+
+async def _await_or_skip_on_sugar_backend_limit(coro):
+    try:
+        return await coro
+    except Web3RPCError as exc:
+        if "out of gas" in str(exc).lower():
+            pytest.skip(
+                "Gorlami fork backend cannot execute Aerodrome Sugar eth_call without running out of gas"
+            )
+        raise
 
 
 @pytest.mark.asyncio
@@ -250,6 +262,53 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
         token_id=int(token_id), lock_duration=8 * WEEK_SECONDS
     )
     assert ok is True, tx
+
+
+@pytest.mark.asyncio
+async def test_gorlami_aerodrome_sugar_reads_and_ranking(gorlami):
+    await _ensure_fork(gorlami)
+
+    adapter = AerodromeAdapter()
+
+    pools = await _await_or_skip_on_sugar_backend_limit(adapter.list_pools(max_pools=1))
+    assert pools, "Expected at least one Sugar pool row"
+    first_pool = pools[0]
+    assert first_pool.lp.startswith("0x")
+    assert first_pool.token0.startswith("0x")
+    assert first_pool.token1.startswith("0x")
+
+    epochs_for_pool = await _await_or_skip_on_sugar_backend_limit(
+        adapter.sugar_epochs_by_address(
+            pool=first_pool.lp,
+            limit=1,
+            offset=0,
+        )
+    )
+    assert epochs_for_pool, "Expected at least one per-pool Sugar epoch row"
+    assert all(ep.lp.lower() == first_pool.lp.lower() for ep in epochs_for_pool)
+    assert int(epochs_for_pool[0].votes) >= 0
+
+    aero_price = await adapter.token_price_usdc(AERO)
+    assert aero_price is not None
+    assert aero_price > 0
+
+    aero_value = await adapter.token_amount_usdc(token=AERO, amount_raw=10**18)
+    assert aero_value is not None
+    assert aero_value > 0
+
+    ranked = await _await_or_skip_on_sugar_backend_limit(
+        adapter.rank_pools_by_usdc_per_ve(
+            top_n=1,
+            limit=5,
+            require_all_prices=False,
+        )
+    )
+    assert ranked, "Expected at least one ranked Aerodrome vote pool"
+
+    usdc_per_ve, ranked_epoch, total_usdc = ranked[0]
+    assert usdc_per_ve > 0
+    assert total_usdc > 0
+    assert ranked_epoch.lp.startswith("0x")
 
 
 @pytest.mark.asyncio
