@@ -1330,13 +1330,11 @@ class AerodromeSlipstreamAdapter(
             )
             liquidity_total = pool_state["liquidity"]
             share_of_active_liquidity = (
-                liquidity_position / liquidity_total
-                if liquidity_total > 0
-                else 0.0
+                liquidity_position / liquidity_total if liquidity_total > 0 else 0.0
             )
-            effective_fee_fraction_for_unstaked = (
-                pool_state["fee_pips"] / 1e6
-            ) * (1.0 - pool_state["unstaked_fee_pips"] / 1e6)
+            effective_fee_fraction_for_unstaked = (pool_state["fee_pips"] / 1e6) * (
+                1.0 - pool_state["unstaked_fee_pips"] / 1e6
+            )
 
             return True, {
                 "protocol": "aerodrome_slipstream",
