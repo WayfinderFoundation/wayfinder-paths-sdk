@@ -153,6 +153,7 @@ class AerodromeSlipstreamAdapter(
             to_checksum_address(wallet_address) if wallet_address else None
         )
         self._token_decimals_cache: dict[str, int] = {}
+        self._token_symbol_cache: dict[str, str] = {}
         self._token_price_usdc_cache: dict[str, tuple[float, float | None]] = {}
 
     def _resolve_deployments(
