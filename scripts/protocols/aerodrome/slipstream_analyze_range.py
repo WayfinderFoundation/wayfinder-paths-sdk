@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import math
 
 from eth_utils import to_checksum_address
 
@@ -12,26 +11,7 @@ from wayfinder_paths.adapters.aerodrome_slipstream_adapter import (
     AerodromeSlipstreamAdapter,
 )
 from wayfinder_paths.core.config import load_config
-from wayfinder_paths.core.utils.uniswap_v3_math import (
-    ceil_tick_to_spacing,
-    round_tick_to_spacing,
-)
-
-
-def _fmt_amount(amount_raw: int, decimals: int) -> str:
-    return f"{amount_raw / (10**decimals):,.6f}"
-
-
-def _default_ticks(current_tick: int, tick_spacing: int, range_pct: float) -> tuple[int, int]:
-    pct = range_pct / 100.0
-    if pct <= 0 or pct >= 1.0:
-        raise ValueError("range_pct must be in (0, 100)")
-    tick_lower = int(current_tick + math.floor(math.log(1.0 - pct) / math.log(1.0001)))
-    tick_upper = int(current_tick + math.ceil(math.log(1.0 + pct) / math.log(1.0001)))
-    return (
-        round_tick_to_spacing(tick_lower, tick_spacing),
-        ceil_tick_to_spacing(tick_upper, tick_spacing),
-    )
+from scripts.protocols.aerodrome._common import fmt_amount, ticks_for_percent_range
 
 
 async def main() -> int:
@@ -81,7 +61,7 @@ async def main() -> int:
         tick_lower = int(args.tick_lower)
         tick_upper = int(args.tick_upper)
     else:
-        tick_lower, tick_upper = _default_ticks(
+        tick_lower, tick_upper = ticks_for_percent_range(
             int(state["tick"]),
             int(state["tick_spacing"]),
             float(args.range_pct),
@@ -108,8 +88,8 @@ async def main() -> int:
 
     print(
         f"bounds=[{tick_lower}, {tick_upper}) deposit="
-        f"{_fmt_amount(amount0_raw, decimals0)} {symbol0} + "
-        f"{_fmt_amount(amount1_raw, decimals1)} {symbol1}"
+        f"{fmt_amount(amount0_raw, decimals0)} {symbol0} + "
+        f"{fmt_amount(amount1_raw, decimals1)} {symbol1}"
     )
 
     ok, metrics = await adapter.slipstream_range_metrics(
@@ -130,8 +110,8 @@ async def main() -> int:
         f"share={metrics['share_of_active_liquidity']:.8f} value≈${position_value:,.2f}"
     )
     print(
-        f"composition(now): {_fmt_amount(metrics['amount0_now'], decimals0)} {symbol0} + "
-        f"{_fmt_amount(metrics['amount1_now'], decimals1)} {symbol1}"
+        f"composition(now): {fmt_amount(metrics['amount0_now'], decimals0)} {symbol0} + "
+        f"{fmt_amount(metrics['amount1_now'], decimals1)} {symbol1}"
     )
 
     ok, volume = await adapter.slipstream_volume_usdc_per_day(

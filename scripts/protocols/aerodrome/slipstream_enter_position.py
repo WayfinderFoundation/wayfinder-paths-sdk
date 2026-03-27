@@ -12,7 +12,6 @@ from wayfinder_paths.adapters.aerodrome_slipstream_adapter import (
     AerodromeSlipstreamAdapter,
 )
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
-from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM, CHAIN_ID_BASE
@@ -22,36 +21,22 @@ from wayfinder_paths.core.constants.contracts import (
     BASE_WETH,
     BASE_WSTETH,
 )
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.tokens import (
     TOKEN_ID_USDC_ARBITRUM,
     TOKEN_ID_USDC_BASE,
 )
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
-from wayfinder_paths.core.utils.tokens import get_token_balance
-from wayfinder_paths.core.utils.uniswap_v3_math import ceil_tick_to_spacing, round_tick_to_spacing
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.tokens import get_token_decimals
 from wayfinder_paths.mcp.scripting import get_adapter
+from scripts.protocols.aerodrome._common import (
+    erc20_balance,
+    swap_via_brap,
+    ticks_for_percent_range,
+)
 
 BASE_AERO = AERODROME_BY_CHAIN[CHAIN_ID_BASE]["aero"]
 BASE_CBBTC = to_checksum_address("0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf")
 BASE_UBTC = to_checksum_address("0xf1143f3a8d76f1ca740d29d5671d365f66c44ed1")
-
-
-async def _erc20_balance(chain_id: int, token: str, wallet: str) -> int:
-    return int(
-        await get_token_balance(
-            token_address=to_checksum_address(token),
-            chain_id=chain_id,
-            wallet_address=to_checksum_address(wallet),
-        )
-    )
-
-
-async def _erc20_decimals(chain_id: int, token: str) -> int:
-    async with web3_from_chain_id(chain_id) as web3:
-        contract = web3.eth.contract(address=to_checksum_address(token), abi=ERC20_ABI)
-        return int(await contract.functions.decimals().call())
 
 
 def _select_pair_tokens(pair: str) -> tuple[str, str]:
@@ -60,57 +45,6 @@ def _select_pair_tokens(pair: str) -> tuple[str, str]:
     if pair == "btc":
         return BASE_CBBTC, BASE_UBTC
     raise ValueError(f"Unsupported pair: {pair}")
-
-
-def _ticks_for_percent_range(current_tick: int, tick_spacing: int, range_pct: float) -> tuple[int, int]:
-    pct = range_pct / 100.0
-    if pct <= 0 or pct >= 1.0:
-        raise ValueError("range_pct must be in (0, 100)")
-    tick_lower = int(current_tick + math.floor(math.log(1.0 - pct) / math.log(1.0001)))
-    tick_upper = int(current_tick + math.ceil(math.log(1.0 + pct) / math.log(1.0001)))
-    return (
-        round_tick_to_spacing(tick_lower, tick_spacing),
-        ceil_tick_to_spacing(tick_upper, tick_spacing),
-    )
-
-
-async def _swap_via_brap(
-    *,
-    brap: BRAPAdapter,
-    from_token: str,
-    to_token: str,
-    from_address: str,
-    amount_raw: int,
-    slippage_bps: int,
-) -> dict:
-    from_meta, to_meta = await asyncio.gather(
-        TOKEN_CLIENT.get_token_details(from_token, chain_id=CHAIN_ID_BASE),
-        TOKEN_CLIENT.get_token_details(to_token, chain_id=CHAIN_ID_BASE),
-    )
-    if not from_meta or not to_meta:
-        raise SystemExit("Unable to resolve token metadata for BRAP swap")
-
-    ok, quote = await brap.best_quote(
-        from_token_address=from_token,
-        to_token_address=to_token,
-        from_chain_id=CHAIN_ID_BASE,
-        to_chain_id=CHAIN_ID_BASE,
-        from_address=from_address,
-        amount=str(amount_raw),
-        slippage=slippage_bps / 10_000,
-    )
-    if not ok:
-        raise SystemExit(quote)
-
-    ok, result = await brap.swap_from_quote(
-        from_token=from_meta,
-        to_token=to_meta,
-        from_address=from_address,
-        quote=quote,
-    )
-    if not ok:
-        raise SystemExit(result)
-    return result
 
 
 async def _maybe_bridge_arb_usdc_to_base(
@@ -123,16 +57,16 @@ async def _maybe_bridge_arb_usdc_to_base(
     if amount_usdc <= 0:
         return
 
-    usdc_decimals = await _erc20_decimals(CHAIN_ID_ARBITRUM, ARBITRUM_USDC)
+    usdc_decimals = await get_token_decimals(ARBITRUM_USDC, CHAIN_ID_ARBITRUM)
     amount_raw = int(amount_usdc * (10**usdc_decimals))
     if amount_raw <= 0:
         return
 
-    arb_before = await _erc20_balance(CHAIN_ID_ARBITRUM, ARBITRUM_USDC, wallet)
+    arb_before = await erc20_balance(CHAIN_ID_ARBITRUM, ARBITRUM_USDC, wallet)
     if arb_before < amount_raw:
         raise SystemExit("Insufficient Arbitrum USDC to bridge")
 
-    base_before = await _erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
+    base_before = await erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
     ok, res = await brap.swap_from_token_ids(
         from_token_id=TOKEN_ID_USDC_ARBITRUM,
         to_token_id=TOKEN_ID_USDC_BASE,
@@ -151,11 +85,12 @@ async def _maybe_bridge_arb_usdc_to_base(
             get_etherscan_transaction_link(CHAIN_ID_ARBITRUM, tx_hash),
         )
 
-    start = asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()
+    start = loop.time()
     while True:
-        if asyncio.get_event_loop().time() - start > float(timeout_s):
+        if loop.time() - start > float(timeout_s):
             raise SystemExit("Timed out waiting for bridged USDC to arrive on Base")
-        current = await _erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
+        current = await erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
         if current > base_before:
             return
         await asyncio.sleep(10)
@@ -219,7 +154,7 @@ async def main() -> int:
     )
 
     usdc_decimals = await slipstream.token_decimals(BASE_USDC)
-    usdc_raw = await _erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
+    usdc_raw = await erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
     deposit_usdc = min(float(args.deposit_usdc), usdc_raw / (10**usdc_decimals))
     if deposit_usdc <= 0:
         raise SystemExit("No USDC on Base to deploy")
@@ -229,10 +164,11 @@ async def main() -> int:
         raise SystemExit("deposit-usdc too small after splitting")
 
     if state["token0"].lower() != BASE_USDC.lower():
-        res = await _swap_via_brap(
+        res = await swap_via_brap(
             brap=brap,
             from_token=BASE_USDC,
             to_token=state["token0"],
+            chain_id=CHAIN_ID_BASE,
             from_address=wallet,
             amount_raw=half_raw,
             slippage_bps=int(args.slippage_bps),
@@ -244,10 +180,11 @@ async def main() -> int:
         )
 
     if state["token1"].lower() != BASE_USDC.lower():
-        res = await _swap_via_brap(
+        res = await swap_via_brap(
             brap=brap,
             from_token=BASE_USDC,
             to_token=state["token1"],
+            chain_id=CHAIN_ID_BASE,
             from_address=wallet,
             amount_raw=half_raw,
             slippage_bps=int(args.slippage_bps),
@@ -258,8 +195,8 @@ async def main() -> int:
             get_etherscan_transaction_link(CHAIN_ID_BASE, res["tx"]),
         )
 
-    balance0 = await _erc20_balance(CHAIN_ID_BASE, state["token0"], wallet)
-    balance1 = await _erc20_balance(CHAIN_ID_BASE, state["token1"], wallet)
+    balance0 = await erc20_balance(CHAIN_ID_BASE, state["token0"], wallet)
+    balance1 = await erc20_balance(CHAIN_ID_BASE, state["token1"], wallet)
     decimals0, decimals1 = await asyncio.gather(
         slipstream.token_decimals(state["token0"]),
         slipstream.token_decimals(state["token1"]),
@@ -269,7 +206,7 @@ async def main() -> int:
         f"{symbol1}={balance1 / 10**decimals1:.8f}"
     )
 
-    tick_lower, tick_upper = _ticks_for_percent_range(
+    tick_lower, tick_upper = ticks_for_percent_range(
         int(state["tick"]),
         int(state["tick_spacing"]),
         float(args.range_pct),
@@ -301,7 +238,10 @@ async def main() -> int:
         ok, gauge = await slipstream.get_gauge(pool=pool)
         if not ok:
             raise SystemExit(gauge)
-        ok, tx_hash = await slipstream.stake_position(gauge=gauge, token_id=int(token_id))
+        ok, tx_hash = await slipstream.stake_position(
+            gauge=gauge,
+            token_id=int(token_id),
+        )
         if not ok:
             raise SystemExit(tx_hash)
         print(

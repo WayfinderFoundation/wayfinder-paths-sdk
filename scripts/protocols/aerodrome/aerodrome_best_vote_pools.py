@@ -3,76 +3,24 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import datetime
-
-from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.aerodrome_adapter import AerodromeAdapter
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
-from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
-from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.mcp.scripting import get_adapter
+from scripts.protocols.aerodrome._common import (
+    erc20_balance,
+    fmt_amount,
+    swap_via_brap,
+)
+from eth_utils import to_checksum_address
 
 AERO = AERODROME_BY_CHAIN[CHAIN_ID_BASE]["aero"]
-
-
-def _fmt_amount(amount_raw: int, decimals: int) -> str:
-    return f"{amount_raw / (10**decimals):,.6f}"
-
-
-async def _erc20_balance(token: str, wallet: str) -> int:
-    return int(
-        await get_token_balance(
-            token_address=to_checksum_address(token),
-            chain_id=CHAIN_ID_BASE,
-            wallet_address=to_checksum_address(wallet),
-        )
-    )
-
-
-async def _swap_via_brap(
-    *,
-    brap: BRAPAdapter,
-    from_token: str,
-    to_token: str,
-    from_address: str,
-    amount_raw: int,
-    slippage_bps: int,
-) -> dict:
-    from_meta, to_meta = await asyncio.gather(
-        TOKEN_CLIENT.get_token_details(from_token, chain_id=CHAIN_ID_BASE),
-        TOKEN_CLIENT.get_token_details(to_token, chain_id=CHAIN_ID_BASE),
-    )
-    if not from_meta or not to_meta:
-        raise SystemExit("Unable to resolve token metadata for BRAP swap")
-
-    ok, quote = await brap.best_quote(
-        from_token_address=from_token,
-        to_token_address=to_token,
-        from_chain_id=CHAIN_ID_BASE,
-        to_chain_id=CHAIN_ID_BASE,
-        from_address=from_address,
-        amount=str(amount_raw),
-        slippage=slippage_bps / 10_000,
-    )
-    if not ok:
-        raise SystemExit(quote)
-
-    ok, result = await brap.swap_from_quote(
-        from_token=from_meta,
-        to_token=to_meta,
-        from_address=from_address,
-        quote=quote,
-    )
-    if not ok:
-        raise SystemExit(result)
-    return result
 
 
 async def _safe_symbol(adapter: AerodromeAdapter, token: str | None) -> str:
@@ -116,11 +64,11 @@ async def main() -> int:
     usdc_decimals = await adapter.token_decimals(BASE_USDC)
     aero_decimals = await adapter.token_decimals(AERO)
 
-    usdc_balance = await _erc20_balance(BASE_USDC, wallet)
-    aero_balance = await _erc20_balance(AERO, wallet)
+    usdc_balance = await erc20_balance(CHAIN_ID_BASE, BASE_USDC, wallet)
+    aero_balance = await erc20_balance(CHAIN_ID_BASE, AERO, wallet)
     print(
-        f"wallet={wallet} USDC={_fmt_amount(usdc_balance, usdc_decimals)} "
-        f"AERO={_fmt_amount(aero_balance, aero_decimals)}"
+        f"wallet={wallet} USDC={fmt_amount(usdc_balance, usdc_decimals)} "
+        f"AERO={fmt_amount(aero_balance, aero_decimals)}"
     )
 
     ranked = await adapter.rank_pools_by_usdc_per_ve(
@@ -179,10 +127,11 @@ async def main() -> int:
 
     usdc_swap_raw = int(args.usdc_swap * (10**usdc_decimals))
     if args.create_lock and usdc_swap_raw > 0:
-        res = await _swap_via_brap(
+        res = await swap_via_brap(
             brap=brap,
             from_token=BASE_USDC,
             to_token=AERO,
+            chain_id=CHAIN_ID_BASE,
             from_address=wallet,
             amount_raw=usdc_swap_raw,
             slippage_bps=args.slippage_bps,
@@ -194,7 +143,7 @@ async def main() -> int:
         )
 
     if args.create_lock and token_id is None:
-        aero_now = await _erc20_balance(AERO, wallet)
+        aero_now = await erc20_balance(CHAIN_ID_BASE, AERO, wallet)
         lock_raw = min(int(args.lock_aero * (10**aero_decimals)), aero_now)
         if lock_raw <= 0:
             raise SystemExit("No AERO available to lock")
