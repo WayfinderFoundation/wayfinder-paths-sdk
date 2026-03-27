@@ -22,3 +22,10 @@ Use this skill when you need to inspect, install, or operate the `{{slug}}` pack
 4. The CLI will build `bundle.zip` and `source.zip`, generate thin skill exports, request signed upload URLs from the Packs API, upload artifacts directly to object storage, then finalize the submission.
 5. Report the returned `manageUrl`, `reviewState`, `publishState`, and `nextAction` to the user.
 6. If `ownerLinkRequired` is `true`, tell the owner to link the wallet and post the required bond. If `reviewState` is `review`, point them to the submissions page for recommended changes.
+
+## Delta Lab note
+- Use authenticated `DELTA_LAB_CLIENT` or `${system.api_base_url}/delta-lab/...` for scripts, server-side logic, and agent-side Python.
+- For browser presentation on prod, use `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`.
+- For browser presentation on dev, use `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`.
+- If the applet is embedded by the Strategies pack page, same-origin `/api/v1/delta-lab/public/assets/<symbol>/timeseries/` is fine.
+- Do not probe multiple environments from one applet build, and do not call `/api/v1/delta-lab/symbols/`.

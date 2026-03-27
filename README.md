@@ -315,6 +315,23 @@ If you are automating pack publication:
 - if `ownerLinkRequired` is `true`, the next step is owner wallet linking and bonding, not another publish
 - if `reviewState` is `review`, direct the owner to the submissions page to read the recommended changes
 
+### Delta Lab For Applets
+
+Use two different Delta Lab access patterns depending on what is running:
+
+- SDK scripts, MCP tools, and agent-side Python should use `DELTA_LAB_CLIENT` with `system.api_base_url`, for example `https://strategies.wayfinder.ai/api/v1/delta-lab/...`
+- presentation applets shown on the public pack page should use the public browser-safe timeseries endpoint:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+
+For applet authors and agents:
+
+- if the applet is served by the pack page on Strategies, same-origin `/api/v1/delta-lab/public/assets/...` is acceptable
+- if the applet may run in preview, E2B, or any static host, prefer one explicit absolute base URL instead of probing multiple origins
+- do not probe both dev and prod from the same applet build
+- do not call `/api/v1/delta-lab/symbols/`; that route does not exist
+- use the public `.../public/assets/<symbol>/timeseries/` route for presentation data, and reserve authenticated Delta Lab routes for SDK/server-side use
+
 ## Claude MCP Integration
 
 The repo includes an MCP server for Claude Code (see `.mcp.json`).
