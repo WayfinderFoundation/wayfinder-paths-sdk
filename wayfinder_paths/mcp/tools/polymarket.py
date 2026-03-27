@@ -9,13 +9,17 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
     POLYGON_USDC_ADDRESS,
 )
+from wayfinder_paths.core.utils.wallets import (
+    get_wallet_sign_hash_callback,
+    get_wallet_signing_callback,
+)
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
-    find_wallet_by_label,
     normalize_address,
     ok,
+    resolve_wallet_address,
 )
 
 _TRIM_MARKET_FIELDS: set[str] = {
@@ -99,25 +103,6 @@ def _trim_market(m: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _resolve_wallet(
-    *, wallet_label: str | None
-) -> tuple[str | None, str | None, str | None]:
-    want = (wallet_label or "").strip()
-    if not want:
-        return None, None, None
-    w = find_wallet_by_label(want)
-    if not w:
-        return want, None, None
-    addr = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    pk_s = str(pk).strip() if pk else None
-    return want, addr, pk_s
-
-
 def _annotate(
     *,
     address: str,
@@ -183,14 +168,13 @@ async def polymarket(
     end_ts: int | None = None,
     fidelity: int | None = None,
 ) -> dict[str, Any]:
-    want, waddr, _pk = _resolve_wallet(wallet_label=wallet_label)
+    waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
 
     acct = normalize_address(account) or normalize_address(wallet_address) or waddr
 
-    if (wallet_label or "").strip() and want and not waddr:
+    if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
 
-    # Most actions require an account; search/data-only actions do not.
     if action in {"status", "bridge_status"} and not acct:
         return err(
             "invalid_request",
@@ -206,14 +190,26 @@ async def polymarket(
         return err("invalid_request", "wallet_label is required for open_orders")
 
     config: dict[str, Any] | None = None
+    sign_cb = None
+    sign_hash_cb = None
     if want and waddr:
+        try:
+            sign_cb, _ = await get_wallet_signing_callback(want)
+        except ValueError:
+            pass
+        try:
+            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        except ValueError:
+            pass
         config = dict(CONFIG)
-        wobj: dict[str, Any] = {"address": waddr}
-        if _pk:
-            wobj["private_key_hex"] = _pk
-        config["strategy_wallet"] = wobj
+        config["strategy_wallet"] = {"address": waddr}
 
-    adapter = PolymarketAdapter(config=config)
+    adapter = PolymarketAdapter(
+        config=config,
+        sign_callback=sign_cb,
+        sign_hash_callback=sign_hash_cb,
+        wallet_address=waddr,
+    )
     try:
         if action == "status":
             ok_state, state = await adapter.get_full_user_state(
@@ -337,7 +333,7 @@ async def polymarket(
         if action == "open_orders":
             if not want or not waddr:
                 return err("not_found", f"Unknown wallet_label: {wallet_label}")
-            if not _pk:
+            if not sign_cb:
                 return err(
                     "invalid_wallet",
                     "Wallet must include private_key_hex in config.json to fetch open orders",
@@ -399,15 +395,15 @@ async def polymarket_execute(
     # redeem
     condition_id: str | None = None,
 ) -> dict[str, Any]:
-    want, sender, pk = _resolve_wallet(wallet_label=wallet_label)
-    if not want:
-        return err("invalid_request", "wallet_label is required")
-    if not sender or not pk:
-        return err(
-            "invalid_wallet",
-            "Wallet must include address and private_key_hex in config.json (local dev only)",
-            {"wallet_label": want},
-        )
+    try:
+        sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
+    except ValueError as e:
+        return err("invalid_wallet", str(e))
+    try:
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
+    except ValueError:
+        sign_hash_cb = None
+    want = wallet_label
 
     tool_input = {
         "action": action,
@@ -433,17 +429,22 @@ async def polymarket_execute(
         "order_id": order_id,
         "condition_id": condition_id,
     }
-    preview_obj = build_polymarket_execute_preview(tool_input)
+    preview_obj = await build_polymarket_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
     if preview_obj.get("recipient_mismatch"):
         preview_text = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + preview_text
 
     cfg = dict(CONFIG)
-    cfg["main_wallet"] = {"address": sender, "private_key_hex": pk}
-    cfg["strategy_wallet"] = {"address": sender, "private_key_hex": pk}
+    cfg["main_wallet"] = {"address": sender}
+    cfg["strategy_wallet"] = {"address": sender}
 
     effects: list[dict[str, Any]] = []
-    adapter = PolymarketAdapter(config=cfg)
+    adapter = PolymarketAdapter(
+        config=cfg,
+        sign_callback=sign_callback,
+        sign_hash_callback=sign_hash_cb,
+        wallet_address=sender,
+    )
     try:
 
         def _done(status: str) -> dict[str, Any]:

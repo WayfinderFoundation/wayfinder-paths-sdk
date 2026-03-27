@@ -61,7 +61,7 @@ def is_tradable(m: dict) -> bool:
     return bool(m.get("enableOrderBook") and m.get("clobTokenIds") and m.get("acceptingOrders") and m.get("active") and not m.get("closed"))
 
 async def main():
-    a = get_adapter(PolymarketAdapter)
+    a = await get_adapter(PolymarketAdapter)
     ok, rows = await a.search_markets_fuzzy(query="super bowl mvp", limit=25)
     assert ok, rows
     tradable = [m for m in rows if is_tradable(m)]
@@ -89,7 +89,7 @@ def hist_points(hist: dict) -> list[tuple[int, float]]:
     return sorted(pts, key=lambda x: x[0])
 
 async def main():
-    a = get_adapter(PolymarketAdapter)
+    a = await get_adapter(PolymarketAdapter)
     ok, ev = await a.get_event_by_slug("super-bowl-lx-mvp")
     assert ok, ev
 

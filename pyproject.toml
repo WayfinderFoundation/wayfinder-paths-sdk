@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "wayfinder-paths"
-version = "0.8.0"
+version = "0.9.0"
 description = "Wayfinder Path: strategies and adapters"
 readme = "README.md"
 authors = ["Wayfinder <dev@wayfinder.ai>"]
@@ -26,7 +26,7 @@ hyperliquid-felix = "*"
 aiocache = "^0.12.3"
 ccxt = "^4.0"
 click = "^8.1.7"
-py-clob-client = "^0.34.5"
+py-clob-client-felix = ">=0.23.3"
 py-solc-x = "^2.0.0"
 matplotlib = "^3.10.8"
 packaging = "^25.0"

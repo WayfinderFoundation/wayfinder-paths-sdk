@@ -19,12 +19,11 @@ from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.wallets import make_sign_callback
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
-    find_wallet_by_label,
     normalize_address,
     ok,
     parse_amount_to_raw,
@@ -288,28 +287,13 @@ async def execute(
     tool_input = {
         "request": req.model_dump(mode="json"),
     }
-    preview_obj = build_execution_preview(tool_input)
+    preview_obj = await build_execution_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
-    w = find_wallet_by_label(req.wallet_label)
-    if not w:
-        return err("not_found", f"Unknown wallet_label: {req.wallet_label}")
-
-    sender = normalize_address(w.get("address"))
-    pk = (
-        (w.get("private_key") or w.get("private_key_hex"))
-        if isinstance(w, dict)
-        else None
-    )
-    if not sender or not pk:
-        response = err(
-            "invalid_wallet",
-            "Wallet must include address and private_key_hex in config.json (local dev only)",
-            {"wallet_label": req.wallet_label},
-        )
-        return response
-
-    sign_callback = make_sign_callback(pk)
+    try:
+        sign_callback, sender = await get_wallet_signing_callback(req.wallet_label)
+    except ValueError as e:
+        return err("invalid_wallet", str(e))
 
     if req.kind == "swap":
         rcpt = normalize_address(req.recipient) or sender

@@ -101,21 +101,20 @@ def _infer_protocol_from_script(script_path: Path) -> str | None:
     return None
 
 
-def _annotate_script_run(
+async def _annotate_script_run(
     *,
     script_path: str,
     status: str,
     wallet_label: str | None = None,
     protocol: str | None = None,
 ) -> None:
-    # Only annotates if wallet_label is provided - we must know the actual wallet
     if not protocol:
         return
 
     if not wallet_label:
         return
 
-    wallet = find_wallet_by_label(wallet_label)
+    wallet = await find_wallet_by_label(wallet_label)
     if not wallet:
         return
 
@@ -235,7 +234,7 @@ async def run_script(
 
     inferred_protocol = _infer_protocol_from_script(script)
     if inferred_protocol and wallet_label:
-        _annotate_script_run(
+        await _annotate_script_run(
             script_path=display_path,
             status=status,
             wallet_label=wallet_label,

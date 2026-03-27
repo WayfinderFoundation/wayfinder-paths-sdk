@@ -172,9 +172,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
@@ -231,9 +229,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
@@ -293,9 +289,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
@@ -433,9 +427,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
 
         best_quote = {
             "provider": "enso",
@@ -487,9 +479,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",

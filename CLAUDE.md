@@ -36,7 +36,6 @@ This repo ships:
 - A project-scoped MCP server config at `.mcp.json` (Claude Code will prompt to enable it).
 - A safety review hook at `.claude/settings.json` that forces confirmation before fund-moving calls.
 - Claude Code skills under `.claude/skills/` for strategy development + adapter exploration.
-- A Packs skill under `.claude/skills/developing-wayfinder-packs/` for `wfpack.yaml` + applets + signals (`/developing-wayfinder-packs`).
 - A local, gitignored runs directory at `.wayfinder_runs/` for one-off “execution mode” scripts.
 
 MCP server entrypoint:
@@ -80,6 +79,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Aave V3               | `/using-aave-v3-adapter`         |
 | Morpho                | `/using-morpho-adapter`          |
 | Pendle                | `/using-pendle-adapter`          |
+| ether.fi (eETH/weETH) | `/using-etherfi-adapter`         |
 | Ethena (sUSDe)        | `/using-ethena-vault-adapter`    |
 | Hyperliquid           | `/using-hyperliquid-adapter`     |
 | Hyperlend             | `/using-hyperlend-adapter`       |
@@ -143,25 +143,7 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 | `created_before` | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
 | `limit`          | 1-200                                                                                                                                             | `20`    |
 
-**Examples:**
-
-```
-# Top 20 insights (all types)
-uri="wayfinder://alpha-lab/search/_/all/_/_/20"
-
-# Twitter posts only
-uri="wayfinder://alpha-lab/search/_/twitter_post/_/_/10"
-
-# Search for ETH-related insights
-uri="wayfinder://alpha-lab/search/ETH/all/_/_/10"
-
-# Today's insights
-uri="wayfinder://alpha-lab/search/_/all/2026-03-11T00:00:00Z/_/20"
-
-# Serious analysis via client
-from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
-data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)
-```
+**Examples:** `wayfinder://alpha-lab/search/_/all/_/_/20` (all), `wayfinder://alpha-lab/search/_/twitter_post/_/_/10` (twitter), `wayfinder://alpha-lab/search/ETH/all/_/_/10` (ETH). Client: `await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)`.
 
 ## Delta Lab MCP resources (yield discovery)
 
@@ -193,31 +175,7 @@ data = await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, li
 
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
-**Examples:**
-
-```
-# Quick queries via MCP
-uri="wayfinder://delta-lab/top-apy/7/20"  # Top 20 APYs across all assets
-uri="wayfinder://delta-lab/BTC/apy-sources/7/10"  # BTC-specific opportunities
-uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
-
-# Screening via MCP
-uri="wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all"  # Top 20 lending rates
-uri="wayfinder://delta-lab/screen/perp/funding_now/20/ETH"  # Top 20 ETH perp funding rates
-uri="wayfinder://delta-lab/screen/price/ret_1d/10/all"  # Top 10 daily movers
-uri="wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD"  # ETH collateral -> USD borrow routes
-
-# Serious analysis via client
-data = await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)
-# If top opportunity has apy=0.98, that's 98% APY (not 0.98%)
-print(f"Top APY: {data['opportunities'][0]['apy']['value'] * 100:.2f}%")
-
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=30)
-data["price"]["price_usd"].plot()
-
-# Client screening with extra filters (venue, min_tvl, etc.)
-data = await DELTA_LAB_CLIENT.screen_lending(basis="ETH", venue="aave", min_tvl=1_000_000)
-```
+**Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
 
 ## Running strategies via MCP
 
@@ -335,20 +293,21 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
 # Single-wallet adapter (sign_callback + wallet_address)
-adapter = get_adapter(MoonwellAdapter, "main")
+adapter = await get_adapter(MoonwellAdapter, "main")
 await adapter.set_collateral(mtoken=USDC_MTOKEN)
 
 # Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
 from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
-adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
+adapter = await get_adapter(BalanceAdapter, "main", "my_strategy")
 
 # Read-only (no wallet needed)
-adapter = get_adapter(PendleAdapter)
+adapter = await get_adapter(PendleAdapter)
 ```
 
-`get_adapter()` auto-loads `config.json`, looks up wallets by label, creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
+`get_adapter()` auto-loads `config.json`, looks up wallets by label (local or remote), creates signing callbacks, and wires them into the adapter constructor. Works transparently for both local wallets (`private_key_hex`) and remote wallets (Privy server). It introspects the adapter's `__init__` signature to determine the wiring:
 
 - `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
+- `sign_hash_callback` → also wired if the adapter accepts it (e.g. PolymarketAdapter for CLOB signing)
 - `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
 
 For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_chain_id(chain_id)` from `wayfinder_paths.core.utils.web3` — it's an **async context manager** (see gotchas below):
@@ -388,7 +347,7 @@ token = await TOKEN_CLIENT.get_token_details(...)  # ✅ TokenDetails
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 
-adapter = get_adapter(HyperliquidAdapter)
+adapter = await get_adapter(HyperliquidAdapter)
 
 # WRONG — adapters always return tuples
 data = await adapter.get_meta_and_asset_ctxs()  # ❌ data is actually (True, {...})
@@ -400,30 +359,9 @@ if not ok:
 meta, ctxs = data[0], data[1]
 ```
 
-**Why the difference?**
+**Rule of thumb:** `wayfinder_paths.core.clients` → data directly. `wayfinder_paths.adapters` → `(ok, data)` tuple.
 
-- **Clients** are thin HTTP wrappers that let `httpx` exceptions bubble up
-- **Adapters** handle multiple failure modes (RPC errors, contract reverts, parsing failures) and return tuples to avoid raising exceptions for expected failures
-
-**Rule of thumb:** If it's in `wayfinder_paths.core.clients`, it returns data directly. If it's in `wayfinder_paths.adapters`, it returns a tuple.
-
-**1. `get_adapter()` already loads config — don't call `load_config()` first**
-
-```python
-# WRONG — redundant, and load_config() returns None anyway
-config = load_config("config.json")
-adapter = MoonwellAdapter(config=config, ...)
-
-# RIGHT — get_adapter() handles config + wallet + signing internally
-from wayfinder_paths.mcp.scripting import get_adapter
-adapter = get_adapter(MoonwellAdapter, "main")
-
-# Dual-wallet adapters (e.g. BalanceAdapter) take two wallet labels:
-adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
-
-# For read-only adapters, omit the wallet label:
-adapter = get_adapter(HyperliquidAdapter)
-```
+**1. `get_adapter()` already loads config — don't call `load_config()` first.** See `get_adapter()` examples in the scripting helper section above.
 
 **2. `load_config()` returns `None` — it mutates a global**
 

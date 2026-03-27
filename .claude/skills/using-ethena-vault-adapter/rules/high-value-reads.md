@@ -28,7 +28,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ethena_vault_adapter import EthenaVaultAdapter
 
 async def main():
-    adapter = get_adapter(EthenaVaultAdapter)  # read-only (no wallet needed)
+    adapter = await get_adapter(EthenaVaultAdapter)  # read-only (no wallet needed)
     ok, apy = await adapter.get_apy()
     if not ok:
         raise RuntimeError(apy)
@@ -49,7 +49,7 @@ from wayfinder_paths.adapters.ethena_vault_adapter import EthenaVaultAdapter
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(EthenaVaultAdapter)
+    adapter = await get_adapter(EthenaVaultAdapter)
     ok, cd = await adapter.get_cooldown(account=USER)
     if not ok:
         raise RuntimeError(cd)
@@ -71,7 +71,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(EthenaVaultAdapter)
+    adapter = await get_adapter(EthenaVaultAdapter)
     ok, state = await adapter.get_full_user_state(
         account=USER,
         chain_id=CHAIN_ID_ETHEREUM,

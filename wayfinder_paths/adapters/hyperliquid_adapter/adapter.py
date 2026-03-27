@@ -4,13 +4,11 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from decimal import ROUND_DOWN, Decimal, getcontext
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from aiocache import Cache
-from eth_account import Account
-from eth_account.messages import encode_typed_data
 from eth_utils import to_checksum_address
-from hyperliquid.exchange import Exchange, get_timestamp_ms
+from hyperliquid.exchange import get_timestamp_ms
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
@@ -30,9 +28,6 @@ from hyperliquid.utils.types import BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
-from wayfinder_paths.adapters.hyperliquid_adapter.local_signer import (
-    create_local_signer,
-)
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import (
@@ -74,44 +69,7 @@ class HyperliquidAdapter(BaseAdapter):
             or ZERO_ADDRESS
         )
 
-        if sign_callback is not None:
-            self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
-            self._signing_type: Literal["eip712", "local"] = "eip712"
-        elif config:
-            self._sign_callback = create_local_signer(config)
-            self._signing_type = "local"
-        else:
-            self._sign_callback = None
-            self._signing_type = "local"
-
-        self._local_account = self._build_local_account(config or {})
-        self._exchange = (
-            Exchange(self._local_account) if self._local_account is not None else None
-        )
-
-    @staticmethod
-    def _build_local_account(config: dict[str, Any]) -> Any | None:
-        strategy_wallet = config.get("strategy_wallet") or {}
-        main_wallet = config.get("main_wallet") or {}
-        private_key = (
-            strategy_wallet.get("private_key_hex")
-            or strategy_wallet.get("private_key")
-            or main_wallet.get("private_key_hex")
-            or main_wallet.get("private_key")
-        )
-        if not private_key:
-            return None
-        private_key = (
-            private_key if str(private_key).startswith("0x") else f"0x{private_key}"
-        )
-        return Account.from_key(str(private_key))
-
-    def _require_exchange(self) -> Exchange:
-        if self._exchange is None:
-            raise ValueError(
-                "Hyperliquid vault transfers require a local private key in config"
-            )
-        return self._exchange
+        self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
 
     async def _post_across_dexes(
         self,
@@ -196,19 +154,12 @@ class HyperliquidAdapter(BaseAdapter):
         self, payload: str, action: dict[str, Any], address: str
     ) -> dict[str, Any] | None:
         if self._sign_callback is None:
-            raise ValueError(
-                "Config required for local signing (no sign_callback provided)"
-            )
+            raise ValueError("No sign_callback configured")
 
-        if self._signing_type == "eip712":
-            sig_hex = await self._sign_callback(payload)
-            if not sig_hex:
-                return None
-            return self._sig_hex_to_hl_signature(sig_hex)
-
-        encoded_payload = encode_typed_data(full_message=payload)
-        result = await self._sign_callback(action, encoded_payload, address)
-        return cast(dict[str, Any] | None, result)
+        sig_hex = await self._sign_callback(payload)
+        if not sig_hex:
+            return None
+        return self._sig_hex_to_hl_signature(sig_hex)
 
     async def _sign_and_broadcast_hypecore(
         self, action: dict[str, Any], address: str
@@ -216,6 +167,20 @@ class HyperliquidAdapter(BaseAdapter):
         nonce = get_timestamp_ms()
         payload = get_l1_action_payload(action, None, nonce, None, True)
         if not (sig := await self._sign(payload, action, address)):
+            return USER_DECLINED_ERROR
+        return self._broadcast_hypecore(action, nonce, sig)
+
+    async def _sign_and_broadcast_user_action(
+        self,
+        action: dict[str, Any],
+        payload_types: list[dict[str, str]],
+        primary_type: str,
+    ) -> dict[str, Any]:
+        nonce = get_timestamp_ms()
+        action["signatureChainId"] = "0x66eee"
+        action["hyperliquidChain"] = "Mainnet"
+        payload = user_signed_payload(primary_type, payload_types, action)
+        if not (sig := await self._sign(payload, action, self.wallet_address)):
             return USER_DECLINED_ERROR
         return self._broadcast_hypecore(action, nonce, sig)
 
@@ -1395,8 +1360,14 @@ class HyperliquidAdapter(BaseAdapter):
         vault_address: str,
     ) -> tuple[bool, dict[str, Any]]:
         try:
-            result = self._require_exchange().vault_usd_transfer(
-                str(vault_address), True, float_to_usd_int(float(usd_amount))
+            action = {
+                "type": "vaultTransfer",
+                "vaultAddress": str(vault_address),
+                "isDeposit": True,
+                "usd": float_to_usd_int(float(usd_amount)),
+            }
+            result = await self._sign_and_broadcast_hypecore(
+                action, self.wallet_address
             )
             success = result.get("status") == "ok"
             return success, result
@@ -1409,8 +1380,14 @@ class HyperliquidAdapter(BaseAdapter):
         vault_address: str,
     ) -> tuple[bool, dict[str, Any]]:
         try:
-            result = self._require_exchange().vault_usd_transfer(
-                str(vault_address), False, float_to_usd_int(float(usd_amount))
+            action = {
+                "type": "vaultTransfer",
+                "vaultAddress": str(vault_address),
+                "isDeposit": False,
+                "usd": float_to_usd_int(float(usd_amount)),
+            }
+            result = await self._sign_and_broadcast_hypecore(
+                action, self.wallet_address
             )
             success = result.get("status") == "ok"
             return success, result
@@ -1552,7 +1529,16 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         dest = to_checksum_address(destination or self.wallet_address)
         try:
-            result = self._require_exchange().withdraw_from_bridge(float(amount), dest)
+            timestamp = get_timestamp_ms()
+            action = {
+                "type": "withdraw3",
+                "destination": dest,
+                "amount": str(float(amount)),
+                "time": timestamp,
+            }
+            result = await self._sign_and_broadcast_user_action(
+                action, WITHDRAW_SIGN_TYPES, "HyperliquidTransaction:Withdraw"
+            )
             success = result.get("status") == "ok"
             if not success:
                 return False, result

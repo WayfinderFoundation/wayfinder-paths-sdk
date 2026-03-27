@@ -9,8 +9,9 @@ from wayfinder_paths.mcp.tools.wallets import wallets
 from wayfinder_paths.mcp.utils import resolve_wallet_address
 
 
-def test_resolve_wallet_address_prefers_explicit_address():
-    addr, lbl = resolve_wallet_address(
+@pytest.mark.asyncio
+async def test_resolve_wallet_address_prefers_explicit_address():
+    addr, lbl = await resolve_wallet_address(
         wallet_label="main", wallet_address="0x000000000000000000000000000000000000dEaD"
     )
     assert addr == "0x000000000000000000000000000000000000dEaD"

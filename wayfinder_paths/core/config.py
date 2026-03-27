@@ -116,6 +116,11 @@ def get_packs_api_base_url() -> str:
     return base
 
 
+def allow_local_wallets() -> bool:
+    system = CONFIG.get("system", {})
+    return bool(system.get("allow_local_wallets", True))
+
+
 def get_api_key() -> str | None:
     system = CONFIG.get("system", {})
     api_key = system.get("api_key")
