@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 from collections.abc import Callable, Sequence
 from typing import Any, TypedDict
 
-from eth_utils import to_checksum_address
+from eth_utils import keccak, to_checksum_address
 
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_REWARDS_DISTRIBUTOR_ABI,
@@ -25,26 +28,31 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
     AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
     AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
 )
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance
+from wayfinder_paths.core.utils.tokens import ensure_allowance, get_erc20_metadata
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
+    deadline as default_deadline,
     liq_for_amounts,
     slippage_min,
     sqrt_price_x96_from_tick,
-)
-from wayfinder_paths.core.utils.uniswap_v3_math import (
-    deadline as default_deadline,
+    sqrt_price_x96_to_price,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 MAX_UINT128 = (1 << 128) - 1
+_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
+SLIPSTREAM_SWAP_TOPIC0 = (
+    "0x"
+    + keccak(text="Swap(address,address,int256,int256,uint160,uint128,int24)").hex()
+)
 
 
 def _checksum_or_zero(value: str | None) -> str:
@@ -145,6 +153,8 @@ class AerodromeSlipstreamAdapter(
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
+        self._token_decimals_cache: dict[str, int] = {}
+        self._token_price_usdc_cache: dict[str, tuple[float, float | None]] = {}
 
     def _resolve_deployments(
         self,
@@ -175,6 +185,88 @@ class AerodromeSlipstreamAdapter(
         if not variant:
             raise ValueError(f"Unknown Slipstream position manager: {pm}")
         return variant
+
+    async def token_decimals(self, token: str) -> int:
+        token_addr = to_checksum_address(token)
+        cached = self._token_decimals_cache.get(token_addr)
+        if cached is not None:
+            return cached
+
+        async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            _symbol, _name, decimals = await get_erc20_metadata(token_addr, web3=web3)
+        decimals_i = int(decimals)
+        self._token_decimals_cache[token_addr] = decimals_i
+        return decimals_i
+
+    async def token_price_usdc(self, token: str) -> float | None:
+        token_addr = to_checksum_address(token)
+        if token_addr == BASE_USDC:
+            return 1.0
+
+        now = time.monotonic()
+        cached = self._token_price_usdc_cache.get(token_addr)
+        if cached is not None:
+            cached_at, cached_price = cached
+            if now - cached_at <= _TOKEN_PRICE_USDC_TTL_SECONDS:
+                return cached_price
+
+        price: float | None = None
+        chain_name = str(self.core_contracts["chain_name"]).lower()
+        queries: tuple[tuple[str, dict[str, Any]], ...] = (
+            (f"{chain_name}_{token_addr}", {"market_data": True}),
+            (
+                token_addr,
+                {"market_data": True, "chain_id": CHAIN_ID_BASE},
+            ),
+        )
+        for query, kwargs in queries:
+            try:
+                details = await TOKEN_CLIENT.get_token_details(query, **kwargs)
+            except Exception:
+                continue
+            raw_price = (
+                details.get("current_price")
+                or details.get("price_usd")
+                or details.get("price")
+            )
+            if raw_price is None:
+                continue
+            price_f = float(raw_price)
+            if math.isfinite(price_f) and price_f > 0:
+                price = price_f
+                break
+
+        self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
+        return price
+
+    @staticmethod
+    def q96_to_price_token1_per_token0(
+        *,
+        sqrt_price_x96: int,
+        decimals0: int,
+        decimals1: int,
+    ) -> float:
+        return float(
+            sqrt_price_x96_to_price(
+                int(sqrt_price_x96),
+                int(decimals0),
+                int(decimals1),
+            )
+        )
+
+    @staticmethod
+    def floor_tick_to_spacing(tick: int, spacing: int) -> int:
+        spacing_i = int(spacing)
+        if spacing_i <= 0:
+            raise ValueError("spacing must be positive")
+        return (int(tick) // spacing_i) * spacing_i
+
+    @staticmethod
+    def ceil_tick_to_spacing(tick: int, spacing: int) -> int:
+        spacing_i = int(spacing)
+        if spacing_i <= 0:
+            raise ValueError("spacing must be positive")
+        return int((-(-int(tick) // spacing_i)) * spacing_i)
 
     def _select_write_target(
         self,
@@ -1101,6 +1193,628 @@ class AerodromeSlipstreamAdapter(
                 "limit": limit,
                 "total": total,
                 "markets": markets,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_best_pool_for_pair(
+        self,
+        *,
+        tokenA: str,
+        tokenB: str,
+        deployments: Sequence[str] | None = None,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            ok, matches = await self.find_pools(
+                tokenA=tokenA,
+                tokenB=tokenB,
+                deployments=deployments,
+                block_identifier=block_identifier,
+            )
+            if not ok:
+                return False, matches
+            if not matches:
+                return False, "No Slipstream pool found for pair"
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                markets = await asyncio.gather(
+                    *[
+                        self._read_market(
+                            web3=web3,
+                            deployment_variant=str(match["deployment_variant"]),
+                            pool=str(match["pool"]),
+                            include_gauge_state=False,
+                            block_identifier=block_identifier,
+                        )
+                        for match in matches
+                    ]
+                )
+
+            best_market = max(markets, key=lambda market: int(market["liquidity"]))
+            if int(best_market["liquidity"]) <= 0:
+                return False, "Slipstream pools exist but none have liquidity > 0"
+            return True, best_market
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_pool_state(
+        self,
+        *,
+        pool: str,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            pool_addr = to_checksum_address(pool)
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                pool_contract = web3.eth.contract(
+                    address=pool_addr,
+                    abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
+                )
+                (
+                    token0,
+                    token1,
+                    position_manager,
+                    tick_spacing,
+                    slot0,
+                    liquidity,
+                    fee_pips,
+                    unstaked_fee_pips,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(pool_contract, "token0", postprocess=to_checksum_address),
+                        Call(pool_contract, "token1", postprocess=to_checksum_address),
+                        Call(pool_contract, "nft", postprocess=to_checksum_address),
+                        Call(pool_contract, "tickSpacing"),
+                        Call(pool_contract, "slot0"),
+                        Call(pool_contract, "liquidity"),
+                        Call(pool_contract, "fee"),
+                        Call(pool_contract, "unstakedFee"),
+                    ],
+                    block_identifier=block_identifier,
+                )
+            decimals0, decimals1 = await asyncio.gather(
+                self.token_decimals(token0),
+                self.token_decimals(token1),
+            )
+            deployment_variant = self._variant_by_npm.get(
+                str(position_manager).lower()
+            )
+            sqrt_price_x96 = int(slot0[0])
+            price = self.q96_to_price_token1_per_token0(
+                sqrt_price_x96=sqrt_price_x96,
+                decimals0=decimals0,
+                decimals1=decimals1,
+            )
+            return True, {
+                "protocol": "aerodrome_slipstream",
+                "chain_id": CHAIN_ID_BASE,
+                "chain_name": self.core_contracts["chain_name"],
+                "deployment_variant": deployment_variant,
+                "pool": pool_addr,
+                "position_manager": position_manager,
+                "token0": token0,
+                "token1": token1,
+                "sqrt_price_x96": sqrt_price_x96,
+                "tick": int(slot0[1]),
+                "tick_spacing": int(tick_spacing),
+                "liquidity": int(liquidity),
+                "fee_pips": int(fee_pips),
+                "unstaked_fee_pips": int(unstaked_fee_pips),
+                "price_token1_per_token0": price,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_range_metrics(
+        self,
+        *,
+        pool: str,
+        tick_lower: int,
+        tick_upper: int,
+        amount0_raw: int,
+        amount1_raw: int,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        if int(tick_lower) >= int(tick_upper):
+            return False, "tick_lower must be < tick_upper"
+        amount0_i = int(amount0_raw)
+        amount1_i = int(amount1_raw)
+        if amount0_i < 0 or amount1_i < 0:
+            return False, "amount0_raw and amount1_raw must be non-negative"
+
+        try:
+            ok, pool_state = await self.slipstream_pool_state(
+                pool=pool,
+                block_identifier=block_identifier,
+            )
+            if not ok:
+                return False, pool_state
+
+            sqrt_price_x96 = int(pool_state["sqrt_price_x96"])
+            sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
+            sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+            liquidity_position = liq_for_amounts(
+                sqrt_price_x96,
+                sqrt_lower,
+                sqrt_upper,
+                amount0_i,
+                amount1_i,
+            )
+            amount0_now, amount1_now = amounts_for_liq_inrange(
+                sqrt_price_x96,
+                sqrt_lower,
+                sqrt_upper,
+                int(liquidity_position),
+            )
+            liquidity_total = int(pool_state["liquidity"])
+            share_of_active_liquidity = (
+                float(liquidity_position) / float(liquidity_total)
+                if liquidity_total > 0
+                else 0.0
+            )
+            effective_fee_fraction_for_unstaked = (
+                float(pool_state["fee_pips"]) / 1e6
+            ) * (1.0 - float(pool_state["unstaked_fee_pips"]) / 1e6)
+
+            return True, {
+                "protocol": "aerodrome_slipstream",
+                "chain_id": CHAIN_ID_BASE,
+                "chain_name": self.core_contracts["chain_name"],
+                "deployment_variant": pool_state.get("deployment_variant"),
+                "pool": pool_state["pool"],
+                "position_manager": pool_state["position_manager"],
+                "token0": pool_state["token0"],
+                "token1": pool_state["token1"],
+                "tick_lower": int(tick_lower),
+                "tick_upper": int(tick_upper),
+                "current_tick": int(pool_state["tick"]),
+                "in_range": int(tick_lower)
+                <= int(pool_state["tick"])
+                < int(tick_upper),
+                "sqrt_price_x96": sqrt_price_x96,
+                "price_token1_per_token0": float(
+                    pool_state["price_token1_per_token0"]
+                ),
+                "liquidity_total": liquidity_total,
+                "liquidity_position": int(liquidity_position),
+                "share_of_active_liquidity": share_of_active_liquidity,
+                "amount0_now": int(amount0_now),
+                "amount1_now": int(amount1_now),
+                "fee_pips": int(pool_state["fee_pips"]),
+                "unstaked_fee_pips": int(pool_state["unstaked_fee_pips"]),
+                "effective_fee_fraction_for_unstaked": (
+                    effective_fee_fraction_for_unstaked
+                ),
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_volume_usdc_per_day(
+        self,
+        *,
+        pool: str,
+        lookback_blocks: int = 2000,
+        max_logs: int = 5000,
+        token0_price_usdc: float | None = None,
+        token1_price_usdc: float | None = None,
+    ) -> tuple[bool, Any]:
+        lookback_blocks_i = int(lookback_blocks)
+        max_logs_i = int(max_logs)
+        if lookback_blocks_i <= 0:
+            return False, "lookback_blocks must be > 0"
+        if max_logs_i <= 0:
+            return False, "max_logs must be > 0"
+
+        try:
+            ok, state = await self.slipstream_pool_state(pool=pool)
+            if not ok:
+                return False, state
+
+            token0 = str(state["token0"])
+            token1 = str(state["token1"])
+            decimals0, decimals1 = await asyncio.gather(
+                self.token_decimals(token0),
+                self.token_decimals(token1),
+            )
+            price0 = (
+                float(token0_price_usdc)
+                if token0_price_usdc is not None
+                else await self.token_price_usdc(token0)
+            )
+            price1 = (
+                float(token1_price_usdc)
+                if token1_price_usdc is not None
+                else await self.token_price_usdc(token1)
+            )
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                latest = int(await web3.eth.block_number)
+                from_block = max(0, latest - lookback_blocks_i)
+                logs = await self._get_logs_bounded(
+                    web3,
+                    from_block=from_block,
+                    to_block=latest,
+                    address=str(state["pool"]),
+                    topics=[SLIPSTREAM_SWAP_TOPIC0],
+                    max_logs=max_logs_i,
+                )
+                if not logs:
+                    return True, {
+                        "pool": state["pool"],
+                        "volume_usdc_per_day": 0.0,
+                        "swap_count": 0,
+                        "seconds_covered": 0,
+                    }
+
+                block_numbers = [
+                    int(log["blockNumber"])
+                    for log in logs
+                    if log.get("blockNumber") is not None
+                ]
+                if not block_numbers:
+                    return True, {
+                        "pool": state["pool"],
+                        "volume_usdc_per_day": 0.0,
+                        "swap_count": len(logs),
+                        "seconds_covered": 0,
+                    }
+
+                block_min, block_max = min(block_numbers), max(block_numbers)
+                block0, block1 = await asyncio.gather(
+                    web3.eth.get_block(block_min),
+                    web3.eth.get_block(block_max),
+                )
+                seconds_covered = max(
+                    1,
+                    int(block1["timestamp"]) - int(block0["timestamp"]),
+                )
+
+                total_usdc = 0.0
+                for log in logs:
+                    data = log.get("data")
+                    if not data:
+                        continue
+                    try:
+                        amount0, amount1, *_ = web3.codec.decode(
+                            ["int256", "int256", "uint160", "uint128", "int24"],
+                            data,
+                        )
+                    except Exception:
+                        continue
+
+                    value0 = float("nan")
+                    value1 = float("nan")
+                    if price0 is not None and math.isfinite(float(price0)) and price0 > 0:
+                        value0 = abs(int(amount0)) / (10**decimals0) * float(price0)
+                    if price1 is not None and math.isfinite(float(price1)) and price1 > 0:
+                        value1 = abs(int(amount1)) / (10**decimals1) * float(price1)
+
+                    if math.isfinite(value0) and math.isfinite(value1):
+                        total_usdc += max(value0, value1)
+                    elif math.isfinite(value0):
+                        total_usdc += value0
+                    elif math.isfinite(value1):
+                        total_usdc += value1
+
+            return True, {
+                "pool": state["pool"],
+                "volume_usdc_per_day": float(
+                    total_usdc * 86400.0 / float(seconds_covered)
+                ),
+                "swap_count": len(logs),
+                "seconds_covered": seconds_covered,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_fee_apr_percent(
+        self,
+        *,
+        metrics: dict[str, Any],
+        volume_usdc_per_day: float,
+        expected_in_range_fraction: float = 1.0,
+        token0_price_usdc: float | None = None,
+        token1_price_usdc: float | None = None,
+    ) -> tuple[bool, Any]:
+        if float(volume_usdc_per_day) < 0:
+            return False, "volume_usdc_per_day must be non-negative"
+
+        try:
+            token0 = to_checksum_address(str(metrics["token0"]))
+            token1 = to_checksum_address(str(metrics["token1"]))
+            decimals0, decimals1 = await asyncio.gather(
+                self.token_decimals(token0),
+                self.token_decimals(token1),
+            )
+            price0 = (
+                float(token0_price_usdc)
+                if token0_price_usdc is not None
+                else await self.token_price_usdc(token0)
+            )
+            price1 = (
+                float(token1_price_usdc)
+                if token1_price_usdc is not None
+                else await self.token_price_usdc(token1)
+            )
+
+            position_value_usdc: float | None = None
+            if (
+                price0 is not None
+                and price1 is not None
+                and math.isfinite(price0)
+                and math.isfinite(price1)
+            ):
+                position_value_usdc = (
+                    (int(metrics["amount0_now"]) / (10**decimals0)) * price0
+                ) + ((int(metrics["amount1_now"]) / (10**decimals1)) * price1)
+                if position_value_usdc <= 0:
+                    position_value_usdc = None
+
+            fees_per_day_usdc = 0.0
+            apr_percent: float | None
+            if float(volume_usdc_per_day) <= 0:
+                apr_percent = 0.0
+            elif position_value_usdc is None:
+                apr_percent = None
+            else:
+                in_range_fraction = float(expected_in_range_fraction)
+                if not bool(metrics.get("in_range")):
+                    in_range_fraction = 0.0
+                fees_per_day_usdc = (
+                    float(volume_usdc_per_day)
+                    * float(metrics["effective_fee_fraction_for_unstaked"])
+                    * float(metrics["share_of_active_liquidity"])
+                    * in_range_fraction
+                )
+                apr_percent = float(
+                    fees_per_day_usdc * 365.0 / position_value_usdc * 100.0
+                )
+
+            return True, {
+                "pool": metrics.get("pool"),
+                "fee_apr_percent": apr_percent,
+                "fees_per_day_usdc": fees_per_day_usdc,
+                "position_value_usdc": position_value_usdc,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_sigma_annual_from_swaps(
+        self,
+        *,
+        pool: str,
+        lookback_blocks: int = 20_000,
+        max_logs: int = 5000,
+    ) -> tuple[bool, Any]:
+        lookback_blocks_i = int(lookback_blocks)
+        max_logs_i = int(max_logs)
+        if lookback_blocks_i <= 0:
+            return False, "lookback_blocks must be > 0"
+        if max_logs_i <= 0:
+            return False, "max_logs must be > 0"
+
+        try:
+            ok, state = await self.slipstream_pool_state(pool=pool)
+            if not ok:
+                return False, state
+
+            decimals0, decimals1 = await asyncio.gather(
+                self.token_decimals(str(state["token0"])),
+                self.token_decimals(str(state["token1"])),
+            )
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                latest = int(await web3.eth.block_number)
+                from_block = max(0, latest - lookback_blocks_i)
+                logs = await self._get_logs_bounded(
+                    web3,
+                    from_block=from_block,
+                    to_block=latest,
+                    address=str(state["pool"]),
+                    topics=[SLIPSTREAM_SWAP_TOPIC0],
+                    max_logs=max_logs_i,
+                )
+                if not logs:
+                    return True, {
+                        "pool": state["pool"],
+                        "sigma_annual": None,
+                        "sample_count": 0,
+                        "seconds_covered": 0,
+                    }
+
+                timestamp_by_block: dict[int, int] = {}
+                prices: list[tuple[int, float]] = []
+                for log in logs:
+                    data = log.get("data")
+                    block_number = log.get("blockNumber")
+                    if not data or block_number is None:
+                        continue
+                    try:
+                        _amount0, _amount1, sqrt_price_x96, _liquidity, _tick = (
+                            web3.codec.decode(
+                                ["int256", "int256", "uint160", "uint128", "int24"],
+                                data,
+                            )
+                        )
+                    except Exception:
+                        continue
+                    block_number_i = int(block_number)
+                    if block_number_i not in timestamp_by_block:
+                        block = await web3.eth.get_block(block_number_i)
+                        timestamp_by_block[block_number_i] = int(block["timestamp"])
+                    price = self.q96_to_price_token1_per_token0(
+                        sqrt_price_x96=int(sqrt_price_x96),
+                        decimals0=decimals0,
+                        decimals1=decimals1,
+                    )
+                    if price > 0:
+                        prices.append((timestamp_by_block[block_number_i], price))
+
+            if len(prices) < 5:
+                return True, {
+                    "pool": state["pool"],
+                    "sigma_annual": None,
+                    "sample_count": len(prices),
+                    "seconds_covered": 0,
+                }
+
+            prices.sort(key=lambda item: item[0])
+            sum_r2 = 0.0
+            sum_dt = 0.0
+            for i in range(1, len(prices)):
+                timestamp0, price0 = prices[i - 1]
+                timestamp1, price1 = prices[i]
+                dt = int(timestamp1) - int(timestamp0)
+                if dt <= 0:
+                    continue
+                log_return = math.log(float(price1) / float(price0))
+                sum_r2 += float(log_return * log_return)
+                sum_dt += float(dt)
+
+            if sum_dt <= 0:
+                return True, {
+                    "pool": state["pool"],
+                    "sigma_annual": None,
+                    "sample_count": len(prices),
+                    "seconds_covered": 0,
+                }
+
+            sigma_per_second = math.sqrt(sum_r2 / sum_dt)
+            return True, {
+                "pool": state["pool"],
+                "sigma_annual": float(sigma_per_second * math.sqrt(SECONDS_PER_YEAR)),
+                "sample_count": len(prices),
+                "seconds_covered": int(sum_dt),
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    @staticmethod
+    async def _get_logs_bounded(
+        web3: Any,
+        *,
+        from_block: int,
+        to_block: int,
+        address: str,
+        topics: list[Any] | None,
+        max_logs: int,
+        initial_chunk_size: int = 2000,
+    ) -> list[Any]:
+        from web3.exceptions import Web3RPCError
+
+        if int(max_logs) <= 0:
+            return []
+
+        address_cs = to_checksum_address(address)
+        from_block_i = int(from_block)
+        to_block_i = int(to_block)
+        if from_block_i > to_block_i:
+            return []
+
+        logs: list[Any] = []
+        chunk_size = max(1, int(initial_chunk_size))
+        current_to = to_block_i
+
+        while current_to >= from_block_i and len(logs) < int(max_logs):
+            current_from = max(from_block_i, current_to - chunk_size + 1)
+            try:
+                batch = await web3.eth.get_logs(
+                    {
+                        "fromBlock": current_from,
+                        "toBlock": current_to,
+                        "address": address_cs,
+                        "topics": topics or [],
+                    }
+                )
+            except Web3RPCError:
+                if chunk_size == 1:
+                    raise
+                chunk_size = max(1, chunk_size // 2)
+                continue
+
+            if batch:
+                logs.extend(batch)
+                logs.sort(
+                    key=lambda log: (
+                        int(log.get("blockNumber", 0)),
+                        int(log.get("logIndex", 0)),
+                    )
+                )
+                if len(logs) > int(max_logs):
+                    logs = logs[-int(max_logs) :]
+
+            current_to = current_from - 1
+
+        return logs
+
+    @staticmethod
+    def _phi(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+
+    async def slipstream_prob_in_range_week(
+        self,
+        *,
+        pool: str,
+        tick_lower: int,
+        tick_upper: int,
+        sigma_annual: float,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        if int(tick_lower) >= int(tick_upper):
+            return False, "tick_lower must be < tick_upper"
+        sigma = float(sigma_annual)
+        if not math.isfinite(sigma) or sigma <= 0:
+            return False, "sigma_annual must be positive and finite"
+
+        try:
+            ok, state = await self.slipstream_pool_state(
+                pool=pool,
+                block_identifier=block_identifier,
+            )
+            if not ok:
+                return False, state
+
+            decimals0, decimals1 = await asyncio.gather(
+                self.token_decimals(str(state["token0"])),
+                self.token_decimals(str(state["token1"])),
+            )
+            price_now = float(state["price_token1_per_token0"])
+            price_low = self.q96_to_price_token1_per_token0(
+                sqrt_price_x96=sqrt_price_x96_from_tick(int(tick_lower)),
+                decimals0=decimals0,
+                decimals1=decimals1,
+            )
+            price_high = self.q96_to_price_token1_per_token0(
+                sqrt_price_x96=sqrt_price_x96_from_tick(int(tick_upper)),
+                decimals0=decimals0,
+                decimals1=decimals1,
+            )
+            if price_now <= 0 or price_low <= 0 or price_high <= 0:
+                return True, {
+                    "pool": state["pool"],
+                    "prob_in_range_week": None,
+                }
+
+            time_years = 7.0 / 365.0
+            denom = sigma * math.sqrt(time_years)
+            if denom <= 0:
+                return True, {
+                    "pool": state["pool"],
+                    "prob_in_range_week": None,
+                }
+
+            z1 = math.log(price_low / price_now) / denom
+            z2 = math.log(price_high / price_now) / denom
+            prob = max(0.0, min(1.0, self._phi(z2) - self._phi(z1)))
+            return True, {
+                "pool": state["pool"],
+                "tick_lower": int(tick_lower),
+                "tick_upper": int(tick_upper),
+                "sigma_annual": sigma,
+                "prob_in_range_week": float(prob),
             }
         except Exception as exc:
             return False, str(exc)

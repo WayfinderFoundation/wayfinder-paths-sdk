@@ -1,4 +1,5 @@
 import inspect
+import math
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -92,6 +93,15 @@ def test_constructor_is_base_only():
         "claim_rebases",
         "claim_rebases_many",
         "get_full_user_state",
+        "token_decimals",
+        "token_price_usdc",
+        "slipstream_best_pool_for_pair",
+        "slipstream_pool_state",
+        "slipstream_range_metrics",
+        "slipstream_volume_usdc_per_day",
+        "slipstream_fee_apr_percent",
+        "slipstream_sigma_annual_from_swaps",
+        "slipstream_prob_in_range_week",
     ],
 )
 def test_public_methods_do_not_accept_chain_id(method_name):
@@ -209,6 +219,440 @@ async def test_get_all_markets_empty_result_uses_base_chain():
     assert data["chain_name"] == "base"
     assert data["markets"] == []
     assert data["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_token_price_usdc_uses_client_and_cache():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    token = "0x0000000000000000000000000000000000000007"
+
+    with patch.object(
+        slipstream_module.TOKEN_CLIENT,
+        "get_token_details",
+        new=AsyncMock(return_value={"current_price": 1.23}),
+    ) as mock_get_token_details:
+        price1 = await adapter.token_price_usdc(token)
+        price2 = await adapter.token_price_usdc(token)
+
+    assert price1 == pytest.approx(1.23)
+    assert price2 == pytest.approx(1.23)
+    assert mock_get_token_details.await_count == 1
+    assert mock_get_token_details.await_args_list[0].args[0] == f"base_{token}"
+
+
+@pytest.mark.asyncio
+async def test_slipstream_best_pool_for_pair_prefers_highest_liquidity():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    matches = [
+        {
+            "deployment_variant": "initial",
+            "pool": FAKE_POOL,
+        },
+        {
+            "deployment_variant": "initial",
+            "pool": "0x0000000000000000000000000000000000000004",
+        },
+    ]
+    mock_web3 = MagicMock()
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter,
+            "find_pools",
+            new=AsyncMock(return_value=(True, matches)),
+        ),
+        patch.object(
+            adapter,
+            "_read_market",
+            new=AsyncMock(
+                side_effect=[
+                    {"pool": FAKE_POOL, "liquidity": 100},
+                    {
+                        "pool": "0x0000000000000000000000000000000000000004",
+                        "liquidity": 200,
+                    },
+                ]
+            ),
+        ),
+    ):
+        ok, data = await adapter.slipstream_best_pool_for_pair(
+            tokenA="0x0000000000000000000000000000000000000001",
+            tokenB="0x0000000000000000000000000000000000000002",
+        )
+
+    assert ok is True
+    assert data["pool"] == "0x0000000000000000000000000000000000000004"
+
+
+@pytest.mark.asyncio
+async def test_slipstream_pool_state_reads_expected_fields():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    deployment = adapter._deployment("initial")
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            slipstream_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                return_value=(
+                    "0x0000000000000000000000000000000000000011",
+                    "0x0000000000000000000000000000000000000012",
+                    deployment["nonfungible_position_manager"],
+                    60,
+                    (2**96, 0),
+                    999,
+                    3000,
+                    0,
+                )
+            ),
+        ),
+        patch.object(
+            adapter,
+            "token_decimals",
+            new=AsyncMock(side_effect=[6, 6]),
+        ),
+    ):
+        ok, data = await adapter.slipstream_pool_state(pool=FAKE_POOL)
+
+    assert ok is True
+    assert data["pool"] == FAKE_POOL
+    assert data["deployment_variant"] == "initial"
+    assert data["tick_spacing"] == 60
+    assert data["liquidity"] == 999
+    assert data["fee_pips"] == 3000
+    assert data["unstaked_fee_pips"] == 0
+    assert data["price_token1_per_token0"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_slipstream_range_metrics_uses_pool_state():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    sqrt_price_x96 = sqrt_price_x96_from_tick(0)
+    tick_lower = -120
+    tick_upper = 120
+    amount0_raw = 1_000_000
+    amount1_raw = 1_000_000
+
+    with patch.object(
+        adapter,
+        "slipstream_pool_state",
+        new=AsyncMock(
+            return_value=(
+                True,
+                {
+                    "deployment_variant": "initial",
+                    "pool": FAKE_POOL,
+                    "position_manager": FAKE_NPM,
+                    "token0": "0x0000000000000000000000000000000000000011",
+                    "token1": "0x0000000000000000000000000000000000000012",
+                    "sqrt_price_x96": sqrt_price_x96,
+                    "tick": 0,
+                    "liquidity": 10_000_000,
+                    "fee_pips": 3000,
+                    "unstaked_fee_pips": 0,
+                    "price_token1_per_token0": 1.0,
+                },
+            )
+        ),
+    ):
+        ok, metrics = await adapter.slipstream_range_metrics(
+            pool=FAKE_POOL,
+            tick_lower=tick_lower,
+            tick_upper=tick_upper,
+            amount0_raw=amount0_raw,
+            amount1_raw=amount1_raw,
+        )
+
+    sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+    sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
+    expected_liquidity = liq_for_amounts(
+        sqrt_price_x96,
+        sqrt_lower,
+        sqrt_upper,
+        amount0_raw,
+        amount1_raw,
+    )
+    expected0, expected1 = amounts_for_liq_inrange(
+        sqrt_price_x96,
+        sqrt_lower,
+        sqrt_upper,
+        expected_liquidity,
+    )
+
+    assert ok is True
+    assert metrics["in_range"] is True
+    assert metrics["liquidity_position"] == expected_liquidity
+    assert metrics["amount0_now"] == expected0
+    assert metrics["amount1_now"] == expected1
+    assert metrics["share_of_active_liquidity"] == pytest.approx(
+        expected_liquidity / 10_000_000
+    )
+
+
+@pytest.mark.asyncio
+async def test_slipstream_volume_usdc_per_day_uses_price_overrides():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    mock_web3 = MagicMock()
+    mock_web3.eth.block_number = AsyncMock(return_value=110)()
+    mock_web3.eth.get_block = AsyncMock(
+        side_effect=[
+            {"timestamp": 1_000},
+            {"timestamp": 1_100},
+        ]
+    )
+    mock_web3.codec.decode = MagicMock(
+        side_effect=[
+            (1_000_000, -2_000_000, 0, 0, 0),
+            (-500_000, 1_500_000, 0, 0, 0),
+        ]
+    )
+    logs = [
+        {"blockNumber": 100, "logIndex": 0, "data": b"one"},
+        {"blockNumber": 101, "logIndex": 0, "data": b"two"},
+    ]
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter,
+            "slipstream_pool_state",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "pool": FAKE_POOL,
+                        "token0": "0x0000000000000000000000000000000000000011",
+                        "token1": "0x0000000000000000000000000000000000000012",
+                    },
+                )
+            ),
+        ),
+        patch.object(
+            adapter,
+            "token_decimals",
+            new=AsyncMock(side_effect=[6, 6]),
+        ),
+        patch.object(
+            adapter,
+            "_get_logs_bounded",
+            new=AsyncMock(return_value=logs),
+        ),
+    ):
+        ok, data = await adapter.slipstream_volume_usdc_per_day(
+            pool=FAKE_POOL,
+            token0_price_usdc=1.0,
+            token1_price_usdc=2.0,
+        )
+
+    assert ok is True
+    assert data["swap_count"] == 2
+    assert data["seconds_covered"] == 100
+    assert data["volume_usdc_per_day"] == pytest.approx(6048.0)
+
+
+@pytest.mark.asyncio
+async def test_slipstream_fee_apr_percent_uses_price_overrides():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    metrics = {
+        "pool": FAKE_POOL,
+        "token0": "0x0000000000000000000000000000000000000011",
+        "token1": "0x0000000000000000000000000000000000000012",
+        "in_range": True,
+        "share_of_active_liquidity": 0.1,
+        "amount0_now": 1_000_000,
+        "amount1_now": 2_000_000,
+        "effective_fee_fraction_for_unstaked": 0.003,
+    }
+
+    with patch.object(
+        adapter,
+        "token_decimals",
+        new=AsyncMock(side_effect=[6, 6, 6, 6]),
+    ):
+        ok, data = await adapter.slipstream_fee_apr_percent(
+            metrics=metrics,
+            volume_usdc_per_day=10.0,
+            expected_in_range_fraction=0.5,
+            token0_price_usdc=1.0,
+            token1_price_usdc=2.0,
+        )
+        ok_out, data_out = await adapter.slipstream_fee_apr_percent(
+            metrics={**metrics, "in_range": False},
+            volume_usdc_per_day=10.0,
+            expected_in_range_fraction=1.0,
+            token0_price_usdc=1.0,
+            token1_price_usdc=2.0,
+        )
+
+    assert ok is True
+    assert data["position_value_usdc"] == pytest.approx(5.0)
+    assert data["fee_apr_percent"] == pytest.approx(10.95, abs=1e-9)
+    assert ok_out is True
+    assert data_out["fee_apr_percent"] == pytest.approx(0.0)
+
+
+@pytest.mark.asyncio
+async def test_get_logs_bounded_reduces_chunk_and_truncates():
+    class _FakeEthLogs:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        async def get_logs(self, params: dict[str, object]):
+            self.calls.append(params)
+            from_block = int(params["fromBlock"])
+            to_block = int(params["toBlock"])
+            if (to_block - from_block + 1) > 3:
+                from web3.exceptions import Web3RPCError
+
+                raise Web3RPCError("too many results")
+            return [
+                {"blockNumber": bn, "logIndex": 0}
+                for bn in range(from_block, to_block + 1)
+            ]
+
+    class _FakeWeb3Logs:
+        def __init__(self):
+            self.eth = _FakeEthLogs()
+
+    web3 = _FakeWeb3Logs()
+    logs = await AerodromeSlipstreamAdapter._get_logs_bounded(
+        web3,
+        from_block=0,
+        to_block=9,
+        address="0x0000000000000000000000000000000000000011",
+        topics=["0x0"],
+        max_logs=5,
+        initial_chunk_size=8,
+    )
+
+    assert len(logs) == 5
+    assert [int(log["blockNumber"]) for log in logs] == [5, 6, 7, 8, 9]
+    assert len(web3.eth.calls) >= 2
+
+
+@pytest.mark.asyncio
+async def test_slipstream_sigma_annual_from_swaps_uses_swap_prices():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    mock_web3 = MagicMock()
+    mock_web3.eth.block_number = AsyncMock(return_value=500)()
+
+    async def _get_block(block_number):
+        return {"timestamp": int(block_number) * 10}
+
+    mock_web3.eth.get_block = AsyncMock(side_effect=_get_block)
+    mock_web3.codec.decode = MagicMock(
+        side_effect=[
+            (0, 0, sqrt_price_x96_from_tick(0), 0, 0),
+            (0, 0, sqrt_price_x96_from_tick(10), 0, 0),
+            (0, 0, sqrt_price_x96_from_tick(20), 0, 0),
+            (0, 0, sqrt_price_x96_from_tick(30), 0, 0),
+            (0, 0, sqrt_price_x96_from_tick(40), 0, 0),
+        ]
+    )
+    logs = [
+        {"blockNumber": 100, "logIndex": 0, "data": b"1"},
+        {"blockNumber": 101, "logIndex": 0, "data": b"2"},
+        {"blockNumber": 102, "logIndex": 0, "data": b"3"},
+        {"blockNumber": 103, "logIndex": 0, "data": b"4"},
+        {"blockNumber": 104, "logIndex": 0, "data": b"5"},
+    ]
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter,
+            "slipstream_pool_state",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "pool": FAKE_POOL,
+                        "token0": "0x0000000000000000000000000000000000000011",
+                        "token1": "0x0000000000000000000000000000000000000012",
+                    },
+                )
+            ),
+        ),
+        patch.object(
+            adapter,
+            "token_decimals",
+            new=AsyncMock(side_effect=[6, 6]),
+        ),
+        patch.object(
+            adapter,
+            "_get_logs_bounded",
+            new=AsyncMock(return_value=logs),
+        ),
+    ):
+        ok, data = await adapter.slipstream_sigma_annual_from_swaps(pool=FAKE_POOL)
+
+    assert ok is True
+    assert data["sample_count"] == 5
+    assert data["seconds_covered"] == 40
+    assert data["sigma_annual"] is not None
+    assert data["sigma_annual"] > 0
+
+
+@pytest.mark.asyncio
+async def test_slipstream_prob_in_range_week_matches_gaussian_estimate():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    sigma_annual = 0.8
+
+    with (
+        patch.object(
+            adapter,
+            "slipstream_pool_state",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "pool": FAKE_POOL,
+                        "token0": "0x0000000000000000000000000000000000000011",
+                        "token1": "0x0000000000000000000000000000000000000012",
+                        "price_token1_per_token0": 1.0,
+                    },
+                )
+            ),
+        ),
+        patch.object(
+            adapter,
+            "token_decimals",
+            new=AsyncMock(side_effect=[6, 6]),
+        ),
+    ):
+        ok, data = await adapter.slipstream_prob_in_range_week(
+            pool=FAKE_POOL,
+            tick_lower=-60,
+            tick_upper=60,
+            sigma_annual=sigma_annual,
+        )
+
+    price_low = AerodromeSlipstreamAdapter.q96_to_price_token1_per_token0(
+        sqrt_price_x96=sqrt_price_x96_from_tick(-60),
+        decimals0=6,
+        decimals1=6,
+    )
+    price_high = AerodromeSlipstreamAdapter.q96_to_price_token1_per_token0(
+        sqrt_price_x96=sqrt_price_x96_from_tick(60),
+        decimals0=6,
+        decimals1=6,
+    )
+    denom = sigma_annual * math.sqrt(7.0 / 365.0)
+    expected = max(
+        0.0,
+        min(
+            1.0,
+            AerodromeSlipstreamAdapter._phi(math.log(price_high) / denom)
+            - AerodromeSlipstreamAdapter._phi(math.log(price_low) / denom),
+        ),
+    )
+
+    assert ok is True
+    assert data["prob_in_range_week"] == pytest.approx(expected)
 
 
 @pytest.mark.asyncio
