@@ -24,6 +24,7 @@ AERODROME_BY_CHAIN: dict[int, dict[str, str]] = {
         "rewards_distributor": to_checksum_address(
             "0x227f65131A261548b057215bB1D5Ab2997964C7d"
         ),
+        "sugar": to_checksum_address("0x68c19e13618C41158fE4bAba1B8fb3A9c74bDb0A"),
         "minter": to_checksum_address("0xeB018363F0a9Af8f91F06FEe6613a751b2A33FE5"),
         "gauge_factory": to_checksum_address(
             "0x35f35cA5B132CaDf2916BaB57639128eAC5bbcb5"

@@ -5,6 +5,8 @@ This adapter supports Aerodrome’s classic **Pool / Gauge / veAERO** stack on *
 ## Supported flows (v1)
 
 - Enumerate gauge-enabled pools via `Voter.length()` + `Voter.pools(i)`
+- Sugar pool + epoch reads for analytics (`list_pools()`, `sugar_epochs_latest()`)
+- Pool ranking by latest epoch fees/bribes per veAERO vote (`rank_pools_by_usdc_per_ve()`)
 - LP add/remove liquidity (ERC20-ERC20 and ERC20-ETH)
 - Stake/unstake LP into gauges + claim emissions
 - veAERO: list NFTs, create lock, increase amount/time, withdraw, permanent lock/unlock

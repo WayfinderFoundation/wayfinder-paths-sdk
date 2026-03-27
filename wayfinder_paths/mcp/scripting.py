@@ -6,7 +6,6 @@ from typing import Any
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
-    get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
 
