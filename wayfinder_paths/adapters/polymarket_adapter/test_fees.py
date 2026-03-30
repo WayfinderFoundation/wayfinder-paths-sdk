@@ -9,7 +9,6 @@ from wayfinder_paths.adapters.polymarket_adapter.fees import (
     polymarket_fee_rate,
 )
 
-
 # ---------------------------------------------------------------------------
 # 1.1  fees_enabled=False always returns 0
 # ---------------------------------------------------------------------------
@@ -58,7 +57,9 @@ def test_fee_fn_factory() -> None:
     fn = make_polymarket_fee_fn(fees_enabled=True)
     assert callable(fn)
     assert fn(0.5, "BUY") >= 0.0
-    assert fn(0.5, "BUY") == pytest.approx(polymarket_fee_rate(0.5, "BUY", fees_enabled=True))
+    assert fn(0.5, "BUY") == pytest.approx(
+        polymarket_fee_rate(0.5, "BUY", fees_enabled=True)
+    )
 
 
 def test_fee_fn_disabled() -> None:

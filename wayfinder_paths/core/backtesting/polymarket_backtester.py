@@ -22,7 +22,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from wayfinder_paths.core.backtesting.polymarket_data import detect_resolutions
+from wayfinder_paths.adapters.polymarket_adapter.fees import polymarket_fee_rate
+from wayfinder_paths.core.backtesting.polymarket_parser import TradeSignal
 from wayfinder_paths.core.backtesting.polymarket_types import (
     PolymarketBacktestConfig,
     PolymarketBacktestResult,
@@ -30,7 +31,32 @@ from wayfinder_paths.core.backtesting.polymarket_types import (
     PolymarketBacktestStats,
     SizingFn,
 )
-from wayfinder_paths.strategies.polymarket_copy_strategy.parser import TradeSignal
+
+
+def _execution_price(
+    signal_price: float,
+    next_price: float | None,
+    side: str,
+    config: PolymarketBacktestConfig,
+) -> float:
+    """Compute the effective execution price after modelling copy-trade delay.
+
+    If slippage_delay is set and the next grid price is worse for us,
+    blend toward it:  exec = (1-d)*signal + d*next.
+    If the next price is better (or unavailable), fall back to flat
+    slippage_rate applied to the signal price.
+    """
+    if config.slippage_delay is not None and next_price is not None:
+        worse_for_buyer = next_price > signal_price
+        worse_for_seller = next_price < signal_price
+        if (side == "BUY" and worse_for_buyer) or (side == "SELL" and worse_for_seller):
+            d = config.slippage_delay
+            return (1.0 - d) * signal_price + d * next_price
+
+    # Fallback: flat slippage (always makes price worse)
+    if side == "BUY":
+        return signal_price * (1.0 + config.slippage_rate)
+    return signal_price * (1.0 - config.slippage_rate)
 
 
 def run_polymarket_backtest(
@@ -62,10 +88,35 @@ def run_polymarket_backtest(
     # Sort signals chronologically
     trades_df = trades_df.sort_index()
 
-    # Group signals by timestamp for O(1) lookup per grid step
+    # Assign each trade to the first grid point STRICTLY AFTER its timestamp.
+    # A trade at time T is processed at the smallest grid time t where t > T.
+    # This guarantees no lookahead: at step t the trade is known (T < t) and
+    # prices_df[t] contains only observations from before t.
+    grid_freq = pd.tseries.frequencies.to_offset(config.equity_interval)
+    one_period = pd.tseries.frequencies.to_offset(config.equity_interval)
     trade_groups: dict[Any, list[pd.Series]] = {}
+    grid_start = prices_df.index[0] if len(prices_df.index) > 0 else None
+    grid_end = prices_df.index[-1] if len(prices_df.index) > 0 else None
+
     for ts, row in trades_df.iterrows():
-        trade_groups.setdefault(ts, []).append(row)
+        snapped = ts.ceil(grid_freq)  # type: ignore[arg-type]
+        # ceil maps exact boundary to itself — push to next period so
+        # the trade is never processed in the same instant it occurred.
+        if snapped == ts:
+            snapped += one_period  # type: ignore[operator]
+        # Drop trades that fall outside the price grid
+        if grid_start is None or snapped > grid_end:  # type: ignore[operator]
+            continue
+        if snapped < grid_start:
+            snapped = grid_start
+        trade_groups.setdefault(snapped, []).append(row)
+
+    # Precompute next-row prices for slippage delay model.
+    # next_prices_map[ts][token_id] = price at the grid step after ts.
+    grid_index = prices_df.index
+    next_prices_map: dict[Any, pd.Series] = {}
+    for i in range(len(grid_index) - 1):
+        next_prices_map[grid_index[i]] = prices_df.iloc[i + 1]
 
     # State
     usdc_balance = config.initial_capital
@@ -73,6 +124,8 @@ def run_polymarket_backtest(
     token_to_cond: dict[str, str] = {}  # token_id → condition_id
     # condition_id → avg_price of first BUY (used for Brier)
     entry_price_by_cond: dict[str, float] = {}
+    # token_id → weighted-average entry price (used for stop-loss)
+    entry_price_by_token: dict[str, float] = {}
 
     all_trades: list[dict[str, Any]] = []
     equity_values: list[float] = []
@@ -106,15 +159,36 @@ def run_polymarket_backtest(
             if sized_usdc < config.min_order_usdc:
                 continue
 
-            price = signal.avg_price
-            if price <= 0:
+            if signal.avg_price <= 0:
                 continue
 
+            # Model copy-trade execution delay
+            next_row = next_prices_map.get(ts)
+            next_p: float | None = None
+            if next_row is not None and signal.token_id in next_row.index:
+                val = float(next_row[signal.token_id])
+                if not math.isnan(val):
+                    next_p = val
+            price = _execution_price(
+                signal.avg_price,
+                next_p,
+                signal.side,
+                config,
+            )
+
             if signal.side == "BUY":
-                fee = sized_usdc * (config.fee_rate + config.slippage_rate)
+                pm_fee_rate = polymarket_fee_rate(price, "BUY")
+                fee = sized_usdc * pm_fee_rate
                 shares = (sized_usdc - fee) / price
                 usdc_balance -= sized_usdc
-                positions[signal.token_id] = positions.get(signal.token_id, 0.0) + shares
+                # Update weighted-average entry price
+                old_shares = positions.get(signal.token_id, 0.0)
+                old_entry = entry_price_by_token.get(signal.token_id, 0.0)
+                new_shares = old_shares + shares
+                entry_price_by_token[signal.token_id] = (
+                    old_shares * old_entry + shares * price
+                ) / new_shares
+                positions[signal.token_id] = new_shares
                 total_fees += fee
                 token_to_cond[signal.token_id] = signal.condition_id
                 if signal.condition_id not in entry_price_by_cond:
@@ -136,13 +210,25 @@ def run_polymarket_backtest(
             elif signal.side == "SELL":
                 shares_held = positions.get(signal.token_id, 0.0)
                 if shares_held <= 0:
+                    if not config.copy_sells:
+                        continue
+                    # copy_sells=True but we don't hold this token — skip
                     continue
-                shares_to_sell = min(sized_usdc / price, shares_held)
+
+                if config.copy_sells:
+                    # Sell our entire position when WOI sells
+                    shares_to_sell = shares_held
+                else:
+                    shares_to_sell = min(sized_usdc / price, shares_held)
+
                 gross = shares_to_sell * price
-                fee = gross * (config.fee_rate + config.slippage_rate)
+                pm_fee_rate = polymarket_fee_rate(price, "SELL")
+                fee = gross * pm_fee_rate
                 net = gross - fee
                 usdc_balance += net
                 positions[signal.token_id] = shares_held - shares_to_sell
+                if positions[signal.token_id] <= 0:
+                    entry_price_by_token.pop(signal.token_id, None)
                 total_fees += fee
                 all_trades.append(
                     {
@@ -155,6 +241,88 @@ def run_polymarket_backtest(
                         "shares": -shares_to_sell,
                         "price": price,
                         "fee": fee,
+                    }
+                )
+
+        # --- Stop-loss check ---
+        if config.stop_loss_pct is not None:
+            for token_id in list(positions):
+                shares = positions[token_id]
+                if shares <= 0:
+                    continue
+                entry_p = entry_price_by_token.get(token_id)
+                if entry_p is None or entry_p <= 0:
+                    continue
+                if token_id not in current_prices.index:
+                    continue
+                cur_p = float(current_prices[token_id])
+                if math.isnan(cur_p):
+                    continue
+                loss_pct = (entry_p - cur_p) / entry_p
+                if loss_pct >= config.stop_loss_pct:
+                    gross = shares * cur_p
+                    pm_fee_rate = polymarket_fee_rate(cur_p, "SELL")
+                    fee = gross * pm_fee_rate
+                    net = gross - fee
+                    usdc_balance += net
+                    positions[token_id] = 0.0
+                    entry_price_by_token.pop(token_id, None)
+                    total_fees += fee
+                    all_trades.append(
+                        {
+                            "timestamp": ts,
+                            "woi": "",
+                            "condition_id": token_to_cond.get(token_id, ""),
+                            "token_id": token_id,
+                            "side": "STOP_LOSS",
+                            "usdc_amount": net,
+                            "shares": -shares,
+                            "price": cur_p,
+                            "fee": fee,
+                        }
+                    )
+
+        # --- Auto-redeem resolved markets (no fee) ---
+        for token_id in list(positions):
+            shares = positions[token_id]
+            if shares <= 0:
+                continue
+            if token_id not in current_prices.index:
+                continue
+            p = float(current_prices[token_id])
+            if math.isnan(p):
+                continue
+            if p >= config.resolution_threshold:
+                # Resolved YES — redeem shares at $1.00
+                usdc_balance += shares * 1.0
+                positions[token_id] = 0.0
+                all_trades.append(
+                    {
+                        "timestamp": ts,
+                        "woi": "",
+                        "condition_id": token_to_cond.get(token_id, ""),
+                        "token_id": token_id,
+                        "side": "REDEEM_YES",
+                        "usdc_amount": shares * 1.0,
+                        "shares": -shares,
+                        "price": 1.0,
+                        "fee": 0.0,
+                    }
+                )
+            elif p <= (1.0 - config.resolution_threshold):
+                # Resolved NO — shares worth $0, position zeroed
+                positions[token_id] = 0.0
+                all_trades.append(
+                    {
+                        "timestamp": ts,
+                        "woi": "",
+                        "condition_id": token_to_cond.get(token_id, ""),
+                        "token_id": token_id,
+                        "side": "REDEEM_NO",
+                        "usdc_amount": 0.0,
+                        "shares": -shares,
+                        "price": 0.0,
+                        "fee": 0.0,
                     }
                 )
 
@@ -212,7 +380,11 @@ def _compute_stats(
     prices_df: pd.DataFrame,
     resolution_prices: dict[str, float] | None,
 ) -> PolymarketBacktestStats:
-    equity_final = float(equity_curve.dropna().iloc[-1]) if equity_curve.dropna().size > 0 else config.initial_capital
+    equity_final = (
+        float(equity_curve.dropna().iloc[-1])
+        if equity_curve.dropna().size > 0
+        else config.initial_capital
+    )
     total_return = (equity_final - config.initial_capital) / config.initial_capital
 
     trade_count = len(trades)
@@ -248,7 +420,9 @@ def _compute_stats(
         brier_score = float("nan")
 
     total_resolved = markets_won + markets_lost
-    market_win_rate = markets_won / total_resolved if total_resolved > 0 else float("nan")
+    market_win_rate = (
+        markets_won / total_resolved if total_resolved > 0 else float("nan")
+    )
 
     return PolymarketBacktestStats(
         equity_final=equity_final,

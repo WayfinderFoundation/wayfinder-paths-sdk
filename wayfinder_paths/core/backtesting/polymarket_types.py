@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, TypedDict
+from typing import Any, TypedDict
 
 import pandas as pd
 
-from wayfinder_paths.strategies.polymarket_copy_strategy.parser import TradeSignal
+from wayfinder_paths.core.backtesting.polymarket_parser import TradeSignal
 
 
 class PolymarketBacktestStats(TypedDict, total=False):
@@ -45,12 +46,19 @@ class PolymarketBacktestConfig:
     initial_capital: float = 100.0
     fee_rate: float = 0.02
     slippage_rate: float = 0.0
+    slippage_delay: float | None = (
+        0.5  # blend toward next grid price (0=no delay, 1=full next price)
+    )
     min_order_usdc: float = 10.0
     equity_interval: str = "1h"
     assume_resolution_at_end: bool = False
     max_price_gap_hours: int | None = None
     resolution_threshold: float = 0.99  # price >= threshold → resolved YES
     void_threshold: float = 0.05  # |price - 0.5| < void_threshold at end → voided
+    copy_sells: bool = False  # When True, copy WOI sell signals on tokens we hold
+    stop_loss_pct: float | None = (
+        None  # e.g. 0.5 = sell if position drops 50% from entry
+    )
 
 
 @dataclass

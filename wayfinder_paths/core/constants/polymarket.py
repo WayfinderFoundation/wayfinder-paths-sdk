@@ -8,6 +8,10 @@ POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com"
 POLYMARKET_BRIDGE_BASE_URL = "https://bridge.polymarket.com"
+POLYMARKET_GOLDSKY_URL = (
+    "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw"
+    "/subgraphs/orderbook-subgraph/0.0.1/gn"
+)
 
 POLYGON_CHAIN_ID = 137
 

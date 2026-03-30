@@ -8,7 +8,6 @@ from __future__ import annotations
 import math
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -17,7 +16,9 @@ from wayfinder_paths.core.backtesting.polymarket_backtester import (
     run_polymarket_backtest,
 )
 from wayfinder_paths.core.backtesting.polymarket_data import (
+    _activity_records_to_trades_df,
     detect_resolutions,
+    fetch_market_metadata,
     fetch_market_prices,
     fetch_wallet_trades,
     regularize_to_grid,
@@ -28,12 +29,12 @@ from wayfinder_paths.core.backtesting.polymarket_helpers import (
     flat_ratio_sizer,
     proportional_sizer,
 )
+from wayfinder_paths.core.backtesting.polymarket_parser import TradeSignal
 from wayfinder_paths.core.backtesting.polymarket_types import (
     PolymarketBacktestConfig,
     PolymarketBacktestResult,
     PolymarketBacktestState,
 )
-from wayfinder_paths.strategies.polymarket_copy_strategy.parser import TradeSignal
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -253,8 +254,14 @@ def test_regularize_fills_hourly_grid() -> None:
     }
     df = regularize_to_grid(raw, "2023-10-01", "2023-10-01T12:00", interval="1h")
     assert (df.index[1] - df.index[0]) == pd.Timedelta("1h")
+    # Convention: row t = last observation STRICTLY BEFORE t.
+    # At 09:00: last obs before 09:00 is the 08:00 obs → 0.3
     assert df.loc["2023-10-01 09:00:00+00:00", "tok_A"] == pytest.approx(0.3)
-    assert df.loc["2023-10-01 10:00:00+00:00", "tok_A"] == pytest.approx(0.35)
+    # At 10:00: last obs before 10:00 is still the 08:00 obs → 0.3
+    #   (the 10:00 obs is NOT available at the 10:00 row)
+    assert df.loc["2023-10-01 10:00:00+00:00", "tok_A"] == pytest.approx(0.3)
+    # At 11:00: last obs before 11:00 is the 10:00 obs → 0.35
+    assert df.loc["2023-10-01 11:00:00+00:00", "tok_A"] == pytest.approx(0.35)
 
 
 def test_regularize_gaps_beyond_max_become_nan() -> None:
@@ -337,20 +344,271 @@ def test_detect_threshold_boundary() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 2.4  Fetch stubs raise NotImplementedError with "Delta Lab" in message
+# 2.4  fetch_wallet_trades (Delta Lab → adapter fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_activity_records_to_trades_df_parses_records() -> None:
+    """_activity_records_to_trades_df converts raw Data API records to backtester format."""
+    records = [
+        {
+            "type": "TRADE",
+            "side": "BUY",
+            "conditionId": "0xcond1",
+            "asset": "tok_yes_1",
+            "usdcSize": "50.0",
+            "size": "125.0",
+            "price": "0.4",
+            "outcome": "Yes",
+            "transactionHash": "0xabc",
+            "slug": "test-market",
+            "timestamp": "1696118400",  # 2023-10-01 00:00 UTC
+        },
+        {
+            "type": "TRADE",
+            "side": "SELL",
+            "conditionId": "0xcond1",
+            "asset": "tok_yes_1",
+            "usdcSize": "30.0",
+            "size": "75.0",
+            "price": "0.4",
+            "outcome": "Yes",
+            "transactionHash": "0xdef",
+            "slug": "test-market",
+            "timestamp": "1696122000",  # 1h later
+        },
+        # Non-trade record — should be skipped
+        {
+            "type": "DEPOSIT",
+            "timestamp": "1696118400",
+        },
+    ]
+    df = _activity_records_to_trades_df("0xWOI", records)
+    assert len(df) == 2
+    assert list(df.columns) == [
+        "woi_address",
+        "condition_id",
+        "token_id",
+        "outcome",
+        "side",
+        "usdc_amount",
+        "share_count",
+        "avg_price",
+        "market_slug",
+        "tx_hash",
+    ]
+    assert df.iloc[0]["side"] == "BUY"
+    assert df.iloc[1]["side"] == "SELL"
+    assert df.iloc[0]["usdc_amount"] == 50.0
+    assert df.index.tz is not None  # UTC
+
+
+def test_activity_records_to_trades_df_empty() -> None:
+    df = _activity_records_to_trades_df("0xWOI", [])
+    assert df.empty
+    assert "woi_address" in df.columns
+
+
+def test_activity_records_to_trades_df_iso_timestamps() -> None:
+    """Handles ISO 8601 timestamps from the Data API."""
+    records = [
+        {
+            "type": "TRADE",
+            "side": "BUY",
+            "conditionId": "0xcond1",
+            "asset": "tok1",
+            "usdcSize": "10.0",
+            "size": "25.0",
+            "price": "0.4",
+            "outcome": "Yes",
+            "transactionHash": "0x111",
+            "slug": "iso-market",
+            "timestamp": "2025-10-01T12:00:00Z",
+        },
+    ]
+    df = _activity_records_to_trades_df("0xWOI", records)
+    assert len(df) == 1
+    assert df.index[0].hour == 12
+
+
+@pytest.mark.asyncio
+async def test_fetch_wallet_trades_uses_adapter_fallback() -> None:
+    """When Delta Lab returns None, falls back to adapter pagination."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wayfinder_paths.adapters.polymarket_adapter import PolymarketAdapter
+
+    mock_adapter = MagicMock(spec=PolymarketAdapter)
+    mock_adapter.get_wallet_trade_history = AsyncMock(
+        return_value=(
+            True,
+            [
+                {
+                    "type": "TRADE",
+                    "side": "BUY",
+                    "conditionId": "0xcond1",
+                    "asset": "tok1",
+                    "usdcSize": "20.0",
+                    "size": "50.0",
+                    "price": "0.4",
+                    "outcome": "Yes",
+                    "transactionHash": "0xaaa",
+                    "slug": "fallback-market",
+                    "timestamp": "1696118400",
+                },
+            ],
+        )
+    )
+    mock_adapter.close = AsyncMock()
+
+    df = await fetch_wallet_trades(
+        "0xABC",
+        "2023-10-01",
+        "2023-10-02",
+        adapter=mock_adapter,
+    )
+    assert len(df) == 1
+    assert df.iloc[0]["market_slug"] == "fallback-market"
+    mock_adapter.get_wallet_trade_history.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_wallet_trades_falls_back_to_goldsky_on_data_api_failure() -> None:
+    """When Data API fails, falls through to Goldsky and returns whatever it gets."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wayfinder_paths.adapters.polymarket_adapter import PolymarketAdapter
+
+    mock_adapter = MagicMock(spec=PolymarketAdapter)
+    mock_adapter.get_wallet_trade_history = AsyncMock(
+        return_value=(False, "data api error")
+    )
+    mock_adapter.get_goldsky_wallet_trades = AsyncMock(return_value=(True, []))
+    mock_adapter.close = AsyncMock()
+
+    df = await fetch_wallet_trades(
+        "0xABC",
+        "2023-10-01",
+        "2023-10-02",
+        adapter=mock_adapter,
+    )
+    assert df.empty
+    mock_adapter.get_goldsky_wallet_trades.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 2.5  fetch_market_prices and fetch_market_metadata
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_fetch_wallet_trades_not_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="Delta Lab"):
-        await fetch_wallet_trades("0xABC", "2025-01-01", "2025-02-01")
+async def test_fetch_market_prices_returns_hourly_grid(monkeypatch) -> None:
+    """fetch_market_prices calls adapter and returns regularized DataFrame."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wayfinder_paths.adapters.polymarket_adapter import PolymarketAdapter
+
+    mock_adapter = MagicMock(spec=PolymarketAdapter)
+    mock_adapter.get_batch_prices_history = AsyncMock(
+        return_value=(
+            True,
+            {
+                "tok_A": [
+                    {"t": 1735689600, "p": 0.5},  # 2025-01-01 00:00
+                    {"t": 1735693200, "p": 0.6},  # 2025-01-01 01:00
+                    {"t": 1735696800, "p": 0.7},  # 2025-01-01 02:00
+                ],
+            },
+        )
+    )
+    mock_adapter.close = AsyncMock()
+
+    df = await fetch_market_prices(
+        ["tok_A"],
+        "2025-01-01",
+        "2025-01-01 02:00",
+        adapter=mock_adapter,
+    )
+    assert "tok_A" in df.columns
+    assert len(df) == 3  # 3 hourly points: 00:00, 01:00, 02:00
+    # Convention: row t = last observation strictly before t.
+    # Raw obs land on exact grid boundaries (00:00, 01:00, 02:00), so each
+    # is visible one step later.
+    assert pd.isna(df["tok_A"].iloc[0])  # 00:00: no obs before 00:00
+    assert df["tok_A"].iloc[1] == pytest.approx(0.5)  # 01:00: obs from 00:00
+    assert df["tok_A"].iloc[2] == pytest.approx(0.6)  # 02:00: obs from 01:00
+    mock_adapter.get_batch_prices_history.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_fetch_market_prices_not_implemented() -> None:
-    with pytest.raises(NotImplementedError, match="Delta Lab"):
-        await fetch_market_prices(["tok_A"], "2025-01-01", "2025-02-01")
+async def test_fetch_market_prices_adapter_failure_raises(monkeypatch) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wayfinder_paths.adapters.polymarket_adapter import PolymarketAdapter
+
+    mock_adapter = MagicMock(spec=PolymarketAdapter)
+    mock_adapter.get_batch_prices_history = AsyncMock(
+        return_value=(False, "network error")
+    )
+    mock_adapter.close = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="Failed to fetch prices"):
+        await fetch_market_prices(
+            ["tok_A"], "2025-01-01", "2025-01-02", adapter=mock_adapter
+        )
+
+
+@pytest.mark.asyncio
+async def test_fetch_market_metadata_returns_structured_dict(monkeypatch) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wayfinder_paths.adapters.polymarket_adapter import PolymarketAdapter
+
+    mock_adapter = MagicMock(spec=PolymarketAdapter)
+    mock_adapter.get_markets_by_condition_ids = AsyncMock(
+        return_value=(
+            True,
+            {
+                "0xcond1": {
+                    "slug": "will-x-happen",
+                    "question": "Will X happen?",
+                    "endDate": "2025-12-31T00:00:00Z",
+                    "closed": False,
+                    "volumeNum": 50000,
+                    "outcomes": ["Yes", "No"],
+                    "clobTokenIds": ["tok1", "tok2"],
+                },
+            },
+        )
+    )
+    mock_adapter.close = AsyncMock()
+
+    result = await fetch_market_metadata(["0xcond1"], adapter=mock_adapter)
+    assert "0xcond1" in result
+    meta = result["0xcond1"]
+    assert meta["market_slug"] == "will-x-happen"
+    assert meta["question"] == "Will X happen?"
+    assert meta["resolved"] is False
+    assert len(meta["tokens"]) == 2
+    assert meta["tokens"][0]["token_id"] == "tok1"
+    assert meta["tokens"][0]["outcome"] == "Yes"
+    assert meta["tokens"][1]["outcome"] == "No"
+
+
+@pytest.mark.asyncio
+async def test_fetch_market_metadata_adapter_failure_raises(monkeypatch) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from wayfinder_paths.adapters.polymarket_adapter import PolymarketAdapter
+
+    mock_adapter = MagicMock(spec=PolymarketAdapter)
+    mock_adapter.get_markets_by_condition_ids = AsyncMock(
+        return_value=(False, "gamma api error")
+    )
+    mock_adapter.close = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="Failed to fetch market metadata"):
+        await fetch_market_metadata(["0xcond1"], adapter=mock_adapter)
 
 
 # ---------------------------------------------------------------------------
@@ -413,11 +671,13 @@ def test_single_buy_resolves_yes_pnl(
     prices_df_resolves_yes: pd.DataFrame,
 ) -> None:
     """
-    BUY 10 USDC at price 0.4, fee_rate=0.02:
-      shares = 10 * 0.98 / 0.4 = 24.5
+    BUY 10 USDC at price 0.4, slippage=0:
+      Polymarket fee = 0.02 * (1 - 0.4) = 0.012 of notional
+      fee = 10 * 0.012 = 0.12
+      shares = (10 - 0.12) / 0.4 = 24.7
       balance = 90
     Resolution at 1.0:
-      equity = 90 + 24.5 * 1.0 = 114.5
+      equity = 90 + 24.7 = 114.7
     """
     trades_df = make_single_buy(usdc=10.0, price=0.4)
     result = run_polymarket_backtest(
@@ -427,9 +687,16 @@ def test_single_buy_resolves_yes_pnl(
         config=default_config,
         resolution_prices={"cond_A": 1.0},
     )
-    assert result.stats["equity_final"] == pytest.approx(114.5, rel=0.001)
-    assert result.stats["total_return"] == pytest.approx(0.145, rel=0.001)
-    assert result.stats["total_fees"] == pytest.approx(0.2, rel=0.001)
+    # fee_rate = 0.02 * (1 - 0.4) = 0.012
+    expected_fee = 10.0 * 0.012
+    expected_shares = (10.0 - expected_fee) / 0.4
+    assert result.stats["equity_final"] == pytest.approx(
+        90.0 + expected_shares, rel=0.001
+    )
+    assert result.stats["total_return"] == pytest.approx(
+        expected_shares / 100.0 - 0.1, rel=0.001
+    )
+    assert result.stats["total_fees"] == pytest.approx(expected_fee, rel=0.001)
     assert_valid_polymarket_result(result)
 
 
@@ -437,10 +704,10 @@ def test_single_buy_resolves_no_full_loss(
     default_config: PolymarketBacktestConfig,
 ) -> None:
     """
-    BUY 10 USDC at price 0.4, fee_rate=0.02:
-      shares = 24.5, balance = 90
+    BUY 10 USDC at price 0.4:
+      shares = (10 - 0.12) / 0.4 = 24.7, balance = 90
     Resolution at 0.0:
-      equity = 90 + 24.5 * 0.0 = 90  →  return = -0.10
+      equity = 90 + 24.7 * 0.0 = 90  →  return = -0.10
     """
     prices_df = make_prices_resolving_to(0.0)
     trades_df = make_single_buy(usdc=10.0, price=0.4)
@@ -462,11 +729,13 @@ def test_brier_score_known_value() -> None:
     Brier = mean(0.49, 0.49, 0.25) = 0.41
     """
     trades_df = make_trades([(0.3, "cond_A"), (0.7, "cond_B"), (0.5, "cond_C")])
-    prices_df = make_multi_market_prices(
-        {"cond_A": 1.0, "cond_B": 0.0, "cond_C": 1.0}
-    )
+    prices_df = make_multi_market_prices({"cond_A": 1.0, "cond_B": 0.0, "cond_C": 1.0})
     config = PolymarketBacktestConfig(
-        initial_capital=1000.0, fee_rate=0.0, slippage_rate=0.0, min_order_usdc=1.0
+        initial_capital=1000.0,
+        fee_rate=0.0,
+        slippage_rate=0.0,
+        slippage_delay=None,
+        min_order_usdc=1.0,
     )
     result = run_polymarket_backtest(
         trades_df,
@@ -484,7 +753,9 @@ def test_sell_reduces_position(default_config: PolymarketBacktestConfig) -> None
     buy_price = 0.4
     sell_price = 0.5
     idx = pd.date_range("2025-10-01", periods=24, freq="1h", tz="UTC")
-    prices_df = pd.DataFrame({"tok_YES_A": [buy_price] * 12 + [sell_price] * 12}, index=idx)
+    prices_df = pd.DataFrame(
+        {"tok_YES_A": [buy_price] * 12 + [sell_price] * 12}, index=idx
+    )
 
     trades_df = pd.DataFrame(
         {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
@@ -34,6 +35,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_CLOB_BASE_URL,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_GAMMA_BASE_URL,
+    POLYMARKET_GOLDSKY_URL,
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
@@ -173,6 +175,7 @@ class PolymarketAdapter(BaseAdapter):
         self._clob_http = httpx.AsyncClient(base_url=clob_base_url, timeout=timeout)
         self._data_http = httpx.AsyncClient(base_url=data_base_url, timeout=timeout)
         self._bridge_http = httpx.AsyncClient(base_url=bridge_base_url, timeout=timeout)
+        self._goldsky_http = httpx.AsyncClient(timeout=httpx.Timeout(30.0))
 
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
@@ -183,6 +186,7 @@ class PolymarketAdapter(BaseAdapter):
             self._clob_http.aclose(),
             self._data_http.aclose(),
             self._bridge_http.aclose(),
+            self._goldsky_http.aclose(),
             return_exceptions=True,
         )
 
@@ -569,6 +573,197 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def get_batch_prices_history(
+        self,
+        *,
+        token_ids: list[str],
+        start_ts: int,
+        end_ts: int,
+        fidelity: int = 60,
+        max_concurrency: int = 10,
+    ) -> tuple[bool, dict[str, list[dict]] | str]:
+        """Fetch price history for multiple token IDs concurrently.
+
+        Uses CLOB /prices-history first; falls back to Goldsky subgraph
+        (OrderFilledEvent trade fills) for tokens where CLOB returns empty
+        (common for resolved/expired markets).
+
+        Returns {token_id: [{t: unix_ts, p: price}, ...]} on success.
+        """
+        sem = asyncio.Semaphore(max_concurrency)
+
+        async def _fetch_one(token_id: str) -> tuple[str, list[dict]]:
+            async with sem:
+                # Try CLOB first
+                ok, data = await self.get_prices_history(
+                    token_id=token_id,
+                    interval="max",
+                    fidelity=fidelity,
+                )
+                if ok and isinstance(data, dict):
+                    history = data.get("history", [])
+                    filtered = [
+                        tick
+                        for tick in history
+                        if start_ts <= tick.get("t", 0) <= end_ts
+                    ]
+                    if filtered:
+                        return token_id, filtered
+
+                # Fallback: Goldsky subgraph
+                goldsky_ticks = await self._goldsky_token_prices(
+                    token_id,
+                    start_ts,
+                    end_ts,
+                )
+                return token_id, goldsky_ticks
+
+        try:
+            results = await asyncio.gather(*[_fetch_one(tid) for tid in token_ids])
+            return True, dict(results)
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def _goldsky_token_prices(
+        self,
+        token_id: str,
+        start_ts: int,
+        end_ts: int,
+        page_size: int = 1000,
+        max_pages: int = 20,
+    ) -> list[dict]:
+        """Derive hourly prices from Goldsky OrderFilledEvent records.
+
+        Queries fills where the token appears as maker or taker asset,
+        computes price from USDC/share ratio, and returns one tick per hour
+        (last trade price in each hour).
+        """
+        all_fills: list[tuple[int, float]] = []
+
+        for role in ("makerAssetId", "takerAssetId"):
+            last_ts = str(start_ts)
+            for _ in range(max_pages):
+                query = f"""
+                query($token: String!, $start: String!, $end: String!, $first: Int!) {{
+                    orderFilledEvents(
+                        first: $first,
+                        orderBy: timestamp,
+                        orderDirection: asc,
+                        where: {{
+                            {role}: $token,
+                            timestamp_gte: $start,
+                            timestamp_lte: $end
+                        }}
+                    ) {{
+                        timestamp
+                        makerAssetId
+                        takerAssetId
+                        makerAmountFilled
+                        takerAmountFilled
+                    }}
+                }}
+                """
+
+                try:
+                    res = await self._goldsky_http.post(
+                        POLYMARKET_GOLDSKY_URL,
+                        json={
+                            "query": query,
+                            "variables": {
+                                "token": token_id,
+                                "start": last_ts,
+                                "end": str(end_ts),
+                                "first": page_size,
+                            },
+                        },
+                    )
+                    res.raise_for_status()
+                    body = res.json()
+                except Exception:  # noqa: BLE001
+                    break
+
+                events = (body.get("data") or {}).get("orderFilledEvents") or []
+                if not events:
+                    break
+
+                for ev in events:
+                    price = self._fill_price(ev, token_id)
+                    if price is not None:
+                        all_fills.append((int(ev["timestamp"]), price))
+
+                if len(events) < page_size:
+                    break
+                # Paginate via timestamp cursor
+                last_ts = events[-1]["timestamp"]
+
+        if not all_fills:
+            return []
+
+        # Aggregate to hourly last-trade price
+        all_fills.sort()
+        hourly: dict[int, float] = {}
+        for ts, price in all_fills:
+            hour_ts = ts - (ts % 3600)
+            hourly[hour_ts] = price  # last trade in each hour wins
+
+        return [{"t": t, "p": p} for t, p in sorted(hourly.items())]
+
+    @staticmethod
+    def _fill_price(event: dict, token_id: str) -> float | None:
+        """Derive price-per-share from an OrderFilledEvent.
+
+        makerAssetId="0" means the maker is selling USDC (buying shares).
+        The non-zero side is the outcome token.
+        """
+        try:
+            maker_amt = int(event["makerAmountFilled"])
+            taker_amt = int(event["takerAmountFilled"])
+            if maker_amt <= 0 or taker_amt <= 0:
+                return None
+
+            maker_asset = event.get("makerAssetId", "")
+            taker_asset = event.get("takerAssetId", "")
+
+            if maker_asset == "0" and taker_asset == token_id:
+                # Maker sells USDC, taker sells token → price = USDC / shares
+                return maker_amt / taker_amt
+            if taker_asset == "0" and maker_asset == token_id:
+                # Taker sells USDC, maker sells token → price = USDC / shares
+                return taker_amt / maker_amt
+            # Token on both sides or neither — skip
+            return None
+        except (KeyError, ValueError, ZeroDivisionError):
+            return None
+
+    async def get_markets_by_condition_ids(
+        self,
+        *,
+        condition_ids: list[str],
+        max_concurrency: int = 10,
+    ) -> tuple[bool, dict[str, dict] | str]:
+        """Fetch market metadata for multiple condition IDs via Gamma API.
+
+        Queries one condition_id at a time (Gamma doesn't support
+        comma-separated condition_ids). Concurrency-limited.
+
+        Returns {condition_id: normalized_market_dict} on success.
+        Condition IDs not found are omitted from the result.
+        """
+        sem = asyncio.Semaphore(max_concurrency)
+        result: dict[str, dict] = {}
+
+        async def _fetch_one(cid: str) -> None:
+            async with sem:
+                ok, data = await self.get_market_by_condition_id(condition_id=cid)
+                if ok and isinstance(data, dict):
+                    result[cid] = data
+
+        try:
+            await asyncio.gather(*[_fetch_one(cid) for cid in condition_ids])
+            return True, result
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     async def get_positions(
         self,
         *,
@@ -639,6 +834,285 @@ class PolymarketAdapter(BaseAdapter):
             return True, data
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
+
+    async def get_wallet_trade_history(
+        self,
+        *,
+        user: str,
+        start_ts: int | None = None,
+        end_ts: int | None = None,
+        page_size: int = 500,
+        max_pages: int = 100,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        """Paginate through Data API /activity for a wallet's TRADE records.
+
+        Filters to type=TRADE server-side. Applies start_ts/end_ts client-side
+        (the Data API doesn't support timestamp range params on /activity).
+        Returns all matching records sorted by timestamp ascending.
+        """
+        all_records: list[dict[str, Any]] = []
+        offset = 0
+        try:
+            for _ in range(max_pages):
+                ok, page = await self.get_activity(
+                    user=user,
+                    limit=page_size,
+                    offset=offset,
+                    type="TRADE",
+                )
+                if not ok:
+                    # Data API returns 400 when offset exceeds its limit — treat as end
+                    if isinstance(page, str) and "400" in page:
+                        break
+                    return False, page
+                if not page:
+                    break
+
+                for record in page:
+                    ts_raw = record.get("timestamp")
+                    if not ts_raw:
+                        continue
+                    # Data API timestamps may be int, numeric string, or ISO 8601
+                    try:
+                        if isinstance(ts_raw, (int, float)):
+                            ts_val = int(ts_raw)
+                        elif str(ts_raw).isdigit():
+                            ts_val = int(ts_raw)
+                        else:
+                            dt = datetime.fromisoformat(
+                                str(ts_raw).replace("Z", "+00:00")
+                            ).astimezone(UTC)
+                            ts_val = int(dt.timestamp())
+                    except (ValueError, TypeError):
+                        continue
+
+                    if start_ts is not None and ts_val < start_ts:
+                        continue
+                    if end_ts is not None and ts_val > end_ts:
+                        continue
+                    all_records.append(record)
+
+                if len(page) < page_size:
+                    break
+                offset += page_size
+
+            return True, all_records
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_goldsky_wallet_trades(
+        self,
+        *,
+        user: str,
+        start_ts: int,
+        end_ts: int,
+        page_size: int = 1000,
+        max_pages: int = 50,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        """Fetch full trade history for a wallet via Goldsky OrderFilledEvent.
+
+        Queries fills where the wallet is maker or taker, derives BUY/SELL
+        side, price, and amounts, and looks up condition_ids via MarketData.
+        Returns activity-like records compatible with parse_activity().
+        """
+        user_lower = user.lower()
+
+        # 1. Fetch all fills for this wallet (both maker and taker roles)
+        all_fills: list[dict[str, Any]] = []
+        for role in ("maker", "taker"):
+            last_ts = str(start_ts - 1)
+            for _ in range(max_pages):
+                query = f"""
+                query($addr: String!, $start: String!, $end: String!, $first: Int!) {{
+                    orderFilledEvents(
+                        first: $first,
+                        orderBy: timestamp,
+                        orderDirection: asc,
+                        where: {{
+                            {role}: $addr,
+                            timestamp_gt: $start,
+                            timestamp_lte: $end
+                        }}
+                    ) {{
+                        timestamp
+                        maker
+                        taker
+                        makerAssetId
+                        takerAssetId
+                        makerAmountFilled
+                        takerAmountFilled
+                        fee
+                        transactionHash
+                    }}
+                }}
+                """
+
+                try:
+                    res = await self._goldsky_http.post(
+                        POLYMARKET_GOLDSKY_URL,
+                        json={
+                            "query": query,
+                            "variables": {
+                                "addr": user_lower,
+                                "start": last_ts,
+                                "end": str(end_ts),
+                                "first": page_size,
+                            },
+                        },
+                    )
+                    res.raise_for_status()
+                    body = res.json()
+                except Exception:  # noqa: BLE001
+                    break
+
+                events = (body.get("data") or {}).get("orderFilledEvents") or []
+                if not events:
+                    break
+
+                for ev in events:
+                    ev["_role"] = role
+                all_fills.extend(events)
+
+                if len(events) < page_size:
+                    break
+                last_ts = events[-1]["timestamp"]
+
+        if not all_fills:
+            return True, []
+
+        # Dedupe by transactionHash (same fill can appear as both maker and taker)
+        seen_tx: set[str] = set()
+        unique_fills: list[dict[str, Any]] = []
+        for fill in sorted(all_fills, key=lambda f: int(f["timestamp"])):
+            tx = fill.get("transactionHash", "")
+            maker_asset = fill.get("makerAssetId", "")
+            taker_asset = fill.get("takerAssetId", "")
+            dedup_key = f"{tx}:{maker_asset}:{taker_asset}"
+            if dedup_key in seen_tx:
+                continue
+            seen_tx.add(dedup_key)
+            unique_fills.append(fill)
+
+        # 2. Collect unique token_ids and batch-lookup condition_ids
+        token_ids: set[str] = set()
+        for fill in unique_fills:
+            for asset_key in ("makerAssetId", "takerAssetId"):
+                asset = fill.get(asset_key, "")
+                if asset and asset != "0":
+                    token_ids.add(asset)
+
+        condition_map = await self._goldsky_token_to_condition(list(token_ids))
+
+        # 3. Convert fills to activity-like records
+        records: list[dict[str, Any]] = []
+        for fill in unique_fills:
+            record = self._fill_to_activity_record(fill, user_lower, condition_map)
+            if record is not None:
+                records.append(record)
+
+        return True, records
+
+    async def _goldsky_token_to_condition(
+        self,
+        token_ids: list[str],
+    ) -> dict[str, str]:
+        """Batch lookup token_id → condition_id via Goldsky MarketData."""
+        result: dict[str, str] = {}
+        batch_size = 100
+        for i in range(0, len(token_ids), batch_size):
+            batch = token_ids[i : i + batch_size]
+            # Goldsky subgraph MarketData uses token_id as the `id` field
+            ids_str = ", ".join(f'"{tid}"' for tid in batch)
+            query = f"""
+            {{
+                marketDatas(first: %d, where: {{ id_in: [{len(batch)}, {ids_str}] }}) {{
+                    id
+                    condition
+                }}
+            }}
+            """
+
+            try:
+                res = await self._goldsky_http.post(
+                    POLYMARKET_GOLDSKY_URL,
+                    json={"query": query},
+                )
+                res.raise_for_status()
+                body = res.json()
+                for md in (body.get("data") or {}).get("marketDatas") or []:
+                    token_id = md.get("id", "")
+                    condition = md.get("condition", "")
+                    if token_id and condition:
+                        result[token_id] = (
+                            "0x" + condition
+                            if not condition.startswith("0x")
+                            else condition
+                        )
+            except Exception:  # noqa: BLE001
+                continue
+
+        return result
+
+    @staticmethod
+    def _fill_to_activity_record(
+        fill: dict[str, Any],
+        user_lower: str,
+        condition_map: dict[str, str],
+    ) -> dict[str, Any] | None:
+        """Convert a Goldsky OrderFilledEvent into a Data API activity-like record."""
+        maker = (fill.get("maker") or "").lower()
+        taker = (fill.get("taker") or "").lower()
+        maker_asset = fill.get("makerAssetId", "")
+        taker_asset = fill.get("takerAssetId", "")
+
+        try:
+            maker_amt = int(fill["makerAmountFilled"])
+            taker_amt = int(fill["takerAmountFilled"])
+        except (KeyError, ValueError):
+            return None
+
+        if maker_amt <= 0 or taker_amt <= 0:
+            return None
+
+        # Determine which side is USDC (asset "0") and which is the token
+        if maker_asset == "0":
+            usdc_amt = maker_amt
+            token_amt = taker_amt
+            token_id = taker_asset
+            # Maker sells USDC for tokens: maker is BUYING tokens
+            side = "BUY" if maker == user_lower else "SELL"
+        elif taker_asset == "0":
+            usdc_amt = taker_amt
+            token_amt = maker_amt
+            token_id = maker_asset
+            # Taker sells USDC for tokens: taker is BUYING tokens
+            side = "BUY" if taker == user_lower else "SELL"
+        else:
+            # Neither side is USDC — skip (token-for-token swap)
+            return None
+
+        if not token_id or token_id == "0":
+            return None
+
+        # USDC has 6 decimals on Polymarket
+        usdc_human = usdc_amt / 1_000_000
+        price = usdc_amt / token_amt if token_amt > 0 else 0
+
+        condition_id = condition_map.get(token_id, "")
+
+        return {
+            "type": "TRADE",
+            "side": side,
+            "conditionId": condition_id,
+            "asset": token_id,
+            "usdcSize": str(usdc_human),
+            "size": str(token_amt / 1_000_000),  # shares also 6 decimals
+            "price": str(price),
+            "outcome": "Yes",  # Cannot determine from fill data alone
+            "transactionHash": fill.get("transactionHash", ""),
+            "slug": condition_id[:12] if condition_id else token_id[:12],
+            "timestamp": int(fill["timestamp"]),
+        }
 
     async def bridge_supported_assets(self) -> tuple[bool, dict[str, Any] | str]:
         try:
