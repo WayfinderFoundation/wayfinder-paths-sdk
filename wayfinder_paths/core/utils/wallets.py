@@ -381,7 +381,7 @@ async def refresh_remote_wallet_policy(wallet_address: str) -> dict[str, Any]:
     if not rules:
         rules = extract_policy_rules(wallet_data)
 
-    managed_rules, _ = apply_configured_remote_wallet_policy(rules)
+    managed_rules, _ = preview_timebound_rules(rules)
     response = await update_remote_wallet_policy(wallet_address, managed_rules)
 
     return {
@@ -390,13 +390,6 @@ async def refresh_remote_wallet_policy(wallet_address: str) -> dict[str, Any]:
         "policy_status": build_remote_policy_status(response or managed_rules),
         "updated": True,
     }
-
-
-def apply_configured_remote_wallet_policy(
-    policies: list[PolicyRule],
-) -> tuple[list[PolicyRule], dict[str, Any]]:
-    managed_policies, policy_status = preview_timebound_rules(policies)
-    return managed_policies, policy_status
 
 
 def make_random_wallet() -> dict[str, str]:
