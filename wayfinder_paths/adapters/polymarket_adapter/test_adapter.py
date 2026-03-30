@@ -524,3 +524,244 @@ class TestPolymarketAdapter:
         assert isinstance(res, dict)
         assert res["method"] == "polymarket_bridge"
         assert res["tx_hash"] == "0xtransfer"
+
+    # ------------------------------------------------------------------
+    # Wallet trade history (paginated /activity)
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_wallet_trade_history_paginates(self, adapter, monkeypatch):
+        page_num = 0
+
+        async def mock_get_activity(*, user, limit, offset, **kwargs):
+            nonlocal page_num
+            page_num += 1
+            if page_num == 1:
+                return True, [
+                    {"timestamp": "1700000000", "type": "TRADE", "side": "BUY"},
+                    {"timestamp": "1700003600", "type": "TRADE", "side": "SELL"},
+                ]
+            return True, []  # second page empty → stop
+
+        monkeypatch.setattr(adapter, "get_activity", mock_get_activity)
+
+        ok, records = await adapter.get_wallet_trade_history(
+            user="0x" + "11" * 20,
+            start_ts=1700000000,
+            end_ts=1700010000,
+            page_size=2,
+        )
+        assert ok is True
+        assert len(records) == 2
+        assert page_num == 2
+
+    @pytest.mark.asyncio
+    async def test_get_wallet_trade_history_filters_by_time(self, adapter, monkeypatch):
+        async def mock_get_activity(*, user, limit, offset, **kwargs):
+            return True, [
+                {"timestamp": "1699999000", "type": "TRADE"},  # before start
+                {"timestamp": "1700005000", "type": "TRADE"},  # in range
+                {"timestamp": "1700020000", "type": "TRADE"},  # after end
+            ]
+
+        monkeypatch.setattr(adapter, "get_activity", mock_get_activity)
+
+        ok, records = await adapter.get_wallet_trade_history(
+            user="0x" + "11" * 20,
+            start_ts=1700000000,
+            end_ts=1700010000,
+        )
+        assert ok is True
+        assert len(records) == 1
+        assert records[0]["timestamp"] == "1700005000"
+
+    @pytest.mark.asyncio
+    async def test_get_wallet_trade_history_handles_iso_timestamps(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get_activity(*, user, limit, offset, **kwargs):
+            return True, [
+                {"timestamp": "2025-10-01T12:00:00Z", "type": "TRADE"},
+            ]
+
+        monkeypatch.setattr(adapter, "get_activity", mock_get_activity)
+
+        ok, records = await adapter.get_wallet_trade_history(
+            user="0x" + "11" * 20,
+            start_ts=0,
+            end_ts=2000000000,
+        )
+        assert ok is True
+        assert len(records) == 1
+
+    @pytest.mark.asyncio
+    async def test_get_wallet_trade_history_propagates_error(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get_activity(*, user, limit, offset, **kwargs):
+            return False, "rate limited"
+
+        monkeypatch.setattr(adapter, "get_activity", mock_get_activity)
+
+        ok, msg = await adapter.get_wallet_trade_history(
+            user="0x" + "11" * 20,
+        )
+        assert ok is False
+        assert "rate limited" in msg
+
+    # ------------------------------------------------------------------
+    # Batch prices history
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_batch_prices_history_merges_results(self, adapter, monkeypatch):
+        call_log: list[dict] = []
+
+        async def mock_get(*_args, **kwargs):
+            params = kwargs.get("params", {})
+            call_log.append(params)
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            token = params.get("market", "")
+            mock_resp.json.return_value = {
+                "history": [
+                    {"t": 1700000000, "p": 0.5 if token == "tok_A" else 0.3},
+                    {"t": 1700003600, "p": 0.6 if token == "tok_A" else 0.4},
+                ]
+            }
+            return mock_resp
+
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
+
+        ok, data = await adapter.get_batch_prices_history(
+            token_ids=["tok_A", "tok_B"],
+            start_ts=1700000000,
+            end_ts=1700010000,
+            fidelity=60,
+        )
+        assert ok is True
+        assert isinstance(data, dict)
+        assert set(data.keys()) == {"tok_A", "tok_B"}
+        assert len(data["tok_A"]) == 2
+        assert data["tok_A"][0]["p"] == 0.5
+        assert data["tok_B"][0]["p"] == 0.3
+        assert len(call_log) == 2
+
+    @pytest.mark.asyncio
+    async def test_get_batch_prices_history_empty_token(self, adapter, monkeypatch):
+        async def mock_get(*_args, **kwargs):
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            mock_resp.json.return_value = {"history": []}
+            return mock_resp
+
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
+
+        ok, data = await adapter.get_batch_prices_history(
+            token_ids=["tok_dead"],
+            start_ts=1700000000,
+            end_ts=1700010000,
+        )
+        assert ok is True
+        assert data["tok_dead"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_batch_prices_history_partial_failure(self, adapter, monkeypatch):
+        """When a single token fetch fails, it returns an empty list."""
+
+        async def mock_get(*_args, **kwargs):
+            params = kwargs.get("params", {})
+            token = params.get("market", "")
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status.return_value = None
+            if token == "tok_bad":
+                mock_resp.json.return_value = "unexpected string"
+            else:
+                mock_resp.json.return_value = {"history": [{"t": 1700005000, "p": 0.5}]}
+            return mock_resp
+
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
+
+        ok, data = await adapter.get_batch_prices_history(
+            token_ids=["tok_ok", "tok_bad"],
+            start_ts=1700000000,
+            end_ts=1700010000,
+        )
+        assert ok is True
+        assert len(data["tok_ok"]) == 1
+        assert data["tok_bad"] == []
+
+    # ------------------------------------------------------------------
+    # Batch market metadata
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_get_markets_by_condition_ids(self, adapter, monkeypatch):
+        call_count = 0
+
+        async def mock_get_market(*, condition_id):
+            nonlocal call_count
+            call_count += 1
+            return True, {
+                "conditionId": condition_id,
+                "slug": "market-one",
+                "question": "Will X happen?",
+                "outcomes": ["Yes", "No"],
+                "outcomePrices": [0.6, 0.4],
+                "clobTokenIds": ["tok1", "tok2"],
+                "endDate": "2025-12-31T00:00:00Z",
+                "closed": False,
+                "volumeNum": 50000,
+            }
+
+        monkeypatch.setattr(adapter, "get_market_by_condition_id", mock_get_market)
+
+        ok, data = await adapter.get_markets_by_condition_ids(
+            condition_ids=["0xcond1"],
+        )
+        assert ok is True
+        assert "0xcond1" in data
+        assert data["0xcond1"]["slug"] == "market-one"
+        assert call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_get_markets_by_condition_ids_concurrent(self, adapter, monkeypatch):
+        """Multiple condition IDs are fetched concurrently."""
+        call_count = 0
+
+        async def mock_get_market(*, condition_id):
+            nonlocal call_count
+            call_count += 1
+            return True, {
+                "conditionId": condition_id,
+                "slug": f"market-{condition_id}",
+                "outcomes": ["Yes", "No"],
+                "outcomePrices": [0.5, 0.5],
+                "clobTokenIds": ["t1", "t2"],
+            }
+
+        monkeypatch.setattr(adapter, "get_market_by_condition_id", mock_get_market)
+
+        cids = [f"0xcond{i}" for i in range(5)]
+        ok, data = await adapter.get_markets_by_condition_ids(condition_ids=cids)
+        assert ok is True
+        assert len(data) == 5
+        assert call_count == 5
+
+    @pytest.mark.asyncio
+    async def test_get_markets_by_condition_ids_skips_not_found(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get_market(*, condition_id):
+            if condition_id == "0xbad":
+                return False, "Market not found"
+            return True, {"conditionId": condition_id, "slug": "ok"}
+
+        monkeypatch.setattr(adapter, "get_market_by_condition_id", mock_get_market)
+
+        ok, data = await adapter.get_markets_by_condition_ids(
+            condition_ids=["0xgood", "0xbad"],
+        )
+        assert ok is True
+        assert len(data) == 1
+        assert "0xgood" in data

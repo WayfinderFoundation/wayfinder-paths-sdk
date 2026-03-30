@@ -243,7 +243,12 @@ def run_backtest(
             ):
                 continue
 
-            transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
+            if config.fee_fn_by_symbol and sym in config.fee_fn_by_symbol:
+                side = "BUY" if trade_units > 0 else "SELL"
+                sym_fee_rate = config.fee_fn_by_symbol[sym](price, side)
+            else:
+                sym_fee_rate = config.fee_rate
+            transaction_cost = trade_notional * (sym_fee_rate + config.slippage_rate)
 
             if trade_units < 0:  # adding short, increase debt
                 debt_balance.loc[sym, "q"] -= trade_units

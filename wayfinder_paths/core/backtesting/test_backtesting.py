@@ -206,6 +206,66 @@ def test_backtest_input_validation(sample_prices, sample_target_positions):
 
 
 # ==============================================================================
+# FEE FUNCTION BY SYMBOL TESTS
+# ==============================================================================
+
+
+def test_fee_fn_by_symbol_overrides_flat_rate(sample_prices: pd.DataFrame) -> None:
+    """Per-symbol fee function produces higher fees than the flat fee_rate alone."""
+    target = pd.DataFrame(
+        {"ASSET_A": [0.5] * len(sample_prices), "ASSET_B": [0.5] * len(sample_prices)},
+        index=sample_prices.index,
+    )
+    config_flat = BacktestConfig(fee_rate=0.01, enable_liquidation=False)
+    config_fn = BacktestConfig(
+        fee_rate=0.01,
+        enable_liquidation=False,
+        fee_fn_by_symbol={"ASSET_A": lambda p, s: 0.05},
+    )
+    result_flat = run_backtest(sample_prices, target, config_flat)
+    result_fn = run_backtest(sample_prices, target, config_fn)
+    assert result_fn.stats["total_fees"] > result_flat.stats["total_fees"]
+
+
+def test_no_fee_fn_uses_flat_rate(sample_prices: pd.DataFrame) -> None:
+    """Without fee_fn_by_symbol the flat fee_rate applies normally."""
+    target = pd.DataFrame(
+        {"ASSET_A": [0.5] * len(sample_prices), "ASSET_B": [0.5] * len(sample_prices)},
+        index=sample_prices.index,
+    )
+    config = BacktestConfig(fee_rate=0.001, slippage_rate=0.0, enable_liquidation=False)
+    result = run_backtest(sample_prices, target, config)
+    # Fees must be positive (trades were executed)
+    assert result.stats["total_fees"] > 0.0
+
+
+def test_fee_fn_only_for_named_symbol(sample_prices: pd.DataFrame) -> None:
+    """fee_fn_by_symbol applies a higher rate only to the named symbol."""
+    target = pd.DataFrame(
+        {"ASSET_A": [0.5] * len(sample_prices), "ASSET_B": [0.5] * len(sample_prices)},
+        index=sample_prices.index,
+    )
+    config_all_low = BacktestConfig(
+        fee_rate=0.01, slippage_rate=0.0, enable_liquidation=False
+    )
+    config_mixed = BacktestConfig(
+        fee_rate=0.01,
+        slippage_rate=0.0,
+        enable_liquidation=False,
+        fee_fn_by_symbol={"ASSET_A": lambda p, s: 0.05},  # only ASSET_A gets high fee
+    )
+    config_all_high = BacktestConfig(
+        fee_rate=0.05, slippage_rate=0.0, enable_liquidation=False
+    )
+    result_low = run_backtest(sample_prices, target, config_all_low)
+    result_mixed = run_backtest(sample_prices, target, config_mixed)
+    result_high = run_backtest(sample_prices, target, config_all_high)
+    # Mixed should be between all-low and all-high
+    assert result_low.stats["total_fees"] < result_mixed.stats["total_fees"]
+    assert result_mixed.stats["total_fees"] < result_high.stats["total_fees"]
+
+
+# ==============================================================================
 # DELTA-NEUTRAL FUNDING ARBITRAGE TESTS
 # ==============================================================================
 # These tests demonstrate a production-ready funding rate arbitrage strategy
