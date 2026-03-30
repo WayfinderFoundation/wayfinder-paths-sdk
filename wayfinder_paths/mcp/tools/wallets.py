@@ -134,8 +134,8 @@ async def _query_adapter(
             method_per_chain = config.get("method_per_chain")
             chain_param = config.get("chain_param")
             if method_per_chain and chain_param:
-                method_name = str(method_per_chain)
-                kwargs[str(chain_param)] = chain_id
+                method_name = method_per_chain
+                kwargs[chain_param] = chain_id
             if "chain_id" in kwargs:
                 kwargs["chain_id"] = chain_id
             elif "chain" in kwargs:
