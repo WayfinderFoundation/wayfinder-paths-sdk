@@ -59,7 +59,9 @@ def test_remote_wallet_policy_ttl_defaults_to_one_hour(
 def test_remote_wallet_policy_ttl_uses_config_override(
     restore_global_config: None,
 ) -> None:
-    config.set_config({"system": {"remote_wallet_policy": {"default_ttl_seconds": 900}}})
+    config.set_config(
+        {"system": {"remote_wallet_policy": {"default_ttl_seconds": 900}}}
+    )
 
     ttl_seconds, ttl_source = config.get_remote_wallet_policy_ttl_setting()
     assert ttl_seconds == 900

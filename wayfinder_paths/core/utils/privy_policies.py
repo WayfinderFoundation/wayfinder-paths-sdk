@@ -210,9 +210,11 @@ def extract_managed_expiry_from_rules(policies: list[PolicyRule]) -> int | None:
     for rule in policies:
         if not isinstance(rule, dict):
             continue
-        for condition in rule.get("conditions", []) if isinstance(
-            rule.get("conditions"), list
-        ) else []:
+        for condition in (
+            rule.get("conditions", [])
+            if isinstance(rule.get("conditions"), list)
+            else []
+        ):
             if not _is_managed_timebound_condition(condition):
                 continue
             value = condition.get("value")

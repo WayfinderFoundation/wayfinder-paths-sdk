@@ -105,26 +105,30 @@ async def test_get_wallet_includes_remote_policy_status():
         "type": "remote",
     }
 
-    with patch(
-        "wayfinder_paths.mcp.resources.wallets.WalletProfileStore.default",
-        return_value=store,
-    ), patch(
-        "wayfinder_paths.mcp.resources.wallets.find_wallet_by_label",
-        new=AsyncMock(return_value=wallet),
-    ), patch(
-        "wayfinder_paths.mcp.resources.wallets.get_remote_wallet_policy_status",
-        new=AsyncMock(
-            return_value={
-                "time_bound": True,
-                "effective_ttl_seconds": 3600,
-                "ttl_source": "built_in_default",
-                "expires_at": "2026-01-01T00:00:00+00:00",
-                "remaining_seconds": 100,
-                "source": "remote",
-            }
+    with (
+        patch(
+            "wayfinder_paths.mcp.resources.wallets.WalletProfileStore.default",
+            return_value=store,
+        ),
+        patch(
+            "wayfinder_paths.mcp.resources.wallets.find_wallet_by_label",
+            new=AsyncMock(return_value=wallet),
+        ),
+        patch(
+            "wayfinder_paths.mcp.resources.wallets.get_remote_wallet_policy_status",
+            new=AsyncMock(
+                return_value={
+                    "time_bound": True,
+                    "effective_ttl_seconds": 3600,
+                    "ttl_source": "built_in_default",
+                    "expires_at": "2026-01-01T00:00:00+00:00",
+                    "remaining_seconds": 100,
+                    "source": "remote",
+                }
+            ),
         ),
     ):
         payload = await get_wallet("remote-main")
 
-    assert "\"policy_status\"" in payload
-    assert "\"remaining_seconds\": 100" in payload
+    assert '"policy_status"' in payload
+    assert '"remaining_seconds": 100' in payload

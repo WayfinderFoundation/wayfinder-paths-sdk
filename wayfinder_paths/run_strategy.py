@@ -148,7 +148,9 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
             )
             if wallet_id := kw.get("wallet_id"):
                 policies = [
-                    p.replace("FORMAT_WALLET_ID", wallet_id) if isinstance(p, str) else p
+                    p.replace("FORMAT_WALLET_ID", wallet_id)
+                    if isinstance(p, str)
+                    else p
                     for p in policies
                 ]
             return {"policies": policies}

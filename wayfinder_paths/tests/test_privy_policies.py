@@ -155,7 +155,9 @@ def test_extract_policy_rules_flattens_multiple_wrapped_policies() -> None:
 def test_build_remote_policy_status_reads_live_expiry(
     restore_global_config: None,
 ) -> None:
-    config.set_config({"system": {"remote_wallet_policy": {"default_ttl_seconds": 900}}})
+    config.set_config(
+        {"system": {"remote_wallet_policy": {"default_ttl_seconds": 900}}}
+    )
     managed_rules, _ = apply_timebound_rules(
         _base_rules(),
         ttl_seconds=900,
