@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT
+from wayfinder_paths.core.utils.wallets import get_remote_wallet_policy_status
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     find_wallet_by_label,
@@ -43,14 +44,17 @@ async def get_wallet(label: str) -> str:
         return json.dumps({"error": f"Invalid address for wallet: {label}"})
 
     profile = store.get_profile(address)
-    return json.dumps(
-        {
-            "label": label,
-            "address": address,
-            "profile": profile,
-        },
-        indent=2,
-    )
+    payload: dict[str, Any] = {
+        "label": label,
+        "address": address,
+        "profile": profile,
+    }
+    if w.get("type") == "remote":
+        try:
+            payload["policy_status"] = await get_remote_wallet_policy_status(address)
+        except Exception as exc:  # noqa: BLE001
+            payload["policy_status_error"] = str(exc)
+    return json.dumps(payload, indent=2)
 
 
 def _balance_usd(entry: dict[str, Any]) -> float:

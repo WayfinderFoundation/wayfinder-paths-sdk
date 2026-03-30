@@ -97,6 +97,7 @@ Notes:
 - If `strategy.rpc_urls` is not set for a chain, `web3_from_chain_id(...)` defaults to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/` (requires `api_key`).
 - If you provide a list, `web3_from_chain_id(...)` uses the first entry for reads; put your best RPC first.
 - If a script appears to be using a public RPC, print `resolve_config_path()` and `get_rpc_urls()` to confirm which config file was loaded.
+- `system.remote_wallet_policy.default_ttl_seconds` controls the managed TTL applied to dict-based remote-wallet Privy rules. If the key is missing, the SDK still uses a built-in default of `3600` seconds. Set it to `0` to disable managed TTL wrapping.
 
 ## Wallet Configuration
 

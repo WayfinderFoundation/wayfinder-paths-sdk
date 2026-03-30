@@ -48,6 +48,50 @@ def test_load_config_json_supports_env_override(
     assert isinstance(rpc_urls, dict)
 
 
+def test_remote_wallet_policy_ttl_defaults_to_one_hour(
+    restore_global_config: None,
+) -> None:
+    ttl_seconds, ttl_source = config.get_remote_wallet_policy_ttl_setting()
+    assert ttl_seconds == 3600
+    assert ttl_source == "built_in_default"
+
+
+def test_remote_wallet_policy_ttl_uses_config_override(
+    restore_global_config: None,
+) -> None:
+    config.set_config({"system": {"remote_wallet_policy": {"default_ttl_seconds": 900}}})
+
+    ttl_seconds, ttl_source = config.get_remote_wallet_policy_ttl_setting()
+    assert ttl_seconds == 900
+    assert ttl_source == "config"
+
+
+def test_remote_wallet_policy_ttl_zero_disables(
+    restore_global_config: None,
+) -> None:
+    config.set_config({"system": {"remote_wallet_policy": {"default_ttl_seconds": 0}}})
+
+    ttl_seconds, ttl_source = config.get_remote_wallet_policy_ttl_setting()
+    assert ttl_seconds == 0
+    assert ttl_source == "disabled"
+
+
+@pytest.mark.parametrize(
+    "raw_value",
+    [-1, "3600", 3.14, True],
+)
+def test_remote_wallet_policy_ttl_rejects_invalid_values(
+    restore_global_config: None,
+    raw_value: object,
+) -> None:
+    config.set_config(
+        {"system": {"remote_wallet_policy": {"default_ttl_seconds": raw_value}}}
+    )
+
+    with pytest.raises(ValueError):
+        config.get_remote_wallet_policy_ttl_setting()
+
+
 @pytest.mark.asyncio
 async def test_web3s_fallback_to_rpc_proxy(
     restore_global_config: None,

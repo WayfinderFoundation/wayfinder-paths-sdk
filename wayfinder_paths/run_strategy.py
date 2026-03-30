@@ -21,6 +21,7 @@ from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.config import CONFIG, load_config
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
+from wayfinder_paths.core.utils.privy_policies import preview_timebound_rules
 from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
 from wayfinder_paths.core.utils.wallets import (
     get_private_key,
@@ -146,8 +147,17 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
                 await strategy.policies() if hasattr(strategy, "policies") else []
             )
             if wallet_id := kw.get("wallet_id"):
-                policies = [p.replace("FORMAT_WALLET_ID", wallet_id) for p in policies]
+                policies = [
+                    p.replace("FORMAT_WALLET_ID", wallet_id) if isinstance(p, str) else p
+                    for p in policies
+                ]
             return {"policies": policies}
+        if action == "policy_preview":
+            policies = (
+                await strategy.policies() if hasattr(strategy, "policies") else []
+            )
+            preview_policies, policy_status = preview_timebound_rules(policies)
+            return {"policies": preview_policies, "policy_status": policy_status}
         if action == "status":
             return await strategy.status()
         if action == "deposit":
@@ -271,6 +281,7 @@ def main():
             "update",
             "exit",
             "policy",
+            "policy_preview",
             "analyze",
             "quote",
         ],

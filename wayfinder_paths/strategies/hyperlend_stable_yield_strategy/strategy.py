@@ -26,6 +26,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.policies.enso import ENSO_ROUTER, enso_swap
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
@@ -2388,7 +2389,7 @@ class HyperlendStableYieldStrategy(Strategy):
         }
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         return [
             any_hyperliquid_l1_payload(),
             any_hyperliquid_user_payload(),

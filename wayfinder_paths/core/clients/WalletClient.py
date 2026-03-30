@@ -12,6 +12,25 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("GET", url)
         return resp.json()
 
+    async def get_wallet(self, wallet_address: str) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/"
+        resp = await self._authed_request("GET", url)
+        return resp.json()
+
+    async def get_wallet_policy(self, wallet_address: str) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/policy/"
+        resp = await self._authed_request("GET", url)
+        return resp.json()
+
+    async def update_wallet_policy(
+        self,
+        wallet_address: str,
+        policies: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/policy/"
+        resp = await self._authed_request("PUT", url, json={"policies": policies})
+        return resp.json()
+
     async def create_wallet(
         self,
         chain_type: str = "ethereum",

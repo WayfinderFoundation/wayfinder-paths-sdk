@@ -57,6 +57,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.policies.erc20 import any_erc20_function
 from wayfinder_paths.policies.hyperliquid import (
@@ -3969,7 +3970,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         return 0.5 / max_lev
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         return [
             any_hyperliquid_l1_payload(),
             any_hyperliquid_user_payload(),

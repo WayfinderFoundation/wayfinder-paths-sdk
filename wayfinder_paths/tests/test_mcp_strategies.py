@@ -147,6 +147,47 @@ async def test_policy_async():
 
 
 @pytest.mark.asyncio
+async def test_policy_preview_dict_policy():
+    cls = type(
+        "WithPreviewPolicy",
+        (),
+        {
+            "policies": staticmethod(
+                lambda: [
+                    {
+                        "name": "Allow swap",
+                        "method": "eth_signTransaction",
+                        "action": "ALLOW",
+                        "conditions": [],
+                    }
+                ]
+            )
+        },
+    )
+    with _patch_load(strategy_class=cls, status="active"):
+        out = await run_strategy(strategy="my_strat", action="policy_preview")
+    assert out["ok"] is True
+    assert out["result"]["policy_status"]["time_bound"] is True
+    assert out["result"]["policy_status"]["effective_ttl_seconds"] == 3600
+    assert out["result"]["policy_status"]["ttl_source"] == "built_in_default"
+    assert out["result"]["output"][0]["name"].endswith("[wayfinder-timebound]")
+
+
+@pytest.mark.asyncio
+async def test_policy_preview_rejects_string_policies():
+    cls = type(
+        "WithLegacyPolicy",
+        (),
+        {"policies": staticmethod(lambda: ["legacy string policy"])},
+    )
+    with _patch_load(strategy_class=cls, status="active"):
+        out = await run_strategy(strategy="my_strat", action="policy_preview")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "strategy_error"
+    assert "dict-based Privy rules" in out["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_policy_raises():
     def bad_policies():
         raise RuntimeError("policy boom")

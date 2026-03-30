@@ -3,7 +3,10 @@
     "api_base_url": "https://strategies.wayfinder.ai/api/v1",
     "api_key": "wk_your_key_here",
     "etherscan_api_key": "",
-    "allow_local_wallets": true
+    "allow_local_wallets": true,
+    "remote_wallet_policy": {
+      "default_ttl_seconds": 3600
+    }
   },
   "strategy": {
     "rpc_urls": {}

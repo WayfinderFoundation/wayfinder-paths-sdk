@@ -8,6 +8,7 @@ from typing import Any, Literal
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
+from wayfinder_paths.core.utils.privy_policies import preview_timebound_rules
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.utils import err, ok, repo_root
 
@@ -48,6 +49,7 @@ async def run_strategy(
         "analyze",
         "snapshot",
         "policy",
+        "policy_preview",
         "quote",
         "deposit",
         "update",
@@ -77,9 +79,19 @@ async def run_strategy(
             response["warning"] = wip_warning
         return response
 
-    if action == "policy":
+    if action in {"policy", "policy_preview"}:
         pol = getattr(strategy_class, "policies", None)
         if not callable(pol):
+            if action == "policy_preview":
+                policies, policy_status = preview_timebound_rules([])
+                return ok_with_warning(
+                    {
+                        "strategy": strategy,
+                        "action": action,
+                        "output": policies,
+                        "policy_status": policy_status,
+                    }
+                )
             return ok_with_warning(
                 {"strategy": strategy, "action": action, "output": []}
             )
@@ -87,6 +99,16 @@ async def run_strategy(
             res = pol()  # type: ignore[misc]
             if asyncio.iscoroutine(res):
                 res = await res
+            if action == "policy_preview":
+                policies, policy_status = preview_timebound_rules(res)
+                return ok_with_warning(
+                    {
+                        "strategy": strategy,
+                        "action": action,
+                        "output": policies,
+                        "policy_status": policy_status,
+                    }
+                )
             return ok_with_warning(
                 {"strategy": strategy, "action": action, "output": res}
             )

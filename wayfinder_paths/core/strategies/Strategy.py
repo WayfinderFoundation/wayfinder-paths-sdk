@@ -9,6 +9,7 @@ from loguru import logger
 from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.core.clients.TokenClient import TokenDetails
 from wayfinder_paths.core.strategies.descriptors import StratDescriptor
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 
 
 class StatusDict(TypedDict):
@@ -110,7 +111,7 @@ class Strategy(ABC):
         pass
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         raise NotImplementedError
 
     @abstractmethod

@@ -77,6 +77,7 @@ Key fields:
 
 - `system.api_key`: Wayfinder API key (or set `WAYFINDER_API_KEY` env var)
 - `system.api_base_url`: API base URL (defaults to `https://wayfinder.ai/api` if omitted)
+- `system.remote_wallet_policy.default_ttl_seconds`: default TTL applied to dict-based remote-wallet Privy policies. If omitted, the SDK still uses a built-in 1 hour default. Set `0` to disable managed TTL wrapping.
 - `strategy.rpc_urls`: *(optional)* chain ID -> RPC URL(s) (string or list). If omitted for a chain, reads default to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/`.
 - `wallets`: local wallets with `label`, `address`, and `private_key_hex`. Remote wallets (Privy server wallets) are auto-fetched when `system.api_key` is configured.
 
@@ -86,7 +87,10 @@ Example:
 {
   "system": {
     "api_base_url": "https://strategies.wayfinder.ai/api/v1",
-    "api_key": "wk_your_api_key_here"
+    "api_key": "wk_your_api_key_here",
+    "remote_wallet_policy": {
+      "default_ttl_seconds": 3600
+    }
   },
   "strategy": {
     "rpc_urls": {

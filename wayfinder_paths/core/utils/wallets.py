@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
@@ -13,6 +14,12 @@ from wayfinder_paths.core.config import (
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
+)
+from wayfinder_paths.core.utils.privy_policies import (
+    PolicyRule,
+    build_remote_policy_status,
+    extract_policy_rules,
+    preview_timebound_rules,
 )
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
@@ -49,6 +56,15 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                     "label": w.get("label") or f"remote-{i}",
                     "type": "remote",
                     "chain_type": w.get("chain_type", "ethereum"),
+                    "wallet_id": w.get("id") or w.get("wallet_id"),
+                    "policy_ids": w.get("policy_ids"),
+                    "has_policy": bool(
+                        w.get("policy_ids")
+                        or w.get("policy_id")
+                        or w.get("policy")
+                        or w.get("policies")
+                    ),
+                    "_remote_wallet": w,
                 }
             )
         return wallets
@@ -302,9 +318,85 @@ async def create_remote_wallet(
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
+    managed_policies = policies
+    try:
+        managed_policies, _ = preview_timebound_rules(policies)
+    except TypeError:
+        # Preserve backwards compatibility for callers that still pass
+        # non-dict/string-based policies directly.
+        managed_policies = policies
+
     return await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label
+        chain_type=chain_type, policies=managed_policies, label=label
     )
+
+
+async def get_remote_wallet(wallet_address: str) -> dict[str, Any]:
+    return await WALLET_CLIENT.get_wallet(wallet_address)
+
+
+async def get_remote_wallet_policy(wallet_address: str) -> dict[str, Any]:
+    return await WALLET_CLIENT.get_wallet_policy(wallet_address)
+
+
+async def update_remote_wallet_policy(
+    wallet_address: str,
+    policies: list[PolicyRule],
+) -> dict[str, Any]:
+    return await WALLET_CLIENT.update_wallet_policy(wallet_address, policies)
+
+
+def _wallet_has_policy_reference(wallet_data: dict[str, Any] | None) -> bool:
+    if not isinstance(wallet_data, dict):
+        return False
+    return bool(
+        wallet_data.get("policy_ids")
+        or wallet_data.get("policy_id")
+        or wallet_data.get("policy")
+        or wallet_data.get("policies")
+    )
+
+
+async def get_remote_wallet_policy_status(wallet_address: str) -> dict[str, Any]:
+    wallet_data = await get_remote_wallet(wallet_address)
+
+    try:
+        policy_data = await get_remote_wallet_policy(wallet_address)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404 and not _wallet_has_policy_reference(
+            wallet_data
+        ):
+            return build_remote_policy_status([])
+        raise
+
+    status_source = policy_data if policy_data else wallet_data
+    return build_remote_policy_status(status_source)
+
+
+async def refresh_remote_wallet_policy(wallet_address: str) -> dict[str, Any]:
+    wallet_data = await get_remote_wallet(wallet_address)
+    policy_data = await get_remote_wallet_policy(wallet_address)
+
+    rules = extract_policy_rules(policy_data)
+    if not rules:
+        rules = extract_policy_rules(wallet_data)
+
+    managed_rules, _ = apply_configured_remote_wallet_policy(rules)
+    response = await update_remote_wallet_policy(wallet_address, managed_rules)
+
+    return {
+        "wallet_address": wallet_address,
+        "policies": managed_rules,
+        "policy_status": build_remote_policy_status(response or managed_rules),
+        "updated": True,
+    }
+
+
+def apply_configured_remote_wallet_policy(
+    policies: list[PolicyRule],
+) -> tuple[list[PolicyRule], dict[str, Any]]:
+    managed_policies, policy_status = preview_timebound_rules(policies)
+    return managed_policies, policy_status
 
 
 def make_random_wallet() -> dict[str, str]:

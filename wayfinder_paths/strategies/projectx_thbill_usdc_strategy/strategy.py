@@ -24,6 +24,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
     liq_for_amounts,
@@ -1014,7 +1015,7 @@ class ProjectXThbillUsdcStrategy(Strategy):
         )
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         router = str(THBILL_USDC_METADATA["router"])
         npm = str(THBILL_USDC_METADATA["npm"])
         return [

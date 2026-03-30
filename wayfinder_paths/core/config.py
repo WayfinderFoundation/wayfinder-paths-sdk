@@ -6,6 +6,7 @@ from typing import Any
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
+DEFAULT_REMOTE_WALLET_POLICY_TTL_SECONDS = 3600
 
 
 def _find_project_root(start: Path) -> Path | None:
@@ -109,6 +110,33 @@ def get_api_key() -> str | None:
     if api_key:
         return str(api_key).strip()
     return os.environ.get("WAYFINDER_API_KEY")
+
+
+def get_remote_wallet_policy_ttl_setting(
+    config: dict[str, Any] | None = None,
+) -> tuple[int, str]:
+    source_config = CONFIG if config is None else config
+    system = source_config.get("system", {})
+    remote_wallet_policy = (
+        system.get("remote_wallet_policy") if isinstance(system, dict) else None
+    )
+    if not isinstance(remote_wallet_policy, dict):
+        return DEFAULT_REMOTE_WALLET_POLICY_TTL_SECONDS, "built_in_default"
+
+    raw_ttl = remote_wallet_policy.get("default_ttl_seconds")
+    if raw_ttl is None:
+        return DEFAULT_REMOTE_WALLET_POLICY_TTL_SECONDS, "built_in_default"
+    if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int):
+        raise ValueError(
+            "system.remote_wallet_policy.default_ttl_seconds must be an integer"
+        )
+    if raw_ttl < 0:
+        raise ValueError(
+            "system.remote_wallet_policy.default_ttl_seconds cannot be negative"
+        )
+    if raw_ttl == 0:
+        return 0, "disabled"
+    return int(raw_ttl), "config"
 
 
 def load_wallet_mnemonic(path: str | Path | None = None) -> str | None:

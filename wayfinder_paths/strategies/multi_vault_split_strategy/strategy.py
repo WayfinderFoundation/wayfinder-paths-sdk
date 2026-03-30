@@ -28,6 +28,7 @@ from wayfinder_paths.core.strategies.Strategy import (
     StatusTuple,
     Strategy,
 )
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 from wayfinder_paths.core.utils.units import from_erc20_raw, to_erc20_raw
 
 USDC_ARB = "usd-coin-arbitrum"
@@ -230,7 +231,7 @@ class MultiVaultSplitStrategy(Strategy):
             self.usdt_address = None
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         return []
 
     @property

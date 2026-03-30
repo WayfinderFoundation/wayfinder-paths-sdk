@@ -21,6 +21,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 
 
 class StablecoinYieldStrategy(Strategy):
@@ -1633,7 +1634,7 @@ class StablecoinYieldStrategy(Strategy):
         }
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         enso_router = ENSO_ROUTER.lower()
         approve_enso = (
             "eth.tx.data[0..10] == '0x095ea7b3' && "

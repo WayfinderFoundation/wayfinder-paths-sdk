@@ -13,7 +13,9 @@ from wayfinder_paths.core.config import (
 )
 from wayfinder_paths.core.utils.wallets import (
     create_remote_wallet,
+    get_remote_wallet_policy_status,
     make_local_wallet,
+    refresh_remote_wallet_policy,
     write_wallet_to_json,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
@@ -162,7 +164,13 @@ async def _query_adapter(
 
 
 async def wallets(
-    action: Literal["create", "annotate", "discover_portfolio"],
+    action: Literal[
+        "create",
+        "annotate",
+        "discover_portfolio",
+        "policy_status",
+        "refresh_policy",
+    ],
     *,
     label: str | None = None,
     wallet_label: str | None = None,
@@ -367,6 +375,54 @@ async def wallets(
                 "total_duration_s": round(total_duration, 3),
                 "parallel": parallel,
                 "unsupported_protocols": unsupported if unsupported else None,
+            }
+        )
+
+    if action == "policy_status":
+        address, lbl = await resolve_wallet_address(
+            wallet_label=wallet_label or label, wallet_address=wallet_address
+        )
+        if not address:
+            return err(
+                "invalid_request",
+                "wallet_label or wallet_address is required for policy_status",
+            )
+
+        try:
+            policy_status = await get_remote_wallet_policy_status(address)
+        except Exception as exc:  # noqa: BLE001
+            return err("wallet_error", str(exc))
+
+        return ok(
+            {
+                "action": "policy_status",
+                "address": address,
+                "label": lbl,
+                "policy_status": policy_status,
+            }
+        )
+
+    if action == "refresh_policy":
+        address, lbl = await resolve_wallet_address(
+            wallet_label=wallet_label or label, wallet_address=wallet_address
+        )
+        if not address:
+            return err(
+                "invalid_request",
+                "wallet_label or wallet_address is required for refresh_policy",
+            )
+
+        try:
+            refreshed = await refresh_remote_wallet_policy(address)
+        except Exception as exc:  # noqa: BLE001
+            return err("wallet_error", str(exc))
+
+        return ok(
+            {
+                "action": "refresh_policy",
+                "address": address,
+                "label": lbl,
+                **refreshed,
             }
         )
 

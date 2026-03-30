@@ -21,6 +21,7 @@ def sanitize_name(name: str) -> str:
 
 
 STRATEGY_PY = """from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 
 
 class {class_name}(Strategy):
@@ -48,7 +49,7 @@ class {class_name}(Strategy):
         )
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         return []
 """
 

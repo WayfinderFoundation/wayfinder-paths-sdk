@@ -31,6 +31,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.privy_policies import PolicyList
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from wayfinder_paths.policies.enso import ENSO_ROUTER, enso_swap
@@ -3739,7 +3740,7 @@ class MoonwellWstethLoopStrategy(Strategy):
         )
 
     @staticmethod
-    async def policies() -> list[str]:
+    async def policies() -> PolicyList:
         return [
             # Moonwell operations
             await musdc_mint_or_approve_or_redeem(),
