@@ -27,7 +27,7 @@ def _copy_rule(rule: PolicyRule) -> PolicyRule:
 def _isoformat_timestamp(timestamp: int | None) -> str | None:
     if timestamp is None:
         return None
-    return datetime.fromtimestamp(int(timestamp), tz=UTC).isoformat()
+    return datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
 
 
 def _normalize_rule_name(name: Any) -> str:
@@ -64,7 +64,7 @@ def _make_timebound_condition(expires_at_unix: int) -> dict[str, str]:
         "field_source": TIMEBOUND_FIELD_SOURCE,
         "field": TIMEBOUND_FIELD,
         "operator": TIMEBOUND_OPERATOR,
-        "value": str(int(expires_at_unix)),
+        "value": str(expires_at_unix),
     }
 
 
@@ -100,13 +100,13 @@ def build_policy_status(
     source: str,
     now_unix: int | None = None,
 ) -> dict[str, Any]:
-    now = int(datetime.now(UTC).timestamp()) if now_unix is None else int(now_unix)
+    now = int(datetime.now(UTC).timestamp()) if now_unix is None else now_unix
     remaining_seconds = None
     if expires_at_unix is not None:
-        remaining_seconds = max(0, int(expires_at_unix) - now)
+        remaining_seconds = max(0, expires_at_unix - now)
     return {
         "time_bound": expires_at_unix is not None,
-        "effective_ttl_seconds": int(effective_ttl_seconds),
+        "effective_ttl_seconds": effective_ttl_seconds,
         "ttl_source": ttl_source,
         "expires_at": _isoformat_timestamp(expires_at_unix),
         "remaining_seconds": remaining_seconds,
@@ -123,7 +123,7 @@ def apply_timebound_rules(
     now_unix: int | None = None,
 ) -> tuple[list[PolicyRule], dict[str, Any]]:
     base_rules = strip_managed_timebound_rules(policies)
-    now = int(datetime.now(UTC).timestamp()) if now_unix is None else int(now_unix)
+    now = int(datetime.now(UTC).timestamp()) if now_unix is None else now_unix
 
     if ttl_seconds <= 0:
         return base_rules, build_policy_status(
@@ -134,7 +134,7 @@ def apply_timebound_rules(
             now_unix=now,
         )
 
-    expires_at_unix = now + int(ttl_seconds)
+    expires_at_unix = now + ttl_seconds
     managed_rules: list[PolicyRule] = []
     applied = False
     for original_rule in base_rules:
@@ -152,7 +152,7 @@ def apply_timebound_rules(
 
     return managed_rules, build_policy_status(
         expires_at_unix=expires_at_unix if applied else None,
-        effective_ttl_seconds=int(ttl_seconds),
+        effective_ttl_seconds=ttl_seconds,
         ttl_source=ttl_source,
         source=source,
         now_unix=now,
@@ -231,7 +231,7 @@ def build_remote_policy_status(
     now_unix: int | None = None,
 ) -> dict[str, Any]:
     ttl_seconds, ttl_source = get_remote_wallet_policy_ttl_setting()
-    effective_ttl_seconds = 0 if ttl_source == "disabled" else int(ttl_seconds)
+    effective_ttl_seconds = 0 if ttl_source == "disabled" else ttl_seconds
     rules = extract_policy_rules(policy_payload)
     expires_at_unix = extract_managed_expiry_from_rules(rules)
     return build_policy_status(

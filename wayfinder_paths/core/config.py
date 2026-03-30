@@ -136,7 +136,7 @@ def get_remote_wallet_policy_ttl_setting(
         )
     if raw_ttl == 0:
         return 0, "disabled"
-    return int(raw_ttl), "config"
+    return raw_ttl, "config"
 
 
 def load_wallet_mnemonic(path: str | Path | None = None) -> str | None:

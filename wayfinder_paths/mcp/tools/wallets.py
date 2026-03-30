@@ -135,11 +135,11 @@ async def _query_adapter(
             chain_param = config.get("chain_param")
             if method_per_chain and chain_param:
                 method_name = str(method_per_chain)
-                kwargs[str(chain_param)] = int(chain_id)
+                kwargs[str(chain_param)] = chain_id
             if "chain_id" in kwargs:
-                kwargs["chain_id"] = int(chain_id)
+                kwargs["chain_id"] = chain_id
             elif "chain" in kwargs:
-                kwargs["chain"] = int(chain_id)
+                kwargs["chain"] = chain_id
 
         method = getattr(adapter, method_name)
         success, data = await method(**kwargs)
