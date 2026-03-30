@@ -104,16 +104,6 @@ def detect_resolutions(
     return result
 
 
-async def _fetch_wallet_trades_delta_lab(
-    wallet_address: str,
-    start_date: str,
-    end_date: str,
-) -> pd.DataFrame | None:
-    """Try Delta Lab first. Returns None if not available yet."""
-    # TODO: wire up POLYMARKET_CLIENT.get_wallet_trades() when Delta Lab ships
-    return None
-
-
 def _activity_records_to_trades_df(
     wallet_address: str,
     records: list[dict[str, Any]],
@@ -180,22 +170,13 @@ async def fetch_wallet_trades(
 ) -> pd.DataFrame:
     """Fetch historical trades for a wallet.
 
-    Tries Delta Lab first, then Polymarket Data API /activity, then
+    Uses Polymarket Data API /activity for recent trades, then
     Goldsky subgraph (OrderFilledEvent) for full history on resolved markets.
 
     Returns a DataFrame indexed by UTC timestamp with columns:
     woi_address, condition_id, token_id, outcome, side,
     usdc_amount, share_count, avg_price, market_slug, tx_hash.
     """
-    # 1) Try Delta Lab
-    dl_result = await _fetch_wallet_trades_delta_lab(
-        wallet_address,
-        start_date,
-        end_date,
-    )
-    if dl_result is not None and not dl_result.empty:
-        return dl_result
-
     start_ts = int(pd.Timestamp(start_date, tz="UTC").timestamp())
     end_ts = int(pd.Timestamp(end_date, tz="UTC").timestamp())
 
@@ -204,7 +185,7 @@ async def fetch_wallet_trades(
         adapter = PolymarketAdapter(config={})
 
     try:
-        # 2) Data API (recent trades, limited to ~3500)
+        # Data API (recent trades, limited to ~3500)
         ok, records = await adapter.get_wallet_trade_history(
             user=wallet_address,
             start_ts=start_ts,
