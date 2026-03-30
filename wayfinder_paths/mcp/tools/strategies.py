@@ -66,7 +66,7 @@ async def run_strategy(
 
     try:
         strategy_class, strategy_status = _load_strategy_class(strategy)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return err("not_found", str(exc))
 
     wip_warning = None
@@ -112,7 +112,7 @@ async def run_strategy(
             return ok_with_warning(
                 {"strategy": strategy, "action": action, "output": res}
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return err("strategy_error", str(exc))
 
     config = _get_strategy_config(strategy)
@@ -240,5 +240,5 @@ async def run_strategy(
             return err("not_supported", "Strategy does not support exit()")
 
         return err("invalid_request", f"Unknown action: {action}")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return err("strategy_error", str(exc))

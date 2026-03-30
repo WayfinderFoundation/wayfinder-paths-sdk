@@ -390,7 +390,7 @@ async def wallets(
 
         try:
             policy_status = await get_remote_wallet_policy_status(address)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return err("wallet_error", str(exc))
 
         return ok(
@@ -414,7 +414,7 @@ async def wallets(
 
         try:
             refreshed = await refresh_remote_wallet_policy(address)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return err("wallet_error", str(exc))
 
         return ok(

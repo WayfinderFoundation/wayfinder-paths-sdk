@@ -52,7 +52,7 @@ async def get_wallet(label: str) -> str:
     if w.get("type") == "remote":
         try:
             payload["policy_status"] = await get_remote_wallet_policy_status(address)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             payload["policy_status_error"] = str(exc)
     return json.dumps(payload, indent=2)
 
@@ -101,7 +101,7 @@ async def get_wallet_balances(label: str) -> str:
         return json.dumps(
             {"label": label, "address": address, "balances": data}, indent=2
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return json.dumps({"error": str(exc)})
 
 
@@ -127,5 +127,5 @@ async def get_wallet_activity(label: str) -> str:
             },
             indent=2,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return json.dumps({"error": str(exc)})
