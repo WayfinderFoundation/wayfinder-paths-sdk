@@ -7,9 +7,6 @@ from typing import Any
 from wayfinder_paths.core.config import get_remote_wallet_policy_ttl_setting
 
 WAYFINDER_TIMEBOUND_RULE_SUFFIX = " [wayfinder-timebound]"
-TIMEBOUND_FIELD_SOURCE = "system"
-TIMEBOUND_FIELD = "current_unix_timestamp"
-TIMEBOUND_OPERATOR = "lt"
 TIMEBOUND_POLICY_ERROR = (
     "Time-bound policy management requires dict-based Privy rules; "
     "string-based policies are not supported."
@@ -53,17 +50,17 @@ def _is_managed_timebound_condition(condition: Any) -> bool:
     if not isinstance(condition, dict):
         return False
     return (
-        condition.get("field_source") == TIMEBOUND_FIELD_SOURCE
-        and condition.get("field") == TIMEBOUND_FIELD
-        and condition.get("operator") == TIMEBOUND_OPERATOR
+        condition.get("field_source") == "system"
+        and condition.get("field") == "current_unix_timestamp"
+        and condition.get("operator") == "lt"
     )
 
 
 def _make_timebound_condition(expires_at_unix: int) -> dict[str, str]:
     return {
-        "field_source": TIMEBOUND_FIELD_SOURCE,
-        "field": TIMEBOUND_FIELD,
-        "operator": TIMEBOUND_OPERATOR,
+        "field_source": "system",
+        "field": "current_unix_timestamp",
+        "operator": "lt",
         "value": str(expires_at_unix),
     }
 
