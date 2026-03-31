@@ -1655,10 +1655,9 @@ class BorosAdapter(BaseAdapter):
 
     @staticmethod
     def _vault_has_user_position(vault: BorosVault) -> bool:
-        return (
-            (vault.user_total_lp_wei or 0) > 0
-            or (vault.user_deposit_tokens or 0.0) > 0.0
-        )
+        return (vault.user_total_lp_wei or 0) > 0 or (
+            vault.user_deposit_tokens or 0.0
+        ) > 0.0
 
     def _market_row_from_vault_only(
         self,
@@ -1690,7 +1689,8 @@ class BorosAdapter(BaseAdapter):
             "collateral": collateral,
             "is_isolated_only": bool(vault.is_isolated_only),
             "max_leverage": None,
-            "state": vault.market_state or ("Expired" if vault.is_expired else "Unknown"),
+            "state": vault.market_state
+            or ("Expired" if vault.is_expired else "Unknown"),
             "is_active": False,
             "maturity_ts": vault.maturity_ts,
             "tenor_days": vault.tenor_days,
