@@ -27,6 +27,24 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("POST", url, json=body)
         return resp.json()
 
+    async def extend_wallet_expiry(
+        self,
+        wallet_address: str,
+        *,
+        expires_at: str,
+        privy_authorization_signature: str,
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/extend-expiry/"
+        resp = await self._authed_request(
+            "POST",
+            url,
+            json={
+                "expires_at": expires_at,
+                "privy_authorization_signature": privy_authorization_signature,
+            },
+        )
+        return resp.json()
+
     async def sign_transaction(self, wallet_address: str, transaction: dict) -> str:
         url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-evm-transaction/"
         resp = await self._authed_request(

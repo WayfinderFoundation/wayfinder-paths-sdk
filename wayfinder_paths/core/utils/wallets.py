@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -316,6 +317,27 @@ async def create_remote_wallet(
 
     return await WALLET_CLIENT.create_wallet(
         chain_type=chain_type, policies=resolved_policies, label=label
+    )
+
+
+async def extend_remote_wallet_expiry(
+    wallet_address: str,
+    ttl: int | None = None,
+    privy_authorization_signature: str = "",
+) -> dict[str, Any]:
+    resolved_ttl = get_default_remote_wallet_ttl_seconds() if ttl is None else ttl
+    if resolved_ttl <= 0:
+        raise ValueError("ttl must be positive to extend wallet expiry")
+    if not privy_authorization_signature.strip():
+        raise ValueError(
+            "privy_authorization_signature is required to extend wallet expiry"
+        )
+
+    expires_at = (datetime.now(UTC) + timedelta(seconds=resolved_ttl)).isoformat()
+    return await WALLET_CLIENT.extend_wallet_expiry(
+        wallet_address,
+        expires_at=expires_at,
+        privy_authorization_signature=privy_authorization_signature,
     )
 
 

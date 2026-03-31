@@ -117,6 +117,7 @@ def get_default_remote_wallet_ttl_seconds() -> int:
             "system.default_remote_wallet_ttl_seconds must be an int"
         ) from exc
 
+
 def get_api_key() -> str | None:
     system = CONFIG.get("system", {})
     api_key = system.get("api_key")
