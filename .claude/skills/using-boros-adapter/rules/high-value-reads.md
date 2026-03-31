@@ -227,6 +227,34 @@ Returns fields:
 - `state`, `is_active`, `maturity_ts`, `tenor_days`
 - `mid_apr`, `floating_apr`, `mark_apr`
 
+### Get all markets
+
+Get the repo-convention Boros market list with current rates, optional vault summary, and compact historical context:
+
+- Call: `success, markets = await adapter.get_all_markets()`
+- Output: `(bool, list[dict])`
+
+Per-market fields:
+- Top level: `market_id`, `market_address`, `symbol`, `underlying_symbol`, `platform`, `collateral`, `state`, `is_active`, `maturity_ts`, `tenor_days`, `is_isolated_only`, `max_leverage`
+- `rates`: current market rates and activity, including `floating_apr`, `mark_apr`, `vault_apy`, `mid_apr`, `best_bid_apr`, `best_ask_apr`, `funding_7d_ma_apr`, `funding_30d_ma_apr`, `volume_24h`, `notional_oi`
+- `vault`: AMM summary for that market, including `apy`, `expiry`, `collateral_symbol`, `tvl`, `tvl_usd`, `available_tokens`, `available_usd`
+- `history`: compact history summary, including `latest_mark_rate`, `avg_mark_rate`, `latest_floating_rate`, `avg_floating_rate`, and latest funding moving averages
+
+Useful flags:
+- `active_only=True` — only keep currently active markets
+- `account="0x..."` — include `vault.user` with deposited/available balances for that account
+- `include_vault_summary=False` — market + rate view only
+- `include_history_summary=False` — skip per-market history summary
+
+Account-specific expired vault note:
+- When `account` is provided, `get_all_markets()` also appends inactive vault-only rows for expired markets that have rolled off `/markets` but still have real user LP/deposit exposure.
+- Those rows may use fallback labels like `BOROS-MARKET-34` when Boros no longer serves market metadata for that expired market ID.
+- Rows are not appended for `availableBalanceToDeposit` alone, because that would duplicate idle collateral across many expired vault IDs.
+
+Important note:
+- `rates.mark_apr` is the current live market APR from `/markets`
+- `history.latest_mark_rate` / `avg_mark_rate` come from candle `mr` values and should be treated as historical rate snapshots, not a raw candle dump
+
 ### Historical rate data
 
 Get OHLCV + rate history for a market:
@@ -240,10 +268,10 @@ Valid `time_frame` values: `5m`, `1h`, `1d`, `1w`
 # Get last day of hourly rate history
 ok, history = await adapter.get_market_history(market_id=47, time_frame="1h")
 for candle in history[-24:]:
-    print(f"{candle.get('t')}: mark={candle.get('mr')}, floating={candle.get('ofr')}")
+    print(f"{candle.get('ts') or candle.get('t')}: mark={candle.get('mr')}, floating={candle.get('ofr')}")
 ```
 
-Candle fields: `t` (Unix timestamp), `mr` (total remaining fixed yield — see CRITICAL note above), `ofr` (annualized floating rate — daily CLOSE, can be noisy), `b7dmafr` / `b30dmafr` (7/30-day MA funding), `u` (instantaneous oracle rate update).
+Candle fields: `ts` (Unix timestamp; some older mocks may use `t`), `mr` (total remaining fixed yield — see CRITICAL note above), `ofr` (annualized floating rate — daily CLOSE, can be noisy), `b7dmafr` / `b30dmafr` (7/30-day MA funding), `u` (instantaneous oracle rate update).
 
 **Getting maturity for historical/expired markets:**
 

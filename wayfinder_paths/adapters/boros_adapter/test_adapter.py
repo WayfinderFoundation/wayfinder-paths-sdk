@@ -235,6 +235,383 @@ class TestBorosAdapter:
         assert quotes[0].floating_apr == 0.11
 
     @pytest.mark.asyncio
+    async def test_get_all_markets_includes_rates_vault_and_history(
+        self, adapter, mock_boros_client
+    ):
+        future_maturity = int(time.time()) + 86400
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "address": "0xMARKET",
+                        "tokenId": 3,
+                        "state": "Normal",
+                        "metadata": {
+                            "name": "ETHUSDT",
+                            "assetSymbol": "ETH",
+                            "platformName": "Hyperliquid",
+                        },
+                        "platform": {"name": "Hyperliquid"},
+                        "imData": {
+                            "symbol": "HYPERLIQUID-ETH-01JAN2026",
+                            "maturity": future_maturity,
+                            "isIsolatedOnly": False,
+                            "maxLeverage": 5,
+                        },
+                        "data": {
+                            "bestBid": 0.10,
+                            "bestAsk": 0.14,
+                            "midApr": 0.11,
+                            "floatingApr": 0.13,
+                            "markApr": 0.12,
+                            "longYieldApr": 0.09,
+                            "b7dmafr": 0.08,
+                            "b30dmafr": 0.07,
+                            "volume24h": "1000",
+                            "notionalOI": "2000",
+                            "assetMarkPrice": "123.4",
+                            "lastTradedApr": 0.15,
+                            "ammImpliedApr": 0.16,
+                            "nextSettlementTime": 1700000000,
+                        },
+                    }
+                ],
+            )
+        )
+        mock_boros_client.get_assets = AsyncMock(
+            return_value=[
+                {
+                    "tokenId": 3,
+                    "address": "0xUSDT",
+                    "symbol": "USDT",
+                    "usdPrice": "0.998",
+                    "metadata": {"proSymbol": "USDT"},
+                }
+            ]
+        )
+        mock_boros_client.get_amm_summary = AsyncMock(
+            return_value={
+                "collaterals": [
+                    {
+                        "tokenId": 3,
+                        "collateralAddress": "0xUSDT",
+                        "vaults": [
+                            {
+                                "ammId": 7,
+                                "marketId": 18,
+                                "lpApy": 0.12,
+                                "lpPrice": 1.25,
+                                "totalSupplyCap": str(int(100 * 1e18)),
+                                "totalLp": str(int(20 * 1e18)),
+                                "totalValue": str(int(25 * 1e18)),
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        mock_boros_client.get_market_history = AsyncMock(
+            return_value=[
+                {"t": 100, "mr": 0.21, "ofr": 0.08, "b7dmafr": 0.07, "b30dmafr": 0.06},
+                {
+                    "ts": 200,
+                    "mr": 0.19,
+                    "ofr": 0.09,
+                    "b7dmafr": 0.08,
+                    "b30dmafr": 0.07,
+                },
+            ]
+        )
+
+        ok, markets = await adapter.get_all_markets(
+            history_time_frame="5m",
+            history_points=2,
+        )
+
+        assert ok is True
+        assert isinstance(markets, list) and len(markets) == 1
+        market = markets[0]
+        assert market["market_id"] == 18
+        assert market["market_address"] == "0xMARKET"
+        assert market["is_active"] is True
+        assert market["rates"]["floating_apr"] == pytest.approx(0.13)
+        assert market["rates"]["mark_apr"] == pytest.approx(0.12)
+        assert market["rates"]["vault_apy"] == pytest.approx(0.12)
+        assert market["rates"]["best_bid_apr"] == pytest.approx(0.10)
+        assert market["rates"]["best_ask_apr"] == pytest.approx(0.14)
+        assert market["vault"]["apy"] == pytest.approx(0.12)
+        assert market["vault"]["collateral_symbol"] == "USDT"
+        assert market["vault"]["tvl"] == pytest.approx(25.0)
+        assert market["vault"]["tvl_usd"] == pytest.approx(24.95)
+        assert market["vault"]["available_tokens"] == pytest.approx(100.0)
+        assert market["vault"]["available_usd"] == pytest.approx(99.8)
+        assert market["history"]["time_frame"] == "5m"
+        assert market["history"]["points"] == 2
+        assert market["history"]["latest_mark_rate"] == pytest.approx(0.19)
+        assert market["history"]["avg_mark_rate"] == pytest.approx(0.20)
+        assert market["history"]["latest_floating_rate"] == pytest.approx(0.09)
+        assert market["history"]["avg_floating_rate"] == pytest.approx(0.085)
+
+        _, kwargs = mock_boros_client.get_market_history.await_args
+        assert kwargs["time_frame"] == "5m"
+        assert kwargs["start_ts"] is not None
+        assert kwargs["end_ts"] is not None
+
+    @pytest.mark.asyncio
+    async def test_get_all_markets_active_only_and_degrades_missing_enrichments(
+        self, adapter, mock_boros_client
+    ):
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "tokenId": 3,
+                        "state": "Normal",
+                        "metadata": {
+                            "assetSymbol": "ETH",
+                            "platformName": "Hyperliquid",
+                        },
+                        "platform": {"name": "Hyperliquid"},
+                        "imData": {
+                            "symbol": "HYPERLIQUID-ETH-01JAN2026",
+                            "maturity": int(time.time()) + 86400,
+                        },
+                        "data": {"floatingApr": 0.13, "markApr": 0.12},
+                    },
+                    {
+                        "marketId": 19,
+                        "tokenId": 3,
+                        "state": "Paused",
+                        "metadata": {"assetSymbol": "BTC", "platformName": "Binance"},
+                        "platform": {"name": "Binance"},
+                        "imData": {
+                            "symbol": "BINANCE-BTCUSDT-01JAN2025",
+                            "maturity": int(time.time()) - 86400,
+                        },
+                        "data": {"floatingApr": 0.05, "markApr": 0.04},
+                    },
+                ],
+            )
+        )
+        mock_boros_client.get_assets = AsyncMock(return_value=[])
+        mock_boros_client.get_amm_summary = AsyncMock(return_value={"vaults": []})
+        mock_boros_client.get_market_history = AsyncMock(
+            side_effect=Exception("history unavailable")
+        )
+
+        ok, markets = await adapter.get_all_markets(active_only=True)
+
+        assert ok is True
+        assert isinstance(markets, list)
+        assert [market["market_id"] for market in markets] == [18]
+        assert markets[0]["vault"] is None
+        assert markets[0]["history"] is None
+        assert markets[0]["rates"]["vault_apy"] is None
+
+    @pytest.mark.asyncio
+    async def test_get_all_markets_includes_account_specific_vault_user_fields(
+        self, adapter, mock_boros_client
+    ):
+        future_maturity = int(time.time()) + 86400
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "tokenId": 3,
+                        "state": "Normal",
+                        "metadata": {
+                            "assetSymbol": "ETH",
+                            "platformName": "Hyperliquid",
+                        },
+                        "platform": {"name": "Hyperliquid"},
+                        "imData": {
+                            "symbol": "HYPERLIQUID-ETH-01JAN2026",
+                            "maturity": future_maturity,
+                        },
+                    }
+                ],
+            )
+        )
+        mock_boros_client.get_assets = AsyncMock(
+            return_value=[
+                {
+                    "tokenId": 3,
+                    "address": "0xUSDT",
+                    "symbol": "USDT",
+                    "usdPrice": "1.0",
+                    "metadata": {"proSymbol": "USDT"},
+                }
+            ]
+        )
+        mock_boros_client.get_amm_summary = AsyncMock(
+            return_value={
+                "collaterals": [
+                    {
+                        "tokenId": 3,
+                        "collateralAddress": "0xUSDT",
+                        "vaults": [
+                            {
+                                "ammId": 7,
+                                "marketId": 18,
+                                "lpApy": 0.12,
+                                "lpPrice": 1.25,
+                                "totalSupplyCap": str(int(100 * 1e18)),
+                                "totalLp": str(int(20 * 1e18)),
+                                "totalValue": str(int(25 * 1e18)),
+                                "user": {
+                                    "depositValue": str(int(7 * 1e18)),
+                                    "availableBalanceToDeposit": str(int(5 * 1e18)),
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        mock_boros_client.get_market_history = AsyncMock(return_value=[])
+
+        async def _fake_fetch(queryable, needs_fetch, account, out):
+            for nfi in needs_fetch:
+                out[nfi] = int(8 * 1e18)
+
+        adapter._fetch_lp_balances_multicall = AsyncMock(side_effect=_fake_fetch)
+
+        ok, markets = await adapter.get_all_markets(
+            account=adapter.wallet_address,
+            include_history_summary=False,
+        )
+
+        assert ok is True
+        assert isinstance(markets, list) and len(markets) == 1
+        user = markets[0]["vault"]["user"]
+        assert user["deposited_tokens"] == pytest.approx(10.0)
+        assert user["deposited_usd"] == pytest.approx(10.0)
+        assert user["available_tokens"] == pytest.approx(5.0)
+        assert user["available_usd"] == pytest.approx(5.0)
+        assert user["total_lp_wei"] == int(8 * 1e18)
+        mock_boros_client.get_amm_summary.assert_awaited_once_with(
+            account=f"{adapter.wallet_address.lower()}00"
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_all_markets_appends_expired_user_vault_rows(
+        self, adapter, mock_boros_client
+    ):
+        future_maturity = int(time.time()) + 86400
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "tokenId": 3,
+                        "state": "Normal",
+                        "metadata": {
+                            "assetSymbol": "ETH",
+                            "platformName": "Hyperliquid",
+                        },
+                        "platform": {"name": "Hyperliquid"},
+                        "imData": {
+                            "symbol": "HYPERLIQUID-ETH-01JAN2026",
+                            "maturity": future_maturity,
+                        },
+                        "data": {"floatingApr": 0.13, "markApr": 0.12},
+                    }
+                ],
+            )
+        )
+        mock_boros_client.get_assets = AsyncMock(
+            return_value=[
+                {
+                    "tokenId": 3,
+                    "address": "0xUSDT",
+                    "symbol": "USDT",
+                    "usdPrice": "1.0",
+                    "decimals": 6,
+                    "metadata": {"proSymbol": "USDT"},
+                }
+            ]
+        )
+        mock_boros_client.get_amm_summary = AsyncMock(
+            return_value={
+                "collaterals": [
+                    {
+                        "tokenId": 3,
+                        "collateralAddress": "0xUSDT",
+                        "vaults": [
+                            {
+                                "ammId": 7,
+                                "marketId": 18,
+                                "lpApy": 0.12,
+                                "lpPrice": 1.25,
+                                "totalSupplyCap": str(int(100 * 1e18)),
+                                "totalLp": str(int(20 * 1e18)),
+                                "totalValue": str(int(25 * 1e18)),
+                            },
+                            {
+                                "ammId": 34,
+                                "marketId": 34,
+                                "lpApy": 0.08,
+                                "lpPrice": 1.0,
+                                "totalSupplyCap": str(int(100 * 1e18)),
+                                "totalLp": str(int(20 * 1e18)),
+                                "totalValue": str(int(80 * 1e18)),
+                                "user": {
+                                    "depositValue": str(int(12 * 1e18)),
+                                    "availableBalanceToDeposit": str(int(5 * 1e18)),
+                                },
+                            },
+                            {
+                                "ammId": 35,
+                                "marketId": 35,
+                                "lpApy": 0.06,
+                                "lpPrice": 1.0,
+                                "totalSupplyCap": str(int(100 * 1e18)),
+                                "totalLp": str(int(20 * 1e18)),
+                                "totalValue": str(int(40 * 1e18)),
+                                "user": {
+                                    "depositValue": "0",
+                                    "availableBalanceToDeposit": str(int(7 * 1e18)),
+                                },
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+        mock_boros_client.get_market_history = AsyncMock(return_value=[])
+        adapter._fetch_lp_balances_multicall = AsyncMock(return_value=None)
+
+        ok, markets = await adapter.get_all_markets(
+            account=adapter.wallet_address,
+            include_history_summary=False,
+        )
+
+        assert ok is True
+        assert isinstance(markets, list)
+        rows_by_id = {market["market_id"]: market for market in markets}
+        assert 18 in rows_by_id
+        assert 34 in rows_by_id
+        assert 35 not in rows_by_id
+
+        expired_row = rows_by_id[34]
+        assert expired_row["is_active"] is False
+        assert expired_row["state"] == "Expired"
+        assert expired_row["symbol"] == "BOROS-MARKET-34"
+        assert expired_row["rates"]["floating_apr"] is None
+        assert expired_row["rates"]["mark_apr"] is None
+        assert expired_row["rates"]["vault_apy"] == pytest.approx(0.08)
+        assert expired_row["vault"]["is_expired"] is True
+        assert expired_row["vault"]["user"]["deposited_tokens"] == pytest.approx(12.0)
+        assert expired_row["vault"]["user"]["available_tokens"] == pytest.approx(5.0)
+
+    @pytest.mark.asyncio
     async def test_get_collaterals_success(self, adapter, mock_boros_client):
         """Test collateral fetch."""
         mock_response = {
