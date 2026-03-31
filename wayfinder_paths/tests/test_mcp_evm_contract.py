@@ -296,7 +296,7 @@ async def test_contract_execute_rejects_view_function():
     ]
 
     with patch(
-        "wayfinder_paths.mcp.tools.evm_contract.find_wallet_by_label",
+        "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
         return_value=wallet,
     ):
         out = await contract_execute(
@@ -336,7 +336,7 @@ async def test_contract_execute_encodes_sends_and_annotates():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.evm_contract.find_wallet_by_label",
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
             return_value=wallet,
         ),
         patch(

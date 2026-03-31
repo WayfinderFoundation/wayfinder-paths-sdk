@@ -30,7 +30,7 @@ from wayfinder_paths.adapters.euler_v2_adapter import EulerV2Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 async def main():
-    adapter = get_adapter(EulerV2Adapter)  # read-only, no wallet needed
+    adapter = await get_adapter(EulerV2Adapter)  # read-only, no wallet needed
     ok, vaults = await adapter.get_verified_vaults(chain_id=CHAIN_ID_BASE, perspective="governed", limit=50)
     if not ok:
         raise RuntimeError(vaults)
@@ -51,7 +51,7 @@ from wayfinder_paths.adapters.euler_v2_adapter import EulerV2Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 async def main():
-    adapter = get_adapter(EulerV2Adapter)  # read-only, no wallet needed
+    adapter = await get_adapter(EulerV2Adapter)  # read-only, no wallet needed
     ok, markets = await adapter.get_all_markets(chain_id=CHAIN_ID_BASE, perspective="governed", limit=60, concurrency=10)
     if not ok:
         raise RuntimeError(markets)
@@ -80,7 +80,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 VAULT = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(EulerV2Adapter)
+    adapter = await get_adapter(EulerV2Adapter)
     ok, info = await adapter.get_vault_info_full(chain_id=CHAIN_ID_BASE, vault=VAULT)
     if not ok:
         raise RuntimeError(info)
@@ -102,7 +102,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(EulerV2Adapter)  # read-only, no wallet needed
+    adapter = await get_adapter(EulerV2Adapter)  # read-only, no wallet needed
     ok, state = await adapter.get_full_user_state(chain_id=CHAIN_ID_BASE, account=USER, include_zero_positions=False)
     if not ok:
         raise RuntimeError(state)

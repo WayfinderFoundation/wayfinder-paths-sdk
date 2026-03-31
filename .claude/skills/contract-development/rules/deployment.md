@@ -70,17 +70,15 @@ contract MyToken is ERC20 {
 '''
 
 async def main():
-    from wayfinder_paths.mcp.utils import find_wallet_by_label
-    from wayfinder_paths.core.utils.wallets import make_sign_callback
+    from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 
-    wallet = find_wallet_by_label("main")
-    sign_callback = make_sign_callback(wallet["private_key_hex"])
+    sign_callback, address = await get_wallet_signing_callback("main")
 
     result = await deploy_contract(
         source_code=SOURCE,
         contract_name="MyToken",
         constructor_args=[1_000_000 * 10**18],
-        from_address=wallet["address"],
+        from_address=address,
         chain_id=8453,
         sign_callback=sign_callback,
         verify=True,

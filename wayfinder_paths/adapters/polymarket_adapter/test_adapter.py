@@ -75,6 +75,169 @@ class TestPolymarketAdapter:
         assert data["price"] == "0.5"
 
     @pytest.mark.asyncio
+    async def test_quote_market_order_buy_uses_weighted_average(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get_order_book(*_args, **_kwargs):
+            return True, {
+                "market": "m1",
+                "asset_id": "123",
+                "timestamp": "1",
+                "hash": "hash",
+                "tick_size": "0.01",
+                "min_order_size": "1",
+                "neg_risk": False,
+                "last_trade_price": "0.41",
+                "asks": [
+                    {"price": "0.50", "size": "100"},
+                    {"price": "0.40", "size": "100"},
+                ],
+                "bids": [],
+            }
+
+        monkeypatch.setattr(adapter, "get_order_book", mock_get_order_book)
+
+        ok, quote = await adapter.quote_market_order(
+            token_id="123",
+            side="BUY",
+            amount=60.0,
+        )
+
+        assert ok is True
+        assert quote["amount_kind"] == "usdc"
+        assert quote["fully_fillable"] is True
+        assert quote["best_price"] == pytest.approx(0.4)
+        assert quote["worst_price"] == pytest.approx(0.5)
+        assert quote["shares"] == pytest.approx(140.0)
+        assert quote["notional_usdc"] == pytest.approx(60.0)
+        assert quote["average_price"] == pytest.approx(60.0 / 140.0)
+        assert quote["price_impact_bps"] == pytest.approx(
+            (((60.0 / 140.0) - 0.4) / 0.4) * 10_000.0
+        )
+        assert quote["levels_consumed"] == 2
+        assert quote["fills"] == [
+            {"price": 0.4, "shares": 100.0, "notional_usdc": 40.0},
+            {"price": 0.5, "shares": 40.0, "notional_usdc": 20.0},
+        ]
+        assert quote["book_meta"]["asset_id"] == "123"
+
+    @pytest.mark.asyncio
+    async def test_quote_market_order_sell_uses_weighted_average(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get_order_book(*_args, **_kwargs):
+            return True, {
+                "asset_id": "123",
+                "bids": [
+                    {"price": "0.50", "size": "100"},
+                    {"price": "0.55", "size": "40"},
+                ],
+                "asks": [],
+            }
+
+        monkeypatch.setattr(adapter, "get_order_book", mock_get_order_book)
+
+        ok, quote = await adapter.quote_market_order(
+            token_id="123",
+            side="SELL",
+            amount=60.0,
+        )
+
+        assert ok is True
+        assert quote["amount_kind"] == "shares"
+        assert quote["fully_fillable"] is True
+        assert quote["best_price"] == pytest.approx(0.55)
+        assert quote["worst_price"] == pytest.approx(0.5)
+        assert quote["shares"] == pytest.approx(60.0)
+        assert quote["notional_usdc"] == pytest.approx(32.0)
+        assert quote["average_price"] == pytest.approx(32.0 / 60.0)
+        assert quote["price_impact_bps"] == pytest.approx(
+            ((0.55 - (32.0 / 60.0)) / 0.55) * 10_000.0
+        )
+        assert quote["fills"] == [
+            {"price": 0.55, "shares": 40.0, "notional_usdc": 22.0},
+            {"price": 0.5, "shares": 20.0, "notional_usdc": 10.0},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_quote_market_order_handles_insufficient_depth(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get_order_book(*_args, **_kwargs):
+            return True, {
+                "asks": [
+                    {"price": "0.40", "size": "10"},
+                    {"price": "bad", "size": "20"},
+                ],
+                "bids": [],
+            }
+
+        monkeypatch.setattr(adapter, "get_order_book", mock_get_order_book)
+
+        ok, quote = await adapter.quote_market_order(
+            token_id="123",
+            side="BUY",
+            amount=10.0,
+        )
+
+        assert ok is True
+        assert quote["fully_fillable"] is False
+        assert quote["filled_amount"] == pytest.approx(4.0)
+        assert quote["unfilled_amount"] == pytest.approx(6.0)
+        assert quote["shares"] == pytest.approx(10.0)
+        assert quote["levels_consumed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_quote_market_order_handles_empty_book(self, adapter, monkeypatch):
+        async def mock_get_order_book(*_args, **_kwargs):
+            return True, {"asks": [], "bids": []}
+
+        monkeypatch.setattr(adapter, "get_order_book", mock_get_order_book)
+
+        ok, quote = await adapter.quote_market_order(
+            token_id="123",
+            side="BUY",
+            amount=10.0,
+        )
+
+        assert ok is True
+        assert quote["fully_fillable"] is False
+        assert quote["filled_amount"] == pytest.approx(0.0)
+        assert quote["unfilled_amount"] == pytest.approx(10.0)
+        assert quote["best_price"] is None
+        assert quote["average_price"] is None
+        assert quote["levels_consumed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_quote_prediction_resolves_market_slug(self, adapter, monkeypatch):
+        async def mock_get_market_by_slug(*_args, **_kwargs):
+            return True, {
+                "slug": "test-market",
+                "outcomes": ["Yes", "No"],
+                "clobTokenIds": ["tok_yes", "tok_no"],
+            }
+
+        async def mock_get_order_book(*_args, **_kwargs):
+            return True, {
+                "asks": [{"price": "0.25", "size": "40"}],
+                "bids": [],
+            }
+
+        monkeypatch.setattr(adapter, "get_market_by_slug", mock_get_market_by_slug)
+        monkeypatch.setattr(adapter, "get_order_book", mock_get_order_book)
+
+        ok, quote = await adapter.quote_prediction(
+            market_slug="test-market",
+            outcome="YES",
+            side="BUY",
+            amount=5.0,
+        )
+
+        assert ok is True
+        assert quote["token_id"] == "tok_yes"
+        assert quote["shares"] == pytest.approx(20.0)
+
+    @pytest.mark.asyncio
     async def test_get_positions(self, adapter, monkeypatch):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
@@ -172,9 +335,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
@@ -231,9 +392,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
@@ -293,9 +452,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
@@ -433,9 +590,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
 
         best_quote = {
             "provider": "enso",
@@ -487,9 +642,7 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
-        monkeypatch.setattr(
-            adapter, "_resolve_wallet_signer", lambda: (from_address, sign_cb)
-        )
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",

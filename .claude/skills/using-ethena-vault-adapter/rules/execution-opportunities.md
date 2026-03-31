@@ -18,7 +18,7 @@ from wayfinder_paths.adapters.ethena_vault_adapter import EthenaVaultAdapter
 AMOUNT_USDE_WEI = 100 * 10**18
 
 async def main():
-    adapter = get_adapter(EthenaVaultAdapter, "main")  # wallet required for signing
+    adapter = await get_adapter(EthenaVaultAdapter, "main")  # wallet required for signing
 
     ok, tx = await adapter.deposit_usde(amount_assets=AMOUNT_USDE_WEI)
     if not ok:

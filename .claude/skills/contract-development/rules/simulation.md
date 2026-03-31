@@ -17,8 +17,7 @@ import asyncio
 from wayfinder_paths.core.config import set_rpc_urls
 from wayfinder_paths.core.utils.contracts import deploy_contract
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-from wayfinder_paths.mcp.utils import find_wallet_by_label
-from wayfinder_paths.core.utils.wallets import make_sign_callback
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 
 SOURCE = '''
 // SPDX-License-Identifier: MIT
@@ -33,14 +32,13 @@ async def main():
     # 1. Set fork RPC (get this from gorlami_fork() or MCP)
     set_rpc_urls({"8453": ["https://virtual.base.rpc.tenderly.co/YOUR_FORK_ID"]})
 
-    wallet = find_wallet_by_label("main")
-    sign_callback = make_sign_callback(wallet["private_key_hex"])
+    sign_callback, address = await get_wallet_signing_callback("main")
 
     # 2. Deploy on fork
     result = await deploy_contract(
         source_code=SOURCE,
         contract_name="Counter",
-        from_address=wallet["address"],
+        from_address=address,
         chain_id=8453,
         sign_callback=sign_callback,
         verify=False,  # no Etherscan verification on forks

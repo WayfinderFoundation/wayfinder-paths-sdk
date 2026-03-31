@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -33,14 +34,14 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
     return ti if isinstance(ti, dict) else {}
 
 
-def main() -> None:
+async def main() -> None:
     payload = _load_payload()
     name = _tool_name(payload)
     if name not in {"mcp__wayfinder__polymarket_execute", "polymarket_execute"}:
         return
 
     tool_input = _tool_input(payload)
-    preview = build_polymarket_execute_preview(tool_input)
+    preview = await build_polymarket_execute_preview(tool_input)
     summary = (
         str(preview.get("summary") or "").strip()
         or "Review polymarket_execute() request."
@@ -59,4 +60,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

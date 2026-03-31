@@ -20,10 +20,12 @@ from loguru import logger
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.config import CONFIG, load_config
 from wayfinder_paths.core.strategies.Strategy import Strategy
-from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_address
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
 from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
-from wayfinder_paths.core.utils.web3 import get_transaction_chain_id, web3_from_chain_id
+from wayfinder_paths.core.utils.wallets import (
+    get_private_key,
+    get_wallet_signing_callback,
+)
 
 
 def get_strategy_config(
@@ -47,20 +49,9 @@ def get_strategy_config(
     for key in ("main_wallet", "strategy_wallet"):
         if wallet := config.get(key):
             if entry := by_addr.get(wallet.get("address", "").lower()):
-                if pk := entry.get("private_key") or entry.get("private_key_hex"):
+                if pk := get_private_key(entry):
                     wallet["private_key_hex"] = pk
     return config
-
-
-def create_signing_callback(address: str, config: dict[str, Any]):
-    async def sign(transaction: dict) -> str:
-        pk = resolve_private_key_for_from_address(address, config)
-        async with web3_from_chain_id(get_transaction_chain_id(transaction)) as web3:
-            return web3.eth.account.sign_transaction(
-                transaction, pk
-            ).raw_transaction.hex()
-
-    return sign
 
 
 def find_strategy_class(module) -> type[Strategy]:
@@ -134,10 +125,8 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
         main_wallet_label=main_wallet_label,
     )
 
-    def signing_cb(key: str):
-        if addr := config.get(key, {}).get("address"):
-            return create_signing_callback(addr, config)
-        return None
+    main_cb, _ = await get_wallet_signing_callback(main_wallet_label or "main")
+    strat_cb, _ = await get_wallet_signing_callback(wallet_label or strategy_name)
 
     module = importlib.import_module(
         f"wayfinder_paths.strategies.{strategy_name}.strategy"
@@ -147,8 +136,8 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
     async def _run() -> Any:
         strategy = strategy_cls(
             config,
-            main_wallet_signing_callback=signing_cb("main_wallet"),
-            strategy_wallet_signing_callback=signing_cb("strategy_wallet"),
+            main_wallet_signing_callback=main_cb,
+            strategy_wallet_signing_callback=strat_cb,
         )
         await strategy.setup()
 

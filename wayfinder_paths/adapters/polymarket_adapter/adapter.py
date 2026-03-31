@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
 import httpx
-from eth_account import Account
 from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from py_clob_client.client import ClobClient  # type: ignore[import-untyped]
@@ -148,8 +148,8 @@ class PolymarketAdapter(BaseAdapter):
         config: dict[str, Any] | None = None,
         *,
         sign_callback=None,
+        sign_hash_callback=None,
         wallet_address: str | None = None,
-        private_key_hex: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
         gamma_base_url: str = POLYMARKET_GAMMA_BASE_URL,
@@ -160,11 +160,11 @@ class PolymarketAdapter(BaseAdapter):
     ) -> None:
         super().__init__("polymarket_adapter", config)
 
-        self.sign_callback = sign_callback
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
-        self._private_key_hex = private_key_hex
+        self.sign_callback = sign_callback
+        self.sign_hash_callback = sign_hash_callback
         self._funder_override = funder
         self._signature_type = signature_type
 
@@ -422,6 +422,171 @@ class PolymarketAdapter(BaseAdapter):
 
         tok = token_ids[idx]
         return True, str(tok)
+
+    @staticmethod
+    def _decimal_or_none(value: Any) -> Decimal | None:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not parsed.is_finite():
+            return None
+        return parsed
+
+    @classmethod
+    def _normalized_book_levels(
+        cls,
+        *,
+        book: dict[str, Any],
+        side: Literal["BUY", "SELL"],
+    ) -> list[tuple[Decimal, Decimal]]:
+        raw_levels = book.get("asks") if side == "BUY" else book.get("bids")
+        if not isinstance(raw_levels, list):
+            return []
+
+        levels: list[tuple[Decimal, Decimal]] = []
+        for level in raw_levels:
+            if not isinstance(level, dict):
+                continue
+            price = cls._decimal_or_none(level.get("price"))
+            size = cls._decimal_or_none(level.get("size"))
+            if price is None or size is None or price <= 0 or size <= 0:
+                continue
+            levels.append((price, size))
+
+        levels.sort(key=lambda item: item[0], reverse=(side == "SELL"))
+        return levels
+
+    @staticmethod
+    def _decimal_to_float(value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+    @staticmethod
+    def _book_meta(book: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: book.get(key)
+            for key in (
+                "market",
+                "asset_id",
+                "timestamp",
+                "hash",
+                "tick_size",
+                "min_order_size",
+                "neg_risk",
+                "last_trade_price",
+            )
+            if key in book
+        }
+
+    async def quote_prediction(
+        self,
+        *,
+        market_slug: str,
+        outcome: str | int = "YES",
+        side: Literal["BUY", "SELL"],
+        amount: float,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        ok, market = await self.get_market_by_slug(market_slug)
+        if not ok:
+            return False, market
+
+        ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
+        if not ok_tid:
+            return False, token_id
+
+        return await self.quote_market_order(
+            token_id=token_id,
+            side=side,
+            amount=amount,
+        )
+
+    async def quote_market_order(
+        self,
+        *,
+        token_id: str,
+        side: Literal["BUY", "SELL"],
+        amount: float,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        requested_amount = self._decimal_or_none(amount)
+        if requested_amount is None or requested_amount <= 0:
+            return False, "amount must be positive"
+
+        ok_book, book = await self.get_order_book(token_id=token_id)
+        if not ok_book:
+            return False, book
+        if not isinstance(book, dict):
+            return False, f"Unexpected order book response: {type(book).__name__}"
+
+        levels = self._normalized_book_levels(book=book, side=side)
+        remaining = requested_amount
+        total_shares = Decimal("0")
+        total_notional = Decimal("0")
+        fills: list[dict[str, Any]] = []
+        best_price: Decimal | None = None
+        worst_price: Decimal | None = None
+
+        for price, size in levels:
+            if side == "BUY":
+                available_notional = size * price
+                notional = min(remaining, available_notional)
+                shares = notional / price
+                remaining -= notional
+            else:
+                shares = min(remaining, size)
+                notional = shares * price
+                remaining -= shares
+
+            if shares <= 0 or notional <= 0:
+                continue
+
+            if best_price is None:
+                best_price = price
+            worst_price = price
+            total_shares += shares
+            total_notional += notional
+            fills.append(
+                {
+                    "price": float(price),
+                    "shares": float(shares),
+                    "notional_usdc": float(notional),
+                }
+            )
+
+            if remaining <= 0:
+                remaining = Decimal("0")
+                break
+
+        average_price = (total_notional / total_shares) if total_shares > 0 else None
+        price_impact_bps: Decimal | None = None
+        if best_price is not None and average_price is not None and best_price > 0:
+            if side == "BUY":
+                price_impact_bps = (
+                    (average_price - best_price) / best_price
+                ) * Decimal("10000")
+            else:
+                price_impact_bps = (
+                    (best_price - average_price) / best_price
+                ) * Decimal("10000")
+
+        filled_amount = total_notional if side == "BUY" else total_shares
+        return True, {
+            "token_id": str(token_id),
+            "side": side,
+            "amount_kind": "usdc" if side == "BUY" else "shares",
+            "requested_amount": float(requested_amount),
+            "filled_amount": float(filled_amount),
+            "unfilled_amount": float(remaining),
+            "fully_fillable": remaining == 0,
+            "best_price": self._decimal_to_float(best_price),
+            "worst_price": self._decimal_to_float(worst_price),
+            "average_price": self._decimal_to_float(average_price),
+            "price_impact_bps": self._decimal_to_float(price_impact_bps),
+            "shares": float(total_shares),
+            "notional_usdc": float(total_notional),
+            "levels_consumed": len(fills),
+            "fills": fills,
+            "book_meta": self._book_meta(book),
+        }
 
     async def place_prediction(
         self,
@@ -746,7 +911,7 @@ class PolymarketAdapter(BaseAdapter):
         Fallback (async, bridge service): Polymarket Bridge deposit address transfer
         from `from_chain_id` (see `bridge_supported_assets()`).
         """
-        from_address, sign_cb = self._resolve_wallet_signer()
+        from_address, sign_cb = self._require_signer()
         from_token = to_checksum_address(from_token_address)
         base_units = to_erc20_raw(amount, token_decimals)
 
@@ -851,7 +1016,7 @@ class PolymarketAdapter(BaseAdapter):
         Preferred path (fast, on-chain): BRAP swap USDC.e -> USDC on Polygon, when possible.
         Fallback (async, bridge service): Polymarket Bridge withdraw address transfer.
         """
-        from_address, sign_cb = self._resolve_wallet_signer()
+        from_address, sign_cb = self._require_signer()
         base_units = to_erc20_raw(amount_usdce, token_decimals)
 
         rcpt = to_checksum_address(recipient_addr)
@@ -905,65 +1070,25 @@ class PolymarketAdapter(BaseAdapter):
             "recipient_addr": to_checksum_address(recipient_addr),
         }
 
-    def _resolve_wallet(self) -> dict[str, Any]:
-        cfg = self.config or {}
-        for key in ("strategy_wallet", "main_wallet"):
-            w = cfg.get(key)
-            if isinstance(w, dict) and w.get("address"):
-                return w
-
-        wallets = cfg.get("wallets")
-        if isinstance(wallets, list) and wallets:
-            for w in wallets:
-                if isinstance(w, dict) and str(w.get("label", "")).lower() == "main":
-                    return w
-            for w in wallets:
-                if isinstance(w, dict) and w.get("address"):
-                    return w
-
-        raise ValueError(
-            "No wallet configured. Provide config.strategy_wallet or pass wallet via get_adapter(..., wallet_label=...)."
-        )
-
-    def _resolve_private_key(self) -> str:
-        if self._private_key_hex:
-            return self._private_key_hex.removeprefix("0x")
-        wallet = self._resolve_wallet()
-        pk = wallet.get("private_key_hex") or wallet.get("private_key")
-        if not pk:
+    def _require_wallet_address(self) -> str:
+        if not self.wallet_address:
             raise ValueError(
-                "Wallet is missing private_key_hex (required for CLOB trading)."
+                "wallet_address is required. Use get_adapter(PolymarketAdapter, wallet_label)."
             )
-        return str(pk).removeprefix("0x")
+        return self.wallet_address
 
-    def _resolve_funder(self) -> str:
+    def _require_funder(self) -> str:
         if self._funder_override:
             return to_checksum_address(self._funder_override)
-        if self.wallet_address:
-            return self.wallet_address
-        wallet = self._resolve_wallet()
-        addr = wallet.get("address")
-        if not addr:
-            raise ValueError("Wallet missing address")
-        return to_checksum_address(str(addr))
+        return self._require_wallet_address()
 
-    def _resolve_wallet_signer(self) -> tuple[str, Any]:
-        from_address = self.wallet_address or to_checksum_address(
-            str(self._resolve_wallet().get("address"))
-        )
-
-        sign_cb = self.sign_callback
-        if sign_cb is None:
-            pk = self._resolve_private_key()
-            account = Account.from_key(pk)
-
-            async def _sign_cb(tx: dict) -> bytes:
-                signed = account.sign_transaction(tx)
-                return signed.raw_transaction
-
-            sign_cb = _sign_cb
-
-        return from_address, sign_cb
+    def _require_signer(self) -> tuple[str, Any]:
+        addr = self._require_wallet_address()
+        if not self.sign_callback:
+            raise ValueError(
+                "sign_callback is required. Use get_adapter(PolymarketAdapter, wallet_label)."
+            )
+        return addr, self.sign_callback
 
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
         cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=neg_risk)
@@ -976,14 +1101,16 @@ class PolymarketAdapter(BaseAdapter):
     @property
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
         if self._clob_client is None:
-            pk = self._resolve_private_key()
-            funder = self._resolve_funder()
+            addr = self._require_wallet_address()
+            funder = self._require_funder()
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
                 chain_id=POLYGON_CHAIN_ID,
-                key=pk,
+                key="0x" + "00" * 32,
                 signature_type=self._signature_type,
                 funder=funder,
+                address_override=addr,
+                sign_callback_override=self.sign_hash_callback,
             )
         return self._clob_client  # type: ignore[return-value]
 
@@ -992,7 +1119,7 @@ class PolymarketAdapter(BaseAdapter):
             if self._api_creds_set:
                 return True, {"ok": True}
 
-            creds = await asyncio.to_thread(self.clob_client.create_or_derive_api_creds)
+            creds = await self.clob_client.create_or_derive_api_creds()
             self.clob_client.set_api_creds(creds)
             self._api_creds_set = True
             return True, {"ok": True}
@@ -1000,7 +1127,7 @@ class PolymarketAdapter(BaseAdapter):
             return False, str(exc)
 
     async def ensure_onchain_approvals(self) -> tuple[bool, dict[str, Any] | str]:
-        from_address, sign_cb = self._resolve_wallet_signer()
+        from_address, sign_cb = self._require_signer()
 
         cfg = self._contract_addrs(neg_risk=False)
         cfg_nr = self._contract_addrs(neg_risk=True)
@@ -1074,10 +1201,8 @@ class PolymarketAdapter(BaseAdapter):
                 size=size,
                 side=side,
             )  # type: ignore[misc]
-            order = await asyncio.to_thread(self.clob_client.create_order, order_args)
-            resp = await asyncio.to_thread(
-                self.clob_client.post_order, order, "GTC", post_only
-            )
+            order = await self.clob_client.create_order(order_args)
+            resp = self.clob_client.post_order(order, "GTC", post_only)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1105,12 +1230,8 @@ class PolymarketAdapter(BaseAdapter):
                 amount=amount,
                 price=price or 0.0,
             )
-            order = await asyncio.to_thread(
-                self.clob_client.create_market_order, order_args
-            )
-            resp = await asyncio.to_thread(
-                self.clob_client.post_order, order, order_args.order_type, False
-            )
+            order = await self.clob_client.create_market_order(order_args)
+            resp = self.clob_client.post_order(order, order_args.order_type, False)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1120,7 +1241,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
-            resp = await asyncio.to_thread(self.clob_client.cancel, order_id)
+            resp = self.clob_client.cancel(order_id)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1138,7 +1259,7 @@ class PolymarketAdapter(BaseAdapter):
             if token_id:
                 # CLOB uses `asset_id` for the outcome token id returned by Gamma `clobTokenIds`.
                 params = OpenOrderParams(asset_id=token_id)  # type: ignore[misc]
-            data = await asyncio.to_thread(self.clob_client.get_orders, params)
+            data = self.clob_client.get_orders(params)
             if isinstance(data, list):
                 return True, data
             if isinstance(data, dict) and isinstance(data.get("data"), list):
@@ -1232,7 +1353,7 @@ class PolymarketAdapter(BaseAdapter):
 
         async def _fetch_orders() -> tuple[bool, list[dict[str, Any]] | str]:
             # CLOB requires Level-2 auth; only works for the configured signing wallet.
-            signer_addr = self._resolve_funder()
+            signer_addr = self._require_funder()
             if to_checksum_address(signer_addr) != addr:
                 return (
                     False,
@@ -1633,7 +1754,7 @@ class PolymarketAdapter(BaseAdapter):
         condition_id: str,
         holder: str,
     ) -> tuple[bool, dict[str, Any] | str]:
-        holder_addr, sign_cb = self._resolve_wallet_signer()
+        holder_addr, sign_cb = self._require_signer()
         if holder and to_checksum_address(holder) != holder_addr:
             return False, "holder must match the configured signing wallet"
 

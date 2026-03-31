@@ -59,7 +59,7 @@ Most methods return `(ok: bool, data_or_error: Any | str)`.
 
 You need:
 
-- A configured wallet with a private key (`wallets[].private_key_hex` in `config.json`, or pass `private_key_hex=...`)
+- A configured wallet (local with `private_key_hex` or remote via Privy)
 - A Polygon RPC URL (`strategy.rpc_urls["137"]`)
 - Some native Polygon gas token for transactions
 
@@ -69,7 +69,7 @@ Convenient pattern used by repo scripts:
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
+adapter = await get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
 ```
 
 ## End-to-end cycle (USDC → USDC.e → buy → sell/redeem → USDC)
@@ -130,7 +130,21 @@ Use `resolve_clob_token_id(market=..., outcome=...)` with either:
 ok, price = await adapter.get_price(token_id=token_id, side="BUY")
 ok, book = await adapter.get_order_book(token_id=token_id)
 ok, books = await adapter.get_order_books(token_ids=[token_id1, token_id2])
+ok, quote = await adapter.quote_market_order(token_id=token_id, side="BUY", amount=100.0)
+ok, slug_quote = await adapter.quote_prediction(
+    market_slug="bitcoin-above-70k-on-february-9",
+    outcome="YES",
+    side="BUY",
+    amount=100.0,
+)
 ```
+
+Important distinction:
+
+- `get_price(...)` returns the current quoted price from the CLOB API.
+- `quote_market_order(...)` walks the live book and estimates the actual average execution price, worst fill price, and partial-fill depth for a market-sized trade.
+- For `BUY`, `amount` is USDC notional to spend.
+- For `SELL`, `amount` is shares to sell.
 
 ### Price history (time series)
 
@@ -306,7 +320,7 @@ Market discovery (Gamma):
 
 Market data (CLOB):
 
-- `get_price`, `get_order_book`, `get_order_books`, `get_prices_history`, `get_market_prices_history`
+- `get_price`, `get_order_book`, `get_order_books`, `quote_market_order`, `quote_prediction`, `get_prices_history`, `get_market_prices_history`
 
 User data (Data API):
 

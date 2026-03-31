@@ -8,8 +8,7 @@ from typing import Any, Literal
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
-from wayfinder_paths.core.utils.evm_helpers import resolve_private_key_for_from_address
-from wayfinder_paths.core.utils.web3 import get_transaction_chain_id, web3_from_chain_id
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.utils import err, ok, repo_root
 
 
@@ -38,25 +37,7 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
         config["main_wallet"] = {"address": wallets["main"]["address"]}
     if "strategy_wallet" not in config and strategy_name in wallets:
         config["strategy_wallet"] = {"address": wallets[strategy_name]["address"]}
-
-    by_addr = {w["address"].lower(): w for w in CONFIG.get("wallets", [])}
-    for key in ("main_wallet", "strategy_wallet"):
-        if wallet := config.get(key):
-            if entry := by_addr.get(wallet.get("address", "").lower()):
-                if pk := entry.get("private_key") or entry.get("private_key_hex"):
-                    wallet["private_key_hex"] = pk
     return config
-
-
-def _create_signing_callback(address: str, config: dict[str, Any]):
-    async def sign(transaction: dict) -> str:
-        pk = resolve_private_key_for_from_address(address, config)
-        async with web3_from_chain_id(get_transaction_chain_id(transaction)) as web3:
-            return web3.eth.account.sign_transaction(
-                transaction, pk
-            ).raw_transaction.hex()
-
-    return sign
 
 
 async def run_strategy(
@@ -114,16 +95,20 @@ async def run_strategy(
 
     config = _get_strategy_config(strategy)
 
-    def signing_cb(key: str):
-        if addr := config.get(key, {}).get("address"):
-            return _create_signing_callback(addr, config)
-        return None
+    try:
+        main_cb, _ = await get_wallet_signing_callback("main")
+    except ValueError:
+        main_cb = None
+    try:
+        strategy_cb, _ = await get_wallet_signing_callback(strategy)
+    except ValueError:
+        strategy_cb = None
 
     try:
         strategy_obj = strategy_class(
             config,
-            main_wallet_signing_callback=signing_cb("main_wallet"),
-            strategy_wallet_signing_callback=signing_cb("strategy_wallet"),
+            main_wallet_signing_callback=main_cb,
+            strategy_wallet_signing_callback=strategy_cb,
         )
     except TypeError:
         try:

@@ -27,7 +27,7 @@ from wayfinder_paths.adapters.aave_v3_adapter import AaveV3Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
 
 async def main():
-    adapter = get_adapter(AaveV3Adapter)  # read-only, no wallet needed
+    adapter = await get_adapter(AaveV3Adapter)  # read-only, no wallet needed
     ok, markets = await adapter.get_all_markets(chain_id=CHAIN_ID_ARBITRUM, include_rewards=True)
     if not ok:
         raise RuntimeError(markets)
@@ -55,7 +55,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(AaveV3Adapter)  # read-only if you pass account explicitly
+    adapter = await get_adapter(AaveV3Adapter)  # read-only if you pass account explicitly
     ok, state = await adapter.get_full_user_state_per_chain(chain_id=CHAIN_ID_ARBITRUM, account=USER, include_rewards=True)
     if not ok:
         raise RuntimeError(state)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import asyncio
 import re
 import shutil
 from pathlib import Path
@@ -118,7 +119,7 @@ poetry run pytest wayfinder_paths/strategies/{dir_name}/ -v
 """
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(
         description="Create a new strategy with dedicated wallet"
     )
@@ -167,7 +168,7 @@ def main():
             filename=args.wallets_file.name,
         )
 
-    existing = load_wallets(args.wallets_file.parent, args.wallets_file.name)
+    existing = await load_wallets()
     wallet = make_local_wallet(
         label=dir_name, existing_wallets=existing, mnemonic=mnemonic
     )
@@ -181,4 +182,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

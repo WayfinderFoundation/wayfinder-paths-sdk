@@ -58,7 +58,7 @@ from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
 async def main():
-    adapter = get_adapter(SparkLendAdapter, "main")  # wallet required
+    adapter = await get_adapter(SparkLendAdapter, "main")  # wallet required
 
     ok, tx = await adapter.lend(
         chain_id=CHAIN_ID_ETHEREUM,

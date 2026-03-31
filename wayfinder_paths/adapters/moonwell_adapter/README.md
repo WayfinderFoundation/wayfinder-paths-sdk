@@ -35,7 +35,7 @@ The MoonwellAdapter provides:
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = get_adapter(MoonwellAdapter, "main")
+adapter = await get_adapter(MoonwellAdapter, "main")
 ```
 
 ## Methods

@@ -78,7 +78,7 @@ Key fields:
 - `system.api_key`: Wayfinder API key (or set `WAYFINDER_API_KEY` env var)
 - `system.api_base_url`: API base URL (defaults to `https://wayfinder.ai/api` if omitted)
 - `strategy.rpc_urls`: *(optional)* chain ID -> RPC URL(s) (string or list). If omitted for a chain, reads default to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/`.
-- `wallets`: local wallets with `label`, `address`, and `private_key_hex`
+- `wallets`: local wallets with `label`, `address`, and `private_key_hex`. Remote wallets (Privy server wallets) are auto-fetched when `system.api_key` is configured.
 
 Example:
 
@@ -160,6 +160,8 @@ The repository ships with several strategies. Each strategy folder contains a RE
 Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific logic:
 
 - `AaveV3Adapter` (Aave V3 lending/borrowing across Ethereum, Base, and Arbitrum)
+- `AerodromeAdapter` (Aerodrome classic Pool/Gauge/veAERO on Base, including Sugar read analytics)
+- `AerodromeSlipstreamAdapter` (Aerodrome Slipstream concentrated liquidity, CL gauges, and veAERO on Base)
 - `AvantisAdapter` (Avantis avUSDC ERC-4626 vault on Base)
 - `BalanceAdapter` (wallet balances + transfers)
 - `BorosAdapter` (Boros fixed-rate markets, margin accounts, and vaults)

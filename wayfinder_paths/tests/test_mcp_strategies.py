@@ -65,8 +65,9 @@ def _patch_config():
 
 def _patch_signing():
     return patch(
-        "wayfinder_paths.mcp.tools.strategies._create_signing_callback",
-        return_value=AsyncMock(),
+        "wayfinder_paths.mcp.tools.strategies.get_wallet_signing_callback",
+        new_callable=AsyncMock,
+        return_value=(AsyncMock(), "0xFakeAddr"),
     )
 
 
@@ -422,16 +423,16 @@ async def test_wip_warning_not_present_for_active():
 
 
 @pytest.mark.asyncio
-async def test_signing_cb_returns_none_when_no_address():
-    """When config wallets lack addresses, signing_cb returns None (no error)."""
-    empty_config: dict = {}
+async def test_signing_cb_returns_none_when_wallet_not_found():
+    """When wallets aren't found, signing callbacks are None (no error)."""
     with (
         _patch_load(),
+        _patch_config(),
         patch(
-            "wayfinder_paths.mcp.tools.strategies._get_strategy_config",
-            return_value=empty_config,
+            "wayfinder_paths.mcp.tools.strategies.get_wallet_signing_callback",
+            new_callable=AsyncMock,
+            side_effect=ValueError("not found"),
         ),
-        _patch_signing(),
     ):
         out = await run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
