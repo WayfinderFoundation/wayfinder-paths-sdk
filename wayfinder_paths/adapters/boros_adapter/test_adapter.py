@@ -1080,6 +1080,17 @@ class TestBorosAdapter:
                 ]
             }
         )
+        mock_boros_client.get_assets = AsyncMock(
+            return_value=[
+                {
+                    "tokenId": 3,
+                    "address": "0xUSDT",
+                    "symbol": "USDT",
+                    "usdPrice": "1.0",
+                    "metadata": {"proSymbol": "USDT"},
+                }
+            ]
+        )
         adapter.list_markets_all = AsyncMock(
             return_value=(
                 True,
@@ -1115,12 +1126,146 @@ class TestBorosAdapter:
         assert vault.user_deposit_tokens == pytest.approx(25.0)
 
     @pytest.mark.asyncio
+    async def test_get_vaults_summary_normalizes_view_fields(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.get_amm_summary = AsyncMock(
+            return_value={
+                "collaterals": [
+                    {
+                        "tokenId": 3,
+                        "collateralAddress": "0xUSDT",
+                        "vaults": [
+                            {
+                                "ammId": 7,
+                                "marketId": 18,
+                                "lpApy": 0.12,
+                                "lpPrice": 1.25,
+                                "totalSupplyCap": str(int(100 * 1e18)),
+                                "totalLp": str(int(20 * 1e18)),
+                                "totalValue": str(int(25 * 1e18)),
+                                "user": {
+                                    "depositValue": str(int(7 * 1e18)),
+                                    "availableBalanceToDeposit": str(int(5 * 1e18)),
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+        mock_boros_client.get_assets = AsyncMock(
+            return_value=[
+                {
+                    "tokenId": 3,
+                    "address": "0xUSDT",
+                    "symbol": "USDT0",
+                    "usdPrice": "0.998",
+                    "metadata": {"proSymbol": "USDT"},
+                }
+            ]
+        )
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "tokenId": 3,
+                        "state": "Normal",
+                        "metadata": {"name": "ETHUSDT"},
+                        "imData": {
+                            "symbol": "HYPERLIQUID-ETH-01JAN2026",
+                            "maturity": 1767225600,
+                            "isIsolatedOnly": False,
+                        },
+                    }
+                ],
+            )
+        )
+
+        ok, vaults = await adapter.get_vaults_summary()
+
+        assert ok is True
+        assert isinstance(vaults, list) and len(vaults) == 1
+        vault = vaults[0]
+        assert vault.collateral_token_id == 3
+        assert vault.collateral_symbol == "USDT"
+        assert vault.collateral_address == "0xUSDT"
+        assert vault.expiry == "2026-01-01"
+        assert vault.tvl == pytest.approx(25.0)
+        assert vault.tvl_usd == pytest.approx(24.95)
+        assert vault.available_tokens == pytest.approx(100.0)
+        assert vault.available_usd == pytest.approx(99.8)
+        assert vault.user_deposit_tokens == pytest.approx(7.0)
+        assert vault.user_deposit_usd == pytest.approx(6.986)
+        assert vault.user_available_tokens == pytest.approx(5.0)
+        assert vault.user_available_usd == pytest.approx(4.99)
+
+    @pytest.mark.asyncio
+    async def test_get_vaults_summary_can_exclude_expired(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.get_amm_summary = AsyncMock(
+            return_value={
+                "vaults": [
+                    {
+                        "ammId": 7,
+                        "marketId": 18,
+                        "symbol": "ACTIVE",
+                        "lpApy": 0.12,
+                    },
+                    {
+                        "ammId": 8,
+                        "marketId": 19,
+                        "symbol": "EXPIRED",
+                        "lpApy": 0.15,
+                    },
+                ]
+            }
+        )
+        mock_boros_client.get_assets = AsyncMock(return_value=[])
+        adapter.list_markets_all = AsyncMock(
+            return_value=(
+                True,
+                [
+                    {
+                        "marketId": 18,
+                        "tokenId": 3,
+                        "state": "Normal",
+                        "metadata": {"name": "ACTIVE"},
+                        "imData": {
+                            "symbol": "ACTIVE",
+                            "maturity": int(time.time()) + 86400,
+                        },
+                    },
+                ],
+            )
+        )
+
+        ok_all, all_vaults = await adapter.get_vaults_summary()
+        ok_open, open_vaults = await adapter.get_vaults_summary(include_expired=False)
+
+        assert ok_all is True
+        assert isinstance(all_vaults, list)
+        assert [vault.market_id for vault in all_vaults] == [18, 19]
+        assert all_vaults[1].is_expired is True
+
+        assert ok_open is True
+        assert isinstance(open_vaults, list)
+        assert [vault.market_id for vault in open_vaults] == [18]
+        assert open_vaults[0].is_expired is False
+
+    @pytest.mark.asyncio
     async def test_vault_helpers_reuse_summary_fields(self, adapter):
         vault = BorosVault(
             amm_id=7,
             market_id=18,
             symbol="HYPE-USDT",
             remaining_supply_lp=int(50 * 1e18),
+            available_tokens=62.5,
+            available_usd=75.0,
+            collateral_price_usd=1.2,
             tenor_days=10.0,
             raw={
                 "lpPrice": 1.25,
@@ -1131,6 +1276,7 @@ class TestBorosAdapter:
         assert adapter.estimate_user_lp_balance_wei(vault) == int(8 * 1e18)
         assert adapter.estimate_user_vault_value_tokens(vault) == pytest.approx(10.0)
         assert adapter.estimate_vault_capacity_tokens(vault) == pytest.approx(62.5)
+        assert adapter.estimate_vault_capacity_usd(vault) == pytest.approx(75.0)
         assert adapter.is_vault_open_for_deposit(vault, min_tenor_days=3.0) is True
 
     @pytest.mark.asyncio

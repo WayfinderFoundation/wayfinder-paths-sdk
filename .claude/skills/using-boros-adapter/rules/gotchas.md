@@ -41,6 +41,11 @@ Those helpers also enforce:
 - minimum tenor filters
 - isolated-only eligibility (`allow_isolated_only=True` if you want those vaults included)
 
+For display/status code:
+- `get_vaults_summary()` includes expired vaults by default so orchestration code can still roll or withdraw them
+- pass `include_expired=False` when you want the user-facing "currently available vaults" view
+- do not implement your own expiry filter from raw timestamps if the adapter already provided `is_expired` / `expiry`
+
 ## Isolated-only vaults use isolated margin first
 
 An isolated-only vault is not funded the same way as a cross-margin vault.

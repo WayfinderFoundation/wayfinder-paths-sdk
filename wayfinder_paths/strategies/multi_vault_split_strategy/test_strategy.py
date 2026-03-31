@@ -191,6 +191,89 @@ async def test_canonical_usage(strategy: MultiVaultSplitStrategy):
 
 
 @pytest.mark.asyncio
+async def test_status_includes_boros_vault_view(strategy: MultiVaultSplitStrategy):
+    strategy._fetch_apys = AsyncMock(
+        return_value={"apy_hlp": 0.0, "apy_boros": 0.08, "apy_avantis": 0.06}
+    )
+    strategy._get_inventory = AsyncMock(
+        return_value=_inventory(
+            boros_vault_value_usd=7.5,
+            boros_vaults=[
+                BorosVault(
+                    amm_id=7,
+                    market_id=18,
+                    symbol="HYPERLIQUID-ETH-01JAN2026",
+                    apy=0.08,
+                    collateral_symbol="USDT",
+                    expiry="2026-01-01",
+                    tvl=25.0,
+                    tvl_usd=25.0,
+                    available_tokens=100.0,
+                    available_usd=100.0,
+                    user_deposit_tokens=7.5,
+                    user_deposit_usd=7.5,
+                )
+            ],
+        )
+    )
+
+    st = assert_status_dict(await strategy.status())
+    boros_vaults = st["strategy_status"]["boros_vaults"]
+
+    assert isinstance(boros_vaults, list)
+    assert len(boros_vaults) == 1
+    assert boros_vaults[0]["collateral"] == "USDT"
+    assert boros_vaults[0]["expiry"] == "2026-01-01"
+    assert boros_vaults[0]["available"] == pytest.approx(100.0)
+    assert boros_vaults[0]["available_usd"] == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_status_hides_expired_boros_vaults(strategy: MultiVaultSplitStrategy):
+    strategy._fetch_apys = AsyncMock(
+        return_value={"apy_hlp": 0.0, "apy_boros": 0.08, "apy_avantis": 0.06}
+    )
+    strategy._get_inventory = AsyncMock(
+        return_value=_inventory(
+            boros_vault_value_usd=17.5,
+            boros_vaults=[
+                BorosVault(
+                    amm_id=7,
+                    market_id=18,
+                    symbol="ACTIVE",
+                    apy=0.08,
+                    collateral_symbol="USDT",
+                    expiry="2026-01-01",
+                    available_tokens=100.0,
+                    available_usd=100.0,
+                    user_deposit_tokens=7.5,
+                    user_deposit_usd=7.5,
+                ),
+                BorosVault(
+                    amm_id=8,
+                    market_id=19,
+                    symbol="EXPIRED",
+                    apy=0.12,
+                    collateral_symbol="USDT",
+                    expiry="2025-01-01",
+                    available_tokens=0.0,
+                    available_usd=0.0,
+                    user_deposit_tokens=10.0,
+                    user_deposit_usd=10.0,
+                    is_expired=True,
+                ),
+            ],
+        )
+    )
+
+    st = assert_status_dict(await strategy.status())
+    boros_vaults = st["strategy_status"]["boros_vaults"]
+
+    assert [vault["market_id"] for vault in boros_vaults] == [18]
+    assert strategy._get_inventory.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_quote_returns_quote_result(strategy: MultiVaultSplitStrategy):
     strategy._fetch_apys = AsyncMock(
         return_value={"apy_hlp": 0.0, "apy_boros": 0.10, "apy_avantis": 0.05}
