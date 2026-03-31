@@ -13,7 +13,9 @@ from wayfinder_paths.core.config import (
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
+    get_default_remote_wallet_ttl_seconds,
 )
+from wayfinder_paths.policies.ttl import allow_all_for
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -301,9 +303,13 @@ async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
+    ttl: int | None = None,
 ) -> dict[str, Any]:
+    resolved_ttl = get_default_remote_wallet_ttl_seconds() if ttl is None else ttl
+    resolved_policies = policies or [allow_all_for(resolved_ttl, chain_type=chain_type)]
+
     return await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label
+        chain_type=chain_type, policies=resolved_policies, label=label
     )
 
 

@@ -6,6 +6,7 @@ from typing import Any
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
+_DEFAULT_REMOTE_WALLET_TTL_SECONDS = 3600
 
 
 def _find_project_root(start: Path) -> Path | None:
@@ -102,6 +103,14 @@ def allow_local_wallets() -> bool:
     system = CONFIG.get("system", {})
     return bool(system.get("allow_local_wallets", True))
 
+
+def get_default_remote_wallet_ttl_seconds() -> int:
+    system = CONFIG.get("system", {})
+    value = system.get(
+        "default_remote_wallet_ttl_seconds",
+        _DEFAULT_REMOTE_WALLET_TTL_SECONDS,
+    )
+    return value
 
 def get_api_key() -> str | None:
     system = CONFIG.get("system", {})
