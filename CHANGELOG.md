@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.10.0] - 2026-03-31
+
+Added
+
+1. **Remote signing** (#169, #170): Server-side transaction signing via Privy, enabling hosted execution without local private keys. Docs and integration guide included.
+2. **Aerodrome adapter** (#163): Classic Aerodrome pools on Base — market discovery, route/liquidity quoting, LP/gauge state, veAERO voting, and reward claims.
+3. **Aerodrome Slipstream adapter** (#166): Concentrated liquidity on Base — pool discovery, position reads, mint/increase/decrease flows, gauge staking, and veAERO-linked reward claims.
+4. **SparkLend adapter** (#151, #160): Refactored from Aave V3 base with SparkLend-specific market reads, user state, supply/withdraw, borrow/repay, collateral, rewards, and native-token flows. Skill docs (#161).
+5. **Polymarket book-based quote support** (#178): Quote swap prices from Polymarket orderbook depth.
+6. **New chains** (#156): Added Katana, Monad, and MegaETH chain support.
+7. **AGENTS.md** (#174): Codegen agent guidelines for the repository.
+
+Changed
+
+1. **Signing cleanup** (#167): Consolidated wallet/signing utilities, one global constant replacing scattered duplicates (#165).
+2. **Boros vault views and docs improved** (#177): Enhanced vault read patterns and updated skill documentation.
+3. **Eigencloud adapter readme** (#168): Expanded docs for EigenLayer restaking adapter.
+4. **Etherfi Claude skills docs** (#159): Added skill documentation for ether.fi adapter.
+5. **SDK skill coverage refreshed** (#179): Updated all protocol skill docs to reflect current adapter APIs.
+
+Fixed
+
+1. **Backtesting bugs** (#162): Missing config field and duplicate timestamp handling fixed.
+2. **Multi-venue backtest docs and behaviour** (#164): Corrected docs and logic for multi-venue backtest runs.
+3. **Backtesting debt handling** (#158): Fixed incorrect debt accounting in backtest simulations.
+
 ## [0.9.0] - 2026-03-16 (a789e2d30d1f1ac540a859ee6d2587649f066cc6)
 
 Added
