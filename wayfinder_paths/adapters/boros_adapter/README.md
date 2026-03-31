@@ -13,6 +13,43 @@ from wayfinder_paths.adapters.boros_adapter import BorosAdapter
 adapter = BorosAdapter(config={})
 ```
 
+## Query Markets
+
+### get_all_markets
+
+Returns the normalized Boros market list with nested live rates, optional vault summary, and compact historical context.
+
+```python
+ok, markets = await adapter.get_all_markets(
+    active_only=True,
+    history_points=24,
+)
+
+if ok:
+    for market in markets:
+        print(
+            market["market_id"],
+            market["symbol"],
+            market["rates"]["floating_apr"],
+            market["rates"]["mark_apr"],
+            market["rates"]["vault_apy"],
+        )
+```
+
+Per-market output includes:
+- top-level market metadata and status: `market_id`, `market_address`, `symbol`, `underlying_symbol`, `platform`, `collateral`, `state`, `is_active`, `maturity_ts`, `tenor_days`
+- nested `rates`: live `floating_apr`, `mark_apr`, `vault_apy`, plus market stats like `mid_apr`, `best_bid_apr`, `best_ask_apr`, funding moving averages, volume, and OI
+- nested `vault`: `apy`, `expiry`, `collateral_symbol`, `tvl`, `tvl_usd`, `available_tokens`, `available_usd`
+- nested `history`: compact summary with latest and average mark/floating rates plus latest funding moving averages
+
+Useful flags:
+- `include_vault_summary=False` for a lighter market+rates view
+- `include_history_summary=False` to skip per-market history calls
+- `account="0x..."` to include `vault.user` balances for that wallet
+
+When `account` is provided, the adapter also appends inactive vault-only rows for expired markets that have rolled off live `/markets` but still have real user LP/deposit exposure. Those rows may use fallback symbols like `BOROS-MARKET-34` if Boros no longer returns market metadata for that expired ID.
+Rows are not appended for `availableBalanceToDeposit` alone, because that would duplicate idle collateral across many expired vault IDs.
+
 ## Query Vaults
 
 ### get_vaults_summary
