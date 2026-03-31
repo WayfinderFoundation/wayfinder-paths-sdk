@@ -101,6 +101,7 @@ config = BacktestConfig(
     funding_rates=funding_df,  # Optional DataFrame[timestamp × symbol]
     enable_liquidation=True,   # False for supply-only / LP strategies
     maintenance_margin_rate=0.05,
+    force_rebalance_if_overleveraged=False,
     periods_per_year=8760,     # CRITICAL: must match data interval
 )
 ```
@@ -109,6 +110,8 @@ config = BacktestConfig(
 - 1h → 8760 | 4h → 2190 | 1d → 365
 
 All end-to-end helpers set this automatically.
+
+`force_rebalance_if_overleveraged=False` means the backtester will **not** automatically bypass `rebalance_threshold` just because adverse price moves pushed current gross exposure above the configured leverage. Turn it on only when your intended simulation should proactively reduce gross exposure after an overleverage event. Leave it off when you want the strategy's normal rebalance cadence to remain the only driver of de-risking.
 
 ---
 
