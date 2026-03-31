@@ -11,10 +11,10 @@ from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
     get_api_key,
+    get_default_remote_wallet_ttl_seconds,
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
-    get_default_remote_wallet_ttl_seconds,
 )
 from wayfinder_paths.policies.ttl import allow_all_for
 

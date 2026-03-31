@@ -146,7 +146,9 @@ async def test_extend_remote_wallet_expiry_uses_default_ttl(
 
 @pytest.mark.asyncio
 async def test_extend_remote_wallet_expiry_rejects_nonpositive_ttl() -> None:
-    with pytest.raises(ValueError, match="ttl must be positive to extend wallet expiry"):
+    with pytest.raises(
+        ValueError, match="ttl must be positive to extend wallet expiry"
+    ):
         await extend_remote_wallet_expiry(
             "0xabc",
             ttl=0,
