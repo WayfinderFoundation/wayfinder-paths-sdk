@@ -57,6 +57,7 @@ class Inventory:
     hl_perp_idle: float
     avantis_value_usdc: float
     boros_vault_value_usd: float
+    boros_vault_reported_value_usd: float
     boros_account_idle_usd: float
     boros_vaults: list[BorosVault]
     positions_value: float
@@ -456,14 +457,20 @@ class MultiVaultSplitStrategy(Strategy):
 
         boros_vaults: list[BorosVault] = []
         boros_vault_value_usd = 0.0
+        boros_vault_reported_value_usd = 0.0
         ok_vaults, vaults = await self.boros_adapter.get_vaults_summary(
             account=self.strategy_wallet_address
         )
         if ok_vaults and isinstance(vaults, list):
             boros_vaults = list(vaults)
-            boros_vault_value_usd = sum(
+            boros_vault_reported_value_usd = sum(
                 self.boros_adapter.estimate_user_vault_value_usd(vault)
                 or self.boros_adapter.estimate_user_vault_value_tokens(vault)
+                for vault in boros_vaults
+            )
+            # Preserve existing allocation semantics; expose marked USD separately.
+            boros_vault_value_usd = sum(
+                self.boros_adapter.estimate_user_vault_value_tokens(vault)
                 for vault in boros_vaults
             )
 
@@ -494,6 +501,7 @@ class MultiVaultSplitStrategy(Strategy):
             hl_perp_idle=hl_perp_idle,
             avantis_value_usdc=avantis_value_usdc,
             boros_vault_value_usd=boros_vault_value_usd,
+            boros_vault_reported_value_usd=boros_vault_reported_value_usd,
             boros_account_idle_usd=boros_account_idle_usd,
             boros_vaults=boros_vaults,
             positions_value=positions_value,
@@ -1302,6 +1310,7 @@ class MultiVaultSplitStrategy(Strategy):
                 "avantis_value_usdc": inv.avantis_value_usdc,
                 "avantis_apy": float(apys.get("apy_avantis") or 0.0),
                 "boros_vault_value_usd": inv.boros_vault_value_usd,
+                "boros_vault_reported_value_usd": inv.boros_vault_reported_value_usd,
                 "boros_account_idle_usd": inv.boros_account_idle_usd,
                 "boros_apy": float(apys.get("apy_boros") or 0.0),
                 "boros_vaults": [

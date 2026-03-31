@@ -180,6 +180,7 @@ Important notes:
 - Isolated-only vaults are intentionally excluded unless `allow_isolated_only=True`.
 - "Open" means more than `is_active=true`: the helper also rejects expired, paused, below-tenor, and disallowed isolated-only vaults.
 - Expired vaults are identified by absence from the active market metadata set; they can still appear in summaries when `include_expired=True` so rollover/withdraw flows can manage them.
+- If you surface Boros vault values inside a strategy status view, keep marked USD reporting under a dedicated field (for example `boros_vault_reported_value_usd`) rather than silently changing the meaning of an existing sizing field.
 
 ## Market Discovery Helpers
 

@@ -45,6 +45,7 @@ For display/status code:
 - `get_vaults_summary()` includes expired vaults by default so orchestration code can still roll or withdraw them
 - pass `include_expired=False` when you want the user-facing "currently available vaults" view
 - do not implement your own expiry filter from raw timestamps if the adapter already provided `is_expired` / `expiry`
+- if a strategy already uses a Boros value field for allocation math, add a separate reporting key for the true USD mark instead of reusing that field name
 
 ## Isolated-only vaults use isolated margin first
 
