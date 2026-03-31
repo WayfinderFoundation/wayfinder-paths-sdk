@@ -306,7 +306,13 @@ async def create_remote_wallet(
     ttl: int | None = None,
 ) -> dict[str, Any]:
     resolved_ttl = get_default_remote_wallet_ttl_seconds() if ttl is None else ttl
-    resolved_policies = policies or [allow_all_for(resolved_ttl, chain_type=chain_type)]
+    if policies:
+        resolved_policies = policies
+    # disable TTL for non-positive numbers
+    elif resolved_ttl <= 0:
+        resolved_policies = []
+    else:
+        resolved_policies = [allow_all_for(resolved_ttl, chain_type=chain_type)]
 
     return await WALLET_CLIENT.create_wallet(
         chain_type=chain_type, policies=resolved_policies, label=label
