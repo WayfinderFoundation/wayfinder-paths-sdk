@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
@@ -421,6 +422,171 @@ class PolymarketAdapter(BaseAdapter):
 
         tok = token_ids[idx]
         return True, str(tok)
+
+    @staticmethod
+    def _decimal_or_none(value: Any) -> Decimal | None:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if not parsed.is_finite():
+            return None
+        return parsed
+
+    @classmethod
+    def _normalized_book_levels(
+        cls,
+        *,
+        book: dict[str, Any],
+        side: Literal["BUY", "SELL"],
+    ) -> list[tuple[Decimal, Decimal]]:
+        raw_levels = book.get("asks") if side == "BUY" else book.get("bids")
+        if not isinstance(raw_levels, list):
+            return []
+
+        levels: list[tuple[Decimal, Decimal]] = []
+        for level in raw_levels:
+            if not isinstance(level, dict):
+                continue
+            price = cls._decimal_or_none(level.get("price"))
+            size = cls._decimal_or_none(level.get("size"))
+            if price is None or size is None or price <= 0 or size <= 0:
+                continue
+            levels.append((price, size))
+
+        levels.sort(key=lambda item: item[0], reverse=(side == "SELL"))
+        return levels
+
+    @staticmethod
+    def _decimal_to_float(value: Decimal | None) -> float | None:
+        return float(value) if value is not None else None
+
+    @staticmethod
+    def _book_meta(book: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: book.get(key)
+            for key in (
+                "market",
+                "asset_id",
+                "timestamp",
+                "hash",
+                "tick_size",
+                "min_order_size",
+                "neg_risk",
+                "last_trade_price",
+            )
+            if key in book
+        }
+
+    async def quote_prediction(
+        self,
+        *,
+        market_slug: str,
+        outcome: str | int = "YES",
+        side: Literal["BUY", "SELL"],
+        amount: float,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        ok, market = await self.get_market_by_slug(market_slug)
+        if not ok:
+            return False, market
+
+        ok_tid, token_id = self.resolve_clob_token_id(market=market, outcome=outcome)
+        if not ok_tid:
+            return False, token_id
+
+        return await self.quote_market_order(
+            token_id=token_id,
+            side=side,
+            amount=amount,
+        )
+
+    async def quote_market_order(
+        self,
+        *,
+        token_id: str,
+        side: Literal["BUY", "SELL"],
+        amount: float,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        requested_amount = self._decimal_or_none(amount)
+        if requested_amount is None or requested_amount <= 0:
+            return False, "amount must be positive"
+
+        ok_book, book = await self.get_order_book(token_id=token_id)
+        if not ok_book:
+            return False, book
+        if not isinstance(book, dict):
+            return False, f"Unexpected order book response: {type(book).__name__}"
+
+        levels = self._normalized_book_levels(book=book, side=side)
+        remaining = requested_amount
+        total_shares = Decimal("0")
+        total_notional = Decimal("0")
+        fills: list[dict[str, Any]] = []
+        best_price: Decimal | None = None
+        worst_price: Decimal | None = None
+
+        for price, size in levels:
+            if side == "BUY":
+                available_notional = size * price
+                notional = min(remaining, available_notional)
+                shares = notional / price
+                remaining -= notional
+            else:
+                shares = min(remaining, size)
+                notional = shares * price
+                remaining -= shares
+
+            if shares <= 0 or notional <= 0:
+                continue
+
+            if best_price is None:
+                best_price = price
+            worst_price = price
+            total_shares += shares
+            total_notional += notional
+            fills.append(
+                {
+                    "price": float(price),
+                    "shares": float(shares),
+                    "notional_usdc": float(notional),
+                }
+            )
+
+            if remaining <= 0:
+                remaining = Decimal("0")
+                break
+
+        average_price = (total_notional / total_shares) if total_shares > 0 else None
+        price_impact_bps: Decimal | None = None
+        if best_price is not None and average_price is not None and best_price > 0:
+            if side == "BUY":
+                price_impact_bps = (
+                    (average_price - best_price) / best_price
+                ) * Decimal("10000")
+            else:
+                price_impact_bps = (
+                    (best_price - average_price) / best_price
+                ) * Decimal("10000")
+
+        filled_amount = total_notional if side == "BUY" else total_shares
+        return True, {
+            "token_id": str(token_id),
+            "side": side,
+            "amount_kind": "usdc" if side == "BUY" else "shares",
+            "requested_amount": float(requested_amount),
+            "filled_amount": float(filled_amount),
+            "unfilled_amount": float(remaining),
+            "fully_fillable": remaining == 0,
+            "best_price": self._decimal_to_float(best_price),
+            "worst_price": self._decimal_to_float(worst_price),
+            "average_price": self._decimal_to_float(average_price),
+            "price_impact_bps": self._decimal_to_float(price_impact_bps),
+            "shares": float(total_shares),
+            "notional_usdc": float(total_notional),
+            "levels_consumed": len(fills),
+            "fills": fills,
+            "book_meta": self._book_meta(book),
+        }
 
     async def place_prediction(
         self,

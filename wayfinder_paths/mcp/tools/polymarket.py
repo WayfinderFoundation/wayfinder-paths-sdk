@@ -131,6 +131,7 @@ async def polymarket(
         "trending",
         "get_market",
         "get_event",
+        "quote",
         "price",
         "order_book",
         "price_history",
@@ -160,9 +161,12 @@ async def polymarket(
     # market/event
     market_slug: str | None = None,
     event_slug: str | None = None,
+    outcome: str | int = "YES",
     # clob data
     token_id: str | None = None,
     side: Literal["BUY", "SELL"] = "BUY",
+    amount_usdc: float | None = None,
+    shares: float | None = None,
     interval: str | None = "1d",
     start_ts: int | None = None,
     end_ts: int | None = None,
@@ -290,6 +294,59 @@ async def polymarket(
             if not ok_e:
                 return err("error", str(e))
             return ok({"action": action, "event": e})
+
+        if action == "quote":
+            if side == "BUY":
+                if amount_usdc is None:
+                    return err(
+                        "invalid_request", "amount_usdc is required for BUY quote"
+                    )
+                try:
+                    quote_amount = float(amount_usdc)
+                except (TypeError, ValueError):
+                    return err("invalid_request", "amount_usdc must be a number")
+            else:
+                if shares is None:
+                    return err("invalid_request", "shares is required for SELL quote")
+                try:
+                    quote_amount = float(shares)
+                except (TypeError, ValueError):
+                    return err("invalid_request", "shares must be a number")
+
+            if quote_amount <= 0:
+                return err("invalid_request", "quote amount must be positive")
+
+            slug = str(market_slug or "").strip()
+            if slug:
+                ok_q, q = await adapter.quote_prediction(
+                    market_slug=slug,
+                    outcome=outcome,
+                    side=side,
+                    amount=quote_amount,
+                )
+            else:
+                tid = str(token_id or "").strip()
+                if not tid:
+                    return err(
+                        "invalid_request",
+                        "token_id or market_slug is required for quote",
+                    )
+                ok_q, q = await adapter.quote_market_order(
+                    token_id=tid,
+                    side=side,
+                    amount=quote_amount,
+                )
+
+            if not ok_q:
+                return err("error", str(q))
+            return ok(
+                {
+                    "action": action,
+                    "token_id": q["token_id"],
+                    "side": side,
+                    "quote": q,
+                }
+            )
 
         if action == "price":
             tid = str(token_id or "").strip()
