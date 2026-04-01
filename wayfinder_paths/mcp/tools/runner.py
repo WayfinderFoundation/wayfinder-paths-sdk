@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.mcp.utils import err, ok, read_text_excerpt, repo_root
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
@@ -77,8 +76,6 @@ async def runner(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     debug: bool = False,
-    # Notification
-    notify_session: str | None = None,
 ) -> dict[str, Any]:
     """Control the local runner daemon via its Unix socket.
 
@@ -328,15 +325,6 @@ async def runner(
                         "args": argv,
                     }
                 )
-
-            resolved_session_id = None
-            if notify_session == "auto":
-                if OPENCODE_CLIENT.healthy():
-                    resolved_session_id = OPENCODE_CLIENT.latest_session_id()
-            elif notify_session:
-                resolved_session_id = notify_session
-            if resolved_session_id:
-                job_payload["notify_session_id"] = resolved_session_id
 
             resp = client.call(
                 "add_job",
