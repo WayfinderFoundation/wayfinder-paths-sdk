@@ -43,15 +43,9 @@ def test_pack_publish_uploads_rendered_skill_exports_and_bond_metadata(
                 "effectiveRiskTier": "interactive",
                 "requiredInitialBond": "1000",
                 "requiredUpgradePendingBond": "1000",
-                "manageUrl": "https://app.example/packs/submissions/skill-demo?version=0.1.0",
-                "packId": "0xabc123",
-                "contractArgs": {
-                    "packId": "0xabc123",
-                    "bundleHash": "0xdef456",
-                    "riskTier": "interactive",
-                    "requiredInitialBondWei": "1000",
-                    "requiredUpgradePendingBondWei": "1000",
-                },
+                "manageUrl": "https://app.example/packs/skill-demo/manage?version=0.1.0",
+                "reservationExpiresAt": "2026-04-15T00:00:00+00:00",
+                "slugPermanent": False,
             }
 
     monkeypatch.setattr("wayfinder_paths.packs.cli.PacksApiClient", FakePublishClient)
@@ -111,14 +105,12 @@ def test_pack_publish_uploads_rendered_skill_exports_and_bond_metadata(
     assert "skill/agents/openai.yaml" in names
 
     assert "Link owner wallet and bond at:" in result.output
-    assert (
-        "https://app.example/packs/submissions/skill-demo?version=0.1.0"
-        in result.output
-    )
+    assert "https://app.example/packs/skill-demo/manage?version=0.1.0" in result.output
     assert "Effective risk tier: interactive" in result.output
     assert "Required initial bond: 1000" in result.output
     assert "Required upgrade pending bond: 1000" in result.output
-    assert "Bond contract args:" in result.output
+    assert "Temporary slug reservation expires at:" in result.output
+    assert "Slug reservation is temporary until approval/publication." in result.output
 
 
 def test_packs_api_client_publish_uses_direct_upload_flow(tmp_path: Path):

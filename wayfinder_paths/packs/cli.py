@@ -705,9 +705,17 @@ def publish_cmd(
             f"Required upgrade pending bond: {resp['requiredUpgradePendingBond']}",
             err=True,
         )
-    if bonded and resp.get("contractArgs"):
-        click.echo("\nBond contract args:", err=True)
-        click.echo(json.dumps(resp["contractArgs"], indent=2), err=True)
+    if resp.get("reservationExpiresAt"):
+        click.echo(
+            f"Temporary slug reservation expires at: {resp['reservationExpiresAt']}",
+            err=True,
+        )
+    if resp.get("slugPermanent") is True:
+        click.echo("Slug reservation is permanent.", err=True)
+    elif resp.get("slugPermanent") is False:
+        click.echo(
+            "Slug reservation is temporary until approval/publication.", err=True
+        )
 
 
 @pack_cli.command(name="search", help="Search packs in the registry.")
