@@ -37,10 +37,14 @@ class OpenCodeClient:
             return []
         return resp.json()
 
-    def latest_session_id(self) -> str | None:
+    def active_session_id(self) -> str | None:
+        """Return the busy session (mid-tool-call), or the most recently updated one."""
         sessions = self.list_sessions()
         if not sessions:
             return None
+        for s in sessions:
+            if s.get("status") == "busy":
+                return s.get("id")
         return sessions[0].get("id")
 
     def send_message(self, session_id: str, text: str) -> bool:
