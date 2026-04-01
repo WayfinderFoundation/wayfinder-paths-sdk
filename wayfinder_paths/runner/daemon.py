@@ -283,9 +283,9 @@ class RunnerDaemon:
             0, self._running_by_job.get(rp.job_id, 1) - 1
         )
 
-        self._notify_session(rp, status=status, error_text=error_text)
+        asyncio.run(self._notify_session(rp, status=status, error_text=error_text))
 
-    def _notify_session(
+    async def _notify_session(
         self,
         rp: RunningProcess,
         *,
@@ -295,8 +295,7 @@ class RunnerDaemon:
         job, _ = self._db.get_job(name=rp.job_name)
         session_id = (job.payload or {}).get("notify_session_id")
 
-        if not session_id or not asyncio.run(OPENCODE_CLIENT.healthy()):
-            logger.debug("OpenCode server not reachable, skipping notification")
+        if not session_id or not await OPENCODE_CLIENT.healthy():
             return
 
         log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
@@ -309,7 +308,7 @@ class RunnerDaemon:
                 "message": log_tail,
             }
         )
-        asyncio.run(OPENCODE_CLIENT.send_message(session_id, msg))
+        await OPENCODE_CLIENT.send_message(session_id, msg)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
