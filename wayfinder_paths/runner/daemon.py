@@ -292,29 +292,24 @@ class RunnerDaemon:
         status: str,
         error_text: str | None,
     ) -> None:
-        try:
-            job, _ = self._db.get_job(name=rp.job_name)
-        except Exception:
-            return
+        job, _ = self._db.get_job(name=rp.job_name)
         session_id = (job.payload or {}).get("notify_session_id")
-        if not session_id:
+
+        if not session_id or not asyncio.run(OPENCODE_CLIENT.healthy()):
+            logger.debug("OpenCode server not reachable, skipping notification")
             return
-        try:
-            if not asyncio.run(OPENCODE_CLIENT.healthy()):
-                logger.debug("OpenCode server not reachable, skipping notification")
-                return
-            log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
-            msg = json.dumps(
-                {
-                    "type": "job",
-                    "name": rp.job_name,
-                    "status": status,
-                    "message": log_tail,
-                }
-            )
-            asyncio.run(OPENCODE_CLIENT.send_message(session_id, msg))
-        except Exception as exc:
-            logger.debug(f"Notification failed: {exc}")
+
+        log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
+        msg = json.dumps(
+            {
+                "type": "job",
+                "name": rp.job_name,
+                "status": status,
+                "error": error_text,
+                "message": log_tail,
+            }
+        )
+        asyncio.run(OPENCODE_CLIENT.send_message(session_id, msg))
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
