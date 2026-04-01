@@ -4,14 +4,15 @@ import time
 from typing import Any
 
 
-def allow_all_until(
-    unix_timestamp: int,
+def allow_all_for(
+    seconds_to_live: int,
     *,
     chain_type: str = "ethereum",
 ) -> dict[str, Any]:
-    if unix_timestamp <= 0:
-        raise ValueError("unix_timestamp must be a positive unix timestamp")
+    if seconds_to_live <= 0:
+        raise ValueError("seconds_to_live must be a positive integer")
 
+    unix_timestamp = int(time.time()) + seconds_to_live
     return {
         "version": "1.0",
         "name": "TTL",
@@ -32,15 +33,3 @@ def allow_all_until(
             }
         ],
     }
-
-
-def allow_all_for(
-    seconds_to_live: int,
-    *,
-    chain_type: str = "ethereum",
-) -> dict[str, Any]:
-    if seconds_to_live <= 0:
-        raise ValueError("seconds_to_live must be a positive integer")
-
-    unix_timestamp = int(time.time()) + seconds_to_live
-    return allow_all_until(unix_timestamp, chain_type=chain_type)
