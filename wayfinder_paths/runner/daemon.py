@@ -22,7 +22,7 @@ from wayfinder_paths.runner.constants import (
 )
 from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
-from wayfinder_paths.core.clients.OpenCodeClient import OpenCodeClient
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
@@ -298,8 +298,7 @@ class RunnerDaemon:
         session_id = (job.payload or {}).get("notify_session_id")
         if not session_id:
             return
-        oc = OpenCodeClient()
-        if not oc.healthy():
+        if not OPENCODE_CLIENT.healthy():
             logger.debug("OpenCode server not reachable, skipping notification")
             return
         log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
@@ -309,7 +308,7 @@ class RunnerDaemon:
             "status": status,
             "message": log_tail,
         })
-        oc.send_message(session_id, msg)
+        OPENCODE_CLIENT.send_message(session_id, msg)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:

@@ -8,7 +8,7 @@ from typing import Any
 import click
 from loguru import logger
 
-from wayfinder_paths.core.clients.OpenCodeClient import OpenCodeClient
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.daemon import RunnerDaemon
@@ -220,9 +220,8 @@ def add_job_cmd(
 
     resolved_session_id = None
     if notify_session == "auto":
-        oc = OpenCodeClient()
-        if oc.healthy():
-            resolved_session_id = oc.latest_session_id()
+        if OPENCODE_CLIENT.healthy():
+            resolved_session_id = OPENCODE_CLIENT.latest_session_id()
             if resolved_session_id:
                 click.echo(f"Auto-discovered session: {resolved_session_id}")
             else:
