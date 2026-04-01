@@ -8,6 +8,7 @@ from typing import Any
 import click
 from loguru import logger
 
+from wayfinder_paths.core.clients.OpenCodeClient import OpenCodeClient
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.daemon import RunnerDaemon
@@ -187,6 +188,11 @@ def status_cmd() -> None:
     "--env-json", default=None, help="JSON object of env vars for the worker."
 )
 @click.option("--debug/--no-debug", default=False, show_default=True)
+@click.option(
+    "--notify-session",
+    default=None,
+    help="OpenCode session ID to post job results to. Use 'auto' to discover the latest session.",
+)
 def add_job_cmd(
     name: str,
     job_type: str,
@@ -200,6 +206,7 @@ def add_job_cmd(
     timeout_seconds: int | None,
     env_json: str | None,
     debug: bool,
+    notify_session: str | None,
 ) -> None:
     paths = get_runner_paths()
     jt = str(job_type).lower().strip()
@@ -210,6 +217,20 @@ def add_job_cmd(
         if not isinstance(decoded, dict):
             raise click.UsageError("--env-json must decode to an object")
         env_payload = {str(k): str(v) for k, v in decoded.items()}
+
+    resolved_session_id = None
+    if notify_session == "auto":
+        oc = OpenCodeClient()
+        if oc.healthy():
+            resolved_session_id = oc.latest_session_id()
+            if resolved_session_id:
+                click.echo(f"Auto-discovered session: {resolved_session_id}")
+            else:
+                click.echo("Warning: no active sessions found", err=True)
+        else:
+            click.echo("Warning: OpenCode server not reachable, skipping notify", err=True)
+    elif notify_session:
+        resolved_session_id = notify_session
 
     payload: dict[str, Any]
     if jt == JOB_TYPE_STRATEGY:
@@ -244,6 +265,9 @@ def add_job_cmd(
             payload["env"] = env_payload
     else:
         raise click.UsageError(f"Unsupported type: {job_type}")
+
+    if resolved_session_id:
+        payload["notify_session_id"] = resolved_session_id
 
     resp = _client(paths.sock_path).call(
         "add_job",

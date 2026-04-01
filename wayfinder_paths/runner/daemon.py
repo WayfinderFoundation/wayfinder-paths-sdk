@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -21,6 +22,7 @@ from wayfinder_paths.runner.constants import (
 )
 from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
+from wayfinder_paths.core.clients.OpenCodeClient import OpenCodeClient
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
@@ -279,6 +281,35 @@ class RunnerDaemon:
         self._running_by_job[rp.job_id] = max(
             0, self._running_by_job.get(rp.job_id, 1) - 1
         )
+
+        self._notify_session(rp, status=status, error_text=error_text)
+
+    def _notify_session(
+        self,
+        rp: RunningProcess,
+        *,
+        status: str,
+        error_text: str | None,
+    ) -> None:
+        try:
+            job, _ = self._db.get_job(name=rp.job_name)
+        except Exception:
+            return
+        session_id = (job.payload or {}).get("notify_session_id")
+        if not session_id:
+            return
+        oc = OpenCodeClient()
+        if not oc.healthy():
+            logger.debug("OpenCode server not reachable, skipping notification")
+            return
+        log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
+        msg = json.dumps({
+            "type": "job",
+            "name": rp.job_name,
+            "status": status,
+            "message": log_tail,
+        })
+        oc.send_message(session_id, msg)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
