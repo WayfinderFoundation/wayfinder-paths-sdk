@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -298,19 +299,22 @@ class RunnerDaemon:
         session_id = (job.payload or {}).get("notify_session_id")
         if not session_id:
             return
-        if not OPENCODE_CLIENT.healthy():
-            logger.debug("OpenCode server not reachable, skipping notification")
-            return
-        log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
-        msg = json.dumps(
-            {
-                "type": "job",
-                "name": rp.job_name,
-                "status": status,
-                "message": log_tail,
-            }
-        )
-        OPENCODE_CLIENT.send_message(session_id, msg)
+        try:
+            if not asyncio.run(OPENCODE_CLIENT.healthy()):
+                logger.debug("OpenCode server not reachable, skipping notification")
+                return
+            log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
+            msg = json.dumps(
+                {
+                    "type": "job",
+                    "name": rp.job_name,
+                    "status": status,
+                    "message": log_tail,
+                }
+            )
+            asyncio.run(OPENCODE_CLIENT.send_message(session_id, msg))
+        except Exception as exc:
+            logger.debug(f"Notification failed: {exc}")
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
@@ -635,11 +639,15 @@ class RunnerDaemon:
             env = payload_norm.get("env")
             if env is not None and not isinstance(env, dict):
                 return {"ok": False, "error": "payload.env must be an object"}
-        if "notify_session_id" not in payload_norm and OPENCODE_CLIENT.healthy():
-            sid = OPENCODE_CLIENT.active_session_id()
-            if sid:
-                payload_norm["notify_session_id"] = sid
-                logger.info(f"Auto-bound job {name} to session {sid}")
+        if "notify_session_id" not in payload_norm:
+            try:
+                if asyncio.run(OPENCODE_CLIENT.healthy()):
+                    sid = asyncio.run(OPENCODE_CLIENT.active_session_id())
+                    if sid:
+                        payload_norm["notify_session_id"] = sid
+                        logger.info(f"Auto-bound job {name} to session {sid}")
+            except Exception:
+                pass
 
         try:
             job_id = self._db.add_job(
