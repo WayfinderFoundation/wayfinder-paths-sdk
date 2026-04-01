@@ -14,6 +14,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths import __version__
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -22,7 +23,6 @@ from wayfinder_paths.runner.constants import (
 )
 from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
-from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
@@ -302,12 +302,14 @@ class RunnerDaemon:
             logger.debug("OpenCode server not reachable, skipping notification")
             return
         log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
-        msg = json.dumps({
-            "type": "job",
-            "name": rp.job_name,
-            "status": status,
-            "message": log_tail,
-        })
+        msg = json.dumps(
+            {
+                "type": "job",
+                "name": rp.job_name,
+                "status": status,
+                "message": log_tail,
+            }
+        )
         OPENCODE_CLIENT.send_message(session_id, msg)
 
     def _shutdown_running_processes(self) -> None:

@@ -227,7 +227,9 @@ def add_job_cmd(
             else:
                 click.echo("Warning: no active sessions found", err=True)
         else:
-            click.echo("Warning: OpenCode server not reachable, skipping notify", err=True)
+            click.echo(
+                "Warning: OpenCode server not reachable, skipping notify", err=True
+            )
     elif notify_session:
         resolved_session_id = notify_session
 
