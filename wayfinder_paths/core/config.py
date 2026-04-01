@@ -110,12 +110,7 @@ def get_default_remote_wallet_ttl_seconds() -> int:
         "default_remote_wallet_ttl_seconds",
         _DEFAULT_REMOTE_WALLET_TTL_SECONDS,
     )
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "system.default_remote_wallet_ttl_seconds must be an int"
-        ) from exc
+    return int(value)
 
 
 def get_api_key() -> str | None:
