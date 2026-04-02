@@ -480,6 +480,100 @@ async def test_get_full_user_state_batches_related_reads():
 
 
 @pytest.mark.asyncio
+async def test_get_full_user_state_includes_vote_claimables_flag():
+    adapter = AerodromeAdapter()
+    pool0 = "0x" + "11" * 20
+    gauge0 = "0x" + "33" * 20
+
+    voter = MagicMock()
+    voter.functions.length = MagicMock(return_value=_mock_call(1))
+
+    ve = MagicMock()
+    ve.functions.balanceOf = MagicMock(return_value=_mock_call(1))
+
+    rd = MagicMock()
+
+    gauge_contract0 = MagicMock()
+    gauge_contract0.address = gauge0
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            voter,
+            ve,
+            rd,
+            MagicMock(),
+            gauge_contract0,
+        ]
+    )
+
+    with (
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            adapter,
+            "get_vote_claimables",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "votes": [
+                            {
+                                "pool": pool0,
+                                "claimableFees": [],
+                                "claimableBribes": [],
+                            }
+                        ]
+                    },
+                )
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            aerodrome_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [pool0],
+                    [101],
+                    [50, gauge0],
+                    [500, 5],
+                    [700, True, 70],
+                ]
+            ),
+        ),
+    ):
+        ok, data = await adapter.get_full_user_state(
+            account=FAKE_WALLET,
+            limit=1,
+            include_vote_claimables=True,
+        )
+
+    assert ok is True
+    assert data["ve_nfts"] == [
+        {
+            "token_id": 101,
+            "voting_power": 700,
+            "voted": True,
+            "rebase_claimable": 70,
+            "vote_claimables": [
+                {
+                    "pool": pool0,
+                    "claimableFees": [],
+                    "claimableBribes": [],
+                }
+            ],
+        }
+    ]
+    mock_get_vote_claimables.assert_awaited_once_with(
+        token_id=101,
+        block_identifier="latest",
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_vote_claimables_uses_pool_metadata_and_shared_helper():
     adapter = AerodromeAdapter()
     voter = MagicMock()

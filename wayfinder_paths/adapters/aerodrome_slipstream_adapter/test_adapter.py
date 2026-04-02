@@ -553,6 +553,109 @@ async def test_get_logs_bounded_reduces_chunk_and_truncates():
 
 
 @pytest.mark.asyncio
+async def test_get_full_user_state_includes_vote_claimables_flag():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    voter = MagicMock()
+    ve = MagicMock()
+    rd = MagicMock()
+    npm = MagicMock()
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            npm,
+            voter,
+            MagicMock(),
+            ve,
+            rd,
+        ]
+    )
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter,
+            "_enumerate_all_pools",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            adapter,
+            "_read_position_state",
+            new=AsyncMock(side_effect=AssertionError("unexpected position read")),
+        ),
+        patch.object(
+            adapter,
+            "get_user_ve_nfts",
+            new=AsyncMock(return_value=(True, [7])),
+        ),
+        patch.object(
+            adapter,
+            "get_vote_claimables",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "votes": [
+                            {
+                                "pool": FAKE_POOL,
+                                "claimableFees": [],
+                                "claimableBribes": [],
+                            }
+                        ]
+                    },
+                )
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            slipstream_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [0],
+                    [],
+                    [],
+                    [100],
+                    [True],
+                    [9],
+                    [50],
+                    [123],
+                ]
+            ),
+        ),
+    ):
+        ok, data = await adapter.get_full_user_state(
+            account=FAKE_WALLET,
+            include_vote_claimables=True,
+        )
+
+    assert ok is True
+    assert data["ve_nfts"] == [
+        {
+            "token_id": 7,
+            "voting_power": 100,
+            "voted": True,
+            "used_weight": 50,
+            "last_voted": 123,
+            "rebase_claimable": 9,
+            "vote_claimables": [
+                {
+                    "pool": FAKE_POOL,
+                    "claimableFees": [],
+                    "claimableBribes": [],
+                }
+            ],
+        }
+    ]
+    mock_get_vote_claimables.assert_awaited_once_with(
+        token_id=7,
+        deployments=["initial"],
+        include_zero_positions=False,
+        include_usd_values=False,
+        block_identifier="latest",
+    )
+
+
+@pytest.mark.asyncio
 async def test_slipstream_sigma_annual_from_swaps_uses_swap_prices():
     adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     mock_web3 = MagicMock()

@@ -1496,6 +1496,7 @@ class AerodromeAdapter(
         start: int = 0,
         limit: int | None = 200,
         include_votes: bool = False,
+        include_vote_claimables: bool = False,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         """
@@ -1717,6 +1718,14 @@ class AerodromeAdapter(
                         }
                         if include_votes:
                             item["votes"] = votes_by_token.get(tid, {})
+                        if include_vote_claimables:
+                            ok_claimables, claimables = await self.get_vote_claimables(
+                                token_id=tid,
+                                block_identifier=block_identifier,
+                            )
+                            if not ok_claimables:
+                                return False, claimables
+                            item["vote_claimables"] = claimables["votes"]
                         ve_items.append(item)
 
             return True, {

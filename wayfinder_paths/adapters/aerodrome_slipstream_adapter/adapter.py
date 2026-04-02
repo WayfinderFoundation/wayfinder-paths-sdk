@@ -2238,6 +2238,7 @@ class AerodromeSlipstreamAdapter(
         include_usd: bool = False,
         include_zero_positions: bool = False,
         include_votes: bool = False,
+        include_vote_claimables: bool = False,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
@@ -2560,6 +2561,17 @@ class AerodromeSlipstreamAdapter(
                         }
                         if include_votes:
                             item["votes"] = votes_by_token.get(tid, {})
+                        if include_vote_claimables:
+                            ok_claimables, claimables = await self.get_vote_claimables(
+                                token_id=tid,
+                                deployments=deployment_names,
+                                include_zero_positions=include_zero_positions,
+                                include_usd_values=include_usd,
+                                block_identifier=block_identifier,
+                            )
+                            if not ok_claimables:
+                                return False, claimables
+                            item["vote_claimables"] = claimables["votes"]
                         ve_items.append(item)
 
             return True, {
