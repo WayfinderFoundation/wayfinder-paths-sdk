@@ -286,28 +286,28 @@ class RunnerDaemon:
 
     def _notify_session(
         self,
-        rp: RunningProcess,
+        running_process: RunningProcess,
         *,
         status: str,
         error_text: str | None,
     ) -> None:
-        job, _ = self._db.get_job(name=rp.job_name)
+        job, _ = self._db.get_job(name=running_process.job_name)
         session_id = (job.payload or {}).get("notify_session_id")
 
         if not session_id or not OPENCODE_CLIENT.healthy():
             return
 
-        log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
-        msg = json.dumps(
+        log_tail = _tail_text(running_process.log_path, max_bytes=2000) or "(no output)"
+        notification = json.dumps(
             {
                 "type": "job",
-                "name": rp.job_name,
+                "name": running_process.job_name,
                 "status": status,
                 "error": error_text,
                 "message": log_tail,
             }
         )
-        OPENCODE_CLIENT.send_message(session_id, msg)
+        OPENCODE_CLIENT.send_message(session_id, notification)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:

@@ -21,46 +21,48 @@ class OpenCodeClient:
         url = f"{self.base_url}{path}"
         try:
             return self.client.request(method, url, **kwargs)
-        except Exception as exc:
-            logger.debug(f"OpenCode {method} {url} failed: {exc}")
+        except Exception as error:
+            logger.debug(f"OpenCode {method} {url} failed: {error}")
             return None
 
     def healthy(self) -> bool:
-        resp = self._request("GET", "/global/health")
-        if resp is None or resp.status_code != 200:
+        response = self._request("GET", "/global/health")
+        if response is None or response.status_code != 200:
             return False
-        return resp.json().get("healthy", False)
+        return response.json().get("healthy", False)
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        resp = self._request("GET", "/session")
-        if resp is None or resp.status_code != 200:
+        response = self._request("GET", "/session")
+        if response is None or response.status_code != 200:
             return []
-        return resp.json()
+        return response.json()
 
     def active_session_id(self) -> str | None:
         """Find the session that invoked runner add-job."""
-        for s in self.list_sessions():
-            sid = s.get("id")
-            if sid and self._session_has_runner_job(sid):
-                return sid
+        for session in self.list_sessions():
+            session_id = session.get("id")
+            if session_id and self._session_has_runner_job(session_id):
+                return session_id
         return None
 
     def _session_has_runner_job(self, session_id: str) -> bool:
-        resp = self._request(
+        response = self._request(
             "GET", f"/session/{session_id}/message", params={"limit": 50}
         )
-        if resp is None or resp.status_code != 200:
+        if response is None or response.status_code != 200:
             return False
-        raw = json.dumps(resp.json())
-        return "runner" in raw and ("add-job" in raw or "add_job" in raw)
+        raw_messages = json.dumps(response.json())
+        return "runner" in raw_messages and (
+            "add-job" in raw_messages or "add_job" in raw_messages
+        )
 
     def send_message(self, session_id: str, text: str) -> bool:
-        resp = self._request(
+        response = self._request(
             "POST",
             f"/session/{session_id}/message",
             json={"parts": [{"type": "text", "text": text}]},
         )
-        if resp is None or resp.status_code != 200:
+        if response is None or response.status_code != 200:
             return False
         return True
 
