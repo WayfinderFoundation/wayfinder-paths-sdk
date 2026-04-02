@@ -274,14 +274,28 @@ Token identifiers (important for quoting/execution/lookups):
 
 ### Recurring automation (Runner)
 
-Runner CLI (project-local state in `./.wayfinder/runner/`):
+**All scheduled/recurring tasks MUST go through the runner daemon.** Do not use cron, systemd timers, or background loops. The daemon handles job persistence, failure tracking, timeouts, and session notifications.
 
 ```bash
-poetry run wayfinder runner start --detach
-poetry run wayfinder runner ensure
-poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
-poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
+poetry run wayfinder runner start                # idempotent — safe to call multiple times
+poetry run wayfinder runner add-job \
+  --name basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --interval 600 \
+  --config ./config.json
+poetry run wayfinder runner status               # show daemon + all jobs
+poetry run wayfinder runner run-once <job>        # trigger immediate run
+poetry run wayfinder runner pause <job>
+poetry run wayfinder runner resume <job>
+poetry run wayfinder runner delete <job>
+poetry run wayfinder runner stop                  # shut down daemon
 ```
+
+Job types: `strategy` (runs a strategy action) or `script` (runs a `.py` file from `.wayfinder_runs/`).
+
+The daemon auto-discovers the OpenCode session that created a job and posts results back to it on completion.
 
 See `RUNNER_ARCHITECTURE.md`.
 
