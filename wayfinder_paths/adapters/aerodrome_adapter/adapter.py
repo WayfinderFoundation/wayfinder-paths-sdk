@@ -40,8 +40,10 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import deadline as default_deadline
 from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from loguru import logger
 
 _SUGAR_CALL_GAS = 30_000_000
+_SUGAR_ALL_PAGE_SIZE = 300
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,7 @@ class AerodromeAdapter(
         self._token_price_usdc_cache: dict[str, tuple[float, float | None]] = {}
         self._sugar_pools_cache: list[SugarPool] | None = None
         self._sugar_pools_by_lp_cache: dict[str, SugarPool] | None = None
+        self._latest_epochs_for_ranking_stats: dict[str, int] | None = None
 
     async def get_amounts_out(self, amount_in: int, routes: list[Route]) -> list[int]:
         if amount_in <= 0:
@@ -378,21 +381,40 @@ class AerodromeAdapter(
             created_at=row[25],
         )
 
-    async def sugar_all(self, *, limit: int = 500, offset: int = 0) -> list[SugarPool]:
+    async def sugar_all(
+        self,
+        *,
+        limit: int = _SUGAR_ALL_PAGE_SIZE,
+        offset: int = 0,
+    ) -> list[SugarPool]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
                 address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
-            rows = await sugar.functions.all(limit, offset).call(
-                transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
-            )
-        return [self._parse_sugar_pool(row) for row in rows]
+            out: list[SugarPool] = []
+            remaining = limit
+            next_offset = offset
+            # Not calling gather here, because each sugar call is heavy so we may hit limits
+            while remaining > 0:
+                batch_limit = min(remaining, _SUGAR_ALL_PAGE_SIZE)
+                batch = (await sugar.functions.all(batch_limit, next_offset).call(
+                    transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
+                ))
+                out.extend(batch)
+                received = len(batch)
+                if received == 0:
+                    break
+                remaining -= received
+                next_offset += received
+                
+                
+            return [self._parse_sugar_pool(row) for row in out]
 
     async def list_pools(
         self,
         *,
-        page_size: int = 500,
+        page_size: int = _SUGAR_ALL_PAGE_SIZE,
         max_pools: int | None = None,
     ) -> list[SugarPool]:
         out: list[SugarPool] = []
@@ -471,25 +493,26 @@ class AerodromeAdapter(
             )
         return [self._parse_sugar_epoch(row) for row in rows]
 
-    @staticmethod
-    def _is_out_of_gas_error(exc: Exception) -> bool:
-        return "out of gas" in str(exc).lower()
-
     async def _latest_epochs_for_ranking(self, *, limit: int) -> list[SugarEpoch]:
-        try:
-            return await self.sugar_epochs_latest(limit=limit, offset=0)
-        except Exception as exc:
-            if not self._is_out_of_gas_error(exc):
-                raise
-
+        # NOTE: removed sugar_epochs_latest as it consistently failed
         if self._sugar_pools_cache is not None:
             pools = self._sugar_pools_cache[:limit]
         else:
             pools = await self.list_pools(max_pools=limit)
 
         epochs: list[SugarEpoch] = []
-        for i in range(0, len(pools), 25):
-            pool_batch = pools[i : i + 25]
+        batch_size = 10
+        stats = {
+            "requested_limit": limit,
+            "pool_count": len(pools),
+            "batch_size": batch_size,
+            "rpc_calls": 0,
+            "epochs_found": 0,
+            "empty_pools": 0,
+            "failed_pools": 0,
+        }
+        for i in range(0, len(pools), batch_size):
+            pool_batch = pools[i : i + batch_size]
             batch_results = await asyncio.gather(
                 *[
                     self.sugar_epochs_by_address(
@@ -498,11 +521,23 @@ class AerodromeAdapter(
                         offset=0,
                     )
                     for pool in pool_batch
-                ]
+                ],
+                return_exceptions=True,
             )
-            for rows in batch_results:
-                if rows:
-                    epochs.append(rows[0])
+            stats["rpc_calls"] += len(pool_batch)
+            for pool, rows in zip(pool_batch, batch_results, strict=True):
+                if isinstance(rows, Exception):
+                    stats["failed_pools"] += 1
+                    continue
+                if not rows:
+                    stats["empty_pools"] += 1
+                    continue
+                # Keep only the latest epoch per pool for ranking.
+                epochs.append(rows[0])
+                stats["epochs_found"] += 1
+        self._latest_epochs_for_ranking_stats = stats
+        logger.info("_latest_epochs_for_ranking stats: {}", stats)
+
         return epochs
 
     async def epoch_total_incentives_usdc(

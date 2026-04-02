@@ -882,6 +882,77 @@ async def test_estimate_votes_for_lock_caps_duration():
 
 
 @pytest.mark.asyncio
+async def test_sugar_all_batches_large_limit():
+    adapter = AerodromeAdapter()
+
+    def _addr(n: int) -> str:
+        return "0x" + f"{n:040x}"
+
+    def _row(i: int) -> tuple:
+        addr = _addr(i + 1)
+        token0 = _addr(i + 1001)
+        token1 = _addr(i + 2001)
+        return (
+            addr,
+            f"pool-{i}",
+            18,
+            100,
+            0,
+            0,
+            0,
+            token0,
+            1,
+            1,
+            token1,
+            1,
+            1,
+            _addr(i + 3001),
+            1,
+            True,
+            _addr(i + 4001),
+            _addr(i + 5001),
+            _addr(i + 6001),
+            0,
+            _addr(i + 7001),
+            30,
+            5,
+            0,
+            0,
+            1,
+        )
+
+    rows_page_1 = [_row(i) for i in range(300)]
+    rows_page_2 = [_row(i) for i in range(300, 350)]
+    seen_calls: list[tuple[int, int]] = []
+
+    def _all(limit: int, offset: int):
+        seen_calls.append((limit, offset))
+        if (limit, offset) == (300, 10):
+            return _mock_call(rows_page_1)
+        if (limit, offset) == (50, 310):
+            return _mock_call(rows_page_2)
+        raise AssertionError(f"unexpected sugar.all({limit}, {offset})")
+
+    sugar = MagicMock()
+    sugar.functions.all = MagicMock(side_effect=_all)
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=sugar)
+
+    with patch.object(
+        aerodrome_adapter_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        pools = await adapter.sugar_all(limit=350, offset=10)
+
+    assert seen_calls == [(300, 10), (50, 310)]
+    assert len(pools) == 350
+    assert pools[0].symbol == "pool-0"
+    assert pools[-1].symbol == "pool-349"
+
+
+@pytest.mark.asyncio
 async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
     adapter = AerodromeAdapter()
 
@@ -920,7 +991,7 @@ async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
         nonlocal calls
         calls += 1
         if calls == 1:
-            assert limit == 500
+            assert limit == 300
             assert offset == 0
             return [pool]
         raise RuntimeError("execution reverted: out of bounds")
@@ -1193,10 +1264,82 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
         fees=[],
     )
 
-    async def _fake_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
-        assert limit == 1000
+    pools = [
+        SugarPool(
+            lp=lp_a,
+            symbol="A/B",
+            lp_decimals=18,
+            lp_total_supply=100,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=1,
+            staked0=1,
+            token1=lp_b,
+            reserve1=1,
+            staked1=1,
+            gauge=lp_a,
+            gauge_liquidity=1,
+            gauge_alive=True,
+            fee=lp_a,
+            bribe=lp_a,
+            factory=lp_a,
+            emissions_per_sec=0,
+            emissions_token=lp_a,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_b,
+            symbol="B/C",
+            lp_decimals=18,
+            lp_total_supply=100,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_b,
+            reserve0=1,
+            staked0=1,
+            token1=lp_a,
+            reserve1=1,
+            staked1=1,
+            gauge=lp_b,
+            gauge_liquidity=1,
+            gauge_alive=True,
+            fee=lp_b,
+            bribe=lp_b,
+            factory=lp_b,
+            emissions_per_sec=0,
+            emissions_token=lp_b,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+    ]
+
+    async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
+        assert max_pools == 1000
+        return pools
+
+    async def _fake_epochs_by_address(
+        *,
+        pool: str,
+        limit: int,
+        offset: int,
+    ) -> list[SugarEpoch]:
+        assert limit == 1
         assert offset == 0
-        return [epoch_a_latest, epoch_a_old, epoch_b_latest]
+        if pool.lower() == lp_a.lower():
+            return [epoch_a_latest, epoch_a_old]
+        if pool.lower() == lp_b.lower():
+            return [epoch_b_latest]
+        return []
 
     async def _fake_total_usdc(
         epoch: SugarEpoch,
@@ -1210,7 +1353,8 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
             return 50.0
         return None
 
-    monkeypatch.setattr(adapter, "sugar_epochs_latest", _fake_epochs_latest)
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
     monkeypatch.setattr(adapter, "epoch_total_incentives_usdc", _fake_total_usdc)
 
     ranked = await adapter.rank_pools_by_usdc_per_ve(top_n=10, limit=1000)
@@ -1222,7 +1366,7 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypatch):
+async def test_rank_pools_by_usdc_per_ve_uses_pool_epoch_lookup(monkeypatch):
     adapter = AerodromeAdapter()
     lp_a = "0x" + "11" * 20
     lp_b = "0x" + "22" * 20
@@ -1304,10 +1448,8 @@ async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypat
         fees=[],
     )
 
-    async def _fake_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
-        assert limit == 2
-        assert offset == 0
-        raise RuntimeError("out of gas")
+    async def _unexpected_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
+        raise AssertionError("sugar_epochs_latest should not be called")
 
     async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
         assert max_pools == 2
@@ -1339,7 +1481,7 @@ async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypat
             return 50.0
         return None
 
-    monkeypatch.setattr(adapter, "sugar_epochs_latest", _fake_epochs_latest)
+    monkeypatch.setattr(adapter, "sugar_epochs_latest", _unexpected_epochs_latest)
     monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
     monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
     monkeypatch.setattr(adapter, "epoch_total_incentives_usdc", _fake_total_usdc)
@@ -1350,3 +1492,150 @@ async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypat
     assert ranked[0][1].lp.lower() == lp_a.lower()
     assert ranked[1][1].lp.lower() == lp_b.lower()
     assert ranked[0][0] > ranked[1][0]
+    assert adapter._latest_epochs_for_ranking_stats == {
+        "requested_limit": 2,
+        "pool_count": 2,
+        "batch_size": 10,
+        "rpc_calls": 2,
+        "epochs_found": 2,
+        "empty_pools": 0,
+        "failed_pools": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_latest_epochs_for_ranking_skips_failed_and_empty_pools(monkeypatch):
+    adapter = AerodromeAdapter()
+    lp_a = "0x1111111111111111111111111111111111111111"
+    lp_b = "0x2222222222222222222222222222222222222222"
+    lp_c = "0x3333333333333333333333333333333333333333"
+
+    pools = [
+        SugarPool(
+            lp=lp_a,
+            symbol="pool-a",
+            lp_decimals=18,
+            lp_total_supply=1,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=0,
+            staked0=0,
+            token1=lp_b,
+            reserve1=0,
+            staked1=0,
+            gauge=lp_a,
+            gauge_liquidity=0,
+            gauge_alive=True,
+            fee=lp_a,
+            bribe=lp_a,
+            factory=lp_a,
+            emissions_per_sec=0,
+            emissions_token=lp_a,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_b,
+            symbol="pool-b",
+            lp_decimals=18,
+            lp_total_supply=1,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=0,
+            staked0=0,
+            token1=lp_b,
+            reserve1=0,
+            staked1=0,
+            gauge=lp_b,
+            gauge_liquidity=0,
+            gauge_alive=True,
+            fee=lp_b,
+            bribe=lp_b,
+            factory=lp_b,
+            emissions_per_sec=0,
+            emissions_token=lp_b,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_c,
+            symbol="pool-c",
+            lp_decimals=18,
+            lp_total_supply=1,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=0,
+            staked0=0,
+            token1=lp_c,
+            reserve1=0,
+            staked1=0,
+            gauge=lp_c,
+            gauge_liquidity=0,
+            gauge_alive=True,
+            fee=lp_c,
+            bribe=lp_c,
+            factory=lp_c,
+            emissions_per_sec=0,
+            emissions_token=lp_c,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+    ]
+
+    epoch_a = SugarEpoch(
+        ts=100,
+        lp=lp_a,
+        votes=10,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+
+    async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
+        assert max_pools == 3
+        return pools
+
+    async def _fake_epochs_by_address(
+        *,
+        pool: str,
+        limit: int,
+        offset: int,
+    ) -> list[SugarEpoch]:
+        assert limit == 1
+        assert offset == 0
+        if pool.lower() == lp_a.lower():
+            return [epoch_a]
+        if pool.lower() == lp_b.lower():
+            return []
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
+
+    epochs = await adapter._latest_epochs_for_ranking(limit=3)
+
+    assert [epoch.lp.lower() for epoch in epochs] == [lp_a.lower()]
+    assert adapter._latest_epochs_for_ranking_stats == {
+        "requested_limit": 3,
+        "pool_count": 3,
+        "batch_size": 10,
+        "rpc_calls": 3,
+        "epochs_found": 1,
+        "empty_pools": 1,
+        "failed_pools": 1,
+    }
