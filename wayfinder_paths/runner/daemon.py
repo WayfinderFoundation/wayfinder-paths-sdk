@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import signal
@@ -283,9 +282,9 @@ class RunnerDaemon:
             0, self._running_by_job.get(rp.job_id, 1) - 1
         )
 
-        asyncio.run(self._notify_session(rp, status=status, error_text=error_text))
+        self._notify_session(rp, status=status, error_text=error_text)
 
-    async def _notify_session(
+    def _notify_session(
         self,
         rp: RunningProcess,
         *,
@@ -295,7 +294,7 @@ class RunnerDaemon:
         job, _ = self._db.get_job(name=rp.job_name)
         session_id = (job.payload or {}).get("notify_session_id")
 
-        if not session_id or not await OPENCODE_CLIENT.healthy():
+        if not session_id or not OPENCODE_CLIENT.healthy():
             return
 
         log_tail = _tail_text(rp.log_path, max_bytes=2000) or "(no output)"
@@ -308,7 +307,7 @@ class RunnerDaemon:
                 "message": log_tail,
             }
         )
-        await OPENCODE_CLIENT.send_message(session_id, msg)
+        OPENCODE_CLIENT.send_message(session_id, msg)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
@@ -633,15 +632,10 @@ class RunnerDaemon:
             env = payload_norm.get("env")
             if env is not None and not isinstance(env, dict):
                 return {"ok": False, "error": "payload.env must be an object"}
-        if "notify_session_id" not in payload_norm:
-            try:
-                if asyncio.run(OPENCODE_CLIENT.healthy()):
-                    sid = asyncio.run(OPENCODE_CLIENT.active_session_id())
-                    if sid:
-                        payload_norm["notify_session_id"] = sid
-                        logger.info(f"Auto-bound job {name} to session {sid}")
-            except Exception:
-                pass
+        session_id = OPENCODE_CLIENT.active_session_id()
+        if session_id:
+            payload_norm["notify_session_id"] = session_id
+            logger.info(f"Auto-bound job {name} to session {session_id}")
 
         try:
             job_id = self._db.add_job(
