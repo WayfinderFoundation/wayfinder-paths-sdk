@@ -215,19 +215,23 @@ async def wallets(
                     },
                 }
             )
+        else:
+            mnemonic = load_wallet_mnemonic()
+            w = make_local_wallet(
+                label=want, existing_wallets=existing, mnemonic=mnemonic
+            )
+            write_wallet_to_json(
+                w, out_dir=config_path.parent, filename=config_path.name
+            )
+            load_config(config_path)
 
-        mnemonic = load_wallet_mnemonic()
-        w = make_local_wallet(label=want, existing_wallets=existing, mnemonic=mnemonic)
-        write_wallet_to_json(w, out_dir=config_path.parent, filename=config_path.name)
-        load_config(config_path)
-
-        refreshed = await load_wallets()
-        return ok(
-            {
-                "wallets": [public_wallet_view(x) for x in refreshed],
-                "created": public_wallet_view(w),
-            }
-        )
+            refreshed = await load_wallets()
+            return ok(
+                {
+                    "wallets": [public_wallet_view(x) for x in refreshed],
+                    "created": public_wallet_view(w),
+                }
+            )
 
     if action == "annotate":
         address, lbl = await resolve_wallet_address(
