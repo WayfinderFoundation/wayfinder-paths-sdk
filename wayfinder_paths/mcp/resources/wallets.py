@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT
@@ -12,14 +13,37 @@ from wayfinder_paths.mcp.utils import (
 )
 
 
+def _ttl_remaining(expires_at: str) -> str | None:
+    try:
+        expires = datetime.fromisoformat(expires_at)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        total = int((expires - datetime.now(timezone.utc)).total_seconds())
+        if total <= 0:
+            return "expired"
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, _ = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days}d")
+        if hours:
+            parts.append(f"{hours}h")
+        if minutes:
+            parts.append(f"{minutes}m")
+        return " ".join(parts) or "<1m"
+    except (ValueError, TypeError):
+        return None
+
+
 def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
     view: dict[str, Any] = {"label": w.get("label"), "address": w.get("address")}
     if wallet_type := w.get("wallet_type"):
         view["wallet_type"] = wallet_type
     if (ttl := w.get("ttl_expires_at")) is not None:
         view["ttl_expires_at"] = ttl
-    if (remaining := w.get("ttl_remaining")) is not None:
-        view["ttl_remaining"] = remaining
+        if (remaining := _ttl_remaining(ttl)) is not None:
+            view["ttl_remaining"] = remaining
     return view
 
 

@@ -53,10 +53,6 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                 "chain_type": w.get("chain_type", "ethereum"),
                 "wallet_type": w.get("wallet_type", "ttl"),
             }
-            if (ttl := w.get("ttl_expires_at")) is not None:
-                entry["ttl_expires_at"] = ttl
-            if (remaining := w.get("ttl_remaining")) is not None:
-                entry["ttl_remaining"] = remaining
             wallets.append(entry)
         return wallets
     except Exception as exc:
