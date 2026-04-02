@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
+
+TTL_DURATION_SECONDS = 300
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -49,6 +52,8 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                     "label": w.get("label") or f"remote-{i}",
                     "type": "remote",
                     "chain_type": w.get("chain_type", "ethereum"),
+                    "wallet_type": w.get("wallet_type", "policy"),
+                    "policy_id": w.get("policy_id"),
                 }
             )
         return wallets
@@ -297,13 +302,34 @@ async def get_wallet_sign_hash_callback(label: str):
 # ---------------------------------------------------------------------------
 
 
+def build_ttl_policy(ttl_seconds: int = TTL_DURATION_SECONDS) -> list[dict]:
+    return [
+        {
+            "name": "TTL",
+            "method": "*",
+            "action": "ALLOW",
+            "conditions": [
+                {
+                    "field_source": "system",
+                    "field": "current_unix_timestamp",
+                    "operator": "lt",
+                    "value": str(int(time.time()) + ttl_seconds),
+                }
+            ],
+        }
+    ]
+
+
 async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
+    wallet_type: str = "policy",
 ) -> dict[str, Any]:
+    if wallet_type == "ttl" and not policies:
+        policies = build_ttl_policy()
     return await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label
+        chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
     )
 
 

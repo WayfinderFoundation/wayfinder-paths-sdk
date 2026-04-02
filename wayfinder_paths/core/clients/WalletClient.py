@@ -17,14 +17,21 @@ class WalletClient(WayfinderClient):
         chain_type: str = "ethereum",
         policies: list[dict] = [],  # noqa: B006
         label: str = "",
+        wallet_type: str = "policy",
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/wallets/"
         body: dict[str, Any] = {
             "chain_type": chain_type,
             "policies": policies,
             "label": label,
+            "wallet_type": wallet_type,
         }
         resp = await self._authed_request("POST", url, json=body)
+        return resp.json()
+
+    async def bump_ttl(self, wallet_address: str) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/bump-ttl/"
+        resp = await self._authed_request("POST", url)
         return resp.json()
 
     async def sign_transaction(self, wallet_address: str, transaction: dict) -> str:
