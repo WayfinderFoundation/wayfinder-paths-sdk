@@ -21,7 +21,9 @@ def main() -> int:
         raise SystemExit("Missing API key. Pass --api-key or set WAYFINDER_API_KEY.")
 
     ensure_config(api_key=api_key)
-    run_cmd(["poetry", "install"])
+    venv = REPO_ROOT / ".venv"
+    if not venv.is_symlink() and not (venv / "bin" / "python").exists():
+        run_cmd(["poetry", "install"])
     return 0
 
 
