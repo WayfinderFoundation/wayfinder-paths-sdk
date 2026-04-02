@@ -13,6 +13,8 @@ from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
     SugarPool,
     SugarReward,
 )
+from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.base import SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -60,11 +62,16 @@ def test_constructor_is_base_only():
         "get_gauge",
         "get_reward_contracts",
         "get_all_markets",
+        "v2_pool_tvl_usdc",
+        "v2_staked_tvl_usdc",
+        "v2_emissions_apr",
+        "rank_v2_pools_by_emissions_apr",
         "quote_add_liquidity",
         "add_liquidity",
         "quote_remove_liquidity",
         "remove_liquidity",
         "claim_pool_fees_unstaked",
+        "lp_balance",
         "stake_lp",
         "unstake_lp",
         "claim_gauge_rewards",
@@ -84,6 +91,7 @@ def test_constructor_is_base_only():
         "claim_rebases",
         "claim_rebases_many",
         "get_full_user_state",
+        "get_vote_claimables",
     ],
 )
 def test_public_methods_do_not_accept_chain_id(method_name):
@@ -126,6 +134,23 @@ async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
     ok, msg = await getattr(adapter, method)(**kwargs)
     assert ok is False
     assert msg == "wallet address not configured"
+
+
+@pytest.mark.asyncio
+async def test_lp_balance_reads_wallet_token_balance(adapter_with_signer):
+    with patch.object(
+        aerodrome_adapter_module,
+        "get_token_balance",
+        new=AsyncMock(return_value=1234),
+    ) as mock_get_token_balance:
+        balance = await adapter_with_signer.lp_balance(FAKE_POOL)
+
+    assert balance == 1234
+    mock_get_token_balance.assert_awaited_once_with(
+        token_address=FAKE_POOL,
+        chain_id=CHAIN_ID_BASE,
+        wallet_address=FAKE_WALLET,
+    )
 
 
 @pytest.mark.asyncio
@@ -452,6 +477,194 @@ async def test_get_full_user_state_batches_related_reads():
             "rebase_claimable": 80,
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_full_user_state_includes_vote_claimables_flag():
+    adapter = AerodromeAdapter()
+    pool0 = "0x" + "11" * 20
+    gauge0 = "0x" + "33" * 20
+
+    voter = MagicMock()
+    voter.functions.length = MagicMock(return_value=_mock_call(1))
+
+    ve = MagicMock()
+    ve.functions.balanceOf = MagicMock(return_value=_mock_call(1))
+
+    rd = MagicMock()
+
+    gauge_contract0 = MagicMock()
+    gauge_contract0.address = gauge0
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            voter,
+            ve,
+            rd,
+            MagicMock(),
+            gauge_contract0,
+        ]
+    )
+
+    with (
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            adapter,
+            "get_vote_claimables",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "votes": [
+                            {
+                                "pool": pool0,
+                                "claimableFees": [],
+                                "claimableBribes": [],
+                            }
+                        ]
+                    },
+                )
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            aerodrome_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [pool0],
+                    [101],
+                    [50, gauge0],
+                    [500, 5],
+                    [700, True, 70],
+                ]
+            ),
+        ),
+    ):
+        ok, data = await adapter.get_full_user_state(
+            account=FAKE_WALLET,
+            limit=1,
+            include_vote_claimables=True,
+        )
+
+    assert ok is True
+    assert data["ve_nfts"] == [
+        {
+            "token_id": 101,
+            "voting_power": 700,
+            "voted": True,
+            "rebase_claimable": 70,
+            "vote_claimables": [
+                {
+                    "pool": pool0,
+                    "claimableFees": [],
+                    "claimableBribes": [],
+                }
+            ],
+        }
+    ]
+    mock_get_vote_claimables.assert_awaited_once_with(
+        token_id=101,
+        block_identifier="latest",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_vote_claimables_uses_pool_metadata_and_shared_helper():
+    adapter = AerodromeAdapter()
+    voter = MagicMock()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    pool = SugarPool(
+        lp="0x" + "11" * 20,
+        symbol="AERO/USDC",
+        lp_decimals=18,
+        lp_total_supply=0,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0="0x" + "12" * 20,
+        reserve0=0,
+        staked0=0,
+        token1="0x" + "13" * 20,
+        reserve1=0,
+        staked1=0,
+        gauge="0x" + "14" * 20,
+        gauge_liquidity=0,
+        gauge_alive=True,
+        fee="0x" + "15" * 20,
+        bribe="0x" + "16" * 20,
+        factory="0x" + "17" * 20,
+        emissions_per_sec=0,
+        emissions_token="0x" + "18" * 20,
+        pool_fee_pips=0,
+        unstaked_fee_pips=0,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=0,
+    )
+
+    with (
+        patch.object(
+            adapter,
+            "pools_by_lp",
+            new=AsyncMock(return_value={pool.lp: pool}),
+        ),
+        patch.object(
+            adapter,
+            "_get_vote_claimables",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "pool": pool.lp,
+                        "claimableFees": [],
+                        "claimableBribes": [],
+                    }
+                ]
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+    ):
+        ok, data = await adapter.get_vote_claimables(
+            token_id=123,
+            include_zero_positions=True,
+            include_usd_values=True,
+        )
+
+    assert ok is True
+    assert data == {
+        "protocol": "aerodrome",
+        "chain_id": CHAIN_ID_BASE,
+        "tokenId": 123,
+        "votes": [
+            {
+                "pool": pool.lp,
+                "claimableFees": [],
+                "claimableBribes": [],
+            }
+        ],
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["token_id"] == 123
+    assert mock_get_vote_claimables.await_args.kwargs["pool_metadata_by_address"] == {
+        pool.lp.lower(): {
+            "symbol": "AERO/USDC",
+            "feeReward": pool.fee,
+            "bribeReward": pool.bribe,
+        }
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["web3"] is mock_web3
+    assert mock_get_vote_claimables.await_args.kwargs["voter_contract"] is voter
+    assert mock_get_vote_claimables.await_args.kwargs["include_zero_positions"] is True
+    assert mock_get_vote_claimables.await_args.kwargs["include_usd_values"] is True
 
 
 def test_parse_sugar_epoch():
@@ -809,6 +1022,177 @@ async def test_token_amount_usdc(monkeypatch):
     assert await adapter.token_amount_usdc(token=token, amount_raw=1_500_000) == (
         pytest.approx(3.0)
     )
+
+
+@pytest.mark.asyncio
+async def test_v2_pool_helpers_and_emissions_apr(monkeypatch):
+    adapter = AerodromeAdapter()
+    token0 = "0x" + "11" * 20
+    token1 = "0x" + "22" * 20
+    reward = "0x" + "33" * 20
+    pool = SugarPool(
+        lp=FAKE_POOL,
+        symbol="A/B",
+        lp_decimals=18,
+        lp_total_supply=1_000 * 10**18,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token0,
+        reserve0=2_000_000,
+        staked0=0,
+        token1=token1,
+        reserve1=3 * 10**18,
+        staked1=0,
+        gauge=FAKE_GAUGE,
+        gauge_liquidity=250 * 10**18,
+        gauge_alive=True,
+        fee="0x" + "44" * 20,
+        bribe="0x" + "55" * 20,
+        factory="0x" + "66" * 20,
+        emissions_per_sec=10**18,
+        emissions_token=reward,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+
+    async def _fake_decimals(token: str) -> int:
+        if token.lower() == token0.lower():
+            return 6
+        return 18
+
+    async def _fake_price(token: str) -> float | None:
+        if token.lower() == token0.lower():
+            return 1.0
+        if token.lower() == token1.lower():
+            return 2.0
+        if token.lower() == reward.lower():
+            return 4.0
+        return None
+
+    monkeypatch.setattr(adapter, "token_decimals", _fake_decimals)
+    monkeypatch.setattr(adapter, "token_price_usdc", _fake_price)
+
+    tvl = await adapter.v2_pool_tvl_usdc(pool)
+    staked_tvl = await adapter.v2_staked_tvl_usdc(pool)
+    apr = await adapter.v2_emissions_apr(pool)
+
+    assert tvl == pytest.approx(8.0)
+    assert staked_tvl == pytest.approx(2.0)
+    assert apr == pytest.approx((SECONDS_PER_YEAR * 4.0) / 2.0)
+
+
+@pytest.mark.asyncio
+async def test_rank_v2_pools_by_emissions_apr(monkeypatch):
+    adapter = AerodromeAdapter()
+    token = "0x" + "11" * 20
+
+    pool_a = SugarPool(
+        lp="0x" + "aa" * 20,
+        symbol="A/B",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=1,
+        staked1=0,
+        gauge="0x" + "01" * 20,
+        gauge_liquidity=50,
+        gauge_alive=True,
+        fee="0x" + "02" * 20,
+        bribe="0x" + "03" * 20,
+        factory="0x" + "04" * 20,
+        emissions_per_sec=200,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+    pool_b = SugarPool(
+        lp="0x" + "bb" * 20,
+        symbol="C/D",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=1,
+        staked1=0,
+        gauge="0x" + "05" * 20,
+        gauge_liquidity=50,
+        gauge_alive=True,
+        fee="0x" + "06" * 20,
+        bribe="0x" + "07" * 20,
+        factory="0x" + "08" * 20,
+        emissions_per_sec=100,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+    pool_filtered = SugarPool(
+        lp="0x" + "cc" * 20,
+        symbol="E/F",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=0,
+        staked1=0,
+        gauge=ZERO_ADDRESS,
+        gauge_liquidity=0,
+        gauge_alive=False,
+        fee="0x" + "09" * 20,
+        bribe="0x" + "0a" * 20,
+        factory="0x" + "0b" * 20,
+        emissions_per_sec=300,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+
+    async def _fake_list_pools(*, page_size: int, max_pools=None):
+        assert page_size == 500
+        assert max_pools is None
+        return [pool_b, pool_filtered, pool_a]
+
+    async def _fake_apr(pool: SugarPool) -> float | None:
+        if pool.lp.lower() == pool_a.lp.lower():
+            return 1.5
+        if pool.lp.lower() == pool_b.lp.lower():
+            return 0.5
+        return None
+
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "v2_emissions_apr", _fake_apr)
+
+    ranked = await adapter.rank_v2_pools_by_emissions_apr(top_n=5)
+
+    assert ranked == [(1.5, pool_a), (0.5, pool_b)]
 
 
 @pytest.mark.asyncio

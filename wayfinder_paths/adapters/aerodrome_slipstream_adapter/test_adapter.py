@@ -94,6 +94,7 @@ def test_constructor_is_base_only():
         "claim_rebases",
         "claim_rebases_many",
         "get_full_user_state",
+        "get_vote_claimables",
         "slipstream_best_pool_for_pair",
         "slipstream_pool_state",
         "slipstream_range_metrics",
@@ -552,6 +553,109 @@ async def test_get_logs_bounded_reduces_chunk_and_truncates():
 
 
 @pytest.mark.asyncio
+async def test_get_full_user_state_includes_vote_claimables_flag():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    voter = MagicMock()
+    ve = MagicMock()
+    rd = MagicMock()
+    npm = MagicMock()
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            npm,
+            voter,
+            MagicMock(),
+            ve,
+            rd,
+        ]
+    )
+
+    with (
+        patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
+        patch.object(
+            adapter,
+            "_enumerate_all_pools",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch.object(
+            adapter,
+            "_read_position_state",
+            new=AsyncMock(side_effect=AssertionError("unexpected position read")),
+        ),
+        patch.object(
+            adapter,
+            "get_user_ve_nfts",
+            new=AsyncMock(return_value=(True, [7])),
+        ),
+        patch.object(
+            adapter,
+            "get_vote_claimables",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "votes": [
+                            {
+                                "pool": FAKE_POOL,
+                                "claimableFees": [],
+                                "claimableBribes": [],
+                            }
+                        ]
+                    },
+                )
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            slipstream_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [0],
+                    [],
+                    [],
+                    [100],
+                    [True],
+                    [9],
+                    [50],
+                    [123],
+                ]
+            ),
+        ),
+    ):
+        ok, data = await adapter.get_full_user_state(
+            account=FAKE_WALLET,
+            include_vote_claimables=True,
+        )
+
+    assert ok is True
+    assert data["ve_nfts"] == [
+        {
+            "token_id": 7,
+            "voting_power": 100,
+            "voted": True,
+            "used_weight": 50,
+            "last_voted": 123,
+            "rebase_claimable": 9,
+            "vote_claimables": [
+                {
+                    "pool": FAKE_POOL,
+                    "claimableFees": [],
+                    "claimableBribes": [],
+                }
+            ],
+        }
+    ]
+    mock_get_vote_claimables.assert_awaited_once_with(
+        token_id=7,
+        deployments=["initial"],
+        include_zero_positions=False,
+        include_usd_values=False,
+        block_identifier="latest",
+    )
+
+
+@pytest.mark.asyncio
 async def test_slipstream_sigma_annual_from_swaps_uses_swap_prices():
     adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     mock_web3 = MagicMock()
@@ -812,6 +916,97 @@ async def test_claim_fees_auto_discovers_reward_tokens(adapter_with_signer):
     args = mock_encode.await_args.kwargs["args"]
     assert args[2] == 1
     assert args[1] == [["0x0000000000000000000000000000000000000005"]]
+
+
+@pytest.mark.asyncio
+async def test_get_vote_claimables_resolves_gauge_reward_contracts():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    voter = MagicMock()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    pool = "0x" + "11" * 20
+    gauge = "0x" + "22" * 20
+    fee_reward = "0x" + "33" * 20
+    bribe_reward = "0x" + "44" * 20
+
+    with (
+        patch.object(
+            adapter,
+            "_enumerate_all_pools",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "pool": pool,
+                        "deployment_variant": "initial",
+                        "position_manager": FAKE_NPM,
+                    }
+                ]
+            ),
+        ),
+        patch.object(
+            slipstream_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            slipstream_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [gauge],
+                    [fee_reward, bribe_reward],
+                ]
+            ),
+        ) as mock_read,
+        patch.object(
+            adapter,
+            "_get_vote_claimables",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "pool": pool,
+                        "claimableFees": [],
+                        "claimableBribes": [],
+                    }
+                ]
+            ),
+        ) as mock_get_vote_claimables,
+    ):
+        ok, data = await adapter.get_vote_claimables(
+            token_id=7,
+            deployments=("initial",),
+            include_zero_positions=True,
+            include_usd_values=True,
+        )
+
+    assert ok is True
+    assert data == {
+        "protocol": "aerodrome_slipstream",
+        "chain_id": CHAIN_ID_BASE,
+        "chain_name": "base",
+        "deployments": ["initial"],
+        "tokenId": 7,
+        "votes": [
+            {
+                "pool": pool,
+                "claimableFees": [],
+                "claimableBribes": [],
+            }
+        ],
+    }
+    assert mock_read.await_count == 2
+    assert mock_get_vote_claimables.await_args.kwargs["token_id"] == 7
+    assert mock_get_vote_claimables.await_args.kwargs["pool_metadata_by_address"] == {
+        pool.lower(): {
+            "feeReward": fee_reward,
+            "bribeReward": bribe_reward,
+        }
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["web3"] is mock_web3
+    assert mock_get_vote_claimables.await_args.kwargs["voter_contract"] is voter
+    assert mock_get_vote_claimables.await_args.kwargs["include_zero_positions"] is True
+    assert mock_get_vote_claimables.await_args.kwargs["include_usd_values"] is True
 
 
 @pytest.mark.asyncio

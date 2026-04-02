@@ -274,12 +274,28 @@ Token identifiers (important for quoting/execution/lookups):
 
 ### Recurring automation (Runner)
 
-Runner CLI (project-local state in `./.wayfinder/runner/`):
+**All scheduled/recurring tasks MUST go through the runner daemon.** Do not use cron, systemd timers, or background loops. The daemon handles job persistence, failure tracking, timeouts, and session notifications.
 
 ```bash
-poetry run wayfinder runner start
-poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
-poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
+poetry run wayfinder runner start                # idempotent — safe to call multiple times
+poetry run wayfinder runner add-job \             # schedule a strategy
+  --name basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --interval 600 \
+  --config ./config.json
+poetry run wayfinder runner add-job \             # schedule a script
+  --name check-balances \
+  --type script \
+  --script-path .wayfinder_runs/check_balances.py \
+  --interval 300
+poetry run wayfinder runner status               # show daemon + all jobs
+poetry run wayfinder runner run-once <job>        # trigger immediate run
+poetry run wayfinder runner pause <job>
+poetry run wayfinder runner resume <job>
+poetry run wayfinder runner delete <job>
+poetry run wayfinder runner stop                  # shut down daemon
 ```
 
 See `RUNNER_ARCHITECTURE.md`.
