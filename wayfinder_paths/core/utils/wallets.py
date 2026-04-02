@@ -306,11 +306,11 @@ async def create_remote_wallet(
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
-    if policies:
-        wallet_type = "policy"
-    else:
+    if len(policies) == 0:
         wallet_type = "ttl"
         policies = [build_ttl_policy()]
+    else:
+        wallet_type = "policy"
     result = await WALLET_CLIENT.create_wallet(
         chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
     )
