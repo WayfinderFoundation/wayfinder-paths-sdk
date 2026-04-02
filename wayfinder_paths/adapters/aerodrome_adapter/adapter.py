@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -22,7 +23,7 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_VOTING_ESCROW_ABI,
 )
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WETH
 from wayfinder_paths.core.utils.multicall import (
@@ -32,6 +33,7 @@ from wayfinder_paths.core.utils.multicall import (
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_erc20_metadata,
+    get_token_balance,
     is_native_token,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
@@ -566,6 +568,61 @@ class AerodromeAdapter(
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         return ranked[: max(1, top_n)]
+
+    async def v2_pool_tvl_usdc(self, pool: SugarPool) -> float | None:
+        if not pool.is_v2:
+            return None
+
+        decimals0, decimals1, price0, price1 = await asyncio.gather(
+            self.token_decimals(pool.token0),
+            self.token_decimals(pool.token1),
+            self.token_price_usdc(pool.token0),
+            self.token_price_usdc(pool.token1),
+        )
+        if (
+            price0 is None
+            or price1 is None
+            or not math.isfinite(price0)
+            or not math.isfinite(price1)
+        ):
+            return None
+
+        reserve0 = pool.reserve0 / (10**decimals0)
+        reserve1 = pool.reserve1 / (10**decimals1)
+        return float(reserve0 * price0 + reserve1 * price1)
+
+    async def v2_staked_tvl_usdc(self, pool: SugarPool) -> float | None:
+        tvl = await self.v2_pool_tvl_usdc(pool)
+        if tvl is None:
+            return None
+        if pool.lp_total_supply <= 0:
+            return None
+
+        ratio = float(pool.gauge_liquidity) / float(pool.lp_total_supply)
+        if ratio <= 0:
+            return None
+        return tvl * min(1.0, ratio)
+
+    async def v2_emissions_apr(self, pool: SugarPool) -> float | None:
+        if not pool.is_v2:
+            return None
+        if not pool.gauge_alive or pool.gauge == ZERO_ADDRESS:
+            return None
+        if pool.emissions_per_sec <= 0:
+            return None
+
+        staked_tvl = await self.v2_staked_tvl_usdc(pool)
+        if staked_tvl is None or staked_tvl <= 0:
+            return None
+
+        reward_decimals = await self.token_decimals(pool.emissions_token)
+        reward_price = await self.token_price_usdc(pool.emissions_token)
+        if reward_price is None or not math.isfinite(reward_price) or reward_price <= 0:
+            return None
+
+        emissions_per_second = pool.emissions_per_sec / (10**reward_decimals)
+        annual_rewards_usdc = emissions_per_second * SECONDS_PER_YEAR * reward_price
+        return float(annual_rewards_usdc / staked_tvl)
 
     async def get_pool(
         self,
@@ -1362,6 +1419,15 @@ class AerodromeAdapter(
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
+
+    async def lp_balance(self, lp_token: str) -> int:
+        if not self.wallet_address:
+            raise ValueError("wallet address not configured")
+        return await get_token_balance(
+            token_address=to_checksum_address(lp_token),
+            chain_id=CHAIN_ID_BASE,
+            wallet_address=to_checksum_address(self.wallet_address),
+        )
 
     @require_wallet
     async def unstake_lp(
