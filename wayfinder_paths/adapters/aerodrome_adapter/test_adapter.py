@@ -586,6 +586,89 @@ async def test_token_price_usdc_caches_none_on_failed_quote(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_can_vote_now_returns_epoch_metadata():
+    adapter = AerodromeAdapter()
+    last_voted = 123
+    now = WEEK_SECONDS + 500
+
+    voter = MagicMock()
+    voter.functions.lastVoted = MagicMock(return_value=_mock_call(last_voted))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": now})
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, data = await adapter.can_vote_now(token_id=7)
+
+    assert ok is True
+    assert data["can_vote"] is True
+    assert data["last_voted"] == last_voted
+    assert data["epoch_start"] == WEEK_SECONDS
+    assert data["next_epoch_start"] == 2 * WEEK_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_ve_locked_returns_structured_payload():
+    adapter = AerodromeAdapter()
+    ve = MagicMock()
+    ve.functions.locked = MagicMock(return_value=_mock_call((42, 99, True)))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=ve)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, data = await adapter.ve_locked(token_id=1)
+
+    assert ok is True
+    assert data == {"amount": 42, "end": 99, "is_permanent": True}
+
+
+@pytest.mark.asyncio
+async def test_estimate_ve_apr_percent_uses_aero_price(monkeypatch):
+    adapter = AerodromeAdapter()
+
+    async def _fake_token_price(_token: str) -> float:
+        return 2.0
+
+    async def _fake_token_decimals(_token: str) -> int:
+        return 18
+
+    monkeypatch.setattr(adapter, "token_price_usdc", _fake_token_price)
+    monkeypatch.setattr(adapter, "token_decimals", _fake_token_decimals)
+
+    ok, apr = await adapter.estimate_ve_apr_percent(
+        usdc_per_ve=5.0,
+        votes_raw=2 * 10**18,
+        aero_locked_raw=10 * 10**18,
+    )
+
+    assert ok is True
+    assert apr == pytest.approx(2600.0)
+
+
+@pytest.mark.asyncio
+async def test_estimate_votes_for_lock_caps_duration():
+    adapter = AerodromeAdapter()
+
+    ok, votes = await adapter.estimate_votes_for_lock(
+        aero_amount_raw=4 * 10**18,
+        lock_duration=10**12,
+    )
+
+    assert ok is True
+    assert votes == 4 * 10**18
+
+
+@pytest.mark.asyncio
 async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
     adapter = AerodromeAdapter()
 

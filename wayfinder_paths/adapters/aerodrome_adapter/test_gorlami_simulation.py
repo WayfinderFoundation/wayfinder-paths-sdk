@@ -249,6 +249,19 @@ async def test_gorlami_aerodrome_lp_gauge_and_ve_lock(gorlami):
     token_id = res["token_id"]
     assert token_id is not None
 
+    ok, voting_power = await adapter.ve_balance_of_nft(token_id=int(token_id))
+    assert ok is True, voting_power
+    assert int(voting_power) > 0
+
+    ok, locked = await adapter.ve_locked(token_id=int(token_id))
+    assert ok is True, locked
+    assert int(locked["amount"]) > 0
+    assert int(locked["end"]) > 0
+
+    ok, vote_window = await adapter.can_vote_now(token_id=int(token_id))
+    assert ok is True, vote_window
+    assert vote_window["next_epoch_start"] > vote_window["epoch_start"]
+
     ok, token_ids = await adapter.get_user_ve_nfts(owner=acct.address)
     assert ok is True, token_ids
     assert int(token_id) in [int(x) for x in token_ids]

@@ -23,13 +23,18 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_decimals
+from wayfinder_paths.core.utils.tokens import (
+    ensure_allowance,
+    get_erc20_metadata,
+    get_token_decimals,
+)
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
 EPOCH_SPECIAL_WINDOW_SECONDS = 60 * 60
 AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
+VE_MAXTIME_SECONDS = 4 * 365 * 24 * 60 * 60
 
 _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
 
@@ -37,17 +42,15 @@ _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_
 class AerodromeTokenHelpersMixin:
     chain_id: int
     _token_decimals_cache: dict[str, int]
+    _token_symbol_cache: dict[str, str]
 
     async def _fetch_token_decimals(self, token_addr: str) -> int:
         return await get_token_decimals(token_addr, self.chain_id)
 
-    async def _resolve_token_price_usdc(
-        self,
-        token: str,
-        *,
-        price_usdc: float | None = None,
-    ) -> float | None:
-        raise NotImplementedError
+    async def _fetch_token_symbol(self, token_addr: str) -> str:
+        async with web3_from_chain_id(self.chain_id) as web3:
+            symbol, _name, _decimals = await get_erc20_metadata(token_addr, web3=web3)
+        return symbol
 
     async def token_decimals(self, token: str) -> int:
         token_addr = to_checksum_address(token)
@@ -55,7 +58,7 @@ class AerodromeTokenHelpersMixin:
         if cached is not None:
             return cached
 
-        decimals = int(await self._fetch_token_decimals(token_addr))
+        decimals = await self._fetch_token_decimals(token_addr)
         self._token_decimals_cache[token_addr] = decimals
         return decimals
 
@@ -72,20 +75,32 @@ class AerodromeTokenHelpersMixin:
             return None
 
         decimals = await self.token_decimals(token)
-        resolved_price = await self._resolve_token_price_usdc(
-            token,
-            price_usdc=price_usdc,
+        resolved_price = (
+            price_usdc if price_usdc is not None else await self.token_price_usdc(token)
         )
         if resolved_price is None:
             return None
 
-        price_f = float(resolved_price)
-        if not math.isfinite(price_f) or price_f <= 0:
+        if not math.isfinite(resolved_price) or resolved_price <= 0:
             return None
-        return (amount_raw / (10**decimals)) * price_f
+        return (amount_raw / (10**decimals)) * resolved_price
+
+    async def token_price_usdc(self, token: str) -> float | None:
+        raise NotImplementedError
+
+    async def token_symbol(self, token: str) -> str:
+        token_addr = to_checksum_address(token)
+        cached = self._token_symbol_cache.get(token_addr)
+        if cached is not None:
+            return cached
+
+        symbol = await self._fetch_token_symbol(token_addr)
+        self._token_symbol_cache[token_addr] = symbol
+        return symbol
 
 
 class AerodromeVotingRewardsMixin:
+    chain_id: int
     core_contracts: dict[str, str]
 
     async def _minted_erc721_token_id(
@@ -154,6 +169,118 @@ class AerodromeVotingRewardsMixin:
                     )
 
         return True, ""
+
+    async def ve_balance_of_nft(
+        self,
+        *,
+        token_id: int,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            async with web3_from_chain_id(self.chain_id) as web3:
+                ve = web3.eth.contract(
+                    address=to_checksum_address(self.core_contracts["voting_escrow"]),
+                    abi=AERODROME_VOTING_ESCROW_ABI,
+                )
+                balance = await ve.functions.balanceOfNFT(token_id).call(
+                    block_identifier=block_identifier
+                )
+            return True, balance
+        except Exception as exc:
+            return False, str(exc)
+
+    async def ve_locked(
+        self,
+        *,
+        token_id: int,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            async with web3_from_chain_id(self.chain_id) as web3:
+                ve = web3.eth.contract(
+                    address=to_checksum_address(self.core_contracts["voting_escrow"]),
+                    abi=AERODROME_VOTING_ESCROW_ABI,
+                )
+                locked = await ve.functions.locked(token_id).call(
+                    block_identifier=block_identifier
+                )
+            if (
+                isinstance(locked, (list, tuple))
+                and len(locked) == 1
+                and isinstance(locked[0], (list, tuple))
+            ):
+                locked = locked[0]
+            amount, end, is_permanent = locked
+            return True, {
+                "amount": amount,
+                "end": end,
+                "is_permanent": is_permanent,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def can_vote_now(
+        self,
+        *,
+        token_id: int,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            async with web3_from_chain_id(self.chain_id) as web3:
+                latest = await web3.eth.get_block(block_identifier)
+                now = latest.get("timestamp") or 0
+                epoch_start = (now // WEEK_SECONDS) * WEEK_SECONDS
+                next_epoch_start = epoch_start + WEEK_SECONDS
+
+                voter = web3.eth.contract(
+                    address=to_checksum_address(self.core_contracts["voter"]),
+                    abi=AERODROME_VOTER_ABI,
+                )
+                last_voted = await voter.functions.lastVoted(token_id).call(
+                    block_identifier=block_identifier
+                )
+
+            return True, {
+                "can_vote": last_voted < epoch_start,
+                "last_voted": last_voted,
+                "epoch_start": epoch_start,
+                "next_epoch_start": next_epoch_start,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def estimate_votes_for_lock(
+        self,
+        *,
+        aero_amount_raw: int,
+        lock_duration: int,
+    ) -> tuple[bool, Any]:
+        if aero_amount_raw <= 0 or lock_duration <= 0:
+            return True, 0
+        effective_duration = min(lock_duration, VE_MAXTIME_SECONDS)
+        return True, aero_amount_raw * effective_duration // VE_MAXTIME_SECONDS
+
+    async def estimate_ve_apr_percent(
+        self,
+        *,
+        usdc_per_ve: float,
+        votes_raw: int,
+        aero_locked_raw: int,
+    ) -> tuple[bool, Any]:
+        if votes_raw <= 0 or aero_locked_raw <= 0:
+            return True, None
+
+        aero_price = await self.token_price_usdc(self.core_contracts["aero"])
+        if aero_price is None or not math.isfinite(aero_price) or aero_price <= 0:
+            return True, None
+
+        aero_decimals = await self.token_decimals(self.core_contracts["aero"])
+        locked_value_usdc = (aero_locked_raw / (10**aero_decimals)) * aero_price
+        if locked_value_usdc <= 0:
+            return True, None
+
+        weekly_reward_usdc = (votes_raw / 1e18) * usdc_per_ve
+        return True, (weekly_reward_usdc * 52.0 / locked_value_usdc) * 100.0
 
     async def get_reward_contracts(
         self,
