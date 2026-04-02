@@ -141,9 +141,8 @@ def get_etherscan_api_key() -> str | None:
 
 
 def get_opencode_instance_id() -> str:
-    value = os.environ.get("OPENCODE_INSTANCE_ID")
-    if not value:
+    if not (instance_id := os.environ.get("OPENCODE_INSTANCE_ID")):
         raise RuntimeError(
             "No OPENCODE_INSTANCE_ID set, this is unexpected as the caller assumes this is an OpenCode environment."
         )
-    return value
+    return instance_id
