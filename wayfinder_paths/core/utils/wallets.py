@@ -53,7 +53,6 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                     "type": "remote",
                     "chain_type": w.get("chain_type", "ethereum"),
                     "wallet_type": w.get("wallet_type", "policy"),
-                    "policy_id": w.get("policy_id"),
                 }
             )
         return wallets
