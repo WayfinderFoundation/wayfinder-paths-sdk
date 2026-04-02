@@ -298,10 +298,6 @@ poetry run wayfinder runner delete <job>
 poetry run wayfinder runner stop                  # shut down daemon
 ```
 
-Job types: `strategy` (runs a strategy action) or `script` (runs a `.py` file from `.wayfinder_runs/`).
-
-The daemon auto-discovers the OpenCode session that created a job and posts results back to it on completion.
-
 See `RUNNER_ARCHITECTURE.md`.
 
 ## Common Commands
