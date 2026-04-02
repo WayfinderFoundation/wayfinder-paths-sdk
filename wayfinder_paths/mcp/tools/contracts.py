@@ -138,7 +138,7 @@ async def deploy_contract(
     ``constructor_args`` is a JSON-encoded list (e.g. ``'["0xabc...", 1000]'``).
     """
     try:
-        sign_callback, sender = get_wallet_signing_callback(wallet_label)
+        sign_callback, sender = await get_wallet_signing_callback(wallet_label)
     except ValueError as e:
         return err("invalid_wallet", str(e))
 

@@ -29,7 +29,7 @@ On non-mainnet EVM chains, USDe/sUSDe/ENA are LayerZero OFT tokens. See `ethena_
 from wayfinder_paths.adapters.ethena_vault_adapter import EthenaVaultAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = get_adapter(EthenaVaultAdapter, "main")
+adapter = await get_adapter(EthenaVaultAdapter, "main")
 ```
 
 ## Methods

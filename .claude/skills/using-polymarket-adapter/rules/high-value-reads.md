@@ -10,6 +10,7 @@
 - Search markets/events: `mcp__wayfinder__polymarket(action="search", query="bitcoin daily", limit=10)`
 - Trending markets: `mcp__wayfinder__polymarket(action="trending", limit=25)`
 - Market metadata by slug: `mcp__wayfinder__polymarket(action="get_market", market_slug="...")`
+- Book-based trade quote: `mcp__wayfinder__polymarket(action="quote", market_slug="...", outcome="YES", side="BUY", amount_usdc=100)`
 - Price history (token_id): `mcp__wayfinder__polymarket(action="price_history", token_id="...", interval="1d", fidelity=5)`
 - Full user status: `mcp__wayfinder__polymarket(action="status", wallet_label="main")`
 
@@ -48,6 +49,13 @@ Use `get_prices_history(token_id=..., ...)`:
 
 If you’re analyzing a market by slug, use `get_market_prices_history(market_slug=..., outcome=...)` (slug → token id → history).
 
+## Book-based quote vs price
+
+- Use `quote_market_order(token_id=..., side="BUY" | "SELL", amount=...)` when you need average execution from the current book.
+- `BUY amount` is USDC notional to spend; `SELL amount` is shares to sell.
+- Quote returns weighted-average price, worst fill, partial-fill status, and per-level fills.
+- `get_price(...)` is not a substitute for this; it does not tell you the weighted average execution price for a sized trade.
+
 ## Ad-hoc analysis scripts (copy/paste)
 
 ### Search a topic and print tradable candidates
@@ -61,7 +69,7 @@ def is_tradable(m: dict) -> bool:
     return bool(m.get("enableOrderBook") and m.get("clobTokenIds") and m.get("acceptingOrders") and m.get("active") and not m.get("closed"))
 
 async def main():
-    a = get_adapter(PolymarketAdapter)
+    a = await get_adapter(PolymarketAdapter)
     ok, rows = await a.search_markets_fuzzy(query="super bowl mvp", limit=25)
     assert ok, rows
     tradable = [m for m in rows if is_tradable(m)]
@@ -89,7 +97,7 @@ def hist_points(hist: dict) -> list[tuple[int, float]]:
     return sorted(pts, key=lambda x: x[0])
 
 async def main():
-    a = get_adapter(PolymarketAdapter)
+    a = await get_adapter(PolymarketAdapter)
     ok, ev = await a.get_event_by_slug("super-bowl-lx-mvp")
     assert ok, ev
 
@@ -133,6 +141,7 @@ asyncio.run(main())
 | `get_event_by_slug(slug)` | dict | Market sets (MVP, brackets, etc.) |
 | `get_price(token_id)` | dict | Current price |
 | `get_order_book(token_id)` | dict | Book snapshot |
+| `quote_market_order(token_id, side, amount)` | dict | Average execution / depth quote from the live book |
 | `get_prices_history(token_id, ...)` | dict | Historic time series |
 | `get_positions(user)` | list | Exposure snapshot |
 | `get_trades(...)` / `get_activity(...)` | list | “What happened” history |

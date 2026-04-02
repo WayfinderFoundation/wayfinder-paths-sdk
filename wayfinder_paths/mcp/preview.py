@@ -21,7 +21,7 @@ from wayfinder_paths.mcp.utils import (
 )
 
 
-def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+async def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     req = tool_input.get("request") if isinstance(tool_input, dict) else None
     if not isinstance(req, dict):
         return {
@@ -31,7 +31,7 @@ def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
 
     kind = str(req.get("kind") or "").strip()
     wallet_label = str(req.get("wallet_label") or "").strip()
-    w = find_wallet_by_label(wallet_label) if wallet_label else None
+    w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
     recipient = normalize_address(req.get("recipient"))
@@ -120,7 +120,9 @@ def build_run_script_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     return {"summary": summary}
 
 
-def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+async def build_hyperliquid_execute_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
     # hyperliquid_execute uses direct parameters, not a 'request' wrapper
     req = tool_input if isinstance(tool_input, dict) else {}
     if not req:
@@ -128,7 +130,7 @@ def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, A
 
     action = str(req.get("action") or "").strip()
     wallet_label = str(req.get("wallet_label") or "").strip()
-    w = find_wallet_by_label(wallet_label) if wallet_label else None
+    w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
     coin = req.get("coin")
@@ -211,7 +213,9 @@ def build_hyperliquid_execute_preview(tool_input: dict[str, Any]) -> dict[str, A
     return {"summary": header + base}
 
 
-def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+async def build_polymarket_execute_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
     req = tool_input if isinstance(tool_input, dict) else {}
     if not req:
         return {
@@ -221,7 +225,7 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
 
     action = str(req.get("action") or "").strip()
     wallet_label = str(req.get("wallet_label") or "").strip()
-    w = find_wallet_by_label(wallet_label) if wallet_label else None
+    w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
     recipient = None
@@ -299,13 +303,13 @@ def build_polymarket_execute_preview(tool_input: dict[str, Any]) -> dict[str, An
     return {"summary": header + base, "recipient_mismatch": mismatch}
 
 
-def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+async def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     req = tool_input if isinstance(tool_input, dict) else {}
     if not req:
         return {"summary": "CONTRACT_EXECUTE missing parameters."}
 
     wallet_label = str(req.get("wallet_label") or "").strip()
-    w = find_wallet_by_label(wallet_label) if wallet_label else None
+    w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
     chain_id = req.get("chain_id")

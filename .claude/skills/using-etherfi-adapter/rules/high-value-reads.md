@@ -32,7 +32,7 @@ ACCOUNT = "0x0000000000000000000000000000000000000000"
 
 
 async def main():
-    adapter = get_adapter(EtherfiAdapter)  # read-only, no wallet needed
+    adapter = await get_adapter(EtherfiAdapter)  # read-only, no wallet needed
     ok, pos = await adapter.get_pos(account=ACCOUNT, chain_id=CHAIN_ID_ETHEREUM)
     if not ok:
         raise RuntimeError(pos)
@@ -61,7 +61,7 @@ TOKEN_ID = 0
 
 
 async def main():
-    adapter = get_adapter(EtherfiAdapter)
+    adapter = await get_adapter(EtherfiAdapter)
 
     ok, finalized = await adapter.is_withdraw_finalized(
         token_id=TOKEN_ID, chain_id=CHAIN_ID_ETHEREUM

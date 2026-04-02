@@ -28,6 +28,7 @@ def build_daemon_start_cmd(
         "-m",
         "wayfinder_paths.runnerd",
         "start",
+        "--no-detach",
         "--tick-seconds",
         str(float(tick_seconds)),
         "--max-workers",

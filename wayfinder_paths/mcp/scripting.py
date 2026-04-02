@@ -4,10 +4,13 @@ import inspect
 from typing import Any
 
 from wayfinder_paths.core.config import CONFIG
-from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.core.utils.wallets import (
+    get_wallet_sign_hash_callback,
+    get_wallet_signing_callback,
+)
 
 
-def get_adapter[T](
+async def get_adapter[T](
     adapter_class: type[T],
     wallet_label: str | None = None,
     strategy_wallet_label: str | None = None,
@@ -22,13 +25,16 @@ def get_adapter[T](
     adapter_kwargs: dict[str, Any] = {"config": config}
 
     if wallet_label:
-        sign_cb, address = get_wallet_signing_callback(wallet_label)
+        sign_cb, address = await get_wallet_signing_callback(wallet_label)
         params = set(inspect.signature(adapter_class.__init__).parameters)
 
         if "sign_callback" in params:
             adapter_kwargs["sign_callback"] = sign_cb
             if "wallet_address" in params:
                 adapter_kwargs["wallet_address"] = address
+            if "sign_hash_callback" in params:
+                hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label)
+                adapter_kwargs["sign_hash_callback"] = hash_cb
 
         elif "main_sign_callback" in params:
             adapter_kwargs["main_sign_callback"] = sign_cb
@@ -41,7 +47,7 @@ def get_adapter[T](
                         f"{adapter_class.__name__} requires a strategy wallet. "
                         "Pass strategy_wallet_label."
                     )
-                strategy_cb, strategy_addr = get_wallet_signing_callback(
+                strategy_cb, strategy_addr = await get_wallet_signing_callback(
                     strategy_wallet_label
                 )
                 adapter_kwargs["strategy_sign_callback"] = strategy_cb

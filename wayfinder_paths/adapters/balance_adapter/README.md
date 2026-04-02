@@ -18,7 +18,7 @@ The BalanceAdapter provides:
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
-adapter = get_adapter(BalanceAdapter, "main", "my_strategy")
+adapter = await get_adapter(BalanceAdapter, "main", "my_strategy")
 ```
 
 ## Methods

@@ -32,7 +32,7 @@ async def main():
     # 1. Set fork RPC (get this from gorlami_fork() or MCP)
     set_rpc_urls({"8453": ["https://virtual.base.rpc.tenderly.co/YOUR_FORK_ID"]})
 
-    sign_callback, address = get_wallet_signing_callback("main")
+    sign_callback, address = await get_wallet_signing_callback("main")
 
     # 2. Deploy on fork
     result = await deploy_contract(

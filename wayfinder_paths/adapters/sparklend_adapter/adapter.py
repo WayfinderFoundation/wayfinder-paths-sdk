@@ -287,13 +287,15 @@ class SparkLendAdapter(AaveV3Adapter):
                     block_identifier="pending",
                 )
 
-                token_candidates: set[str] = set()
+                token_candidates: list[str] = []
+                seen_tokens: set[str] = set()
                 for token_addrs in token_results:
-                    token_candidates.update(
-                        cs
-                        for addr in token_addrs
-                        if (cs := to_checksum_address(addr)) != ZERO_ADDRESS
-                    )
+                    for addr in token_addrs:
+                        cs = to_checksum_address(addr)
+                        if cs == ZERO_ADDRESS or cs in seen_tokens:
+                            continue
+                        seen_tokens.add(cs)
+                        token_candidates.append(cs)
 
                 reward_results = await read_only_calls_multicall_or_gather(
                     web3=web3,
@@ -305,21 +307,21 @@ class SparkLendAdapter(AaveV3Adapter):
                     block_identifier="pending",
                 )
 
-                assets_set: set[str] = set()
+                assets_to_claim: list[str] = []
                 for token, rewards_for_asset in zip(
                     token_candidates, reward_results, strict=True
                 ):
                     if rewards_for_asset:
-                        assets_set.add(token)
+                        assets_to_claim.append(token)
 
-            if not assets_set:
+            if not assets_to_claim:
                 return True, {"claimed": [], "note": "no incentivized assets found"}
 
             tx = await encode_call(
                 target=rewards_controller,
                 abi=REWARDS_CONTROLLER_ABI,
                 fn_name="claimAllRewardsToSelf",
-                args=[assets_set],
+                args=[assets_to_claim],
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )

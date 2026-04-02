@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -13,6 +14,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths import __version__
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -279,6 +281,33 @@ class RunnerDaemon:
         self._running_by_job[rp.job_id] = max(
             0, self._running_by_job.get(rp.job_id, 1) - 1
         )
+
+        self._notify_session(rp, status=status, error_text=error_text)
+
+    def _notify_session(
+        self,
+        running_process: RunningProcess,
+        *,
+        status: str,
+        error_text: str | None,
+    ) -> None:
+        job, _ = self._db.get_job(name=running_process.job_name)
+        session_id = job.payload["notify_session_id"]
+
+        if session_id is None or not OPENCODE_CLIENT.healthy():
+            return
+
+        notification = json.dumps(
+            {
+                "type": "job_result",
+                "name": running_process.job_name,
+                "status": status,
+                "error": error_text,
+                "message": running_process.log_path.read_text(errors="replace").strip()
+                or "(no output)",
+            }
+        )
+        OPENCODE_CLIENT.send_message(session_id, notification)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
@@ -603,6 +632,10 @@ class RunnerDaemon:
             env = payload_norm.get("env")
             if env is not None and not isinstance(env, dict):
                 return {"ok": False, "error": "payload.env must be an object"}
+        session_id = OPENCODE_CLIENT.find_runner_session()
+        payload_norm["notify_session_id"] = session_id
+        logger.info(f"Auto-bound job {name} to session {session_id}")
+
         try:
             job_id = self._db.add_job(
                 name=name,

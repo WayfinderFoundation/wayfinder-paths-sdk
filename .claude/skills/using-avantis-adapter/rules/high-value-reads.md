@@ -25,7 +25,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.avantis_adapter import AvantisAdapter
 
 async def main():
-    adapter = get_adapter(AvantisAdapter)  # read-only, no wallet needed
+    adapter = await get_adapter(AvantisAdapter)  # read-only, no wallet needed
     ok, markets = await adapter.get_all_markets()
     if not ok:
         raise RuntimeError(markets)
@@ -51,7 +51,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.avantis_adapter import AvantisAdapter
 
 async def main():
-    adapter = get_adapter(AvantisAdapter)
+    adapter = await get_adapter(AvantisAdapter)
     ok, state = await adapter.get_vault_manager_state()
     if not ok:
         raise RuntimeError(state)
@@ -73,7 +73,7 @@ from wayfinder_paths.core.constants.contracts import AVANTIS_AVUSDC
 USER = "0x0000000000000000000000000000000000000000"
 
 async def main():
-    adapter = get_adapter(AvantisAdapter)
+    adapter = await get_adapter(AvantisAdapter)
     ok, pos = await adapter.get_pos(vault_address=AVANTIS_AVUSDC, account=USER, include_usd=False)
     if not ok:
         raise RuntimeError(pos)

@@ -239,7 +239,7 @@ async def runner(
         if not client.sock_path.exists():
             return err(
                 "runner_not_running",
-                "Runner daemon socket not found. Start it with: poetry run wayfinder runner ensure",
+                "Runner daemon socket not found. Start it with: poetry run wayfinder runner start",
                 details={"sock_path": str(client.sock_path)},
             )
 
