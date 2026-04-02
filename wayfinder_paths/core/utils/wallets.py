@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -10,10 +11,12 @@ from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
     get_api_key,
+    get_default_remote_wallet_ttl_seconds,
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
+from wayfinder_paths.policies.ttl import allow_all_for
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -301,9 +304,40 @@ async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
+    ttl: int | None = None,
 ) -> dict[str, Any]:
+    resolved_ttl = get_default_remote_wallet_ttl_seconds() if ttl is None else ttl
+    if policies:
+        resolved_policies = policies
+    # disable TTL for non-positive numbers
+    elif resolved_ttl <= 0:
+        resolved_policies = []
+    else:
+        resolved_policies = [allow_all_for(resolved_ttl, chain_type=chain_type)]
+
     return await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label
+        chain_type=chain_type, policies=resolved_policies, label=label
+    )
+
+
+async def extend_remote_wallet_expiry(
+    wallet_address: str,
+    ttl: int | None = None,
+    privy_authorization_signature: str = "",
+) -> dict[str, Any]:
+    resolved_ttl = get_default_remote_wallet_ttl_seconds() if ttl is None else ttl
+    if resolved_ttl <= 0:
+        raise ValueError("ttl must be positive to extend wallet expiry")
+    if not privy_authorization_signature.strip():
+        raise ValueError(
+            "privy_authorization_signature is required to extend wallet expiry"
+        )
+
+    expires_at = (datetime.now(UTC) + timedelta(seconds=resolved_ttl)).isoformat()
+    return await WALLET_CLIENT.extend_wallet_expiry(
+        wallet_address,
+        expires_at=expires_at,
+        privy_authorization_signature=privy_authorization_signature,
     )
 
 
