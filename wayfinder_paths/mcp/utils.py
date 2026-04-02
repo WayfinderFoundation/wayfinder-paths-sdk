@@ -97,12 +97,13 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
 
 
 def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    view: dict[str, Any] = {"label": w.get("label"), "address": w.get("address")}
-    if wallet_type := w.get("wallet_type"):
-        view["wallet_type"] = wallet_type
-        view["ttl_expires_at"] = w.get("ttl_expires_at")
-        view["ttl_expires_in"] = w.get("ttl_expires_in")
-    return view
+    return {
+        "label": w.get("label"),
+        "address": w.get("address"),
+        "wallet_type": w.get("wallet_type"),
+        "ttl_expires_at": w.get("ttl_expires_at"),
+        "ttl_expires_in": w.get("ttl_expires_in"),
+    }
 
 
 def normalize_address(addr: str | None) -> str | None:
