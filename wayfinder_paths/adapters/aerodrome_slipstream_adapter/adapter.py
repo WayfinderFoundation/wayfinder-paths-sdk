@@ -204,32 +204,7 @@ class AerodromeSlipstreamAdapter(
             ):
                 return cached_price
 
-        price: float | None = None
-        chain_name = self.core_contracts["chain_name"].lower()
-        queries: tuple[tuple[str, dict[str, Any]], ...] = (
-            (f"{chain_name}_{token_addr}", {"market_data": True}),
-            (
-                token_addr,
-                {"market_data": True, "chain_id": CHAIN_ID_BASE},
-            ),
-        )
-        for query, kwargs in queries:
-            try:
-                details = await TOKEN_CLIENT.get_token_details(query, **kwargs)
-            except Exception:
-                continue
-            raw_price = (
-                details.get("current_price")
-                or details.get("price_usd")
-                or details.get("price")
-            )
-            if raw_price is None:
-                continue
-            price_f = float(raw_price)
-            if math.isfinite(price_f) and price_f > 0:
-                price = price_f
-                break
-
+        price = await self._token_price_usdc_from_market_data(token_addr)
         self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
         return price
 

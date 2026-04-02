@@ -19,6 +19,7 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.erc721_abi import ERC721_TRANSFER_EVENT_ABI
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -41,6 +42,7 @@ _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_
 
 class AerodromeTokenHelpersMixin:
     chain_id: int
+    core_contracts: dict[str, str]
     _token_decimals_cache: dict[str, int]
     _token_symbol_cache: dict[str, str]
 
@@ -61,6 +63,40 @@ class AerodromeTokenHelpersMixin:
         decimals = await self._fetch_token_decimals(token_addr)
         self._token_decimals_cache[token_addr] = decimals
         return decimals
+
+    async def _token_price_usdc_from_market_data(self, token: str) -> float | None:
+        token_addr = to_checksum_address(token)
+        chain_name = self.core_contracts.get("chain_name", "").lower()
+
+        queries: list[tuple[str, dict[str, Any]]] = []
+        if chain_name:
+            queries.append((f"{chain_name}_{token_addr}", {"market_data": True}))
+        queries.append(
+            (
+                token_addr,
+                {"market_data": True, "chain_id": self.chain_id},
+            )
+        )
+
+        for query, kwargs in queries:
+            try:
+                details = await TOKEN_CLIENT.get_token_details(query, **kwargs)
+            except Exception:
+                continue
+
+            raw_price = (
+                details.get("current_price")
+                or details.get("price_usd")
+                or details.get("price")
+            )
+            if raw_price is None:
+                continue
+
+            price = float(raw_price)
+            if math.isfinite(price) and price > 0:
+                return price
+
+        return None
 
     async def token_amount_usdc(
         self,

@@ -297,12 +297,12 @@ class AerodromeAdapter(
                 intermediates=[BASE_WETH],
             )
         except Exception:
-            self._token_price_usdc_cache[token] = (time.monotonic(), None)
-            return None
+            out = None
 
-        if out <= 0:
-            self._token_price_usdc_cache[token] = (time.monotonic(), None)
-            return None
+        if out is None or out <= 0:
+            price = await self._token_price_usdc_from_market_data(token)
+            self._token_price_usdc_cache[token] = (time.monotonic(), price)
+            return price
 
         price = out / 10**6
         self._token_price_usdc_cache[token] = (time.monotonic(), price)
