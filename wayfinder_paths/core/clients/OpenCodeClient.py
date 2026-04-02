@@ -17,21 +17,19 @@ class OpenCodeClient:
             headers={"Content-Type": "application/json"},
         )
 
-    def get(self, path: str, **kwargs: Any) -> httpx.Response:
-        return self.client.get(f"{self.base_url}{path}", **kwargs)
-
-    def post(self, path: str, **kwargs: Any) -> httpx.Response:
-        return self.client.post(f"{self.base_url}{path}", **kwargs)
-
     def healthy(self) -> bool:
         try:
-            return self.get("/global/health").json().get("healthy", False)
+            return (
+                self.client.get(f"{self.base_url}/global/health")
+                .json()
+                .get("healthy", False)
+            )
         except Exception:
             return False
 
     def list_sessions(self) -> list[dict[str, Any]]:
         try:
-            return self.get("/session").json()
+            return self.client.get(f"{self.base_url}/session").json()
         except Exception:
             return []
 
@@ -43,8 +41,9 @@ class OpenCodeClient:
                 continue
             try:
                 raw = json.dumps(
-                    self.get(
-                        f"/session/{session_id}/message", params={"limit": 50}
+                    self.client.get(
+                        f"{self.base_url}/session/{session_id}/message",
+                        params={"limit": 50},
                     ).json()
                 )
                 if "runner" in raw and ("add-job" in raw or "add_job" in raw):
@@ -55,11 +54,10 @@ class OpenCodeClient:
 
     def send_message(self, session_id: str, text: str) -> bool:
         try:
-            response = self.post(
-                f"/session/{session_id}/message",
+            return self.client.post(
+                f"{self.base_url}/session/{session_id}/message",
                 json={"parts": [{"type": "text", "text": text}]},
-            )
-            return response.is_success
+            ).is_success
         except Exception as error:
             logger.debug(f"Failed to send message to session {session_id}: {error}")
             return False
