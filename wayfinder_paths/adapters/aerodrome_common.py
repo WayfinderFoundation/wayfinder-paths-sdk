@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -22,14 +23,66 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.tokens import ensure_allowance
+from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_decimals
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
 EPOCH_SPECIAL_WINDOW_SECONDS = 60 * 60
+AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 
 _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
+
+
+class AerodromeTokenHelpersMixin:
+    chain_id: int
+    _token_decimals_cache: dict[str, int]
+
+    async def _fetch_token_decimals(self, token_addr: str) -> int:
+        return await get_token_decimals(token_addr, self.chain_id)
+
+    async def _resolve_token_price_usdc(
+        self,
+        token: str,
+        *,
+        price_usdc: float | None = None,
+    ) -> float | None:
+        raise NotImplementedError
+
+    async def token_decimals(self, token: str) -> int:
+        token_addr = to_checksum_address(token)
+        cached = self._token_decimals_cache.get(token_addr)
+        if cached is not None:
+            return cached
+
+        decimals = int(await self._fetch_token_decimals(token_addr))
+        self._token_decimals_cache[token_addr] = decimals
+        return decimals
+
+    async def token_amount_usdc(
+        self,
+        *,
+        token: str,
+        amount_raw: int,
+        price_usdc: float | None = None,
+    ) -> float | None:
+        if amount_raw == 0:
+            return 0.0
+        if amount_raw < 0:
+            return None
+
+        decimals = await self.token_decimals(token)
+        resolved_price = await self._resolve_token_price_usdc(
+            token,
+            price_usdc=price_usdc,
+        )
+        if resolved_price is None:
+            return None
+
+        price_f = float(resolved_price)
+        if not math.isfinite(price_f) or price_f <= 0:
+            return None
+        return (amount_raw / (10**decimals)) * price_f
 
 
 class AerodromeVotingRewardsMixin:

@@ -40,7 +40,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _SUGAR_CALL_GAS = 30_000_000
-_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 
 
 @dataclass(frozen=True)
@@ -117,7 +116,11 @@ class SugarPool:
         return self.pool_type == 0
 
 
-class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter):
+class AerodromeAdapter(
+    aerodrome_common.AerodromeTokenHelpersMixin,
+    aerodrome_common.AerodromeVotingRewardsMixin,
+    BaseAdapter,
+):
     """
     Aerodrome classic pool/gauge/veAERO adapter (Base mainnet only).
 
@@ -260,11 +263,8 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         self._token_decimals_cache[token] = decimals
         return symbol, decimals
 
-    async def token_decimals(self, token: str) -> int:
-        token = to_checksum_address(token)
-        if token in self._token_decimals_cache:
-            return self._token_decimals_cache[token]
-        _symbol, decimals = await self._load_token_metadata(token)
+    async def _fetch_token_decimals(self, token_addr: str) -> int:
+        _symbol, decimals = await self._load_token_metadata(token_addr)
         return decimals
 
     async def token_symbol(self, token: str) -> str:
@@ -282,7 +282,10 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         cached = self._token_price_usdc_cache.get(token)
         if cached is not None:
             cached_at, cached_price = cached
-            if now - cached_at <= _TOKEN_PRICE_USDC_TTL_SECONDS:
+            if (
+                now - cached_at
+                <= aerodrome_common.AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS
+            ):
                 return cached_price
 
         decimals = await self.token_decimals(token)
@@ -304,6 +307,16 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         price = out / 10**6
         self._token_price_usdc_cache[token] = (time.monotonic(), price)
         return price
+
+    async def _resolve_token_price_usdc(
+        self,
+        token: str,
+        *,
+        price_usdc: float | None = None,
+    ) -> float | None:
+        if price_usdc is not None:
+            return price_usdc
+        return await self.token_price_usdc(token)
 
     @staticmethod
     def _parse_sugar_rewards(rows: Any) -> list[SugarReward]:
@@ -499,18 +512,6 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 if rows:
                     epochs.append(rows[0])
         return epochs
-
-    async def token_amount_usdc(self, *, token: str, amount_raw: int) -> float | None:
-        if amount_raw == 0:
-            return 0.0
-        if amount_raw < 0:
-            return None
-
-        decimals = await self.token_decimals(token)
-        price_usdc = await self.token_price_usdc(token)
-        if price_usdc is None or price_usdc <= 0:
-            return None
-        return (amount_raw / (10**decimals)) * price_usdc
 
     async def epoch_total_incentives_usdc(
         self,

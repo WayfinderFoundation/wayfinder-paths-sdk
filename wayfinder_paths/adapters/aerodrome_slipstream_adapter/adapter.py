@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import math
+import time
 from collections.abc import Callable, Sequence
 from typing import Any, TypedDict
 
-from eth_utils import to_checksum_address
+from eth_utils import keccak, to_checksum_address
 
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_REWARDS_DISTRIBUTOR_ABI,
@@ -25,8 +28,9 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
     AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
     AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
 )
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -34,17 +38,23 @@ from wayfinder_paths.core.utils.multicall import (
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
+    MAX_UINT128,
     amounts_for_liq_inrange,
     liq_for_amounts,
     slippage_min,
     sqrt_price_x96_from_tick,
+    sqrt_price_x96_to_price,
+    tick_to_price_decimal,
 )
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     deadline as default_deadline,
 )
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-MAX_UINT128 = (1 << 128) - 1
+SLIPSTREAM_SWAP_TOPIC0 = (
+    "0x"
+    + keccak(text="Swap(address,address,int256,int256,uint160,uint128,int24)").hex()
+)
 
 
 def _checksum_or_zero(value: str | None) -> str:
@@ -58,7 +68,7 @@ def _checksum_or_zero(value: str | None) -> str:
 def _explicit_amount_min(amount_min: int | None) -> int | None:
     if amount_min is None:
         return None
-    value = int(amount_min)
+    value = amount_min
     if value < 0:
         raise ValueError("amount mins must be non-negative")
     return value
@@ -81,6 +91,7 @@ class AerodromeSlipstreamAdapterConfig(TypedDict, total=False):
 
 
 class AerodromeSlipstreamAdapter(
+    aerodrome_common.AerodromeTokenHelpersMixin,
     aerodrome_common.AerodromeVotingRewardsMixin,
     BaseAdapter,
 ):
@@ -137,14 +148,12 @@ class AerodromeSlipstreamAdapter(
             cfg["nonfungible_position_manager"].lower(): variant
             for variant, cfg in self.supported_deployments.items()
         }
-        self._variant_by_factory = {
-            cfg["pool_factory"].lower(): variant
-            for variant, cfg in self.supported_deployments.items()
-        }
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
+        self._token_decimals_cache: dict[str, int] = {}
+        self._token_price_usdc_cache: dict[str, tuple[float, float | None]] = {}
 
     def _resolve_deployments(
         self,
@@ -175,6 +184,63 @@ class AerodromeSlipstreamAdapter(
         if not variant:
             raise ValueError(f"Unknown Slipstream position manager: {pm}")
         return variant
+
+    async def _token_decimals(self, token: str) -> int:
+        return await self.token_decimals(token)
+
+    async def _token_price_usdc(self, token: str) -> float | None:
+        token_addr = to_checksum_address(token)
+        if token_addr == BASE_USDC:
+            return 1.0
+
+        now = time.monotonic()
+        cached = self._token_price_usdc_cache.get(token_addr)
+        if cached is not None:
+            cached_at, cached_price = cached
+            if (
+                now - cached_at
+                <= aerodrome_common.AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS
+            ):
+                return cached_price
+
+        price: float | None = None
+        chain_name = self.core_contracts["chain_name"].lower()
+        queries: tuple[tuple[str, dict[str, Any]], ...] = (
+            (f"{chain_name}_{token_addr}", {"market_data": True}),
+            (
+                token_addr,
+                {"market_data": True, "chain_id": CHAIN_ID_BASE},
+            ),
+        )
+        for query, kwargs in queries:
+            try:
+                details = await TOKEN_CLIENT.get_token_details(query, **kwargs)
+            except Exception:
+                continue
+            raw_price = (
+                details.get("current_price")
+                or details.get("price_usd")
+                or details.get("price")
+            )
+            if raw_price is None:
+                continue
+            price_f = float(raw_price)
+            if math.isfinite(price_f) and price_f > 0:
+                price = price_f
+                break
+
+        self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
+        return price
+
+    async def _resolve_token_price_usdc(
+        self,
+        token: str,
+        *,
+        price_usdc: float | None = None,
+    ) -> float | None:
+        if price_usdc is not None:
+            return price_usdc
+        return await self._token_price_usdc(token)
 
     def _select_write_target(
         self,
@@ -266,7 +332,7 @@ class AerodromeSlipstreamAdapter(
             pool = await factory.functions.getPool(
                 to_checksum_address(token0),
                 to_checksum_address(token1),
-                int(tick_spacing),
+                tick_spacing,
             ).call(block_identifier="latest")
             pool_addr = _checksum_or_zero(pool)
 
@@ -278,10 +344,10 @@ class AerodromeSlipstreamAdapter(
                 slot0 = await pool_contract.functions.slot0().call(
                     block_identifier="latest"
                 )
-                return int(slot0[0])
+                return slot0[0]
 
-        if initial_sqrt_price_x96 is not None and int(initial_sqrt_price_x96) > 0:
-            return int(initial_sqrt_price_x96)
+        if initial_sqrt_price_x96 is not None and initial_sqrt_price_x96 > 0:
+            return initial_sqrt_price_x96
 
         raise ValueError("amount mins are required when pool price cannot be resolved")
 
@@ -313,17 +379,17 @@ class AerodromeSlipstreamAdapter(
             tick_spacing=tick_spacing,
             initial_sqrt_price_x96=initial_sqrt_price_x96,
         )
-        sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
-        sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+        sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+        sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
         liquidity = liq_for_amounts(
-            int(sqrt_price_x96),
+            sqrt_price_x96,
             sqrt_lower,
             sqrt_upper,
-            int(amount0_desired),
-            int(amount1_desired),
+            amount0_desired,
+            amount1_desired,
         )
         expected0, expected1 = amounts_for_liq_inrange(
-            int(sqrt_price_x96),
+            sqrt_price_x96,
             sqrt_lower,
             sqrt_upper,
             liquidity,
@@ -365,13 +431,13 @@ class AerodromeSlipstreamAdapter(
             token1=token1,
             tick_spacing=tick_spacing,
         )
-        sqrt_lower = sqrt_price_x96_from_tick(int(tick_lower))
-        sqrt_upper = sqrt_price_x96_from_tick(int(tick_upper))
+        sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+        sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
         expected0, expected1 = amounts_for_liq_inrange(
-            int(sqrt_price_x96),
+            sqrt_price_x96,
             sqrt_lower,
             sqrt_upper,
-            int(liquidity),
+            liquidity,
         )
         if expected0 <= 0 and expected1 <= 0:
             raise ValueError("could not derive non-zero amount mins from current price")
@@ -401,11 +467,14 @@ class AerodromeSlipstreamAdapter(
             nft = web3.eth.contract(
                 address=nft_contract, abi=AERODROME_SLIPSTREAM_NPM_ABI
             )
-            approved, approved_for_all = await asyncio.gather(
-                nft.functions.getApproved(token_id).call(block_identifier="pending"),
-                nft.functions.isApprovedForAll(owner, operator).call(
-                    block_identifier="pending"
-                ),
+            approved, approved_for_all = await read_only_calls_multicall_or_gather(
+                web3=web3,
+                chain_id=CHAIN_ID_BASE,
+                calls=[
+                    Call(nft, "getApproved", args=(token_id,)),
+                    Call(nft, "isApprovedForAll", args=(owner, operator)),
+                ],
+                block_identifier="pending",
             )
             if (
                 _checksum_or_zero(approved).lower() == operator.lower()
@@ -455,9 +524,14 @@ class AerodromeSlipstreamAdapter(
             address=pool_addr,
             abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
         )
-        pool_gauge, voter_gauge = await asyncio.gather(
-            pool_contract.functions.gauge().call(block_identifier=block_identifier),
-            voter.functions.gauges(pool_addr).call(block_identifier=block_identifier),
+        pool_gauge, voter_gauge = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=CHAIN_ID_BASE,
+            calls=[
+                Call(pool_contract, "gauge"),
+                Call(voter, "gauges", args=(pool_addr,)),
+            ],
+            block_identifier=block_identifier,
         )
         pool_gauge_addr = _checksum_or_zero(pool_gauge)
         voter_gauge_addr = _checksum_or_zero(voter_gauge)
@@ -958,13 +1032,14 @@ class AerodromeSlipstreamAdapter(
                     address=self.core_contracts["voter"],
                     abi=AERODROME_VOTER_ABI,
                 )
-                pool_gauge, voter_gauge = await asyncio.gather(
-                    pool_contract.functions.gauge().call(
-                        block_identifier=block_identifier
-                    ),
-                    voter.functions.gauges(pool_addr).call(
-                        block_identifier=block_identifier
-                    ),
+                pool_gauge, voter_gauge = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(pool_contract, "gauge"),
+                        Call(voter, "gauges", args=(pool_addr,)),
+                    ],
+                    block_identifier=block_identifier,
                 )
 
             pool_gauge_addr = _checksum_or_zero(pool_gauge)
@@ -1101,6 +1176,618 @@ class AerodromeSlipstreamAdapter(
                 "limit": limit,
                 "total": total,
                 "markets": markets,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_best_pool_for_pair(
+        self,
+        *,
+        tokenA: str,
+        tokenB: str,
+        deployments: Sequence[str] | None = None,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            ok, matches = await self.find_pools(
+                tokenA=tokenA,
+                tokenB=tokenB,
+                deployments=deployments,
+                block_identifier=block_identifier,
+            )
+            if not ok:
+                return False, matches
+            if not matches:
+                return False, "No Slipstream pool found for pair"
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                markets = await asyncio.gather(
+                    *[
+                        self._read_market(
+                            web3=web3,
+                            deployment_variant=match["deployment_variant"],
+                            pool=match["pool"],
+                            include_gauge_state=False,
+                            block_identifier=block_identifier,
+                        )
+                        for match in matches
+                    ]
+                )
+
+            best_market = max(markets, key=lambda market: market["liquidity"])
+            if best_market["liquidity"] <= 0:
+                return False, "Slipstream pools exist but none have liquidity > 0"
+            return True, best_market
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_pool_state(
+        self,
+        *,
+        pool: str,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            pool_addr = to_checksum_address(pool)
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                pool_contract = web3.eth.contract(
+                    address=pool_addr,
+                    abi=AERODROME_SLIPSTREAM_CL_POOL_ABI,
+                )
+                (
+                    token0,
+                    token1,
+                    position_manager,
+                    tick_spacing,
+                    slot0,
+                    liquidity,
+                    fee_pips,
+                    unstaked_fee_pips,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(pool_contract, "token0", postprocess=to_checksum_address),
+                        Call(pool_contract, "token1", postprocess=to_checksum_address),
+                        Call(pool_contract, "nft", postprocess=to_checksum_address),
+                        Call(pool_contract, "tickSpacing"),
+                        Call(pool_contract, "slot0"),
+                        Call(pool_contract, "liquidity"),
+                        Call(pool_contract, "fee"),
+                        Call(pool_contract, "unstakedFee"),
+                    ],
+                    block_identifier=block_identifier,
+                )
+            decimals0, decimals1 = await asyncio.gather(
+                self._token_decimals(token0),
+                self._token_decimals(token1),
+            )
+            deployment_variant = self._variant_by_npm.get(position_manager.lower())
+            sqrt_price_x96 = slot0[0]
+            price = sqrt_price_x96_to_price(
+                sqrt_price_x96,
+                decimals0,
+                decimals1,
+            )
+            return True, {
+                "protocol": "aerodrome_slipstream",
+                "chain_id": CHAIN_ID_BASE,
+                "chain_name": self.core_contracts["chain_name"],
+                "deployment_variant": deployment_variant,
+                "pool": pool_addr,
+                "position_manager": position_manager,
+                "token0": token0,
+                "token1": token1,
+                "sqrt_price_x96": sqrt_price_x96,
+                "tick": slot0[1],
+                "tick_spacing": tick_spacing,
+                "liquidity": liquidity,
+                "fee_pips": fee_pips,
+                "unstaked_fee_pips": unstaked_fee_pips,
+                "price_token1_per_token0": price,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_range_metrics(
+        self,
+        *,
+        pool: str,
+        tick_lower: int,
+        tick_upper: int,
+        amount0_raw: int,
+        amount1_raw: int,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        if tick_lower >= tick_upper:
+            return False, "tick_lower must be < tick_upper"
+        if amount0_raw < 0 or amount1_raw < 0:
+            return False, "amount0_raw and amount1_raw must be non-negative"
+
+        try:
+            ok, pool_state = await self.slipstream_pool_state(
+                pool=pool,
+                block_identifier=block_identifier,
+            )
+            if not ok:
+                return False, pool_state
+
+            sqrt_price_x96 = pool_state["sqrt_price_x96"]
+            sqrt_lower = sqrt_price_x96_from_tick(tick_lower)
+            sqrt_upper = sqrt_price_x96_from_tick(tick_upper)
+            liquidity_position = liq_for_amounts(
+                sqrt_price_x96,
+                sqrt_lower,
+                sqrt_upper,
+                amount0_raw,
+                amount1_raw,
+            )
+            amount0_now, amount1_now = amounts_for_liq_inrange(
+                sqrt_price_x96,
+                sqrt_lower,
+                sqrt_upper,
+                liquidity_position,
+            )
+            liquidity_total = pool_state["liquidity"]
+            share_of_active_liquidity = (
+                liquidity_position / liquidity_total if liquidity_total > 0 else 0.0
+            )
+            effective_fee_fraction_for_unstaked = (pool_state["fee_pips"] / 1e6) * (
+                1.0 - pool_state["unstaked_fee_pips"] / 1e6
+            )
+
+            return True, {
+                "protocol": "aerodrome_slipstream",
+                "chain_id": CHAIN_ID_BASE,
+                "chain_name": self.core_contracts["chain_name"],
+                "deployment_variant": pool_state.get("deployment_variant"),
+                "pool": pool_state["pool"],
+                "position_manager": pool_state["position_manager"],
+                "token0": pool_state["token0"],
+                "token1": pool_state["token1"],
+                "tick_lower": tick_lower,
+                "tick_upper": tick_upper,
+                "current_tick": pool_state["tick"],
+                "in_range": tick_lower <= pool_state["tick"] < tick_upper,
+                "sqrt_price_x96": sqrt_price_x96,
+                "price_token1_per_token0": pool_state["price_token1_per_token0"],
+                "liquidity_total": liquidity_total,
+                "liquidity_position": liquidity_position,
+                "share_of_active_liquidity": share_of_active_liquidity,
+                "amount0_now": amount0_now,
+                "amount1_now": amount1_now,
+                "fee_pips": pool_state["fee_pips"],
+                "unstaked_fee_pips": pool_state["unstaked_fee_pips"],
+                "effective_fee_fraction_for_unstaked": (
+                    effective_fee_fraction_for_unstaked
+                ),
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_volume_usdc_per_day(
+        self,
+        *,
+        pool: str,
+        lookback_blocks: int = 2000,
+        max_logs: int = 5000,
+        token0_price_usdc: float | None = None,
+        token1_price_usdc: float | None = None,
+    ) -> tuple[bool, Any]:
+        if lookback_blocks <= 0:
+            return False, "lookback_blocks must be > 0"
+        if max_logs <= 0:
+            return False, "max_logs must be > 0"
+
+        try:
+            ok, state = await self.slipstream_pool_state(pool=pool)
+            if not ok:
+                return False, state
+
+            token0 = state["token0"]
+            token1 = state["token1"]
+            decimals0, decimals1, price0, price1 = await asyncio.gather(
+                self._token_decimals(token0),
+                self._token_decimals(token1),
+                self._resolve_token_price_usdc(
+                    token0,
+                    price_usdc=token0_price_usdc,
+                ),
+                self._resolve_token_price_usdc(
+                    token1,
+                    price_usdc=token1_price_usdc,
+                ),
+            )
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                latest = await web3.eth.block_number
+                from_block = max(0, latest - lookback_blocks)
+                logs = await self._get_logs_bounded(
+                    web3,
+                    from_block=from_block,
+                    to_block=latest,
+                    address=state["pool"],
+                    topics=[SLIPSTREAM_SWAP_TOPIC0],
+                    max_logs=max_logs,
+                )
+                if not logs:
+                    return True, {
+                        "pool": state["pool"],
+                        "volume_usdc_per_day": 0.0,
+                        "swap_count": 0,
+                        "seconds_covered": 0,
+                    }
+
+                block_numbers = [
+                    log["blockNumber"]
+                    for log in logs
+                    if log.get("blockNumber") is not None
+                ]
+                if not block_numbers:
+                    return True, {
+                        "pool": state["pool"],
+                        "volume_usdc_per_day": 0.0,
+                        "swap_count": len(logs),
+                        "seconds_covered": 0,
+                    }
+
+                block_min, block_max = min(block_numbers), max(block_numbers)
+                block0, block1 = await asyncio.gather(
+                    web3.eth.get_block(block_min),
+                    web3.eth.get_block(block_max),
+                )
+                seconds_covered = max(
+                    1,
+                    block1["timestamp"] - block0["timestamp"],
+                )
+
+                total_usdc = 0.0
+                for log in logs:
+                    data = log.get("data")
+                    if not data:
+                        continue
+                    try:
+                        amount0, amount1, *_ = web3.codec.decode(
+                            ["int256", "int256", "uint160", "uint128", "int24"],
+                            data,
+                        )
+                    except Exception:
+                        continue
+
+                    value0 = float("nan")
+                    value1 = float("nan")
+                    if price0 is not None and math.isfinite(price0) and price0 > 0:
+                        value0 = abs(amount0) / (10**decimals0) * price0
+                    if price1 is not None and math.isfinite(price1) and price1 > 0:
+                        value1 = abs(amount1) / (10**decimals1) * price1
+
+                    if math.isfinite(value0) and math.isfinite(value1):
+                        total_usdc += max(value0, value1)
+                    elif math.isfinite(value0):
+                        total_usdc += value0
+                    elif math.isfinite(value1):
+                        total_usdc += value1
+
+            return True, {
+                "pool": state["pool"],
+                "volume_usdc_per_day": total_usdc * 86400.0 / seconds_covered,
+                "swap_count": len(logs),
+                "seconds_covered": seconds_covered,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_fee_apr_percent(
+        self,
+        *,
+        metrics: dict[str, Any],
+        volume_usdc_per_day: float,
+        expected_in_range_fraction: float = 1.0,
+        token0_price_usdc: float | None = None,
+        token1_price_usdc: float | None = None,
+    ) -> tuple[bool, Any]:
+        if volume_usdc_per_day < 0:
+            return False, "volume_usdc_per_day must be non-negative"
+
+        try:
+            token0 = to_checksum_address(metrics["token0"])
+            token1 = to_checksum_address(metrics["token1"])
+            decimals0, decimals1, price0, price1 = await asyncio.gather(
+                self._token_decimals(token0),
+                self._token_decimals(token1),
+                self._resolve_token_price_usdc(
+                    token0,
+                    price_usdc=token0_price_usdc,
+                ),
+                self._resolve_token_price_usdc(
+                    token1,
+                    price_usdc=token1_price_usdc,
+                ),
+            )
+
+            position_value_usdc: float | None = None
+            if (
+                price0 is not None
+                and price1 is not None
+                and math.isfinite(price0)
+                and math.isfinite(price1)
+            ):
+                position_value_usdc = (
+                    (metrics["amount0_now"] / (10**decimals0)) * price0
+                ) + ((metrics["amount1_now"] / (10**decimals1)) * price1)
+                if position_value_usdc <= 0:
+                    position_value_usdc = None
+
+            fees_per_day_usdc = 0.0
+            apr_percent: float | None
+            if volume_usdc_per_day <= 0:
+                apr_percent = 0.0
+            elif position_value_usdc is None:
+                apr_percent = None
+            else:
+                in_range_fraction = expected_in_range_fraction
+                if not metrics.get("in_range"):
+                    in_range_fraction = 0.0
+                fees_per_day_usdc = (
+                    volume_usdc_per_day
+                    * metrics["effective_fee_fraction_for_unstaked"]
+                    * metrics["share_of_active_liquidity"]
+                    * in_range_fraction
+                )
+                apr_percent = fees_per_day_usdc * 365.0 / position_value_usdc * 100.0
+
+            return True, {
+                "pool": metrics.get("pool"),
+                "fee_apr_percent": apr_percent,
+                "fees_per_day_usdc": fees_per_day_usdc,
+                "position_value_usdc": position_value_usdc,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def slipstream_sigma_annual_from_swaps(
+        self,
+        *,
+        pool: str,
+        lookback_blocks: int = 20_000,
+        max_logs: int = 5000,
+    ) -> tuple[bool, Any]:
+        if lookback_blocks <= 0:
+            return False, "lookback_blocks must be > 0"
+        if max_logs <= 0:
+            return False, "max_logs must be > 0"
+
+        try:
+            ok, state = await self.slipstream_pool_state(pool=pool)
+            if not ok:
+                return False, state
+
+            decimals0, decimals1 = await asyncio.gather(
+                self._token_decimals(state["token0"]),
+                self._token_decimals(state["token1"]),
+            )
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                latest = await web3.eth.block_number
+                from_block = max(0, latest - lookback_blocks)
+                logs = await self._get_logs_bounded(
+                    web3,
+                    from_block=from_block,
+                    to_block=latest,
+                    address=state["pool"],
+                    topics=[SLIPSTREAM_SWAP_TOPIC0],
+                    max_logs=max_logs,
+                )
+                if not logs:
+                    return True, {
+                        "pool": state["pool"],
+                        "sigma_annual": None,
+                        "sample_count": 0,
+                        "seconds_covered": 0,
+                    }
+
+                timestamp_by_block: dict[int, int] = {}
+                observations: list[tuple[int, int]] = []
+                for log in logs:
+                    data = log.get("data")
+                    block_number = log.get("blockNumber")
+                    if not data or block_number is None:
+                        continue
+                    try:
+                        _amount0, _amount1, sqrt_price_x96, _liquidity, _tick = (
+                            web3.codec.decode(
+                                ["int256", "int256", "uint160", "uint128", "int24"],
+                                data,
+                            )
+                        )
+                    except Exception:
+                        continue
+                    block_number_i = block_number
+                    observations.append((block_number_i, sqrt_price_x96))
+
+                missing_blocks = sorted(
+                    {
+                        block_number_i
+                        for block_number_i, _ in observations
+                        if block_number_i not in timestamp_by_block
+                    }
+                )
+                if missing_blocks:
+                    blocks = await asyncio.gather(
+                        *[
+                            web3.eth.get_block(block_number_i)
+                            for block_number_i in missing_blocks
+                        ]
+                    )
+                    for block_number_i, block in zip(
+                        missing_blocks, blocks, strict=True
+                    ):
+                        timestamp_by_block[block_number_i] = block["timestamp"]
+
+                prices: list[tuple[int, float]] = []
+                for block_number_i, sqrt_price_x96 in observations:
+                    price = sqrt_price_x96_to_price(
+                        sqrt_price_x96,
+                        decimals0,
+                        decimals1,
+                    )
+                    if price > 0:
+                        prices.append((timestamp_by_block[block_number_i], price))
+
+            if len(prices) < 5:
+                return True, {
+                    "pool": state["pool"],
+                    "sigma_annual": None,
+                    "sample_count": len(prices),
+                    "seconds_covered": 0,
+                }
+
+            prices.sort(key=lambda item: item[0])
+            sum_r2 = 0.0
+            sum_dt = 0
+            for i in range(1, len(prices)):
+                timestamp0, price0 = prices[i - 1]
+                timestamp1, price1 = prices[i]
+                dt = timestamp1 - timestamp0
+                if dt <= 0:
+                    continue
+                log_return = math.log(price1 / price0)
+                sum_r2 += log_return * log_return
+                sum_dt += dt
+
+            if sum_dt <= 0:
+                return True, {
+                    "pool": state["pool"],
+                    "sigma_annual": None,
+                    "sample_count": len(prices),
+                    "seconds_covered": 0,
+                }
+
+            sigma_per_second = math.sqrt(sum_r2 / sum_dt)
+            return True, {
+                "pool": state["pool"],
+                "sigma_annual": sigma_per_second * math.sqrt(SECONDS_PER_YEAR),
+                "sample_count": len(prices),
+                "seconds_covered": sum_dt,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    @staticmethod
+    async def _get_logs_bounded(
+        web3: Any,
+        *,
+        from_block: int,
+        to_block: int,
+        address: str,
+        topics: list[Any] | None,
+        max_logs: int,
+        initial_chunk_size: int = 2000,
+    ) -> list[Any]:
+        from web3.exceptions import Web3RPCError
+
+        if max_logs <= 0:
+            return []
+
+        address_cs = to_checksum_address(address)
+        from_block_i = from_block
+        to_block_i = to_block
+        if from_block_i > to_block_i:
+            return []
+
+        logs: list[Any] = []
+        chunk_size = max(1, initial_chunk_size)
+        current_to = to_block_i
+
+        while current_to >= from_block_i and len(logs) < max_logs:
+            current_from = max(from_block_i, current_to - chunk_size + 1)
+            try:
+                batch = await web3.eth.get_logs(
+                    {
+                        "fromBlock": current_from,
+                        "toBlock": current_to,
+                        "address": address_cs,
+                        "topics": topics or [],
+                    }
+                )
+            except Web3RPCError:
+                if chunk_size == 1:
+                    raise
+                chunk_size = max(1, chunk_size // 2)
+                continue
+
+            if batch:
+                logs.extend(batch)
+                logs.sort(
+                    key=lambda log: (
+                        log.get("blockNumber", 0),
+                        log.get("logIndex", 0),
+                    )
+                )
+                if len(logs) > max_logs:
+                    logs = logs[-max_logs:]
+
+            current_to = current_from - 1
+
+        return logs
+
+    @staticmethod
+    def _phi(x: float) -> float:
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    async def slipstream_prob_in_range_week(
+        self,
+        *,
+        pool: str,
+        tick_lower: int,
+        tick_upper: int,
+        sigma_annual: float,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        if tick_lower >= tick_upper:
+            return False, "tick_lower must be < tick_upper"
+        sigma = sigma_annual
+        if not math.isfinite(sigma) or sigma <= 0:
+            return False, "sigma_annual must be positive and finite"
+
+        try:
+            ok, state = await self.slipstream_pool_state(
+                pool=pool,
+                block_identifier=block_identifier,
+            )
+            if not ok:
+                return False, state
+
+            decimals0, decimals1 = await asyncio.gather(
+                self._token_decimals(state["token0"]),
+                self._token_decimals(state["token1"]),
+            )
+            price_now = state["price_token1_per_token0"]
+            price_low = tick_to_price_decimal(tick_lower, decimals0, decimals1)
+            price_high = tick_to_price_decimal(tick_upper, decimals0, decimals1)
+            if price_now <= 0 or price_low <= 0 or price_high <= 0:
+                return True, {
+                    "pool": state["pool"],
+                    "prob_in_range_week": None,
+                }
+
+            time_years = 7.0 / 365.0
+            denom = sigma * math.sqrt(time_years)
+            if denom <= 0:
+                return True, {
+                    "pool": state["pool"],
+                    "prob_in_range_week": None,
+                }
+
+            z1 = math.log(price_low / price_now) / denom
+            z2 = math.log(price_high / price_now) / denom
+            prob = max(0.0, min(1.0, self._phi(z2) - self._phi(z1)))
+            return True, {
+                "pool": state["pool"],
+                "tick_lower": tick_lower,
+                "tick_upper": tick_upper,
+                "sigma_annual": sigma,
+                "prob_in_range_week": prob,
             }
         except Exception as exc:
             return False, str(exc)
@@ -1248,9 +1935,9 @@ class AerodromeSlipstreamAdapter(
                 )
                 token0 = to_checksum_address(pos[2])
                 token1 = to_checksum_address(pos[3])
-                tick_spacing = int(pos[4])
-                tick_lower = int(pos[5])
-                tick_upper = int(pos[6])
+                tick_spacing = pos[4]
+                tick_lower = pos[5]
+                tick_upper = pos[6]
 
             (
                 amount0_min_resolved,
@@ -1354,9 +2041,9 @@ class AerodromeSlipstreamAdapter(
                 )
                 token0 = to_checksum_address(pos[2])
                 token1 = to_checksum_address(pos[3])
-                tick_spacing = int(pos[4])
-                tick_lower = int(pos[5])
-                tick_upper = int(pos[6])
+                tick_spacing = pos[4]
+                tick_lower = pos[5]
+                tick_upper = pos[6]
 
             (
                 amount0_min_resolved,
@@ -1503,9 +2190,14 @@ class AerodromeSlipstreamAdapter(
                     address=gauge_addr,
                     abi=AERODROME_SLIPSTREAM_CL_GAUGE_ABI,
                 )
-                alive, nft_address = await asyncio.gather(
-                    voter.functions.isAlive(gauge_addr).call(block_identifier="latest"),
-                    gauge_contract.functions.nft().call(block_identifier="latest"),
+                alive, nft_address = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(voter, "isAlive", args=(gauge_addr,)),
+                        Call(gauge_contract, "nft"),
+                    ],
+                    block_identifier="latest",
                 )
                 if not alive:
                     return False, "Gauge is not alive (killed/dead)"
