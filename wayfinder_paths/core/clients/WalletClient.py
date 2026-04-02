@@ -15,9 +15,9 @@ class WalletClient(WayfinderClient):
     async def create_wallet(
         self,
         chain_type: str = "ethereum",
-        policies: list[dict] = [],  # noqa: B006
+        policies: list[dict] = None,
         label: str = "",
-        wallet_type: str = "policy",
+        wallet_type: str = None,
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/wallets/"
         body: dict[str, Any] = {
