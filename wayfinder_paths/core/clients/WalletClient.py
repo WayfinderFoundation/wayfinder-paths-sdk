@@ -38,11 +38,6 @@ class WalletClient(WayfinderClient):
         )
         return resp.json()
 
-    async def bump_ttl(self, wallet_address: str) -> dict[str, Any]:
-        url = f"{get_api_base_url()}/wallets/{wallet_address}/bump-ttl/"
-        resp = await self._authed_request("POST", url)
-        return resp.json()
-
     async def sign_transaction(self, wallet_address: str, transaction: dict) -> str:
         url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-evm-transaction/"
         resp = await self._authed_request(
