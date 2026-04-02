@@ -204,32 +204,7 @@ class AerodromeSlipstreamAdapter(
             ):
                 return cached_price
 
-        price: float | None = None
-        chain_name = self.core_contracts["chain_name"].lower()
-        queries: tuple[tuple[str, dict[str, Any]], ...] = (
-            (f"{chain_name}_{token_addr}", {"market_data": True}),
-            (
-                token_addr,
-                {"market_data": True, "chain_id": CHAIN_ID_BASE},
-            ),
-        )
-        for query, kwargs in queries:
-            try:
-                details = await TOKEN_CLIENT.get_token_details(query, **kwargs)
-            except Exception:
-                continue
-            raw_price = (
-                details.get("current_price")
-                or details.get("price_usd")
-                or details.get("price")
-            )
-            if raw_price is None:
-                continue
-            price_f = float(raw_price)
-            if math.isfinite(price_f) and price_f > 0:
-                price = price_f
-                break
-
+        price = await self._token_price_usdc_from_market_data(token_addr)
         self._token_price_usdc_cache[token_addr] = (time.monotonic(), price)
         return price
 
@@ -1679,63 +1654,6 @@ class AerodromeSlipstreamAdapter(
             return False, str(exc)
 
     @staticmethod
-    async def _get_logs_bounded(
-        web3: Any,
-        *,
-        from_block: int,
-        to_block: int,
-        address: str,
-        topics: list[Any] | None,
-        max_logs: int,
-        initial_chunk_size: int = 2000,
-    ) -> list[Any]:
-        from web3.exceptions import Web3RPCError
-
-        if max_logs <= 0:
-            return []
-
-        address_cs = to_checksum_address(address)
-        from_block_i = from_block
-        to_block_i = to_block
-        if from_block_i > to_block_i:
-            return []
-
-        logs: list[Any] = []
-        chunk_size = max(1, initial_chunk_size)
-        current_to = to_block_i
-
-        while current_to >= from_block_i and len(logs) < max_logs:
-            current_from = max(from_block_i, current_to - chunk_size + 1)
-            try:
-                batch = await web3.eth.get_logs(
-                    {
-                        "fromBlock": current_from,
-                        "toBlock": current_to,
-                        "address": address_cs,
-                        "topics": topics or [],
-                    }
-                )
-            except Web3RPCError:
-                if chunk_size == 1:
-                    raise
-                chunk_size = max(1, chunk_size // 2)
-                continue
-
-            if batch:
-                logs.extend(batch)
-                logs.sort(
-                    key=lambda log: (
-                        log.get("blockNumber", 0),
-                        log.get("logIndex", 0),
-                    )
-                )
-                if len(logs) > max_logs:
-                    logs = logs[-max_logs:]
-
-            current_to = current_from - 1
-
-        return logs
-
     @staticmethod
     def _phi(x: float) -> float:
         return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
@@ -2320,6 +2238,7 @@ class AerodromeSlipstreamAdapter(
         include_usd: bool = False,
         include_zero_positions: bool = False,
         include_votes: bool = False,
+        include_vote_claimables: bool = False,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         try:
@@ -2642,6 +2561,17 @@ class AerodromeSlipstreamAdapter(
                         }
                         if include_votes:
                             item["votes"] = votes_by_token.get(tid, {})
+                        if include_vote_claimables:
+                            ok_claimables, claimables = await self.get_vote_claimables(
+                                token_id=tid,
+                                deployments=deployment_names,
+                                include_zero_positions=include_zero_positions,
+                                include_usd_values=include_usd,
+                                block_identifier=block_identifier,
+                            )
+                            if not ok_claimables:
+                                return False, claimables
+                            item["vote_claimables"] = claimables["votes"]
                         ve_items.append(item)
 
             return True, {
@@ -2654,6 +2584,125 @@ class AerodromeSlipstreamAdapter(
                 "ve_nfts": ve_items,
                 "pool_count": len(all_pools),
                 "gauge_count": len(unique_gauges),
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def get_vote_claimables(
+        self,
+        *,
+        token_id: int,
+        deployments: Sequence[str] | None = None,
+        include_zero_positions: bool = False,
+        include_usd_values: bool = False,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            deployment_names = self._resolve_deployments(deployments)
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                all_pools = await self._enumerate_all_pools(
+                    web3=web3,
+                    deployments=deployment_names,
+                    block_identifier=block_identifier,
+                )
+                voter = web3.eth.contract(
+                    address=self.core_contracts["voter"],
+                    abi=AERODROME_VOTER_ABI,
+                )
+                pool_to_gauge = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=CHAIN_ID_BASE,
+                    calls=[
+                        Call(
+                            voter,
+                            "gauges",
+                            args=(entry["pool"],),
+                            postprocess=_checksum_or_zero,
+                        )
+                        for entry in all_pools
+                    ],
+                    block_identifier=block_identifier,
+                    chunk_size=100,
+                )
+
+                gauge_reward_contracts: dict[str, tuple[str, str]] = {}
+                unique_gauges = sorted(
+                    {
+                        to_checksum_address(gauge)
+                        for gauge in pool_to_gauge
+                        if gauge != ZERO_ADDRESS
+                    }
+                )
+                if unique_gauges:
+                    reward_pairs = await read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=CHAIN_ID_BASE,
+                        calls=[
+                            item
+                            for gauge in unique_gauges
+                            for item in (
+                                Call(
+                                    voter,
+                                    "gaugeToFees",
+                                    args=(gauge,),
+                                    postprocess=_checksum_or_zero,
+                                ),
+                                Call(
+                                    voter,
+                                    "gaugeToBribe",
+                                    args=(gauge,),
+                                    postprocess=_checksum_or_zero,
+                                ),
+                            )
+                        ],
+                        block_identifier=block_identifier,
+                        chunk_size=100,
+                    )
+                    fee_rewards = reward_pairs[0::2]
+                    bribe_rewards = reward_pairs[1::2]
+                    for gauge, fee_reward, bribe_reward in zip(
+                        unique_gauges,
+                        fee_rewards,
+                        bribe_rewards,
+                        strict=True,
+                    ):
+                        gauge_reward_contracts[gauge.lower()] = (
+                            fee_reward,
+                            bribe_reward,
+                        )
+
+                pool_metadata: dict[str, dict[str, Any]] = {}
+                for entry, gauge in zip(all_pools, pool_to_gauge, strict=True):
+                    fee_reward = ZERO_ADDRESS
+                    bribe_reward = ZERO_ADDRESS
+                    if gauge != ZERO_ADDRESS:
+                        fee_reward, bribe_reward = gauge_reward_contracts.get(
+                            gauge.lower(),
+                            (ZERO_ADDRESS, ZERO_ADDRESS),
+                        )
+                    pool_metadata[entry["pool"].lower()] = {
+                        "feeReward": fee_reward,
+                        "bribeReward": bribe_reward,
+                    }
+
+                claimables = await self._get_vote_claimables(
+                    token_id=token_id,
+                    pool_metadata_by_address=pool_metadata,
+                    web3=web3,
+                    voter_contract=voter,
+                    include_zero_positions=include_zero_positions,
+                    include_usd_values=include_usd_values,
+                    block_identifier=block_identifier,
+                )
+
+            return True, {
+                "protocol": "aerodrome_slipstream",
+                "chain_id": CHAIN_ID_BASE,
+                "chain_name": self.core_contracts["chain_name"],
+                "deployments": deployment_names,
+                "tokenId": int(token_id),
+                "votes": claimables,
             }
         except Exception as exc:
             return False, str(exc)
