@@ -32,8 +32,7 @@ def _utc_epoch_s() -> int:
 
 
 def _safe_job_dirname(name: str) -> str:
-    cleaned = "".join(ch if ch.isalnum() or ch in (
-        "-", "_") else "_" for ch in name)
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
     return cleaned.strip("_") or "job"
 
 
@@ -140,8 +139,7 @@ class RunnerDaemon:
                 f"Failed to configure daemon log file {daemon_log_path}: {exc}"
             )
 
-        aborted = self._db.mark_stale_running_runs_aborted(
-            note="runner restarted")
+        aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
 
@@ -239,8 +237,7 @@ class RunnerDaemon:
             status = RunStatus.OK if int(exit_code) == 0 else RunStatus.FAILED
             error_text = None
             if status != RunStatus.OK:
-                error_text = _tail_text(
-                    rp.log_path) or f"exit_code={exit_code}"
+                error_text = _tail_text(rp.log_path) or f"exit_code={exit_code}"
             self._finish_run(
                 rp,
                 finished_at=now,
@@ -449,8 +446,7 @@ class RunnerDaemon:
             strategy = str(payload.get("strategy") or "").strip()
             action = str(payload.get("action") or "update").strip()
             config_path = str(payload.get("config") or "config.json")
-            wallet_label = payload.get(
-                "wallet_label") or payload.get("wallet") or None
+            wallet_label = payload.get("wallet_label") or payload.get("wallet") or None
             debug = bool(payload.get("debug") or False)
 
             cmd = [
@@ -477,8 +473,7 @@ class RunnerDaemon:
                 or payload.get("path")
             )
             if not sp:
-                raise ValueError(
-                    "payload.script_path is required for script jobs")
+                raise ValueError("payload.script_path is required for script jobs")
 
             script = resolve_script_path(self._paths, str(sp))
             args = payload.get("args") or []
@@ -545,8 +540,7 @@ class RunnerDaemon:
         except (TypeError, ValueError):
             return {"ok": False, "error": "run_id must be an integer"}
 
-        tbytes = _clamp_int(tail_bytes, min_value=200,
-                            max_value=200_000, default=4000)
+        tbytes = _clamp_int(tail_bytes, min_value=200, max_value=200_000, default=4000)
 
         run = self._db.get_run(run_id=rid)
         if run is None:
@@ -554,8 +548,7 @@ class RunnerDaemon:
 
         duration_s = None
         if run.get("finished_at") is not None:
-            duration_s = max(
-                0, int(run["finished_at"]) - int(run["started_at"]))
+            duration_s = max(0, int(run["finished_at"]) - int(run["started_at"]))
 
         log_tail = None
         log_path_s = run.get("log_path")
@@ -702,8 +695,7 @@ class RunnerDaemon:
             "interval_seconds": job.interval_seconds,
         }
         with self._lock:
-            run_id = self._maybe_start_job(
-                job=job_dict, now=now, reason="run_once")
+            run_id = self._maybe_start_job(job=job_dict, now=now, reason="run_once")
         if run_id is None:
             return {
                 "ok": False,
