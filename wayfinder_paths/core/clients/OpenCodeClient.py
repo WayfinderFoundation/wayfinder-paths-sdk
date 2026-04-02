@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from wayfinder_paths.runner.constants import ADD_JOB_CLI_VERB, ADD_JOB_MCP_ACTION
+
 OPENCODE_DEFAULT_URL = "http://localhost:4096"
 
 
@@ -44,7 +46,9 @@ class OpenCodeClient:
                         params={"limit": 50},
                     ).json()
                 )
-                if "runner" in raw and ("add-job" in raw or "add_job" in raw):
+                if "runner" in raw and (
+                    ADD_JOB_CLI_VERB in raw or ADD_JOB_MCP_ACTION in raw
+                ):
                     return session_id
             except Exception:
                 continue

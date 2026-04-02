@@ -9,7 +9,11 @@ import click
 from loguru import logger
 
 from wayfinder_paths.runner.client import RunnerControlClient
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
+from wayfinder_paths.runner.constants import (
+    ADD_JOB_CLI_VERB,
+    JOB_TYPE_SCRIPT,
+    JOB_TYPE_STRATEGY,
+)
 from wayfinder_paths.runner.daemon import RunnerDaemon
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import get_runner_paths
@@ -145,7 +149,9 @@ def status_cmd() -> None:
     _echo_json(resp)
 
 
-@runner_cli.command(name="add-job", help="Add a job without restarting the daemon.")
+@runner_cli.command(
+    name=ADD_JOB_CLI_VERB, help="Add a job without restarting the daemon."
+)
 @click.option("--name", required=True)
 @click.option(
     "--type",
