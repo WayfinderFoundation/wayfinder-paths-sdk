@@ -1733,3 +1733,46 @@ class AerodromeAdapter(
             }
         except Exception as exc:
             return False, str(exc)
+
+    async def get_vote_claimables(
+        self,
+        *,
+        token_id: int,
+        include_zero_positions: bool = False,
+        include_usd_values: bool = False,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            pools_by_lp_all = await self.pools_by_lp()
+            pool_metadata = {
+                pool_addr.lower(): {
+                    "symbol": pool.symbol,
+                    "feeReward": pool.fee,
+                    "bribeReward": pool.bribe,
+                }
+                for pool_addr, pool in pools_by_lp_all.items()
+            }
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                voter = web3.eth.contract(
+                    address=self.core_contracts["voter"],
+                    abi=AERODROME_VOTER_ABI,
+                )
+                claimables = await self._get_vote_claimables(
+                    token_id=token_id,
+                    pool_metadata_by_address=pool_metadata,
+                    web3=web3,
+                    voter_contract=voter,
+                    include_zero_positions=include_zero_positions,
+                    include_usd_values=include_usd_values,
+                    block_identifier=block_identifier,
+                )
+
+            return True, {
+                "protocol": "aerodrome",
+                "chain_id": CHAIN_ID_BASE,
+                "tokenId": token_id,
+                "votes": claimables,
+            }
+        except Exception as exc:
+            return False, str(exc)
