@@ -292,19 +292,18 @@ class RunnerDaemon:
         error_text: str | None,
     ) -> None:
         job, _ = self._db.get_job(name=running_process.job_name)
-        session_id = (job.payload or {}).get("notify_session_id")
+        session_id = job.payload["notify_session_id"]
 
-        if not session_id or not OPENCODE_CLIENT.healthy():
+        if session_id is None or not OPENCODE_CLIENT.healthy():
             return
-
-        log_tail = _tail_text(running_process.log_path, max_bytes=2000) or "(no output)"
         notification = json.dumps(
             {
                 "type": "job",
                 "name": running_process.job_name,
                 "status": status,
                 "error": error_text,
-                "message": log_tail,
+                "message": running_process.log_path.read_text(errors="replace").strip()
+                or "(no output)",
             }
         )
         OPENCODE_CLIENT.send_message(session_id, notification)
@@ -633,9 +632,8 @@ class RunnerDaemon:
             if env is not None and not isinstance(env, dict):
                 return {"ok": False, "error": "payload.env must be an object"}
         session_id = OPENCODE_CLIENT.find_runner_session()
-        if session_id:
-            payload_norm["notify_session_id"] = session_id
-            logger.info(f"Auto-bound job {name} to session {session_id}")
+        payload_norm["notify_session_id"] = session_id
+        logger.info(f"Auto-bound job {name} to session {session_id}")
 
         try:
             job_id = self._db.add_job(
