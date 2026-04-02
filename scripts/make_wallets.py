@@ -5,8 +5,8 @@ from pathlib import Path
 
 from eth_account import Account
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import (
-    allow_local_wallets,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
@@ -101,7 +101,8 @@ async def main():
     if args.mnemonic is not None:
         if args.mnemonic == "__generate__":
             if not mnemonic_to_use:
-                mnemonic_to_use = ensure_wallet_mnemonic(config_path=config_path)
+                mnemonic_to_use = ensure_wallet_mnemonic(
+                    config_path=config_path)
         else:
             try:
                 phrase = validate_wallet_mnemonic(args.mnemonic)
@@ -155,7 +156,10 @@ async def main():
             existing_temp_numbers.add(next_temp_num)
             next_temp_num += 1
 
-    if args.remote or not allow_local_wallets():
+    if not args.remote and OPENCODE_CLIENT.healthy():
+        raise SystemExit("Local wallets are discouraged for OpenCode instances")
+
+    if args.remote:
         for label in labels_to_create:
             policies = json.loads(args.policies)
             result = await create_remote_wallet(label=label, policies=policies)
@@ -173,7 +177,8 @@ async def main():
         suffix = "(main)" if label.lower() == "main" else f"(label: {label})"
         print(f"[{i}] {w['address']}  {suffix}")
         try:
-            write_wallet_to_json(w, out_dir=args.out_dir, filename="config.json")
+            write_wallet_to_json(w, out_dir=args.out_dir,
+                                 filename="config.json")
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         existing.append(w)

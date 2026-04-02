@@ -5,8 +5,8 @@ import importlib
 import time
 from typing import Any, Literal
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import (
-    allow_local_wallets,
     load_config,
     load_wallet_mnemonic,
     resolve_config_path,
@@ -181,8 +181,8 @@ async def wallets(
 
     if action == "create":
         load_config(config_path)
-        if not allow_local_wallets():
-            remote = True
+        if not remote and OPENCODE_CLIENT.healthy():
+            return err("invalid_request", "Local wallets are discouraged for OpenCode instances")
         existing = await load_wallets()
         want = (label or wallet_label or "").strip()
         if not want:
@@ -212,23 +212,23 @@ async def wallets(
                     },
                 }
             )
-        else:
-            mnemonic = load_wallet_mnemonic()
-            w = make_local_wallet(
-                label=want, existing_wallets=existing, mnemonic=mnemonic
-            )
-            write_wallet_to_json(
-                w, out_dir=config_path.parent, filename=config_path.name
-            )
-            load_config(config_path)
 
-            refreshed = await load_wallets()
-            return ok(
-                {
-                    "wallets": [public_wallet_view(x) for x in refreshed],
-                    "created": public_wallet_view(w),
-                }
-            )
+        mnemonic = load_wallet_mnemonic()
+        w = make_local_wallet(
+            label=want, existing_wallets=existing, mnemonic=mnemonic
+        )
+        write_wallet_to_json(
+            w, out_dir=config_path.parent, filename=config_path.name
+        )
+        load_config(config_path)
+
+        refreshed = await load_wallets()
+        return ok(
+            {
+                "wallets": [public_wallet_view(x) for x in refreshed],
+                "created": public_wallet_view(w),
+            }
+        )
 
     if action == "annotate":
         address, lbl = await resolve_wallet_address(
