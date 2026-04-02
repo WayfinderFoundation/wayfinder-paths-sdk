@@ -38,6 +38,8 @@ MAX_UINT256 = 2**256 - 1
 
 NATIVE_COINGECKO_IDS = {
     "ethereum",
+    "mantle",
+    "monad",
     "polygon-ecosystem-token",
     "avalanche-2",
     "binancecoin",
@@ -45,4 +47,4 @@ NATIVE_COINGECKO_IDS = {
     "plasma",
 }
 
-NATIVE_GAS_SYMBOLS = {"eth", "pol", "avax", "bnb", "hype", "xpl"}
+NATIVE_GAS_SYMBOLS = {"eth", "mon", "monad", "pol", "avax", "bnb", "hype", "mnt", "mantle", "xpl"}

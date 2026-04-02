@@ -112,6 +112,39 @@ def test_web3s_accept_int_rpc_url_keys(restore_global_config: None) -> None:
     assert w3.provider.endpoint_uri == "https://example.invalid"
 
 
+@pytest.mark.parametrize(
+    ("chain_id", "expected_path"),
+    [
+        (130, "/blockchain/rpc/130/"),
+        (143, "/blockchain/rpc/143/"),
+        (4326, "/blockchain/rpc/4326/"),
+        (5000, "/blockchain/rpc/5000/"),
+        (4217, "/blockchain/rpc/4217/"),
+        (747474, "/blockchain/rpc/747474/"),
+    ],
+)
+def test_new_chain_ids_fallback_to_rpc_proxy(
+    restore_global_config: None,
+    chain_id: int,
+    expected_path: str,
+) -> None:
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+                "api_key": "wk_test",
+            },
+            "strategy": {"rpc_urls": {}},
+        }
+    )
+
+    from wayfinder_paths.core.utils.web3 import get_web3s_from_chain_id
+
+    w3 = get_web3s_from_chain_id(chain_id)[0]
+    assert w3.provider.endpoint_uri == f"https://strategies.wayfinder.ai/api/v1{expected_path}"
+    assert w3.provider._request_kwargs["headers"]["X-API-KEY"] == "wk_test"
+
+
 def test_gorlami_base_url_derived_from_api_base(
     restore_global_config: None,
 ) -> None:

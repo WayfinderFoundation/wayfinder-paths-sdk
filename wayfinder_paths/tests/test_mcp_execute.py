@@ -58,6 +58,58 @@ async def test_resolve_token_meta_native_gas_token_missing_address():
 
 
 @pytest.mark.asyncio
+async def test_resolve_token_meta_monad_native_gas_token():
+    meta = {
+        "asset_id": "monad",
+        "symbol": "MONAD",
+        "decimals": 18,
+        "address": None,
+        "chain_id": 143,
+    }
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_gas_token",
+        new=AsyncMock(return_value=meta),
+    ) as get_gas_token, patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_token_details",
+        new=AsyncMock(side_effect=AssertionError("should use gas token lookup")),
+    ):
+        out = await TokenResolver.resolve_token_meta("monad-monad")
+        assert out["address"] == ZERO_ADDRESS
+        assert out["chain_id"] == 143
+        assert out["symbol"] == "MONAD"
+        get_gas_token.assert_awaited_once_with("monad")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "chain_code", "chain_id"),
+    [
+        ("ethereum-megaeth", "megaeth", 4326),
+        ("ethereum-katana", "katana", 747474),
+    ],
+)
+async def test_resolve_token_meta_eth_native_gas_token_for_new_eth_chains(
+    query: str, chain_code: str, chain_id: int
+):
+    meta = {
+        "asset_id": "ethereum",
+        "symbol": "ETH",
+        "decimals": 18,
+        "address": None,
+        "chain_id": chain_id,
+    }
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_gas_token",
+        new=AsyncMock(return_value=meta),
+    ) as get_gas_token:
+        out = await TokenResolver.resolve_token_meta(query)
+        assert out["address"] == ZERO_ADDRESS
+        assert out["chain_id"] == chain_id
+        assert out["symbol"] == "ETH"
+        get_gas_token.assert_awaited_once_with(chain_code)
+
+
+@pytest.mark.asyncio
 async def test_resolve_token_meta_erc20_null_address_raises():
     """Non-native tokens with null address should raise (real error)."""
     meta = {
