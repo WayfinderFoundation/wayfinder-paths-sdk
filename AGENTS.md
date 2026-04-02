@@ -278,13 +278,18 @@ Token identifiers (important for quoting/execution/lookups):
 
 ```bash
 poetry run wayfinder runner start                # idempotent — safe to call multiple times
-poetry run wayfinder runner add-job \
+poetry run wayfinder runner add-job \             # schedule a strategy
   --name basis-update \
   --type strategy \
   --strategy basis_trading_strategy \
   --action update \
   --interval 600 \
   --config ./config.json
+poetry run wayfinder runner add-job \             # schedule a script
+  --name check-balances \
+  --type script \
+  --script-path .wayfinder_runs/check_balances.py \
+  --interval 300
 poetry run wayfinder runner status               # show daemon + all jobs
 poetry run wayfinder runner run-once <job>        # trigger immediate run
 poetry run wayfinder runner pause <job>
