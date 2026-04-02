@@ -36,9 +36,7 @@ class OpenCodeClient:
     def find_runner_session(self) -> str | None:
         """Find the session that invoked runner add-job."""
         for session in self.list_sessions():
-            session_id = session.get("id")
-            if not session_id:
-                continue
+            session_id = session["id"]
             try:
                 raw = json.dumps(
                     self.client.get(
