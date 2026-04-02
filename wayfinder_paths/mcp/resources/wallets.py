@@ -9,11 +9,8 @@ from wayfinder_paths.mcp.utils import (
     find_wallet_by_label,
     load_wallets,
     normalize_address,
+    public_wallet_view,
 )
-
-
-def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    return {"label": w.get("label"), "address": w.get("address")}
 
 
 async def list_wallets() -> str:
@@ -21,7 +18,7 @@ async def list_wallets() -> str:
     existing = await load_wallets()
     wallet_list = []
     for w in existing:
-        view = _public_wallet_view(w)
+        view = public_wallet_view(w)
         addr = normalize_address(w.get("address"))
         if addr:
             tracked = store.get_protocols_for_wallet(addr.lower())

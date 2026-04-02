@@ -9,9 +9,13 @@ import click
 from loguru import logger
 
 from wayfinder_paths.runner.client import RunnerControlClient
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
+from wayfinder_paths.runner.constants import (
+    ADD_JOB_VERB,
+    JOB_TYPE_SCRIPT,
+    JOB_TYPE_STRATEGY,
+)
 from wayfinder_paths.runner.daemon import RunnerDaemon
-from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
+from wayfinder_paths.runner.lifecycle import ensure_daemon_started
 from wayfinder_paths.runner.paths import get_runner_paths
 
 
@@ -28,7 +32,7 @@ def runner_cli() -> None:
     pass
 
 
-@runner_cli.command(name="start", help="Start the runner daemon.")
+@runner_cli.command(name="start", help="Start the runner daemon (idempotent).")
 @click.option("--tick-seconds", type=float, default=1.0, show_default=True)
 @click.option("--max-workers", type=int, default=4, show_default=True)
 @click.option("--max-failures", type=int, default=5, show_default=True)
@@ -39,84 +43,30 @@ def runner_cli() -> None:
     default="INFO",
     show_default=True,
 )
-@click.option(
-    "--detach/--no-detach",
-    default=False,
-    show_default=True,
-    help="Run the daemon in the background (recommended for long-lived use).",
-)
+@click.option("--no-detach", is_flag=True, default=False, hidden=True)
 def start_cmd(
     tick_seconds: float,
     max_workers: int,
     max_failures: int,
     default_timeout_seconds: int,
     log_level: str,
-    detach: bool,
+    no_detach: bool,
 ) -> None:
     paths = get_runner_paths()
 
-    if detach:
-        ok_started, info = ensure_daemon_started(
+    if no_detach:
+        logger.remove()
+        logger.add(sys.stderr, level=str(log_level).upper())
+        RunnerDaemon(
             paths=paths,
             tick_seconds=tick_seconds,
             max_workers=max_workers,
             max_failures=max_failures,
             default_timeout_seconds=default_timeout_seconds,
             log_level=log_level,
-        )
-        if ok_started:
-            _echo_json({"ok": True, "result": {"started": True, **info}})
-        else:
-            _echo_json(
-                {
-                    "ok": False,
-                    "error": "runner_start_failed",
-                    "details": info,
-                }
-            )
+        ).start()
         return
 
-    running, status, _ = try_status(_client(paths.sock_path))
-    if running and status is not None:
-        click.echo(f"Runner already running at {paths.sock_path}.")
-        return
-
-    logger.remove()
-    logger.add(sys.stderr, level=str(log_level).upper())
-
-    daemon = RunnerDaemon(
-        paths=paths,
-        tick_seconds=tick_seconds,
-        max_workers=max_workers,
-        max_failures=max_failures,
-        default_timeout_seconds=default_timeout_seconds,
-        log_level=log_level,
-    )
-    daemon.start()
-
-
-@runner_cli.command(
-    name="ensure",
-    help="Ensure the runner daemon is running (starts detached if needed).",
-)
-@click.option("--tick-seconds", type=float, default=1.0, show_default=True)
-@click.option("--max-workers", type=int, default=4, show_default=True)
-@click.option("--max-failures", type=int, default=5, show_default=True)
-@click.option("--default-timeout-seconds", type=int, default=20 * 60, show_default=True)
-@click.option(
-    "--log-level",
-    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"], case_sensitive=False),
-    default="INFO",
-    show_default=True,
-)
-def ensure_cmd(
-    tick_seconds: float,
-    max_workers: int,
-    max_failures: int,
-    default_timeout_seconds: int,
-    log_level: str,
-) -> None:
-    paths = get_runner_paths()
     ok_started, info = ensure_daemon_started(
         paths=paths,
         tick_seconds=tick_seconds,
@@ -145,7 +95,7 @@ def status_cmd() -> None:
     _echo_json(resp)
 
 
-@runner_cli.command(name="add-job", help="Add a job without restarting the daemon.")
+@runner_cli.command(name=ADD_JOB_VERB, help="Add a job without restarting the daemon.")
 @click.option("--name", required=True)
 @click.option(
     "--type",

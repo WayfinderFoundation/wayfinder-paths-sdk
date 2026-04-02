@@ -161,10 +161,13 @@ usdt_address = asset["address"]  # "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"
 
 Use the vault helpers when the task is "where should I deposit collateral?" rather than "what fixed rate can I trade?"
 
-- `success, vaults = await adapter.get_vaults_summary(account="0x...")`
+- `success, vaults = await adapter.get_vaults_summary(account="0x...", include_expired=False)`
   - Output: `(bool, list[BorosVault])`
-  - High-value fields: `amm_id`, `market_id`, `symbol`, `apy`, `tenor_days`, `is_isolated_only`, `market_state`, `remaining_supply_lp`
+  - High-value fields: `amm_id`, `market_id`, `symbol`, `collateral_symbol`, `apy`, `expiry`, `tenor_days`, `tvl`, `tvl_usd`, `available_tokens`, `available_usd`, `user_deposit_tokens`, `user_deposit_usd`, `is_isolated_only`, `market_state`, `is_expired`
   - When `account` is provided, the adapter also attaches user LP balance / estimated deposited value
+  - `tvl` / `available_tokens` / `user_deposit_tokens` are normalized to collateral token units, not raw `1e18` Boros values
+  - `*_usd` fields are derived from the collateral asset price joined from `get_assets()`
+- `include_expired=False` is the right default for UI/status views; leave it as `True` when you need to inspect or roll existing expired positions
 - `success, vaults = await adapter.search_vaults(token_id=3, asset="ETH", account="0x...")`
   - Filter by collateral token (`token_id`) and/or symbol
 - `success, best = await adapter.best_yield_vault(token_id=3, amount_tokens=1000.0, min_tenor_days=7.0, allow_isolated_only=True)`
@@ -176,6 +179,8 @@ Important notes:
 - `token_id` here is the **collateral token**, not the underlying perp symbol.
 - Isolated-only vaults are intentionally excluded unless `allow_isolated_only=True`.
 - "Open" means more than `is_active=true`: the helper also rejects expired, paused, below-tenor, and disallowed isolated-only vaults.
+- Expired vaults are identified by absence from the active market metadata set; they can still appear in summaries when `include_expired=True` so rollover/withdraw flows can manage them.
+- If you surface Boros vault values inside a strategy status view, keep marked USD reporting under a dedicated field (for example `boros_vault_reported_value_usd`) rather than silently changing the meaning of an existing sizing field.
 
 ## Market Discovery Helpers
 
@@ -222,6 +227,34 @@ Returns fields:
 - `state`, `is_active`, `maturity_ts`, `tenor_days`
 - `mid_apr`, `floating_apr`, `mark_apr`
 
+### Get all markets
+
+Get the repo-convention Boros market list with current rates, optional vault summary, and compact historical context:
+
+- Call: `success, markets = await adapter.get_all_markets()`
+- Output: `(bool, list[dict])`
+
+Per-market fields:
+- Top level: `market_id`, `market_address`, `symbol`, `underlying_symbol`, `platform`, `collateral`, `state`, `is_active`, `maturity_ts`, `tenor_days`, `is_isolated_only`, `max_leverage`
+- `rates`: current market rates and activity, including `floating_apr`, `mark_apr`, `vault_apy`, `mid_apr`, `best_bid_apr`, `best_ask_apr`, `funding_7d_ma_apr`, `funding_30d_ma_apr`, `volume_24h`, `notional_oi`
+- `vault`: AMM summary for that market, including `apy`, `expiry`, `collateral_symbol`, `tvl`, `tvl_usd`, `available_tokens`, `available_usd`
+- `history`: compact history summary, including `latest_mark_rate`, `avg_mark_rate`, `latest_floating_rate`, `avg_floating_rate`, and latest funding moving averages
+
+Useful flags:
+- `active_only=True` — only keep currently active markets
+- `account="0x..."` — include `vault.user` with deposited/available balances for that account
+- `include_vault_summary=False` — market + rate view only
+- `include_history_summary=False` — skip per-market history summary
+
+Account-specific expired vault note:
+- When `account` is provided, `get_all_markets()` also appends inactive vault-only rows for expired markets that have rolled off `/markets` but still have real user LP/deposit exposure.
+- Those rows may use fallback labels like `BOROS-MARKET-34` when Boros no longer serves market metadata for that expired market ID.
+- Rows are not appended for `availableBalanceToDeposit` alone, because that would duplicate idle collateral across many expired vault IDs.
+
+Important note:
+- `rates.mark_apr` is the current live market APR from `/markets`
+- `history.latest_mark_rate` / `avg_mark_rate` come from candle `mr` values and should be treated as historical rate snapshots, not a raw candle dump
+
 ### Historical rate data
 
 Get OHLCV + rate history for a market:
@@ -235,10 +268,10 @@ Valid `time_frame` values: `5m`, `1h`, `1d`, `1w`
 # Get last day of hourly rate history
 ok, history = await adapter.get_market_history(market_id=47, time_frame="1h")
 for candle in history[-24:]:
-    print(f"{candle.get('t')}: mark={candle.get('mr')}, floating={candle.get('ofr')}")
+    print(f"{candle.get('ts') or candle.get('t')}: mark={candle.get('mr')}, floating={candle.get('ofr')}")
 ```
 
-Candle fields: `t` (Unix timestamp), `mr` (total remaining fixed yield — see CRITICAL note above), `ofr` (annualized floating rate — daily CLOSE, can be noisy), `b7dmafr` / `b30dmafr` (7/30-day MA funding), `u` (instantaneous oracle rate update).
+Candle fields: `ts` (Unix timestamp; some older mocks may use `t`), `mr` (total remaining fixed yield — see CRITICAL note above), `ofr` (annualized floating rate — daily CLOSE, can be noisy), `b7dmafr` / `b30dmafr` (7/30-day MA funding), `u` (instantaneous oracle rate update).
 
 **Getting maturity for historical/expired markets:**
 

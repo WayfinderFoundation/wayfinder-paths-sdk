@@ -4,6 +4,13 @@
 
 - Use `mcp__wayfinder__polymarket` for reads (search/markets/history/status).
 - Use `mcp__wayfinder__polymarket_execute` for writes (bridge, approvals, buy/sell, limit/cancel, redeem). It should always require a confirmation in Claude Code.
+- Use `mcp__wayfinder__polymarket(action="quote", ...)` before a sized buy/sell when you need average execution from the current book.
+
+## `price` is not `quote`
+
+- `get_price(...)` / `mcp__wayfinder__polymarket(action="price", ...)` returns the current quoted price.
+- `quote_market_order(...)` / `mcp__wayfinder__polymarket(action="quote", ...)` walks the live book and returns weighted-average execution, worst fill, and partial-fill status.
+- For quote requests: `BUY` uses USDC notional, `SELL` uses shares.
 
 ## USDC vs USDC.e (collateral mismatch)
 
