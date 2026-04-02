@@ -21,6 +21,7 @@ from wayfinder_paths.mcp.utils import (
     err,
     load_wallets,
     ok,
+    public_wallet_view,
     resolve_wallet_address,
 )
 
@@ -98,11 +99,6 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
 }
 
 
-def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    view: dict[str, Any] = {"label": w.get("label"), "address": w.get("address")}
-    if wallet_type := w.get("wallet_type"):
-        view["wallet_type"] = wallet_type
-    return view
 
 
 async def _query_adapter(
@@ -200,8 +196,8 @@ async def wallets(
             if str(w.get("label", "")).strip() == want:
                 return ok(
                     {
-                        "wallets": [_public_wallet_view(x) for x in existing],
-                        "created": _public_wallet_view(w),
+                        "wallets": [public_wallet_view(x) for x in existing],
+                        "created": public_wallet_view(w),
                         "note": "Wallet label already existed; returning existing wallet.",
                     }
                 )
@@ -211,7 +207,7 @@ async def wallets(
             refreshed = await load_wallets()
             return ok(
                 {
-                    "wallets": [_public_wallet_view(x) for x in refreshed],
+                    "wallets": [public_wallet_view(x) for x in refreshed],
                     "created": {
                         "label": result.get("label", want),
                         "address": result["wallet_address"],
@@ -231,8 +227,8 @@ async def wallets(
             refreshed = await load_wallets()
             return ok(
                 {
-                    "wallets": [_public_wallet_view(x) for x in refreshed],
-                    "created": _public_wallet_view(w),
+                    "wallets": [public_wallet_view(x) for x in refreshed],
+                    "created": public_wallet_view(w),
                 }
             )
 
