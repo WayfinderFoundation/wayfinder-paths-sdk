@@ -315,12 +315,9 @@ async def create_remote_wallet(
         chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
     )
     if is_on_opencode():
-        try:
-            await WALLET_CLIENT.bind_to_instance(
-                result["wallet_address"], get_opencode_instance_id()
-            )
-        except Exception as exc:
-            logger.debug(f"Failed to bind wallet to instance: {exc}")
+        await WALLET_CLIENT.bind_to_instance(
+            result["wallet_address"], get_opencode_instance_id()
+        )
     return result
 
 
