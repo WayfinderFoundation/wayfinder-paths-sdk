@@ -6,11 +6,13 @@ import time
 from typing import Any, Literal
 
 from wayfinder_paths.core.config import (
+    allow_local_wallets,
     load_config,
     load_wallet_mnemonic,
     resolve_config_path,
 )
 from wayfinder_paths.core.utils.wallets import (
+    create_remote_wallet,
     make_local_wallet,
     write_wallet_to_json,
 )
@@ -19,6 +21,7 @@ from wayfinder_paths.mcp.utils import (
     err,
     load_wallets,
     ok,
+    public_wallet_view,
     resolve_wallet_address,
 )
 
@@ -96,10 +99,6 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
 }
 
 
-def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    return {"label": w.get("label"), "address": w.get("address")}
-
-
 async def _query_adapter(
     protocol: str,
     address: str,
@@ -174,13 +173,17 @@ async def wallets(
     protocols: list[str] | None = None,
     parallel: bool = False,
     include_zero_positions: bool = False,
+    remote: bool = False,
+    policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
 
     if action == "create":
         load_config(config_path)
-        existing = load_wallets()
+        if not allow_local_wallets():
+            remote = True
+        existing = await load_wallets()
         want = (label or wallet_label or "").strip()
         if not want:
             return err(
@@ -191,29 +194,44 @@ async def wallets(
             if str(w.get("label", "")).strip() == want:
                 return ok(
                     {
-                        "config_path": "config.json",
-                        "wallets": [_public_wallet_view(x) for x in existing],
-                        "created": _public_wallet_view(w),
+                        "wallets": [public_wallet_view(x) for x in existing],
+                        "created": public_wallet_view(w),
                         "note": "Wallet label already existed; returning existing wallet.",
                     }
                 )
 
-        mnemonic = load_wallet_mnemonic()
-        w = make_local_wallet(label=want, existing_wallets=existing, mnemonic=mnemonic)
-        write_wallet_to_json(w, out_dir=config_path.parent, filename=config_path.name)
-        load_config(config_path)
+        if remote:
+            result = await create_remote_wallet(label=want, policies=policies)
+            refreshed = await load_wallets()
+            return ok(
+                {
+                    "wallets": [public_wallet_view(x) for x in refreshed],
+                    "created": {
+                        "label": result.get("label", want),
+                        "address": result["wallet_address"],
+                    },
+                }
+            )
+        else:
+            mnemonic = load_wallet_mnemonic()
+            w = make_local_wallet(
+                label=want, existing_wallets=existing, mnemonic=mnemonic
+            )
+            write_wallet_to_json(
+                w, out_dir=config_path.parent, filename=config_path.name
+            )
+            load_config(config_path)
 
-        refreshed = load_wallets()
-        return ok(
-            {
-                "config_path": "config.json",
-                "wallets": [_public_wallet_view(x) for x in refreshed],
-                "created": _public_wallet_view(w),
-            }
-        )
+            refreshed = await load_wallets()
+            return ok(
+                {
+                    "wallets": [public_wallet_view(x) for x in refreshed],
+                    "created": public_wallet_view(w),
+                }
+            )
 
     if action == "annotate":
-        address, lbl = resolve_wallet_address(
+        address, lbl = await resolve_wallet_address(
             wallet_label=wallet_label or label, wallet_address=wallet_address
         )
         if not address:
@@ -251,7 +269,7 @@ async def wallets(
         )
 
     if action == "discover_portfolio":
-        address, lbl = resolve_wallet_address(
+        address, lbl = await resolve_wallet_address(
             wallet_label=wallet_label or label, wallet_address=wallet_address
         )
         if not address:

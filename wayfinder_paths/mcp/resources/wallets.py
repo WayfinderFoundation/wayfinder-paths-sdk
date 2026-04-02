@@ -9,19 +9,16 @@ from wayfinder_paths.mcp.utils import (
     find_wallet_by_label,
     load_wallets,
     normalize_address,
+    public_wallet_view,
 )
-
-
-def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    return {"label": w.get("label"), "address": w.get("address")}
 
 
 async def list_wallets() -> str:
     store = WalletProfileStore.default()
-    existing = load_wallets()
+    existing = await load_wallets()
     wallet_list = []
     for w in existing:
-        view = _public_wallet_view(w)
+        view = public_wallet_view(w)
         addr = normalize_address(w.get("address"))
         if addr:
             tracked = store.get_protocols_for_wallet(addr.lower())
@@ -34,7 +31,7 @@ async def list_wallets() -> str:
 
 async def get_wallet(label: str) -> str:
     store = WalletProfileStore.default()
-    w = find_wallet_by_label(label)
+    w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})
 
@@ -62,7 +59,7 @@ def _balance_usd(entry: dict[str, Any]) -> float:
 
 
 async def get_wallet_balances(label: str) -> str:
-    w = find_wallet_by_label(label)
+    w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})
 
@@ -102,7 +99,7 @@ async def get_wallet_balances(label: str) -> str:
 
 
 async def get_wallet_activity(label: str) -> str:
-    w = find_wallet_by_label(label)
+    w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})
 

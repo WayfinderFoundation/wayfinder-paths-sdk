@@ -20,7 +20,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 
 
 async def main():
-    adapter = get_adapter(EtherfiAdapter, "main")  # wallet required for signing
+    adapter = await get_adapter(EtherfiAdapter, "main")  # wallet required for signing
 
     ok, tx = await adapter.stake_eth(amount_wei=10**18, chain_id=CHAIN_ID_ETHEREUM)
     if not ok:
@@ -44,7 +44,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 
 
 async def main():
-    adapter = get_adapter(EtherfiAdapter, "main")
+    adapter = await get_adapter(EtherfiAdapter, "main")
 
     ok, pos = await adapter.get_pos(chain_id=CHAIN_ID_ETHEREUM)
     if not ok:

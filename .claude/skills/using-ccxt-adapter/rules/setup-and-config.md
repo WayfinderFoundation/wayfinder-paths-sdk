@@ -16,7 +16,7 @@ A multi-exchange factory adapter. Each exchange you configure becomes a property
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
-adapter = get_adapter(CCXTAdapter)
+adapter = await get_adapter(CCXTAdapter)
 ticker = await adapter.binance.fetch_ticker("BTC/USDT")
 await adapter.close()
 ```

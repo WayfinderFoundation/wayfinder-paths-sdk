@@ -10,10 +10,11 @@ import yaml
 
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     find_wallet_by_label,
+    get_local_sign_typed_data_callback,
     get_private_key,
+    get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
     load_wallets,
-    make_sign_typed_data_callback,
     resolve_wallet,
 )
 
@@ -95,6 +96,16 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
     return text[: max_chars - 3] + "..."
 
 
+def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "label": w.get("label"),
+        "address": w.get("address"),
+        "wallet_type": w.get("wallet_type"),
+        "ttl_expires_at": w.get("ttl_expires_at"),
+        "ttl_expires_in": w.get("ttl_expires_in"),
+    }
+
+
 def normalize_address(addr: str | None) -> str | None:
     if not addr:
         return None
@@ -102,7 +113,7 @@ def normalize_address(addr: str | None) -> str | None:
     return a if a else None
 
 
-def resolve_wallet_address(
+async def resolve_wallet_address(
     *, wallet_label: str | None = None, wallet_address: str | None = None
 ) -> tuple[str | None, str | None]:
     """Return ``(normalized_address, label_used)`` from a label or raw address."""
@@ -114,7 +125,7 @@ def resolve_wallet_address(
     if not want:
         return None, None
 
-    w = find_wallet_by_label(want)
+    w = await find_wallet_by_label(want)
     if not w:
         return None, None
 

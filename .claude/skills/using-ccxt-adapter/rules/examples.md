@@ -8,7 +8,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
     ticker = await adapter.binance.fetch_ticker("BTC/USDT")
     print(f"BTC/USDT last: {ticker['last']}")
     await adapter.close()
@@ -24,7 +24,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
     balance = await adapter.binance.fetch_balance()
     print(f"USDT free: {balance['USDT']['free']}")
     await adapter.close()
@@ -40,7 +40,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
     order = await adapter.binance.create_order("ETH/USDT", "market", "buy", 0.01)
     print(f"Order: {order['id']} status={order['status']}")
     await adapter.close()
@@ -56,7 +56,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
     order = await adapter.aster.create_order("ETH/USDT", "limit", "buy", 0.01, 2000.0)
     print(f"Order: {order['id']} status={order['status']}")
     await adapter.close()
@@ -72,7 +72,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
     ob = await adapter.binance.fetch_order_book("ETH/USDT", limit=5)
     print(f"Best bid: {ob['bids'][0]}, Best ask: {ob['asks'][0]}")
     await adapter.close()
@@ -88,7 +88,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
 
     binance_ticker = await adapter.binance.fetch_ticker("ETH/USDT")
     aster_ticker = await adapter.aster.fetch_ticker("ETH/USDT")
@@ -111,7 +111,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 
 async def main():
-    adapter = get_adapter(CCXTAdapter)
+    adapter = await get_adapter(CCXTAdapter)
 
     # Hyperliquid defaults to swap (perp) markets
     ticker = await adapter.hyperliquid.fetch_ticker("ETH/USDC:USDC")

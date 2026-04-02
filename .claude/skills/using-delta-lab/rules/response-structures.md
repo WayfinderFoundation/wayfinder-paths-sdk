@@ -436,7 +436,7 @@ If the asset is not in a basis group, `"basis"` will be `None`:
             "oi_usd",
             "volume_usd"
         ],
-        index=DatetimeIndex
+        index=DatetimeIndex  # ts; may have duplicate timestamps when multiple venues present
     ),
     "pendle": DataFrame(
         columns=[

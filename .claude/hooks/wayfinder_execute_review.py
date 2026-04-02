@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.mcp.preview import build_execution_preview
+
 # Add repo root to path for wayfinder_paths imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from wayfinder_paths.mcp.preview import build_execution_preview
 
 
 def _load_payload() -> dict[str, Any]:
@@ -33,7 +34,7 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
     return ti if isinstance(ti, dict) else {}
 
 
-def main() -> None:
+async def main() -> None:
     payload = _load_payload()
     name = _tool_name(payload)
     if name not in {"mcp__wayfinder__execute", "execute"}:
@@ -41,7 +42,7 @@ def main() -> None:
 
     tool_input = _tool_input(payload)
 
-    preview = build_execution_preview(tool_input)
+    preview = await build_execution_preview(tool_input)
     summary = str(preview.get("summary") or "").strip() or "Review execute() request."
     if preview.get("recipient_mismatch"):
         summary = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + summary
@@ -57,4 +58,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

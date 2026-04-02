@@ -28,7 +28,7 @@ from wayfinder_paths.core.constants.contracts import BASE_WETH, BASE_USDC
 from wayfinder_paths.core.utils.uniswap_v3_math import get_pool_slot0
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
 
     _, pool_address = await adapter.get_pool(BASE_WETH, BASE_USDC, 500)
     print(f"Pool: {pool_address}")
@@ -50,7 +50,7 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
     _, positions = await adapter.get_positions()
     for p in positions:
         print(f"  ID={p['token_id']} liq={p['liquidity']} "
@@ -70,7 +70,7 @@ from wayfinder_paths.adapters.uniswap_adapter import UniswapAdapter
 TOKEN_ID = 12345
 
 async def main():
-    adapter = get_adapter(UniswapAdapter, "main")
+    adapter = await get_adapter(UniswapAdapter, "main")
     _, fees = await adapter.get_uncollected_fees(TOKEN_ID)
     print(f"Uncollected: amount0={fees['amount0']} amount1={fees['amount1']}")
 

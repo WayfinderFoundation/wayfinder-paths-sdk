@@ -4,6 +4,13 @@
 
 - Use `mcp__wayfinder__polymarket` for reads (search/markets/history/status).
 - Use `mcp__wayfinder__polymarket_execute` for writes (bridge, approvals, buy/sell, limit/cancel, redeem). It should always require a confirmation in Claude Code.
+- Use `mcp__wayfinder__polymarket(action="quote", ...)` before a sized buy/sell when you need average execution from the current book.
+
+## `price` is not `quote`
+
+- `get_price(...)` / `mcp__wayfinder__polymarket(action="price", ...)` returns the current quoted price.
+- `quote_market_order(...)` / `mcp__wayfinder__polymarket(action="quote", ...)` walks the live book and returns weighted-average execution, worst fill, and partial-fill status.
+- For quote requests: `BUY` uses USDC notional, `SELL` uses shares.
 
 ## USDC vs USDC.e (collateral mismatch)
 
@@ -57,7 +64,7 @@ The adapter normalizes them into Python lists, but if you bypass the adapter and
 
 ## Open orders require the signing wallet
 
-- CLOB open orders require Level-2 auth, which requires a configured signing wallet (`private_key_hex`).
+- CLOB open orders require Level-2 auth, which requires a configured signing wallet (local or remote).
 - In MCP, pass `wallet_label="main"` to `mcp__wayfinder__polymarket(action="status", ...)` to include open orders.
 
 ## Redemption requires the right `conditionId`
