@@ -99,7 +99,14 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
 
 
 def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    return {"label": w.get("label"), "address": w.get("address")}
+    view: dict[str, Any] = {"label": w.get("label"), "address": w.get("address")}
+    if wallet_type := w.get("wallet_type"):
+        view["wallet_type"] = wallet_type
+    if (ttl := w.get("ttl_expires_at")) is not None:
+        view["ttl_expires_at"] = ttl
+    if (remaining := w.get("ttl_remaining")) is not None:
+        view["ttl_remaining"] = remaining
+    return view
 
 
 async def _query_adapter(

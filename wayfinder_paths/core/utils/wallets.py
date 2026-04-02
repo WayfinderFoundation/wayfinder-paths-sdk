@@ -46,15 +46,18 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
             addr = w.get("wallet_address")
             if not addr:
                 continue
-            wallets.append(
-                {
-                    "address": addr,
-                    "label": w.get("label") or f"remote-{i}",
-                    "type": "remote",
-                    "chain_type": w.get("chain_type", "ethereum"),
-                    "wallet_type": w.get("wallet_type", "policy"),
-                }
-            )
+            entry = {
+                "address": addr,
+                "label": w.get("label") or f"remote-{i}",
+                "type": "remote",
+                "chain_type": w.get("chain_type", "ethereum"),
+                "wallet_type": w.get("wallet_type", "ttl"),
+            }
+            if (ttl := w.get("ttl_expires_at")) is not None:
+                entry["ttl_expires_at"] = ttl
+            if (remaining := w.get("ttl_remaining")) is not None:
+                entry["ttl_remaining"] = remaining
+            wallets.append(entry)
         return wallets
     except Exception as exc:
         logger.debug(f"Failed to fetch remote wallets: {exc}")
