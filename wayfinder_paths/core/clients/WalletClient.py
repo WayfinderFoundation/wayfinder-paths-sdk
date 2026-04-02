@@ -16,6 +16,7 @@ class WalletClient(WayfinderClient):
         self,
         policies: list[dict],
         wallet_type: str,
+        *,
         chain_type: str = "ethereum",
         label: str = "",
     ) -> dict[str, Any]:
