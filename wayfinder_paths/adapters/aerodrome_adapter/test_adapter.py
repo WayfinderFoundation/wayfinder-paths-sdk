@@ -91,6 +91,7 @@ def test_constructor_is_base_only():
         "claim_rebases",
         "claim_rebases_many",
         "get_full_user_state",
+        "get_vote_claimables",
     ],
 )
 def test_public_methods_do_not_accept_chain_id(method_name):
@@ -476,6 +477,100 @@ async def test_get_full_user_state_batches_related_reads():
             "rebase_claimable": 80,
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_vote_claimables_uses_pool_metadata_and_shared_helper():
+    adapter = AerodromeAdapter()
+    voter = MagicMock()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    pool = SugarPool(
+        lp="0x" + "11" * 20,
+        symbol="AERO/USDC",
+        lp_decimals=18,
+        lp_total_supply=0,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0="0x" + "12" * 20,
+        reserve0=0,
+        staked0=0,
+        token1="0x" + "13" * 20,
+        reserve1=0,
+        staked1=0,
+        gauge="0x" + "14" * 20,
+        gauge_liquidity=0,
+        gauge_alive=True,
+        fee="0x" + "15" * 20,
+        bribe="0x" + "16" * 20,
+        factory="0x" + "17" * 20,
+        emissions_per_sec=0,
+        emissions_token="0x" + "18" * 20,
+        pool_fee_pips=0,
+        unstaked_fee_pips=0,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=0,
+    )
+
+    with (
+        patch.object(
+            adapter,
+            "pools_by_lp",
+            new=AsyncMock(return_value={pool.lp: pool}),
+        ),
+        patch.object(
+            adapter,
+            "_get_vote_claimables",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "pool": pool.lp,
+                        "claimableFees": [],
+                        "claimableBribes": [],
+                    }
+                ]
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+    ):
+        ok, data = await adapter.get_vote_claimables(
+            token_id=123,
+            include_zero_positions=True,
+            include_usd_values=True,
+        )
+
+    assert ok is True
+    assert data == {
+        "protocol": "aerodrome",
+        "chain_id": CHAIN_ID_BASE,
+        "tokenId": 123,
+        "votes": [
+            {
+                "pool": pool.lp,
+                "claimableFees": [],
+                "claimableBribes": [],
+            }
+        ],
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["token_id"] == 123
+    assert mock_get_vote_claimables.await_args.kwargs["pool_metadata_by_address"] == {
+        pool.lp.lower(): {
+            "symbol": "AERO/USDC",
+            "feeReward": pool.fee,
+            "bribeReward": pool.bribe,
+        }
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["web3"] is mock_web3
+    assert mock_get_vote_claimables.await_args.kwargs["voter_contract"] is voter
+    assert mock_get_vote_claimables.await_args.kwargs["include_zero_positions"] is True
+    assert mock_get_vote_claimables.await_args.kwargs["include_usd_values"] is True
 
 
 def test_parse_sugar_epoch():
