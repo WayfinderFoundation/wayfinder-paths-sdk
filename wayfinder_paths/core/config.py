@@ -3,6 +3,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
@@ -142,3 +144,16 @@ def get_etherscan_api_key() -> str | None:
 
 def get_opencode_instance_id() -> str | None:
     return os.environ.get("OPENCODE_INSTANCE_ID")
+
+
+def is_on_opencode() -> bool:
+    if not get_opencode_instance_id():
+        return False
+    try:
+        return (
+            httpx.get("http://localhost:4096/global/health", timeout=5)
+            .json()
+            .get("healthy", False)
+        )
+    except Exception:
+        return False

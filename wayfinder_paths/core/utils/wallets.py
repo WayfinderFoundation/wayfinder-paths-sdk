@@ -6,14 +6,12 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
 
-from wayfinder_paths.core.clients.OpenCodeClient import (
-    IS_ON_OPENCODE,
-    OPENCODE_INSTANCE_ID,
-)
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
     get_api_key,
+    get_opencode_instance_id,
+    is_on_opencode,
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
@@ -322,10 +320,11 @@ async def create_remote_wallet(
 
 
 async def _try_bind_to_instance(wallet_address: str) -> None:
-    if not IS_ON_OPENCODE or not wallet_address:
+    instance_id = get_opencode_instance_id()
+    if not instance_id or not is_on_opencode() or not wallet_address:
         return
     try:
-        await WALLET_CLIENT.bind_to_instance(wallet_address, OPENCODE_INSTANCE_ID)
+        await WALLET_CLIENT.bind_to_instance(wallet_address, instance_id)
     except Exception as exc:
         logger.debug(f"Failed to bind wallet to instance: {exc}")
 
