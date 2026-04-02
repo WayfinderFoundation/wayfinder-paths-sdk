@@ -16,6 +16,8 @@ def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
     view: dict[str, Any] = {"label": w.get("label"), "address": w.get("address")}
     if wallet_type := w.get("wallet_type"):
         view["wallet_type"] = wallet_type
+        view["ttl_expires_at"] = w.get("ttl_expires_at")
+        view["ttl_expires_in"] = w.get("ttl_expires_in")
     return view
 
 
