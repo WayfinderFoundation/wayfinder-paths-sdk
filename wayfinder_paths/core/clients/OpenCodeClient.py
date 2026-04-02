@@ -17,54 +17,52 @@ class OpenCodeClient:
             headers={"Content-Type": "application/json"},
         )
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response | None:
-        url = f"{self.base_url}{path}"
-        try:
-            return self.client.request(method, url, **kwargs)
-        except Exception as error:
-            logger.debug(f"OpenCode {method} {url} failed: {error}")
-            return None
+    def get(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.client.get(f"{self.base_url}{path}", **kwargs)
+
+    def post(self, path: str, **kwargs: Any) -> httpx.Response:
+        return self.client.post(f"{self.base_url}{path}", **kwargs)
 
     def healthy(self) -> bool:
-        response = self._request("GET", "/global/health")
-        if response is None or response.status_code != 200:
+        try:
+            return self.get("/global/health").json().get("healthy", False)
+        except Exception:
             return False
-        return response.json().get("healthy", False)
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        response = self._request("GET", "/session")
-        if response is None or response.status_code != 200:
+        try:
+            return self.get("/session").json()
+        except Exception:
             return []
-        return response.json()
 
-    def active_session_id(self) -> str | None:
+    def find_runner_session(self) -> str | None:
         """Find the session that invoked runner add-job."""
         for session in self.list_sessions():
             session_id = session.get("id")
-            if session_id and self._session_has_runner_job(session_id):
-                return session_id
+            if not session_id:
+                continue
+            try:
+                raw = json.dumps(
+                    self.get(
+                        f"/session/{session_id}/message", params={"limit": 50}
+                    ).json()
+                )
+                if "runner" in raw and ("add-job" in raw or "add_job" in raw):
+                    return session_id
+            except Exception:
+                continue
         return None
 
-    def _session_has_runner_job(self, session_id: str) -> bool:
-        response = self._request(
-            "GET", f"/session/{session_id}/message", params={"limit": 50}
-        )
-        if response is None or response.status_code != 200:
-            return False
-        raw_messages = json.dumps(response.json())
-        return "runner" in raw_messages and (
-            "add-job" in raw_messages or "add_job" in raw_messages
-        )
-
     def send_message(self, session_id: str, text: str) -> bool:
-        response = self._request(
-            "POST",
-            f"/session/{session_id}/message",
-            json={"parts": [{"type": "text", "text": text}]},
-        )
-        if response is None or response.status_code != 200:
+        try:
+            response = self.post(
+                f"/session/{session_id}/message",
+                json={"parts": [{"type": "text", "text": text}]},
+            )
+            return response.is_success
+        except Exception as error:
+            logger.debug(f"Failed to send message to session {session_id}: {error}")
             return False
-        return True
 
 
 OPENCODE_CLIENT = OpenCodeClient()

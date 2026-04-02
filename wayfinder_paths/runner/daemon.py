@@ -632,7 +632,7 @@ class RunnerDaemon:
             env = payload_norm.get("env")
             if env is not None and not isinstance(env, dict):
                 return {"ok": False, "error": "payload.env must be an object"}
-        session_id = OPENCODE_CLIENT.active_session_id()
+        session_id = OPENCODE_CLIENT.find_runner_session()
         if session_id:
             payload_norm["notify_session_id"] = session_id
             logger.info(f"Auto-bound job {name} to session {session_id}")
