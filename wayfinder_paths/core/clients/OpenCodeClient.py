@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-import os
 from typing import Any
 
 import httpx
 from loguru import logger
 
+from wayfinder_paths.core.config import get_opencode_instance_id
 from wayfinder_paths.runner.constants import ADD_JOB_VERB
 
 OPENCODE_DEFAULT_URL = "http://localhost:4096"
-OPENCODE_INSTANCE_ID: str | None = os.environ.get("OPENCODE_INSTANCE_ID")
+OPENCODE_INSTANCE_ID: str | None = get_opencode_instance_id()
 
 
 class OpenCodeClient:
