@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +7,7 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
@@ -16,8 +16,7 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-
-TTL_DURATION_SECONDS = 300
+from wayfinder_paths.policies.ttl import build_ttl_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -303,24 +302,6 @@ async def get_wallet_sign_hash_callback(label: str):
 # ---------------------------------------------------------------------------
 
 
-def build_ttl_policy(ttl_seconds: int = TTL_DURATION_SECONDS) -> list[dict]:
-    return [
-        {
-            "name": "TTL",
-            "method": "*",
-            "action": "ALLOW",
-            "conditions": [
-                {
-                    "field_source": "system",
-                    "field": "current_unix_timestamp",
-                    "operator": "lt",
-                    "value": str(int(time.time()) + ttl_seconds),
-                }
-            ],
-        }
-    ]
-
-
 async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
@@ -341,8 +322,6 @@ async def _try_bind_to_instance(wallet_address: str) -> None:
     if not instance_id or not wallet_address:
         return
     try:
-        from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
-
         if not OPENCODE_CLIENT.healthy():
             return
         await WALLET_CLIENT.bind_to_instance(instance_id, wallet_address)
