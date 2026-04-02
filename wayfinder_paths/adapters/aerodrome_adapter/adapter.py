@@ -41,6 +41,7 @@ from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from loguru import logger
 
 _SUGAR_CALL_GAS = 30_000_000
+_SUGAR_ALL_PAGE_SIZE = 300
 
 
 @dataclass(frozen=True)
@@ -378,21 +379,40 @@ class AerodromeAdapter(
             created_at=row[25],
         )
 
-    async def sugar_all(self, *, limit: int = 500, offset: int = 0) -> list[SugarPool]:
+    async def sugar_all(
+        self,
+        *,
+        limit: int = _SUGAR_ALL_PAGE_SIZE,
+        offset: int = 0,
+    ) -> list[SugarPool]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
                 address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
-            rows = await sugar.functions.all(limit, offset).call(
-                transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
-            )
-        return [self._parse_sugar_pool(row) for row in rows]
+            out: list[SugarPool] = []
+            remaining = limit
+            next_offset = offset
+            # Not calling gather here, because each sugar call is heavy so we may hit limits
+            while remaining > 0:
+                batch_limit = min(remaining, _SUGAR_ALL_PAGE_SIZE)
+                batch = (await sugar.functions.all(batch_limit, next_offset).call(
+                    transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
+                ))
+                out.extend(batch)
+                received = len(batch)
+                if received == 0:
+                    break
+                remaining -= received
+                next_offset += received
+                
+                
+            return [self._parse_sugar_pool(row) for row in out]
 
     async def list_pools(
         self,
         *,
-        page_size: int = 500,
+        page_size: int = _SUGAR_ALL_PAGE_SIZE,
         max_pools: int | None = None,
     ) -> list[SugarPool]:
         out: list[SugarPool] = []

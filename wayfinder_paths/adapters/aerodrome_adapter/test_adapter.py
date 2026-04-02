@@ -669,6 +669,77 @@ async def test_estimate_votes_for_lock_caps_duration():
 
 
 @pytest.mark.asyncio
+async def test_sugar_all_batches_large_limit():
+    adapter = AerodromeAdapter()
+
+    def _addr(n: int) -> str:
+        return "0x" + f"{n:040x}"
+
+    def _row(i: int) -> tuple:
+        addr = _addr(i + 1)
+        token0 = _addr(i + 1001)
+        token1 = _addr(i + 2001)
+        return (
+            addr,
+            f"pool-{i}",
+            18,
+            100,
+            0,
+            0,
+            0,
+            token0,
+            1,
+            1,
+            token1,
+            1,
+            1,
+            _addr(i + 3001),
+            1,
+            True,
+            _addr(i + 4001),
+            _addr(i + 5001),
+            _addr(i + 6001),
+            0,
+            _addr(i + 7001),
+            30,
+            5,
+            0,
+            0,
+            1,
+        )
+
+    rows_page_1 = [_row(i) for i in range(300)]
+    rows_page_2 = [_row(i) for i in range(300, 350)]
+    seen_calls: list[tuple[int, int]] = []
+
+    def _all(limit: int, offset: int):
+        seen_calls.append((limit, offset))
+        if (limit, offset) == (300, 10):
+            return _mock_call(rows_page_1)
+        if (limit, offset) == (50, 310):
+            return _mock_call(rows_page_2)
+        raise AssertionError(f"unexpected sugar.all({limit}, {offset})")
+
+    sugar = MagicMock()
+    sugar.functions.all = MagicMock(side_effect=_all)
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=sugar)
+
+    with patch.object(
+        aerodrome_adapter_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        pools = await adapter.sugar_all(limit=350, offset=10)
+
+    assert seen_calls == [(300, 10), (50, 310)]
+    assert len(pools) == 350
+    assert pools[0].symbol == "pool-0"
+    assert pools[-1].symbol == "pool-349"
+
+
+@pytest.mark.asyncio
 async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
     adapter = AerodromeAdapter()
 
@@ -707,7 +778,7 @@ async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
         nonlocal calls
         calls += 1
         if calls == 1:
-            assert limit == 500
+            assert limit == 300
             assert offset == 0
             return [pool]
         raise RuntimeError("execution reverted: out of bounds")
