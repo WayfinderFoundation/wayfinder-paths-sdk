@@ -277,8 +277,7 @@ Token identifiers (important for quoting/execution/lookups):
 Runner CLI (project-local state in `./.wayfinder/runner/`):
 
 ```bash
-poetry run wayfinder runner start --detach
-poetry run wayfinder runner ensure
+poetry run wayfinder runner start
 poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
 poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
 ```

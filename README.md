@@ -214,11 +214,8 @@ poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action r
 Run strategies on an interval without cron:
 
 ```bash
-# Start the daemon (recommended: detached/background)
-poetry run wayfinder runner start --detach
-
-# Idempotent: start if needed, otherwise no-op
-poetry run wayfinder runner ensure
+# Start the daemon (idempotent)
+poetry run wayfinder runner start
 
 # Add a job (run update every 10 minutes)
 poetry run wayfinder runner add-job \
