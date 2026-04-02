@@ -6,12 +6,12 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
 
+from wayfinder_paths.core.clients.OpenCodeClient import is_on_opencode
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
     get_api_key,
     get_opencode_instance_id,
-    is_on_opencode,
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,

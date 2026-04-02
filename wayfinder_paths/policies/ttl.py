@@ -1,6 +1,6 @@
 import time
 
-TTL_DURATION_SECONDS = 300
+TTL_DURATION_SECONDS = 3600
 
 
 def build_ttl_policy(ttl_seconds: int = TTL_DURATION_SECONDS) -> dict:

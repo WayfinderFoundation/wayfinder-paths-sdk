@@ -14,8 +14,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths import __version__
-from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
-from wayfinder_paths.core.config import is_on_opencode
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT, is_on_opencode
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
