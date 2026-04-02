@@ -29,6 +29,15 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("POST", url, json=body)
         return resp.json()
 
+    async def bind_to_instance(
+        self, instance_id: str, wallet_address: str
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/opencode/instances/{instance_id}/bind-wallet/"
+        resp = await self._authed_request(
+            "POST", url, json={"wallet_address": wallet_address}
+        )
+        return resp.json()
+
     async def bump_ttl(self, wallet_address: str) -> dict[str, Any]:
         url = f"{get_api_base_url()}/wallets/{wallet_address}/bump-ttl/"
         resp = await self._authed_request("POST", url)

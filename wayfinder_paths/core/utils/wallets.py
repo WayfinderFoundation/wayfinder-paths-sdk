@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -328,9 +329,25 @@ async def create_remote_wallet(
 ) -> dict[str, Any]:
     if wallet_type == "ttl" and not policies:
         policies = build_ttl_policy()
-    return await WALLET_CLIENT.create_wallet(
+    result = await WALLET_CLIENT.create_wallet(
         chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
     )
+    await _try_bind_to_instance(result.get("wallet_address", ""))
+    return result
+
+
+async def _try_bind_to_instance(wallet_address: str) -> None:
+    instance_id = os.environ.get("OPENCODE_INSTANCE_ID")
+    if not instance_id or not wallet_address:
+        return
+    try:
+        from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+
+        if not OPENCODE_CLIENT.healthy():
+            return
+        await WALLET_CLIENT.bind_to_instance(instance_id, wallet_address)
+    except Exception as exc:
+        logger.debug(f"Failed to bind wallet to instance: {exc}")
 
 
 def make_random_wallet() -> dict[str, str]:
