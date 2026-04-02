@@ -6,7 +6,6 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from wayfinder_paths.core.config import get_opencode_instance_id
 from wayfinder_paths.runner.constants import ADD_JOB_VERB
 
 OPENCODE_DEFAULT_URL = "http://localhost:4096"
@@ -65,7 +64,3 @@ class OpenCodeClient:
 
 
 OPENCODE_CLIENT = OpenCodeClient()
-
-
-def is_on_opencode() -> bool:
-    return bool(get_opencode_instance_id()) and OPENCODE_CLIENT.healthy()

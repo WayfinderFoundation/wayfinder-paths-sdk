@@ -6,7 +6,7 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
 
-from wayfinder_paths.core.clients.OpenCodeClient import is_on_opencode
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
@@ -314,7 +314,7 @@ async def create_remote_wallet(
     result = await WALLET_CLIENT.create_wallet(
         chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
     )
-    if is_on_opencode():
+    if OPENCODE_CLIENT.healthy():
         await WALLET_CLIENT.bind_to_instance(
             result["wallet_address"], get_opencode_instance_id()
         )

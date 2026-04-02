@@ -14,7 +14,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths import __version__
-from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT, is_on_opencode
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -294,7 +294,7 @@ class RunnerDaemon:
         job, _ = self._db.get_job(name=running_process.job_name)
         session_id = job.payload["notify_session_id"]
 
-        if session_id is None or not is_on_opencode():
+        if session_id is None or not OPENCODE_CLIENT.healthy():
             return
 
         notification = json.dumps(
