@@ -99,8 +99,6 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
 }
 
 
-
-
 async def _query_adapter(
     protocol: str,
     address: str,
