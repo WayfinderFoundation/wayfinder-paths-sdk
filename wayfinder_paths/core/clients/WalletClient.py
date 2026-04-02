@@ -30,11 +30,11 @@ class WalletClient(WayfinderClient):
         return resp.json()
 
     async def bind_to_instance(
-        self, instance_id: str, wallet_address: str
+        self, wallet_address: str, instance_id: str
     ) -> dict[str, Any]:
-        url = f"{get_api_base_url()}/opencode/instances/{instance_id}/bind-wallet/"
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/bind-instance/"
         resp = await self._authed_request(
-            "POST", url, json={"wallet_address": wallet_address}
+            "POST", url, json={"instance_id": instance_id}
         )
         return resp.json()
 

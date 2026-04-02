@@ -325,7 +325,7 @@ async def _try_bind_to_instance(wallet_address: str) -> None:
     if not IS_ON_OPENCODE or not wallet_address:
         return
     try:
-        await WALLET_CLIENT.bind_to_instance(OPENCODE_INSTANCE_ID, wallet_address)
+        await WALLET_CLIENT.bind_to_instance(wallet_address, OPENCODE_INSTANCE_ID)
     except Exception as exc:
         logger.debug(f"Failed to bind wallet to instance: {exc}")
 
