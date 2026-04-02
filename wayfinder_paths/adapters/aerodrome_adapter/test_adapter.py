@@ -55,17 +55,9 @@ def test_constructor_is_base_only():
     assert adapter.chain_id == CHAIN_ID_BASE
 
 
-@pytest.mark.asyncio
-async def test_default_factory_returns_configured_pool_factory():
-    adapter = AerodromeAdapter()
-    assert await adapter.default_factory() == adapter.core_contracts["pool_factory"]
-
-
 @pytest.mark.parametrize(
     "method_name",
     [
-        "default_factory",
-        "gauge_for_pool",
         "get_pool",
         "get_gauge",
         "get_reward_contracts",
@@ -73,12 +65,12 @@ async def test_default_factory_returns_configured_pool_factory():
         "v2_pool_tvl_usdc",
         "v2_staked_tvl_usdc",
         "v2_emissions_apr",
+        "rank_v2_pools_by_emissions_apr",
         "quote_add_liquidity",
         "add_liquidity",
         "quote_remove_liquidity",
         "remove_liquidity",
         "claim_pool_fees_unstaked",
-        "deposit_gauge",
         "lp_balance",
         "stake_lp",
         "unstake_lp",
@@ -128,14 +120,6 @@ def test_public_methods_do_not_accept_chain_id(method_name):
             },
         ),
         (
-            "deposit_gauge",
-            {
-                "gauge": "0x0000000000000000000000000000000000000003",
-                "lp_token": "0x0000000000000000000000000000000000000004",
-                "amount": 1,
-            },
-        ),
-        (
             "create_lock",
             {
                 "amount": 1,
@@ -149,40 +133,6 @@ async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
     ok, msg = await getattr(adapter, method)(**kwargs)
     assert ok is False
     assert msg == "wallet address not configured"
-
-
-@pytest.mark.asyncio
-async def test_gauge_for_pool_returns_zero_address_when_missing(monkeypatch):
-    adapter = AerodromeAdapter()
-    monkeypatch.setattr(
-        adapter,
-        "get_gauge",
-        AsyncMock(return_value=(False, "Gauge not found for pool")),
-    )
-
-    assert await adapter.gauge_for_pool(FAKE_POOL) == ZERO_ADDRESS
-
-
-@pytest.mark.asyncio
-async def test_deposit_gauge_delegates_to_stake_lp(monkeypatch, adapter_with_signer):
-    monkeypatch.setattr(
-        adapter_with_signer,
-        "stake_lp",
-        AsyncMock(return_value=(True, "0xtx")),
-    )
-
-    ok, tx_hash = await adapter_with_signer.deposit_gauge(
-        gauge=FAKE_GAUGE,
-        lp_token=FAKE_POOL,
-        amount=123,
-    )
-
-    assert ok is True
-    assert tx_hash == "0xtx"
-    adapter_with_signer.stake_lp.assert_awaited_once_with(
-        gauge=FAKE_GAUGE,
-        amount=123,
-    )
 
 
 @pytest.mark.asyncio
@@ -873,6 +823,116 @@ async def test_v2_pool_helpers_and_emissions_apr(monkeypatch):
     assert tvl == pytest.approx(8.0)
     assert staked_tvl == pytest.approx(2.0)
     assert apr == pytest.approx((SECONDS_PER_YEAR * 4.0) / 2.0)
+
+
+@pytest.mark.asyncio
+async def test_rank_v2_pools_by_emissions_apr(monkeypatch):
+    adapter = AerodromeAdapter()
+    token = "0x" + "11" * 20
+
+    pool_a = SugarPool(
+        lp="0x" + "aa" * 20,
+        symbol="A/B",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=1,
+        staked1=0,
+        gauge="0x" + "01" * 20,
+        gauge_liquidity=50,
+        gauge_alive=True,
+        fee="0x" + "02" * 20,
+        bribe="0x" + "03" * 20,
+        factory="0x" + "04" * 20,
+        emissions_per_sec=200,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+    pool_b = SugarPool(
+        lp="0x" + "bb" * 20,
+        symbol="C/D",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=1,
+        staked1=0,
+        gauge="0x" + "05" * 20,
+        gauge_liquidity=50,
+        gauge_alive=True,
+        fee="0x" + "06" * 20,
+        bribe="0x" + "07" * 20,
+        factory="0x" + "08" * 20,
+        emissions_per_sec=100,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+    pool_filtered = SugarPool(
+        lp="0x" + "cc" * 20,
+        symbol="E/F",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=0,
+        staked1=0,
+        gauge=ZERO_ADDRESS,
+        gauge_liquidity=0,
+        gauge_alive=False,
+        fee="0x" + "09" * 20,
+        bribe="0x" + "0a" * 20,
+        factory="0x" + "0b" * 20,
+        emissions_per_sec=300,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+
+    async def _fake_list_pools(*, page_size: int, max_pools=None):
+        assert page_size == 500
+        assert max_pools is None
+        return [pool_b, pool_filtered, pool_a]
+
+    async def _fake_apr(pool: SugarPool) -> float | None:
+        if pool.lp.lower() == pool_a.lp.lower():
+            return 1.5
+        if pool.lp.lower() == pool_b.lp.lower():
+            return 0.5
+        return None
+
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "v2_emissions_apr", _fake_apr)
+
+    ranked = await adapter.rank_v2_pools_by_emissions_apr(top_n=5)
+
+    assert ranked == [(1.5, pool_a), (0.5, pool_b)]
 
 
 @pytest.mark.asyncio

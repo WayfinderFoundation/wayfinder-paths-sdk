@@ -624,6 +624,40 @@ class AerodromeAdapter(
         annual_rewards_usdc = emissions_per_second * SECONDS_PER_YEAR * reward_price
         return float(annual_rewards_usdc / staked_tvl)
 
+    async def rank_v2_pools_by_emissions_apr(
+        self,
+        *,
+        top_n: int = 10,
+        candidate_count: int = 200,
+        page_size: int = 500,
+    ) -> list[tuple[float, SugarPool]]:
+        pools = await self.list_pools(page_size=page_size)
+        v2 = [
+            pool
+            for pool in pools
+            if pool.is_v2
+            and pool.gauge_alive
+            and pool.gauge != ZERO_ADDRESS
+            and pool.emissions_per_sec > 0
+            and pool.gauge_liquidity > 0
+            and pool.lp_total_supply > 0
+            and pool.reserve0 > 0
+            and pool.reserve1 > 0
+        ]
+        v2.sort(key=lambda pool: int(pool.emissions_per_sec), reverse=True)
+        if candidate_count > 0:
+            v2 = v2[:candidate_count]
+
+        ranked: list[tuple[float, SugarPool]] = []
+        for pool in v2:
+            apr = await self.v2_emissions_apr(pool)
+            if apr is None:
+                continue
+            ranked.append((apr, pool))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return ranked[: max(1, top_n)]
+
     async def get_pool(
         self,
         *,
