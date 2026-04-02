@@ -69,7 +69,20 @@ class MorphoClient:
                 resp.raise_for_status()
                 data = resp.json()
                 if isinstance(data, dict) and data.get("errors"):
-                    raise ValueError(f"Morpho GraphQL errors: {data['errors']}")
+                    errors = data["errors"]
+                    if self._is_retryable_graphql_error(errors) and attempt < (
+                        max_retries - 1
+                    ):
+                        logger.warning(
+                            "Morpho GraphQL returned retryable errors (attempt {}/{}): {}",
+                            attempt + 1,
+                            max_retries,
+                            errors,
+                        )
+                        await self._reset_client()
+                        await asyncio.sleep(delay_s * (2**attempt))
+                        continue
+                    raise ValueError(f"Morpho GraphQL errors: {errors}")
                 return data.get("data", data)
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
@@ -96,6 +109,29 @@ class MorphoClient:
                 raise
 
         raise RuntimeError("Morpho API request failed")
+
+    @staticmethod
+    def _is_retryable_graphql_error(errors: Any) -> bool:
+        if not isinstance(errors, list):
+            return False
+        retryable_statuses = {
+            "INTERNAL_SERVER_ERROR",
+            "BAD_GATEWAY",
+            "SERVICE_UNAVAILABLE",
+        }
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            status = str(error.get("status") or "").upper()
+            if status in retryable_statuses:
+                return True
+            extensions = error.get("extensions") or {}
+            ext_status = str(
+                extensions.get("code") or extensions.get("status") or ""
+            ).upper()
+            if ext_status in retryable_statuses:
+                return True
+        return False
 
     async def get_morpho_by_chain(self) -> dict[int, dict[str, str]]:
         query = """

@@ -512,7 +512,7 @@ async def contract_call(
 
     from_addr = normalize_address(from_address)
     label = str(wallet_label or "").strip() or None
-    caller, _label_used = resolve_wallet_address(
+    caller, _label_used = await resolve_wallet_address(
         wallet_label=label,
         wallet_address=from_addr,
     )
@@ -596,7 +596,7 @@ async def contract_execute(
     Use this for state-changing writes. For view/pure reads, use `contract_call`.
     """
     try:
-        sign_callback, sender = get_wallet_signing_callback(wallet_label)
+        sign_callback, sender = await get_wallet_signing_callback(wallet_label)
     except ValueError as e:
         return err("invalid_wallet", str(e))
 

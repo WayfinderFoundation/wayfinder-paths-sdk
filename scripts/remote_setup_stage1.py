@@ -12,6 +12,12 @@ def main() -> int:
         description="Remote bootstrap (stage 1): poetry install + write config.json."
     )
     parser.add_argument("--api-key", help="Wayfinder API key (wk_...)")
+    parser.add_argument(
+        "--skip-poetry-install",
+        action="store_true",
+        default=False,
+        help="Skip poetry install (use when venv is pre-built).",
+    )
     args = parser.parse_args()
 
     os.chdir(REPO_ROOT)
@@ -21,7 +27,8 @@ def main() -> int:
         raise SystemExit("Missing API key. Pass --api-key or set WAYFINDER_API_KEY.")
 
     ensure_config(api_key=api_key)
-    run_cmd(["poetry", "install"])
+    if not args.skip_poetry_install:
+        run_cmd(["poetry", "install"])
     return 0
 
 

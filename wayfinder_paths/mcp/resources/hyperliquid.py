@@ -10,7 +10,7 @@ _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
 
 
 async def get_user_state(label: str) -> str:
-    addr, _ = resolve_wallet_address(wallet_label=label)
+    addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
 
@@ -22,7 +22,7 @@ async def get_user_state(label: str) -> str:
 
 
 async def get_spot_user_state(label: str) -> str:
-    addr, _ = resolve_wallet_address(wallet_label=label)
+    addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
 

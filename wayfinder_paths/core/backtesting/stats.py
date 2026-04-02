@@ -59,7 +59,7 @@ def calculate_stats(
         - avg_cost: Average transaction cost per period
         - final_equity: Ending portfolio value
         - total_fees: Total transaction fees paid
-        - total_funding: Total funding costs/income
+        - total_funding: Total funding paid (negative = income received / profit)
     """
     if len(returns) == 0 or len(equity_curve) == 0:
         return empty_stats()

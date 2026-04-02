@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -33,7 +34,7 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
     return ti if isinstance(ti, dict) else {}
 
 
-def main() -> None:
+async def main() -> None:
     payload = _load_payload()
     name = _tool_name(payload)
     if name not in {"mcp__wayfinder__hyperliquid_execute", "hyperliquid_execute"}:
@@ -41,7 +42,7 @@ def main() -> None:
 
     tool_input = _tool_input(payload)
 
-    preview = build_hyperliquid_execute_preview(tool_input)
+    preview = await build_hyperliquid_execute_preview(tool_input)
     summary = (
         str(preview.get("summary") or "").strip()
         or "Review hyperliquid_execute() request."
@@ -58,4 +59,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

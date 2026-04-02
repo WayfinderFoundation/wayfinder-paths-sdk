@@ -57,6 +57,7 @@ class Inventory:
     hl_perp_idle: float
     avantis_value_usdc: float
     boros_vault_value_usd: float
+    boros_vault_reported_value_usd: float
     boros_account_idle_usd: float
     boros_vaults: list[BorosVault]
     positions_value: float
@@ -250,6 +251,25 @@ class MultiVaultSplitStrategy(Strategy):
     def _avantis_enabled(self) -> bool:
         return bool(self.enabled_legs.get("avantis"))
 
+    @staticmethod
+    def _format_boros_vault_view(vault: BorosVault) -> dict[str, Any]:
+        return {
+            "market_id": int(vault.market_id),
+            "amm_id": int(vault.amm_id),
+            "symbol": str(vault.symbol or ""),
+            "apy": float(vault.apy or 0.0) if vault.apy is not None else None,
+            "collateral": vault.collateral_symbol,
+            "expiry": vault.expiry,
+            "tvl": vault.tvl,
+            "tvl_usd": vault.tvl_usd,
+            "available": vault.available_tokens,
+            "available_usd": vault.available_usd,
+            "deposited": vault.user_deposit_tokens,
+            "deposited_usd": vault.user_deposit_usd,
+            "is_expired": bool(vault.is_expired),
+            "is_isolated_only": bool(vault.is_isolated_only),
+        }
+
     async def _pick_boros_vault_for_deposit(
         self,
         *,
@@ -437,11 +457,18 @@ class MultiVaultSplitStrategy(Strategy):
 
         boros_vaults: list[BorosVault] = []
         boros_vault_value_usd = 0.0
+        boros_vault_reported_value_usd = 0.0
         ok_vaults, vaults = await self.boros_adapter.get_vaults_summary(
             account=self.strategy_wallet_address
         )
         if ok_vaults and isinstance(vaults, list):
             boros_vaults = list(vaults)
+            boros_vault_reported_value_usd = sum(
+                self.boros_adapter.estimate_user_vault_value_usd(vault)
+                or self.boros_adapter.estimate_user_vault_value_tokens(vault)
+                for vault in boros_vaults
+            )
+            # Preserve existing allocation semantics; expose marked USD separately.
             boros_vault_value_usd = sum(
                 self.boros_adapter.estimate_user_vault_value_tokens(vault)
                 for vault in boros_vaults
@@ -474,6 +501,7 @@ class MultiVaultSplitStrategy(Strategy):
             hl_perp_idle=hl_perp_idle,
             avantis_value_usdc=avantis_value_usdc,
             boros_vault_value_usd=boros_vault_value_usd,
+            boros_vault_reported_value_usd=boros_vault_reported_value_usd,
             boros_account_idle_usd=boros_account_idle_usd,
             boros_vaults=boros_vaults,
             positions_value=positions_value,
@@ -1282,8 +1310,14 @@ class MultiVaultSplitStrategy(Strategy):
                 "avantis_value_usdc": inv.avantis_value_usdc,
                 "avantis_apy": float(apys.get("apy_avantis") or 0.0),
                 "boros_vault_value_usd": inv.boros_vault_value_usd,
+                "boros_vault_reported_value_usd": inv.boros_vault_reported_value_usd,
                 "boros_account_idle_usd": inv.boros_account_idle_usd,
                 "boros_apy": float(apys.get("apy_boros") or 0.0),
+                "boros_vaults": [
+                    self._format_boros_vault_view(vault)
+                    for vault in inv.boros_vaults
+                    if not vault.is_expired
+                ],
                 "positions_value": inv.positions_value,
                 "unallocated_total": inv.unallocated_total,
                 "enabled_legs": {

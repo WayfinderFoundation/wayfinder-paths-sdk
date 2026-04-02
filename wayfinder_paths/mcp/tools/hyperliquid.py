@@ -9,10 +9,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.utils.wallets import (
-    make_sign_typed_data_callback,
-    resolve_wallet,
-)
+from wayfinder_paths.core.utils.wallets import get_wallet_sign_typed_data_callback
 from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -136,7 +133,7 @@ async def hyperliquid(
 ) -> dict[str, Any]:
     adapter = HyperliquidAdapter()
 
-    addr, _ = resolve_wallet_address(
+    addr, _ = await resolve_wallet_address(
         wallet_label=wallet_label, wallet_address=wallet_address
     )
     if not addr:
@@ -286,25 +283,25 @@ async def hyperliquid_execute(
         "is_market_trigger": is_market_trigger,
     }
     tool_input = {"request": key_input}
-    preview_obj = build_hyperliquid_execute_preview(tool_input)
+    preview_obj = await build_hyperliquid_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
     try:
-        sender, pk = resolve_wallet(want)
+        sign_callback, sender = await get_wallet_sign_typed_data_callback(want)
     except ValueError as e:
         return err("invalid_wallet", str(e))
 
     strategy_raw = CONFIG.get("strategy")
     strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
     config: dict[str, Any] = dict(strategy_cfg)
-    config["main_wallet"] = {"address": sender, "private_key_hex": pk}
-    config["strategy_wallet"] = {"address": sender, "private_key_hex": pk}
+    config["main_wallet"] = {"address": sender}
+    config["strategy_wallet"] = {"address": sender}
 
     effects: list[dict[str, Any]] = []
 
     adapter = HyperliquidAdapter(
         config=config,
-        sign_callback=make_sign_typed_data_callback(pk),
+        sign_callback=sign_callback,
         wallet_address=sender,
     )
 

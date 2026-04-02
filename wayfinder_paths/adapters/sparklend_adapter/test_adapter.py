@@ -252,6 +252,60 @@ class TestSparkLendAdapter:
         assert ok is False
         assert "rate_mode must be" not in msg
 
+    @pytest.mark.asyncio
+    @patch(
+        "wayfinder_paths.adapters.sparklend_adapter.adapter.send_transaction",
+        new_callable=AsyncMock,
+        return_value="0xabc",
+    )
+    @patch(
+        "wayfinder_paths.adapters.sparklend_adapter.adapter.encode_call",
+        new_callable=AsyncMock,
+        return_value={"to": FAKE_ADDR},
+    )
+    @patch(
+        "wayfinder_paths.adapters.sparklend_adapter.adapter.read_only_calls_multicall_or_gather",
+        new_callable=AsyncMock,
+    )
+    async def test_claim_rewards_encodes_asset_list(
+        self, mock_multicall, mock_encode, mock_send, adapter
+    ):
+        mock_multicall.side_effect = [
+            [
+                (FAKE_ASSET, ZERO_ADDRESS, ZERO_ADDRESS),
+                (FAKE_ADDR, ZERO_ADDRESS, ZERO_ADDRESS),
+            ],
+            [["0xreward"], []],
+        ]
+
+        mock_dp = MagicMock()
+        mock_dp.functions.getAllReservesTokens = MagicMock(
+            return_value=MagicMock(
+                call=AsyncMock(
+                    return_value=[("ASSET1", FAKE_ASSET), ("ASSET2", FAKE_ADDR)]
+                )
+            )
+        )
+        mock_rewards = MagicMock()
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract = MagicMock(side_effect=[mock_dp, mock_rewards])
+
+        @asynccontextmanager
+        async def fake_web3_from_chain_id(_chain_id):
+            yield mock_web3
+
+        with patch(
+            "wayfinder_paths.adapters.sparklend_adapter.adapter.web3_utils.web3_from_chain_id",
+            fake_web3_from_chain_id,
+        ):
+            ok, tx = await adapter.claim_rewards(chain_id=1)
+
+        assert ok is True
+        assert tx == "0xabc"
+        assert mock_encode.await_args.kwargs["args"] == [
+            [to_checksum_address(FAKE_ASSET)]
+        ]
+
     # ---- get_all_markets (mocked) ----
 
     @pytest.mark.asyncio

@@ -200,6 +200,7 @@ async def fetch_funding_rates(
     symbols: list[str],
     start_date: str,
     end_date: str,
+    venue: str = "hyperliquid",
 ) -> pd.DataFrame:
     """
     Fetch funding rates for perpetual futures.
@@ -221,6 +222,9 @@ async def fetch_funding_rates(
         symbols: List of perp symbols (e.g., ["BTC", "ETH"])
         start_date: Start date (ISO format: "2025-01-01")
         end_date: End date (ISO format: "2025-02-01")
+        venue: Venue to use for funding rates (default: "hyperliquid"). The funding
+               timeseries may contain multiple venues per timestamp; this filters to
+               a single venue so the result has one row per timestamp per symbol.
 
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=funding_rates
@@ -255,8 +259,11 @@ async def fetch_funding_rates(
         if "funding" in data:
             funding_df = data["funding"]
             if not funding_df.empty and "funding_rate" in funding_df.columns:
-                funding_series = funding_df["funding_rate"].rename(symbol)
-                all_funding.append(funding_series)
+                if "venue" in funding_df.columns:
+                    funding_df = funding_df[funding_df["venue"] == venue]
+                if not funding_df.empty:
+                    funding_series = funding_df["funding_rate"].rename(symbol)
+                    all_funding.append(funding_series)
 
     if not all_funding:
         raise ValueError("No funding rate data found")
@@ -279,7 +286,10 @@ async def fetch_borrow_rates(
         symbols: List of asset symbols (e.g., ["USDC", "ETH"])
         start_date: Start date (ISO format: "2025-01-01")
         end_date: End date (ISO format: "2025-02-01")
-        protocol: Protocol filter ("aave", "morpho", "moonwell", or None for all)
+        protocol: Venue name to filter to (e.g. "aave-v3-base", "moonwell-base",
+            "morpho-base"). Names include the chain suffix — use fetch_lending_rates()
+            with no venues filter to discover available names. When None, rates are
+            averaged across all venues per timestamp.
 
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=borrow_rates
@@ -381,10 +391,19 @@ async def align_dataframes(
     for df in dfs[1:]:
         combined_index = combined_index.union(df.index)
 
+    # Drop duplicate timestamps that can arise from upstream data (e.g. funding)
+    # before reindexing — duplicates cause .loc[ts] to return a DataFrame instead
+    # of a Series, breaking the backtester's scalar arithmetic.
+    if combined_index.duplicated().any():
+        combined_index = combined_index[~combined_index.duplicated(keep="first")]
+
     combined_index = combined_index.sort_values()
 
     aligned = []
     for df in dfs:
+        # Deduplicate source index before reindex (keep first occurrence)
+        if df.index.duplicated().any():
+            df = df[~df.index.duplicated(keep="first")]
         reindexed = df.reindex(combined_index)
 
         if method == "ffill":
@@ -419,7 +438,10 @@ async def fetch_supply_rates(
         symbols: List of asset symbols (e.g., ["USDC", "ETH"])
         start_date: Start date (ISO format: "2025-08-01")
         end_date: End date (ISO format: "2026-01-01")
-        protocol: Protocol filter ("aave", "morpho", "moonwell", or None for all)
+        protocol: Venue name to filter to (e.g. "aave-v3-base", "moonwell-base",
+            "morpho-base"). Names include the chain suffix — use fetch_lending_rates()
+            with no venues filter to discover available names. When None, rates are
+            averaged across all venues per timestamp.
 
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=supply_apr (decimal APR)

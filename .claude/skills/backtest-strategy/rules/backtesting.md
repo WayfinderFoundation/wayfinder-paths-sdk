@@ -71,7 +71,7 @@ result = await backtest_delta_neutral(
 | `sharpe` | >1.0; >2.0 excellent | Yield strategies often >3.0 |
 | `max_drawdown` | near 0 | Yield: near-zero; perp: depends on vol |
 | `trade_count` | low for yield | Each switch = gas cost |
-| `total_funding` | negative | Income received in delta-neutral |
+| `total_funding` | negative | Total funding paid — negative = income received (profit) |
 | `exposure_time_pct` | ~1.0 for carry | Fraction of time spread was positive |
 
 ### Red flags
@@ -101,6 +101,7 @@ config = BacktestConfig(
     funding_rates=funding_df,  # Optional DataFrame[timestamp × symbol]
     enable_liquidation=True,   # False for supply-only / LP strategies
     maintenance_margin_rate=0.05,
+    force_rebalance_if_overleveraged=False,
     periods_per_year=8760,     # CRITICAL: must match data interval
 )
 ```
@@ -109,6 +110,8 @@ config = BacktestConfig(
 - 1h → 8760 | 4h → 2190 | 1d → 365
 
 All end-to-end helpers set this automatically.
+
+`force_rebalance_if_overleveraged=False` means the backtester will **not** automatically bypass `rebalance_threshold` just because adverse price moves pushed current gross exposure above the configured leverage. Turn it on only when your intended simulation should proactively reduce gross exposure after an overleverage event. Leave it off when you want the strategy's normal rebalance cadence to remain the only driver of de-risking.
 
 ---
 
@@ -125,6 +128,45 @@ the cash check requires `initial_capital ≥ notional + fees`, but `1.0 + fees >
 The backtester now warns when this happens. **For yield/lending strategies, set `fee_rate=0.0`
 and `slippage_rate=0.0`** (encode switching costs as discrete events, or skip them for the
 synthetic-price approach).
+
+### Venue selection for `fetch_funding_rates`
+`fetch_funding_rates` defaults to `venue="hyperliquid"`. The funding timeseries can contain
+multiple venues per timestamp (e.g. `hyperliquid` and `hyperliquid-hyna`) with materially
+different rates — mixing them would corrupt the series. Always think about which venue
+you're targeting before calling this function:
+```python
+# Default — primary Hyperliquid perp market (correct for most strategies)
+funding = await fetch_funding_rates(["BTC", "ETH"], start, end)
+
+# Explicit — if backtesting a strategy on a specific alt venue
+funding = await fetch_funding_rates(["XPL"], start, end, venue="hyperliquid-hyna")
+```
+To see which venues are available for a symbol, inspect the raw timeseries:
+```python
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(symbol="XPL", series="funding", lookback_days=7, limit=1000)
+print(data["funding"]["venue"].unique())
+```
+
+### Multi-venue funding backtests
+`BacktestConfig.funding_rates` takes a single `[ts × symbol]` DataFrame — no venue dimension.
+For a strategy comparing or routing across venues, fetch each venue separately and merge before passing:
+```python
+# Fetch both venues
+hl_funding = await fetch_funding_rates(["XPL"], start, end, venue="hyperliquid")
+hyna_funding = await fetch_funding_rates(["XPL"], start, end, venue="hyperliquid-hyna")
+
+# Option A: always-best-venue — pick highest funding per timestamp
+best_funding = pd.concat([hl_funding, hyna_funding]).groupby(level=0).max()
+
+# Option B: use both in signal via closure — signal decides routing
+def my_signal(prices, ctx, _hl=hl_funding, _hyna=hyna_funding):
+    # compare _hl and _hyna, route accordingly, return weights
+    ...
+
+# Pass whichever merged series reflects the positions you'll actually hold
+config = BacktestConfig(funding_rates=best_funding, ...)
+```
+`fetch_lending_rates` already returns `{ts × venue}` natively — multi-venue rotation is built in for lending.
 
 ### Venue names for `fetch_lending_rates`
 Venue keys include the chain suffix: `"moonwell-base"`, `"aave-v3-base"`, not just `"moonwell"`.

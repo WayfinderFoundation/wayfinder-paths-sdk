@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from eth_abi import decode, encode
@@ -140,6 +141,15 @@ class BorosAdapter(BaseAdapter):
             return None
 
     @staticmethod
+    def _maybe_int(value: Any) -> int | None:
+        try:
+            if value is None or value == "":
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def _wei_amount_to_tokens(value: Any) -> float | None:
         try:
             if value is None or value == "":
@@ -147,6 +157,59 @@ class BorosAdapter(BaseAdapter):
             return float(value) / 1e18
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _tokens_to_usd(
+        token_amount: float | None,
+        price_usd: float | None,
+    ) -> float | None:
+        try:
+            if token_amount is None or price_usd is None:
+                return None
+            return float(token_amount) * float(price_usd)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _maturity_ts_to_expiry(maturity_ts: int | None) -> str | None:
+        try:
+            if maturity_ts is None:
+                return None
+            return datetime.fromtimestamp(int(maturity_ts), UTC).date().isoformat()
+        except (OSError, OverflowError, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_account_param(account: str | None) -> str | None:
+        if not account:
+            return None
+        account_param = str(account).lower()
+        if not account_param.endswith("00"):
+            account_param = f"{account_param}00"
+        return account_param
+
+    @staticmethod
+    def _time_frame_seconds(time_frame: str) -> int | None:
+        return {
+            "5m": 5 * 60,
+            "1h": 60 * 60,
+            "1d": 24 * 60 * 60,
+            "1w": 7 * 24 * 60 * 60,
+        }.get(str(time_frame).lower())
+
+    @staticmethod
+    def _average_defined(values: list[float | None]) -> float | None:
+        nums = [float(value) for value in values if value is not None]
+        if not nums:
+            return None
+        return sum(nums) / len(nums)
+
+    @staticmethod
+    def _last_defined(values: list[float | None]) -> float | None:
+        for value in reversed(values):
+            if value is not None:
+                return float(value)
+        return None
 
     @staticmethod
     def _split_symbol(symbol: str) -> tuple[str | None, str | None]:
@@ -1196,6 +1259,160 @@ class BorosAdapter(BaseAdapter):
             logger.error(f"Failed to search markets: {e}")
             return False, []
 
+    async def get_all_markets(
+        self,
+        *,
+        is_whitelisted: bool | None = True,
+        active_only: bool = False,
+        include_vault_summary: bool = True,
+        include_history_summary: bool = True,
+        history_time_frame: str = "1h",
+        history_points: int = 24,
+        account: str | None = None,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        """Return normalized Boros markets with nested rate, vault, and history info."""
+        try:
+            account_param = self._normalize_account_param(account)
+            raw_summary_task = (
+                self.boros_client.get_amm_summary(account=account_param)
+                if include_vault_summary
+                else asyncio.sleep(0, result=None)
+            )
+            markets_result, assets_by_id, raw_summary = await asyncio.gather(
+                self.list_markets_all(is_whitelisted=is_whitelisted),
+                self._fetch_assets_by_id(),
+                raw_summary_task,
+            )
+
+            ok_markets, markets = markets_result
+            if not ok_markets or not isinstance(markets, list):
+                return False, markets
+
+            markets_by_id = {
+                int(market.get("marketId") or market.get("id") or 0): market
+                for market in markets
+                if isinstance(market, dict)
+            }
+            rows: list[dict[str, Any]] = []
+            rows_by_market_id: dict[int, dict[str, Any]] = {}
+
+            for market in markets:
+                if not isinstance(market, dict):
+                    continue
+                row = dict(self._enrich_market(market, assets_by_id))
+                if active_only and not bool(row.get("is_active")):
+                    continue
+
+                market_id = int(row.get("market_id") or 0)
+                row["market_address"] = (
+                    market.get("address") or market.get("marketAddress") or ""
+                )
+                row.pop("mid_apr", None)
+                row.pop("floating_apr", None)
+                row.pop("mark_apr", None)
+                row["rates"] = self._market_rates_from_market(market)
+                row["vault"] = None
+                row["history"] = None
+                rows.append(row)
+                if market_id > 0:
+                    rows_by_market_id[market_id] = row
+
+            if include_vault_summary:
+                vaults = await self._build_vaults_from_raw_summary(
+                    raw_summary=raw_summary,
+                    markets_by_id=markets_by_id,
+                    assets_by_id=assets_by_id,
+                    account=account,
+                    use_direct_lp_query=True,
+                    include_expired=True,
+                )
+                for vault in vaults:
+                    row = rows_by_market_id.get(int(vault.market_id))
+                    if row is None:
+                        continue
+                    row["vault"] = self._vault_summary_payload(
+                        vault,
+                        include_user=account is not None,
+                    )
+                    row["rates"]["vault_apy"] = (
+                        float(vault.apy) if vault.apy is not None else None
+                    )
+
+                if account is not None:
+                    for vault in vaults:
+                        market_id = int(vault.market_id)
+                        if market_id <= 0 or market_id in rows_by_market_id:
+                            continue
+                        if not self._vault_has_user_position(vault):
+                            continue
+                        row = self._market_row_from_vault_only(
+                            vault,
+                            assets_by_id=assets_by_id,
+                            include_user=True,
+                        )
+                        rows.append(row)
+                        rows_by_market_id[market_id] = row
+
+            if include_history_summary and rows:
+                try:
+                    requested_points = max(int(history_points), 0)
+                except (TypeError, ValueError):
+                    requested_points = 24
+                step_seconds = self._time_frame_seconds(history_time_frame)
+                end_ts = (
+                    int(time.time()) if step_seconds and requested_points > 0 else None
+                )
+                start_ts = (
+                    end_ts - (step_seconds * requested_points)
+                    if end_ts is not None
+                    else None
+                )
+                sem = asyncio.Semaphore(10)
+
+                async def _history_for_market(
+                    market_id: int,
+                ) -> tuple[int, dict[str, Any] | None]:
+                    async with sem:
+                        try:
+                            ok_history, history = await self.get_market_history(
+                                market_id,
+                                time_frame=history_time_frame,
+                                start_ts=start_ts,
+                                end_ts=end_ts,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                f"Failed to fetch Boros history for market {market_id}: {exc}"
+                            )
+                            return market_id, None
+
+                    if not ok_history or not isinstance(history, list):
+                        return market_id, None
+
+                    return market_id, self._summarize_market_history(
+                        history,
+                        time_frame=history_time_frame,
+                        requested_points=requested_points,
+                    )
+
+                history_results = await asyncio.gather(
+                    *[
+                        _history_for_market(int(row.get("market_id") or 0))
+                        for row in rows
+                        if int(row.get("market_id") or 0) > 0
+                    ]
+                )
+                for market_id, summary in history_results:
+                    row = rows_by_market_id.get(int(market_id))
+                    if row is not None:
+                        row["history"] = summary
+
+            rows.sort(key=lambda item: item.get("maturity_ts") or 0)
+            return True, rows
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"Failed to get Boros markets: {exc}")
+            return False, str(exc)
+
     async def get_enriched_market(
         self,
         market_id: int,
@@ -1236,6 +1453,31 @@ class BorosAdapter(BaseAdapter):
         self._assets_by_id_cache = assets_by_id
         return assets_by_id
 
+    @staticmethod
+    def _collateral_payload(
+        *,
+        token_id: int | None,
+        asset: dict[str, Any] | None = None,
+        symbol: str | None = None,
+        address: str | None = None,
+        decimals: int = 18,
+    ) -> dict[str, Any] | None:
+        if isinstance(asset, dict):
+            return {
+                "token_id": token_id if token_id is not None else asset.get("tokenId"),
+                "symbol": asset.get("symbol") or symbol or "",
+                "address": asset.get("address") or address or "",
+                "decimals": asset.get("decimals") or decimals,
+            }
+        if token_id is None and not symbol and not address:
+            return None
+        return {
+            "token_id": token_id,
+            "symbol": symbol or "",
+            "address": address or "",
+            "decimals": decimals,
+        }
+
     def _enrich_market(
         self,
         market: dict[str, Any],
@@ -1259,15 +1501,10 @@ class BorosAdapter(BaseAdapter):
 
         # Collateral info
         token_id = market.get("tokenId")
-        collateral = None
-        if token_id is not None and token_id in assets_by_id:
-            asset = assets_by_id[token_id]
-            collateral = {
-                "token_id": token_id,
-                "symbol": asset.get("symbol") or "",
-                "address": asset.get("address") or "",
-                "decimals": asset.get("decimals") or 18,
-            }
+        collateral = self._collateral_payload(
+            token_id=token_id,
+            asset=assets_by_id.get(token_id) if token_id is not None else None,
+        )
 
         # Margin type
         im_data = market.get("imData") or {}
@@ -1301,6 +1538,167 @@ class BorosAdapter(BaseAdapter):
             "mark_apr": mark_apr,
         }
 
+    def _market_rates_from_market(
+        self,
+        market: dict[str, Any],
+        *,
+        vault: BorosVault | None = None,
+    ) -> dict[str, Any]:
+        data = market.get("data") or {}
+        if not isinstance(data, dict):
+            data = {}
+
+        best_bid_apr = self.normalize_apr(data.get("bestBid"))
+        best_ask_apr = self.normalize_apr(data.get("bestAsk"))
+        mid_apr = self.normalize_apr(data.get("midApr"))
+        if mid_apr is None and best_bid_apr is not None and best_ask_apr is not None:
+            mid_apr = (best_bid_apr + best_ask_apr) / 2.0
+
+        return {
+            "floating_apr": self.normalize_apr(data.get("floatingApr")),
+            "mark_apr": self.normalize_apr(data.get("markApr")),
+            "vault_apy": float(vault.apy) if vault and vault.apy is not None else None,
+            "mid_apr": mid_apr,
+            "best_bid_apr": best_bid_apr,
+            "best_ask_apr": best_ask_apr,
+            "long_yield_apr": self.normalize_apr(data.get("longYieldApr")),
+            "funding_7d_ma_apr": self.normalize_apr(data.get("b7dmafr")),
+            "funding_30d_ma_apr": self.normalize_apr(data.get("b30dmafr")),
+            "volume_24h": self._to_float(data.get("volume24h")),
+            "notional_oi": self._to_float(data.get("notionalOI")),
+            "asset_mark_price": self._to_float(data.get("assetMarkPrice")),
+            "next_settlement_time": self._to_int(data.get("nextSettlementTime")),
+            "last_traded_apr": self.normalize_apr(data.get("lastTradedApr")),
+            "amm_implied_apr": self.normalize_apr(data.get("ammImpliedApr")),
+        }
+
+    def _summarize_market_history(
+        self,
+        candles: list[dict[str, Any]],
+        *,
+        time_frame: str,
+        requested_points: int,
+    ) -> dict[str, Any] | None:
+        window: list[tuple[int, dict[str, Any]]] = []
+        for candle in candles:
+            if not isinstance(candle, dict):
+                continue
+            ts = self._maybe_int(candle.get("ts"))
+            if ts is None:
+                ts = self._maybe_int(candle.get("t"))
+            if ts is None:
+                continue
+            window.append((ts, candle))
+
+        if not window:
+            return None
+
+        window.sort(key=lambda item: item[0])
+        if requested_points > 0:
+            window = window[-requested_points:]
+
+        mark_rates = [self.normalize_apr(candle.get("mr")) for _, candle in window]
+        floating_rates = [self.normalize_apr(candle.get("ofr")) for _, candle in window]
+        funding_7d = [self.normalize_apr(candle.get("b7dmafr")) for _, candle in window]
+        funding_30d = [
+            self.normalize_apr(candle.get("b30dmafr")) for _, candle in window
+        ]
+
+        return {
+            "time_frame": str(time_frame),
+            "points": len(window),
+            "start_ts": window[0][0],
+            "end_ts": window[-1][0],
+            "latest_mark_rate": self._last_defined(mark_rates),
+            "avg_mark_rate": self._average_defined(mark_rates),
+            "latest_floating_rate": self._last_defined(floating_rates),
+            "avg_floating_rate": self._average_defined(floating_rates),
+            "latest_funding_7d_ma_apr": self._last_defined(funding_7d),
+            "latest_funding_30d_ma_apr": self._last_defined(funding_30d),
+        }
+
+    def _vault_summary_payload(
+        self,
+        vault: BorosVault,
+        *,
+        include_user: bool,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "amm_id": int(vault.amm_id),
+            "apy": float(vault.apy) if vault.apy is not None else None,
+            "expiry": vault.expiry,
+            "collateral_symbol": vault.collateral_symbol,
+            "collateral_address": vault.collateral_address,
+            "collateral_price_usd": vault.collateral_price_usd,
+            "tvl": vault.tvl,
+            "tvl_usd": vault.tvl_usd,
+            "available_tokens": vault.available_tokens,
+            "available_usd": vault.available_usd,
+            "remaining_supply_pct": vault.remaining_supply_pct,
+            "is_expired": bool(vault.is_expired),
+            "is_isolated_only": bool(vault.is_isolated_only),
+            "market_state": vault.market_state,
+            "is_open_for_deposit": self.is_vault_open_for_deposit(
+                vault,
+                allow_isolated_only=True,
+            ),
+        }
+        if include_user:
+            payload["user"] = {
+                "deposited_tokens": vault.user_deposit_tokens,
+                "deposited_usd": vault.user_deposit_usd,
+                "available_tokens": vault.user_available_tokens,
+                "available_usd": vault.user_available_usd,
+                "total_lp_wei": vault.user_total_lp_wei,
+            }
+        return payload
+
+    @staticmethod
+    def _vault_has_user_position(vault: BorosVault) -> bool:
+        return (vault.user_total_lp_wei or 0) > 0 or (
+            vault.user_deposit_tokens or 0.0
+        ) > 0.0
+
+    def _market_row_from_vault_only(
+        self,
+        vault: BorosVault,
+        *,
+        assets_by_id: dict[int, dict[str, Any]],
+        include_user: bool,
+    ) -> dict[str, Any]:
+        collateral_asset = (
+            assets_by_id.get(int(vault.collateral_token_id))
+            if vault.collateral_token_id is not None
+            else None
+        )
+        collateral = self._collateral_payload(
+            token_id=vault.collateral_token_id,
+            asset=collateral_asset,
+            symbol=vault.collateral_symbol,
+            address=vault.collateral_address,
+        )
+
+        return {
+            "market_id": int(vault.market_id),
+            "market_address": "",
+            "symbol": vault.market_symbol
+            or vault.symbol
+            or f"BOROS-MARKET-{int(vault.market_id)}",
+            "underlying_symbol": vault.base_symbol or "",
+            "platform": "Unknown",
+            "collateral": collateral,
+            "is_isolated_only": bool(vault.is_isolated_only),
+            "max_leverage": None,
+            "state": vault.market_state
+            or ("Expired" if vault.is_expired else "Unknown"),
+            "is_active": False,
+            "maturity_ts": vault.maturity_ts,
+            "tenor_days": vault.tenor_days,
+            "rates": self._market_rates_from_market({}, vault=vault),
+            "vault": self._vault_summary_payload(vault, include_user=include_user),
+            "history": None,
+        }
+
     @staticmethod
     def _coerce_vault_list(data: Any) -> list[dict[str, Any]]:
         if isinstance(data, list):
@@ -1332,6 +1730,71 @@ class BorosAdapter(BaseAdapter):
                 return [entry for entry in value if isinstance(entry, dict)]
         return []
 
+    async def _build_vaults_from_raw_summary(
+        self,
+        *,
+        raw_summary: Any,
+        markets_by_id: dict[int, dict[str, Any]],
+        assets_by_id: dict[int, dict[str, Any]],
+        account: str | None = None,
+        use_direct_lp_query: bool = True,
+        include_expired: bool = True,
+    ) -> list[BorosVault]:
+        raw_vaults = self._coerce_vault_list(raw_summary)
+        assets_by_address = {
+            str(asset.get("address") or "").lower(): asset
+            for asset in assets_by_id.values()
+            if isinstance(asset, dict) and asset.get("address")
+        }
+
+        vaults: list[BorosVault] = []
+        for raw_vault in raw_vaults:
+            market_id = self._to_int(raw_vault.get("marketId"))
+            market_meta = markets_by_id.get(market_id)
+            raw_entry = dict(raw_vault)
+            if isinstance(market_meta, dict):
+                if raw_entry.get("tokenId") is None:
+                    raw_entry["tokenId"] = market_meta.get("tokenId")
+                if raw_entry.get("collateralTokenId") is None:
+                    raw_entry["collateralTokenId"] = market_meta.get(
+                        "collateralTokenId"
+                    ) or ((market_meta.get("market") or {}).get("tokenId"))
+            collateral_token_id = self._maybe_int(
+                raw_entry.get("collateralTokenId") or raw_entry.get("tokenId")
+            )
+            collateral_address = str(raw_entry.get("collateralAddress") or "").lower()
+            collateral_asset = (
+                assets_by_id.get(collateral_token_id)
+                if collateral_token_id is not None
+                else None
+            ) or (
+                assets_by_address.get(collateral_address)
+                if collateral_address
+                else None
+            )
+            raw_entry["_market_meta"] = market_meta
+            raw_entry["_collateral_asset"] = collateral_asset
+            raw_entry["_is_expired"] = market_id > 0 and market_meta is None
+            vault = self._vault_from_raw(raw_entry)
+            vaults.append(vault)
+            if vault.amm_id > 0:
+                self._vault_context_cache[vault.amm_id] = {
+                    "amm_id": int(vault.amm_id),
+                    "market_id": int(vault.market_id),
+                    "token_id": int(vault.collateral_token_id or 0),
+                    "is_isolated_only": bool(vault.is_isolated_only),
+                }
+            if vault.market_id > 0 and vault.amm_id > 0:
+                self._amm_id_by_market_cache[vault.market_id] = vault.amm_id
+
+        if account and use_direct_lp_query:
+            vaults = await self._augment_vault_lp_balances(vaults, account=account)
+
+        if not include_expired:
+            vaults = [vault for vault in vaults if not vault.is_expired]
+
+        return vaults
+
     @staticmethod
     def estimate_user_lp_balance_wei(vault: BorosVault) -> int | None:
         if vault.user_total_lp_wei is not None:
@@ -1354,7 +1817,9 @@ class BorosAdapter(BaseAdapter):
         if vault.user_deposit_tokens is not None and not prefer_lp_balance:
             return float(vault.user_deposit_tokens)
         lp_wei = BorosAdapter.estimate_user_lp_balance_wei(vault)
-        lp_price = (vault.raw or {}).get("lpPrice")
+        lp_price = vault.lp_price
+        if lp_price is None:
+            lp_price = (vault.raw or {}).get("lpPrice")
         try:
             if lp_wei is None or lp_price is None:
                 return 0.0
@@ -1364,15 +1829,40 @@ class BorosAdapter(BaseAdapter):
 
     @staticmethod
     def estimate_vault_capacity_tokens(vault: BorosVault) -> float | None:
+        if vault.available_tokens is not None:
+            return float(vault.available_tokens)
         if vault.remaining_supply_lp is None:
             return None
-        lp_price = (vault.raw or {}).get("lpPrice")
+        lp_price = vault.lp_price
+        if lp_price is None:
+            lp_price = (vault.raw or {}).get("lpPrice")
         try:
             if lp_price is None:
                 return None
             return (float(vault.remaining_supply_lp) * float(lp_price)) / 1e18
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def estimate_vault_capacity_usd(vault: BorosVault) -> float | None:
+        if vault.available_usd is not None:
+            return float(vault.available_usd)
+        capacity_tokens = BorosAdapter.estimate_vault_capacity_tokens(vault)
+        return BorosAdapter._tokens_to_usd(capacity_tokens, vault.collateral_price_usd)
+
+    @staticmethod
+    def estimate_user_vault_value_usd(
+        vault: BorosVault,
+        *,
+        prefer_lp_balance: bool = False,
+    ) -> float | None:
+        if vault.user_deposit_usd is not None and not prefer_lp_balance:
+            return float(vault.user_deposit_usd)
+        tokens = BorosAdapter.estimate_user_vault_value_tokens(
+            vault,
+            prefer_lp_balance=prefer_lp_balance,
+        )
+        return BorosAdapter._tokens_to_usd(tokens, vault.collateral_price_usd)
 
     @staticmethod
     def is_vault_open_for_deposit(
@@ -1396,6 +1886,9 @@ class BorosAdapter(BaseAdapter):
     def _vault_from_raw(self, entry: dict[str, Any]) -> BorosVault:
         market = entry.get("market") or {}
         market_meta = entry.get("_market_meta") if isinstance(entry, dict) else None
+        collateral_asset = (
+            entry.get("_collateral_asset") if isinstance(entry, dict) else None
+        )
         is_expired = bool(entry.get("_is_expired", False))
 
         symbol = (
@@ -1407,13 +1900,10 @@ class BorosAdapter(BaseAdapter):
             or ""
         )
         base_symbol, quote_symbol = self._split_symbol(symbol)
-        tvl = self._maybe_float(
-            entry.get("tvl")
-            or entry.get("tvlUsd")
-            or entry.get("tvlUSD")
-            or entry.get("tvl_usd")
-            or entry.get("totalValue")
-        )
+        lp_price = self._maybe_float(entry.get("lpPrice"))
+        total_value_tokens = self._wei_amount_to_tokens(entry.get("totalValue"))
+        if total_value_tokens is None:
+            total_value_tokens = self._maybe_float(entry.get("tvl"))
         apy = self._maybe_float(
             entry.get("lpApy")
             or entry.get("apy")
@@ -1421,17 +1911,66 @@ class BorosAdapter(BaseAdapter):
             or entry.get("apyPct")
         )
 
-        supply_cap = self._to_int(entry.get("totalSupplyCap"))
-        total_lp = self._to_int(entry.get("totalLp"))
-        remaining_lp = max(supply_cap - total_lp, 0) if supply_cap else None
-        remaining_pct = (
-            (remaining_lp / supply_cap)
-            if supply_cap and remaining_lp is not None
+        collateral_token_id = self._maybe_int(
+            entry.get("collateralTokenId")
+            or entry.get("tokenId")
+            or (
+                (market_meta or {}).get("tokenId")
+                if isinstance(market_meta, dict)
+                else None
+            )
+        )
+        collateral_address = (
+            entry.get("collateralAddress")
+            or (
+                (collateral_asset or {}).get("address")
+                if isinstance(collateral_asset, dict)
+                else None
+            )
+            or (market.get("collateralAddress") if isinstance(market, dict) else None)
+        )
+        collateral_symbol = (
+            ((collateral_asset or {}).get("metadata") or {}).get("proSymbol")
+            if isinstance(collateral_asset, dict)
+            else None
+        ) or (
+            (collateral_asset or {}).get("symbol")
+            if isinstance(collateral_asset, dict)
+            else None
+        )
+        collateral_price_usd = self._maybe_float(
+            (collateral_asset or {}).get("usdPrice")
+            if isinstance(collateral_asset, dict)
             else None
         )
 
+        supply_cap = self._maybe_int(entry.get("totalSupplyCap"))
+        total_lp = self._maybe_int(entry.get("totalLp"))
+        remaining_lp = (
+            max(int(supply_cap) - int(total_lp), 0)
+            if supply_cap is not None and total_lp is not None
+            else None
+        )
+        remaining_pct = (
+            (remaining_lp / supply_cap)
+            if supply_cap not in (None, 0) and remaining_lp is not None
+            else None
+        )
+        available_tokens = (
+            (float(remaining_lp) * float(lp_price)) / 1e18
+            if remaining_lp is not None and lp_price is not None
+            else None
+        )
+        tvl_usd = self._maybe_float(
+            entry.get("tvlUsd") or entry.get("tvlUSD") or entry.get("tvl_usd")
+        )
+        if tvl_usd is None:
+            tvl_usd = self._tokens_to_usd(total_value_tokens, collateral_price_usd)
+        available_usd = self._tokens_to_usd(available_tokens, collateral_price_usd)
+
         maturity_ts: int | None = None
         tenor_days: float | None = None
+        expiry: str | None = None
         if isinstance(market_meta, dict):
             symbol = (
                 (market_meta.get("imData") or {}).get("symbol")
@@ -1444,6 +1983,12 @@ class BorosAdapter(BaseAdapter):
             tenor_days = (
                 time_to_maturity_days(maturity_ts) if maturity_ts is not None else None
             )
+            expiry = self._maturity_ts_to_expiry(maturity_ts)
+            underlying_symbol = self._extract_underlying(market_meta)
+            if underlying_symbol:
+                base_symbol = underlying_symbol
+            if collateral_symbol:
+                quote_symbol = collateral_symbol
         im_data = (
             (market_meta or {}).get("imData") if isinstance(market_meta, dict) else {}
         )
@@ -1459,6 +2004,14 @@ class BorosAdapter(BaseAdapter):
         user_deposit_tokens = self._wei_amount_to_tokens(user.get("depositValue"))
         user_available_tokens = self._wei_amount_to_tokens(
             user.get("availableBalanceToDeposit")
+        )
+        user_deposit_usd = self._tokens_to_usd(
+            user_deposit_tokens,
+            collateral_price_usd,
+        )
+        user_available_usd = self._tokens_to_usd(
+            user_available_tokens,
+            collateral_price_usd,
         )
         user_total_lp_wei = None
         try:
@@ -1485,20 +2038,33 @@ class BorosAdapter(BaseAdapter):
             ),
             base_symbol=base_symbol,
             quote_symbol=quote_symbol,
+            collateral_token_id=collateral_token_id,
+            collateral_symbol=collateral_symbol,
+            collateral_address=collateral_address,
+            collateral_price_usd=collateral_price_usd,
             apy=apy,
-            tvl=tvl,
+            tvl=total_value_tokens,
+            tvl_usd=tvl_usd,
             lp_token_address=entry.get("lpToken")
             or entry.get("lpTokenAddress")
             or entry.get("ammAddress"),
+            lp_price=lp_price,
+            total_lp_wei=total_lp,
+            total_supply_cap_lp=supply_cap,
             remaining_supply_lp=remaining_lp,
             remaining_supply_pct=remaining_pct,
+            available_tokens=available_tokens,
+            available_usd=available_usd,
             maturity_ts=maturity_ts,
+            expiry=expiry,
             tenor_days=tenor_days,
             is_expired=is_expired,
             is_isolated_only=is_isolated_only,
             market_state=market_state,
             user_deposit_tokens=user_deposit_tokens,
+            user_deposit_usd=user_deposit_usd,
             user_available_tokens=user_available_tokens,
+            user_available_usd=user_available_usd,
             user_total_lp_wei=user_total_lp_wei,
             raw=entry,
         )
@@ -1587,11 +2153,7 @@ class BorosAdapter(BaseAdapter):
         # Build list of (index, vault, token_id) for vaults that need LP queries
         queryable: list[tuple[int, BorosVault, int]] = []
         for i, vault in enumerate(vaults):
-            token_id = self._to_int(
-                (vault.raw or {}).get("collateralTokenId")
-                or (vault.raw or {}).get("tokenId"),
-                default=0,
-            )
+            token_id = int(vault.collateral_token_id or 0)
             if token_id > 0 and vault.amm_id > 0:
                 queryable.append((i, vault, token_id))
 
@@ -1634,6 +2196,10 @@ class BorosAdapter(BaseAdapter):
                 continue
             vault.user_total_lp_wei = balance_i
             vault.user_deposit_tokens = self.estimate_user_vault_value_tokens(
+                vault,
+                prefer_lp_balance=True,
+            )
+            vault.user_deposit_usd = self.estimate_user_vault_value_usd(
                 vault,
                 prefer_lp_balance=True,
             )
@@ -1743,9 +2309,18 @@ class BorosAdapter(BaseAdapter):
         *,
         account: str | None = None,
         use_direct_lp_query: bool = True,
+        include_expired: bool = True,
     ) -> tuple[bool, list[BorosVault] | str]:
         try:
-            ok_markets, markets = await self.list_markets_all(is_whitelisted=None)
+            account_param = self._normalize_account_param(account)
+
+            markets_result, assets_by_id, raw_summary = await asyncio.gather(
+                self.list_markets_all(is_whitelisted=None),
+                self._fetch_assets_by_id(),
+                self.boros_client.get_amm_summary(account=account_param),
+            )
+
+            ok_markets, markets = markets_result
             markets_by_id = (
                 {
                     int(market.get("marketId") or 0): market
@@ -1755,48 +2330,14 @@ class BorosAdapter(BaseAdapter):
                 if ok_markets and isinstance(markets, list)
                 else {}
             )
-
-            account_param = None
-            if account:
-                account_param = account.lower()
-                if not account_param.endswith("00"):
-                    account_param = f"{account_param}00"
-
-            raw_summary = await self.boros_client.get_amm_summary(account=account_param)
-            raw_vaults = self._coerce_vault_list(raw_summary)
-
-            vaults: list[BorosVault] = []
-            for raw_vault in raw_vaults:
-                market_id = self._to_int(raw_vault.get("marketId"))
-                market_meta = markets_by_id.get(market_id)
-                raw_entry = dict(raw_vault)
-                if isinstance(market_meta, dict):
-                    if raw_entry.get("tokenId") is None:
-                        raw_entry["tokenId"] = market_meta.get("tokenId")
-                    if raw_entry.get("collateralTokenId") is None:
-                        raw_entry["collateralTokenId"] = market_meta.get(
-                            "collateralTokenId"
-                        ) or ((market_meta.get("market") or {}).get("tokenId"))
-                raw_entry["_market_meta"] = market_meta
-                raw_entry["_is_expired"] = market_id > 0 and market_meta is None
-                vault = self._vault_from_raw(raw_entry)
-                vaults.append(vault)
-                if vault.amm_id > 0:
-                    raw = vault.raw or {}
-                    self._vault_context_cache[vault.amm_id] = {
-                        "amm_id": int(vault.amm_id),
-                        "market_id": int(vault.market_id),
-                        "token_id": self._to_int(
-                            raw.get("collateralTokenId") or raw.get("tokenId"),
-                            default=0,
-                        ),
-                        "is_isolated_only": bool(vault.is_isolated_only),
-                    }
-                if vault.market_id > 0 and vault.amm_id > 0:
-                    self._amm_id_by_market_cache[vault.market_id] = vault.amm_id
-
-            if account and use_direct_lp_query:
-                vaults = await self._augment_vault_lp_balances(vaults, account=account)
+            vaults = await self._build_vaults_from_raw_summary(
+                raw_summary=raw_summary,
+                markets_by_id=markets_by_id,
+                assets_by_id=assets_by_id,
+                account=account,
+                use_direct_lp_query=use_direct_lp_query,
+                include_expired=include_expired,
+            )
 
             return True, vaults
         except Exception as exc:  # noqa: BLE001
@@ -1810,8 +2351,12 @@ class BorosAdapter(BaseAdapter):
         token_id: int | None = None,
         limit: int = 20,
         account: str | None = None,
+        include_expired: bool = True,
     ) -> tuple[bool, list[BorosVault] | str]:
-        ok, vaults = await self.get_vaults_summary(account=account)
+        ok, vaults = await self.get_vaults_summary(
+            account=account,
+            include_expired=include_expired,
+        )
         if not ok or not isinstance(vaults, list):
             return False, vaults
 
@@ -1820,11 +2365,7 @@ class BorosAdapter(BaseAdapter):
             results = [
                 vault
                 for vault in results
-                if self._to_int(
-                    (vault.raw or {}).get("collateralTokenId")
-                    or (vault.raw or {}).get("tokenId")
-                )
-                == int(token_id)
+                if int(vault.collateral_token_id or 0) == int(token_id)
             ]
 
         if asset:
@@ -1836,6 +2377,7 @@ class BorosAdapter(BaseAdapter):
                     str(vault.market_symbol or ""),
                     str(vault.base_symbol or ""),
                     str(vault.quote_symbol or ""),
+                    str(vault.collateral_symbol or ""),
                 ]
                 hay = "".join(
                     h.lower().replace("-", "").replace("/", "") for h in haystacks
@@ -1856,7 +2398,11 @@ class BorosAdapter(BaseAdapter):
         min_tenor_days: float = 3.0,
         allow_isolated_only: bool = False,
     ) -> tuple[bool, BorosVault | None | str]:
-        ok, vaults = await self.search_vaults(token_id=token_id, limit=0)
+        ok, vaults = await self.search_vaults(
+            token_id=token_id,
+            limit=0,
+            include_expired=False,
+        )
         if not ok or not isinstance(vaults, list):
             return False, vaults
 
