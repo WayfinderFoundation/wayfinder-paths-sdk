@@ -14,17 +14,29 @@ class WalletClient(WayfinderClient):
 
     async def create_wallet(
         self,
+        policies: list[dict],
+        wallet_type: str,
+        *,
         chain_type: str = "ethereum",
-        policies: list[dict] = [],  # noqa: B006
         label: str = "",
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/wallets/"
         body: dict[str, Any] = {
-            "chain_type": chain_type,
             "policies": policies,
+            "wallet_type": wallet_type,
+            "chain_type": chain_type,
             "label": label,
         }
         resp = await self._authed_request("POST", url, json=body)
+        return resp.json()
+
+    async def bind_to_instance(
+        self, wallet_address: str, instance_id: str
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/bind-instance/"
+        resp = await self._authed_request(
+            "POST", url, json={"instance_id": instance_id}
+        )
         return resp.json()
 
     async def sign_transaction(self, wallet_address: str, transaction: dict) -> str:
