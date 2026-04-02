@@ -98,7 +98,6 @@ def get_api_base_url() -> str:
     return "https://wayfinder.ai/api"
 
 
-
 def get_api_key() -> str | None:
     system = CONFIG.get("system", {})
     api_key = system.get("api_key")
