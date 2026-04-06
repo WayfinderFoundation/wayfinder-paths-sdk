@@ -101,8 +101,8 @@ def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
         "label": w.get("label"),
         "address": w.get("address"),
         "wallet_type": w.get("wallet_type"),
-        "ttl_expires_at": w.get("ttl_expires_at"),
-        "ttl_expires_in": w.get("ttl_expires_in"),
+        "session_expires_at": w.get("session_expires_at"),
+        "session_expires_in": w.get("session_expires_in"),
     }
 
 

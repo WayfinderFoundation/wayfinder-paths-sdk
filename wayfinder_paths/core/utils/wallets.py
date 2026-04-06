@@ -16,7 +16,7 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-from wayfinder_paths.policies.ttl import build_ttl_policy
+from wayfinder_paths.policies.session import build_session_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -51,9 +51,9 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                 "label": w.get("label") or f"remote-{i}",
                 "type": "remote",
                 "chain_type": w.get("chain_type", "ethereum"),
-                "wallet_type": w.get("wallet_type", "ttl"),
-                "ttl_expires_at": w.get("ttl_expires_at"),
-                "ttl_expires_in": w.get("ttl_expires_in"),
+                "wallet_type": w.get("wallet_type", "session"),
+                "session_expires_at": w.get("session_expires_at"),
+                "session_expires_in": w.get("session_expires_in"),
             }
             wallets.append(entry)
         return wallets
@@ -308,8 +308,8 @@ async def create_remote_wallet(
     policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
     if len(policies) == 0:
-        wallet_type = "ttl"
-        policies = [build_ttl_policy()]
+        wallet_type = "session"
+        policies = [build_session_policy()]
     else:
         wallet_type = "policy"
     result = await WALLET_CLIENT.create_wallet(

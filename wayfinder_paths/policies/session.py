@@ -1,11 +1,11 @@
 import time
 
-TTL_DURATION_SECONDS = 3600
+SESSION_DURATION_SECONDS = 3600
 
 
-def build_ttl_policy(ttl_seconds: int = TTL_DURATION_SECONDS) -> dict:
+def build_session_policy(duration_seconds: int = SESSION_DURATION_SECONDS) -> dict:
     return {
-        "name": "TTL",
+        "name": "Session",
         "method": "*",
         "action": "ALLOW",
         "conditions": [
@@ -13,7 +13,7 @@ def build_ttl_policy(ttl_seconds: int = TTL_DURATION_SECONDS) -> dict:
                 "field_source": "system",
                 "field": "current_unix_timestamp",
                 "operator": "lt",
-                "value": str(int(time.time()) + ttl_seconds),
+                "value": str(int(time.time()) + duration_seconds),
             }
         ],
     }
