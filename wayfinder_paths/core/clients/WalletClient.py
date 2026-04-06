@@ -7,7 +7,9 @@ from wayfinder_paths.core.config import get_api_base_url
 
 
 class WalletClient(WayfinderClient):
-    async def list_wallets(self, instance_id: str | None = None) -> list[dict[str, Any]]:
+    async def list_wallets(
+        self, instance_id: str | None = None
+    ) -> list[dict[str, Any]]:
         url = f"{get_api_base_url()}/wallets/"
         if instance_id:
             url += f"?instance_id={instance_id}"
