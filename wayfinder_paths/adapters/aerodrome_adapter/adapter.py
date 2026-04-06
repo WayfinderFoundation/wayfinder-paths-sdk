@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from eth_utils import to_checksum_address
+from loguru import logger
 
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
@@ -40,7 +41,6 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import deadline as default_deadline
 from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-from loguru import logger
 
 _SUGAR_CALL_GAS = 30_000_000
 _SUGAR_ALL_PAGE_SIZE = 300
@@ -398,17 +398,16 @@ class AerodromeAdapter(
             # Not calling gather here, because each sugar call is heavy so we may hit limits
             while remaining > 0:
                 batch_limit = min(remaining, _SUGAR_ALL_PAGE_SIZE)
-                batch = (await sugar.functions.all(batch_limit, next_offset).call(
+                batch = await sugar.functions.all(batch_limit, next_offset).call(
                     transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
-                ))
+                )
                 out.extend(batch)
                 received = len(batch)
                 if received == 0:
                     break
                 remaining -= received
                 next_offset += received
-                
-                
+
             return [self._parse_sugar_pool(row) for row in out]
 
     async def list_pools(
@@ -525,7 +524,7 @@ class AerodromeAdapter(
                 return_exceptions=True,
             )
             stats["rpc_calls"] += len(pool_batch)
-            for pool, rows in zip(pool_batch, batch_results, strict=True):
+            for _pool, rows in zip(pool_batch, batch_results, strict=True):
                 if isinstance(rows, Exception):
                     stats["failed_pools"] += 1
                     continue

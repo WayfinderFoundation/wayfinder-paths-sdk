@@ -10,7 +10,6 @@ from eth_utils import keccak, to_checksum_address
 
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
-from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_REWARDS_DISTRIBUTOR_ABI,

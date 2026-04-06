@@ -10,6 +10,7 @@ from hexbytes import HexBytes
 from web3._utils.events import event_abi_to_log_topic, get_event_data
 
 from wayfinder_paths.core.adapters.BaseAdapter import require_wallet
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_REWARD_ABI,
@@ -19,7 +20,6 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.erc721_abi import ERC721_TRANSFER_EVENT_ABI
-from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -38,9 +38,9 @@ AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
 VE_MAXTIME_SECONDS = 4 * 365 * 24 * 60 * 60
 
 _ERC721_TRANSFER_TOPIC0 = HexBytes(event_abi_to_log_topic(ERC721_TRANSFER_EVENT_ABI))
-_AERODROME_VOTED_TOPIC0 = "0x" + keccak(
-    text="Voted(address,address,uint256,uint256,uint256,uint256)"
-).hex()
+_AERODROME_VOTED_TOPIC0 = (
+    "0x" + keccak(text="Voted(address,address,uint256,uint256,uint256,uint256)").hex()
+)
 
 
 class AerodromeTokenHelpersMixin:
@@ -941,7 +941,9 @@ class AerodromeVotingRewardsMixin:
             if len(topics) < 3:
                 continue
             pool_topic = topics[2]
-            pool_hex = pool_topic.hex() if hasattr(pool_topic, "hex") else str(pool_topic)
+            pool_hex = (
+                pool_topic.hex() if hasattr(pool_topic, "hex") else str(pool_topic)
+            )
             pools_seen.add(to_checksum_address("0x" + pool_hex[-40:]))
 
         vote_items: list[dict[str, Any]] = []
@@ -956,9 +958,7 @@ class AerodromeVotingRewardsMixin:
                 continue
 
             metadata = pool_metadata_by_address.get(pool.lower(), {})
-            fee_reward = to_checksum_address(
-                metadata.get("feeReward", ZERO_ADDRESS)
-            )
+            fee_reward = to_checksum_address(metadata.get("feeReward", ZERO_ADDRESS))
             bribe_reward = to_checksum_address(
                 metadata.get("bribeReward", ZERO_ADDRESS)
             )
