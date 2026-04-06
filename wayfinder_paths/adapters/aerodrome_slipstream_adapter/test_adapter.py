@@ -227,7 +227,7 @@ async def test_token_price_usdc_uses_client_and_cache():
     token = "0x0000000000000000000000000000000000000007"
 
     with patch.object(
-        slipstream_module.TOKEN_CLIENT,
+        aerodrome_common_module.TOKEN_CLIENT,
         "get_token_details",
         new=AsyncMock(return_value={"current_price": 1.23}),
     ) as mock_get_token_details:
