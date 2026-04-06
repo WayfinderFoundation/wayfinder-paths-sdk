@@ -44,7 +44,9 @@
 
 - Aerodrome voting is restricted in the first hour of an epoch.
 - It is also restricted in the last hour unless the veNFT is whitelisted.
-- Use `vote(..., check_window=True)` or `reset_vote(..., check_window=True)` and surface a timing error rather than guessing.
+- `can_vote_now(token_id=...)` only checks `lastVoted` against the current epoch start; it does not apply those special-window restrictions.
+- For the first-hour / last-hour window restrictions, `vote(..., check_window=True)` and `reset_vote(..., check_window=True)` use the separate internal `_can_vote_now(...)` guard.
+- Surface a timing error rather than guessing.
 
 ## Reward types are separate
 

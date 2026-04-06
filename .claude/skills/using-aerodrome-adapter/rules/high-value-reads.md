@@ -15,14 +15,14 @@
 
 ## High-value reads
 
-### Enumerate markets / gauge-enabled pools
+### Enumerate markets / voter-listed pools
 
 - Call: `ok, result = await adapter.get_all_markets(start=0, limit=50, include_gauge_state=True)`
 - Output: `(bool, dict)` with:
   - `protocol`, `chain_id`, `start`, `limit`, `total`
   - `markets`: list of normalized pool/gauge rows
 
-Use this for the adapter-facing market list, not `list_pools()`.
+Use this for the adapter-facing market list, not `list_pools()`. It enumerates `Voter.pools()`, so some rows can still carry `gauge=ZERO_ADDRESS` when no live gauge is currently attached.
 
 ### Sugar pool and epoch analytics
 
@@ -67,7 +67,9 @@ The classic adapter inherits these shared helpers from `aerodrome_common.py`:
 - `ok, votes = await adapter.estimate_votes_for_lock(aero_amount_raw=..., lock_duration=...)`
 - `ok, apr = await adapter.estimate_ve_apr_percent(usdc_per_ve=..., votes_raw=..., aero_locked_raw=...)`
 
-Use these when you need to inspect veNFT lock state, check whether a veNFT can vote this epoch, resolve fee and bribe reward contracts for a gauge, or estimate vote weight and ve-linked APR from adapter inputs.
+`can_vote_now(...)` reports epoch metadata derived from `lastVoted`; it does **not** apply the first-hour / last-hour vote-window restrictions. For transaction safety, rely on `vote(..., check_window=True)` or `reset_vote(..., check_window=True)`.
+
+Use these when you need to inspect veNFT lock state, inspect epoch and last-voted metadata for a veNFT, resolve fee and bribe reward contracts for a gauge, or estimate vote weight and ve-linked APR from adapter inputs.
 
 ## Ad-hoc read script
 
@@ -96,7 +98,7 @@ if __name__ == "__main__":
 
 | Method | Returns | Best for |
 |--------|---------|----------|
-| `get_all_markets(...)` | Gauge-enabled market dict | Normalized Aerodrome market list |
+| `get_all_markets(...)` | Voter-listed market dict | Normalized Aerodrome market list |
 | `list_pools(...)` / `sugar_all(...)` | `list[SugarPool]` | Pool scans and Sugar-backed analytics |
 | `sugar_epochs_latest(...)` / `sugar_epochs_by_address(...)` | `list[SugarEpoch]` | Recent fee, bribe, and emissions data |
 | `rank_pools_by_usdc_per_ve(...)` | Ranked rows | Incentive efficiency screening |
@@ -104,5 +106,5 @@ if __name__ == "__main__":
 | `quote_best_route(...)` / `get_amounts_out(...)` | Route quote data | Exact-in routing checks |
 | `get_pool(...)` / `get_gauge(...)` | Single-address resolution | Pool-level inspection |
 | `get_full_user_state(...)` | Wallet LP and veAERO snapshot | Portfolio state |
-| `get_user_ve_nfts(...)`, `ve_locked(...)`, `can_vote_now(...)` | veNFT state | veAERO inspection |
+| `get_user_ve_nfts(...)`, `ve_locked(...)`, `can_vote_now(...)` | veNFT state + epoch metadata | veAERO inspection |
 | `get_vote_claimables(...)` / `get_reward_contracts(...)` | Reward-contract and claimable data | Fee and bribe analysis |

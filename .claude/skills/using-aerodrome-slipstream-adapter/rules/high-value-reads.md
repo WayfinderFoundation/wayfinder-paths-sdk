@@ -63,6 +63,10 @@ The Slipstream adapter inherits the same shared veAERO helpers as the classic ad
 - `estimate_votes_for_lock(aero_amount_raw=..., lock_duration=...)`
 - `estimate_ve_apr_percent(usdc_per_ve=..., votes_raw=..., aero_locked_raw=...)`
 
+`can_vote_now(...)` reports epoch metadata derived from `lastVoted`; it does **not** apply the first-hour / last-hour vote-window restrictions. For transaction safety, rely on `vote(..., check_window=True)` or `reset_vote(..., check_window=True)`.
+
+Use these when you need veNFT inventory, lock metadata, epoch and last-voted metadata, reward-contract discovery, or vote-claimable inspection around Slipstream gauges.
+
 ## Ad-hoc read script
 
 ```python

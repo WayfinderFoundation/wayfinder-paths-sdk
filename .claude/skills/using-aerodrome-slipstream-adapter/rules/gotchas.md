@@ -35,6 +35,12 @@
 - Do not reuse classic Aerodrome assumptions for Slipstream positions.
 - Analytics like `slipstream_fee_apr_percent(...)` and `slipstream_prob_in_range_week(...)` are adapter-level estimates based on current state and swap logs, not protocol-guaranteed outputs.
 
+## veAERO vote timing
+
+- `can_vote_now(token_id=...)` only checks `lastVoted` against the current epoch start.
+- It does not apply Aerodrome's first-hour / last-hour vote-window restrictions.
+- Use `vote(..., check_window=True)` or `reset_vote(..., check_window=True)` for execution safety.
+
 ## Raw units and slippage mins
 
 - Token amounts and liquidity values are raw on-chain integers.

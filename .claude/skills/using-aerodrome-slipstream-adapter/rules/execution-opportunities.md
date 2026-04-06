@@ -63,6 +63,8 @@ Slipstream inherits the same veAERO actions as classic Aerodrome:
 
 These matter when the workflow includes veAERO-directed incentives, fee claims, or bribe claims around Slipstream gauges. When claiming veNFT fees or bribes, resolve reward contracts first with `get_reward_contracts(gauge=...)` or `get_vote_claimables(...)`.
 
+For staked Slipstream NFT emissions, `claim_position_rewards(...)` remains the primary claim path. `claim_gauge_rewards(...)` is the separate shared Aerodrome / Voter helper and is not a replacement for `claim_position_rewards(...)`.
+
 ## Wallet + scripting pattern
 
 ```python
