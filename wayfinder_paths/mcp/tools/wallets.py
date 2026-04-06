@@ -5,8 +5,8 @@ import importlib
 import time
 from typing import Any, Literal
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import (
-    allow_local_wallets,
     load_config,
     load_wallet_mnemonic,
     resolve_config_path,
@@ -181,8 +181,11 @@ async def wallets(
 
     if action == "create":
         load_config(config_path)
-        if not allow_local_wallets():
-            remote = True
+        if not remote and OPENCODE_CLIENT.healthy():
+            return err(
+                "invalid_request",
+                "Local wallets are discouraged for OpenCode instances",
+            )
         existing = await load_wallets()
         want = (label or wallet_label or "").strip()
         if not want:
