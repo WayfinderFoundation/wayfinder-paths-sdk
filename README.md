@@ -330,10 +330,13 @@ Use two different Delta Lab access patterns depending on what is running:
 For applet authors and agents:
 
 - if the applet is served by the pack page on Strategies, same-origin `/api/v1/delta-lab/public/assets/...` is acceptable
-- if the applet may run in preview, E2B, or any static host, prefer one explicit absolute base URL instead of probing multiple origins
+- if the applet may run in preview, E2B, or any static host, take the base from the host bridge (`wf:state.apiBase` first, then `wf:hello` origin) instead of inventing one in the browser
 - do not probe both dev and prod from the same applet build
 - do not call `/api/v1/delta-lab/symbols/`; that route does not exist
 - use the public `.../public/assets/<symbol>/timeseries/` route for presentation data, and reserve authenticated Delta Lab routes for SDK/server-side use
+- treat non-200 responses, especially `404`, as expected unavailability and show a clear fallback UI instead of crashing the applet
+- make sure every referenced static asset exists under `applet/dist/`
+- include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s
 
 ## Claude MCP Integration
 

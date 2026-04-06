@@ -28,4 +28,7 @@ Use this skill when you need to inspect, install, or operate the `{{slug}}` pack
 - For browser presentation on prod, use `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`.
 - For browser presentation on dev, use `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`.
 - If the applet is embedded by the Strategies pack page, same-origin `/api/v1/delta-lab/public/assets/<symbol>/timeseries/` is fine.
+- Prefer the host bridge base URL (`wf:state.apiBase`, then `wf:hello` origin) instead of hardcoding or probing environments.
 - Do not probe multiple environments from one applet build, and do not call `/api/v1/delta-lab/symbols/`.
+- Treat non-200 responses, especially `404`, as data unavailability and render a safe fallback UI.
+- Ensure every referenced file exists in `applet/dist/`, and include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s.

@@ -177,6 +177,25 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 
 **Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
 
+## Pack applets
+
+When creating or updating a Wayfinder pack with a browser applet:
+
+- browser applets must use the public Delta Lab browser-safe route:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+- authenticated Delta Lab routes (`/api/v1/delta-lab/assets/...`) are for SDK/server-side use, not browser applets
+- take the base URL from the host bridge when available:
+  - prefer `wf:state.apiBase`
+  - otherwise use the `wf:hello` origin when embedded by the Strategies host
+  - do not probe both dev and prod from the same applet build
+- treat non-200 responses, especially `404`, as expected unavailability:
+  - show a clear "data unavailable" or "waiting for host API" state
+  - do not crash the applet on missing data
+- ensure every referenced static resource is present under `applet/dist/`
+- include explicit icon tags (`icon`, `shortcut icon`, `apple-touch-icon`) in the applet HTML to avoid implicit browser 404s for missing favicon resources
+- do not call `/api/v1/delta-lab/symbols/`; that route does not exist for pack applets
+
 ## Running strategies via MCP
 
 When a user asks to run, check, or interact with a strategy:
