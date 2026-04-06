@@ -59,7 +59,9 @@ class WalletClient(WayfinderClient):
     async def sign_typed_data(self, wallet_address: str, typed_data: dict) -> str:
         url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-typed-data/"
         try:
-            resp = await self._authed_request("POST", url, json={"typed_data": typed_data})
+            resp = await self._authed_request(
+                "POST", url, json={"typed_data": typed_data}
+            )
             return resp.json()["signature"]
         except Exception as exc:
             logger.error(f"sign_typed_data failed for {wallet_address}: {exc}")
