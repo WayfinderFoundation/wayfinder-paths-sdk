@@ -51,9 +51,9 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                 "label": w.get("label") or f"remote-{i}",
                 "type": "remote",
                 "chain_type": w.get("chain_type", "ethereum"),
-                "wallet_type": w.get("wallet_type", "ttl"),
-                "ttl_expires_at": w.get("ttl_expires_at"),
-                "ttl_expires_in": w.get("ttl_expires_in"),
+                "wallet_type": w.get("wallet_type", "session"),
+                "session_expires_at": w.get("session_expires_at"),
+                "session_expires_in": w.get("session_expires_in"),
             }
             wallets.append(entry)
         return wallets
