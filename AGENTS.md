@@ -6,33 +6,31 @@ This file provides guidance when working with code in this repository.
 
 **IMPORTANT: On every new conversation, check if setup is needed:**
 
-1. **Detect hosted OpenCode first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a hosted OpenCode instance — the SDK is already installed at `/wf/sdk`, `WAYFINDER_API_KEY` and `OPENCODE_INSTANCE_ID` are already in the environment, and remote wallets are managed by vault-backend. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
+1. **Detect Wayfinder Cloud first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside Wayfinder Cloud — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
 
-2. Otherwise (no OpenCode server reachable), this is a local dev environment. Tell the user: "Welcome to Wayfinder Paths! Let me set things up for you."
-
-3. If `config.json` does NOT exist:
+2. If `config.json` does NOT exist:
    - Run: `python3 scripts/setup.py`
    - After setup completes, ask the user: "Do you have a Wayfinder API key?"
      - If yes: Add it to `config.json` under `system.api_key`
      - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
 
-4. If `config.json` exists but `system.api_key` is empty/missing AND `WAYFINDER_API_KEY` is not set:
+3. If `config.json` exists but `system.api_key` is empty/missing AND `WAYFINDER_API_KEY` is not set:
    - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
    - If yes: Help them add it to `config.json` under `system.api_key`
    - If no: Direct them to **https://strategies.wayfinder.ai** to get one
 
-5. If everything is configured, proceed normally
+4. If everything is configured, proceed normally
 
-## Hosted instance environment variables
+## Wayfinder Cloud environment variables
 
-When the SDK runs inside a hosted OpenCode instance, the vault-backend `InstanceService` injects two env vars on the Fly machine at startup:
+When the SDK runs inside Wayfinder Cloud, two env vars are injected at startup:
 
-| Variable              | Source                                        | What it is                                                  |
-| --------------------- | --------------------------------------------- | ----------------------------------------------------------- |
-| `WAYFINDER_API_KEY`   | Optional `wayfinder_api_key` in create request | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
-| `OPENCODE_INSTANCE_ID` | Always set by the backend                     | The Fly app name (e.g. `cmn387aqk00bu0cl2d6w-7ceb538e5`). Useful for logs/diagnostics. |
+| Variable               | What it is                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `WAYFINDER_API_KEY`    | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
+| `OPENCODE_INSTANCE_ID` | The Wayfinder Cloud identifier for this runtime. Useful for logs / diagnostics.        |
 
-Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`. On hosted instances you do **not** need to write the key into `config.json`.
+Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`. On Wayfinder Cloud you do **not** need to write the key into `config.json`.
 
 ## Project Overview
 
@@ -442,12 +440,12 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 
 ## Wallets
 
-**On a hosted OpenCode instance, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are Privy server wallets managed by vault-backend, which gives us analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when an OpenCode server is reachable.
+**On Wayfinder Cloud, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
 
-**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on a hosted instance the remote wallets live in vault-backend (not in `config.json`), so reading the file misses them entirely.
+**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
 ```bash
-# List all wallets (returns remote wallets on hosted instances; merged local + remote elsewhere)
+# List all wallets (returns remote wallets on Wayfinder Cloud; merged local + remote elsewhere)
 poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets
 
 # Get a single wallet by label (includes profile / tracked protocols)
@@ -460,13 +458,13 @@ poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/main
 poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/main
 ```
 
-To create a wallet on a hosted instance, always pass `--remote`:
+To create a wallet on Wayfinder Cloud, always pass `--remote`:
 
 ```bash
 poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
 ```
 
-(Local wallet creation is only valid in a developer's machine outside of OpenCode — on a hosted instance the same command without `--remote` returns `Local wallets are discouraged for OpenCode instances`.)
+(Local wallet creation is only valid on a developer's local machine — on Wayfinder Cloud the same command without `--remote` returns `Local wallets are discouraged`.)
 
 In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
 
@@ -476,7 +474,7 @@ Config priority: Constructor parameter > config.json > Environment variable (`WA
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
 
-On hosted OpenCode instances, the API key comes from the `WAYFINDER_API_KEY` env var (set by vault-backend at machine creation) and `OPENCODE_INSTANCE_ID` identifies the Fly app — see [Hosted instance environment variables](#hosted-instance-environment-variables).
+On Wayfinder Cloud, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Cloud environment variables](#wayfinder-cloud-environment-variables).
 
 ## CI/CD Pipeline
 
