@@ -442,12 +442,12 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 
 ## Wallets
 
-**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.**
+**On a hosted OpenCode instance, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are Privy server wallets managed by vault-backend, which gives us analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when an OpenCode server is reachable.
 
-The MCP wallet resource is the only source of truth that returns the merged set of local + remote wallets. On a hosted OpenCode instance, remote wallets live in vault-backend (Privy server wallets) and are NOT in `config.json` — reading the file misses them entirely.
+**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on a hosted instance the remote wallets live in vault-backend (not in `config.json`), so reading the file misses them entirely.
 
 ```bash
-# List all wallets (local + remote, with labels, addresses, chain types)
+# List all wallets (returns remote wallets on hosted instances; merged local + remote elsewhere)
 poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets
 
 # Get a single wallet by label (includes profile / tracked protocols)
@@ -460,17 +460,15 @@ poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/main
 poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/main
 ```
 
-To create a wallet, use the `wallets` tool (not direct file edits):
+To create a wallet on a hosted instance, always pass `--remote`:
 
 ```bash
-# Create a remote (Privy) wallet — required on hosted OpenCode instances
 poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
-
-# Create a local wallet — only allowed when not running on a hosted instance
-poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main
 ```
 
-In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and merge local + remote.
+(Local wallet creation is only valid in a developer's machine outside of OpenCode — on a hosted instance the same command without `--remote` returns `Local wallets are discouraged for OpenCode instances`.)
+
+In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
 
 ## Configuration
 
