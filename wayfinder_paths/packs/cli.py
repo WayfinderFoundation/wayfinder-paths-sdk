@@ -40,6 +40,13 @@ def _echo_json(data: Any) -> None:
     click.echo(json.dumps(data, indent=2, default=str))
 
 
+def _pack_install_venue(*, runtime: str) -> str:
+    return (
+        str(os.environ.get("WAYFINDER_PACKS_INSTALL_VENUE") or runtime).strip()
+        or runtime
+    )
+
+
 def _doctor_result_payload(report: PackDoctorReport) -> dict[str, Any]:
     return {
         "slug": report.slug,
@@ -847,6 +854,7 @@ def _install_pack(
     api_url: str | None,
 ) -> None:
     client = PacksApiClient(api_base_url=api_url)
+    venue = _pack_install_venue(runtime="sdk-cli")
     try:
         detail = client.get_pack(slug=slug)
     except PacksApiError as exc:
@@ -901,6 +909,7 @@ def _install_pack(
             slug=slug,
             version=desired_version,
             runtime="sdk-cli",
+            venue=venue,
             install_target=str(dest),
         )
         payload = intent_resp.get("intent")
@@ -942,6 +951,7 @@ def _install_pack(
     packs_map[slug] = {
         "version": desired_version,
         "bundle_sha256": actual_sha,
+        "venue": venue,
         "installed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "path": str(dest),
     }
@@ -961,6 +971,7 @@ def _install_pack(
                 intent=intent_payload,
                 signature=intent_signature,
                 runtime="sdk-cli",
+                venue=venue,
                 install_path=str(dest),
                 extracted_files=len(extracted),
             )

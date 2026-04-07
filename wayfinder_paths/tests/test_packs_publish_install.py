@@ -453,6 +453,7 @@ def test_pack_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
     assert result.exit_code == 0, result.output
     assert len(FakeInstallClient.install_intent_calls) == 1
     assert len(FakeInstallClient.receipt_calls) == 1
+    assert FakeInstallClient.install_intent_calls[0]["venue"] == "sdk-cli"
 
     output = json.loads(result.output)
     assert output["result"]["install_intent_id"] == "intent-123"
@@ -463,12 +464,14 @@ def test_pack_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
 
     receipt = FakeInstallClient.receipt_calls[0]
     assert receipt["runtime"] == "sdk-cli"
+    assert receipt["venue"] == "sdk-cli"
     assert receipt["extracted_files"] > 0
     assert receipt["install_path"].endswith("install-demo/0.1.0")
 
     lock = json.loads((tmp_path / ".wayfinder" / "packs.lock.json").read_text())
     assert lock["packs"]["install-demo"]["installation_id"] == "install-123"
     assert lock["packs"]["install-demo"]["heartbeat_token"] == "heartbeat-secret"
+    assert lock["packs"]["install-demo"]["venue"] == "sdk-cli"
 
 
 def test_pack_heartbeat_install_uses_lockfile_credentials(tmp_path: Path, monkeypatch):

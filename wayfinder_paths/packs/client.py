@@ -296,11 +296,14 @@ class PacksApiClient:
         slug: str,
         version: str,
         runtime: str = "sdk-cli",
+        venue: str | None = None,
         wallet_address: str | None = None,
         install_target: str | None = None,
     ) -> dict[str, Any]:
         url = f"{self.base_url}/api/v1/packs/{slug}/install-intent/"
         body: dict[str, Any] = {"version": version, "runtime": runtime}
+        if venue:
+            body["venue"] = venue
         if wallet_address:
             body["wallet_address"] = wallet_address
         if install_target:
@@ -320,6 +323,7 @@ class PacksApiClient:
         intent: dict[str, Any],
         signature: str,
         runtime: str,
+        venue: str | None = None,
         install_path: str | None = None,
         extracted_files: int | None = None,
         workspace_hash: str | None = None,
@@ -330,6 +334,8 @@ class PacksApiClient:
             "signature": signature,
             "runtime": runtime,
         }
+        if venue:
+            body["venue"] = venue
         if install_path:
             body["install_path"] = install_path
         if extracted_files is not None:
