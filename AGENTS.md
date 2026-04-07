@@ -6,20 +6,33 @@ This file provides guidance when working with code in this repository.
 
 **IMPORTANT: On every new conversation, check if setup is needed:**
 
-1. Check if `config.json` exists in the repo root
-2. If it does NOT exist, this is a first-time user. You MUST:
-   - Tell the user: "Welcome to Wayfinder Paths! Let me set things up for you."
+1. **Detect hosted OpenCode first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a hosted OpenCode instance — the SDK is already installed at `/wf/sdk`, `WAYFINDER_API_KEY` and `OPENCODE_INSTANCE_ID` are already in the environment, and remote wallets are managed by vault-backend. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
+
+2. Otherwise (no OpenCode server reachable), this is a local dev environment. Tell the user: "Welcome to Wayfinder Paths! Let me set things up for you."
+
+3. If `config.json` does NOT exist:
    - Run: `python3 scripts/setup.py`
    - After setup completes, ask the user: "Do you have a Wayfinder API key?"
      - If yes: Add it to `config.json` under `system.api_key`
      - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
 
-3. If `config.json` exists but `system.api_key` is empty/missing:
+4. If `config.json` exists but `system.api_key` is empty/missing AND `WAYFINDER_API_KEY` is not set:
    - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
    - If yes: Help them add it to `config.json` under `system.api_key`
    - If no: Direct them to **https://strategies.wayfinder.ai** to get one
 
-4. If everything is configured, proceed normally
+5. If everything is configured, proceed normally
+
+## Hosted instance environment variables
+
+When the SDK runs inside a hosted OpenCode instance, the vault-backend `InstanceService` injects two env vars on the Fly machine at startup:
+
+| Variable              | Source                                        | What it is                                                  |
+| --------------------- | --------------------------------------------- | ----------------------------------------------------------- |
+| `WAYFINDER_API_KEY`   | Optional `wayfinder_api_key` in create request | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
+| `OPENCODE_INSTANCE_ID` | Always set by the backend                     | The Fly app name (e.g. `cmn387aqk00bu0cl2d6w-7ceb538e5`). Useful for logs/diagnostics. |
+
+Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`. On hosted instances you do **not** need to write the key into `config.json`.
 
 ## Project Overview
 
@@ -64,6 +77,7 @@ When answering questions about **rates/APYs/funding**:
 Strategy interface — all strategies implement these actions:
 
 **Read-only actions:**
+
 - `status` - Current positions, balances, and state
 - `analyze` - Run strategy analysis with given deposit amount
 - `snapshot` - Build batch snapshot for scoring
@@ -71,12 +85,14 @@ Strategy interface — all strategies implement these actions:
 - `quote` - Get point-in-time expected APY for the strategy
 
 **Fund-moving actions:**
+
 - `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`). First deposit should include `gas_token_amount` (e.g. `0.001`).
 - `update` - Rebalance or execute the strategy logic
 - `withdraw` - **Liquidate**: Close all positions and convert to stablecoins (funds stay in strategy wallet)
 - `exit` - **Transfer**: Move funds from strategy wallet to main wallet (call after withdraw)
 
 **Clarify withdraw vs exit** — these are separate steps:
+
 - `withdraw` closes positions → `exit` transfers to main wallet
 - "withdraw all" / "close everything" → run `withdraw` then `exit`
 - "transfer remaining funds" (positions already closed) → just `exit`
@@ -84,6 +100,7 @@ Strategy interface — all strategies implement these actions:
 **Mypy typing** - When adding or modifying Python code, ensure all _new/changed_ code is fully type-annotated and does not introduce new mypy errors.
 
 Run strategies via CLI:
+
 ```bash
 poetry run python -m wayfinder_paths.run_strategy <strategy_name> --action status --config config.json
 ```
@@ -246,6 +263,7 @@ else:
 ### Key domain knowledge
 
 Hyperliquid minimums:
+
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
@@ -266,10 +284,12 @@ Supported chains:
 - **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
 
 Gas requirements (critical — assets get stuck without gas):
+
 - **Before any on-chain operation**, check the wallet has native gas on that chain.
 - If bridging to a new chain for the first time: bridge gas first.
 
 Token identifiers (important for quoting/execution/lookups):
+
 - Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`).
 
 ### Recurring automation (Runner)
@@ -360,15 +380,19 @@ Strategy → Adapter → Client(s) → Network/API
 **Always use the scaffolding scripts** when creating new strategies or adapters.
 
 **New strategy:**
+
 ```bash
 just create-strategy "My Strategy Name"
 ```
+
 Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
 
 **New adapter:**
+
 ```bash
 just create-adapter "my_protocol"
 ```
+
 Creates `wayfinder_paths/adapters/<name>_adapter/` with adapter.py, manifest.yaml, test, examples.json, README.
 
 ### Manifests
@@ -416,11 +440,45 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 - `@pytest.mark.requires_wallets` - Tests needing local wallets configured
 - `@pytest.mark.requires_config` - Tests needing config.json
 
+## Wallets
+
+**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.**
+
+The MCP wallet resource is the only source of truth that returns the merged set of local + remote wallets. On a hosted OpenCode instance, remote wallets live in vault-backend (Privy server wallets) and are NOT in `config.json` — reading the file misses them entirely.
+
+```bash
+# List all wallets (local + remote, with labels, addresses, chain types)
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets
+
+# Get a single wallet by label (includes profile / tracked protocols)
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets/main
+
+# Wallet balances (USD-aggregated, per-chain breakdown, spam-filtered)
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/main
+
+# Recent on-chain activity
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/main
+```
+
+To create a wallet, use the `wallets` tool (not direct file edits):
+
+```bash
+# Create a remote (Privy) wallet — required on hosted OpenCode instances
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
+
+# Create a local wallet — only allowed when not running on a hosted instance
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main
+```
+
+In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and merge local + remote.
+
 ## Configuration
 
 Config priority: Constructor parameter > config.json > Environment variable (`WAYFINDER_API_KEY`)
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
+
+On hosted OpenCode instances, the API key comes from the `WAYFINDER_API_KEY` env var (set by vault-backend at machine creation) and `OPENCODE_INSTANCE_ID` identifies the Fly app — see [Hosted instance environment variables](#hosted-instance-environment-variables).
 
 ## CI/CD Pipeline
 
