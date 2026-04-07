@@ -6,7 +6,7 @@ This file provides guidance when working with code in this repository.
 
 **IMPORTANT: On every new conversation, check if setup is needed:**
 
-1. **Detect Wayfinder Cloud first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside Wayfinder Cloud — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
+1. **Detect Cloud Instance first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a Cloud instance — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
 
 2. If `config.json` does NOT exist:
    - Run: `python3 scripts/setup.py`
@@ -21,7 +21,7 @@ This file provides guidance when working with code in this repository.
 
 4. If everything is configured, proceed normally
 
-## Wayfinder Cloud environment variables
+## Wayfinder Cloud Instance Environment Variables
 
 When the SDK runs inside Wayfinder Cloud, two env vars are injected at startup:
 
@@ -30,7 +30,7 @@ When the SDK runs inside Wayfinder Cloud, two env vars are injected at startup:
 | `WAYFINDER_API_KEY`    | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
 | `OPENCODE_INSTANCE_ID` | The Wayfinder Cloud identifier for this runtime. Useful for logs / diagnostics.        |
 
-Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`. On Wayfinder Cloud you do **not** need to write the key into `config.json`.
+Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`.
 
 ## Project Overview
 
@@ -440,7 +440,7 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 
 ## Wallets
 
-**On Wayfinder Cloud, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
+**On Wayfinder Cloud Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
 
 **Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
@@ -449,22 +449,20 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets
 
 # Get a single wallet by label (includes profile / tracked protocols)
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets/main
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets/{label}
 
 # Wallet balances (USD-aggregated, per-chain breakdown, spam-filtered)
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/main
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/{label}
 
 # Recent on-chain activity
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/main
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/{label}
 ```
 
-To create a wallet on Wayfinder Cloud, always pass `--remote`:
+To create a wallet on a Wayfinder Cloud Instance, always pass `--remote`:
 
 ```bash
 poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
 ```
-
-(Local wallet creation is only valid on a developer's local machine — on Wayfinder Cloud the same command without `--remote` returns `Local wallets are discouraged`.)
 
 In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
 
@@ -474,7 +472,7 @@ Config priority: Constructor parameter > config.json > Environment variable (`WA
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
 
-On Wayfinder Cloud, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Cloud environment variables](#wayfinder-cloud-environment-variables).
+On a Wayfinder Cloud Instance, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Cloud environment variables](#wayfinder-cloud-environment-variables).
 
 ## CI/CD Pipeline
 
