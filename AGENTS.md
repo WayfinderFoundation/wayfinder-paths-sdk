@@ -6,20 +6,31 @@ This file provides guidance when working with code in this repository.
 
 **IMPORTANT: On every new conversation, check if setup is needed:**
 
-1. Check if `config.json` exists in the repo root
-2. If it does NOT exist, this is a first-time user. You MUST:
-   - Tell the user: "Welcome to Wayfinder Paths! Let me set things up for you."
+1. **Detect Cloud Instance first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a Cloud instance — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
+
+2. If `config.json` does NOT exist:
    - Run: `python3 scripts/setup.py`
    - After setup completes, ask the user: "Do you have a Wayfinder API key?"
      - If yes: Add it to `config.json` under `system.api_key`
      - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
 
-3. If `config.json` exists but `system.api_key` is empty/missing:
+3. If `config.json` exists but `system.api_key` is empty/missing AND `WAYFINDER_API_KEY` is not set:
    - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
    - If yes: Help them add it to `config.json` under `system.api_key`
    - If no: Direct them to **https://strategies.wayfinder.ai** to get one
 
 4. If everything is configured, proceed normally
+
+## Wayfinder Cloud Instance Environment Variables
+
+When the SDK runs inside Wayfinder Cloud, two env vars are injected at startup:
+
+| Variable               | What it is                                                                             |
+| ---------------------- | -------------------------------------------------------------------------------------- |
+| `WAYFINDER_API_KEY`    | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
+| `OPENCODE_INSTANCE_ID` | The Wayfinder Cloud identifier for this runtime. Useful for logs / diagnostics.        |
+
+Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`.
 
 ## Project Overview
 
@@ -64,6 +75,7 @@ When answering questions about **rates/APYs/funding**:
 Strategy interface — all strategies implement these actions:
 
 **Read-only actions:**
+
 - `status` - Current positions, balances, and state
 - `analyze` - Run strategy analysis with given deposit amount
 - `snapshot` - Build batch snapshot for scoring
@@ -71,12 +83,14 @@ Strategy interface — all strategies implement these actions:
 - `quote` - Get point-in-time expected APY for the strategy
 
 **Fund-moving actions:**
+
 - `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`). First deposit should include `gas_token_amount` (e.g. `0.001`).
 - `update` - Rebalance or execute the strategy logic
 - `withdraw` - **Liquidate**: Close all positions and convert to stablecoins (funds stay in strategy wallet)
 - `exit` - **Transfer**: Move funds from strategy wallet to main wallet (call after withdraw)
 
 **Clarify withdraw vs exit** — these are separate steps:
+
 - `withdraw` closes positions → `exit` transfers to main wallet
 - "withdraw all" / "close everything" → run `withdraw` then `exit`
 - "transfer remaining funds" (positions already closed) → just `exit`
@@ -84,6 +98,7 @@ Strategy interface — all strategies implement these actions:
 **Mypy typing** - When adding or modifying Python code, ensure all _new/changed_ code is fully type-annotated and does not introduce new mypy errors.
 
 Run strategies via CLI:
+
 ```bash
 poetry run python -m wayfinder_paths.run_strategy <strategy_name> --action status --config config.json
 ```
@@ -246,6 +261,7 @@ else:
 ### Key domain knowledge
 
 Hyperliquid minimums:
+
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
@@ -266,10 +282,12 @@ Supported chains:
 - **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).
 
 Gas requirements (critical — assets get stuck without gas):
+
 - **Before any on-chain operation**, check the wallet has native gas on that chain.
 - If bridging to a new chain for the first time: bridge gas first.
 
 Token identifiers (important for quoting/execution/lookups):
+
 - Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`).
 
 ### Recurring automation (Runner)
@@ -360,15 +378,19 @@ Strategy → Adapter → Client(s) → Network/API
 **Always use the scaffolding scripts** when creating new strategies or adapters.
 
 **New strategy:**
+
 ```bash
 just create-strategy "My Strategy Name"
 ```
+
 Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
 
 **New adapter:**
+
 ```bash
 just create-adapter "my_protocol"
 ```
+
 Creates `wayfinder_paths/adapters/<name>_adapter/` with adapter.py, manifest.yaml, test, examples.json, README.
 
 ### Manifests
@@ -416,11 +438,41 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 - `@pytest.mark.requires_wallets` - Tests needing local wallets configured
 - `@pytest.mark.requires_config` - Tests needing config.json
 
+## Wallets
+
+**On Wayfinder Cloud Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
+
+**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
+
+```bash
+# List all wallets (returns remote wallets on Wayfinder Cloud; merged local + remote elsewhere)
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets
+
+# Get a single wallet by label (includes profile / tracked protocols)
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets/{label}
+
+# Wallet balances (USD-aggregated, per-chain breakdown, spam-filtered)
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/{label}
+
+# Recent on-chain activity
+poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/{label}
+```
+
+To create a wallet on a Wayfinder Cloud Instance, always pass `--remote`:
+
+```bash
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
+```
+
+In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
+
 ## Configuration
 
 Config priority: Constructor parameter > config.json > Environment variable (`WAYFINDER_API_KEY`)
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
+
+On a Wayfinder Cloud Instance, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Cloud environment variables](#wayfinder-cloud-environment-variables).
 
 ## CI/CD Pipeline
 

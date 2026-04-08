@@ -40,7 +40,8 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
     if not api_key:
         return []
     try:
-        raw = await WALLET_CLIENT.list_wallets()
+        instance_id = get_opencode_instance_id() if OPENCODE_CLIENT.healthy() else None
+        raw = await WALLET_CLIENT.list_wallets(instance_id=instance_id)
         wallets = []
         for i, w in enumerate(raw):
             addr = w.get("wallet_address")
