@@ -22,7 +22,13 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
     AERODROME_SLIPSTREAM_BY_CHAIN,
 )
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils.uniswap_v3_math import (
+    ceil_tick_to_spacing,
+    round_tick_to_spacing,
+    sqrt_price_x96_to_price,
+)
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -119,10 +125,6 @@ async def _move_to_next_safe_vote_window(gorlami, fork_id: str) -> bool:
     return await _try_time_travel(gorlami, fork_id, target_ts=target_ts)
 
 
-def _round_tick_down(tick: int, spacing: int) -> int:
-    return (int(tick) // int(spacing)) * int(spacing)
-
-
 async def _discover_live_market(
     adapter: AerodromeSlipstreamAdapter,
 ) -> tuple[dict, str]:
@@ -157,14 +159,14 @@ async def _position_amounts(pool_contract) -> tuple[int, int, int, int]:
     )
     tick_current = int(slot0[1])
     spacing = int(tick_spacing)
-    tick_lower = _round_tick_down(tick_current, spacing) - (10 * spacing)
-    tick_upper = _round_tick_down(tick_current, spacing) + (10 * spacing)
+    tick_lower = round_tick_to_spacing(tick_current, spacing) - (10 * spacing)
+    tick_upper = round_tick_to_spacing(tick_current, spacing) + (10 * spacing)
     if tick_upper <= tick_lower:
         tick_upper = tick_lower + spacing
 
     sqrt_price_x96 = int(slot0[0])
-    price_token1_per_token0 = (
-        Decimal(sqrt_price_x96) * Decimal(sqrt_price_x96) / Decimal(2**192)
+    price_token1_per_token0 = Decimal(
+        str(sqrt_price_x96_to_price(sqrt_price_x96, 18, 18))
     )
 
     weth_amount = 10**16  # 0.01 WETH
@@ -333,6 +335,56 @@ async def test_gorlami_aerodrome_slipstream_position_lifecycle(gorlami):
         position_manager=npm_address,
     )
     assert ok is True, tx
+
+
+@pytest.mark.asyncio
+async def test_gorlami_aerodrome_slipstream_read_analytics(gorlami):
+    await _ensure_fork(gorlami)
+    adapter = AerodromeSlipstreamAdapter()
+
+    ok, best_pool = await adapter.slipstream_best_pool_for_pair(
+        tokenA=BASE_USDC,
+        tokenB=WETH,
+    )
+    if not ok:
+        pytest.skip(f"No live Slipstream USDC/WETH pool available: {best_pool}")
+
+    pool = str(best_pool["pool"])
+    ok, pool_state = await adapter.slipstream_pool_state(pool=pool)
+    assert ok is True, pool_state
+    assert int(pool_state["liquidity"]) > 0
+
+    tick_spacing = int(pool_state["tick_spacing"])
+    current_tick = int(pool_state["tick"])
+    tick_lower = round_tick_to_spacing(current_tick, tick_spacing) - (5 * tick_spacing)
+    tick_upper = ceil_tick_to_spacing(current_tick, tick_spacing) + (5 * tick_spacing)
+    if tick_upper <= tick_lower:
+        tick_upper = tick_lower + tick_spacing
+
+    token0 = str(pool_state["token0"])
+    token1 = str(pool_state["token1"])
+    amount0_raw = 10**6 if token0.lower() == BASE_USDC.lower() else 10**15
+    amount1_raw = 10**6 if token1.lower() == BASE_USDC.lower() else 10**15
+
+    ok, metrics = await adapter.slipstream_range_metrics(
+        pool=pool,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        amount0_raw=amount0_raw,
+        amount1_raw=amount1_raw,
+    )
+    assert ok is True, metrics
+    assert metrics["liquidity_position"] >= 0
+    assert metrics["share_of_active_liquidity"] >= 0
+
+    ok, prob = await adapter.slipstream_prob_in_range_week(
+        pool=pool,
+        tick_lower=tick_lower,
+        tick_upper=tick_upper,
+        sigma_annual=1.0,
+    )
+    assert ok is True, prob
+    assert 0.0 <= float(prob["prob_in_range_week"]) <= 1.0
 
 
 @pytest.mark.asyncio
