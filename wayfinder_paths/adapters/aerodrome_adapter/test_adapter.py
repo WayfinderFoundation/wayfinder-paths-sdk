@@ -214,6 +214,32 @@ async def test_can_vote_now_allows_whitelisted_nft_in_last_hour():
 
 
 @pytest.mark.asyncio
+async def test_can_vote_now_returns_false_when_already_voted_this_epoch():
+    adapter = AerodromeAdapter()
+    now = WEEK_SECONDS + 500
+
+    voter = MagicMock()
+    voter.functions.lastVoted = MagicMock(return_value=_mock_call(WEEK_SECONDS))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": now})
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, data = await adapter.can_vote_now(token_id=7)
+
+    assert ok is True
+    assert data["can_vote"] is False
+    assert data["last_voted"] == WEEK_SECONDS
+    assert data["epoch_start"] == WEEK_SECONDS
+    assert data["next_epoch_start"] == 2 * WEEK_SECONDS
+
+
+@pytest.mark.asyncio
 async def test_get_all_markets_empty_result_uses_base_chain():
     adapter = AerodromeAdapter()
     voter = MagicMock()
@@ -455,6 +481,30 @@ async def test_get_reward_contracts_reads_fee_and_bribe_contracts():
     }
     assert mock_read.await_args.kwargs["block_identifier"] == "latest"
     assert mock_read.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
+
+
+@pytest.mark.asyncio
+async def test_ve_balance_of_nft_reads_balance():
+    adapter = AerodromeAdapter()
+    ve = MagicMock()
+    ve.functions.balanceOfNFT = MagicMock(return_value=_mock_call(123456))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=ve)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, balance = await adapter.ve_balance_of_nft(
+            token_id=7,
+            block_identifier="pending",
+        )
+
+    assert ok is True
+    assert balance == 123456
+    ve.functions.balanceOfNFT.assert_called_once_with(7)
 
 
 @pytest.mark.asyncio
@@ -714,6 +764,53 @@ async def test_claim_bribes_auto_discovers_reward_tokens(adapter_with_signer):
 
 
 @pytest.mark.asyncio
+async def test_claim_fees_rejects_token_list_length_mismatch(adapter_with_signer):
+    ok, msg = await adapter_with_signer.claim_fees(
+        token_id=1,
+        fee_reward_contracts=["0x0000000000000000000000000000000000000006"],
+        token_lists=[],
+    )
+
+    assert ok is False
+    assert "length mismatch" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_claim_fees_uses_explicit_token_lists_without_lookup(adapter_with_signer):
+    with (
+        patch.object(
+            adapter_with_signer,
+            "_reward_tokens",
+            new=AsyncMock(side_effect=AssertionError("should not be called")),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            aerodrome_common_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, tx = await adapter_with_signer.claim_fees(
+            token_id=1,
+            fee_reward_contracts=["0x0000000000000000000000000000000000000006"],
+            token_lists=[["0x0000000000000000000000000000000000000007"]],
+        )
+
+    assert ok is True
+    assert tx == "0xtxhash"
+    assert mock_encode.await_args.kwargs["fn_name"] == "claimFees"
+    assert mock_encode.await_args.kwargs["args"] == [
+        ["0x0000000000000000000000000000000000000006"],
+        [["0x0000000000000000000000000000000000000007"]],
+        1,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_claim_rebases_skip_if_zero_returns_without_tx(adapter_with_signer):
     with (
         patch.object(
@@ -739,6 +836,50 @@ async def test_claim_rebases_many_rejects_empty_token_ids(adapter_with_signer):
 
     assert ok is False
     assert "cannot be empty" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_pool_returns_clean_error_for_zero_address():
+    adapter = AerodromeAdapter()
+    factory = MagicMock()
+    factory.functions.getPool = MagicMock(return_value=_mock_call(ZERO_ADDRESS))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=factory)
+
+    with patch.object(
+        aerodrome_adapter_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, msg = await adapter.get_pool(
+            tokenA="0x0000000000000000000000000000000000000001",
+            tokenB="0x0000000000000000000000000000000000000002",
+            stable=False,
+        )
+
+    assert ok is False
+    assert msg == "Pool does not exist"
+
+
+@pytest.mark.asyncio
+async def test_get_gauge_returns_clean_error_for_zero_address():
+    adapter = AerodromeAdapter()
+    voter = MagicMock()
+    voter.functions.gauges = MagicMock(return_value=_mock_call(ZERO_ADDRESS))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    with patch.object(
+        aerodrome_adapter_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, msg = await adapter.get_gauge(pool=FAKE_POOL)
+
+    assert ok is False
+    assert msg == "Gauge not found for pool"
 
 
 @pytest.mark.asyncio
