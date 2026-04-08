@@ -13,6 +13,7 @@ from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
     SugarPool,
     SugarReward,
 )
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -352,6 +353,368 @@ async def test_claim_pool_fees_unstaked_reads_pending_claimables(adapter_with_si
     assert mock_read.await_args.kwargs["block_identifier"] == "pending"
     assert mock_read.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
     assert mock_encode.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
+
+
+@pytest.mark.asyncio
+async def test_minted_erc721_token_id_reads_matching_transfer():
+    adapter = AerodromeAdapter()
+    nft_contract = "0x" + "12" * 20
+    mock_web3 = MagicMock()
+    mock_web3.codec = object()
+    mock_web3.eth.get_transaction_receipt = AsyncMock(
+        return_value={
+            "logs": [
+                {
+                    "address": nft_contract,
+                    "topics": [aerodrome_common_module._ERC721_TRANSFER_TOPIC0],
+                }
+            ]
+        }
+    )
+
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "get_event_data",
+            return_value={
+                "args": {
+                    "from": ZERO_ADDRESS,
+                    "to": FAKE_WALLET,
+                    "tokenId": 77,
+                }
+            },
+        ),
+    ):
+        token_id = await adapter._minted_erc721_token_id(
+            nft_contract=nft_contract,
+            tx_hash="0xtxhash",
+            expected_to=FAKE_WALLET,
+        )
+
+    assert token_id == 77
+
+
+@pytest.mark.asyncio
+async def test_get_reward_contracts_reads_fee_and_bribe_contracts():
+    adapter = AerodromeAdapter()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                return_value=(
+                    "0x0000000000000000000000000000000000000005",
+                    "0x0000000000000000000000000000000000000006",
+                )
+            ),
+        ) as mock_read,
+    ):
+        ok, data = await adapter.get_reward_contracts(gauge=FAKE_GAUGE)
+
+    assert ok is True
+    assert data == {
+        "fees": "0x0000000000000000000000000000000000000005",
+        "bribes": "0x0000000000000000000000000000000000000006",
+    }
+    assert mock_read.await_args.kwargs["block_identifier"] == "latest"
+    assert mock_read.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
+
+
+@pytest.mark.asyncio
+async def test_get_user_ve_nfts_requires_address_when_no_wallet():
+    adapter = AerodromeAdapter()
+
+    ok, msg = await adapter.get_user_ve_nfts()
+
+    assert ok is False
+    assert "address is required" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_user_ve_nfts_reads_token_ids_from_balance(adapter_with_signer):
+    ve = MagicMock()
+    ve.functions.balanceOf = MagicMock(return_value=_mock_call(2))
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=ve)
+
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(return_value=[101, 202]),
+        ) as mock_read,
+    ):
+        ok, token_ids = await adapter_with_signer.get_user_ve_nfts(
+            block_identifier="pending"
+        )
+
+    assert ok is True
+    assert token_ids == [101, 202]
+    ve.functions.balanceOf.assert_called_once_with(FAKE_WALLET)
+    assert mock_read.await_args.kwargs["block_identifier"] == "pending"
+    assert mock_read.await_args.kwargs["chain_id"] == CHAIN_ID_BASE
+
+
+@pytest.mark.asyncio
+async def test_create_lock_for_uses_receiver_for_minted_token_lookup(
+    adapter_with_signer,
+):
+    receiver = "0x00000000000000000000000000000000000000AA"
+
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "ensure_allowance",
+            new=AsyncMock(return_value=(True, {})),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            aerodrome_common_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+        patch.object(
+            adapter_with_signer,
+            "_minted_erc721_token_id",
+            new=AsyncMock(return_value=9),
+        ) as mock_minted,
+    ):
+        ok, data = await adapter_with_signer.create_lock_for(
+            amount=123,
+            lock_duration=456,
+            receiver=receiver,
+        )
+
+    assert ok is True
+    assert data == {"tx": "0xtxhash", "token_id": 9}
+    assert mock_encode.await_args.kwargs["fn_name"] == "createLockFor"
+    assert mock_encode.await_args.kwargs["args"] == [
+        123,
+        456,
+        "0x00000000000000000000000000000000000000AA",
+    ]
+    assert mock_minted.await_args.kwargs["expected_to"] == receiver
+
+
+@pytest.mark.asyncio
+async def test_increase_lock_amount_returns_allowance_failure(adapter_with_signer):
+    with patch.object(
+        aerodrome_common_module,
+        "ensure_allowance",
+        new=AsyncMock(return_value=(False, "approval failed")),
+    ):
+        ok, msg = await adapter_with_signer.increase_lock_amount(token_id=7, amount=11)
+
+    assert ok is False
+    assert msg == "approval failed"
+
+
+@pytest.mark.asyncio
+async def test_increase_unlock_time_encodes_expected_call(adapter_with_signer):
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            aerodrome_common_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, tx = await adapter_with_signer.increase_unlock_time(
+            token_id=7,
+            lock_duration=999,
+        )
+
+    assert ok is True
+    assert tx == "0xtxhash"
+    assert mock_encode.await_args.kwargs["fn_name"] == "increaseUnlockTime"
+    assert mock_encode.await_args.kwargs["args"] == [7, 999]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "fn_name"),
+    [
+        ("withdraw_lock", "withdraw"),
+        ("lock_permanent", "lockPermanent"),
+        ("unlock_permanent", "unlockPermanent"),
+    ],
+)
+async def test_lock_management_methods_encode_expected_call(
+    adapter_with_signer,
+    method_name,
+    fn_name,
+):
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            aerodrome_common_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, tx = await getattr(adapter_with_signer, method_name)(token_id=7)
+
+    assert ok is True
+    assert tx == "0xtxhash"
+    assert mock_encode.await_args.kwargs["fn_name"] == fn_name
+    assert mock_encode.await_args.kwargs["args"] == [7]
+
+
+@pytest.mark.asyncio
+async def test_vote_rejects_pools_weights_length_mismatch(adapter_with_signer):
+    ok, msg = await adapter_with_signer.vote(
+        token_id=1,
+        pools=[FAKE_POOL],
+        weights=[1, 2],
+    )
+
+    assert ok is False
+    assert "length mismatch" in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_vote_skips_window_check_when_disabled(adapter_with_signer):
+    with (
+        patch.object(
+            adapter_with_signer,
+            "_can_vote_now",
+            new=AsyncMock(side_effect=AssertionError("should not be called")),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            aerodrome_common_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, tx = await adapter_with_signer.vote(
+            token_id=5,
+            pools=[FAKE_POOL],
+            weights=[123],
+            check_window=False,
+        )
+
+    assert ok is True
+    assert tx == "0xtxhash"
+    assert mock_encode.await_args.kwargs["fn_name"] == "vote"
+    assert mock_encode.await_args.kwargs["args"] == [5, [FAKE_POOL], [123]]
+
+
+@pytest.mark.asyncio
+async def test_reset_vote_returns_window_restriction(adapter_with_signer):
+    with patch.object(
+        adapter_with_signer,
+        "_can_vote_now",
+        new=AsyncMock(return_value=(False, "window closed")),
+    ):
+        ok, msg = await adapter_with_signer.reset_vote(token_id=5)
+
+    assert ok is False
+    assert msg == "window closed"
+
+
+@pytest.mark.asyncio
+async def test_claim_bribes_auto_discovers_reward_tokens(adapter_with_signer):
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            adapter_with_signer,
+            "_reward_tokens",
+            new=AsyncMock(side_effect=[["0x0000000000000000000000000000000000000007"]]),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
+        ) as mock_encode,
+        patch.object(
+            aerodrome_common_module,
+            "send_transaction",
+            new=AsyncMock(return_value="0xtxhash"),
+        ),
+    ):
+        ok, tx = await adapter_with_signer.claim_bribes(
+            token_id=1,
+            bribe_reward_contracts=["0x0000000000000000000000000000000000000006"],
+        )
+
+    assert ok is True
+    assert tx == "0xtxhash"
+    assert mock_encode.await_args.kwargs["fn_name"] == "claimBribes"
+    assert mock_encode.await_args.kwargs["args"] == [
+        ["0x0000000000000000000000000000000000000006"],
+        [["0x0000000000000000000000000000000000000007"]],
+        1,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_claim_rebases_skip_if_zero_returns_without_tx(adapter_with_signer):
+    with (
+        patch.object(
+            adapter_with_signer,
+            "get_rebase_claimable",
+            new=AsyncMock(return_value=(True, 0)),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "encode_call",
+            new=AsyncMock(side_effect=AssertionError("should not be called")),
+        ),
+    ):
+        ok, data = await adapter_with_signer.claim_rebases(token_id=1)
+
+    assert ok is True
+    assert data == {"tx": None, "claimable": 0}
+
+
+@pytest.mark.asyncio
+async def test_claim_rebases_many_rejects_empty_token_ids(adapter_with_signer):
+    ok, msg = await adapter_with_signer.claim_rebases_many(token_ids=[])
+
+    assert ok is False
+    assert "cannot be empty" in msg.lower()
 
 
 @pytest.mark.asyncio
