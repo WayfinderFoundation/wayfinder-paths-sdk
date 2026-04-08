@@ -14,6 +14,7 @@ from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
     SugarReward,
 )
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.base import SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -61,11 +62,16 @@ def test_constructor_is_base_only():
         "get_gauge",
         "get_reward_contracts",
         "get_all_markets",
+        "v2_pool_tvl_usdc",
+        "v2_staked_tvl_usdc",
+        "v2_emissions_apr",
+        "rank_v2_pools_by_emissions_apr",
         "quote_add_liquidity",
         "add_liquidity",
         "quote_remove_liquidity",
         "remove_liquidity",
         "claim_pool_fees_unstaked",
+        "lp_balance",
         "stake_lp",
         "unstake_lp",
         "claim_gauge_rewards",
@@ -85,6 +91,7 @@ def test_constructor_is_base_only():
         "claim_rebases",
         "claim_rebases_many",
         "get_full_user_state",
+        "get_vote_claimables",
     ],
 )
 def test_public_methods_do_not_accept_chain_id(method_name):
@@ -127,6 +134,23 @@ async def test_require_wallet_returns_false_when_no_wallet(method, kwargs):
     ok, msg = await getattr(adapter, method)(**kwargs)
     assert ok is False
     assert msg == "wallet address not configured"
+
+
+@pytest.mark.asyncio
+async def test_lp_balance_reads_wallet_token_balance(adapter_with_signer):
+    with patch.object(
+        aerodrome_adapter_module,
+        "get_token_balance",
+        new=AsyncMock(return_value=1234),
+    ) as mock_get_token_balance:
+        balance = await adapter_with_signer.lp_balance(FAKE_POOL)
+
+    assert balance == 1234
+    mock_get_token_balance.assert_awaited_once_with(
+        token_address=FAKE_POOL,
+        chain_id=CHAIN_ID_BASE,
+        wallet_address=FAKE_WALLET,
+    )
 
 
 @pytest.mark.asyncio
@@ -817,6 +841,194 @@ async def test_get_full_user_state_batches_related_reads():
     ]
 
 
+@pytest.mark.asyncio
+async def test_get_full_user_state_includes_vote_claimables_flag():
+    adapter = AerodromeAdapter()
+    pool0 = "0x" + "11" * 20
+    gauge0 = "0x" + "33" * 20
+
+    voter = MagicMock()
+    voter.functions.length = MagicMock(return_value=_mock_call(1))
+
+    ve = MagicMock()
+    ve.functions.balanceOf = MagicMock(return_value=_mock_call(1))
+
+    rd = MagicMock()
+
+    gauge_contract0 = MagicMock()
+    gauge_contract0.address = gauge0
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(
+        side_effect=[
+            voter,
+            ve,
+            rd,
+            MagicMock(),
+            gauge_contract0,
+        ]
+    )
+
+    with (
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            adapter,
+            "get_vote_claimables",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "votes": [
+                            {
+                                "pool": pool0,
+                                "claimableFees": [],
+                                "claimableBribes": [],
+                            }
+                        ]
+                    },
+                )
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            aerodrome_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            new=AsyncMock(
+                side_effect=[
+                    [pool0],
+                    [101],
+                    [50, gauge0],
+                    [500, 5],
+                    [700, True, 70],
+                ]
+            ),
+        ),
+    ):
+        ok, data = await adapter.get_full_user_state(
+            account=FAKE_WALLET,
+            limit=1,
+            include_vote_claimables=True,
+        )
+
+    assert ok is True
+    assert data["ve_nfts"] == [
+        {
+            "token_id": 101,
+            "voting_power": 700,
+            "voted": True,
+            "rebase_claimable": 70,
+            "vote_claimables": [
+                {
+                    "pool": pool0,
+                    "claimableFees": [],
+                    "claimableBribes": [],
+                }
+            ],
+        }
+    ]
+    mock_get_vote_claimables.assert_awaited_once_with(
+        token_id=101,
+        block_identifier="latest",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_vote_claimables_uses_pool_metadata_and_shared_helper():
+    adapter = AerodromeAdapter()
+    voter = MagicMock()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    pool = SugarPool(
+        lp="0x" + "11" * 20,
+        symbol="AERO/USDC",
+        lp_decimals=18,
+        lp_total_supply=0,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0="0x" + "12" * 20,
+        reserve0=0,
+        staked0=0,
+        token1="0x" + "13" * 20,
+        reserve1=0,
+        staked1=0,
+        gauge="0x" + "14" * 20,
+        gauge_liquidity=0,
+        gauge_alive=True,
+        fee="0x" + "15" * 20,
+        bribe="0x" + "16" * 20,
+        factory="0x" + "17" * 20,
+        emissions_per_sec=0,
+        emissions_token="0x" + "18" * 20,
+        pool_fee_pips=0,
+        unstaked_fee_pips=0,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=0,
+    )
+
+    with (
+        patch.object(
+            adapter,
+            "pools_by_lp",
+            new=AsyncMock(return_value={pool.lp: pool}),
+        ),
+        patch.object(
+            adapter,
+            "_get_vote_claimables",
+            new=AsyncMock(
+                return_value=[
+                    {
+                        "pool": pool.lp,
+                        "claimableFees": [],
+                        "claimableBribes": [],
+                    }
+                ]
+            ),
+        ) as mock_get_vote_claimables,
+        patch.object(
+            aerodrome_adapter_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+    ):
+        ok, data = await adapter.get_vote_claimables(
+            token_id=123,
+            include_zero_positions=True,
+            include_usd_values=True,
+        )
+
+    assert ok is True
+    assert data == {
+        "protocol": "aerodrome",
+        "chain_id": CHAIN_ID_BASE,
+        "tokenId": 123,
+        "votes": [
+            {
+                "pool": pool.lp,
+                "claimableFees": [],
+                "claimableBribes": [],
+            }
+        ],
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["token_id"] == 123
+    assert mock_get_vote_claimables.await_args.kwargs["pool_metadata_by_address"] == {
+        pool.lp.lower(): {
+            "symbol": "AERO/USDC",
+            "feeReward": pool.fee,
+            "bribeReward": pool.bribe,
+        }
+    }
+    assert mock_get_vote_claimables.await_args.kwargs["web3"] is mock_web3
+    assert mock_get_vote_claimables.await_args.kwargs["voter_contract"] is voter
+    assert mock_get_vote_claimables.await_args.kwargs["include_zero_positions"] is True
+    assert mock_get_vote_claimables.await_args.kwargs["include_usd_values"] is True
+
+
 def test_parse_sugar_epoch():
     token0 = "0x" + "11" * 20
     token1 = "0x" + "22" * 20
@@ -949,6 +1161,160 @@ async def test_token_price_usdc_caches_none_on_failed_quote(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_can_vote_now_returns_epoch_metadata():
+    adapter = AerodromeAdapter()
+    last_voted = 123
+    now = WEEK_SECONDS + 500
+
+    voter = MagicMock()
+    voter.functions.lastVoted = MagicMock(return_value=_mock_call(last_voted))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.get_block = AsyncMock(return_value={"timestamp": now})
+    mock_web3.eth.contract = MagicMock(return_value=voter)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, data = await adapter.can_vote_now(token_id=7)
+
+    assert ok is True
+    assert data["can_vote"] is True
+    assert data["last_voted"] == last_voted
+    assert data["epoch_start"] == WEEK_SECONDS
+    assert data["next_epoch_start"] == 2 * WEEK_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_ve_locked_returns_structured_payload():
+    adapter = AerodromeAdapter()
+    ve = MagicMock()
+    ve.functions.locked = MagicMock(return_value=_mock_call((42, 99, True)))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=ve)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, data = await adapter.ve_locked(token_id=1)
+
+    assert ok is True
+    assert data == {"amount": 42, "end": 99, "is_permanent": True}
+
+
+@pytest.mark.asyncio
+async def test_estimate_ve_apr_percent_uses_aero_price(monkeypatch):
+    adapter = AerodromeAdapter()
+
+    async def _fake_token_price(_token: str) -> float:
+        return 2.0
+
+    async def _fake_token_decimals(_token: str) -> int:
+        return 18
+
+    monkeypatch.setattr(adapter, "token_price_usdc", _fake_token_price)
+    monkeypatch.setattr(adapter, "token_decimals", _fake_token_decimals)
+
+    ok, apr = await adapter.estimate_ve_apr_percent(
+        usdc_per_ve=5.0,
+        votes_raw=2 * 10**18,
+        aero_locked_raw=10 * 10**18,
+    )
+
+    assert ok is True
+    assert apr == pytest.approx(2600.0)
+
+
+@pytest.mark.asyncio
+async def test_estimate_votes_for_lock_caps_duration():
+    adapter = AerodromeAdapter()
+
+    ok, votes = await adapter.estimate_votes_for_lock(
+        aero_amount_raw=4 * 10**18,
+        lock_duration=10**12,
+    )
+
+    assert ok is True
+    assert votes == 4 * 10**18
+
+
+@pytest.mark.asyncio
+async def test_sugar_all_batches_large_limit():
+    adapter = AerodromeAdapter()
+
+    def _addr(n: int) -> str:
+        return "0x" + f"{n:040x}"
+
+    def _row(i: int) -> tuple:
+        addr = _addr(i + 1)
+        token0 = _addr(i + 1001)
+        token1 = _addr(i + 2001)
+        return (
+            addr,
+            f"pool-{i}",
+            18,
+            100,
+            0,
+            0,
+            0,
+            token0,
+            1,
+            1,
+            token1,
+            1,
+            1,
+            _addr(i + 3001),
+            1,
+            True,
+            _addr(i + 4001),
+            _addr(i + 5001),
+            _addr(i + 6001),
+            0,
+            _addr(i + 7001),
+            30,
+            5,
+            0,
+            0,
+            1,
+        )
+
+    rows_page_1 = [_row(i) for i in range(300)]
+    rows_page_2 = [_row(i) for i in range(300, 350)]
+    seen_calls: list[tuple[int, int]] = []
+
+    def _all(limit: int, offset: int):
+        seen_calls.append((limit, offset))
+        if (limit, offset) == (300, 10):
+            return _mock_call(rows_page_1)
+        if (limit, offset) == (50, 310):
+            return _mock_call(rows_page_2)
+        raise AssertionError(f"unexpected sugar.all({limit}, {offset})")
+
+    sugar = MagicMock()
+    sugar.functions.all = MagicMock(side_effect=_all)
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=sugar)
+
+    with patch.object(
+        aerodrome_adapter_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        pools = await adapter.sugar_all(limit=350, offset=10)
+
+    assert seen_calls == [(300, 10), (50, 310)]
+    assert len(pools) == 350
+    assert pools[0].symbol == "pool-0"
+    assert pools[-1].symbol == "pool-349"
+
+
+@pytest.mark.asyncio
 async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
     adapter = AerodromeAdapter()
 
@@ -987,7 +1353,7 @@ async def test_list_pools_stops_on_known_pagination_revert(monkeypatch):
         nonlocal calls
         calls += 1
         if calls == 1:
-            assert limit == 500
+            assert limit == 300
             assert offset == 0
             return [pool]
         raise RuntimeError("execution reverted: out of bounds")
@@ -1018,6 +1384,177 @@ async def test_token_amount_usdc(monkeypatch):
     assert await adapter.token_amount_usdc(token=token, amount_raw=1_500_000) == (
         pytest.approx(3.0)
     )
+
+
+@pytest.mark.asyncio
+async def test_v2_pool_helpers_and_emissions_apr(monkeypatch):
+    adapter = AerodromeAdapter()
+    token0 = "0x" + "11" * 20
+    token1 = "0x" + "22" * 20
+    reward = "0x" + "33" * 20
+    pool = SugarPool(
+        lp=FAKE_POOL,
+        symbol="A/B",
+        lp_decimals=18,
+        lp_total_supply=1_000 * 10**18,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token0,
+        reserve0=2_000_000,
+        staked0=0,
+        token1=token1,
+        reserve1=3 * 10**18,
+        staked1=0,
+        gauge=FAKE_GAUGE,
+        gauge_liquidity=250 * 10**18,
+        gauge_alive=True,
+        fee="0x" + "44" * 20,
+        bribe="0x" + "55" * 20,
+        factory="0x" + "66" * 20,
+        emissions_per_sec=10**18,
+        emissions_token=reward,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+
+    async def _fake_decimals(token: str) -> int:
+        if token.lower() == token0.lower():
+            return 6
+        return 18
+
+    async def _fake_price(token: str) -> float | None:
+        if token.lower() == token0.lower():
+            return 1.0
+        if token.lower() == token1.lower():
+            return 2.0
+        if token.lower() == reward.lower():
+            return 4.0
+        return None
+
+    monkeypatch.setattr(adapter, "token_decimals", _fake_decimals)
+    monkeypatch.setattr(adapter, "token_price_usdc", _fake_price)
+
+    tvl = await adapter.v2_pool_tvl_usdc(pool)
+    staked_tvl = await adapter.v2_staked_tvl_usdc(pool)
+    apr = await adapter.v2_emissions_apr(pool)
+
+    assert tvl == pytest.approx(8.0)
+    assert staked_tvl == pytest.approx(2.0)
+    assert apr == pytest.approx((SECONDS_PER_YEAR * 4.0) / 2.0)
+
+
+@pytest.mark.asyncio
+async def test_rank_v2_pools_by_emissions_apr(monkeypatch):
+    adapter = AerodromeAdapter()
+    token = "0x" + "11" * 20
+
+    pool_a = SugarPool(
+        lp="0x" + "aa" * 20,
+        symbol="A/B",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=1,
+        staked1=0,
+        gauge="0x" + "01" * 20,
+        gauge_liquidity=50,
+        gauge_alive=True,
+        fee="0x" + "02" * 20,
+        bribe="0x" + "03" * 20,
+        factory="0x" + "04" * 20,
+        emissions_per_sec=200,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+    pool_b = SugarPool(
+        lp="0x" + "bb" * 20,
+        symbol="C/D",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=1,
+        staked1=0,
+        gauge="0x" + "05" * 20,
+        gauge_liquidity=50,
+        gauge_alive=True,
+        fee="0x" + "06" * 20,
+        bribe="0x" + "07" * 20,
+        factory="0x" + "08" * 20,
+        emissions_per_sec=100,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+    pool_filtered = SugarPool(
+        lp="0x" + "cc" * 20,
+        symbol="E/F",
+        lp_decimals=18,
+        lp_total_supply=100,
+        pool_type=0,
+        tick=0,
+        sqrt_ratio=0,
+        token0=token,
+        reserve0=1,
+        staked0=0,
+        token1=token,
+        reserve1=0,
+        staked1=0,
+        gauge=ZERO_ADDRESS,
+        gauge_liquidity=0,
+        gauge_alive=False,
+        fee="0x" + "09" * 20,
+        bribe="0x" + "0a" * 20,
+        factory="0x" + "0b" * 20,
+        emissions_per_sec=300,
+        emissions_token=token,
+        pool_fee_pips=30,
+        unstaked_fee_pips=5,
+        token0_fees=0,
+        token1_fees=0,
+        created_at=1,
+    )
+
+    async def _fake_list_pools(*, page_size: int, max_pools=None):
+        assert page_size == 500
+        assert max_pools is None
+        return [pool_b, pool_filtered, pool_a]
+
+    async def _fake_apr(pool: SugarPool) -> float | None:
+        if pool.lp.lower() == pool_a.lp.lower():
+            return 1.5
+        if pool.lp.lower() == pool_b.lp.lower():
+            return 0.5
+        return None
+
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "v2_emissions_apr", _fake_apr)
+
+    ranked = await adapter.rank_v2_pools_by_emissions_apr(top_n=5)
+
+    assert ranked == [(1.5, pool_a), (0.5, pool_b)]
 
 
 @pytest.mark.asyncio
@@ -1089,10 +1626,82 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
         fees=[],
     )
 
-    async def _fake_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
-        assert limit == 1000
+    pools = [
+        SugarPool(
+            lp=lp_a,
+            symbol="A/B",
+            lp_decimals=18,
+            lp_total_supply=100,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=1,
+            staked0=1,
+            token1=lp_b,
+            reserve1=1,
+            staked1=1,
+            gauge=lp_a,
+            gauge_liquidity=1,
+            gauge_alive=True,
+            fee=lp_a,
+            bribe=lp_a,
+            factory=lp_a,
+            emissions_per_sec=0,
+            emissions_token=lp_a,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_b,
+            symbol="B/C",
+            lp_decimals=18,
+            lp_total_supply=100,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_b,
+            reserve0=1,
+            staked0=1,
+            token1=lp_a,
+            reserve1=1,
+            staked1=1,
+            gauge=lp_b,
+            gauge_liquidity=1,
+            gauge_alive=True,
+            fee=lp_b,
+            bribe=lp_b,
+            factory=lp_b,
+            emissions_per_sec=0,
+            emissions_token=lp_b,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+    ]
+
+    async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
+        assert max_pools == 1000
+        return pools
+
+    async def _fake_epochs_by_address(
+        *,
+        pool: str,
+        limit: int,
+        offset: int,
+    ) -> list[SugarEpoch]:
+        assert limit == 1
         assert offset == 0
-        return [epoch_a_latest, epoch_a_old, epoch_b_latest]
+        if pool.lower() == lp_a.lower():
+            return [epoch_a_latest, epoch_a_old]
+        if pool.lower() == lp_b.lower():
+            return [epoch_b_latest]
+        return []
 
     async def _fake_total_usdc(
         epoch: SugarEpoch,
@@ -1106,7 +1715,8 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
             return 50.0
         return None
 
-    monkeypatch.setattr(adapter, "sugar_epochs_latest", _fake_epochs_latest)
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
     monkeypatch.setattr(adapter, "epoch_total_incentives_usdc", _fake_total_usdc)
 
     ranked = await adapter.rank_pools_by_usdc_per_ve(top_n=10, limit=1000)
@@ -1118,7 +1728,7 @@ async def test_rank_pools_by_usdc_per_ve(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypatch):
+async def test_rank_pools_by_usdc_per_ve_uses_pool_epoch_lookup(monkeypatch):
     adapter = AerodromeAdapter()
     lp_a = "0x" + "11" * 20
     lp_b = "0x" + "22" * 20
@@ -1200,10 +1810,8 @@ async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypat
         fees=[],
     )
 
-    async def _fake_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
-        assert limit == 2
-        assert offset == 0
-        raise RuntimeError("out of gas")
+    async def _unexpected_epochs_latest(*, limit: int, offset: int) -> list[SugarEpoch]:
+        raise AssertionError("sugar_epochs_latest should not be called")
 
     async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
         assert max_pools == 2
@@ -1235,7 +1843,7 @@ async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypat
             return 50.0
         return None
 
-    monkeypatch.setattr(adapter, "sugar_epochs_latest", _fake_epochs_latest)
+    monkeypatch.setattr(adapter, "sugar_epochs_latest", _unexpected_epochs_latest)
     monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
     monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
     monkeypatch.setattr(adapter, "epoch_total_incentives_usdc", _fake_total_usdc)
@@ -1246,3 +1854,150 @@ async def test_rank_pools_by_usdc_per_ve_falls_back_from_epochs_latest(monkeypat
     assert ranked[0][1].lp.lower() == lp_a.lower()
     assert ranked[1][1].lp.lower() == lp_b.lower()
     assert ranked[0][0] > ranked[1][0]
+    assert adapter._latest_epochs_for_ranking_stats == {
+        "requested_limit": 2,
+        "pool_count": 2,
+        "batch_size": 10,
+        "rpc_calls": 2,
+        "epochs_found": 2,
+        "empty_pools": 0,
+        "failed_pools": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_latest_epochs_for_ranking_skips_failed_and_empty_pools(monkeypatch):
+    adapter = AerodromeAdapter()
+    lp_a = "0x1111111111111111111111111111111111111111"
+    lp_b = "0x2222222222222222222222222222222222222222"
+    lp_c = "0x3333333333333333333333333333333333333333"
+
+    pools = [
+        SugarPool(
+            lp=lp_a,
+            symbol="pool-a",
+            lp_decimals=18,
+            lp_total_supply=1,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=0,
+            staked0=0,
+            token1=lp_b,
+            reserve1=0,
+            staked1=0,
+            gauge=lp_a,
+            gauge_liquidity=0,
+            gauge_alive=True,
+            fee=lp_a,
+            bribe=lp_a,
+            factory=lp_a,
+            emissions_per_sec=0,
+            emissions_token=lp_a,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_b,
+            symbol="pool-b",
+            lp_decimals=18,
+            lp_total_supply=1,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=0,
+            staked0=0,
+            token1=lp_b,
+            reserve1=0,
+            staked1=0,
+            gauge=lp_b,
+            gauge_liquidity=0,
+            gauge_alive=True,
+            fee=lp_b,
+            bribe=lp_b,
+            factory=lp_b,
+            emissions_per_sec=0,
+            emissions_token=lp_b,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+        SugarPool(
+            lp=lp_c,
+            symbol="pool-c",
+            lp_decimals=18,
+            lp_total_supply=1,
+            pool_type=0,
+            tick=0,
+            sqrt_ratio=0,
+            token0=lp_a,
+            reserve0=0,
+            staked0=0,
+            token1=lp_c,
+            reserve1=0,
+            staked1=0,
+            gauge=lp_c,
+            gauge_liquidity=0,
+            gauge_alive=True,
+            fee=lp_c,
+            bribe=lp_c,
+            factory=lp_c,
+            emissions_per_sec=0,
+            emissions_token=lp_c,
+            pool_fee_pips=0,
+            unstaked_fee_pips=0,
+            token0_fees=0,
+            token1_fees=0,
+            created_at=1,
+        ),
+    ]
+
+    epoch_a = SugarEpoch(
+        ts=100,
+        lp=lp_a,
+        votes=10,
+        emissions=0,
+        bribes=[],
+        fees=[],
+    )
+
+    async def _fake_list_pools(*, max_pools: int | None = None) -> list[SugarPool]:
+        assert max_pools == 3
+        return pools
+
+    async def _fake_epochs_by_address(
+        *,
+        pool: str,
+        limit: int,
+        offset: int,
+    ) -> list[SugarEpoch]:
+        assert limit == 1
+        assert offset == 0
+        if pool.lower() == lp_a.lower():
+            return [epoch_a]
+        if pool.lower() == lp_b.lower():
+            return []
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(adapter, "list_pools", _fake_list_pools)
+    monkeypatch.setattr(adapter, "sugar_epochs_by_address", _fake_epochs_by_address)
+
+    epochs = await adapter._latest_epochs_for_ranking(limit=3)
+
+    assert [epoch.lp.lower() for epoch in epochs] == [lp_a.lower()]
+    assert adapter._latest_epochs_for_ranking_stats == {
+        "requested_limit": 3,
+        "pool_count": 3,
+        "batch_size": 10,
+        "rpc_calls": 3,
+        "epochs_found": 1,
+        "empty_pools": 1,
+        "failed_pools": 1,
+    }
