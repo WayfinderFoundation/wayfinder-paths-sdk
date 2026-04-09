@@ -160,26 +160,33 @@ ReadMcpResourceTool(
 ```
 
 ### 8. Asset Timeseries (Quick Snapshots)
-**URIs:**
+
+**Asset timeseries (exact symbol, default):**
 - `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}`
 - `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}`
-- `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}/{basis}`
+
+**Basis timeseries (expands to basis group members):**
+- `wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}`
+- `wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}`
 
 **MCP Philosophy:** SHORT, interpretable results only. For serious analysis, use the client.
 
 **Path Parameters:**
-- `{symbol}` - Asset symbol (e.g., "ETH", "BTC")
+- `{symbol}` - Asset symbol (e.g., "USDC", "ETH")
 - `{series}` - Data series: "price" (default), "yield", "lending", "funding", "pendle", "boros", "rates" (all rates), or empty for all
 - `{lookback_days}` - Number of days to look back (default: "7" for quick snapshot)
 - `{limit}` - Maximum data points per series (default: "100", max: "10000")
-- `{venue}` - Venue name prefix to filter on (e.g. "moonwell", "hyperliquid"). Use `_` for no filter (default). Applied to funding, lending, pendle, boros series.
-- `{basis}` - Whether to expand symbol to basis group members for lending (default: "true"). Set to "false" for exact symbol matches only (asset mode). E.g. USDC with basis=true returns sUSDC pools too; basis=false returns only USDC pools.
+- `{venue}` - Venue name prefix to filter on (e.g. "moonwell", "hyperliquid"). Use `_` for no filter.
 
 **Available Series:** `price`, `yield`, `lending`, `funding`, `pendle`, `boros`, `rates` (all rates), or empty string (all series)
 
-**Venue filter:** The `venue` parameter solves the old limit-vs-lookback conflict. Previously, requesting lending data for a multi-venue asset with a limit of 1000 would return data across ALL venues, cutting off some. With `venue`, you get the full data window for a single venue.
+**Asset vs Basis mode:**
+- **Asset (default):** `{symbol}/timeseries/...` — returns data for the exact symbol only. "USDC" returns only USDC pools.
+- **Basis:** `basis/{symbol}/timeseries/...` — expands the symbol to all basis group members. "USDC" returns USDC + sUSDC + aUSDC etc.
 
-**Basis vs Asset mode:** By default (`basis=true`), lending series expand the query symbol to all basis group members. E.g. querying "USDC" also returns sUSDC, aUSDC, etc. Set `basis=false` to restrict to exact symbol matches only — useful when you know exactly which asset's pools you want.
+Use asset mode (the default) when you know what you want. Use basis mode when exploring all related assets.
+
+**Venue filter:** Solves the old limit-vs-lookback conflict. Previously, a limit of 1000 across 50 venues meant ~20 rows per venue. With `venue`, you get the full data window for a single venue.
 
 **Note:** MCP resource returns JSON arrays. For DataFrame formatting, use the client (see below).
 
@@ -191,13 +198,7 @@ ReadMcpResourceTool(
     uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
 )
 
-# Recent funding rates
-ReadMcpResourceTool(
-    server="wayfinder",
-    uri="wayfinder://delta-lab/BTC/timeseries/funding/7/100"
-)
-
-# ✅ Moonwell USDC lending rates (venue filter — guarantees full time coverage)
+# ✅ Moonwell USDC lending rates (exact asset + venue filter)
 ReadMcpResourceTool(
     server="wayfinder",
     uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/moonwell"
@@ -209,16 +210,16 @@ ReadMcpResourceTool(
     uri="wayfinder://delta-lab/BTC/timeseries/funding/14/500/hyperliquid"
 )
 
-# ✅ USDC lending as exact asset (no sUSDC etc.)
+# ✅ All USD-basis lending (USDC + sUSDC + aUSDC etc.)
 ReadMcpResourceTool(
     server="wayfinder",
-    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/_/false"
+    uri="wayfinder://delta-lab/basis/USDC/timeseries/lending/7/500"
 )
 
-# ✅ Moonwell USDC lending, asset mode only
+# ✅ All USD-basis lending on Moonwell
 ReadMcpResourceTool(
     server="wayfinder",
-    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/moonwell/false"
+    uri="wayfinder://delta-lab/basis/USDC/timeseries/lending/7/500/moonwell"
 )
 ```
 
@@ -233,7 +234,7 @@ data = await DELTA_LAB_CLIENT.get_asset_timeseries(
 )
 data["price"]["price_usd"].plot(title="ETH 30-day Price")
 
-# ✅ Get Moonwell lending rates directly (no post-filtering needed)
+# ✅ Moonwell USDC lending (exact asset is the default)
 data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     symbol="USDC",
     series="lending",
@@ -241,19 +242,18 @@ data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     limit=800,
     venue="moonwell",
 )
-lending_df = data["lending"]  # All rows are Moonwell
+lending_df = data["lending"]  # All rows are Moonwell USDC
 
-# ✅ USDC as exact asset (not basis group)
+# ✅ Expand to basis group (USDC + sUSDC + aUSDC etc.)
 data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     symbol="USDC",
     series="lending",
-    lookback_days=30,
-    limit=800,
-    venue="moonwell",
-    basis=False,
+    lookback_days=7,
+    limit=500,
+    basis=True,
 )
 
-# ✅ Compare funding across venues (or filter to one)
+# ✅ Hyperliquid BTC funding only
 data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     symbol="BTC",
     series="funding",

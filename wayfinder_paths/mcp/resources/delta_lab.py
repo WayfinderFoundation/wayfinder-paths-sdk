@@ -228,65 +228,120 @@ async def get_top_apy(lookback_days: str = "7", limit: str = "50") -> dict[str, 
         return {"error": str(exc)}
 
 
-async def get_asset_timeseries_data(
+async def _get_asset_timeseries_impl(
     symbol: str,
-    series: str = "price",
-    lookback_days: str = "7",
-    limit: str = "100",
+    series: str,
+    lookback_days: str,
+    limit: str,
     venue: str = "_",
-    basis: str = "true",
+    basis: bool = False,
 ) -> dict[str, Any]:
-    """Get timeseries data for an asset (MCP: quick snapshots only).
-
-    MCP defaults prioritize SHORT, interpretable results. For longer time ranges,
-    multi-venue lending data, or DataFrame-based analysis, use the client directly:
-    DELTA_LAB_CLIENT.get_asset_timeseries() (see /using-delta-lab skill).
-
-    Args:
-        symbol: Asset symbol (e.g., "ETH", "BTC")
-        series: Data series - "price" (default), "funding", "lending", "rates", etc.
-               Empty string = all series (can be large!)
-        lookback_days: Number of days to look back (default: "7" for quick snapshot)
-        limit: Maximum number of data points per series (default: "100", max: "10000")
-        venue: Venue name prefix to filter on (e.g. "moonwell", "hyperliquid").
-               Use "_" for no filter (default). Applied to funding, lending,
-               pendle, boros series.
-        basis: Whether to expand symbol to basis group members for lending
-               (default: "true"). Set to "false" to restrict to exact symbol
-               matches only (asset mode).
-
-    Returns:
-        Dict with series data as JSON arrays (use client for DataFrames)
-    """
+    """Shared implementation for timeseries MCP resources."""
     try:
         lookback_int = int(lookback_days)
         limit_int = int(limit)
         limit_int = min(10000, max(1, limit_int))  # Enforce 1-10000 range
         series_param = series if series else None  # Empty string -> None (all series)
         venue_param = venue.strip() if venue.strip() not in ("_", "") else None
-        basis_param = basis.strip().lower() != "false"
 
-        # Get DataFrames from client
         dataframes = await DELTA_LAB_CLIENT.get_asset_timeseries(
             symbol=symbol.upper(),
             lookback_days=lookback_int,
             limit=limit_int,
             series=series_param,
             venue=venue_param,
-            basis=basis_param,
+            basis=basis,
         )
 
-        # Convert DataFrames back to JSON arrays for MCP
         result: dict[str, Any] = {}
         for series_name, df in dataframes.items():
-            # Reset index to make ts a column again
             df_reset = df.reset_index()
-            # Convert to list of dicts
             result[series_name] = df_reset.to_dict("records")
 
         return result
     except Exception as exc:
         return {"error": str(exc)}
+
+
+async def get_asset_timeseries_data(
+    symbol: str,
+    series: str = "price",
+    lookback_days: str = "7",
+    limit: str = "100",
+) -> dict[str, Any]:
+    """Get timeseries data for an asset (exact symbol, no basis expansion).
+
+    Args:
+        symbol: Asset symbol (e.g., "USDC", "ETH")
+        series: Data series - "price" (default), "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back (default: "7")
+        limit: Maximum data points per series (default: "100", max: "10000")
+    """
+    return await _get_asset_timeseries_impl(symbol, series, lookback_days, limit)
+
+
+async def get_asset_timeseries_with_venue(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+    venue: str,
+) -> dict[str, Any]:
+    """Get timeseries data for an asset filtered by venue (exact symbol, no basis expansion).
+
+    Args:
+        symbol: Asset symbol (e.g., "USDC", "ETH")
+        series: Data series - "price", "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back
+        limit: Maximum data points per series (max: "10000")
+        venue: Venue name prefix (e.g. "moonwell", "hyperliquid"). Use "_" for no filter.
+    """
+    return await _get_asset_timeseries_impl(
+        symbol, series, lookback_days, limit, venue=venue
+    )
+
+
+async def get_basis_timeseries_data(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+) -> dict[str, Any]:
+    """Get timeseries data expanded to all basis group members.
+
+    Use this when you want data for all related assets — e.g. "USDC" returns
+    USDC + sUSDC + aUSDC etc., "ETH" returns ETH + wstETH + cbETH etc.
+
+    Args:
+        symbol: Basis symbol (e.g., "USDC", "ETH")
+        series: Data series - "price", "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back
+        limit: Maximum data points per series (max: "10000")
+    """
+    return await _get_asset_timeseries_impl(
+        symbol, series, lookback_days, limit, basis=True
+    )
+
+
+async def get_basis_timeseries_with_venue(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+    venue: str,
+) -> dict[str, Any]:
+    """Get timeseries data expanded to all basis group members, filtered by venue.
+
+    Args:
+        symbol: Basis symbol (e.g., "USDC", "ETH")
+        series: Data series - "price", "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back
+        limit: Maximum data points per series (max: "10000")
+        venue: Venue name prefix (e.g. "moonwell", "hyperliquid"). Use "_" for no filter.
+    """
+    return await _get_asset_timeseries_impl(
+        symbol, series, lookback_days, limit, venue=venue, basis=True
+    )
 
 
 async def screen_price(

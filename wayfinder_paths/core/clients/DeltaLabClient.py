@@ -217,7 +217,7 @@ class DeltaLabClient(WayfinderClient):
         as_of: datetime | None = None,
         series: str | None = None,
         venue: str | None = None,
-        basis: bool = True,
+        basis: bool = False,
     ) -> dict[str, pd.DataFrame]:
         """
         Get timeseries data for an asset.
@@ -234,9 +234,9 @@ class DeltaLabClient(WayfinderClient):
                    venue filtering (funding, lending, pendle, boros).
                    E.g. "hyperliquid", "moonwell". None means no filter.
             basis: Whether to expand the symbol to all basis group members for
-                   lending series (default: True). Set to False to restrict lending
-                   to exact symbol matches only (asset mode). E.g. USDC with
-                   basis=True returns sUSDC etc., basis=False returns only USDC pools.
+                   lending series (default: False). Set to True to expand — e.g.
+                   USDC with basis=True returns sUSDC, aUSDC etc. in addition
+                   to USDC pools.
 
         Returns:
             Dict mapping series names to DataFrames:

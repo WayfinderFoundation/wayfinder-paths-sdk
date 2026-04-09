@@ -18,7 +18,7 @@ Common mistakes and important considerations when using Delta Lab.
 | Using `candidates[0]` for lowest risk | Use `pareto_frontier` | Candidates sorted by APY, not risk |
 | Ignoring `warnings` field | Always check `result["warnings"]` | Data quality issues affect decisions |
 | `get_asset_timeseries(symbol="USDC", series="lending", limit=1000)` (no venue) | Add `venue="moonwell"` when you want one venue | Without venue filter, limit is shared across all venues — data gets cut off |
-| `get_asset_timeseries(symbol="USDC", series="lending")` expecting only USDC pools | Add `basis=False` for exact asset | Default `basis=True` expands to sUSDC, aUSDC, etc. |
+| `get_asset_timeseries(..., basis=True)` when you want one asset | Omit `basis` (defaults to `False`) | Default is exact asset; pass `basis=True` only to expand to basis group |
 
 ## 0. Basis Symbol vs Asset Symbol
 

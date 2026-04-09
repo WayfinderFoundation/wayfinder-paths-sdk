@@ -22,7 +22,8 @@ These are the core Delta Lab client methods you'll use most often.
 - "Find all WETH assets across chains" → `get_assets_by_address("0xC02a...")`
 - "Is ETH in a basis group?" → `get_asset_basis("ETH")`
 - "Get price history for plotting" → `get_asset_timeseries("ETH", series="price")`
-- "Compare lending rates over time" → `get_asset_timeseries("USDC", series="lending")`
+- "USDC lending over time" → `get_asset_timeseries("USDC", series="lending")` (exact asset, default)
+- "All stablecoin lending over time" → `get_asset_timeseries("USDC", series="lending", basis=True)` (expands to sUSDC etc.)
 
 **Important:** Delta Lab is **read-only** (discovery only, no execution).
 
@@ -441,28 +442,22 @@ if eth_basis["basis"] and weth_basis["basis"]:
 MCP timeseries defaults prioritize SHORT, interpretable results. For serious analysis, use the client.
 
 ```python
-# Quick snapshot: price, 7 days, 100 points (all defaults)
+# Quick snapshot: price, 7 days, 100 points
 ReadMcpResourceTool(
     server="wayfinder",
     uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
 )
 
-# Recent funding rates
-ReadMcpResourceTool(
-    server="wayfinder",
-    uri="wayfinder://delta-lab/BTC/timeseries/funding/7/100"
-)
-
-# ✅ Moonwell USDC lending (venue filter — full time coverage for one venue)
+# ✅ Moonwell USDC lending (exact asset + venue filter)
 ReadMcpResourceTool(
     server="wayfinder",
     uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/moonwell"
 )
 
-# ✅ USDC lending, exact asset only (no sUSDC etc.)
+# ✅ All USD-basis lending (USDC + sUSDC + aUSDC etc.)
 ReadMcpResourceTool(
     server="wayfinder",
-    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/_/false"
+    uri="wayfinder://delta-lab/basis/USDC/timeseries/lending/7/500"
 )
 ```
 
@@ -478,7 +473,7 @@ data = await DELTA_LAB_CLIENT.get_asset_timeseries(
 )
 data["price"]["price_usd"].plot(title="ETH 30-day Price")
 
-# ✅ Moonwell USDC lending — venue filter guarantees full time window
+# ✅ Moonwell USDC lending (exact asset is the default)
 data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     symbol="USDC",
     series="lending",
@@ -486,15 +481,15 @@ data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     limit=800,
     venue="moonwell",
 )
-lending_df = data["lending"]  # All rows are Moonwell
+lending_df = data["lending"]  # All rows are Moonwell USDC only
 
-# ✅ Exact asset mode (basis=False) — only USDC pools, not sUSDC etc.
+# ✅ Expand to basis group (USDC + sUSDC + aUSDC etc.)
 data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     symbol="USDC",
     series="lending",
-    lookback_days=30,
-    limit=800,
-    basis=False,
+    lookback_days=7,
+    limit=500,
+    basis=True,
 )
 ```
 
@@ -530,7 +525,7 @@ Returns `dict[str, pd.DataFrame]` with each series as a separate DataFrame:
 ### Filtering Parameters
 
 - **`venue`** (str | None): Venue name prefix to filter on (e.g. "moonwell", "hyperliquid"). Applied to series with venue data (funding, lending, pendle, boros). Solves the old limit-vs-lookback conflict — previously a 30-day lookback with 1000-point limit across 50 venues would cut off data; now you can isolate a single venue and get full coverage.
-- **`basis`** (bool, default True): Whether to expand the query symbol to all basis group members for lending series. `True` (default) = "USDC" includes sUSDC, aUSDC etc. `False` = exact symbol matches only. Useful when you know exactly which asset's pools you want.
+- **`basis`** (bool, default **False**): Whether to expand the query symbol to all basis group members for lending series. `False` (default) = exact symbol only ("USDC" returns only USDC pools). `True` = expand to basis group ("USDC" also includes sUSDC, aUSDC etc.). In MCP, use the `basis/{symbol}/timeseries/...` URI for basis mode.
 
 ### Use Cases
 
