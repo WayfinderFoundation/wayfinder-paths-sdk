@@ -121,6 +121,12 @@ mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
 mcp.resource(
     "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
 )(get_asset_timeseries_data)
+mcp.resource(
+    "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}"
+)(get_asset_timeseries_data)
+mcp.resource(
+    "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}/{basis}"
+)(get_asset_timeseries_data)
 mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
 mcp.resource(
     "wayfinder://delta-lab/screen/price/by-asset-ids/{sort}/{limit}/{asset_ids}"
