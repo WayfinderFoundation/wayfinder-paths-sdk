@@ -10,8 +10,9 @@ These are the core Delta Lab client methods you'll use most often.
 - "What are the absolute best APYs right now?" → `get_top_apy()` (all symbols)
 - "What are the best APYs for BTC/ETH?" → `get_basis_apy_sources(basis_symbol="BTC")`
 - "Find me delta-neutral opportunities" → `get_best_delta_neutral_pairs()`
-- "What lending rates are available for X?" → `screen_lending(basis="ETH")` or `get_basis_apy_sources()` + filter
-- "Compare funding rates across venues" → `screen_perp(basis="BTC")` or `get_basis_apy_sources()` + filter
+- "What lending rates are available for X?" → `screen_lending(basis="ETH")` or `timeseries(series="lending", venue="moonwell")`
+- "USDC lending rates?" → `screen_lending(basis="USD")` (USDC → USD basis group; MCP auto-resolves)
+- "Compare funding rates across venues" → `screen_perp(basis="BTC")` or `timeseries(series="funding", venue="hyperliquid")`
 - "Show me the highest yield with lowest risk" → `get_best_delta_neutral_pairs()` + use `pareto_frontier`
 - "What are the top movers today?" → `screen_price(sort="ret_1d")`
 - "Which perps have highest funding?" → `screen_perp(sort="funding_now")`
@@ -451,11 +452,21 @@ ReadMcpResourceTool(
     server="wayfinder",
     uri="wayfinder://delta-lab/BTC/timeseries/funding/7/100"
 )
+
+# ✅ Moonwell USDC lending (venue filter — full time coverage for one venue)
+ReadMcpResourceTool(
+    server="wayfinder",
+    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/moonwell"
+)
+
+# ✅ USDC lending, exact asset only (no sUSDC etc.)
+ReadMcpResourceTool(
+    server="wayfinder",
+    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/_/false"
+)
 ```
 
 **Client (Serious Analysis - DataFrames):**
-
-For anything beyond quick snapshots (plotting, filtering, multi-day, multi-venue), use the client:
 
 ```python
 # Plot price history (30 days, 1000 points)
@@ -464,9 +475,27 @@ data = await DELTA_LAB_CLIENT.get_asset_timeseries(
     series="price",
     lookback_days=30,
     limit=1000,
-    as_of=None,  # Optional: query as of a specific time
 )
 data["price"]["price_usd"].plot(title="ETH 30-day Price")
+
+# ✅ Moonwell USDC lending — venue filter guarantees full time window
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="USDC",
+    series="lending",
+    lookback_days=30,
+    limit=800,
+    venue="moonwell",
+)
+lending_df = data["lending"]  # All rows are Moonwell
+
+# ✅ Exact asset mode (basis=False) — only USDC pools, not sUSDC etc.
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="USDC",
+    series="lending",
+    lookback_days=30,
+    limit=800,
+    basis=False,
+)
 ```
 
 ### Response Structure
@@ -498,49 +527,52 @@ Returns `dict[str, pd.DataFrame]` with each series as a separate DataFrame:
 - `"rates"` - Alias for all rate series (yield, lending, pendle, boros, funding)
 - `None` - Return all available series (default)
 
+### Filtering Parameters
+
+- **`venue`** (str | None): Venue name prefix to filter on (e.g. "moonwell", "hyperliquid"). Applied to series with venue data (funding, lending, pendle, boros). Solves the old limit-vs-lookback conflict — previously a 30-day lookback with 1000-point limit across 50 venues would cut off data; now you can isolate a single venue and get full coverage.
+- **`basis`** (bool, default True): Whether to expand the query symbol to all basis group members for lending series. `True` (default) = "USDC" includes sUSDC, aUSDC etc. `False` = exact symbol matches only. Useful when you know exactly which asset's pools you want.
+
 ### Use Cases
 
 **Plot price history:**
 ```python
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price", lookback_days=7)
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(symbol="ETH", series="price", lookback_days=7)
 data["price"]["price_usd"].plot(title="ETH Price (7d)")
 ```
 
-**Compare lending rates across venues:**
+**Get lending rates for a specific venue:**
 ```python
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("USDC", series="lending", lookback_days=30)
-lending_df = data["lending"]
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="USDC", series="lending", lookback_days=30, limit=800, venue="moonwell"
+)
+data["lending"]["supply_apr"].plot(title="USDC Supply APR (Moonwell)")
+```
 
-# Plot supply APR by venue
-import matplotlib.pyplot as plt
+**Compare lending rates across venues (no venue filter):**
+```python
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="USDC", series="lending", lookback_days=30, limit=5000
+)
+lending_df = data["lending"]
 for venue in lending_df["venue"].unique():
     venue_data = lending_df[lending_df["venue"] == venue]
-    plt.plot(venue_data.index, venue_data["supply_apr"], label=venue)
-plt.legend()
-plt.title("USDC Supply APR by Venue")
-plt.show()
+    venue_data["supply_apr"].plot(label=venue)
 ```
 
 **Analyze funding rate trends:**
 ```python
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("BTC", series="funding", lookback_days=30)
-funding_df = data["funding"]
-
-# Calculate average funding rate by venue
-avg_funding = funding_df.groupby("venue")["funding_rate"].mean()
-print(avg_funding.sort_values(ascending=False))
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="BTC", series="funding", lookback_days=30, venue="hyperliquid"
+)
+data["funding"]["funding_rate"].plot(title="BTC Funding (Hyperliquid)")
 ```
 
 **Get all rate series at once:**
 ```python
-# Get price + all rate series
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("ETH", series="price,rates", lookback_days=7)
-
-# Access each series
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(symbol="ETH", series="price,rates", lookback_days=7)
 price_df = data["price"]
 lending_df = data["lending"]
 funding_df = data["funding"]
-# ... etc
 ```
 
 ## 7. Screening (Cross-Venue Feature Snapshots)
