@@ -14,6 +14,7 @@ Use this skill when you are:
 - Emitting signals/receipts to make a path page feel “alive”
 - Defining canonical path skill source in `wfpath.yaml` + `skill/instructions.md`
 - Generating host-specific skill exports for Claude Code, Codex, OpenClaw, and portable use
+- Adding live data fetching or interactive controls to a path applet
 
 ## How to use
 
