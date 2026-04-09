@@ -95,6 +95,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
 | Contract Dev          | `/contract-development`          |
+| Paths (search/install/build/publish) | `/developing-wayfinder-paths` |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
