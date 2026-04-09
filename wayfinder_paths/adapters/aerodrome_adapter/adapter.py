@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from eth_utils import to_checksum_address
+from loguru import logger
 
 import wayfinder_paths.adapters.aerodrome_common as aerodrome_common
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
@@ -22,7 +24,7 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
     AERODROME_VOTING_ESCROW_ABI,
 )
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
-from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WETH
 from wayfinder_paths.core.utils.multicall import (
@@ -32,6 +34,7 @@ from wayfinder_paths.core.utils.multicall import (
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_erc20_metadata,
+    get_token_balance,
     is_native_token,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
@@ -40,7 +43,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import slippage_min
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _SUGAR_CALL_GAS = 30_000_000
-_TOKEN_PRICE_USDC_TTL_SECONDS = 20.0
+_SUGAR_ALL_PAGE_SIZE = 300
 
 
 @dataclass(frozen=True)
@@ -117,7 +120,11 @@ class SugarPool:
         return self.pool_type == 0
 
 
-class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter):
+class AerodromeAdapter(
+    aerodrome_common.AerodromeTokenHelpersMixin,
+    aerodrome_common.AerodromeVotingRewardsMixin,
+    BaseAdapter,
+):
     """
     Aerodrome classic pool/gauge/veAERO adapter (Base mainnet only).
 
@@ -154,6 +161,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         self._token_price_usdc_cache: dict[str, tuple[float, float | None]] = {}
         self._sugar_pools_cache: list[SugarPool] | None = None
         self._sugar_pools_by_lp_cache: dict[str, SugarPool] | None = None
+        self._latest_epochs_for_ranking_stats: dict[str, int] | None = None
 
     async def get_amounts_out(self, amount_in: int, routes: list[Route]) -> list[int]:
         if amount_in <= 0:
@@ -260,11 +268,8 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         self._token_decimals_cache[token] = decimals
         return symbol, decimals
 
-    async def token_decimals(self, token: str) -> int:
-        token = to_checksum_address(token)
-        if token in self._token_decimals_cache:
-            return self._token_decimals_cache[token]
-        _symbol, decimals = await self._load_token_metadata(token)
+    async def _fetch_token_decimals(self, token_addr: str) -> int:
+        _symbol, decimals = await self._load_token_metadata(token_addr)
         return decimals
 
     async def token_symbol(self, token: str) -> str:
@@ -282,7 +287,10 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         cached = self._token_price_usdc_cache.get(token)
         if cached is not None:
             cached_at, cached_price = cached
-            if now - cached_at <= _TOKEN_PRICE_USDC_TTL_SECONDS:
+            if (
+                now - cached_at
+                <= aerodrome_common.AERODROME_TOKEN_PRICE_USDC_TTL_SECONDS
+            ):
                 return cached_price
 
         decimals = await self.token_decimals(token)
@@ -294,12 +302,12 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 intermediates=[BASE_WETH],
             )
         except Exception:
-            self._token_price_usdc_cache[token] = (time.monotonic(), None)
-            return None
+            out = None
 
-        if out <= 0:
-            self._token_price_usdc_cache[token] = (time.monotonic(), None)
-            return None
+        if out is None or out <= 0:
+            price = await self._token_price_usdc_from_market_data(token)
+            self._token_price_usdc_cache[token] = (time.monotonic(), price)
+            return price
 
         price = out / 10**6
         self._token_price_usdc_cache[token] = (time.monotonic(), price)
@@ -373,21 +381,39 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             created_at=row[25],
         )
 
-    async def sugar_all(self, *, limit: int = 500, offset: int = 0) -> list[SugarPool]:
+    async def sugar_all(
+        self,
+        *,
+        limit: int = _SUGAR_ALL_PAGE_SIZE,
+        offset: int = 0,
+    ) -> list[SugarPool]:
         async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
             sugar = web3.eth.contract(
                 address=self.core_contracts["sugar"],
                 abi=AERODROME_SUGAR_ABI,
             )
-            rows = await sugar.functions.all(limit, offset).call(
-                transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
-            )
-        return [self._parse_sugar_pool(row) for row in rows]
+            out: list[SugarPool] = []
+            remaining = limit
+            next_offset = offset
+            # Not calling gather here, because each sugar call is heavy so we may hit limits
+            while remaining > 0:
+                batch_limit = min(remaining, _SUGAR_ALL_PAGE_SIZE)
+                batch = await sugar.functions.all(batch_limit, next_offset).call(
+                    transaction={"gas": _SUGAR_CALL_GAS}, block_identifier="latest"
+                )
+                out.extend(batch)
+                received = len(batch)
+                if received == 0:
+                    break
+                remaining -= received
+                next_offset += received
+
+            return [self._parse_sugar_pool(row) for row in out]
 
     async def list_pools(
         self,
         *,
-        page_size: int = 500,
+        page_size: int = _SUGAR_ALL_PAGE_SIZE,
         max_pools: int | None = None,
     ) -> list[SugarPool]:
         out: list[SugarPool] = []
@@ -466,25 +492,26 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
             )
         return [self._parse_sugar_epoch(row) for row in rows]
 
-    @staticmethod
-    def _is_out_of_gas_error(exc: Exception) -> bool:
-        return "out of gas" in str(exc).lower()
-
     async def _latest_epochs_for_ranking(self, *, limit: int) -> list[SugarEpoch]:
-        try:
-            return await self.sugar_epochs_latest(limit=limit, offset=0)
-        except Exception as exc:
-            if not self._is_out_of_gas_error(exc):
-                raise
-
+        # NOTE: removed sugar_epochs_latest as it consistently failed
         if self._sugar_pools_cache is not None:
             pools = self._sugar_pools_cache[:limit]
         else:
             pools = await self.list_pools(max_pools=limit)
 
         epochs: list[SugarEpoch] = []
-        for i in range(0, len(pools), 25):
-            pool_batch = pools[i : i + 25]
+        batch_size = 10
+        stats = {
+            "requested_limit": limit,
+            "pool_count": len(pools),
+            "batch_size": batch_size,
+            "rpc_calls": 0,
+            "epochs_found": 0,
+            "empty_pools": 0,
+            "failed_pools": 0,
+        }
+        for i in range(0, len(pools), batch_size):
+            pool_batch = pools[i : i + batch_size]
             batch_results = await asyncio.gather(
                 *[
                     self.sugar_epochs_by_address(
@@ -493,24 +520,24 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                         offset=0,
                     )
                     for pool in pool_batch
-                ]
+                ],
+                return_exceptions=True,
             )
-            for rows in batch_results:
-                if rows:
-                    epochs.append(rows[0])
+            stats["rpc_calls"] += len(pool_batch)
+            for _pool, rows in zip(pool_batch, batch_results, strict=True):
+                if isinstance(rows, Exception):
+                    stats["failed_pools"] += 1
+                    continue
+                if not rows:
+                    stats["empty_pools"] += 1
+                    continue
+                # Keep only the latest epoch per pool for ranking.
+                epochs.append(rows[0])
+                stats["epochs_found"] += 1
+        self._latest_epochs_for_ranking_stats = stats
+        logger.info("_latest_epochs_for_ranking stats: {}", stats)
+
         return epochs
-
-    async def token_amount_usdc(self, *, token: str, amount_raw: int) -> float | None:
-        if amount_raw == 0:
-            return 0.0
-        if amount_raw < 0:
-            return None
-
-        decimals = await self.token_decimals(token)
-        price_usdc = await self.token_price_usdc(token)
-        if price_usdc is None or price_usdc <= 0:
-            return None
-        return (amount_raw / (10**decimals)) * price_usdc
 
     async def epoch_total_incentives_usdc(
         self,
@@ -572,6 +599,95 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                     continue
                 usdc_per_ve = (total_usdc * 1e18) / epoch.votes
                 ranked.append((usdc_per_ve, epoch, total_usdc))
+
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return ranked[: max(1, top_n)]
+
+    async def v2_pool_tvl_usdc(self, pool: SugarPool) -> float | None:
+        if not pool.is_v2:
+            return None
+
+        decimals0, decimals1, price0, price1 = await asyncio.gather(
+            self.token_decimals(pool.token0),
+            self.token_decimals(pool.token1),
+            self.token_price_usdc(pool.token0),
+            self.token_price_usdc(pool.token1),
+        )
+        if (
+            price0 is None
+            or price1 is None
+            or not math.isfinite(price0)
+            or not math.isfinite(price1)
+        ):
+            return None
+
+        reserve0 = pool.reserve0 / (10**decimals0)
+        reserve1 = pool.reserve1 / (10**decimals1)
+        return float(reserve0 * price0 + reserve1 * price1)
+
+    async def v2_staked_tvl_usdc(self, pool: SugarPool) -> float | None:
+        tvl = await self.v2_pool_tvl_usdc(pool)
+        if tvl is None:
+            return None
+        if pool.lp_total_supply <= 0:
+            return None
+
+        ratio = float(pool.gauge_liquidity) / float(pool.lp_total_supply)
+        if ratio <= 0:
+            return None
+        return tvl * min(1.0, ratio)
+
+    async def v2_emissions_apr(self, pool: SugarPool) -> float | None:
+        if not pool.is_v2:
+            return None
+        if not pool.gauge_alive or pool.gauge == ZERO_ADDRESS:
+            return None
+        if pool.emissions_per_sec <= 0:
+            return None
+
+        staked_tvl = await self.v2_staked_tvl_usdc(pool)
+        if staked_tvl is None or staked_tvl <= 0:
+            return None
+
+        reward_decimals = await self.token_decimals(pool.emissions_token)
+        reward_price = await self.token_price_usdc(pool.emissions_token)
+        if reward_price is None or not math.isfinite(reward_price) or reward_price <= 0:
+            return None
+
+        emissions_per_second = pool.emissions_per_sec / (10**reward_decimals)
+        annual_rewards_usdc = emissions_per_second * SECONDS_PER_YEAR * reward_price
+        return float(annual_rewards_usdc / staked_tvl)
+
+    async def rank_v2_pools_by_emissions_apr(
+        self,
+        *,
+        top_n: int = 10,
+        candidate_count: int = 200,
+        page_size: int = 500,
+    ) -> list[tuple[float, SugarPool]]:
+        pools = await self.list_pools(page_size=page_size)
+        v2 = [
+            pool
+            for pool in pools
+            if pool.is_v2
+            and pool.gauge_alive
+            and pool.gauge != ZERO_ADDRESS
+            and pool.emissions_per_sec > 0
+            and pool.gauge_liquidity > 0
+            and pool.lp_total_supply > 0
+            and pool.reserve0 > 0
+            and pool.reserve1 > 0
+        ]
+        v2.sort(key=lambda pool: int(pool.emissions_per_sec), reverse=True)
+        if candidate_count > 0:
+            v2 = v2[:candidate_count]
+
+        ranked: list[tuple[float, SugarPool]] = []
+        for pool in v2:
+            apr = await self.v2_emissions_apr(pool)
+            if apr is None:
+                continue
+            ranked.append((apr, pool))
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         return ranked[: max(1, top_n)]
@@ -1372,6 +1488,15 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         except Exception as exc:
             return False, str(exc)
 
+    async def lp_balance(self, lp_token: str) -> int:
+        if not self.wallet_address:
+            raise ValueError("wallet address not configured")
+        return await get_token_balance(
+            token_address=to_checksum_address(lp_token),
+            chain_id=CHAIN_ID_BASE,
+            wallet_address=to_checksum_address(self.wallet_address),
+        )
+
     @require_wallet
     async def unstake_lp(
         self,
@@ -1405,6 +1530,7 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
         start: int = 0,
         limit: int | None = 200,
         include_votes: bool = False,
+        include_vote_claimables: bool = False,
         block_identifier: str | int = "latest",
     ) -> tuple[bool, Any]:
         """
@@ -1626,6 +1752,14 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                         }
                         if include_votes:
                             item["votes"] = votes_by_token.get(tid, {})
+                        if include_vote_claimables:
+                            ok_claimables, claimables = await self.get_vote_claimables(
+                                token_id=tid,
+                                block_identifier=block_identifier,
+                            )
+                            if not ok_claimables:
+                                return False, claimables
+                            item["vote_claimables"] = claimables["votes"]
                         ve_items.append(item)
 
             return True, {
@@ -1639,6 +1773,49 @@ class AerodromeAdapter(aerodrome_common.AerodromeVotingRewardsMixin, BaseAdapter
                 },
                 "lp_positions": pools_out,
                 "ve_nfts": ve_items,
+            }
+        except Exception as exc:
+            return False, str(exc)
+
+    async def get_vote_claimables(
+        self,
+        *,
+        token_id: int,
+        include_zero_positions: bool = False,
+        include_usd_values: bool = False,
+        block_identifier: str | int = "latest",
+    ) -> tuple[bool, Any]:
+        try:
+            pools_by_lp_all = await self.pools_by_lp()
+            pool_metadata = {
+                pool_addr.lower(): {
+                    "symbol": pool.symbol,
+                    "feeReward": pool.fee,
+                    "bribeReward": pool.bribe,
+                }
+                for pool_addr, pool in pools_by_lp_all.items()
+            }
+
+            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+                voter = web3.eth.contract(
+                    address=self.core_contracts["voter"],
+                    abi=AERODROME_VOTER_ABI,
+                )
+                claimables = await self._get_vote_claimables(
+                    token_id=token_id,
+                    pool_metadata_by_address=pool_metadata,
+                    web3=web3,
+                    voter_contract=voter,
+                    include_zero_positions=include_zero_positions,
+                    include_usd_values=include_usd_values,
+                    block_identifier=block_identifier,
+                )
+
+            return True, {
+                "protocol": "aerodrome",
+                "chain_id": CHAIN_ID_BASE,
+                "tokenId": token_id,
+                "votes": claimables,
             }
         except Exception as exc:
             return False, str(exc)

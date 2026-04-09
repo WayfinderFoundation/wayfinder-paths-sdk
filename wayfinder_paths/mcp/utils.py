@@ -96,6 +96,16 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
     return text[: max_chars - 3] + "..."
 
 
+def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "label": w.get("label"),
+        "address": w.get("address"),
+        "wallet_type": w.get("wallet_type"),
+        "session_expires_at": w.get("session_expires_at"),
+        "session_expires_in": w.get("session_expires_in"),
+    }
+
+
 def normalize_address(addr: str | None) -> str | None:
     if not addr:
         return None

@@ -194,7 +194,7 @@ def test_detached_daemon_survives_parent_process_group_termination() -> None:
     wrapper_code = "\n".join(
         [
             "import os, subprocess, sys, time",
-            "subprocess.Popen([sys.executable, '-m', 'wayfinder_paths.runnerd', 'start', '--detach'], cwd=os.getcwd(), env=os.environ.copy())",
+            "subprocess.Popen([sys.executable, '-m', 'wayfinder_paths.runnerd', 'start'], cwd=os.getcwd(), env=os.environ.copy())",
             "time.sleep(60)",
         ]
     )

@@ -6,14 +6,17 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
     get_api_key,
+    get_opencode_instance_id,
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
+from wayfinder_paths.policies.session import build_session_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -37,20 +40,23 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
     if not api_key:
         return []
     try:
-        raw = await WALLET_CLIENT.list_wallets()
+        instance_id = get_opencode_instance_id() if OPENCODE_CLIENT.healthy() else None
+        raw = await WALLET_CLIENT.list_wallets(instance_id=instance_id)
         wallets = []
         for i, w in enumerate(raw):
             addr = w.get("wallet_address")
             if not addr:
                 continue
-            wallets.append(
-                {
-                    "address": addr,
-                    "label": w.get("label") or f"remote-{i}",
-                    "type": "remote",
-                    "chain_type": w.get("chain_type", "ethereum"),
-                }
-            )
+            entry = {
+                "address": addr,
+                "label": w.get("label") or f"remote-{i}",
+                "type": "remote",
+                "chain_type": w.get("chain_type", "ethereum"),
+                "wallet_type": w.get("wallet_type", "session"),
+                "session_expires_at": w.get("session_expires_at"),
+                "session_expires_in": w.get("session_expires_in"),
+            }
+            wallets.append(entry)
         return wallets
     except Exception as exc:
         logger.debug(f"Failed to fetch remote wallets: {exc}")
@@ -302,9 +308,19 @@ async def create_remote_wallet(
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
-    return await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label
+    if len(policies) == 0:
+        wallet_type = "session"
+        policies = [build_session_policy()]
+    else:
+        wallet_type = "policy"
+    result = await WALLET_CLIENT.create_wallet(
+        chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
     )
+    if OPENCODE_CLIENT.healthy():
+        await WALLET_CLIENT.bind_to_instance(
+            result["wallet_address"], get_opencode_instance_id()
+        )
+    return result
 
 
 def make_random_wallet() -> dict[str, str]:

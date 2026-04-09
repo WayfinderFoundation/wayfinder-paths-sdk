@@ -65,18 +65,31 @@ class BorosVault:
     market_symbol: str | None = None
     base_symbol: str | None = None
     quote_symbol: str | None = None
+    collateral_token_id: int | None = None
+    collateral_symbol: str | None = None
+    collateral_address: str | None = None
+    collateral_price_usd: float | None = None
     apy: float | None = None
     tvl: float | None = None
+    tvl_usd: float | None = None
     lp_token_address: str | None = None
+    lp_price: float | None = None
+    total_lp_wei: int | None = None
+    total_supply_cap_lp: int | None = None
     remaining_supply_lp: int | None = None
     remaining_supply_pct: float | None = None
+    available_tokens: float | None = None
+    available_usd: float | None = None
     maturity_ts: int | None = None
+    expiry: str | None = None
     tenor_days: float | None = None
     is_expired: bool = False
     is_isolated_only: bool = False
     market_state: str | None = None
     user_deposit_tokens: float | None = None
+    user_deposit_usd: float | None = None
     user_available_tokens: float | None = None
+    user_available_usd: float | None = None
     user_total_lp_wei: int | None = None
     raw: dict[str, Any] | None = field(default=None, repr=False)
 

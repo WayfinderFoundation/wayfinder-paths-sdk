@@ -494,8 +494,7 @@ When a user wants a **repeatable/automated system** (recurring jobs):
 Runner CLI (project-local state in `./.wayfinder/runner/`):
 
 ```bash
-poetry run wayfinder runner start --detach   # Start daemon
-poetry run wayfinder runner ensure            # Idempotent start
+poetry run wayfinder runner start             # Start daemon (idempotent)
 poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
 poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
 ```

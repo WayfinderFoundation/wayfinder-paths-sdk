@@ -119,8 +119,6 @@ def get_paths_api_base_url() -> str:
 def allow_local_wallets() -> bool:
     system = CONFIG.get("system", {})
     return bool(system.get("allow_local_wallets", True))
-
-
 def get_api_key() -> str | None:
     system = CONFIG.get("system", {})
     api_key = system.get("api_key")
@@ -156,3 +154,11 @@ def get_etherscan_api_key() -> str | None:
     if api_key:
         return str(api_key).strip()
     return os.environ.get("ETHERSCAN_API_KEY")
+
+
+def get_opencode_instance_id() -> str:
+    if not (instance_id := os.environ.get("OPENCODE_INSTANCE_ID")):
+        raise RuntimeError(
+            "No OPENCODE_INSTANCE_ID set, this is unexpected as the caller assumes this is an OpenCode environment."
+        )
+    return instance_id

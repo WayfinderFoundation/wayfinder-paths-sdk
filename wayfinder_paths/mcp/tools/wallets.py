@@ -5,8 +5,8 @@ import importlib
 import time
 from typing import Any, Literal
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import (
-    allow_local_wallets,
     load_config,
     load_wallet_mnemonic,
     resolve_config_path,
@@ -21,6 +21,7 @@ from wayfinder_paths.mcp.utils import (
     err,
     load_wallets,
     ok,
+    public_wallet_view,
     resolve_wallet_address,
 )
 
@@ -96,10 +97,6 @@ PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
         "extra_kwargs": {"include_zero_positions": False},
     },
 }
-
-
-def _public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    return {"label": w.get("label"), "address": w.get("address")}
 
 
 async def _query_adapter(
@@ -184,8 +181,11 @@ async def wallets(
 
     if action == "create":
         load_config(config_path)
-        if not allow_local_wallets():
-            remote = True
+        if not remote and OPENCODE_CLIENT.healthy():
+            return err(
+                "invalid_request",
+                "Local wallets are discouraged for OpenCode instances",
+            )
         existing = await load_wallets()
         want = (label or wallet_label or "").strip()
         if not want:
@@ -197,8 +197,8 @@ async def wallets(
             if str(w.get("label", "")).strip() == want:
                 return ok(
                     {
-                        "wallets": [_public_wallet_view(x) for x in existing],
-                        "created": _public_wallet_view(w),
+                        "wallets": [public_wallet_view(x) for x in existing],
+                        "created": public_wallet_view(w),
                         "note": "Wallet label already existed; returning existing wallet.",
                     }
                 )
@@ -208,7 +208,7 @@ async def wallets(
             refreshed = await load_wallets()
             return ok(
                 {
-                    "wallets": [_public_wallet_view(x) for x in refreshed],
+                    "wallets": [public_wallet_view(x) for x in refreshed],
                     "created": {
                         "label": result.get("label", want),
                         "address": result["wallet_address"],
@@ -228,8 +228,8 @@ async def wallets(
             refreshed = await load_wallets()
             return ok(
                 {
-                    "wallets": [_public_wallet_view(x) for x in refreshed],
-                    "created": _public_wallet_view(w),
+                    "wallets": [public_wallet_view(x) for x in refreshed],
+                    "created": public_wallet_view(w),
                 }
             )
 

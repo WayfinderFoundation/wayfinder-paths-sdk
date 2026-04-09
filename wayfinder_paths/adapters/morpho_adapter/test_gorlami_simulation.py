@@ -29,6 +29,21 @@ def _liquidity_assets(market: dict) -> int:
         return 0
 
 
+async def _get_all_markets_or_skip(*, chain_id: int) -> list[dict]:
+    try:
+        markets = await MORPHO_CLIENT.get_all_markets(
+            chain_id=int(chain_id), listed=True
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "Morpho GraphQL errors" in message and "INTERNAL_SERVER_ERROR" in message:
+            pytest.skip(
+                f"Morpho GraphQL unavailable for chain_id={chain_id}: {message}"
+            )
+        raise
+    return markets
+
+
 @pytest.mark.asyncio
 async def test_gorlami_morpho_markets_and_borrow(gorlami):
     chain_id = CHAIN_ID_BASE
@@ -67,7 +82,7 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
         wallet_address=acct.address,
     )
 
-    markets = await MORPHO_CLIENT.get_all_markets(chain_id=int(chain_id), listed=True)
+    markets = await _get_all_markets_or_skip(chain_id=int(chain_id))
     assert markets
 
     usdc_markets = [
@@ -262,9 +277,7 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
         wallet_address=acct.address,
     )
 
-    markets = await MORPHO_CLIENT.get_all_markets(
-        chain_id=int(arb_chain_id), listed=True
-    )
+    markets = await _get_all_markets_or_skip(chain_id=int(arb_chain_id))
     assert markets
 
     usdc_markets = [

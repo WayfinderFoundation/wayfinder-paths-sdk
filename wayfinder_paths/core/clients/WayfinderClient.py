@@ -10,12 +10,22 @@ from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 class WayfinderClient:
     def __init__(self):
-        self.client = httpx.AsyncClient(
-            timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT), follow_redirects=True
-        )
         self.headers = {
             "Content-Type": "application/json",
         }
+        self._ensure_api_key_header()
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT),
+            follow_redirects=True,
+            headers=self.headers,
+        )
+
+    def _ensure_api_key_header(self) -> None:
+        if self.headers.get("X-API-KEY"):
+            return
+        api_key = get_api_key()
+        if api_key:
+            self.headers["X-API-KEY"] = api_key
 
     async def _authed_request(
         self,
@@ -29,10 +39,9 @@ class WayfinderClient:
         start_time = time.time()
 
         # Pass API key to all endpoints (including public ones) for rate limiting
-        if not self.headers.get("X-API-KEY"):
-            api_key = get_api_key()
-            if api_key:
-                self.headers["X-API-KEY"] = api_key
+        self._ensure_api_key_header()
+        if "X-API-KEY" in self.headers:
+            self.client.headers["X-API-KEY"] = self.headers["X-API-KEY"]
 
         merged_headers = dict(self.headers)
         if headers:

@@ -584,6 +584,17 @@ AERODROME_VOTING_ESCROW_ABI: list[dict[str, Any]] = [
     },
     {
         "type": "function",
+        "name": "locked",
+        "stateMutability": "view",
+        "inputs": [{"name": "_tokenId", "type": "uint256"}],
+        "outputs": [
+            {"name": "amount", "type": "int128"},
+            {"name": "end", "type": "uint256"},
+            {"name": "isPermanent", "type": "bool"},
+        ],
+    },
+    {
+        "type": "function",
         "name": "voted",
         "stateMutability": "view",
         "inputs": [{"name": "_tokenId", "type": "uint256"}],
