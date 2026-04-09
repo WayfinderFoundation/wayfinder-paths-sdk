@@ -319,6 +319,7 @@ async def fetch_borrow_rates(
             limit=10000,
             as_of=end,
             series="lending",
+            basis=True,
         )
 
         if "lending" in data:
@@ -467,6 +468,7 @@ async def fetch_supply_rates(
             limit=10000,
             as_of=end,
             series="lending",
+            basis=True,
         )
 
         if "lending" in data:
@@ -532,6 +534,7 @@ async def fetch_lending_rates(
         limit=10000,
         as_of=end,
         series="lending",
+        basis=True,
     )
 
     if "lending" not in data or data["lending"].empty:
