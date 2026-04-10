@@ -6,6 +6,9 @@ Common mistakes and important considerations when using Delta Lab.
 
 | ❌ Wrong | ✅ Right | Why |
 |---------|---------|-----|
+| `screen_lending(basis="USDC")` | `screen_lending(basis="USD")` | USDC is an asset, not a basis symbol — use `USD` (MCP auto-resolves, client does not) |
+| `get_basis_apy_sources(limit=20)` for lending | Use `screen_lending` or `timeseries(series="lending")` | apy-sources is cross-instrument ranked — low-APY lending gets cut off |
+| `get_lending_timeseries("USDC")` | `get_asset_timeseries(symbol="USDC", series="lending")` | One method for all series, not per-series methods |
 | `ok, data = await DELTA_LAB_CLIENT...` | `data = await DELTA_LAB_CLIENT...` | Clients return data directly, not tuples |
 | `data["opportunities"]` | `data["directions"]["LONG"]` | Lending opps are in LONG direction |
 | `candidate["net_apy"]["value"]` | `candidate["net_apy"]` | net_apy is a float, not a dict |
@@ -14,8 +17,60 @@ Common mistakes and important considerations when using Delta Lab.
 | `max(opps, key=lambda x: x["apy"]["value"])` | `max([o for o in opps if o["apy"]["value"]], ...)` | APY can be null |
 | Using `candidates[0]` for lowest risk | Use `pareto_frontier` | Candidates sorted by APY, not risk |
 | Ignoring `warnings` field | Always check `result["warnings"]` | Data quality issues affect decisions |
+| `get_asset_timeseries(symbol="USDC", series="lending", limit=1000)` (no venue) | Add `venue="moonwell"` when you want one venue | Without venue filter, limit is shared across all venues — data gets cut off |
+| `get_asset_timeseries(..., basis=True)` when you want one asset | Omit `basis` (defaults to `False`) | Default is exact asset; pass `basis=True` only to expand to basis group |
 
-## 0. Client Return Pattern
+## 0. Basis Symbol vs Asset Symbol
+
+**Screening, apy-sources, and delta-neutral endpoints use basis symbols, not asset symbols.**
+
+Stablecoins like USDC, USDT, DAI are NOT basis symbols — they belong to the `USD` basis group. Similarly, wstETH → `ETH`, cbBTC → `BTC`.
+
+The MCP layer auto-resolves asset symbols to their root basis (e.g. `USDC` → `USD`), so MCP queries like `screen/lending/.../USDC` will work. But the Python client requires the correct basis symbol directly.
+
+```python
+# WRONG — USDC is not a basis symbol (client will 400)
+await DELTA_LAB_CLIENT.screen_lending(basis="USDC")
+
+# RIGHT — use the root basis symbol
+await DELTA_LAB_CLIENT.screen_lending(basis="USD")
+
+# To find any symbol's root basis:
+info = await DELTA_LAB_CLIENT.get_asset_basis(symbol="USDC")
+# -> {"basis": {"root_symbol": "USD", "role": "STABLE", ...}}
+```
+
+Common mappings: USDC/USDT/DAI → `USD`, wstETH/cbETH → `ETH`, cbBTC/WBTC → `BTC`.
+
+## 0b. apy-sources Is Cross-Instrument, Not Venue-Specific
+
+`get_basis_apy_sources()` returns a **ranked cross-instrument list** (perps, LPs, lending, Pendle, Boros) sorted by APY. A small `limit` (e.g. 20) will only show the highest-APY instruments — standard lending markets at 2-5% get crowded out by perps at 20%+.
+
+**If you want lending rates specifically:**
+- Use `screen_lending(basis="USD")` for a cross-venue snapshot
+- Use `get_asset_timeseries(symbol="USDC", series="lending", venue="moonwell")` for historical data from one venue
+
+**If you need all instrument types:** use a large limit (e.g. 500) with `get_basis_apy_sources()`.
+
+## 0c. One Method for All Timeseries
+
+There is no `get_lending_timeseries()` or `get_funding_timeseries()`. There's one method:
+
+```python
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="USDC",
+    series="lending",  # or "funding", "price", "pendle", "boros", "rates"
+    lookback_days=30,
+    limit=800,
+    venue="moonwell",  # optional venue filter
+    basis=False,        # optional: exact symbol only (no basis expansion)
+)
+lending_df = data["lending"]  # DataFrame keyed by series name
+```
+
+The `series` parameter selects which data to fetch. The return dict is keyed by series name.
+
+## 1. Client Return Pattern
 
 **CRITICAL: Delta Lab CLIENT returns data directly (not tuples).**
 

@@ -1,9 +1,31 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+
+logger = logging.getLogger(__name__)
+
+
+async def _resolve_basis_symbol(symbol: str) -> str:
+    """Resolve an asset symbol to its root basis symbol.
+
+    E.g. "USDC" -> "USD", "wstETH" -> "ETH". Returns the input unchanged
+    if it's already a root basis symbol or if resolution fails.
+    """
+    try:
+        result = await DELTA_LAB_CLIENT.get_asset_basis(symbol=symbol)
+        basis = result.get("basis")
+        if basis and basis.get("root_symbol"):
+            root = basis["root_symbol"]
+            if root != symbol:
+                logger.debug("Resolved basis symbol %s -> %s", symbol, root)
+            return root
+    except Exception:
+        pass
+    return symbol
 
 
 async def get_basis_apy_sources(
@@ -25,8 +47,9 @@ async def get_basis_apy_sources(
         limit_int = int(limit)
         limit_int = min(1000, max(1, limit_int))  # Enforce 1-1000 range
 
+        resolved = await _resolve_basis_symbol(basis_symbol.upper())
         result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
-            basis_symbol=basis_symbol.upper(),
+            basis_symbol=resolved,
             lookback_days=lookback_int,
             limit=limit_int,
         )
@@ -54,8 +77,9 @@ async def get_best_delta_neutral_pairs(
         limit_int = int(limit)
         limit_int = min(100, max(1, limit_int))  # Enforce 1-100 range
 
+        resolved = await _resolve_basis_symbol(basis_symbol.upper())
         result = await DELTA_LAB_CLIENT.get_best_delta_neutral_pairs(
-            basis_symbol=basis_symbol.upper(),
+            basis_symbol=resolved,
             lookback_days=lookback_int,
             limit=limit_int,
         )
@@ -204,53 +228,120 @@ async def get_top_apy(lookback_days: str = "7", limit: str = "50") -> dict[str, 
         return {"error": str(exc)}
 
 
+async def _get_asset_timeseries_impl(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+    venue: str = "_",
+    basis: bool = False,
+) -> dict[str, Any]:
+    """Shared implementation for timeseries MCP resources."""
+    try:
+        lookback_int = int(lookback_days)
+        limit_int = int(limit)
+        limit_int = min(10000, max(1, limit_int))  # Enforce 1-10000 range
+        series_param = series if series else None  # Empty string -> None (all series)
+        venue_param = venue.strip() if venue.strip() not in ("_", "") else None
+
+        dataframes = await DELTA_LAB_CLIENT.get_asset_timeseries(
+            symbol=symbol.upper(),
+            lookback_days=lookback_int,
+            limit=limit_int,
+            series=series_param,
+            venue=venue_param,
+            basis=basis,
+        )
+
+        result: dict[str, Any] = {}
+        for series_name, df in dataframes.items():
+            df_reset = df.reset_index()
+            result[series_name] = df_reset.to_dict("records")
+
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
 async def get_asset_timeseries_data(
     symbol: str,
     series: str = "price",
     lookback_days: str = "7",
     limit: str = "100",
 ) -> dict[str, Any]:
-    """Get timeseries data for an asset (MCP: quick snapshots only).
-
-    MCP defaults prioritize SHORT, interpretable results. For longer time ranges,
-    multi-venue lending data, or DataFrame-based analysis, use the client directly:
-    DELTA_LAB_CLIENT.get_asset_timeseries() (see /using-delta-lab skill).
+    """Get timeseries data for an asset (exact symbol, no basis expansion).
 
     Args:
-        symbol: Asset symbol (e.g., "ETH", "BTC")
+        symbol: Asset symbol (e.g., "USDC", "ETH")
         series: Data series - "price" (default), "funding", "lending", "rates", etc.
-               Empty string = all series (can be large!)
-        lookback_days: Number of days to look back (default: "7" for quick snapshot)
-        limit: Maximum number of data points per series (default: "100", max: "10000")
-
-    Returns:
-        Dict with series data as JSON arrays (use client for DataFrames)
+        lookback_days: Number of days to look back (default: "7")
+        limit: Maximum data points per series (default: "100", max: "10000")
     """
-    try:
-        lookback_int = int(lookback_days)
-        limit_int = int(limit)
-        limit_int = min(10000, max(1, limit_int))  # Enforce 1-10000 range
-        series_param = series if series else None  # Empty string -> None (all series)
+    return await _get_asset_timeseries_impl(symbol, series, lookback_days, limit)
 
-        # Get DataFrames from client
-        dataframes = await DELTA_LAB_CLIENT.get_asset_timeseries(
-            symbol=symbol.upper(),
-            lookback_days=lookback_int,
-            limit=limit_int,
-            series=series_param,
-        )
 
-        # Convert DataFrames back to JSON arrays for MCP
-        result: dict[str, Any] = {}
-        for series_name, df in dataframes.items():
-            # Reset index to make ts a column again
-            df_reset = df.reset_index()
-            # Convert to list of dicts
-            result[series_name] = df_reset.to_dict("records")
+async def get_asset_timeseries_with_venue(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+    venue: str,
+) -> dict[str, Any]:
+    """Get timeseries data for an asset filtered by venue (exact symbol, no basis expansion).
 
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    Args:
+        symbol: Asset symbol (e.g., "USDC", "ETH")
+        series: Data series - "price", "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back
+        limit: Maximum data points per series (max: "10000")
+        venue: Venue name prefix (e.g. "moonwell", "hyperliquid"). Use "_" for no filter.
+    """
+    return await _get_asset_timeseries_impl(
+        symbol, series, lookback_days, limit, venue=venue
+    )
+
+
+async def get_basis_timeseries_data(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+) -> dict[str, Any]:
+    """Get timeseries data expanded to all basis group members.
+
+    Use this when you want data for all related assets — e.g. "USDC" returns
+    USDC + sUSDC + aUSDC etc., "ETH" returns ETH + wstETH + cbETH etc.
+
+    Args:
+        symbol: Basis symbol (e.g., "USDC", "ETH")
+        series: Data series - "price", "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back
+        limit: Maximum data points per series (max: "10000")
+    """
+    return await _get_asset_timeseries_impl(
+        symbol, series, lookback_days, limit, basis=True
+    )
+
+
+async def get_basis_timeseries_with_venue(
+    symbol: str,
+    series: str,
+    lookback_days: str,
+    limit: str,
+    venue: str,
+) -> dict[str, Any]:
+    """Get timeseries data expanded to all basis group members, filtered by venue.
+
+    Args:
+        symbol: Basis symbol (e.g., "USDC", "ETH")
+        series: Data series - "price", "funding", "lending", "rates", etc.
+        lookback_days: Number of days to look back
+        limit: Maximum data points per series (max: "10000")
+        venue: Venue name prefix (e.g. "moonwell", "hyperliquid"). Use "_" for no filter.
+    """
+    return await _get_asset_timeseries_impl(
+        symbol, series, lookback_days, limit, venue=venue, basis=True
+    )
 
 
 async def screen_price(
@@ -265,14 +356,18 @@ async def screen_price(
               price_usd, ret_1d, ret_7d, ret_30d, ret_90d,
               vol_7d, vol_30d, vol_90d, mdd_30d, mdd_90d
         limit: Max rows to return (default: "100", max: "1000")
-        basis: Basis symbol to filter by (e.g. "ETH", "BTC"). Use "all" for no filter.
+        basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
+               Asset symbols are auto-resolved to their root basis (USDC -> USD).
+               Use "all" for no filter.
 
     Returns:
         Dict with data (list of price feature rows) and count
     """
     try:
         limit_int = min(1000, max(1, int(limit)))
-        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        basis_param = None
+        if basis.strip().lower() != "all":
+            basis_param = await _resolve_basis_symbol(basis.strip().upper())
         result = await DELTA_LAB_CLIENT.screen_price(
             sort=sort.strip(),
             limit=limit_int,
@@ -335,14 +430,18 @@ async def screen_lending(
               combined_net_supply_apr_now, net_borrow_apr_now,
               supply_tvl_usd, liquidity_usd, util_now, borrow_spike_score
         limit: Max rows to return (default: "100", max: "1000")
-        basis: Basis symbol to filter by (e.g. "ETH", "BTC"). Use "all" for no filter.
+        basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
+               Asset symbols are auto-resolved to their root basis (USDC -> USD).
+               Use "all" for no filter.
 
     Returns:
         Dict with data (list of lending surface feature rows) and count
     """
     try:
         limit_int = min(1000, max(1, int(limit)))
-        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        basis_param = None
+        if basis.strip().lower() != "all":
+            basis_param = await _resolve_basis_symbol(basis.strip().upper())
         result = await DELTA_LAB_CLIENT.screen_lending(
             sort=sort.strip(),
             limit=limit_int,
@@ -407,14 +506,18 @@ async def screen_perp(
               basis_now, basis_mean_7d, basis_mean_30d,
               oi_now, volume_24h, mark_price
         limit: Max rows to return (default: "100", max: "1000")
-        basis: Basis symbol to filter by (e.g. "ETH", "BTC"). Use "all" for no filter.
+        basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
+               Asset symbols are auto-resolved to their root basis (USDC -> USD).
+               Use "all" for no filter.
 
     Returns:
         Dict with data (list of perp surface feature rows) and count
     """
     try:
         limit_int = min(1000, max(1, int(limit)))
-        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
+        basis_param = None
+        if basis.strip().lower() != "all":
+            basis_param = await _resolve_basis_symbol(basis.strip().upper())
         result = await DELTA_LAB_CLIENT.screen_perp(
             sort=sort.strip(),
             limit=limit_int,
@@ -488,12 +591,14 @@ async def screen_borrow_routes(
     """
     try:
         limit_int = min(1000, max(1, int(limit)))
-        basis_param = basis.strip().upper() if basis.strip().lower() != "all" else None
-        borrow_basis_param = (
-            borrow_basis.strip().upper()
-            if borrow_basis.strip().lower() != "all"
-            else None
-        )
+        basis_param = None
+        if basis.strip().lower() != "all":
+            basis_param = await _resolve_basis_symbol(basis.strip().upper())
+        borrow_basis_param = None
+        if borrow_basis.strip().lower() != "all":
+            borrow_basis_param = await _resolve_basis_symbol(
+                borrow_basis.strip().upper()
+            )
         chain_id_param = None
         chain_value = chain_id.strip().lower()
         if chain_value not in ("all", "_"):
