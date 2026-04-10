@@ -114,6 +114,95 @@ def _skill_dict(manifest: PathManifest) -> dict[str, Any] | None:
     return data
 
 
+def _pipeline_dict(manifest: PathManifest) -> dict[str, Any] | None:
+    pipeline = manifest.pipeline
+    if not pipeline:
+        return None
+    data: dict[str, Any] = {}
+    if pipeline.archetype:
+        data["archetype"] = pipeline.archetype
+    if pipeline.graph_path:
+        data["graph"] = pipeline.graph_path
+    data["artifacts_dir"] = pipeline.artifacts_dir
+    if pipeline.entry_command:
+        data["entry_command"] = pipeline.entry_command
+    data["primary_hosts"] = list(pipeline.primary_hosts)
+    if pipeline.output_contract:
+        data["output_contract"] = list(pipeline.output_contract)
+    return data
+
+
+def _inputs_dict(manifest: PathManifest) -> dict[str, Any] | None:
+    if not manifest.inputs:
+        return None
+    slots: dict[str, Any] = {}
+    for slot in manifest.inputs:
+        slot_data: dict[str, Any] = {
+            "type": slot.slot_type,
+            "path": slot.path,
+            "required": slot.required,
+        }
+        if slot.schema:
+            slot_data["schema"] = slot.schema
+        if slot.description:
+            slot_data["description"] = slot.description
+        slots[slot.name] = slot_data
+    return {"slots": slots}
+
+
+def _agents_list(manifest: PathManifest) -> list[dict[str, Any]] | None:
+    if not manifest.agents:
+        return None
+    agents: list[dict[str, Any]] = []
+    for agent in manifest.agents:
+        entry: dict[str, Any] = {
+            "id": agent.agent_id,
+            "phase": agent.phase,
+            "description": agent.description,
+            "tools": list(agent.tools),
+            "output": agent.output,
+        }
+        if agent.host_mode:
+            entry["host_mode"] = agent.host_mode
+        agents.append(entry)
+    return agents
+
+
+def _host_target_dict(target: Any) -> dict[str, Any] | None:
+    if target is None:
+        return None
+    data: dict[str, Any] = {}
+    if target.rules_file:
+        data["rules_file"] = target.rules_file
+    if target.skill_dir:
+        data["skill_dir"] = target.skill_dir
+    if target.agent_dir:
+        data["agent_dir"] = target.agent_dir
+    if target.settings_file:
+        data["settings_file"] = target.settings_file
+    if target.config_file:
+        data["config_file"] = target.config_file
+    if target.command_dir:
+        data["command_dir"] = target.command_dir
+    if target.plugin_dir:
+        data["plugin_dir"] = target.plugin_dir
+    if target.tool_dir:
+        data["tool_dir"] = target.tool_dir
+    return data or None
+
+
+def _host_dict(manifest: PathManifest) -> dict[str, Any] | None:
+    host = manifest.host
+    if not host:
+        return None
+    data: dict[str, Any] = {}
+    for name in ("claude", "opencode", "codex", "openclaw", "portable"):
+        rendered = _host_target_dict(getattr(host, name))
+        if rendered:
+            data[name] = rendered
+    return data or None
+
+
 def _manifest_dict(manifest: PathManifest) -> dict[str, Any]:
     raw = dict(manifest.raw)
     ordered: dict[str, Any] = {
@@ -140,6 +229,22 @@ def _manifest_dict(manifest: PathManifest) -> dict[str, Any]:
     skill = _skill_dict(manifest)
     if skill is not None:
         ordered["skill"] = skill
+
+    pipeline = _pipeline_dict(manifest)
+    if pipeline is not None:
+        ordered["pipeline"] = pipeline
+
+    inputs = _inputs_dict(manifest)
+    if inputs is not None:
+        ordered["inputs"] = inputs
+
+    agents = _agents_list(manifest)
+    if agents is not None:
+        ordered["agents"] = agents
+
+    host = _host_dict(manifest)
+    if host is not None:
+        ordered["host"] = host
 
     for key, value in raw.items():
         if key not in ordered:

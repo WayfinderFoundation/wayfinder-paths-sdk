@@ -1,0 +1,28 @@
+name: "base_case"
+output:
+  signal_snapshot:
+    recession_prob: 0.61
+  selected_playbook:
+    id: "risk_off"
+    score: 0.71
+  candidate_expressions:
+    - id: "direct-polymarket"
+      type: "direct_polymarket"
+      score: 0.58
+    - id: "proxy-hl-basket"
+      type: "hyperliquid_proxy"
+      score: 0.71
+  null_state:
+    selected: false
+    reason: "Proxy expression clears the null-state threshold."
+  risk_checks:
+    passed: true
+    mode: "armed"
+    leverage_ok: true
+    liquidity_ok: true
+  job:
+    mode: "armed"
+    armed: true
+    poll_every: 300
+    on_enter_signal: "entered-risk-off"
+  next_invalidation: "recession_prob < 0.55"

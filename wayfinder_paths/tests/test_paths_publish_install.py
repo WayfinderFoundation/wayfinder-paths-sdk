@@ -82,8 +82,14 @@ def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
     skill_exports = call["skill_exports"]
 
     assert exports_manifest is not None
-    assert exports_manifest["targets"] == ["claude", "codex", "openclaw", "portable"]
-    assert set(skill_exports) == {"claude", "codex", "openclaw", "portable"}
+    assert exports_manifest["targets"] == [
+        "claude",
+        "opencode",
+        "codex",
+        "openclaw",
+        "portable",
+    ]
+    assert set(skill_exports) == {"claude", "opencode", "codex", "openclaw", "portable"}
     assert (
         exports_manifest["exports"]["portable"]["filename"] == "skill-portable-thin.zip"
     )
@@ -98,7 +104,13 @@ def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
     assert "skill/scripts/wf_bootstrap.py" in names
     assert "skill/scripts/wf_run.py" in names
     assert "skill/path/wfpath.yaml" in names
+    assert "skill/install/.claude/skills/skill-demo/SKILL.md" in names
     assert not any(name.startswith("skill/applet/") for name in names)
+
+    with ZipFile(io.BytesIO(skill_exports["opencode"]), "r") as zf:
+        names = set(zf.namelist())
+    assert "skill/install/.opencode/skills/skill-demo/SKILL.md" in names
+    assert "skill/install/opencode.json" in names
 
     with ZipFile(io.BytesIO(skill_exports["codex"]), "r") as zf:
         names = set(zf.namelist())
@@ -320,11 +332,15 @@ def test_path_activate_copies_rendered_export_to_host_scope(tmp_path: Path):
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         dest = Path(payload["result"]["dest"])
-        assert dest.name == "activate-demo"
-        assert (dest / "SKILL.md").exists()
-        assert (dest / "runtime" / "manifest.json").exists()
-        assert (dest / "scripts" / "wf_bootstrap.py").exists()
-        assert (dest / "path" / "wfpath.yaml").exists()
+        applied = payload["result"]["applied"]
+        assert dest.name != "activate-demo"
+        assert any(path.endswith(".claude/skills/activate-demo") for path in applied)
+        assert (dest / ".claude" / "skills" / "activate-demo" / "SKILL.md").exists()
+        assert (
+            dest / ".claude" / "skills" / "activate-demo" / "runtime" / "manifest.json"
+        ).exists()
+        assert (dest / ".claude" / "CLAUDE.md").exists()
+        assert (dest / ".claude" / "settings.json").exists()
 
 
 def test_paths_api_client_list_paths_defaults_to_bonded_only():
@@ -500,7 +516,7 @@ def test_path_install_migrates_legacy_lockfile_and_directory(
                         "version": "0.0.1",
                         "bundle_sha256": "legacy-sha",
                     }
-                }
+                },
             }
         )
         + "\n"

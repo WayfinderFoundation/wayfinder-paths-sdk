@@ -1,72 +1,103 @@
 # Build + Publish
 
-## Scaffold a new path
+## Scaffold a path
 
-Use `init` before any of the `--path`-based path commands:
+Standard path:
 
 ```bash
 poetry run wayfinder path init my-path --kind monitor --applet --dir examples/paths
 ```
 
-This creates `examples/paths/my-path/`.
+Compiled strategy pipeline:
 
-Important:
-- `path init` uses `--dir` for the base directory, not `--path`.
-- The path slug is the last path segment that gets created under `--dir`.
-- After scaffolding, change into the new path directory and use `--path .` for the rest of the workflow.
+```bash
+poetry run wayfinder path init my-router \
+  --dir examples/paths \
+  --template pipeline \
+  --archetype conditional-router
+```
 
-## Build a bundle
+Notes:
 
-From your path directory (must contain `wfpath.yaml`):
+- `path init` uses `--dir`; the later path commands use `--path`.
+- pipeline templates scaffold `policy/default.yaml`, `pipeline/graph.yaml`, `inputs/`, `schemas/`, `skill/agents/`, and `tests/evals/`.
+- the repo ships a gold reference example at `examples/paths/conditional-router-reference`.
+
+## Validate a path
+
+Run this from the path directory:
 
 ```bash
 poetry run wayfinder path fmt --path .
 poetry run wayfinder path doctor --check --path .
+```
+
+For pipeline paths, also run:
+
+```bash
+poetry run wayfinder path eval --path .
+```
+
+That checks fixture output shape, null-state behavior, risk-gate behavior, and host-render coverage.
+
+## Render skills
+
+Generate host exports under `.build/skills/`:
+
+```bash
 poetry run wayfinder path render-skill --path .
+```
+
+Primary orchestration exports:
+
+- Claude install tree under `.build/skills/claude/<skill>/install/.claude/...`
+- OpenCode install tree under `.build/skills/opencode/<skill>/install/.opencode/...`
+
+Secondary exports:
+
+- Codex
+- OpenClaw
+- portable
+
+## Build a bundle
+
+```bash
 poetry run wayfinder path build --path . --out dist/bundle.zip
 ```
 
-Output includes the bundle sha256 and writes the zip to `--out`.
-
 Notes:
-- `build` and `publish` automatically rerun path validation and skill rendering before packaging.
-- Generated skill exports are written under `.build/skills/...` and are not included in `bundle.zip`.
-- `poetry run wayfinder path preview --check --path .` validates applet preview readiness without starting servers.
 
-## Configure Paths API base URL
+- `build` reruns validation and skill rendering before packaging.
+- generated host exports are not included in `bundle.zip`.
+- source archives keep tests and evals; bundle archives exclude runtime artifacts such as `.wf-artifacts/`.
 
-The CLI publishes to a Paths API base URL (no trailing `/api`).
+## Publish
 
-Set one of:
-
-- `config.json` → `system.paths_api_base_url`
-- or env var: `WAYFINDER_PATHS_API_URL`
-
-Example for local dev:
+Set a Paths API base URL if needed:
 
 ```bash
 export WAYFINDER_PATHS_API_URL="http://localhost:8000"
 ```
 
-## Publish
+Then publish:
 
 ```bash
 poetry run wayfinder path publish --path . --owner-wallet 0xYourWallet
 ```
 
 Notes:
-- Publishing requires a valid `WAYFINDER_API_KEY` (or `config.json` → `system.api_key`).
-- `--owner-wallet` must match a wallet associated with your account (how ownership is enforced will evolve).
 
-## Git hooks
+- publishing requires a valid `WAYFINDER_API_KEY` or `config.json -> system.api_key`
+- bonded publishes still require `--owner-wallet`
+- `publish` uploads `bundle.zip`, `source.zip`, and rendered skill exports when the path has a skill
 
-Install path-focused pre-commit hooks into the current path directory:
+## Activate a rendered export
+
+Install a rendered export into a host scope:
 
 ```bash
-poetry run wayfinder path hooks install --path .
+poetry run wayfinder path activate --host claude --scope project --path .
+poetry run wayfinder path activate --host opencode --scope project --path .
 ```
 
-That writes `.pre-commit-config.yaml` with:
-- `wayfinder path fmt --path .`
-- `wayfinder path doctor --check --path .`
-- `wayfinder path preview --check --path .` on `pre-push`
+When an export includes install targets, `activate` applies those install operations instead of doing a raw directory copy.

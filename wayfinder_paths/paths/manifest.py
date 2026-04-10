@@ -9,6 +9,8 @@ from typing import Any
 import yaml
 from packaging.version import InvalidVersion, Version
 
+from wayfinder_paths.paths.pipeline import DEFAULT_ARTIFACTS_DIR, DEFAULT_PRIMARY_HOSTS
+
 
 class PathManifestError(Exception):
     pass
@@ -115,6 +117,62 @@ class PathSkillPortableConfig:
 
 
 @dataclass(frozen=True)
+class PathPipelineConfig:
+    archetype: str | None
+    graph_path: str | None
+    artifacts_dir: str
+    entry_command: str | None
+    primary_hosts: tuple[str, ...]
+    output_contract: tuple[str, ...]
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PathInputSlotConfig:
+    name: str
+    slot_type: str
+    path: str
+    schema: str | None
+    required: bool
+    description: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PathAgentConfig:
+    agent_id: str
+    phase: str
+    description: str
+    tools: tuple[str, ...]
+    output: str
+    host_mode: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PathHostTargetConfig:
+    rules_file: str | None
+    skill_dir: str | None
+    agent_dir: str | None
+    settings_file: str | None
+    config_file: str | None
+    command_dir: str | None
+    plugin_dir: str | None
+    tool_dir: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class PathHostConfig:
+    claude: PathHostTargetConfig | None
+    opencode: PathHostTargetConfig | None
+    codex: PathHostTargetConfig | None
+    openclaw: PathHostTargetConfig | None
+    portable: PathHostTargetConfig | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class PathSkillRuntimeConfig:
     mode: str | None
     package: str | None
@@ -143,6 +201,172 @@ class PathSkillConfig:
     portable: PathSkillPortableConfig | None
     uses_portable_alias: bool
     raw: dict[str, Any]
+
+
+def _parse_pipeline_config(raw_obj: Any) -> PathPipelineConfig | None:
+    obj = _ensure_object(raw_obj, name="wfpath.yaml pipeline")
+    if obj is None:
+        return None
+
+    archetype = str(obj.get("archetype", "")).strip() or None
+    graph_path = str(obj.get("graph", "")).strip() or None
+    artifacts_dir = str(obj.get("artifacts_dir", "")).strip() or DEFAULT_ARTIFACTS_DIR
+    entry_command = str(obj.get("entry_command", "")).strip() or None
+    output_contract = _parse_string_list(
+        obj.get("output_contract"),
+        name="wfpath.yaml pipeline.output_contract",
+    )
+    primary_hosts = _parse_string_list(
+        obj.get("primary_hosts"),
+        name="wfpath.yaml pipeline.primary_hosts",
+    )
+    if not primary_hosts:
+        primary_hosts = list(DEFAULT_PRIMARY_HOSTS)
+    return PathPipelineConfig(
+        archetype=archetype,
+        graph_path=graph_path,
+        artifacts_dir=artifacts_dir,
+        entry_command=entry_command,
+        primary_hosts=tuple(primary_hosts),
+        output_contract=tuple(output_contract),
+        raw=dict(obj),
+    )
+
+
+def _parse_input_slots(raw_obj: Any) -> tuple[PathInputSlotConfig, ...]:
+    if raw_obj is None:
+        return ()
+    obj = _ensure_object(raw_obj, name="wfpath.yaml inputs", required=True)
+    slots_raw = obj.get("slots") or {}
+    if not isinstance(slots_raw, dict):
+        raise PathManifestError("wfpath.yaml inputs.slots must be an object")
+    slots: list[PathInputSlotConfig] = []
+    for name, value in slots_raw.items():
+        slot_obj = _ensure_object(
+            value,
+            name=f"wfpath.yaml inputs.slots.{name}",
+            required=True,
+        )
+        assert slot_obj is not None
+        slot_type = str(slot_obj.get("type", "")).strip()
+        path = str(slot_obj.get("path", "")).strip()
+        if not slot_type:
+            raise PathManifestError(f"wfpath.yaml inputs.slots.{name}.type is required")
+        if not path:
+            raise PathManifestError(f"wfpath.yaml inputs.slots.{name}.path is required")
+        slots.append(
+            PathInputSlotConfig(
+                name=str(name).strip(),
+                slot_type=slot_type,
+                path=path,
+                schema=str(slot_obj.get("schema", "")).strip() or None,
+                required=bool(
+                    _parse_bool(
+                        slot_obj.get("required"),
+                        name=f"wfpath.yaml inputs.slots.{name}.required",
+                    )
+                    if "required" in slot_obj
+                    else False
+                ),
+                description=str(slot_obj.get("description", "")).strip() or None,
+                raw=dict(slot_obj),
+            )
+        )
+    return tuple(slots)
+
+
+def _parse_agents(raw_obj: Any) -> tuple[PathAgentConfig, ...]:
+    if raw_obj is None:
+        return ()
+    if not isinstance(raw_obj, list):
+        raise PathManifestError("wfpath.yaml agents must be a list")
+    agents: list[PathAgentConfig] = []
+    seen_ids: set[str] = set()
+    for idx, item in enumerate(raw_obj):
+        agent_obj = _ensure_object(
+            item,
+            name=f"wfpath.yaml agents[{idx}]",
+            required=True,
+        )
+        assert agent_obj is not None
+        agent_id = str(agent_obj.get("id", "")).strip()
+        phase = str(agent_obj.get("phase", "")).strip()
+        description = str(agent_obj.get("description", "")).strip()
+        output = str(agent_obj.get("output", "")).strip()
+        if not agent_id:
+            raise PathManifestError(f"wfpath.yaml agents[{idx}].id is required")
+        if agent_id in seen_ids:
+            raise PathManifestError(
+                f"wfpath.yaml contains duplicate agent id: {agent_id}"
+            )
+        seen_ids.add(agent_id)
+        if not phase:
+            raise PathManifestError(f"wfpath.yaml agents[{idx}].phase is required")
+        if not description:
+            raise PathManifestError(
+                f"wfpath.yaml agents[{idx}].description is required"
+            )
+        if not output:
+            raise PathManifestError(f"wfpath.yaml agents[{idx}].output is required")
+        tools = _parse_string_list(
+            agent_obj.get("tools"),
+            name=f"wfpath.yaml agents[{idx}].tools",
+        )
+        agents.append(
+            PathAgentConfig(
+                agent_id=agent_id,
+                phase=phase,
+                description=description,
+                tools=tuple(tools),
+                output=output,
+                host_mode=str(agent_obj.get("host_mode", "")).strip() or None,
+                raw=dict(agent_obj),
+            )
+        )
+    return tuple(agents)
+
+
+def _parse_host_target_config(
+    raw_obj: Any, *, name: str
+) -> PathHostTargetConfig | None:
+    obj = _ensure_object(raw_obj, name=name)
+    if obj is None:
+        return None
+    return PathHostTargetConfig(
+        rules_file=str(obj.get("rules_file", "")).strip() or None,
+        skill_dir=str(obj.get("skill_dir", "")).strip() or None,
+        agent_dir=str(obj.get("agent_dir", "")).strip() or None,
+        settings_file=str(obj.get("settings_file", "")).strip() or None,
+        config_file=str(obj.get("config_file", "")).strip() or None,
+        command_dir=str(obj.get("command_dir", "")).strip() or None,
+        plugin_dir=str(obj.get("plugin_dir", "")).strip() or None,
+        tool_dir=str(obj.get("tool_dir", "")).strip() or None,
+        raw=dict(obj),
+    )
+
+
+def _parse_host_config(raw_obj: Any) -> PathHostConfig | None:
+    obj = _ensure_object(raw_obj, name="wfpath.yaml host")
+    if obj is None:
+        return None
+    return PathHostConfig(
+        claude=_parse_host_target_config(
+            obj.get("claude"), name="wfpath.yaml host.claude"
+        ),
+        opencode=_parse_host_target_config(
+            obj.get("opencode"), name="wfpath.yaml host.opencode"
+        ),
+        codex=_parse_host_target_config(
+            obj.get("codex"), name="wfpath.yaml host.codex"
+        ),
+        openclaw=_parse_host_target_config(
+            obj.get("openclaw"), name="wfpath.yaml host.openclaw"
+        ),
+        portable=_parse_host_target_config(
+            obj.get("portable"), name="wfpath.yaml host.portable"
+        ),
+        raw=dict(obj),
+    )
 
 
 def _parse_claude_skill_config(raw_obj: Any) -> PathSkillClaudeConfig | None:
@@ -356,6 +580,10 @@ class PathManifest:
     tags: list[str]
     applet: PathAppletConfig | None
     skill: PathSkillConfig | None
+    pipeline: PathPipelineConfig | None
+    inputs: tuple[PathInputSlotConfig, ...]
+    agents: tuple[PathAgentConfig, ...]
+    host: PathHostConfig | None
     raw: dict[str, Any]
 
     @property
@@ -451,6 +679,10 @@ class PathManifest:
             applet = PathAppletConfig(build_dir=build_dir, manifest_path=manifest_path)
 
         skill = _parse_skill_config(raw_obj.get("skill"))
+        pipeline = _parse_pipeline_config(raw_obj.get("pipeline"))
+        inputs = _parse_input_slots(raw_obj.get("inputs"))
+        agents = _parse_agents(raw_obj.get("agents"))
+        host = _parse_host_config(raw_obj.get("host"))
 
         return PathManifest(
             schema_version=schema_version,
@@ -462,6 +694,10 @@ class PathManifest:
             tags=tags,
             applet=applet,
             skill=skill,
+            pipeline=pipeline,
+            inputs=inputs,
+            agents=agents,
+            host=host,
             raw=raw_obj,
         )
 

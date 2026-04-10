@@ -25,6 +25,20 @@ _DEFAULT_IGNORE_DIRS = {
     ".build",
     ".git",
     ".venv",
+    ".wf-artifacts",
+    ".wf-state",
+    "__pycache__",
+    "node_modules",
+    ".wayfinder",
+    "tests",
+}
+
+_DEFAULT_SOURCE_IGNORE_DIRS = {
+    ".build",
+    ".git",
+    ".venv",
+    ".wf-artifacts",
+    ".wf-state",
     "__pycache__",
     "node_modules",
     ".wayfinder",
@@ -106,7 +120,7 @@ class PathBuilder:
         if not path_dir.exists():
             raise PathBuildError(f"Path directory not found: {path_dir}")
 
-        ignore = set(ignore_dirs or _DEFAULT_IGNORE_DIRS)
+        ignore = set(ignore_dirs or _DEFAULT_SOURCE_IGNORE_DIRS)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         files = sorted(
             _iter_files(path_dir, ignore_dirs=ignore),

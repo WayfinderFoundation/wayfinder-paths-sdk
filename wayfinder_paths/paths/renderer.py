@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.paths.manifest import (
+    PathAgentConfig,
     PathManifest,
     PathManifestError,
     PathSkillConfig,
@@ -20,19 +21,22 @@ class PathSkillRenderError(Exception):
     pass
 
 
-_HOSTS = ("claude", "codex", "openclaw", "portable")
+_HOSTS = ("claude", "opencode", "codex", "openclaw", "portable")
 _CANONICAL_SKILL_SUBDIRS = ("scripts", "references", "assets")
 _EXCLUDED_PATH_DIRS = {
     ".build",
     ".git",
     ".runtime",
     ".venv",
+    ".wf-artifacts",
+    ".wf-state",
     ".wayfinder",
     "__pycache__",
     "applet",
     "dist",
     "node_modules",
     "skill",
+    "tests",
 }
 _EXCLUDED_PATH_FILES = {"bundle.zip", "source.zip"}
 
@@ -156,12 +160,36 @@ def _render_claude_skill(
         lines.append(
             f"disable-model-invocation: {str(skill.claude.disable_model_invocation).lower()}"
         )
-    allowed = skill.claude.allowed_tools if skill.claude else []
+    allowed = list(skill.claude.allowed_tools) if skill.claude else []
+    if manifest.pipeline and manifest.agents:
+        for agent in manifest.agents:
+            allowed.append(f"Agent({_claude_agent_name(skill.name, agent.agent_id)})")
+        for tool in ("Read", "Glob", "Grep", "Bash"):
+            if tool not in allowed:
+                allowed.append(tool)
     if allowed:
         lines.append(_yaml_list("allowed-tools", allowed))
     if manifest.tags:
         lines.append("metadata:")
         lines.append(_yaml_list("tags", manifest.tags, indent=2))
+    return _wrap_frontmatter(lines, body)
+
+
+def _render_opencode_skill(
+    manifest: PathManifest,
+    skill: PathSkillConfig,
+    body: str,
+) -> str:
+    metadata: dict[str, object] = {"category": "wayfinder", "kind": "path-skill"}
+    if manifest.pipeline and manifest.pipeline.archetype:
+        metadata["kind"] = "strategy-pipeline"
+        metadata["archetype"] = manifest.pipeline.archetype
+    lines = [
+        f"name: {skill.name}",
+        f"description: {_quote_yaml(skill.description)}",
+        "compatibility: opencode",
+        f"metadata: {json.dumps(metadata, separators=(',', ':'), sort_keys=True)}",
+    ]
     return _wrap_frontmatter(lines, body)
 
 
@@ -176,6 +204,283 @@ def _render_codex_skill(
         lines.append("metadata:")
         lines.append(_yaml_list("tags", manifest.tags, indent=2))
     return _wrap_frontmatter(lines, body)
+
+
+def _claude_agent_name(skill_name: str, agent_id: str) -> str:
+    return f"{skill_name}-{agent_id}"
+
+
+def _opencode_agent_name(skill_name: str, agent_id: str) -> str:
+    return f"{skill_name}-{agent_id}"
+
+
+def _canonical_agent_body(path_dir: Path, agent: PathAgentConfig) -> str:
+    agent_path = path_dir / "skill" / "agents" / f"{agent.agent_id}.md"
+    if not agent_path.exists():
+        raise PathSkillRenderError(f"Agent source not found: {agent_path}")
+    return agent_path.read_text(encoding="utf-8").strip() + "\n"
+
+
+def _claude_agent_tools(agent: PathAgentConfig) -> str:
+    mapping = {
+        "read": "Read",
+        "glob": "Glob",
+        "grep": "Grep",
+        "bash": "Bash",
+        "webfetch": "WebFetch",
+        "websearch": "WebSearch",
+        "edit": "Edit",
+        "write": "Write",
+    }
+    return ", ".join(mapping.get(tool, tool) for tool in agent.tools) or "Read"
+
+
+def _render_claude_agent(
+    *,
+    path_dir: Path,
+    skill: PathSkillConfig,
+    agent: PathAgentConfig,
+) -> str:
+    body = _canonical_agent_body(path_dir, agent)
+    lines = [
+        f"name: {_claude_agent_name(skill.name, agent.agent_id)}",
+        f"description: {_quote_yaml(agent.description)}",
+        f"tools: {_claude_agent_tools(agent)}",
+        "model: sonnet",
+    ]
+    return _wrap_frontmatter(lines, body)
+
+
+def _render_claude_rules(manifest: PathManifest) -> str:
+    pipeline = manifest.pipeline
+    archetype = pipeline.archetype if pipeline and pipeline.archetype else "pipeline"
+    lines = [
+        f"# {manifest.name} Claude Rules",
+        "",
+        f"This generated section orchestrates the `{archetype}` workflow.",
+        "",
+        "Rules:",
+        "- The main-thread skill owns orchestration.",
+        "- Worker agents are leaf-only and write one artifact each.",
+        f"- Runtime artifacts live under `{pipeline.artifacts_dir if pipeline else '.wf-artifacts'}`.",
+        "- Null-state evaluation is mandatory before any job is armed.",
+        "- If risk checks fail, downgrade to draft or null-state.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _render_claude_settings(manifest: PathManifest, skill: PathSkillConfig) -> str:
+    matchers = "|".join(
+        _claude_agent_name(skill.name, agent.agent_id) for agent in manifest.agents
+    )
+    inject_cmd = f'python "$CLAUDE_PROJECT_DIR/.claude/skills/{skill.name}/scripts/inject_run_context.py"'
+    validate_cmd = f'python "$CLAUDE_PROJECT_DIR/.claude/skills/{skill.name}/scripts/validate_hook.py"'
+    hooks = {
+        "hooks": {
+            "SubagentStart": [
+                {
+                    "matcher": matchers or skill.name,
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": inject_cmd if manifest.pipeline else "true",
+                        }
+                    ],
+                }
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "Write|Edit",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": validate_cmd,
+                            "async": True,
+                            "timeout": 120,
+                        }
+                    ],
+                }
+            ],
+        }
+    }
+    return json.dumps(hooks, indent=2) + "\n"
+
+
+def _render_opencode_agents_md(manifest: PathManifest, skill: PathSkillConfig) -> str:
+    command_name = (
+        manifest.pipeline.entry_command
+        if manifest.pipeline and manifest.pipeline.entry_command
+        else skill.name
+    )
+    lines = [
+        f"# {manifest.name} OpenCode Rules",
+        "",
+        "## Strategy pipeline rules",
+        "- The primary orchestrator owns the workflow.",
+        "- Hidden subagents are leaf workers.",
+        "- Every worker writes exactly one artifact under `.wf-artifacts/$RUN_ID/`.",
+        "- Always evaluate a null state.",
+        "- Never place live trades before the risk verifier passes.",
+        f"- The primary command entrypoint is `{command_name}`.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def _opencode_permission_block(agent: PathAgentConfig) -> list[str]:
+    lines = ["permission:"]
+    tool_values = set(agent.tools)
+    for name in ("read", "glob", "grep", "webfetch", "websearch"):
+        if name in tool_values:
+            lines.append(f"  {name}: allow")
+    if "edit" in tool_values or "write" in tool_values:
+        lines.append("  edit: allow")
+    else:
+        lines.append("  edit: deny")
+    if "bash" in tool_values:
+        lines.append("  bash:")
+        lines.append('    "*": ask')
+        lines.append('    "python *": allow')
+    return lines
+
+
+def _render_opencode_orchestrator(
+    manifest: PathManifest, skill: PathSkillConfig
+) -> str:
+    task_ids = [
+        _opencode_agent_name(skill.name, agent.agent_id) for agent in manifest.agents
+    ]
+    lines = [
+        "---",
+        f"description: Orchestrates the {skill.name} pipeline using hidden worker subagents.",
+        "mode: primary",
+        "model: anthropic/claude-sonnet-4-20250514",
+        "temperature: 0.1",
+        "steps: 20",
+        "permission:",
+        "  skill:",
+        f'    "{skill.name}": allow',
+        "  task:",
+        '    "*": deny',
+    ]
+    for task_id in task_ids:
+        lines.append(f'    "{task_id}": allow')
+    lines.extend(
+        [
+            "  bash:",
+            '    "*": ask',
+            '    "python *": allow',
+            '    "wayfinder *": allow',
+            "  webfetch: allow",
+            "  websearch: allow",
+            "---",
+            "",
+            "You are the sole orchestrator.",
+            f"Load the `{skill.name}` skill at task start.",
+            "Use hidden subagents for analysis fan-out.",
+            "Do not perform worker analysis yourself.",
+            "Require a null-state comparison before compile_job.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _render_opencode_worker(
+    *,
+    path_dir: Path,
+    skill: PathSkillConfig,
+    agent: PathAgentConfig,
+) -> str:
+    body = _canonical_agent_body(path_dir, agent)
+    lines = [
+        "---",
+        f"description: {agent.description}",
+        "mode: subagent",
+        "hidden: true",
+        "model: anthropic/claude-sonnet-4-20250514",
+        "temperature: 0.1",
+        *_opencode_permission_block(agent),
+        "---",
+        "",
+        body.strip(),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _render_opencode_command(manifest: PathManifest, skill: PathSkillConfig) -> str:
+    agent_name = f"{skill.name}-orchestrator"
+    lines = [
+        "---",
+        f"description: Run the {skill.name} workflow",
+        f"agent: {agent_name}",
+        "model: anthropic/claude-sonnet-4-20250514",
+        "---",
+        "",
+        "Run the pipeline for this request:",
+        "",
+        "$ARGUMENTS",
+        "",
+    ]
+    for slot in manifest.inputs:
+        lines.append(f"@{slot.path}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _render_opencode_plugin_state() -> str:
+    return "\n".join(
+        [
+            'import type { Plugin } from "@opencode-ai/plugin"',
+            "",
+            "export const PipelineState: Plugin = async () => ({",
+            '  "experimental.session.compacting": async (_input, output) => {',
+            '    output.context.push("## Pipeline state\\n- Generated by Wayfinder path export")',
+            "  },",
+            "})",
+            "",
+        ]
+    )
+
+
+def _render_opencode_plugin_guard() -> str:
+    return "\n".join(
+        [
+            'import type { Plugin } from "@opencode-ai/plugin"',
+            "",
+            "export const TradeGuard: Plugin = async () => ({",
+            '  "tool.execute.before": async (_input, _output) => {',
+            "    return",
+            "  },",
+            "})",
+            "",
+        ]
+    )
+
+
+def _render_opencode_tool(name: str, description: str) -> str:
+    return "\n".join(
+        [
+            'import { tool } from "@opencode-ai/plugin"',
+            "",
+            "export default tool({",
+            f"  description: {json.dumps(description)},",
+            "  args: {},",
+            "  async execute() {",
+            f"    return {{ ok: true, tool: {json.dumps(name)} }}",
+            "  },",
+            "})",
+            "",
+        ]
+    )
+
+
+def _render_opencode_config() -> str:
+    payload = {
+        "$schema": "https://opencode.ai/config.json",
+        "instructions": ["AGENTS.md"],
+    }
+    return json.dumps(payload, indent=2) + "\n"
 
 
 def _render_codex_policy(skill: PathSkillConfig) -> str:
@@ -629,6 +934,277 @@ def _export_manifest(
     }
 
 
+def _copy_payload_to_install_tree(
+    *,
+    export_dir: Path,
+    install_root: Path,
+    output_root: Path,
+) -> list[str]:
+    written: list[str] = []
+    install_root.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "SKILL.md",
+        "runtime",
+        "scripts",
+        "references",
+        "assets",
+        "path",
+        "agents",
+    ):
+        src = export_dir / name
+        if not src.exists():
+            continue
+        dest = install_root / name
+        if src.is_dir():
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
+            for path in sorted(dest.rglob("*")):
+                if path.is_file():
+                    written.append(path.relative_to(output_root).as_posix())
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            written.append(dest.relative_to(output_root).as_posix())
+    return written
+
+
+def _write_install_json(
+    export_dir: Path,
+    relative_path: str,
+    payload: dict[str, Any],
+    output_root: Path,
+) -> str:
+    path = export_dir / "install" / relative_path
+    _write_text(path, json.dumps(payload, indent=2, sort_keys=True))
+    return path.relative_to(output_root).as_posix()
+
+
+def _write_install_text(
+    export_dir: Path,
+    relative_path: str,
+    content: str,
+    output_root: Path,
+) -> str:
+    path = export_dir / "install" / relative_path
+    _write_text(path, content)
+    return path.relative_to(output_root).as_posix()
+
+
+def _write_host_install_assets(
+    *,
+    path_dir: Path,
+    export_dir: Path,
+    output_root: Path,
+    manifest: PathManifest,
+    skill: PathSkillConfig,
+    host: str,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    written: list[str] = []
+    install_targets: list[dict[str, Any]] = []
+
+    if host == "claude":
+        skill_rel = f".claude/skills/{skill.name}"
+        written.extend(
+            _copy_payload_to_install_tree(
+                export_dir=export_dir,
+                install_root=export_dir / "install" / skill_rel,
+                output_root=output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "copy_tree",
+                "source": f"install/{skill_rel}",
+                "destination": skill_rel,
+            }
+        )
+        for agent in manifest.agents:
+            rel_path = (
+                f".claude/agents/{_claude_agent_name(skill.name, agent.agent_id)}.md"
+            )
+            written.append(
+                _write_install_text(
+                    export_dir,
+                    rel_path,
+                    _render_claude_agent(path_dir=path_dir, skill=skill, agent=agent),
+                    output_root,
+                )
+            )
+            install_targets.append(
+                {
+                    "op": "copy_file",
+                    "source": f"install/{rel_path}",
+                    "destination": rel_path,
+                }
+            )
+        rules_rel = ".claude/CLAUDE.md"
+        written.append(
+            _write_install_text(
+                export_dir,
+                rules_rel,
+                _render_claude_rules(manifest),
+                output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "merge_markdown",
+                "source": f"install/{rules_rel}",
+                "destination": rules_rel,
+                "section_id": f"wayfinder-path:{manifest.slug}:claude-rules",
+            }
+        )
+        settings_rel = ".claude/settings.json"
+        written.append(
+            _write_install_json(
+                export_dir,
+                settings_rel,
+                json.loads(_render_claude_settings(manifest, skill)),
+                output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "merge_json",
+                "source": f"install/{settings_rel}",
+                "destination": settings_rel,
+            }
+        )
+        return written, install_targets
+
+    if host == "opencode":
+        skill_rel = f".opencode/skills/{skill.name}"
+        written.extend(
+            _copy_payload_to_install_tree(
+                export_dir=export_dir,
+                install_root=export_dir / "install" / skill_rel,
+                output_root=output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "copy_tree",
+                "source": f"install/{skill_rel}",
+                "destination": skill_rel,
+            }
+        )
+        orchestrator_rel = f".opencode/agents/{skill.name}-orchestrator.md"
+        written.append(
+            _write_install_text(
+                export_dir,
+                orchestrator_rel,
+                _render_opencode_orchestrator(manifest, skill),
+                output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "copy_file",
+                "source": f"install/{orchestrator_rel}",
+                "destination": orchestrator_rel,
+            }
+        )
+        for agent in manifest.agents:
+            rel_path = f".opencode/agents/{_opencode_agent_name(skill.name, agent.agent_id)}.md"
+            written.append(
+                _write_install_text(
+                    export_dir,
+                    rel_path,
+                    _render_opencode_worker(
+                        path_dir=path_dir, skill=skill, agent=agent
+                    ),
+                    output_root,
+                )
+            )
+            install_targets.append(
+                {
+                    "op": "copy_file",
+                    "source": f"install/{rel_path}",
+                    "destination": rel_path,
+                }
+            )
+        command_name = (
+            manifest.pipeline.entry_command
+            if manifest.pipeline and manifest.pipeline.entry_command
+            else skill.name
+        )
+        command_rel = f".opencode/commands/{command_name}.md"
+        written.append(
+            _write_install_text(
+                export_dir,
+                command_rel,
+                _render_opencode_command(manifest, skill),
+                output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "copy_file",
+                "source": f"install/{command_rel}",
+                "destination": command_rel,
+            }
+        )
+        for rel_path, content in (
+            (".opencode/plugins/pipeline-state.ts", _render_opencode_plugin_state()),
+            (".opencode/plugins/trade-guard.ts", _render_opencode_plugin_guard()),
+            (
+                ".opencode/tools/compile_job.ts",
+                _render_opencode_tool("compile_job", "Compile a validated runner job."),
+            ),
+            (
+                ".opencode/tools/validate_order.ts",
+                _render_opencode_tool(
+                    "validate_order", "Validate a candidate order payload."
+                ),
+            ),
+        ):
+            written.append(
+                _write_install_text(export_dir, rel_path, content, output_root)
+            )
+            install_targets.append(
+                {
+                    "op": "copy_file",
+                    "source": f"install/{rel_path}",
+                    "destination": rel_path,
+                }
+            )
+        written.append(
+            _write_install_text(
+                export_dir,
+                "AGENTS.md",
+                _render_opencode_agents_md(manifest, skill),
+                output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "merge_markdown",
+                "source": "install/AGENTS.md",
+                "destination": "AGENTS.md",
+                "section_id": f"wayfinder-path:{manifest.slug}:opencode-rules",
+            }
+        )
+        written.append(
+            _write_install_json(
+                export_dir,
+                "opencode.json",
+                json.loads(_render_opencode_config()),
+                output_root,
+            )
+        )
+        install_targets.append(
+            {
+                "op": "merge_json",
+                "source": "install/opencode.json",
+                "destination": "opencode.json",
+            }
+        )
+        return written, install_targets
+
+    return written, install_targets
+
+
 def _write_host_artifacts(
     *,
     path_dir: Path,
@@ -650,6 +1226,8 @@ def _write_host_artifacts(
         skill_md = body
     elif host == "claude":
         skill_md = _render_claude_skill(manifest, skill, body)
+    elif host == "opencode":
+        skill_md = _render_opencode_skill(manifest, skill, body)
     elif host == "codex":
         skill_md = _render_codex_skill(manifest, skill, body)
     elif host == "openclaw":
@@ -688,6 +1266,21 @@ def _write_host_artifacts(
         policy_path = export_dir / "agents" / "openai.yaml"
         _write_text(policy_path, _render_codex_policy(skill))
         written.append(policy_path.relative_to(output_root).as_posix())
+
+    install_written, install_targets = _write_host_install_assets(
+        path_dir=path_dir,
+        export_dir=export_dir,
+        output_root=output_root,
+        manifest=manifest,
+        skill=skill,
+        host=host,
+    )
+    written.extend(install_written)
+    if install_targets:
+        export_manifest["install_targets"] = install_targets
+        _write_text(
+            export_manifest_path, json.dumps(export_manifest, indent=2, sort_keys=True)
+        )
 
     info = PathSkillExportInfo(
         host=host,

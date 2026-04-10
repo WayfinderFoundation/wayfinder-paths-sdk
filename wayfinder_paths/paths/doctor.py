@@ -7,11 +7,20 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
     PathSkillConfig,
     resolve_skill_runtime,
+)
+from wayfinder_paths.paths.pipeline import (
+    STANDARD_OUTPUT_CONTRACT,
+    PipelineGraphError,
+    get_pipeline_archetype,
+    load_pipeline_graph,
+    validate_pipeline_graph,
 )
 from wayfinder_paths.paths.scaffold import slugify
 
@@ -177,6 +186,233 @@ def _validate_skill(
             level="error",
             message="Missing skill/SKILL.md for skill.source=provided",
             path=provided_skill_path,
+        )
+
+
+def _is_safe_artifact_output(output: str, artifacts_dir: str) -> bool:
+    normalized = output.strip()
+    if not normalized.startswith(f"{artifacts_dir}/"):
+        return False
+    return ".." not in normalized
+
+
+def _validate_pipeline(
+    *,
+    path_dir: Path,
+    manifest: PathManifest,
+    errors: list[DoctorIssue],
+    warnings: list[DoctorIssue],
+) -> None:
+    pipeline = manifest.pipeline
+    if pipeline is None:
+        return
+
+    if not pipeline.archetype:
+        _record_issue(
+            errors,
+            level="error",
+            message="wfpath.yaml pipeline.archetype is required",
+            path=path_dir / "wfpath.yaml",
+        )
+        return
+
+    try:
+        archetype = get_pipeline_archetype(pipeline.archetype)
+    except PipelineGraphError as exc:
+        _record_issue(
+            errors,
+            level="error",
+            message=str(exc),
+            path=path_dir / "wfpath.yaml",
+        )
+        return
+
+    missing_output_fields = set(STANDARD_OUTPUT_CONTRACT) - set(
+        pipeline.output_contract or STANDARD_OUTPUT_CONTRACT
+    )
+    if missing_output_fields:
+        _record_issue(
+            errors,
+            level="error",
+            message=(
+                "pipeline.output_contract is missing standard fields: "
+                + ", ".join(sorted(missing_output_fields))
+            ),
+            path=path_dir / "wfpath.yaml",
+        )
+
+    if not pipeline.graph_path:
+        _record_issue(
+            errors,
+            level="error",
+            message="wfpath.yaml pipeline.graph is required",
+            path=path_dir / "wfpath.yaml",
+        )
+    else:
+        graph_path = path_dir / pipeline.graph_path
+        if not graph_path.exists():
+            _record_issue(
+                errors,
+                level="error",
+                message="Missing pipeline graph file",
+                path=graph_path,
+            )
+        else:
+            try:
+                graph = load_pipeline_graph(graph_path)
+                validate_pipeline_graph(graph, archetype=pipeline.archetype)
+            except PipelineGraphError as exc:
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=str(exc),
+                    path=graph_path,
+                )
+
+    policy_path = path_dir / "policy" / "default.yaml"
+    if not policy_path.exists():
+        _record_issue(
+            errors,
+            level="error",
+            message="Missing policy/default.yaml for pipeline path",
+            path=policy_path,
+        )
+    else:
+        try:
+            policy = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            policy = None
+        if not isinstance(policy, dict):
+            _record_issue(
+                errors,
+                level="error",
+                message="policy/default.yaml must be a YAML object",
+                path=policy_path,
+            )
+        else:
+            missing_sections = [
+                key
+                for key in archetype.required_policy_sections
+                if key not in policy or policy.get(key) in (None, "", [], {})
+            ]
+            if missing_sections:
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=(
+                        "policy/default.yaml is missing required sections: "
+                        + ", ".join(missing_sections)
+                    ),
+                    path=policy_path,
+                )
+
+    if not manifest.inputs:
+        _record_issue(
+            errors,
+            level="error",
+            message="Pipeline paths must declare inputs.slots",
+            path=path_dir / "wfpath.yaml",
+        )
+    for slot in manifest.inputs:
+        slot_path = path_dir / slot.path
+        if not slot_path.exists():
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Missing input slot file: {slot.name}",
+                path=slot_path,
+            )
+        if not slot.schema:
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Input slot '{slot.name}' must declare a schema",
+                path=path_dir / "wfpath.yaml",
+            )
+        else:
+            schema_path = path_dir / slot.schema
+            if not schema_path.exists():
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=f"Missing schema for input slot: {slot.name}",
+                    path=schema_path,
+                )
+
+    if not manifest.agents:
+        _record_issue(
+            errors,
+            level="error",
+            message="Pipeline paths must declare agents",
+            path=path_dir / "wfpath.yaml",
+        )
+    seen_outputs: set[str] = set()
+    for agent in manifest.agents:
+        agent_doc = path_dir / "skill" / "agents" / f"{agent.agent_id}.md"
+        if not agent_doc.exists():
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Missing skill/agents/{agent.agent_id}.md",
+                path=agent_doc,
+            )
+        if agent.output in seen_outputs:
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Duplicate agent output path: {agent.output}",
+                path=path_dir / "wfpath.yaml",
+            )
+        seen_outputs.add(agent.output)
+        if not _is_safe_artifact_output(agent.output, pipeline.artifacts_dir):
+            _record_issue(
+                errors,
+                level="error",
+                message=(
+                    "Agent outputs must stay under the configured artifacts_dir: "
+                    f"{agent.agent_id}"
+                ),
+                path=path_dir / "wfpath.yaml",
+            )
+
+    fixtures_dir = path_dir / "tests" / "fixtures"
+    fixture_files = sorted(
+        [
+            path
+            for path in fixtures_dir.glob("*")
+            if path.is_file() and path.suffix in {".yaml", ".yml", ".json"}
+        ]
+    )
+    if len(fixture_files) < 3:
+        _record_issue(
+            errors,
+            level="error",
+            message="Pipeline paths must ship at least 3 fixtures",
+            path=fixtures_dir,
+        )
+
+    evals_dir = path_dir / "tests" / "evals"
+    eval_files = sorted(
+        [
+            path
+            for path in evals_dir.glob("*")
+            if path.is_file() and path.suffix in {".yaml", ".yml", ".json", ".md"}
+        ]
+    )
+    if len(eval_files) < 3:
+        _record_issue(
+            errors,
+            level="error",
+            message="Pipeline paths must ship at least 3 evals",
+            path=evals_dir,
+        )
+
+    if manifest.host is None:
+        _record_issue(
+            warnings,
+            level="warning",
+            message="Pipeline paths should declare host adapter metadata",
+            path=path_dir / "wfpath.yaml",
         )
 
 
@@ -521,6 +757,12 @@ def run_doctor(
             errors=errors,
             warnings=warnings,
             created_files=created_files,
+        )
+        _validate_pipeline(
+            path_dir=path_dir,
+            manifest=manifest,
+            errors=errors,
+            warnings=warnings,
         )
         _validate_runtime_skill_contract(
             path_dir=path_dir,

@@ -17,6 +17,7 @@ import click
 from wayfinder_paths.paths.builder import PathBuilder, PathBuildError, _sha256_file
 from wayfinder_paths.paths.client import PathsApiClient, PathsApiError
 from wayfinder_paths.paths.doctor import PathDoctorError, PathDoctorReport, run_doctor
+from wayfinder_paths.paths.evaluator import PathEvalError, run_path_eval
 from wayfinder_paths.paths.formatter import PathFormatError, format_path
 from wayfinder_paths.paths.hooks import PathHooksError, install_path_hooks
 from wayfinder_paths.paths.manifest import (
@@ -303,6 +304,114 @@ def _activate_destination(host: str, scope: str, *, cwd: Path) -> Path:
     raise click.ClickException(f"Unsupported host/scope combination: {host}/{scope}")
 
 
+def _activate_install_root(host: str, scope: str, *, cwd: Path) -> Path:
+    if host == "claude":
+        if scope == "project":
+            return cwd
+        if scope == "personal":
+            return Path.home()
+    if host == "opencode":
+        if scope == "project":
+            return cwd
+        if scope == "personal":
+            return Path.home() / ".config" / "opencode"
+    raise click.ClickException(f"Unsupported host/scope combination: {host}/{scope}")
+
+
+def _read_export_manifest(source_dir: Path) -> dict[str, Any]:
+    export_manifest_path = source_dir / "runtime" / "export.json"
+    if not export_manifest_path.exists():
+        return {}
+    try:
+        payload = json.loads(export_manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in patch.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
+    current: dict[str, Any] = {}
+    if dest_path.exists():
+        try:
+            parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                current = parsed
+        except Exception:
+            current = {}
+    patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    if not isinstance(patch_payload, dict):
+        raise click.ClickException(f"Install patch must be a JSON object: {patch_path}")
+    merged = _deep_merge(current, patch_payload)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+
+
+def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) -> None:
+    begin = f"<!-- {section_id}:start -->"
+    end = f"<!-- {section_id}:end -->"
+    patch_text = patch_path.read_text(encoding="utf-8").strip()
+    section = f"{begin}\n{patch_text}\n{end}\n"
+    current = dest_path.read_text(encoding="utf-8") if dest_path.exists() else ""
+    if begin in current and end in current:
+        start_idx = current.index(begin)
+        end_idx = current.index(end) + len(end)
+        updated = current[:start_idx] + section + current[end_idx:]
+    else:
+        updated = current.rstrip() + ("\n\n" if current.strip() else "") + section
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+
+
+def _copy_install_path(source: Path, destination: Path) -> None:
+    if source.is_dir():
+        _copy_export_tree(source, destination)
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+
+def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
+    export_manifest = _read_export_manifest(source_dir)
+    install_targets = export_manifest.get("install_targets") or []
+    if not isinstance(install_targets, list):
+        return []
+    applied: list[str] = []
+    for target in install_targets:
+        if not isinstance(target, dict):
+            continue
+        op = str(target.get("op") or "").strip()
+        src = source_dir / str(target.get("source") or "").strip()
+        dest = destination_root / str(target.get("destination") or "").strip()
+        if op in {"copy_tree", "copy_file"}:
+            _copy_install_path(src, dest)
+            applied.append(str(dest))
+            continue
+        if op == "merge_json":
+            _merge_json_file(dest, src)
+            applied.append(str(dest))
+            continue
+        if op == "merge_markdown":
+            section_id = str(target.get("section_id") or "").strip()
+            if not section_id:
+                raise click.ClickException(
+                    f"merge_markdown target missing section_id: {src}"
+                )
+            _merge_markdown_file(dest, src, section_id=section_id)
+            applied.append(str(dest))
+            continue
+    return applied
+
+
 @click.group(name="path", help="Build, publish, and emit signals for Paths.")
 def path_cli() -> None:
     pass
@@ -336,6 +445,13 @@ def path_cli() -> None:
 @click.option("--applet/--no-applet", default=False, show_default=True)
 @click.option("--skill/--no-skill", default=True, show_default=True)
 @click.option(
+    "--template",
+    default="basic",
+    show_default=True,
+    type=click.Choice(["basic", "pipeline"], case_sensitive=False),
+)
+@click.option("--archetype", default=None, help="Pipeline archetype id.")
+@click.option(
     "--overwrite", is_flag=True, help="Overwrite scaffolded files if they exist."
 )
 def init_cmd(
@@ -348,6 +464,8 @@ def init_cmd(
     tags: tuple[str, ...],
     applet: bool,
     skill: bool,
+    template: str,
+    archetype: str | None,
     overwrite: bool,
 ) -> None:
     safe_slug = slugify(slug)
@@ -363,6 +481,8 @@ def init_cmd(
             tags=list(tags) if tags else None,
             with_applet=applet,
             with_skill=skill,
+            template=template.lower(),
+            archetype=archetype,
             overwrite=overwrite,
         )
     except PathScaffoldError as exc:
@@ -387,6 +507,35 @@ def init_cmd(
             },
         }
     )
+
+
+@path_cli.command(name="eval", help="Run fixture-driven path evaluation checks.")
+@click.option("--path", "path_dir", default=".", show_default=True)
+def eval_cmd(path_dir: str) -> None:
+    try:
+        report = run_path_eval(path_dir=Path(path_dir))
+    except PathEvalError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    _echo_json(
+        {
+            "ok": report.ok,
+            "result": {
+                "slug": report.slug,
+                "issues": [
+                    {
+                        "name": issue.name,
+                        "passed": issue.passed,
+                        "message": issue.message,
+                        "path": issue.path,
+                    }
+                    for issue in report.issues
+                ],
+            },
+        }
+    )
+    if not report.ok:
+        raise click.ClickException("Path eval reported failures")
 
 
 @path_cli.command(
@@ -486,7 +635,8 @@ def exec_cmd(path_dir: str, component: str | None, args: tuple[str, ...]) -> Non
     "--host",
     required=True,
     type=click.Choice(
-        ["claude", "codex", "openclaw", "portable"], case_sensitive=False
+        ["claude", "opencode", "codex", "openclaw", "portable"],
+        case_sensitive=False,
     ),
 )
 def export_skill_cmd(path_dir: str, host: str) -> None:
@@ -516,7 +666,9 @@ def export_skill_cmd(path_dir: str, host: str) -> None:
 @click.option(
     "--host",
     required=True,
-    type=click.Choice(["claude", "codex", "openclaw"], case_sensitive=False),
+    type=click.Choice(
+        ["claude", "opencode", "codex", "openclaw"], case_sensitive=False
+    ),
 )
 @click.option(
     "--scope",
@@ -555,11 +707,23 @@ def activate_cmd(
             raise click.ClickException(f"Rendered export not found: {source_dir}")
         skill_name = source_dir.name
 
-    destination_root = _activate_destination(
-        normalized_host, normalized_scope, cwd=Path.cwd()
-    )
-    dest = destination_root / skill_name
-    _copy_export_tree(source_dir, dest)
+    export_manifest = _read_export_manifest(source_dir)
+    install_targets = export_manifest.get("install_targets") or []
+    if install_targets:
+        destination_root = _activate_install_root(
+            normalized_host, normalized_scope, cwd=Path.cwd()
+        )
+        applied = _apply_install_targets(source_dir, destination_root)
+        dest = destination_root
+        mode = "install"
+    else:
+        destination_root = _activate_destination(
+            normalized_host, normalized_scope, cwd=Path.cwd()
+        )
+        dest = destination_root / skill_name
+        _copy_export_tree(source_dir, dest)
+        applied = [str(dest)]
+        mode = "copy"
     _echo_json(
         {
             "ok": True,
@@ -568,7 +732,8 @@ def activate_cmd(
                 "scope": normalized_scope,
                 "source": str(source_dir),
                 "dest": str(dest),
-                "mode": "copy",
+                "mode": mode,
+                "applied": applied,
             },
         }
     )

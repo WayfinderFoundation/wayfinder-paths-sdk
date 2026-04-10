@@ -10,6 +10,7 @@ import pytest
 
 from wayfinder_paths.paths.builder import PathBuilder
 from wayfinder_paths.paths.doctor import run_doctor
+from wayfinder_paths.paths.evaluator import run_path_eval
 from wayfinder_paths.paths.hooks import install_path_hooks
 from wayfinder_paths.paths.manifest import PathManifest
 from wayfinder_paths.paths.preview import inspect_preview_path
@@ -84,6 +85,43 @@ def test_path_init_strategy_uses_path_helper_names(tmp_path: Path):
     assert "def wfpath_decision()" in strategy_source
 
 
+def test_path_init_pipeline_scaffolds_contract_files(tmp_path: Path):
+    path_dir = tmp_path / "conditional-router"
+    result = init_path(
+        path_dir=path_dir,
+        slug="conditional-router",
+        template="pipeline",
+        archetype="conditional-router",
+        with_skill=True,
+        with_applet=False,
+    )
+
+    manifest = PathManifest.load(result.manifest_path)
+    assert manifest.pipeline is not None
+    assert manifest.pipeline.archetype == "conditional-router"
+    assert manifest.pipeline.graph_path == "pipeline/graph.yaml"
+    assert manifest.inputs
+    assert manifest.agents
+    assert (path_dir / "policy" / "default.yaml").exists()
+    assert (path_dir / "pipeline" / "graph.yaml").exists()
+    assert (path_dir / "skill" / "agents" / "poly-scout.md").exists()
+    assert (path_dir / "tests" / "evals" / "host_render.yaml").exists()
+    assert (path_dir / ".wf-artifacts" / "README.md").exists()
+    assert "gold reference" in (path_dir / "README.md").read_text(encoding="utf-8")
+    assert "recession_prob" in (path_dir / "policy" / "default.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "If US recession probability rises above 60%" in (
+        path_dir / "inputs" / "thesis.md"
+    ).read_text(encoding="utf-8")
+    assert 'selected_playbook.id: "risk_off"' in (
+        path_dir / "tests" / "evals" / "output_shape.yaml"
+    ).read_text(encoding="utf-8")
+    assert "entry_command" in (path_dir / "scripts" / "main.py").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_path_doctor_ok_on_scaffolded_path(tmp_path: Path):
     path_dir = tmp_path / "demo"
     init_path(
@@ -96,6 +134,44 @@ def test_path_doctor_ok_on_scaffolded_path(tmp_path: Path):
     report = run_doctor(path_dir=path_dir, fix=False)
     assert report.ok is True
     assert report.errors == []
+
+
+def test_path_doctor_ok_on_pipeline_path(tmp_path: Path):
+    path_dir = tmp_path / "pipeline-demo"
+    init_path(
+        path_dir=path_dir,
+        slug="pipeline-demo",
+        template="pipeline",
+        archetype="conditional-router",
+        with_applet=False,
+    )
+
+    report = run_doctor(path_dir=path_dir, fix=False)
+    assert report.ok is True
+
+
+def test_path_doctor_rejects_agent_output_outside_artifacts_dir(tmp_path: Path):
+    path_dir = tmp_path / "bad-output"
+    init_path(
+        path_dir=path_dir,
+        slug="bad-output",
+        template="pipeline",
+        archetype="conditional-router",
+        with_applet=False,
+    )
+
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            ".wf-artifacts/$RUN_ID/normalize_thesis.json",
+            "../escape.json",
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(path_dir=path_dir, fix=False)
+    assert report.ok is False
+    assert any("artifacts_dir" in issue.message for issue in report.errors)
 
 
 def test_path_doctor_fix_creates_missing_readme_and_generated_instructions(
@@ -221,8 +297,15 @@ def test_render_skill_exports_writes_all_hosts(tmp_path: Path):
 
     report = render_skill_exports(path_dir=path_dir)
 
-    assert report.rendered_hosts == ["claude", "codex", "openclaw", "portable"]
+    assert report.rendered_hosts == [
+        "claude",
+        "opencode",
+        "codex",
+        "openclaw",
+        "portable",
+    ]
     assert (report.output_root / "claude" / "render-demo" / "SKILL.md").exists()
+    assert (report.output_root / "opencode" / "render-demo" / "SKILL.md").exists()
     assert (report.output_root / "codex" / "render-demo" / "SKILL.md").exists()
     assert (
         report.output_root / "codex" / "render-demo" / "agents" / "openai.yaml"
@@ -244,6 +327,9 @@ def test_render_skill_exports_writes_all_hosts(tmp_path: Path):
     assert (
         report.output_root / "portable" / "render-demo" / "path" / "wfpath.yaml"
     ).exists()
+    assert (
+        report.output_root / "opencode" / "render-demo" / "install" / "opencode.json"
+    ).exists()
     runtime_manifest = json.loads(
         (
             report.output_root
@@ -255,6 +341,21 @@ def test_render_skill_exports_writes_all_hosts(tmp_path: Path):
     )
     assert runtime_manifest["version"]
     assert runtime_manifest["path_version"] == "0.1.0"
+
+
+def test_path_eval_runs_fixture_and_host_render_checks(tmp_path: Path):
+    path_dir = tmp_path / "eval-demo"
+    init_path(
+        path_dir=path_dir,
+        slug="eval-demo",
+        template="pipeline",
+        archetype="conditional-router",
+        with_applet=False,
+    )
+
+    report = run_path_eval(path_dir=path_dir)
+    assert report.ok is True
+    assert any(issue.name == "doctor" for issue in report.issues)
 
 
 def test_rendered_portable_export_runs_without_original_path_tree(tmp_path: Path):
