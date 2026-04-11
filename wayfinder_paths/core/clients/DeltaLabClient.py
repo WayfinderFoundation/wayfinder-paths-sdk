@@ -13,7 +13,9 @@ class DeltaLabClient(WayfinderClient):
     """Client for Delta Lab basis APY and delta-neutral strategy discovery."""
 
     @staticmethod
-    def _normalize_series_param(series: str | list[str] | tuple[str, ...] | None) -> str | None:
+    def _normalize_series_param(
+        series: str | list[str] | tuple[str, ...] | None,
+    ) -> str | None:
         if series is None:
             return None
         if isinstance(series, str):

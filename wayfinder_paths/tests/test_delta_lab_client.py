@@ -16,7 +16,9 @@ class _Response:
         return self._payload
 
 
-delta_lab_client_module = importlib.import_module("wayfinder_paths.core.clients.DeltaLabClient")
+delta_lab_client_module = importlib.import_module(
+    "wayfinder_paths.core.clients.DeltaLabClient"
+)
 
 
 @pytest.mark.asyncio
@@ -43,7 +45,10 @@ async def test_get_asset_timeseries_serializes_series_list(
     assert out == {}
     client._authed_request.assert_awaited_once()
     args, kwargs = client._authed_request.await_args
-    assert args == ("GET", "https://example.com/api/v1/delta-lab/assets/VIRTUAL/timeseries")
+    assert args == (
+        "GET",
+        "https://example.com/api/v1/delta-lab/assets/VIRTUAL/timeseries",
+    )
     assert kwargs["params"] == {
         "lookback_days": 30,
         "limit": 2000,

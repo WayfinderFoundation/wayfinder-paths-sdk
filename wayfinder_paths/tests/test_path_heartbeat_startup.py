@@ -101,9 +101,7 @@ def test_maybe_heartbeat_installed_paths_reads_legacy_lockfile_and_rewrites_stat
         def submit_batch_install_heartbeats(self, **kwargs):
             self.__class__.calls.append(kwargs)
             return {
-                "results": [
-                    {"installation_id": "install-legacy", "status": "recorded"}
-                ]
+                "results": [{"installation_id": "install-legacy", "status": "recorded"}]
             }
 
     result = maybe_heartbeat_installed_paths(

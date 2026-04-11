@@ -74,12 +74,19 @@ class PipelineArchetype:
     default_failure_edges: tuple[tuple[str, str, str, int | None], ...]
     input_slots: tuple[ArchetypeInputSlot, ...]
     agents: tuple[ArchetypeAgent, ...]
+    # Skills that must be loaded before writing any scripts for this archetype.
+    # The skill renderer injects these as prerequisites in generated instructions.
+    required_skills: tuple[str, ...] = ()
 
 
 _ARCHETYPES: dict[str, PipelineArchetype] = {
     "conditional-router": PipelineArchetype(
         archetype_id="conditional-router",
         entry_command="conditional-bet",
+        required_skills=(
+            "using-polymarket-adapter",
+            "using-hyperliquid-adapter",
+        ),
         required_policy_sections=(
             "archetype",
             "signals",
@@ -197,6 +204,11 @@ _ARCHETYPES: dict[str, PipelineArchetype] = {
     "hedge-finder": PipelineArchetype(
         archetype_id="hedge-finder",
         entry_command="hedge-finder",
+        required_skills=(
+            "using-delta-lab",
+            "using-hyperliquid-adapter",
+            "using-pool-token-balance-data",
+        ),
         required_policy_sections=(
             "archetype",
             "signals",
@@ -295,6 +307,11 @@ _ARCHETYPES: dict[str, PipelineArchetype] = {
     "spread-radar": PipelineArchetype(
         archetype_id="spread-radar",
         entry_command="spread-radar",
+        required_skills=(
+            "using-delta-lab",
+            "using-hyperliquid-adapter",
+            "using-pool-token-balance-data",
+        ),
         required_policy_sections=(
             "archetype",
             "universe",

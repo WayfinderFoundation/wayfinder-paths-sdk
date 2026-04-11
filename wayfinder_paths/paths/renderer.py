@@ -15,6 +15,7 @@ from wayfinder_paths.paths.manifest import (
     PathSkillRuntimeConfig,
     resolve_skill_runtime,
 )
+from wayfinder_paths.paths.pipeline import get_pipeline_archetype
 
 
 class PathSkillRenderError(Exception):
@@ -1205,6 +1206,27 @@ def _write_host_install_assets(
     return written, install_targets
 
 
+def _inject_required_skills(manifest: PathManifest, body: str) -> str:
+    """Prepend data-source prerequisite directives from the archetype."""
+    if not manifest.pipeline or not manifest.pipeline.archetype:
+        return body
+    try:
+        archetype = get_pipeline_archetype(manifest.pipeline.archetype)
+    except Exception:
+        return body
+    if not archetype.required_skills:
+        return body
+    skill_list = "\n".join(f"- `/{s}`" for s in archetype.required_skills)
+    block = (
+        "\n## Prerequisites\n\n"
+        "Before writing any scripts or invoking workers, load these data-source skills.\n"
+        "They document method signatures, return shapes, and field names for the "
+        "clients and adapters this pipeline depends on.\n\n"
+        f"{skill_list}\n"
+    )
+    return body.rstrip("\n") + "\n" + block + "\n"
+
+
 def _write_host_artifacts(
     *,
     path_dir: Path,
@@ -1221,6 +1243,8 @@ def _write_host_artifacts(
     written: list[str] = []
     written.extend(_copy_optional_dirs(path_dir, export_dir))
     written.extend(_copy_runtime_path(path_dir, export_dir))
+
+    body = _inject_required_skills(manifest, body)
 
     if skill.source == "provided":
         skill_md = body
