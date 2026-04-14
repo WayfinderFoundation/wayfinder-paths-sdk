@@ -1,0 +1,9 @@
+schema_version: "0.1"
+entrypoint: "adapters.ondo_rwa_adapter.adapter.OndoRwaAdapter"
+capabilities:
+  - "rwa.subscribe"
+  - "rwa.redeem"
+  - "rwa.wrap"
+  - "rwa.unwrap"
+  - "position.read"
+dependencies: []

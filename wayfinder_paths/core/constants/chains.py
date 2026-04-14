@@ -4,6 +4,7 @@ CHAIN_ID_ARBITRUM = 42161
 CHAIN_ID_BSC = 56
 CHAIN_ID_POLYGON = 137
 CHAIN_ID_AVALANCHE = 43114
+CHAIN_ID_MANTLE = 5000
 CHAIN_ID_PLASMA = 9745
 CHAIN_ID_HYPEREVM = 999
 CHAIN_ID_KATANA = 747474
@@ -19,6 +20,7 @@ CHAIN_CODE_TO_ID = {
     "mainnet": CHAIN_ID_ETHEREUM,
     "polygon": CHAIN_ID_POLYGON,
     "avalanche": CHAIN_ID_AVALANCHE,
+    "mantle": CHAIN_ID_MANTLE,
     "plasma": CHAIN_ID_PLASMA,
     "hyperevm": CHAIN_ID_HYPEREVM,
     "katana": CHAIN_ID_KATANA,
@@ -37,6 +39,7 @@ SUPPORTED_CHAINS = [
     CHAIN_ID_ARBITRUM,
     CHAIN_ID_POLYGON,
     CHAIN_ID_AVALANCHE,
+    CHAIN_ID_MANTLE,
     CHAIN_ID_PLASMA,
     CHAIN_ID_HYPEREVM,
     CHAIN_ID_KATANA,
@@ -61,6 +64,7 @@ CHAIN_EXPLORER_URLS: dict[int, str] = {
     CHAIN_ID_BASE: "https://basescan.org/",
     CHAIN_ID_BSC: "https://bscscan.com/",
     CHAIN_ID_AVALANCHE: "https://snowtrace.io/",
+    CHAIN_ID_MANTLE: "https://mantlescan.xyz/",
     CHAIN_ID_PLASMA: "https://plasmascan.to/",
     CHAIN_ID_HYPEREVM: "https://hyperevmscan.io/",
     CHAIN_ID_KATANA: "https://katanascan.com/",
