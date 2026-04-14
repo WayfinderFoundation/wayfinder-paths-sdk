@@ -12,6 +12,13 @@ Permissioned Ondo RWA adapter for subscribe/redeem and wrap/unwrap flows.
 
 This adapter models Ondo as a permissioned RWA subscribe/redeem plus wrapper protocol. It does not expose lending-style methods such as `borrow`, `repay`, `set_collateral`, or `claim_rewards`.
 
+## Gotchas
+
+- `subscribe` / `redeem` is not the same as buying or selling on a secondary market. These methods use Ondo's manager contracts and can enforce eligibility or allowlist checks.
+- `wrap` / `unwrap` is only token-format conversion, for example `USDY <-> rUSDY` or `OUSG <-> rOUSG`. It does not mint or redeem the product from stablecoins.
+- `OUSG` should be treated as permissioned for onboarding and transfer flows.
+- `USDY` may exist on secondary markets or in DeFi integrations, but that does not mean every wallet can use the direct Ondo `subscribe` / `redeem` path. Jurisdiction and other restrictions may still apply.
+
 ## Methods
 
 - `subscribe(product, deposit_token, amount, min_received, ...)`
