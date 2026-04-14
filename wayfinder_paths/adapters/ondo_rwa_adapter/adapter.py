@@ -721,8 +721,6 @@ class OndoRwaAdapter(BaseAdapter):
         approval_amount: int = MAX_UINT256,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        if self.wallet_address is None:
-            return False, "wallet_address is required"
         if self.sign_callback is None:
             return False, "sign_callback is required"
 
@@ -790,8 +788,6 @@ class OndoRwaAdapter(BaseAdapter):
         approval_amount: int = MAX_UINT256,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        if self.wallet_address is None:
-            return False, "wallet_address is required"
         if self.sign_callback is None:
             return False, "sign_callback is required"
 
@@ -847,8 +843,6 @@ class OndoRwaAdapter(BaseAdapter):
         approval_amount: int = MAX_UINT256,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        if self.wallet_address is None:
-            return False, "wallet_address is required"
         if self.sign_callback is None:
             return False, "sign_callback is required"
         if amount <= 0:
@@ -913,8 +907,6 @@ class OndoRwaAdapter(BaseAdapter):
         chain_id: int | None = None,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        if self.wallet_address is None:
-            return False, "wallet_address is required"
         if self.sign_callback is None:
             return False, "sign_callback is required"
         if amount <= 0:
