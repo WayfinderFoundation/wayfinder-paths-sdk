@@ -376,9 +376,7 @@ class OndoRwaAdapter(BaseAdapter):
                     )
                     return await oracle.functions.getAssetPrice(
                         to_checksum_address(
-                            ONDO_RWA_MARKETS[(PRODUCT_OUSG, CHAIN_ID_ETHEREUM)][
-                                "token"
-                            ]
+                            ONDO_RWA_MARKETS[(PRODUCT_OUSG, CHAIN_ID_ETHEREUM)]["token"]
                         )
                     ).call(block_identifier="pending")
 
