@@ -720,11 +720,9 @@ class OndoRwaAdapter(BaseAdapter):
         approval_amount: int = MAX_UINT256,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        wallet_address = self.wallet_address
-        sign_callback = self.sign_callback
-        if wallet_address is None:
+        if self.wallet_address is None:
             return False, "wallet_address is required"
-        if sign_callback is None:
+        if self.sign_callback is None:
             return False, "sign_callback is required"
 
         market = self._market(product=product, chain_id=chain_id)
@@ -750,11 +748,11 @@ class OndoRwaAdapter(BaseAdapter):
 
         approved = await ensure_allowance(
             token_address=checksum_deposit_token,
-            owner=wallet_address,
+            owner=self.wallet_address,
             spender=to_checksum_address(market["manager"]),
             amount=amount,
             chain_id=market["chain_id"],
-            signing_callback=sign_callback,
+            signing_callback=self.sign_callback,
             approval_amount=approval_amount,
         )
         if not approved[0]:
@@ -765,7 +763,7 @@ class OndoRwaAdapter(BaseAdapter):
             abi=self._manager_abi(market),
             fn_name=self._subscribe_fn_name(market["product"]),
             args=[checksum_deposit_token, amount, min_received],
-            from_address=wallet_address,
+            from_address=self.wallet_address,
             chain_id=market["chain_id"],
         )
         if preflight:
@@ -774,7 +772,7 @@ class OndoRwaAdapter(BaseAdapter):
                 return False, reason or "preflight failed"
 
         try:
-            txn_hash = await send_transaction(transaction, sign_callback)
+            txn_hash = await send_transaction(transaction, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, self._format_revert_reason(exc)
@@ -791,11 +789,9 @@ class OndoRwaAdapter(BaseAdapter):
         approval_amount: int = MAX_UINT256,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        wallet_address = self.wallet_address
-        sign_callback = self.sign_callback
-        if wallet_address is None:
+        if self.wallet_address is None:
             return False, "wallet_address is required"
-        if sign_callback is None:
+        if self.sign_callback is None:
             return False, "sign_callback is required"
 
         market = self._market(product=product, chain_id=chain_id)
@@ -810,11 +806,11 @@ class OndoRwaAdapter(BaseAdapter):
         manager_address = to_checksum_address(market["manager"])
         approved = await ensure_allowance(
             token_address=to_checksum_address(market["token"]),
-            owner=wallet_address,
+            owner=self.wallet_address,
             spender=manager_address,
             amount=amount,
             chain_id=market["chain_id"],
-            signing_callback=sign_callback,
+            signing_callback=self.sign_callback,
             approval_amount=approval_amount,
         )
         if not approved[0]:
@@ -825,7 +821,7 @@ class OndoRwaAdapter(BaseAdapter):
             abi=self._manager_abi(market),
             fn_name=self._redeem_fn_name(market["product"]),
             args=[amount, to_checksum_address(receiving_token), min_received],
-            from_address=wallet_address,
+            from_address=self.wallet_address,
             chain_id=market["chain_id"],
         )
         if preflight:
@@ -834,7 +830,7 @@ class OndoRwaAdapter(BaseAdapter):
                 return False, reason or "preflight failed"
 
         try:
-            txn_hash = await send_transaction(transaction, sign_callback)
+            txn_hash = await send_transaction(transaction, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, self._format_revert_reason(exc)
@@ -850,11 +846,9 @@ class OndoRwaAdapter(BaseAdapter):
         approval_amount: int = MAX_UINT256,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        wallet_address = self.wallet_address
-        sign_callback = self.sign_callback
-        if wallet_address is None:
+        if self.wallet_address is None:
             return False, "wallet_address is required"
-        if sign_callback is None:
+        if self.sign_callback is None:
             return False, "sign_callback is required"
         if amount <= 0:
             return False, "amount must be positive"
@@ -880,11 +874,11 @@ class OndoRwaAdapter(BaseAdapter):
 
             approved = await ensure_allowance(
                 token_address=to_checksum_address(underlying_market["token"]),
-                owner=wallet_address,
+                owner=self.wallet_address,
                 spender=to_checksum_address(wrapper_market["token"]),
                 amount=amount,
                 chain_id=wrapper_market["chain_id"],
-                signing_callback=sign_callback,
+                signing_callback=self.sign_callback,
                 approval_amount=approval_amount,
             )
             if not approved[0]:
@@ -895,7 +889,7 @@ class OndoRwaAdapter(BaseAdapter):
                 abi=self._wrapper_abi(wrapper_market),
                 fn_name="wrap",
                 args=[amount],
-                from_address=wallet_address,
+                from_address=self.wallet_address,
                 chain_id=wrapper_market["chain_id"],
             )
             if preflight:
@@ -903,7 +897,7 @@ class OndoRwaAdapter(BaseAdapter):
                 if not ok:
                     return False, reason or "preflight failed"
 
-            txn_hash = await send_transaction(transaction, sign_callback)
+            txn_hash = await send_transaction(transaction, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, self._format_revert_reason(exc)
@@ -918,11 +912,9 @@ class OndoRwaAdapter(BaseAdapter):
         chain_id: int | None = None,
         preflight: bool = True,
     ) -> tuple[bool, Any]:
-        wallet_address = self.wallet_address
-        sign_callback = self.sign_callback
-        if wallet_address is None:
+        if self.wallet_address is None:
             return False, "wallet_address is required"
-        if sign_callback is None:
+        if self.sign_callback is None:
             return False, "sign_callback is required"
         if amount <= 0:
             return False, "amount must be positive"
@@ -951,7 +943,7 @@ class OndoRwaAdapter(BaseAdapter):
                 abi=self._wrapper_abi(wrapper_market),
                 fn_name="unwrap",
                 args=[amount],
-                from_address=wallet_address,
+                from_address=self.wallet_address,
                 chain_id=wrapper_market["chain_id"],
             )
             if preflight:
@@ -959,7 +951,7 @@ class OndoRwaAdapter(BaseAdapter):
                 if not ok:
                     return False, reason or "preflight failed"
 
-            txn_hash = await send_transaction(transaction, sign_callback)
+            txn_hash = await send_transaction(transaction, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, self._format_revert_reason(exc)
