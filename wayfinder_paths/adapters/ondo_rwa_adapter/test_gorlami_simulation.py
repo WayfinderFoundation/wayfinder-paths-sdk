@@ -301,3 +301,28 @@ async def test_gorlami_ousg_subscribe_rejects_noncompliant_wallet(gorlami):
     )
     assert ok is False
     assert isinstance(result, str) and result
+
+
+@pytest.mark.asyncio
+async def test_gorlami_rusdy_redeem_rejects_noncompliant_wallet(gorlami):
+    fork_id = await _ensure_fork(gorlami, CHAIN_ID_ETH)
+
+    acct = Account.create()
+    adapter = _make_adapter(acct)
+    await _fund_wallet(
+        gorlami,
+        fork_id=fork_id,
+        account=acct,
+        native_wei=2 * 10**18,
+        erc20_balances={RUSDY: 10 * 10**18},
+    )
+
+    ok, result = await adapter.redeem(
+        product="rusdy",
+        chain_id=CHAIN_ID_ETH,
+        amount=5 * 10**18,
+        receiving_token=ETH_USDC,
+        min_received=1,
+    )
+    assert ok is False
+    assert isinstance(result, str) and result
