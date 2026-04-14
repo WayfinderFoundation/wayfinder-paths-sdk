@@ -203,12 +203,11 @@ class OndoRwaAdapter(BaseAdapter):
     async def _preflight_transaction(
         self, transaction: dict[str, Any]
     ) -> tuple[bool, str | None]:
-        chain_id = transaction["chainId"]
-        async with web3_from_chain_id(chain_id) as web3:
+        async with web3_from_chain_id(transaction["chainId"]) as web3:
             try:
                 await web3.eth.call(transaction, block_identifier="pending")
                 return True, None
-            except Exception as exc:  # noqa: BLE001 - bubble up cleaned reason
+            except Exception as exc:
                 return False, self._format_revert_reason(exc)
 
     def _format_revert_reason(self, exc: Exception) -> str:
