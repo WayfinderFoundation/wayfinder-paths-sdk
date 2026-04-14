@@ -57,6 +57,42 @@ async def _fund_wallet(
         await gorlami.set_erc20_balance(fork_id, token, account.address, amount)
 
 
+async def _try_time_travel(gorlami, fork_id: str, *, target_ts: int) -> bool:
+    candidates = [
+        ("evm_setNextBlockTimestamp", [target_ts]),
+        ("anvil_setNextBlockTimestamp", [target_ts]),
+        ("hardhat_setNextBlockTimestamp", [target_ts]),
+    ]
+    for method, params in candidates:
+        try:
+            await gorlami.send_rpc(fork_id, method, params)
+            await gorlami.send_rpc(fork_id, "evm_mine", [])
+            return True
+        except Exception:
+            continue
+
+    try:
+        block = await gorlami.send_rpc(
+            fork_id, "eth_getBlockByNumber", ["latest", False]
+        )
+        now = int(block.get("timestamp") or "0x0", 16) if isinstance(block, dict) else 0
+    except Exception:
+        now = 0
+
+    delta = max(0, int(target_ts) - int(now))
+    if delta <= 0:
+        return True
+
+    for method in ("evm_increaseTime", "anvil_increaseTime", "hardhat_increaseTime"):
+        try:
+            await gorlami.send_rpc(fork_id, method, [delta])
+            await gorlami.send_rpc(fork_id, "evm_mine", [])
+            return True
+        except Exception:
+            continue
+    return False
+
+
 @pytest.mark.asyncio
 async def test_gorlami_eth_allowlist_and_registry_reads(gorlami):
     await _ensure_fork(gorlami, CHAIN_ID_ETH)
@@ -169,6 +205,77 @@ async def test_gorlami_rusdy_wrap_unwrap_round_trip(gorlami):
         )
     assert usdy_after > 0
     assert rusdy_after == 0
+
+
+@pytest.mark.asyncio
+async def test_gorlami_rusdy_position_value_changes_over_time(gorlami):
+    fork_id = await _ensure_fork(gorlami, CHAIN_ID_ETH)
+
+    acct = Account.create()
+    adapter = _make_adapter(acct)
+    await _fund_wallet(
+        gorlami,
+        fork_id=fork_id,
+        account=acct,
+        native_wei=2 * 10**18,
+        erc20_balances={ETH_USDY: 20 * 10**18},
+    )
+
+    ok, wrap_tx = await adapter.wrap(
+        product="usdy",
+        chain_id=CHAIN_ID_ETH,
+        amount=5 * 10**18,
+    )
+    assert ok is True, wrap_tx
+
+    ok, before = await adapter.get_pos(
+        account=acct.address,
+        product="rusdy",
+        chain_id=CHAIN_ID_ETH,
+        include_usd=True,
+    )
+    assert ok is True, before
+    assert isinstance(before, dict)
+    before_positions = before["positions"]
+    assert len(before_positions) == 1
+    before_pos = before_positions[0]
+    before_price = int(before_pos["price_1e18"])
+    before_underlying = int(before_pos["underlying_equivalent_raw"])
+    before_usd = float(before_pos["usd_value"])
+
+    block = await gorlami.send_rpc(fork_id, "eth_getBlockByNumber", ["latest", False])
+    now = int(block.get("timestamp") or "0x0", 16) if isinstance(block, dict) else 0
+    advanced = await _try_time_travel(
+        gorlami,
+        fork_id,
+        target_ts=now + (30 * 24 * 60 * 60),
+    )
+    if not advanced:
+        pytest.skip("gorlami fork backend does not support time travel for Ondo")
+
+    ok, after = await adapter.get_pos(
+        account=acct.address,
+        product="rusdy",
+        chain_id=CHAIN_ID_ETH,
+        include_usd=True,
+    )
+    assert ok is True, after
+    assert isinstance(after, dict)
+    after_positions = after["positions"]
+    assert len(after_positions) == 1
+    after_pos = after_positions[0]
+    after_price = int(after_pos["price_1e18"])
+    after_underlying = int(after_pos["underlying_equivalent_raw"])
+    after_usd = float(after_pos["usd_value"])
+
+    assert after_price >= before_price
+    assert after_underlying >= before_underlying
+    assert after_usd >= before_usd
+    assert (
+        after_price > before_price
+        or after_underlying > before_underlying
+        or after_usd > before_usd
+    )
 
 
 @pytest.mark.asyncio
