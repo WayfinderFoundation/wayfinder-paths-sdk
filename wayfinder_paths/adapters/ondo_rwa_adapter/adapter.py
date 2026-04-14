@@ -236,27 +236,55 @@ class OndoRwaAdapter(BaseAdapter):
                 address=to_checksum_address(str(manager)),
                 abi=self._manager_abi(market),
             )
-            out: list[dict[str, Any]] = []
-            for key, token_data in stablecoins.items():
-                token_address = to_checksum_address(str(token_data["address"]))
-                try:
-                    supported = (
-                        await manager_contract.functions.acceptedSubscriptionTokens(
-                            token_address
-                        ).call(block_identifier="pending")
-                    )
-                except Exception:
-                    supported = None
-                out.append(
-                    {
-                        "key": str(key),
-                        "address": token_address,
-                        "symbol": str(token_data.get("symbol") or key).upper(),
-                        "decimals": int(token_data.get("decimals") or 0),
-                        "supported": supported,
-                    }
+            token_rows = [
+                {
+                    "key": str(key),
+                    "address": to_checksum_address(str(token_data["address"])),
+                    "symbol": str(token_data.get("symbol") or key).upper(),
+                    "decimals": int(token_data.get("decimals") or 0),
+                }
+                for key, token_data in stablecoins.items()
+            ]
+
+            try:
+                supported_values = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        Call(
+                            manager_contract,
+                            "acceptedSubscriptionTokens",
+                            args=(row["address"],),
+                            postprocess=bool,
+                        )
+                        for row in token_rows
+                    ],
+                    block_identifier="pending",
                 )
-            return out
+            except Exception:
+
+                async def _read_supported(token_address: str) -> bool | None:
+                    try:
+                        supported = (
+                            await manager_contract.functions.acceptedSubscriptionTokens(
+                                token_address
+                            ).call(block_identifier="pending")
+                        )
+                        return bool(supported)
+                    except Exception:
+                        return None
+
+                supported_values = await asyncio.gather(
+                    *[_read_supported(str(row["address"])) for row in token_rows]
+                )
+
+            return [
+                {
+                    **row,
+                    "supported": supported,
+                }
+                for row, supported in zip(token_rows, supported_values, strict=True)
+            ]
 
     async def _read_market_metadata(
         self,
@@ -264,6 +292,9 @@ class OndoRwaAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         chain_id = int(market["chain_id"])
         token_address = to_checksum_address(str(market["token"]))
+        subscription_tokens_task = asyncio.create_task(
+            self._fetch_supported_seed_tokens(market)
+        )
         base: dict[str, Any] = {
             "chain_id": chain_id,
             "chain_name": str(market["chain_name"]),
@@ -320,7 +351,7 @@ class OndoRwaAdapter(BaseAdapter):
         except Exception as exc:
             base["metadata_error"] = str(exc)
 
-        base["subscription_tokens"] = await self._fetch_supported_seed_tokens(market)
+        base["subscription_tokens"] = await subscription_tokens_task
         return base
 
     async def _family_price_1e18(self, family: str) -> int | None:
@@ -431,33 +462,39 @@ class OndoRwaAdapter(BaseAdapter):
                     address=token_address,
                     abi=self._wrapper_abi(market),
                 )
-                shares_raw = int(
-                    await wrapper_contract.functions.sharesOf(acct).call(
-                        block_identifier="pending"
-                    )
+                conversion_fn = (
+                    "getSharesByROUSG"
+                    if str(market["family"]) == "ousg"
+                    else "getSharesByRUSDY"
                 )
-                if str(market["family"]) == "ousg":
-                    underlying_equivalent_raw = (
-                        int(
-                            await wrapper_contract.functions.getSharesByROUSG(
-                                int(balance_raw)
-                            ).call(block_identifier="pending")
-                        )
-                        // ONDO_SHARES_MULTIPLIER
-                    )
-                else:
-                    underlying_equivalent_raw = (
-                        int(
-                            await wrapper_contract.functions.getSharesByRUSDY(
-                                int(balance_raw)
-                            ).call(block_identifier="pending")
-                        )
-                        // ONDO_SHARES_MULTIPLIER
-                    )
+                (
+                    shares_raw,
+                    underlying_equivalent_raw,
+                ) = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=chain_id,
+                    calls=[
+                        Call(
+                            wrapper_contract,
+                            "sharesOf",
+                            args=(acct,),
+                            postprocess=int,
+                        ),
+                        Call(
+                            wrapper_contract,
+                            conversion_fn,
+                            args=(int(balance_raw),),
+                            postprocess=int,
+                        ),
+                    ],
+                    block_identifier="pending",
+                )
 
-                position["shares_raw"] = shares_raw
+                position["shares_raw"] = int(shares_raw)
                 position["underlying_token"] = market.get("underlying_token")
-                position["underlying_equivalent_raw"] = int(underlying_equivalent_raw)
+                position["underlying_equivalent_raw"] = int(
+                    int(underlying_equivalent_raw) // ONDO_SHARES_MULTIPLIER
+                )
             else:
                 rebasing_token = market.get("rebasing_token")
                 if rebasing_token:
@@ -644,18 +681,19 @@ class OndoRwaAdapter(BaseAdapter):
         include_zero_positions: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
         acct = to_checksum_address(account)
-        ok_pos, pos = await self.get_pos(
-            account=acct,
-            include_usd=include_usd,
-            include_zero_positions=include_zero_positions,
+        (ok_pos, pos), (ok_registry, registry) = await asyncio.gather(
+            self.get_pos(
+                account=acct,
+                include_usd=include_usd,
+                include_zero_positions=include_zero_positions,
+            ),
+            self.is_registered_or_eligible(
+                account=acct,
+                product_family="ousg",
+            ),
         )
         if not ok_pos:
             return False, str(pos)
-
-        ok_registry, registry = await self.is_registered_or_eligible(
-            account=acct,
-            product_family="ousg",
-        )
         if not ok_registry:
             registry = {"supported": True, "error": str(registry)}
 
