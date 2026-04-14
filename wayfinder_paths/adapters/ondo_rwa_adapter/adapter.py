@@ -95,7 +95,7 @@ class OndoRwaAdapter(BaseAdapter):
         token_address: str,
         chain_id: int | None = None,
     ) -> dict[str, Any]:
-        checksum_token = to_checksum_address(token_address)
+        normalized_token = to_checksum_address(token_address).lower()
         exact_candidates: list[dict[str, Any]] = []
         paired_candidates: list[dict[str, Any]] = []
 
@@ -105,10 +105,8 @@ class OndoRwaAdapter(BaseAdapter):
             token = market.get("token")
             underlying_token = market.get("underlying_token")
             rebasing_token = market.get("rebasing_token")
-            token_match = (
-                isinstance(token, str) and checksum_token.lower() == token.lower()
-            )
-            paired_match = checksum_token.lower() in {
+            token_match = isinstance(token, str) and normalized_token == token.lower()
+            paired_match = normalized_token in {
                 underlying_token.lower() if isinstance(underlying_token, str) else "",
                 rebasing_token.lower() if isinstance(rebasing_token, str) else "",
             }
@@ -120,10 +118,10 @@ class OndoRwaAdapter(BaseAdapter):
         candidates = exact_candidates or paired_candidates
 
         if not candidates:
-            raise ValueError(f"Unknown Ondo token address: {checksum_token}")
+            raise ValueError(f"Unknown Ondo token address: {normalized_token}")
         if len(candidates) > 1:
             raise ValueError(
-                f"Ambiguous Ondo token address for chain inference: {checksum_token}"
+                f"Ambiguous Ondo token address for chain inference: {normalized_token}"
             )
         return candidates[0]
 
