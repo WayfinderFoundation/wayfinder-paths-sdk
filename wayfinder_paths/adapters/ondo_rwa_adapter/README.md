@@ -8,7 +8,6 @@ Permissioned Ondo RWA adapter for subscribe/redeem and wrap/unwrap flows.
 ## Scope
 
 - Ethereum mainnet: `OUSG`, `rOUSG`, `USDY`, `rUSDY`
-- Mantle: `USDY` <-> `mUSD` wrapper flow
 - Read-only v1: Polygon `OUSG`, Arbitrum `USDY`
 
 This adapter models Ondo as a permissioned RWA subscribe/redeem plus wrapper protocol. It does not expose lending-style methods such as `borrow`, `repay`, `set_collateral`, or `claim_rewards`.
