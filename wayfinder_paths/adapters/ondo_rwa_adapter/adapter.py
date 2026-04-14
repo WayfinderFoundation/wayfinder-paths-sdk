@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Final
 
 from eth_utils import to_checksum_address
 
@@ -35,6 +35,27 @@ from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _ZERO_BYTES32 = "0x" + ("00" * 32)
+
+PRODUCT_OUSG: Final[str] = "ousg"
+PRODUCT_ROUSG: Final[str] = "rousg"
+PRODUCT_USDY: Final[str] = "usdy"
+PRODUCT_RUSDY: Final[str] = "rusdy"
+PRODUCT_MUSD: Final[str] = "musd"
+
+BASE_FAMILIES: Final[frozenset[str]] = frozenset({PRODUCT_OUSG, PRODUCT_USDY})
+
+SUBSCRIBE_FUNCTION_BY_PRODUCT: Final[dict[str, str]] = {
+    PRODUCT_OUSG: "subscribe",
+    PRODUCT_ROUSG: "subscribeRebasingOUSG",
+    PRODUCT_USDY: "subscribe",
+    PRODUCT_RUSDY: "subscribeRebasingUSDY",
+}
+REDEEM_FUNCTION_BY_PRODUCT: Final[dict[str, str]] = {
+    PRODUCT_OUSG: "redeem",
+    PRODUCT_ROUSG: "redeemRebasingOUSG",
+    PRODUCT_USDY: "redeem",
+    PRODUCT_RUSDY: "redeemRebasingUSDY",
+}
 
 
 def _normalize_product(product: str) -> str:
@@ -126,36 +147,26 @@ class OndoRwaAdapter(BaseAdapter):
         return candidates[0]
 
     def _manager_abi(self, market: dict[str, Any]) -> list[dict[str, Any]]:
-        if market["family"] == "ousg":
+        if market["family"] == PRODUCT_OUSG:
             return OUSG_INSTANT_MANAGER_ABI
         return USDY_INSTANT_MANAGER_ABI
 
     def _wrapper_abi(self, market: dict[str, Any]) -> list[dict[str, Any]]:
-        if market["family"] == "ousg":
+        if market["family"] == PRODUCT_OUSG:
             return ROUSG_WRAPPER_ABI
         return RUSDY_WRAPPER_ABI
 
     def _subscribe_fn_name(self, product: str) -> str:
-        if product == "ousg":
-            return "subscribe"
-        if product == "rousg":
-            return "subscribeRebasingOUSG"
-        if product == "usdy":
-            return "subscribe"
-        if product == "rusdy":
-            return "subscribeRebasingUSDY"
-        raise ValueError(f"Unsupported subscribe product: {product}")
+        fn_name = SUBSCRIBE_FUNCTION_BY_PRODUCT.get(product)
+        if fn_name is None:
+            raise ValueError(f"Unsupported subscribe product: {product}")
+        return fn_name
 
     def _redeem_fn_name(self, product: str) -> str:
-        if product == "ousg":
-            return "redeem"
-        if product == "rousg":
-            return "redeemRebasingOUSG"
-        if product == "usdy":
-            return "redeem"
-        if product == "rusdy":
-            return "redeemRebasingUSDY"
-        raise ValueError(f"Unsupported redeem product: {product}")
+        fn_name = REDEEM_FUNCTION_BY_PRODUCT.get(product)
+        if fn_name is None:
+            raise ValueError(f"Unsupported redeem product: {product}")
+        return fn_name
 
     def _wrap_pair(
         self, market: dict[str, Any]
@@ -163,20 +174,20 @@ class OndoRwaAdapter(BaseAdapter):
         product = market["product"]
         chain_id = market["chain_id"]
 
-        if chain_id == CHAIN_ID_ETHEREUM and product in {"ousg", "rousg"}:
+        if chain_id == CHAIN_ID_ETHEREUM and product in {PRODUCT_OUSG, PRODUCT_ROUSG}:
             return (
-                ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETHEREUM)],
-                ONDO_RWA_MARKETS[("rousg", CHAIN_ID_ETHEREUM)],
+                ONDO_RWA_MARKETS[(PRODUCT_OUSG, CHAIN_ID_ETHEREUM)],
+                ONDO_RWA_MARKETS[(PRODUCT_ROUSG, CHAIN_ID_ETHEREUM)],
             )
-        if chain_id == CHAIN_ID_ETHEREUM and product in {"usdy", "rusdy"}:
+        if chain_id == CHAIN_ID_ETHEREUM and product in {PRODUCT_USDY, PRODUCT_RUSDY}:
             return (
-                ONDO_RWA_MARKETS[("usdy", CHAIN_ID_ETHEREUM)],
-                ONDO_RWA_MARKETS[("rusdy", CHAIN_ID_ETHEREUM)],
+                ONDO_RWA_MARKETS[(PRODUCT_USDY, CHAIN_ID_ETHEREUM)],
+                ONDO_RWA_MARKETS[(PRODUCT_RUSDY, CHAIN_ID_ETHEREUM)],
             )
-        if chain_id == CHAIN_ID_MANTLE and product in {"usdy", "musd"}:
+        if chain_id == CHAIN_ID_MANTLE and product in {PRODUCT_USDY, PRODUCT_MUSD}:
             return (
-                ONDO_RWA_MARKETS[("usdy", CHAIN_ID_MANTLE)],
-                ONDO_RWA_MARKETS[("musd", CHAIN_ID_MANTLE)],
+                ONDO_RWA_MARKETS[(PRODUCT_USDY, CHAIN_ID_MANTLE)],
+                ONDO_RWA_MARKETS[(PRODUCT_MUSD, CHAIN_ID_MANTLE)],
             )
         raise ValueError(
             f"Wrap/unwrap is not supported for product={product} chain_id={chain_id}"
@@ -184,7 +195,7 @@ class OndoRwaAdapter(BaseAdapter):
 
     def _family_name(self, product_or_family: str) -> str:
         normalized = _normalize_product(product_or_family)
-        if normalized in {"ousg", "usdy"}:
+        if normalized in BASE_FAMILIES:
             return normalized
         market = self._market(product=normalized)
         return market["family"]
@@ -348,8 +359,8 @@ class OndoRwaAdapter(BaseAdapter):
 
     async def _family_price_1e18(self, family: str) -> int | None:
         normalized_family = self._family_name(family)
-        if normalized_family == "ousg":
-            market = ONDO_RWA_MARKETS[("rousg", CHAIN_ID_ETHEREUM)]
+        if normalized_family == PRODUCT_OUSG:
+            market = ONDO_RWA_MARKETS[(PRODUCT_ROUSG, CHAIN_ID_ETHEREUM)]
             async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 wrapper = web3.eth.contract(
                     address=to_checksum_address(market["token"]),
@@ -366,12 +377,14 @@ class OndoRwaAdapter(BaseAdapter):
                     )
                     return await oracle.functions.getAssetPrice(
                         to_checksum_address(
-                            ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETHEREUM)]["token"]
+                            ONDO_RWA_MARKETS[(PRODUCT_OUSG, CHAIN_ID_ETHEREUM)][
+                                "token"
+                            ]
                         )
                     ).call(block_identifier="pending")
 
-        if normalized_family == "usdy":
-            market = ONDO_RWA_MARKETS[("rusdy", CHAIN_ID_ETHEREUM)]
+        if normalized_family == PRODUCT_USDY:
+            market = ONDO_RWA_MARKETS[(PRODUCT_RUSDY, CHAIN_ID_ETHEREUM)]
             async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 wrapper = web3.eth.contract(
                     address=to_checksum_address(market["token"]),
@@ -439,14 +452,14 @@ class OndoRwaAdapter(BaseAdapter):
                 "notes": _notes_list(market),
             }
 
-            if market["product"] in {"rousg", "rusdy", "musd"}:
+            if market["product"] in {PRODUCT_ROUSG, PRODUCT_RUSDY, PRODUCT_MUSD}:
                 wrapper_contract = web3.eth.contract(
                     address=token_address,
                     abi=self._wrapper_abi(market),
                 )
                 conversion_fn = (
                     "getSharesByROUSG"
-                    if market["family"] == "ousg"
+                    if market["family"] == PRODUCT_OUSG
                     else "getSharesByRUSDY"
                 )
                 (
@@ -540,7 +553,7 @@ class OndoRwaAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             family = self._family_name(product_family)
-            if family != "ousg":
+            if family != PRODUCT_OUSG:
                 return True, {
                     "supported": False,
                     "product_family": family,
@@ -548,7 +561,7 @@ class OndoRwaAdapter(BaseAdapter):
                     "reason": "On-chain registry lookup is only configured for the OUSG family in v1",
                 }
 
-            market = ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETHEREUM)]
+            market = ONDO_RWA_MARKETS[(PRODUCT_OUSG, CHAIN_ID_ETHEREUM)]
             registry_address = market.get("id_registry")
             if not registry_address:
                 return True, {
@@ -613,7 +626,7 @@ class OndoRwaAdapter(BaseAdapter):
             families = {
                 market["family"]
                 for market in markets_to_read
-                if include_usd and market["family"] in {"ousg", "usdy"}
+                if include_usd and market["family"] in BASE_FAMILIES
             }
             price_tasks = {
                 family: asyncio.create_task(self._family_price_1e18(family))
@@ -668,7 +681,7 @@ class OndoRwaAdapter(BaseAdapter):
             ),
             self.is_registered_or_eligible(
                 account=acct,
-                product_family="ousg",
+                product_family=PRODUCT_OUSG,
             ),
         )
         if not ok_pos:
@@ -691,7 +704,7 @@ class OndoRwaAdapter(BaseAdapter):
             "positions": positions,
             "positions_by_product": by_product,
             "positions_by_chain": by_chain,
-            "registration": {"ousg": registry},
+            "registration": {PRODUCT_OUSG: registry},
         }
         if include_usd and isinstance(pos, dict):
             out["total_usd_value"] = pos.get("total_usd_value") or 0.0
