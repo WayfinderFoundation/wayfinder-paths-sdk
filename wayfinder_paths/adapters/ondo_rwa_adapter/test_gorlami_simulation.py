@@ -15,12 +15,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 CHAIN_ID_ETH = 1
-CHAIN_ID_MANTLE = 5000
 ETH_USDC = ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETH)]["stablecoins"]["usdc"]["address"]
 ETH_USDY = ONDO_RWA_MARKETS[("usdy", CHAIN_ID_ETH)]["token"]
 RUSDY = ONDO_RWA_MARKETS[("rusdy", CHAIN_ID_ETH)]["token"]
-MANTLE_USDY = ONDO_RWA_MARKETS[("usdy", CHAIN_ID_MANTLE)]["token"]
-MUSD = ONDO_RWA_MARKETS[("musd", CHAIN_ID_MANTLE)]["token"]
 
 
 def _make_adapter(acct) -> OndoRwaAdapter:
@@ -86,7 +83,6 @@ async def test_gorlami_eth_allowlist_and_registry_reads(gorlami):
 @pytest.mark.asyncio
 async def test_gorlami_get_all_markets_and_allowlist_reads(gorlami):
     await _ensure_fork(gorlami, CHAIN_ID_ETH)
-    await _ensure_fork(gorlami, CHAIN_ID_MANTLE)
 
     adapter = OndoRwaAdapter(config={})
 
@@ -98,8 +94,6 @@ async def test_gorlami_get_all_markets_and_allowlist_reads(gorlami):
     assert ("rousg", 1) in keys
     assert ("usdy", 1) in keys
     assert ("rusdy", 1) in keys
-    assert ("usdy", 5000) in keys
-    assert ("musd", 5000) in keys
     assert ("ousg", 137) in keys
     assert ("usdy", 42161) in keys
 
@@ -175,116 +169,6 @@ async def test_gorlami_rusdy_wrap_unwrap_round_trip(gorlami):
         )
     assert usdy_after > 0
     assert rusdy_after == 0
-
-
-@pytest.mark.asyncio
-async def test_gorlami_musd_wrap_unwrap_round_trip(gorlami):
-    fork_id = await _ensure_fork(gorlami, CHAIN_ID_MANTLE)
-
-    acct = Account.create()
-    adapter = _make_adapter(acct)
-    await _fund_wallet(
-        gorlami,
-        fork_id=fork_id,
-        account=acct,
-        native_wei=2 * 10**18,
-        erc20_balances={MANTLE_USDY: 20 * 10**18},
-    )
-
-    ok, wrap_tx = await adapter.wrap(
-        product="usdy",
-        chain_id=CHAIN_ID_MANTLE,
-        amount=5 * 10**18,
-    )
-    assert ok is True, wrap_tx
-    assert isinstance(wrap_tx, str) and wrap_tx.startswith("0x")
-
-    async with web3_utils.web3_from_chain_id(CHAIN_ID_MANTLE) as web3:
-        musd_balance = int(
-            await get_token_balance(
-                MUSD,
-                CHAIN_ID_MANTLE,
-                acct.address,
-                web3=web3,
-                block_identifier="pending",
-            )
-        )
-    assert musd_balance > 0
-
-    ok, unwrap_tx = await adapter.unwrap(
-        product="musd",
-        chain_id=CHAIN_ID_MANTLE,
-        amount=musd_balance,
-    )
-    assert ok is True, unwrap_tx
-    assert isinstance(unwrap_tx, str) and unwrap_tx.startswith("0x")
-
-    async with web3_utils.web3_from_chain_id(CHAIN_ID_MANTLE) as web3:
-        usdy_after = int(
-            await get_token_balance(
-                MANTLE_USDY,
-                CHAIN_ID_MANTLE,
-                acct.address,
-                web3=web3,
-                block_identifier="pending",
-            )
-        )
-        musd_after = int(
-            await get_token_balance(
-                MUSD,
-                CHAIN_ID_MANTLE,
-                acct.address,
-                web3=web3,
-                block_identifier="pending",
-            )
-        )
-    assert usdy_after > 0
-    assert musd_after == 0
-
-
-@pytest.mark.asyncio
-async def test_gorlami_get_pos_and_full_state_after_musd_wrap(gorlami):
-    fork_id = await _ensure_fork(gorlami, CHAIN_ID_MANTLE)
-
-    acct = Account.create()
-    adapter = _make_adapter(acct)
-    await _fund_wallet(
-        gorlami,
-        fork_id=fork_id,
-        account=acct,
-        native_wei=2 * 10**18,
-        erc20_balances={MANTLE_USDY: 15 * 10**18},
-    )
-
-    ok, wrap_tx = await adapter.wrap(
-        product="usdy",
-        chain_id=CHAIN_ID_MANTLE,
-        amount=5 * 10**18,
-    )
-    assert ok is True, wrap_tx
-
-    ok, pos = await adapter.get_pos(
-        account=acct.address,
-        chain_id=CHAIN_ID_MANTLE,
-        include_usd=True,
-        include_zero_positions=True,
-    )
-    assert ok is True, pos
-    products = {entry["product"] for entry in pos["positions"]}
-    assert {"usdy", "musd"} <= products
-
-    musd_pos = next(entry for entry in pos["positions"] if entry["product"] == "musd")
-    assert musd_pos["balance_raw"] > 0
-    assert musd_pos["underlying_equivalent_raw"] > 0
-
-    ok, state = await adapter.get_full_user_state(
-        account=acct.address,
-        include_usd=True,
-        include_zero_positions=True,
-    )
-    assert ok is True, state
-    assert state["protocol"] == "ondo_rwa"
-    assert "musd" in state["positions_by_product"]
 
 
 @pytest.mark.asyncio

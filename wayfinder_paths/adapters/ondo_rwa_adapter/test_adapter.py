@@ -38,7 +38,6 @@ def test_family_name_accepts_product_aliases() -> None:
     adapter = OndoRwaAdapter(config={})
     assert adapter._family_name("rousg") == "ousg"
     assert adapter._family_name("rusdy") == "usdy"
-    assert adapter._family_name("musd") == "usdy"
 
 
 @pytest.mark.asyncio
@@ -207,7 +206,6 @@ async def test_redeem_routes_to_expected_manager_function(
     [
         ("ousg", 1, ONDO_RWA_MARKETS[("rousg", 1)]["token"]),
         ("usdy", 1, ONDO_RWA_MARKETS[("rusdy", 1)]["token"]),
-        ("usdy", 5000, ONDO_RWA_MARKETS[("musd", 5000)]["token"]),
     ],
 )
 async def test_wrap_routes_to_rebasing_wrapper(
@@ -260,8 +258,8 @@ async def test_wrap_routes_to_rebasing_wrapper(
 
 @pytest.mark.asyncio
 async def test_wrap_infers_market_from_token_address(adapter: OndoRwaAdapter) -> None:
-    token_address = ONDO_RWA_MARKETS[("usdy", 5000)]["token"]
-    wrapper = ONDO_RWA_MARKETS[("musd", 5000)]["token"]
+    token_address = ONDO_RWA_MARKETS[("usdy", 1)]["token"]
+    wrapper = ONDO_RWA_MARKETS[("rusdy", 1)]["token"]
 
     with (
         patch(
@@ -279,7 +277,7 @@ async def test_wrap_infers_market_from_token_address(adapter: OndoRwaAdapter) ->
             f"{PATCH_PREFIX}.encode_call",
             new_callable=AsyncMock,
             return_value={
-                "chainId": 5000,
+                "chainId": 1,
                 "from": WALLET,
                 "to": wrapper,
                 "data": "0xwrap",
@@ -339,13 +337,15 @@ async def test_subscribe_rejects_allowlist_miss(adapter: OndoRwaAdapter) -> None
 
 
 @pytest.mark.asyncio
-async def test_musd_subscribe_is_not_supported(adapter: OndoRwaAdapter) -> None:
+async def test_arbitrum_usdy_subscribe_is_not_supported(
+    adapter: OndoRwaAdapter,
+) -> None:
     ok, msg = await adapter.subscribe(
-        product="musd",
-        deposit_token=ONDO_RWA_MARKETS[("usdy", 5000)]["token"],
+        product="usdy",
+        deposit_token=ONDO_RWA_MARKETS[("usdy", 42161)]["token"],
         amount=10**18,
         min_received=1,
-        chain_id=5000,
+        chain_id=42161,
     )
     assert ok is False
     assert "not supported" in msg.lower()
@@ -365,7 +365,7 @@ async def test_get_full_user_state_aggregates_positions(
                 {
                     "positions": [
                         {"product": "ousg", "chain_id": 1, "usd_value": 100.0},
-                        {"product": "musd", "chain_id": 5000, "usd_value": 25.0},
+                        {"product": "usdy", "chain_id": 42161, "usd_value": 25.0},
                     ],
                     "total_usd_value": 125.0,
                 },
@@ -382,6 +382,6 @@ async def test_get_full_user_state_aggregates_positions(
 
     assert ok is True
     assert state["total_usd_value"] == 125.0
-    assert set(state["positions_by_product"]) == {"ousg", "musd"}
-    assert set(state["positions_by_chain"]) == {"1", "5000"}
+    assert set(state["positions_by_product"]) == {"ousg", "usdy"}
+    assert set(state["positions_by_chain"]) == {"1", "42161"}
     assert state["registration"]["ousg"]["eligible"] is False

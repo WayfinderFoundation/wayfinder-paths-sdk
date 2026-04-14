@@ -9,7 +9,6 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_walle
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_ETHEREUM,
-    CHAIN_ID_MANTLE,
 )
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.ondo_rwa_abi import (
@@ -40,7 +39,6 @@ PRODUCT_OUSG: Final[str] = "ousg"
 PRODUCT_ROUSG: Final[str] = "rousg"
 PRODUCT_USDY: Final[str] = "usdy"
 PRODUCT_RUSDY: Final[str] = "rusdy"
-PRODUCT_MUSD: Final[str] = "musd"
 
 BASE_FAMILIES: Final[frozenset[str]] = frozenset({PRODUCT_OUSG, PRODUCT_USDY})
 
@@ -183,11 +181,6 @@ class OndoRwaAdapter(BaseAdapter):
             return (
                 ONDO_RWA_MARKETS[(PRODUCT_USDY, CHAIN_ID_ETHEREUM)],
                 ONDO_RWA_MARKETS[(PRODUCT_RUSDY, CHAIN_ID_ETHEREUM)],
-            )
-        if chain_id == CHAIN_ID_MANTLE and product in {PRODUCT_USDY, PRODUCT_MUSD}:
-            return (
-                ONDO_RWA_MARKETS[(PRODUCT_USDY, CHAIN_ID_MANTLE)],
-                ONDO_RWA_MARKETS[(PRODUCT_MUSD, CHAIN_ID_MANTLE)],
             )
         raise ValueError(
             f"Wrap/unwrap is not supported for product={product} chain_id={chain_id}"
@@ -449,7 +442,7 @@ class OndoRwaAdapter(BaseAdapter):
                 "notes": _notes_list(market),
             }
 
-            if market["product"] in {PRODUCT_ROUSG, PRODUCT_RUSDY, PRODUCT_MUSD}:
+            if market["product"] in {PRODUCT_ROUSG, PRODUCT_RUSDY}:
                 wrapper_contract = web3.eth.contract(
                     address=token_address,
                     abi=self._wrapper_abi(market),

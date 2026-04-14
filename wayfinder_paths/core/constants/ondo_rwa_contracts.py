@@ -7,7 +7,6 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_ARBITRUM,
     CHAIN_ID_ETHEREUM,
-    CHAIN_ID_MANTLE,
     CHAIN_ID_POLYGON,
 )
 
@@ -136,45 +135,6 @@ ONDO_RWA_MARKETS: dict[tuple[str, int], dict[str, Any]] = {
             "Wrap/unwrap uses the rUSDY token contract directly",
         ],
     },
-    ("usdy", CHAIN_ID_MANTLE): {
-        "product": "usdy",
-        "family": "usdy",
-        "chain_id": CHAIN_ID_MANTLE,
-        "chain_name": "mantle",
-        "token": _cs("0x5bE26527e817998A7206475496fDE1E68957c5A6"),
-        "rebasing_token": _cs("0xab575258d37EaA5C8956EfABe71F4eE8F6397cF3"),
-        "oracle": _cs("0xA96abbe61AfEdEB0D14a20440Ae7100D9aB4882f"),
-        "blocklist": _cs("0xdBd7a7d8807f0C98c9A58f7732f2799c8587e5c6"),
-        "supports_subscribe": False,
-        "supports_redeem": False,
-        "supports_wrap": True,
-        "supports_unwrap": True,
-        "permissioned": True,
-        "read_only": False,
-        "notes": [
-            "Mantle v1 supports wrapper flow only",
-            "No Ethereum-style InstantManager write path",
-        ],
-    },
-    ("musd", CHAIN_ID_MANTLE): {
-        "product": "musd",
-        "family": "usdy",
-        "chain_id": CHAIN_ID_MANTLE,
-        "chain_name": "mantle",
-        "token": _cs("0xab575258d37EaA5C8956EfABe71F4eE8F6397cF3"),
-        "underlying_token": _cs("0x5bE26527e817998A7206475496fDE1E68957c5A6"),
-        "oracle": _cs("0xA96abbe61AfEdEB0D14a20440Ae7100D9aB4882f"),
-        "supports_subscribe": False,
-        "supports_redeem": False,
-        "supports_wrap": True,
-        "supports_unwrap": True,
-        "permissioned": True,
-        "read_only": False,
-        "notes": [
-            "Mantle rebasing USDY wrapper",
-            "Uses the same share-based surface as Ethereum rUSDY",
-        ],
-    },
     ("ousg", CHAIN_ID_POLYGON): {
         "product": "ousg",
         "family": "ousg",
@@ -217,5 +177,4 @@ ONDO_PRODUCT_DEFAULT_CHAIN: dict[str, int] = {
     "rousg": CHAIN_ID_ETHEREUM,
     "usdy": CHAIN_ID_ETHEREUM,
     "rusdy": CHAIN_ID_ETHEREUM,
-    "musd": CHAIN_ID_MANTLE,
 }
