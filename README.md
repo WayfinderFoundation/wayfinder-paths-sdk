@@ -176,6 +176,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `MoonwellAdapter` (Moonwell lending/borrowing)
 - `MorphoAdapter` (Morpho Blue markets, MetaMorpho vaults, rewards, and public allocator)
 - `MulticallAdapter` (batch contract calls)
+- `OndoRwaAdapter` (permissioned Ondo RWA subscribe/redeem plus OUSG/USDY wrapper flows)
 - `PendleAdapter` (PT/YT and hosted SDK operations)
 - `PolymarketAdapter` (Polymarket markets, orderbooks, history, and trading)
 - `PoolAdapter` (pool analytics)

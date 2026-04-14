@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from eth_utils import to_checksum_address
 
@@ -14,20 +14,10 @@ from wayfinder_paths.core.constants.chains import (
 ONDO_RWA_PROTOCOL = "ondo_rwa"
 ONDO_SHARES_MULTIPLIER = 10_000
 
-ProductName = Literal["ousg", "rousg", "usdy", "rusdy", "musd"]
-FamilyName = Literal["ousg", "usdy"]
-
 
 def _cs(addr: str) -> str:
     return to_checksum_address(addr)
 
-
-CHAIN_ID_TO_NAME: dict[int, str] = {
-    CHAIN_ID_ETHEREUM: "ethereum",
-    CHAIN_ID_POLYGON: "polygon",
-    CHAIN_ID_ARBITRUM: "arbitrum",
-    CHAIN_ID_MANTLE: "mantle",
-}
 
 ONDO_STABLECOINS_ETHEREUM: dict[str, dict[str, Any]] = {
     "usdc": {
@@ -61,9 +51,7 @@ ONDO_RWA_MARKETS: dict[tuple[str, int], dict[str, Any]] = {
         "manual_redemption_recipient": _cs(
             "0x72Be8C14B7564f7a61ba2f6B7E50D18DC1D4B63D"
         ),
-        "manual_pyusd_recipient": _cs(
-            "0x0317a350b093F8010837d1b844292555d73ebC2c"
-        ),
+        "manual_pyusd_recipient": _cs("0x0317a350b093F8010837d1b844292555d73ebC2c"),
         "stablecoins": ONDO_STABLECOINS_ETHEREUM,
         "minimum_subscribe_value_1e18": 5_000 * 10**18,
         "minimum_redeem_value_1e18": 5_000 * 10**18,

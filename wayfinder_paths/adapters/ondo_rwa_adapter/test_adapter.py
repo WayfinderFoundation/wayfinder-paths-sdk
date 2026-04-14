@@ -34,6 +34,13 @@ def test_wallet_is_checksummed() -> None:
     assert adapter.wallet_address == "0xABcdEFABcdEFabcdEfAbCdefabcdeFABcDEFabCD"
 
 
+def test_family_name_accepts_product_aliases() -> None:
+    adapter = OndoRwaAdapter(config={})
+    assert adapter._family_name("rousg") == "ousg"
+    assert adapter._family_name("rusdy") == "usdy"
+    assert adapter._family_name("musd") == "usdy"
+
+
 @pytest.mark.asyncio
 async def test_get_pos_requires_account_or_wallet() -> None:
     adapter = OndoRwaAdapter(config={})
@@ -345,7 +352,9 @@ async def test_musd_subscribe_is_not_supported(adapter: OndoRwaAdapter) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_full_user_state_aggregates_positions(adapter: OndoRwaAdapter) -> None:
+async def test_get_full_user_state_aggregates_positions(
+    adapter: OndoRwaAdapter,
+) -> None:
     with (
         patch.object(
             OndoRwaAdapter,

@@ -13,7 +13,7 @@ OUSG_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "depositAmount", "type": "uint256"},
             {"name": "minimumRwaReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -24,7 +24,7 @@ OUSG_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "depositAmount", "type": "uint256"},
             {"name": "minimumRwaReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -35,7 +35,7 @@ OUSG_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "receivingToken", "type": "address"},
             {"name": "minimumTokenReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -46,7 +46,7 @@ OUSG_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "receivingToken", "type": "address"},
             {"name": "minimumTokenReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -67,7 +67,7 @@ USDY_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "depositAmount", "type": "uint256"},
             {"name": "minimumRwaReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -78,7 +78,7 @@ USDY_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "depositAmount", "type": "uint256"},
             {"name": "minimumRwaReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -89,7 +89,7 @@ USDY_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "receivingToken", "type": "address"},
             {"name": "minimumTokenReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",
@@ -100,7 +100,7 @@ USDY_INSTANT_MANAGER_ABI: list[dict[str, Any]] = [
             {"name": "receivingToken", "type": "address"},
             {"name": "minimumTokenReceived", "type": "uint256"},
         ],
-        "outputs": [{"type": "uint256"}],
+        "outputs": [],
     },
     {
         "type": "function",

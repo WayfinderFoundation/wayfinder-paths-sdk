@@ -7,6 +7,10 @@ from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter, require_wallet
 from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.chains import (
+    CHAIN_ID_ETHEREUM,
+    CHAIN_ID_MANTLE,
+)
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.ondo_rwa_abi import (
     ONDO_ID_REGISTRY_ABI,
@@ -157,38 +161,46 @@ class OndoRwaAdapter(BaseAdapter):
             return "redeemRebasingUSDY"
         raise ValueError(f"Unsupported redeem product: {product}")
 
-    def _rwa_token_for_redeem(self, market: dict[str, Any]) -> str:
-        return to_checksum_address(str(market["token"]))
-
-    def _wrap_pair(self, market: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _wrap_pair(
+        self, market: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         product = str(market["product"])
         chain_id = int(market["chain_id"])
 
-        if chain_id == 1 and product in {"ousg", "rousg"}:
+        if chain_id == CHAIN_ID_ETHEREUM and product in {"ousg", "rousg"}:
             return (
-                ONDO_RWA_MARKETS[("ousg", 1)],
-                ONDO_RWA_MARKETS[("rousg", 1)],
+                ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETHEREUM)],
+                ONDO_RWA_MARKETS[("rousg", CHAIN_ID_ETHEREUM)],
             )
-        if chain_id == 1 and product in {"usdy", "rusdy"}:
+        if chain_id == CHAIN_ID_ETHEREUM and product in {"usdy", "rusdy"}:
             return (
-                ONDO_RWA_MARKETS[("usdy", 1)],
-                ONDO_RWA_MARKETS[("rusdy", 1)],
+                ONDO_RWA_MARKETS[("usdy", CHAIN_ID_ETHEREUM)],
+                ONDO_RWA_MARKETS[("rusdy", CHAIN_ID_ETHEREUM)],
             )
-        if chain_id == 5000 and product in {"usdy", "musd"}:
+        if chain_id == CHAIN_ID_MANTLE and product in {"usdy", "musd"}:
             return (
-                ONDO_RWA_MARKETS[("usdy", 5000)],
-                ONDO_RWA_MARKETS[("musd", 5000)],
+                ONDO_RWA_MARKETS[("usdy", CHAIN_ID_MANTLE)],
+                ONDO_RWA_MARKETS[("musd", CHAIN_ID_MANTLE)],
             )
         raise ValueError(
             f"Wrap/unwrap is not supported for product={product} chain_id={chain_id}"
         )
+
+    def _family_name(self, product_or_family: str) -> str:
+        normalized = _normalize_product(product_or_family)
+        if normalized in {"ousg", "usdy"}:
+            return normalized
+        market = self._market(product=normalized)
+        return str(market["family"])
 
     def _ensure_signer(self) -> tuple[bool, str | None]:
         if self.sign_callback is None:
             return False, "sign_callback is required"
         return True, None
 
-    async def _preflight_transaction(self, transaction: dict[str, Any]) -> tuple[bool, str | None]:
+    async def _preflight_transaction(
+        self, transaction: dict[str, Any]
+    ) -> tuple[bool, str | None]:
         chain_id = int(transaction["chainId"])
         async with web3_from_chain_id(chain_id) as web3:
             try:
@@ -228,9 +240,11 @@ class OndoRwaAdapter(BaseAdapter):
             for key, token_data in stablecoins.items():
                 token_address = to_checksum_address(str(token_data["address"]))
                 try:
-                    supported = await manager_contract.functions.acceptedSubscriptionTokens(
-                        token_address
-                    ).call(block_identifier="pending")
+                    supported = (
+                        await manager_contract.functions.acceptedSubscriptionTokens(
+                            token_address
+                        ).call(block_identifier="pending")
+                    )
                 except Exception:
                     supported = None
                 out.append(
@@ -288,7 +302,12 @@ class OndoRwaAdapter(BaseAdapter):
                     Call(token_contract, "decimals", postprocess=int),
                     Call(token_contract, "totalSupply", postprocess=int),
                 ]
-                name, symbol, decimals, total_supply = await read_only_calls_multicall_or_gather(
+                (
+                    name,
+                    symbol,
+                    decimals,
+                    total_supply,
+                ) = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=chain_id,
                     calls=calls,
@@ -305,10 +324,10 @@ class OndoRwaAdapter(BaseAdapter):
         return base
 
     async def _family_price_1e18(self, family: str) -> int | None:
-        normalized_family = _normalize_product(family)
+        normalized_family = self._family_name(family)
         if normalized_family == "ousg":
-            market = ONDO_RWA_MARKETS[("rousg", 1)]
-            async with web3_from_chain_id(1) as web3:
+            market = ONDO_RWA_MARKETS[("rousg", CHAIN_ID_ETHEREUM)]
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 wrapper = web3.eth.contract(
                     address=to_checksum_address(str(market["token"])),
                     abi=ROUSG_WRAPPER_ABI,
@@ -326,13 +345,19 @@ class OndoRwaAdapter(BaseAdapter):
                     )
                     return int(
                         await oracle.functions.getAssetPrice(
-                            to_checksum_address(str(ONDO_RWA_MARKETS[("ousg", 1)]["token"]))
+                            to_checksum_address(
+                                str(
+                                    ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETHEREUM)][
+                                        "token"
+                                    ]
+                                )
+                            )
                         ).call(block_identifier="pending")
                     )
 
         if normalized_family == "usdy":
-            market = ONDO_RWA_MARKETS[("rusdy", 1)]
-            async with web3_from_chain_id(1) as web3:
+            market = ONDO_RWA_MARKETS[("rusdy", CHAIN_ID_ETHEREUM)]
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 wrapper = web3.eth.contract(
                     address=to_checksum_address(str(market["token"])),
                     abi=RUSDY_WRAPPER_ABI,
@@ -363,7 +388,13 @@ class OndoRwaAdapter(BaseAdapter):
 
         async with web3_from_chain_id(chain_id) as web3:
             token_contract = web3.eth.contract(address=token_address, abi=ERC20_ABI)
-            name, symbol, decimals, balance_raw, total_supply_raw = await read_only_calls_multicall_or_gather(
+            (
+                name,
+                symbol,
+                decimals,
+                balance_raw,
+                total_supply_raw,
+            ) = await read_only_calls_multicall_or_gather(
                 web3=web3,
                 chain_id=chain_id,
                 calls=[
@@ -406,17 +437,23 @@ class OndoRwaAdapter(BaseAdapter):
                     )
                 )
                 if str(market["family"]) == "ousg":
-                    underlying_equivalent_raw = int(
-                        await wrapper_contract.functions.getSharesByROUSG(
-                            int(balance_raw)
-                        ).call(block_identifier="pending")
-                    ) // ONDO_SHARES_MULTIPLIER
+                    underlying_equivalent_raw = (
+                        int(
+                            await wrapper_contract.functions.getSharesByROUSG(
+                                int(balance_raw)
+                            ).call(block_identifier="pending")
+                        )
+                        // ONDO_SHARES_MULTIPLIER
+                    )
                 else:
-                    underlying_equivalent_raw = int(
-                        await wrapper_contract.functions.getSharesByRUSDY(
-                            int(balance_raw)
-                        ).call(block_identifier="pending")
-                    ) // ONDO_SHARES_MULTIPLIER
+                    underlying_equivalent_raw = (
+                        int(
+                            await wrapper_contract.functions.getSharesByRUSDY(
+                                int(balance_raw)
+                            ).call(block_identifier="pending")
+                        )
+                        // ONDO_SHARES_MULTIPLIER
+                    )
 
                 position["shares_raw"] = shares_raw
                 position["underlying_token"] = market.get("underlying_token")
@@ -458,9 +495,7 @@ class OndoRwaAdapter(BaseAdapter):
         chain_id: int | None = None,
     ) -> tuple[bool, bool | str]:
         try:
-            family = _normalize_product(product_family)
-            if family not in {"ousg", "usdy"}:
-                return False, f"Unsupported product_family={family}"
+            family = self._family_name(product_family)
 
             market = self._market(product=family, chain_id=chain_id)
             manager_address = market.get("manager")
@@ -487,7 +522,7 @@ class OndoRwaAdapter(BaseAdapter):
         product_family: str,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            family = _normalize_product(product_family)
+            family = self._family_name(product_family)
             if family != "ousg":
                 return True, {
                     "supported": False,
@@ -496,7 +531,7 @@ class OndoRwaAdapter(BaseAdapter):
                     "reason": "On-chain registry lookup is only configured for the OUSG family in v1",
                 }
 
-            market = ONDO_RWA_MARKETS[("ousg", 1)]
+            market = ONDO_RWA_MARKETS[("ousg", CHAIN_ID_ETHEREUM)]
             registry_address = market.get("id_registry")
             if not registry_address:
                 return True, {
@@ -507,7 +542,7 @@ class OndoRwaAdapter(BaseAdapter):
                 }
 
             acct = to_checksum_address(account)
-            async with web3_from_chain_id(1) as web3:
+            async with web3_from_chain_id(CHAIN_ID_ETHEREUM) as web3:
                 registry = web3.eth.contract(
                     address=to_checksum_address(str(registry_address)),
                     abi=ONDO_ID_REGISTRY_ABI,
@@ -624,11 +659,7 @@ class OndoRwaAdapter(BaseAdapter):
         if not ok_registry:
             registry = {"supported": True, "error": str(registry)}
 
-        positions = (
-            pos.get("positions", [])
-            if isinstance(pos, dict)
-            else []
-        )
+        positions = pos.get("positions", []) if isinstance(pos, dict) else []
         by_product: dict[str, list[dict[str, Any]]] = {}
         by_chain: dict[str, list[dict[str, Any]]] = {}
         for position in positions:
@@ -744,7 +775,7 @@ class OndoRwaAdapter(BaseAdapter):
 
         manager_address = to_checksum_address(str(market["manager"]))
         approved = await ensure_allowance(
-            token_address=self._rwa_token_for_redeem(market),
+            token_address=to_checksum_address(str(market["token"])),
             owner=self.wallet_address,
             spender=manager_address,
             amount=int(amount),
@@ -804,7 +835,10 @@ class OndoRwaAdapter(BaseAdapter):
             )
             underlying_market, wrapper_market = self._wrap_pair(market)
             if not wrapper_market.get("supports_wrap"):
-                return False, f"Wrap is not supported for product={wrapper_market['product']}"
+                return (
+                    False,
+                    f"Wrap is not supported for product={wrapper_market['product']}",
+                )
 
             approved = await ensure_allowance(
                 token_address=to_checksum_address(str(underlying_market["token"])),
