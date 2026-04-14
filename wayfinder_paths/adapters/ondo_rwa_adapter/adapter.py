@@ -34,8 +34,6 @@ from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
-MarketKey = tuple[str, int]
-
 _ZERO_BYTES32 = "0x" + ("00" * 32)
 
 
@@ -69,15 +67,16 @@ class OndoRwaAdapter(BaseAdapter):
             to_checksum_address(wallet_address) if wallet_address else None
         )
 
-    def _market_key(
+    def _market(
         self,
         *,
         product: str,
         chain_id: int | None = None,
-    ) -> MarketKey:
+    ) -> dict[str, Any]:
         normalized_product = _normalize_product(product)
         if normalized_product not in ONDO_PRODUCT_DEFAULT_CHAIN:
             raise ValueError(f"Unsupported Ondo product: {normalized_product}")
+
         resolved_chain_id = (
             chain_id
             if chain_id is not None
@@ -88,15 +87,7 @@ class OndoRwaAdapter(BaseAdapter):
             raise ValueError(
                 f"Unsupported Ondo market for product={normalized_product} chain_id={resolved_chain_id}"
             )
-        return key
-
-    def _market(
-        self,
-        *,
-        product: str,
-        chain_id: int | None = None,
-    ) -> dict[str, Any]:
-        return ONDO_RWA_MARKETS[self._market_key(product=product, chain_id=chain_id)]
+        return ONDO_RWA_MARKETS[key]
 
     def _find_market_by_token(
         self,
