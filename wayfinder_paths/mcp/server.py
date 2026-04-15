@@ -71,6 +71,7 @@ from wayfinder_paths.mcp.tools.evm_contract import (
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
+from wayfinder_paths.mcp.tools.notify import notify
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 from wayfinder_paths.mcp.tools.quotes import quote_swap
 from wayfinder_paths.mcp.tools.run_script import run_script
@@ -170,6 +171,7 @@ mcp.tool()(deploy_contract)
 mcp.tool()(contract_get_abi)
 mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
+mcp.tool()(notify)
 
 
 def main() -> None:

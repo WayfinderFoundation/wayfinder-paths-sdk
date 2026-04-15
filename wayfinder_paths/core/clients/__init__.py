@@ -18,6 +18,7 @@ from wayfinder_paths.core.clients.MorphoRewardsClient import (
     MORPHO_REWARDS_CLIENT,
     MorphoRewardsClient,
 )
+from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT, NotifyClient
 from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT, PoolClient
 from wayfinder_paths.core.clients.protocols import (
     BRAPClientProtocol,
@@ -50,6 +51,8 @@ __all__ = [
     "MorphoClient",
     "MORPHO_REWARDS_CLIENT",
     "MorphoRewardsClient",
+    "NOTIFY_CLIENT",
+    "NotifyClient",
     "POOL_CLIENT",
     "PoolClient",
     "TOKEN_CLIENT",
