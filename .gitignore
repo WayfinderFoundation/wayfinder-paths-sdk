@@ -67,6 +67,7 @@ abis/
 .build/
 *.sqlite3
 *.db
+examples/paths/
 
 # Ledger
 .ledger/
