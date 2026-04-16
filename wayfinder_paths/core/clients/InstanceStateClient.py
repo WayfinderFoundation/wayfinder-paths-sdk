@@ -18,27 +18,32 @@ class InstanceStateClient(WayfinderClient):
         state = await self.get_state()
         return state["frontend_state"]
 
-    async def patch_projection(self, projections: list[dict[str, Any]]) -> dict[str, Any]:
+    async def get_chart_id(self) -> str:
+        fs = await self.get_frontend_state()
+        chart = fs["chart"]
+        return f"{chart['market_type']}-{chart['market_id']}"
+
+    async def patch_projection(self, chart_id: str, projections: list[dict[str, Any]]) -> dict[str, Any]:
         resp = await self._authed_request(
             "PATCH",
-            f"{self._base_url()}/sdk_projection/",
-            json={"sdk_projection": projections},
+            f"{self._base_url()}/sdk_projection/{chart_id}/",
+            json={"projections": projections},
         )
         return resp.json()
 
-    async def add_projection(self, projection: dict[str, Any]) -> dict[str, Any]:
+    async def add_projection(self, chart_id: str, projection: dict[str, Any]) -> dict[str, Any]:
         resp = await self._authed_request(
-            "POST", f"{self._base_url()}/sdk_projection/", json=projection
+            "POST", f"{self._base_url()}/sdk_projection/{chart_id}/", json=projection
         )
         return resp.json()
 
-    async def remove_projection(self, projection_id: str) -> None:
+    async def remove_projection(self, chart_id: str, projection_id: str) -> None:
         await self._authed_request(
-            "DELETE", f"{self._base_url()}/sdk_projection/{projection_id}/"
+            "DELETE", f"{self._base_url()}/sdk_projection/{chart_id}/{projection_id}/"
         )
 
-    async def clear_projections(self) -> dict[str, Any]:
-        return await self.patch_projection([])
+    async def clear_projections(self, chart_id: str) -> dict[str, Any]:
+        return await self.patch_projection(chart_id, [])
 
 
 INSTANCE_STATE_CLIENT = InstanceStateClient()
