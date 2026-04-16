@@ -355,13 +355,13 @@ def test_paths_api_client_list_paths_defaults_to_bonded_only():
                 "paths": [
                     {
                         "slug": "bonded-path",
-                        "trust": {"tier": "bonded"},
+                        "trust": {"tier": "bonded", "canonical_state": "active_stable"},
                         "trust_state": "active",
                         "active_bonded_version": "1.0.0",
                     },
                     {
                         "slug": "unbonded-path",
-                        "trust": {"tier": "unbonded"},
+                        "trust": {"tier": "unbonded", "canonical_state": "idle"},
                         "trust_state": "unbonded",
                         "active_bonded_version": None,
                     },
