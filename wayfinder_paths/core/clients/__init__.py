@@ -18,6 +18,10 @@ from wayfinder_paths.core.clients.MorphoRewardsClient import (
     MORPHO_REWARDS_CLIENT,
     MorphoRewardsClient,
 )
+from wayfinder_paths.core.clients.InstanceStateClient import (
+    INSTANCE_STATE_CLIENT,
+    InstanceStateClient,
+)
 from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT, NotifyClient
 from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT, PoolClient
 from wayfinder_paths.core.clients.protocols import (
@@ -51,6 +55,8 @@ __all__ = [
     "MorphoClient",
     "MORPHO_REWARDS_CLIENT",
     "MorphoRewardsClient",
+    "INSTANCE_STATE_CLIENT",
+    "InstanceStateClient",
     "NOTIFY_CLIENT",
     "NotifyClient",
     "POOL_CLIENT",
