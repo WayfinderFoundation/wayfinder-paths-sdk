@@ -21,11 +21,11 @@ class WayfinderClient:
         )
 
     def _ensure_api_key_header(self) -> None:
-        if self.headers.get("X-API-KEY"):
-            return
         api_key = get_api_key()
         if api_key:
             self.headers["X-API-KEY"] = api_key
+        else:
+            self.headers.pop("X-API-KEY", None)
 
     async def _authed_request(
         self,

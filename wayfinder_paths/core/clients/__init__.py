@@ -11,16 +11,16 @@ from wayfinder_paths.core.clients.HyperliquidDataClient import (
     HYPERLIQUID_DATA_CLIENT,
     HyperliquidDataClient,
 )
+from wayfinder_paths.core.clients.InstanceStateClient import (
+    INSTANCE_STATE_CLIENT,
+    InstanceStateClient,
+)
 from wayfinder_paths.core.clients.LedgerClient import LedgerClient
 from wayfinder_paths.core.clients.MerklClient import MERKL_CLIENT, MerklClient
 from wayfinder_paths.core.clients.MorphoClient import MORPHO_CLIENT, MorphoClient
 from wayfinder_paths.core.clients.MorphoRewardsClient import (
     MORPHO_REWARDS_CLIENT,
     MorphoRewardsClient,
-)
-from wayfinder_paths.core.clients.InstanceStateClient import (
-    INSTANCE_STATE_CLIENT,
-    InstanceStateClient,
 )
 from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT, NotifyClient
 from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT, PoolClient

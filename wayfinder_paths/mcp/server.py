@@ -64,12 +64,6 @@ from wayfinder_paths.mcp.resources.wallets import (
     list_wallets,
 )
 from wayfinder_paths.mcp.tools.contracts import compile_contract, deploy_contract
-from wayfinder_paths.mcp.tools.instance_state import (
-    add_chart_projection,
-    clear_chart_projections,
-    get_ui_state,
-    remove_chart_projection,
-)
 from wayfinder_paths.mcp.tools.evm_contract import (
     contract_call,
     contract_execute,
@@ -77,6 +71,12 @@ from wayfinder_paths.mcp.tools.evm_contract import (
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
+from wayfinder_paths.mcp.tools.instance_state import (
+    add_chart_projection,
+    clear_chart_projections,
+    get_ui_state,
+    remove_chart_projection,
+)
 from wayfinder_paths.mcp.tools.notify import notify
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 from wayfinder_paths.mcp.tools.quotes import quote_swap

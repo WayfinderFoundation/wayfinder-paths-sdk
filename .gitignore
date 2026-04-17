@@ -53,6 +53,7 @@ temp/
 
 # Config (keep examples committed)
 config.json
+config.prod.json
 keystore_*.json
 abis/
 
