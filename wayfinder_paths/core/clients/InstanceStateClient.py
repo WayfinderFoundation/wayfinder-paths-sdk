@@ -14,12 +14,12 @@ class InstanceStateClient(WayfinderClient):
         resp = await self._authed_request("GET", f"{self._base_url()}/")
         return resp.json()
 
-    async def get_frontend_state(self) -> dict[str, Any]:
+    async def get_frontend_context(self) -> dict[str, Any]:
         state = await self.get_state()
-        return state["frontend_state"]
+        return state["frontend_context"]
 
     async def get_chart_id(self) -> str:
-        fs = await self.get_frontend_state()
+        fs = await self.get_frontend_context()
         chart = fs["chart"]
         return f"{chart['market_type']}-{chart['market_id']}"
 
