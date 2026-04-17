@@ -29,9 +29,8 @@ async def add_chart_projection(
 ) -> dict[str, Any]:
     """Add a projection (overlay) to a specific chart.
 
-    The chart_id must match the frontend's chart key, e.g. "hl-perp-BTC".
-    Use get_ui_state() first to read frontend_context.chart and derive the
-    chart_id as "{market_type}-{market_id}".
+    The chart_id is available at frontend_context.chart.id (e.g. "hl-perp-BTC").
+    Call get_frontend_context() first to read it.
 
     Supported types:
       - horizontal_line: config = {price, color?, label?}

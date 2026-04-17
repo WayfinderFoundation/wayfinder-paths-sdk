@@ -20,8 +20,7 @@ class InstanceStateClient(WayfinderClient):
 
     async def get_chart_id(self) -> str:
         fs = await self.get_frontend_context()
-        chart = fs["chart"]
-        return f"{chart['market_type']}-{chart['market_id']}"
+        return fs["chart"]["id"]
 
     async def patch_projection(
         self, chart_id: str, projections: list[dict[str, Any]]

@@ -69,8 +69,8 @@ If you detected an OpenCode Cloud instance, you can read what the user is viewin
 | `clear_chart_projections` | `chart_id` | Remove all overlays from a chart |
 
 **Typical flow:**
-1. Call `get_frontend_context` → returns `{frontend_context: {chart: {market_id: "BTC", market_type: "hl-perp", interval: "1m"}}, sdk_projection: {...}}`
-2. Derive `chart_id` = `"{market_type}-{market_id}"` → `"hl-perp-BTC"`
+1. Call `get_frontend_context` → returns `{frontend_context: {chart: {id: "hl-perp-BTC", market_id: "BTC", market_type: "hl-perp", interval: "1m"}}, sdk_projection: {...}}`
+2. Read `chart_id` from `frontend_context.chart.id` → `"hl-perp-BTC"`
 3. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support"}`
 4. Line appears on the user's chart in real-time
 
@@ -87,8 +87,7 @@ If you detected an OpenCode Cloud instance, you can read what the user is viewin
 from wayfinder_paths.core.clients import INSTANCE_STATE_CLIENT
 
 state = await INSTANCE_STATE_CLIENT.get_state()
-chart = state["frontend_context"]["chart"]
-chart_id = f"{chart['market_type']}-{chart['market_id']}"
+chart_id = state["frontend_context"]["chart"]["id"]
 
 await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
     "type": "horizontal_line",
