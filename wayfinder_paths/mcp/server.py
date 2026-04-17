@@ -74,7 +74,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execu
 from wayfinder_paths.mcp.tools.instance_state import (
     add_chart_projection,
     clear_chart_projections,
-    get_ui_state,
+    get_frontend_context,
     remove_chart_projection,
 )
 from wayfinder_paths.mcp.tools.notify import notify
@@ -178,7 +178,7 @@ mcp.tool()(contract_get_abi)
 mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
 mcp.tool()(notify)
-mcp.tool()(get_ui_state)
+mcp.tool()(get_frontend_context)
 mcp.tool()(add_chart_projection)
 mcp.tool()(remove_chart_projection)
 mcp.tool()(clear_chart_projections)

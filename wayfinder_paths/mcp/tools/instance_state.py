@@ -8,7 +8,7 @@ from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIE
 from wayfinder_paths.mcp.utils import err, ok
 
 
-async def get_ui_state() -> dict[str, Any]:
+async def get_frontend_context() -> dict[str, Any]:
     """Read the current frontend UI state.
 
     Returns what the user is currently viewing: active chart (market, type,
