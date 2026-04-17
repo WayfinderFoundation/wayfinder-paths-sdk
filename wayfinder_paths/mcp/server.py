@@ -18,9 +18,12 @@ from wayfinder_paths.mcp.resources.contracts import (
 from wayfinder_paths.mcp.resources.delta_lab import (
     get_asset_basis_info,
     get_asset_timeseries_data,
+    get_asset_timeseries_with_venue,
     get_assets_by_address,
     get_basis_apy_sources,
     get_basis_symbols,
+    get_basis_timeseries_data,
+    get_basis_timeseries_with_venue,
     get_best_delta_neutral_pairs,
     get_delta_lab_asset,
     get_top_apy,
@@ -68,6 +71,13 @@ from wayfinder_paths.mcp.tools.evm_contract import (
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
+from wayfinder_paths.mcp.tools.instance_state import (
+    add_chart_projection,
+    clear_chart_projections,
+    get_frontend_context,
+    remove_chart_projection,
+)
+from wayfinder_paths.mcp.tools.notify import notify
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 from wayfinder_paths.mcp.tools.quotes import quote_swap
 from wayfinder_paths.mcp.tools.run_script import run_script
@@ -122,6 +132,15 @@ mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
 mcp.resource(
     "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
 )(get_asset_timeseries_data)
+mcp.resource(
+    "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}"
+)(get_asset_timeseries_with_venue)
+mcp.resource(
+    "wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
+)(get_basis_timeseries_data)
+mcp.resource(
+    "wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}"
+)(get_basis_timeseries_with_venue)
 mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
 mcp.resource(
     "wayfinder://delta-lab/screen/price/by-asset-ids/{sort}/{limit}/{asset_ids}"
@@ -159,6 +178,11 @@ mcp.tool()(deploy_contract)
 mcp.tool()(contract_get_abi)
 mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
+mcp.tool()(notify)
+mcp.tool()(get_frontend_context)
+mcp.tool()(add_chart_projection)
+mcp.tool()(remove_chart_projection)
+mcp.tool()(clear_chart_projections)
 
 
 def main() -> None:

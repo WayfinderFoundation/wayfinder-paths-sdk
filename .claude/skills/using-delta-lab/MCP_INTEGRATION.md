@@ -160,27 +160,33 @@ ReadMcpResourceTool(
 ```
 
 ### 8. Asset Timeseries (Quick Snapshots)
-**URI:** `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}`
+
+**Asset timeseries (exact symbol, default):**
+- `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}`
+- `wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}`
+
+**Basis timeseries (expands to basis group members):**
+- `wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}`
+- `wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}`
 
 **MCP Philosophy:** SHORT, interpretable results only. For serious analysis, use the client.
 
 **Path Parameters:**
-- `{symbol}` - Asset symbol (e.g., "ETH", "BTC")
+- `{symbol}` - Asset symbol (e.g., "USDC", "ETH")
 - `{series}` - Data series: "price" (default), "yield", "lending", "funding", "pendle", "boros", "rates" (all rates), or empty for all
 - `{lookback_days}` - Number of days to look back (default: "7" for quick snapshot)
 - `{limit}` - Maximum data points per series (default: "100", max: "10000")
+- `{venue}` - Venue name prefix to filter on (e.g. "moonwell", "hyperliquid"). Use `_` for no filter.
 
 **Available Series:** `price`, `yield`, `lending`, `funding`, `pendle`, `boros`, `rates` (all rates), or empty string (all series)
 
-**⚠️ Lending Data Limitation:** The `limit` parameter is **global across all venues/markets**, not per-market. For multi-venue assets like BTC (52 lending markets), requesting lending data with a 1000-point limit will return ~20 timestamps (1000 ÷ 52) instead of 1000 timestamps. This can result in large responses (300KB+) with limited time coverage.
+**Asset vs Basis mode:**
+- **Asset (default):** `{symbol}/timeseries/...` — returns data for the exact symbol only. "USDC" returns only USDC pools.
+- **Basis:** `basis/{symbol}/timeseries/...` — expands the symbol to all basis group members. "USDC" returns USDC + sUSDC + aUSDC etc.
 
-**Workarounds:**
-- Use `price` or `funding` series for longer time ranges (single record per timestamp)
-- For lending data, use the client with post-filtering by venue:
-  ```python
-  data = await DELTA_LAB_CLIENT.get_asset_timeseries("BTC", series="lending", limit=10000)
-  moonwell = data["lending"][data["lending"]["venue"] == "moonwell"]
-  ```
+Use asset mode (the default) when you know what you want. Use basis mode when exploring all related assets.
+
+**Venue filter:** Solves the old limit-vs-lookback conflict. Previously, a limit of 1000 across 50 venues meant ~20 rows per venue. With `venue`, you get the full data window for a single venue.
 
 **Note:** MCP resource returns JSON arrays. For DataFrame formatting, use the client (see below).
 
@@ -192,10 +198,28 @@ ReadMcpResourceTool(
     uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
 )
 
-# Recent funding rates
+# ✅ Moonwell USDC lending rates (exact asset + venue filter)
 ReadMcpResourceTool(
     server="wayfinder",
-    uri="wayfinder://delta-lab/BTC/timeseries/funding/7/100"
+    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/moonwell"
+)
+
+# ✅ Hyperliquid BTC funding only
+ReadMcpResourceTool(
+    server="wayfinder",
+    uri="wayfinder://delta-lab/BTC/timeseries/funding/14/500/hyperliquid"
+)
+
+# ✅ All USD-basis lending (USDC + sUSDC + aUSDC etc.)
+ReadMcpResourceTool(
+    server="wayfinder",
+    uri="wayfinder://delta-lab/basis/USDC/timeseries/lending/7/500"
+)
+
+# ✅ All USD-basis lending on Moonwell
+ReadMcpResourceTool(
+    server="wayfinder",
+    uri="wayfinder://delta-lab/basis/USDC/timeseries/lending/7/500/moonwell"
 )
 ```
 
@@ -210,28 +234,37 @@ data = await DELTA_LAB_CLIENT.get_asset_timeseries(
 )
 data["price"]["price_usd"].plot(title="ETH 30-day Price")
 
-# ✅ Analyze lending rates (filter by venue)
+# ✅ Moonwell USDC lending (exact asset is the default)
 data = await DELTA_LAB_CLIENT.get_asset_timeseries(
-    symbol="BTC",
+    symbol="USDC",
     series="lending",
     lookback_days=30,
-    limit=10000
+    limit=800,
+    venue="moonwell",
 )
-lending_df = data["lending"]
-moonwell = lending_df[lending_df["venue"] == "moonwell"]
-moonwell["supply_apr"].plot(title="BTC Supply APR (Moonwell)")
+lending_df = data["lending"]  # All rows are Moonwell USDC
 
-# ✅ Compare funding across venues
-data = await DELTA_LAB_CLIENT.get_asset_timeseries("BTC", series="funding", lookback_days=14)
-funding_df = data["funding"]
-for venue in funding_df["venue"].unique():
-    venue_data = funding_df[funding_df["venue"] == venue]
-    venue_data["funding_rate"].plot(label=venue)
+# ✅ Expand to basis group (USDC + sUSDC + aUSDC etc.)
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="USDC",
+    series="lending",
+    lookback_days=7,
+    limit=500,
+    basis=True,
+)
+
+# ✅ Hyperliquid BTC funding only
+data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+    symbol="BTC",
+    series="funding",
+    lookback_days=14,
+    venue="hyperliquid",
+)
 ```
 
 **When to use MCP vs Client:**
-- **MCP:** "Show recent price", "What's the funding rate?", quick sanity checks
-- **Client:** Plotting, filtering, aggregating, multi-day analysis, lending data
+- **MCP:** "Show recent price", "What's the funding rate?", quick sanity checks, venue-filtered snapshots
+- **Client:** Plotting, filtering, aggregating, multi-day analysis, DataFrame operations
 
 ### 9. Screen Price
 **URIs:**

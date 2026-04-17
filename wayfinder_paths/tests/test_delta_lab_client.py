@@ -53,6 +53,7 @@ async def test_get_asset_timeseries_serializes_series_list(
         "lookback_days": 30,
         "limit": 2000,
         "series": "price,funding,lending",
+        "basis": "false",
     }
 
 
