@@ -55,6 +55,49 @@ await NOTIFY_CLIENT.notify(
 
 Both POST to `/api/v1/opencode/notify/` on vault-backend with your `WAYFINDER_API_KEY`. Limits: title ≤ 200 chars, message ≤ 20 000 chars.
 
+## Frontend Context (reading UI state + drawing on charts)
+
+If you detected an OpenCode Cloud instance, you can read what the user is viewing and project overlays (price lines, markers, series) onto their chart in real-time.
+
+**MCP tools:**
+
+| Tool | Args | Description |
+|------|------|-------------|
+| `get_frontend_context` | (none) | Read current chart context + all projections |
+| `add_chart_projection` | `chart_id`, `type`, `config` | Add overlay to a chart |
+| `remove_chart_projection` | `chart_id`, `projection_id` | Remove a specific overlay |
+| `clear_chart_projections` | `chart_id` | Remove all overlays from a chart |
+
+**Typical flow:**
+1. Call `get_frontend_context` → returns `{frontend_context: {chart: {market_id: "BTC", market_type: "hl-perp", interval: "1m"}}, sdk_projection: {...}}`
+2. Derive `chart_id` = `"{market_type}-{market_id}"` → `"hl-perp-BTC"`
+3. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support"}`
+4. Line appears on the user's chart in real-time
+
+**Projection types:**
+
+| type | config |
+|------|--------|
+| `horizontal_line` | `price`, `color?`, `label?` |
+| `marker` | `time` (unix sec), `position` (aboveBar/belowBar), `shape` (circle/arrowUp/arrowDown), `color?`, `label?` |
+| `line_series` | `data: [{time, value}]`, `color?`, `label?`, `line_width?` |
+
+**Python client:**
+```python
+from wayfinder_paths.core.clients import INSTANCE_STATE_CLIENT
+
+state = await INSTANCE_STATE_CLIENT.get_state()
+chart = state["frontend_context"]["chart"]
+chart_id = f"{chart['market_type']}-{chart['market_id']}"
+
+await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
+    "type": "horizontal_line",
+    "config": {"price": 73500, "color": "#ef4444", "label": "Support"},
+})
+```
+
+Projections are scoped per chart — switching markets shows only that chart's projections. The backend is type-agnostic; new projection types only need a frontend renderer.
+
 ## Project Overview
 
 Wayfinder Paths is a Python 3.12 public SDK for community-contributed DeFi trading strategies and adapters. It provides the building blocks for automated trading: adapters (exchange/protocol integrations), strategies (trading algorithms), and clients (low-level API wrappers). In production it can be integrated with a separate execution service for hosted signing/execution.
