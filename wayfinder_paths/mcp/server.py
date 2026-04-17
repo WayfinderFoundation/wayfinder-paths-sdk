@@ -71,6 +71,12 @@ from wayfinder_paths.mcp.tools.evm_contract import (
 )
 from wayfinder_paths.mcp.tools.execute import execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid, hyperliquid_execute
+from wayfinder_paths.mcp.tools.instance_state import (
+    add_chart_projection,
+    clear_chart_projections,
+    get_frontend_context,
+    remove_chart_projection,
+)
 from wayfinder_paths.mcp.tools.notify import notify
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
 from wayfinder_paths.mcp.tools.quotes import quote_swap
@@ -172,6 +178,10 @@ mcp.tool()(contract_get_abi)
 mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
 mcp.tool()(notify)
+mcp.tool()(get_frontend_context)
+mcp.tool()(add_chart_projection)
+mcp.tool()(remove_chart_projection)
+mcp.tool()(clear_chart_projections)
 
 
 def main() -> None:
