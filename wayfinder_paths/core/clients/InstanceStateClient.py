@@ -8,7 +8,7 @@ from wayfinder_paths.core.config import get_api_base_url, get_opencode_instance_
 
 class InstanceStateClient(WayfinderClient):
     def _base_url(self) -> str:
-        return f"{get_api_base_url()}/v1/opencode/instances/{get_opencode_instance_id()}/state"
+        return f"{get_api_base_url()}/v1/opencode/instances/{get_opencode_instance_id()}/context"
 
     async def get_state(self) -> dict[str, Any]:
         resp = await self._authed_request("GET", f"{self._base_url()}/")
