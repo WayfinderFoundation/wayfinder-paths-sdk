@@ -64,6 +64,12 @@ from wayfinder_paths.mcp.resources.wallets import (
     list_wallets,
 )
 from wayfinder_paths.mcp.tools.contracts import compile_contract, deploy_contract
+from wayfinder_paths.mcp.tools.instance_state import (
+    add_chart_projection,
+    clear_chart_projections,
+    get_ui_state,
+    remove_chart_projection,
+)
 from wayfinder_paths.mcp.tools.evm_contract import (
     contract_call,
     contract_execute,
@@ -172,6 +178,10 @@ mcp.tool()(contract_get_abi)
 mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
 mcp.tool()(notify)
+mcp.tool()(get_ui_state)
+mcp.tool()(add_chart_projection)
+mcp.tool()(remove_chart_projection)
+mcp.tool()(clear_chart_projections)
 
 
 def main() -> None:
