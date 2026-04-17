@@ -23,7 +23,9 @@ class InstanceStateClient(WayfinderClient):
         chart = fs["chart"]
         return f"{chart['market_type']}-{chart['market_id']}"
 
-    async def patch_projection(self, chart_id: str, projections: list[dict[str, Any]]) -> dict[str, Any]:
+    async def patch_projection(
+        self, chart_id: str, projections: list[dict[str, Any]]
+    ) -> dict[str, Any]:
         resp = await self._authed_request(
             "PATCH",
             f"{self._base_url()}/sdk_projection/{chart_id}/",
@@ -31,7 +33,9 @@ class InstanceStateClient(WayfinderClient):
         )
         return resp.json()
 
-    async def add_projection(self, chart_id: str, projection: dict[str, Any]) -> dict[str, Any]:
+    async def add_projection(
+        self, chart_id: str, projection: dict[str, Any]
+    ) -> dict[str, Any]:
         resp = await self._authed_request(
             "POST", f"{self._base_url()}/sdk_projection/{chart_id}/", json=projection
         )
