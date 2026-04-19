@@ -12,10 +12,11 @@ from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
     PathSkillConfig,
+    PathSkillDependencyConfig,
     PathSkillRuntimeConfig,
+    resolve_skill_dependencies,
     resolve_skill_runtime,
 )
-from wayfinder_paths.paths.pipeline import get_pipeline_archetype
 
 
 class PathSkillRenderError(Exception):
@@ -215,6 +216,138 @@ def _opencode_agent_name(skill_name: str, agent_id: str) -> str:
     return f"{skill_name}-{agent_id}"
 
 
+def _path_skill_dependencies(
+    manifest: PathManifest,
+) -> tuple[PathSkillDependencyConfig, ...]:
+    return resolve_skill_dependencies(manifest)
+
+
+def _host_dependency_name(dependency: PathSkillDependencyConfig, *, host: str) -> str:
+    return dependency.host_names.get(host) or dependency.name
+
+
+def _opencode_model(
+    manifest: PathManifest,
+    *,
+    override: str | None = None,
+) -> str | None:
+    if override:
+        return override
+    host = manifest.host.opencode if manifest.host else None
+    return host.model if host and host.model else None
+
+
+def _opencode_model_lines(
+    manifest: PathManifest,
+    *,
+    override: str | None = None,
+) -> list[str]:
+    model = _opencode_model(manifest, override=override)
+    return [f"model: {model}"] if model else []
+
+
+def _opencode_orchestrator_mode(manifest: PathManifest) -> str:
+    host = manifest.host.opencode if manifest.host else None
+    if host and host.orchestrator_mode:
+        return host.orchestrator_mode
+    return "all"
+
+
+def _opencode_command_subtask(manifest: PathManifest) -> bool:
+    host = manifest.host.opencode if manifest.host else None
+    if host and host.command_subtask is not None:
+        return host.command_subtask
+    return True
+
+
+def _opencode_artifact_gate_enabled(manifest: PathManifest) -> bool:
+    host = manifest.host.opencode if manifest.host else None
+    if host and host.artifact_gate is not None:
+        return host.artifact_gate
+    return manifest.pipeline is not None
+
+
+def _opencode_required_skill_names(manifest: PathManifest) -> list[str]:
+    return [
+        _host_dependency_name(dependency, host="opencode")
+        for dependency in _path_skill_dependencies(manifest)
+    ]
+
+
+def _required_artifact_files(manifest: PathManifest) -> list[str]:
+    if not manifest.pipeline:
+        return []
+    artifacts_dir = f"{manifest.pipeline.artifacts_dir.rstrip('/')}/"
+    required_files: list[str] = []
+    for agent in manifest.agents:
+        output = agent.output.strip()
+        if not output.startswith(artifacts_dir):
+            continue
+        filename = Path(output).name
+        if filename and filename not in required_files:
+            required_files.append(filename)
+    return required_files
+
+
+def _opencode_bash_permission_block() -> list[str]:
+    return [
+        "  bash:",
+        '    "*": ask',
+        '    "python *": allow',
+        '    "wayfinder *": allow',
+    ]
+
+
+def _opencode_orchestrator_permission_lines(
+    manifest: PathManifest,
+    skill: PathSkillConfig,
+) -> list[str]:
+    lines = [
+        "permission:",
+        "  skill:",
+        '    "*": deny',
+        f'    "{skill.name}": allow',
+    ]
+    for dependency_name in _opencode_required_skill_names(manifest):
+        lines.append(f'    "{dependency_name}": allow')
+    lines.extend(
+        [
+            "  task:",
+            '    "*": deny',
+        ]
+    )
+    for agent in manifest.agents:
+        lines.append(
+            f'    "{_opencode_agent_name(skill.name, agent.agent_id)}": allow'
+        )
+    lines.extend(_opencode_bash_permission_block())
+    lines.extend(
+        [
+            "  webfetch: allow",
+            "  websearch: allow",
+        ]
+    )
+    return lines
+
+
+def _opencode_orchestrator_permission_payload(
+    manifest: PathManifest,
+    skill: PathSkillConfig,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "skill": {"*": "deny", skill.name: "allow"},
+        "task": {"*": "deny"},
+        "bash": {"*": "ask", "python *": "allow", "wayfinder *": "allow"},
+        "webfetch": "allow",
+        "websearch": "allow",
+    }
+    for dependency_name in _opencode_required_skill_names(manifest):
+        payload["skill"][dependency_name] = "allow"
+    for agent in manifest.agents:
+        payload["task"][_opencode_agent_name(skill.name, agent.agent_id)] = "allow"
+    return payload
+
+
 def _canonical_agent_body(path_dir: Path, agent: PathAgentConfig) -> str:
     agent_path = path_dir / "skill" / "agents" / f"{agent.agent_id}.md"
     if not agent_path.exists():
@@ -313,17 +446,34 @@ def _render_opencode_agents_md(manifest: PathManifest, skill: PathSkillConfig) -
         if manifest.pipeline and manifest.pipeline.entry_command
         else skill.name
     )
+    dependencies = _opencode_required_skill_names(manifest)
     lines = [
-        f"# {manifest.name} OpenCode Rules",
+        f"## Wayfinder path: {manifest.slug}",
         "",
-        "## Strategy pipeline rules",
-        "- The primary orchestrator owns the workflow.",
-        "- Hidden subagents are leaf workers.",
-        "- Every worker writes exactly one artifact under `.wf-artifacts/$RUN_ID/`.",
-        "- Always evaluate a null state.",
-        "- Never place live trades before the risk verifier passes.",
-        f"- The primary command entrypoint is `{command_name}`.",
+        f"When the user asks to run or install `{manifest.slug}`, prefer `/{command_name}`.",
+        "If handling natural language directly, invoke the Wayfinder orchestrator instead of `general` or `explore`.",
+        "",
+        "Rules:",
+        f"- Prefer `/{command_name}`.",
+        f"- Invoke `{skill.name}-orchestrator` for direct agent execution.",
+        "- Never invoke `general` or `explore` for this workflow.",
+        f"- The orchestrator must load `{skill.name}`.",
     ]
+    for dependency_name in dependencies:
+        lines.append(
+            f"- The orchestrator must load `{dependency_name}` before analysis."
+        )
+    if manifest.pipeline:
+        lines.extend(
+            [
+                f"- Write artifacts under `{manifest.pipeline.artifacts_dir}/<run_id>/`.",
+                "- Do not present ARMED, DRAFT, NULL, or pipeline-complete output unless required artifacts exist.",
+                "- Cite artifact file paths in the final answer.",
+            ]
+        )
+    lines.append(
+        "- If a required model, skill, worker, tool, data source, or artifact is missing, stop with a diagnostic."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -345,44 +495,45 @@ def _opencode_permission_block(agent: PathAgentConfig) -> list[str]:
 
 
 def _render_opencode_orchestrator(
-    manifest: PathManifest, skill: PathSkillConfig
+    manifest: PathManifest,
+    skill: PathSkillConfig,
+    *,
+    model_override: str | None = None,
 ) -> str:
-    task_ids = [
-        _opencode_agent_name(skill.name, agent.agent_id) for agent in manifest.agents
-    ]
     lines = [
         "---",
-        f"description: Orchestrates the {skill.name} pipeline using hidden worker subagents.",
-        "mode: primary",
-        "model: anthropic/claude-sonnet-4-20250514",
+        f"description: Run the Wayfinder {manifest.slug} pipeline using declared skills, workers, and artifact gates.",
+        f"mode: {_opencode_orchestrator_mode(manifest)}",
+        *_opencode_model_lines(manifest, override=model_override),
         "temperature: 0.1",
-        "steps: 20",
-        "permission:",
-        "  skill:",
-        f'    "{skill.name}": allow',
-        "  task:",
-        '    "*": deny',
+        "steps: 30",
+        *_opencode_orchestrator_permission_lines(manifest, skill),
+        "---",
+        "",
+        f"Load the `{skill.name}` skill at task start.",
     ]
-    for task_id in task_ids:
-        lines.append(f'    "{task_id}": allow')
+    for dependency_name in _opencode_required_skill_names(manifest):
+        lines.append(
+            f"Load the `{dependency_name}` skill before writing scripts or invoking workers."
+        )
     lines.extend(
         [
-            "  bash:",
-            '    "*": ask',
-            '    "python *": allow',
-            '    "wayfinder *": allow',
-            "  webfetch: allow",
-            "  websearch: allow",
-            "---",
-            "",
-            "You are the sole orchestrator.",
-            f"Load the `{skill.name}` skill at task start.",
             "Use hidden subagents for analysis fan-out.",
             "Do not perform worker analysis yourself.",
-            "Require a null-state comparison before compile_job.",
-            "",
+            "Invoke only the declared Wayfinder worker subagents.",
+            "Do not invoke `general` or `explore`.",
+            "Create a run id and write all phase artifacts under `.wf-artifacts/<run_id>/`.",
+            "If a skill, worker, tool, model, or data source is unavailable, stop with a diagnostic.",
         ]
     )
+    if _opencode_artifact_gate_enabled(manifest):
+        lines.extend(
+            [
+                "A final answer is forbidden until `wayfinder_artifact_gate_assert_required_artifacts` returns `ok: true`.",
+                "Use `wayfinder_artifact_gate_init_run` before worker fan-out and `wayfinder_artifact_gate_read_artifact` when citing artifacts.",
+            ]
+        )
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -391,6 +542,8 @@ def _render_opencode_worker(
     path_dir: Path,
     skill: PathSkillConfig,
     agent: PathAgentConfig,
+    manifest: PathManifest,
+    model_override: str | None = None,
 ) -> str:
     body = _canonical_agent_body(path_dir, agent)
     lines = [
@@ -398,7 +551,7 @@ def _render_opencode_worker(
         f"description: {agent.description}",
         "mode: subagent",
         "hidden: true",
-        "model: anthropic/claude-sonnet-4-20250514",
+        *_opencode_model_lines(manifest, override=model_override),
         "temperature: 0.1",
         *_opencode_permission_block(agent),
         "---",
@@ -409,23 +562,47 @@ def _render_opencode_worker(
     return "\n".join(lines)
 
 
-def _render_opencode_command(manifest: PathManifest, skill: PathSkillConfig) -> str:
+def _render_opencode_command(
+    manifest: PathManifest,
+    skill: PathSkillConfig,
+    *,
+    model_override: str | None = None,
+) -> str:
     agent_name = f"{skill.name}-orchestrator"
     lines = [
         "---",
         f"description: Run the {skill.name} workflow",
         f"agent: {agent_name}",
-        "model: anthropic/claude-sonnet-4-20250514",
+        f"subtask: {str(_opencode_command_subtask(manifest)).lower()}",
+        *_opencode_model_lines(manifest, override=model_override),
         "---",
         "",
-        "Run the pipeline for this request:",
+        f"Run the Wayfinder `{manifest.slug}` pipeline for:",
         "",
         "$ARGUMENTS",
         "",
+        "Hard requirements:",
+        f"- Load the OpenCode skill named `{skill.name}`.",
     ]
-    for slot in manifest.inputs:
-        lines.append(f"@{slot.path}")
-    lines.append("")
+    for dependency_name in _opencode_required_skill_names(manifest):
+        lines.append(f"- Load the OpenCode skill `{dependency_name}` before analysis.")
+    lines.extend(
+        [
+            "- Invoke only the declared Wayfinder worker subagents.",
+            "- Do not invoke `general` or `explore`.",
+            "- Create a run id and write all phase artifacts under `.wf-artifacts/<run_id>/`.",
+        ]
+    )
+    if _opencode_artifact_gate_enabled(manifest):
+        lines.append(
+            "- Do not produce ARMED, DRAFT, or NULL unless the artifact gate passes."
+        )
+    lines.extend(
+        [
+            "- If a skill, worker, tool, model, or data source is unavailable, stop with a diagnostic.",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -436,7 +613,7 @@ def _render_opencode_plugin_state() -> str:
             "",
             "export const PipelineState: Plugin = async () => ({",
             '  "experimental.session.compacting": async (_input, output) => {',
-            '    output.context.push("## Pipeline state\\n- Generated by Wayfinder path export")',
+            '    output.context.push("## Wayfinder pipeline state\\n- Keep the current run id and artifact directory in context.")',
             "  },",
             "})",
             "",
@@ -476,10 +653,95 @@ def _render_opencode_tool(name: str, description: str) -> str:
     )
 
 
-def _render_opencode_config() -> str:
+def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
+    artifacts_dir = (
+        manifest.pipeline.artifacts_dir if manifest.pipeline else ".wf-artifacts"
+    )
+    required_files = _required_artifact_files(manifest)
+    return "\n".join(
+        [
+            'import { tool } from "@opencode-ai/plugin"',
+            'import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"',
+            'import { join } from "node:path"',
+            "",
+            f"const ARTIFACTS_DIR = {json.dumps(artifacts_dir)}",
+            f"const REQUIRED_FILES = {json.dumps(required_files)}",
+            "",
+            "function resolveRoot(context) {",
+            "  return context?.worktree ?? context?.directory ?? process.cwd()",
+            "}",
+            "",
+            "function isSafeRelative(value) {",
+            "  return Boolean(value) && !value.startsWith('/') && !value.includes('..')",
+            "}",
+            "",
+            "export const init_run = tool({",
+            '  description: "Initialize a Wayfinder run directory and return the run id.",',
+            "  args: {",
+            "    slug: tool.schema.string(),",
+            "  },",
+            "  async execute(args, context) {",
+            "    const runId = `${args.slug}-${Date.now()}`",
+            "    const dir = join(resolveRoot(context), ARTIFACTS_DIR, runId)",
+            "    mkdirSync(dir, { recursive: true })",
+            '    writeFileSync(join(dir, "run.json"), JSON.stringify({ run_id: runId, slug: args.slug }, null, 2))',
+            "    return { ok: true, run_id: runId, artifact_dir: dir }",
+            "  },",
+            "})",
+            "",
+            "export const assert_required_artifacts = tool({",
+            '  description: "Verify required Wayfinder artifacts exist before a final answer.",',
+            "  args: {",
+            "    run_id: tool.schema.string(),",
+            "  },",
+            "  async execute(args, context) {",
+            "    if (!isSafeRelative(args.run_id)) {",
+            '      return { ok: false, error: "invalid_run_id" }',
+            "    }",
+            "    const dir = join(resolveRoot(context), ARTIFACTS_DIR, args.run_id)",
+            "    const missing = REQUIRED_FILES.filter((file) => !existsSync(join(dir, file)))",
+            "    if (missing.length > 0) {",
+            "      return { ok: false, missing, artifact_dir: dir }",
+            "    }",
+            "    return { ok: true, artifact_dir: dir }",
+            "  },",
+            "})",
+            "",
+            "export const read_artifact = tool({",
+            '  description: "Read a JSON Wayfinder artifact by run id and file name.",',
+            "  args: {",
+            "    run_id: tool.schema.string(),",
+            "    file: tool.schema.string(),",
+            "  },",
+            "  async execute(args, context) {",
+            "    if (!isSafeRelative(args.run_id) || !isSafeRelative(args.file)) {",
+            '      return { ok: false, error: "invalid_artifact_path" }',
+            "    }",
+            "    const path = join(resolveRoot(context), ARTIFACTS_DIR, args.run_id, args.file)",
+            "    if (!existsSync(path)) {",
+            '      return { ok: false, error: "artifact_missing", path }',
+            "    }",
+            "    try {",
+            '      return { ok: true, path, artifact: JSON.parse(readFileSync(path, "utf8")) }',
+            "    } catch {",
+            '      return { ok: false, error: "invalid_json_artifact", path }',
+            "    }",
+            "  },",
+            "})",
+            "",
+        ]
+    )
+
+
+def _render_opencode_config(manifest: PathManifest, skill: PathSkillConfig) -> str:
     payload = {
         "$schema": "https://opencode.ai/config.json",
         "instructions": ["AGENTS.md"],
+        "agent": {
+            f"{skill.name}-orchestrator": {
+                "permission": _opencode_orchestrator_permission_payload(manifest, skill)
+            }
+        },
     }
     return json.dumps(payload, indent=2) + "\n"
 
@@ -923,9 +1185,11 @@ def _export_manifest(
     skill: PathSkillConfig,
     host: str,
     runtime_manifest: dict[str, Any],
+    *,
+    opencode_model_override: str | None = None,
 ) -> dict[str, Any]:
     mode = str(runtime_manifest.get("mode") or "thin")
-    return {
+    payload = {
         "host": host,
         "slug": manifest.slug,
         "version": manifest.version,
@@ -933,6 +1197,44 @@ def _export_manifest(
         "mode": mode,
         "filename": f"skill-{host}-{mode}.zip",
     }
+    dependencies = [
+        {
+            "name": dependency.name,
+            "path_slug": dependency.path_slug,
+            "required": dependency.required,
+            "skill_name": _host_dependency_name(dependency, host=host),
+        }
+        for dependency in _path_skill_dependencies(manifest)
+    ]
+    if dependencies:
+        payload["requires"] = {"skills": dependencies}
+    if host == "opencode":
+        preferred_scope = "project"
+        explicit_model = _opencode_model(manifest, override=opencode_model_override)
+        preferred_sdk_command = (
+            f"wayfinder path install --slug {manifest.slug} --version {manifest.version} "
+            f"--host opencode --scope {preferred_scope}"
+        )
+        if explicit_model:
+            preferred_sdk_command += f" --model {explicit_model}"
+        manual_activate_command = (
+            f"wayfinder path activate --slug {manifest.slug} --version {manifest.version} "
+            f"--host opencode --scope {preferred_scope}"
+        )
+        if explicit_model:
+            manual_activate_command += f" --model {explicit_model}"
+        payload["install"] = {
+            "preferred_sdk_command": preferred_sdk_command,
+            "manual_sdk_commands": [
+                f"wayfinder path pull --slug {manifest.slug} --version {manifest.version}",
+                manual_activate_command,
+            ],
+            "restart_required": True,
+            "scopes": ["project", "user"],
+        }
+        if explicit_model:
+            payload["install"]["model"] = explicit_model
+    return payload
 
 
 def _copy_payload_to_install_tree(
@@ -1000,6 +1302,7 @@ def _write_host_install_assets(
     manifest: PathManifest,
     skill: PathSkillConfig,
     host: str,
+    opencode_model_override: str | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
     written: list[str] = []
     install_targets: list[dict[str, Any]] = []
@@ -1095,7 +1398,11 @@ def _write_host_install_assets(
             _write_install_text(
                 export_dir,
                 orchestrator_rel,
-                _render_opencode_orchestrator(manifest, skill),
+                _render_opencode_orchestrator(
+                    manifest,
+                    skill,
+                    model_override=opencode_model_override,
+                ),
                 output_root,
             )
         )
@@ -1113,7 +1420,11 @@ def _write_host_install_assets(
                     export_dir,
                     rel_path,
                     _render_opencode_worker(
-                        path_dir=path_dir, skill=skill, agent=agent
+                        path_dir=path_dir,
+                        skill=skill,
+                        agent=agent,
+                        manifest=manifest,
+                        model_override=opencode_model_override,
                     ),
                     output_root,
                 )
@@ -1135,7 +1446,11 @@ def _write_host_install_assets(
             _write_install_text(
                 export_dir,
                 command_rel,
-                _render_opencode_command(manifest, skill),
+                _render_opencode_command(
+                    manifest,
+                    skill,
+                    model_override=opencode_model_override,
+                ),
                 output_root,
             )
         )
@@ -1149,6 +1464,10 @@ def _write_host_install_assets(
         for rel_path, content in (
             (".opencode/plugins/pipeline-state.ts", _render_opencode_plugin_state()),
             (".opencode/plugins/trade-guard.ts", _render_opencode_plugin_guard()),
+            (
+                ".opencode/tools/wayfinder_artifact_gate.ts",
+                _render_opencode_artifact_gate_tool(manifest),
+            ),
             (
                 ".opencode/tools/compile_job.ts",
                 _render_opencode_tool("compile_job", "Compile a validated runner job."),
@@ -1190,7 +1509,7 @@ def _write_host_install_assets(
             _write_install_json(
                 export_dir,
                 "opencode.json",
-                json.loads(_render_opencode_config()),
+                json.loads(_render_opencode_config(manifest, skill)),
                 output_root,
             )
         )
@@ -1207,23 +1526,43 @@ def _write_host_install_assets(
 
 
 def _inject_required_skills(manifest: PathManifest, body: str) -> str:
-    """Prepend data-source prerequisite directives from the archetype."""
-    if not manifest.pipeline or not manifest.pipeline.archetype:
+    return _inject_required_skills_for_host(manifest, body, host="claude")
+
+
+def _inject_required_skills_for_host(
+    manifest: PathManifest,
+    body: str,
+    *,
+    host: str,
+) -> str:
+    dependencies = _path_skill_dependencies(manifest)
+    if not dependencies:
         return body
-    try:
-        archetype = get_pipeline_archetype(manifest.pipeline.archetype)
-    except Exception:
-        return body
-    if not archetype.required_skills:
-        return body
-    skill_list = "\n".join(f"- `/{s}`" for s in archetype.required_skills)
-    block = (
-        "\n## Prerequisites\n\n"
-        "Before writing any scripts or invoking workers, load these data-source skills.\n"
-        "They document method signatures, return shapes, and field names for the "
-        "clients and adapters this pipeline depends on.\n\n"
-        f"{skill_list}\n"
-    )
+    if host == "opencode":
+        dependency_lines = "\n".join(
+            f"{index}. `{_host_dependency_name(dependency, host='opencode')}`"
+            for index, dependency in enumerate(dependencies, start=1)
+        )
+        block = (
+            "\n## Required OpenCode skill dependencies\n\n"
+            "Before writing scripts, spawning workers, or producing a verdict, "
+            "call the OpenCode `skill` tool for each exact skill name:\n\n"
+            f"{dependency_lines}\n\n"
+            "If any dependency skill is unavailable, stop and report "
+            "`missing_required_skill: <name>`.\n"
+        )
+    else:
+        skill_list = "\n".join(
+            f"- `/{_host_dependency_name(dependency, host=host)}`"
+            for dependency in dependencies
+        )
+        block = (
+            "\n## Prerequisites\n\n"
+            "Before writing any scripts or invoking workers, load these data-source skills.\n"
+            "They document method signatures, return shapes, and field names for the "
+            "clients and adapters this pipeline depends on.\n\n"
+            f"{skill_list}\n"
+        )
     return body.rstrip("\n") + "\n" + block + "\n"
 
 
@@ -1236,6 +1575,7 @@ def _write_host_artifacts(
     host: str,
     output_root: Path,
     body: str,
+    opencode_model_override: str | None = None,
 ) -> tuple[list[str], PathSkillExportInfo]:
     export_dir = _export_dir(output_root, host, skill.name)
     _reset_export_dir(export_dir)
@@ -1244,7 +1584,7 @@ def _write_host_artifacts(
     written.extend(_copy_optional_dirs(path_dir, export_dir))
     written.extend(_copy_runtime_path(path_dir, export_dir))
 
-    body = _inject_required_skills(manifest, body)
+    body = _inject_required_skills_for_host(manifest, body, host=host)
 
     if skill.source == "provided":
         skill_md = body
@@ -1264,7 +1604,13 @@ def _write_host_artifacts(
     written.append(skill_md_path.relative_to(output_root).as_posix())
 
     runtime_manifest = _runtime_manifest(manifest, skill, runtime)
-    export_manifest = _export_manifest(manifest, skill, host, runtime_manifest)
+    export_manifest = _export_manifest(
+        manifest,
+        skill,
+        host,
+        runtime_manifest,
+        opencode_model_override=opencode_model_override,
+    )
 
     runtime_manifest_path = export_dir / "runtime" / "manifest.json"
     _write_text(
@@ -1298,6 +1644,7 @@ def _write_host_artifacts(
         manifest=manifest,
         skill=skill,
         host=host,
+        opencode_model_override=opencode_model_override,
     )
     written.extend(install_written)
     if install_targets:
@@ -1323,6 +1670,7 @@ def render_skill_exports(
     path_dir: Path,
     output_root: Path | None = None,
     hosts: list[str] | tuple[str, ...] | None = None,
+    opencode_model_override: str | None = None,
 ) -> PathSkillRenderReport:
     path_dir = path_dir.resolve()
     manifest_path = path_dir / "wfpath.yaml"
@@ -1371,6 +1719,9 @@ def render_skill_exports(
             host=host,
             output_root=output_root_resolved,
             body=body,
+            opencode_model_override=opencode_model_override
+            if host == "opencode"
+            else None,
         )
         written_files.extend(host_written)
         exports[host] = export_info

@@ -25,6 +25,8 @@ from wayfinder_paths.paths.hooks import PathHooksError, install_path_hooks
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
+    PathSkillDependencyConfig,
+    resolve_skill_dependencies,
 )
 from wayfinder_paths.paths.preview import (
     PathPreviewError,
@@ -256,6 +258,94 @@ def _load_path_manifest(path_dir: Path) -> PathManifest:
         raise click.ClickException(str(exc)) from exc
 
 
+def _manifest_skill_dependencies(
+    manifest: PathManifest,
+    *,
+    host: str,
+) -> list[dict[str, Any]]:
+    dependencies: tuple[PathSkillDependencyConfig, ...] = resolve_skill_dependencies(
+        manifest
+    )
+    return [
+        {
+            "name": dependency.name,
+            "path_slug": dependency.path_slug,
+            "required": dependency.required,
+            "skill_name": dependency.host_names.get(host) or dependency.name,
+        }
+        for dependency in dependencies
+    ]
+
+
+def _run_host_doctor(
+    *,
+    path_dir: Path,
+    host: str,
+    activated_root: Path | None = None,
+    model: str | None = None,
+) -> PathDoctorReport:
+    if host != "opencode":
+        return PathDoctorReport(
+            ok=True,
+            slug=None,
+            version=None,
+            primary_kind=None,
+            errors=[],
+            warnings=[],
+            created_files=[],
+        )
+    try:
+        report = run_doctor(
+            path_dir=path_dir,
+            fix=False,
+            overwrite=False,
+            host=host,
+            activated_root=activated_root,
+            model_override=model,
+        )
+    except PathDoctorError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _raise_for_doctor_errors(report)
+    return report
+
+
+def _install_required_dependencies_for_path(
+    *,
+    path_dir: Path,
+    host: str,
+    scope: str,
+    install_dir: str,
+    force: bool,
+    no_verify: bool,
+    api_url: str | None,
+    model: str | None,
+    activate: bool,
+    visited: set[str],
+) -> list[dict[str, Any]]:
+    manifest = _load_path_manifest(path_dir)
+    dependency_results: list[dict[str, Any]] = []
+    for dependency in _manifest_skill_dependencies(manifest, host=host):
+        if not dependency["required"]:
+            continue
+        dependency_results.append(
+            _install_path_with_options(
+                slug=str(dependency["path_slug"]),
+                path_version=None,
+                install_dir=install_dir,
+                force=force,
+                no_verify=no_verify,
+                api_url=api_url,
+                host=host,
+                scope=scope,
+                model=model,
+                activate=activate,
+                include_dependencies=True,
+                _visited=visited,
+            )
+        )
+    return dependency_results
+
+
 def _resolve_component_execution_target(
     manifest: PathManifest,
     *,
@@ -301,6 +391,7 @@ def _export_single_skill(
     *,
     path_dir: Path,
     host: str,
+    model: str | None = None,
 ) -> tuple[PathDoctorReport | None, PathSkillRenderReport]:
     try:
         doctor_report = run_doctor(path_dir=path_dir, fix=False, overwrite=False)
@@ -309,7 +400,11 @@ def _export_single_skill(
     _raise_for_doctor_errors(doctor_report)
 
     try:
-        render_report = render_skill_exports(path_dir=path_dir, hosts=[host])
+        render_report = render_skill_exports(
+            path_dir=path_dir,
+            hosts=[host],
+            opencode_model_override=model if host == "opencode" else None,
+        )
     except PathSkillRenderError as exc:
         raise click.ClickException(str(exc)) from exc
     return doctor_report, render_report
@@ -319,9 +414,14 @@ def _render_installed_skill(
     *,
     path_dir: Path,
     host: str,
+    model: str | None = None,
 ) -> PathSkillRenderReport:
     try:
-        return render_skill_exports(path_dir=path_dir, hosts=[host])
+        return render_skill_exports(
+            path_dir=path_dir,
+            hosts=[host],
+            opencode_model_override=model if host == "opencode" else None,
+        )
     except PathSkillRenderError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -364,7 +464,7 @@ def _activate_install_root(host: str, scope: str, *, cwd: Path) -> Path:
     if host == "opencode":
         if scope == "project":
             return cwd
-        if scope == "personal":
+        if scope in {"user", "personal"}:
             return Path.home() / ".config" / "opencode"
     raise click.ClickException(f"Unsupported host/scope combination: {host}/{scope}")
 
@@ -385,9 +485,23 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     for key, value in patch.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
+        elif key in merged and isinstance(merged[key], list) and isinstance(value, list):
+            combined: list[Any] = []
+            for item in [*merged[key], *value]:
+                if item not in combined:
+                    combined.append(item)
+            merged[key] = combined
         else:
             merged[key] = value
     return merged
+
+
+def _normalize_host_scope(host: str, scope: str) -> str:
+    normalized_host = host.lower()
+    normalized_scope = scope.strip().lower()
+    if normalized_host == "opencode" and normalized_scope == "personal":
+        return "user"
+    return normalized_scope
 
 
 def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
@@ -470,8 +584,11 @@ def _activation_record(
     mode: str,
     dest: Path,
     applied: list[str],
+    model: str | None = None,
+    include_dependencies: bool | None = None,
+    dependencies: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "host": host,
         "scope": scope,
         "mode": mode,
@@ -479,6 +596,13 @@ def _activation_record(
         "applied": list(applied),
         "updated_at": _iso_utc_now(),
     }
+    if model:
+        payload["model"] = model
+    if include_dependencies is not None:
+        payload["include_dependencies"] = include_dependencies
+    if dependencies:
+        payload["dependencies"] = dependencies
+    return payload
 
 
 def _activation_target_from_entry(entry: dict[str, Any]) -> _ActivationTarget | None:
@@ -486,10 +610,28 @@ def _activation_target_from_entry(entry: dict[str, Any]) -> _ActivationTarget | 
     if not isinstance(activation, dict):
         return None
     host = str(activation.get("host") or "").strip().lower()
-    scope = str(activation.get("scope") or "").strip().lower()
+    scope = _normalize_host_scope(host, str(activation.get("scope") or ""))
     if not host or not scope:
         return None
     return _ActivationTarget(host=host, scope=scope, source="lockfile")
+
+
+def _activation_options_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    activation = entry.get("activation")
+    if not isinstance(activation, dict):
+        return {}
+    dependencies = activation.get("dependencies")
+    return {
+        "model": str(activation.get("model") or "").strip() or None,
+        "include_dependencies": bool(activation.get("include_dependencies"))
+        if "include_dependencies" in activation
+        else None,
+        "dependencies": (
+            dependencies
+            if isinstance(dependencies, list)
+            else []
+        ),
+    }
 
 
 def _infer_activation_target(*, cwd: Path) -> _ActivationTarget | None:
@@ -572,6 +714,9 @@ def _record_activation_for_entry(
     mode: str,
     dest: Path,
     applied: list[str],
+    model: str | None = None,
+    include_dependencies: bool | None = None,
+    dependencies: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     updated_entry = dict(entry)
     updated_entry["activation"] = _activation_record(
@@ -580,6 +725,9 @@ def _record_activation_for_entry(
         mode=mode,
         dest=dest,
         applied=applied,
+        model=model,
+        include_dependencies=include_dependencies,
+        dependencies=dependencies,
     )
     _update_lock_path_entry(lock, lock_path, slug=slug, entry=updated_entry)
     return updated_entry
@@ -591,12 +739,13 @@ def _activate_export(
     scope: str,
     path_dir: Path | None = None,
     export_path: Path | None = None,
+    model: str | None = None,
 ) -> dict[str, Any]:
     if (path_dir is None) == (export_path is None):
         raise click.ClickException("Provide exactly one of --path or --export-path")
 
     normalized_host = host.lower()
-    normalized_scope = scope.strip().lower()
+    normalized_scope = _normalize_host_scope(host, scope)
     source_dir: Path
 
     if path_dir is not None:
@@ -607,11 +756,13 @@ def _activate_export(
             render_report = _render_installed_skill(
                 path_dir=path_dir,
                 host=normalized_host,
+                model=model,
             )
         else:
             _, render_report = _export_single_skill(
                 path_dir=path_dir,
                 host=normalized_host,
+                model=model,
             )
         source_dir = render_report.exports[normalized_host].export_dir
         skill_name = render_report.skill_name or source_dir.name
@@ -779,6 +930,22 @@ def eval_cmd(path_dir: str) -> None:
 )
 @click.option("--path", "path_dir", default=".", show_default=True)
 @click.option(
+    "--host",
+    default=None,
+    type=click.Choice(["opencode"], case_sensitive=False),
+    help="Run host-specific validation.",
+)
+@click.option("--activated", is_flag=True, help="Validate an activated host install.")
+@click.option("--installed", default=None, help="Installed path slug to validate from the lockfile.")
+@click.option(
+    "--dir",
+    "install_dir",
+    default=".wayfinder/paths",
+    show_default=True,
+    help="Base install directory used during install.",
+)
+@click.option("--model", default=None, help="Optional host model override.")
+@click.option(
     "--check",
     is_flag=True,
     help="Validation-only mode. Equivalent to the default behavior.",
@@ -787,12 +954,69 @@ def eval_cmd(path_dir: str) -> None:
 @click.option(
     "--overwrite", is_flag=True, help="Overwrite generated files when using --fix."
 )
-def doctor_cmd(path_dir: str, check: bool, fix: bool, overwrite: bool) -> None:
+def doctor_cmd(
+    path_dir: str,
+    host: str | None,
+    activated: bool,
+    installed: str | None,
+    install_dir: str,
+    model: str | None,
+    check: bool,
+    fix: bool,
+    overwrite: bool,
+) -> None:
     if check and fix:
         raise click.ClickException("--check cannot be used together with --fix")
 
+    resolved_path_dir = Path(path_dir).expanduser().resolve()
+    activated_root: Path | None = None
+    if installed:
+        base = _canonical_install_root(install_dir)
+        state_dir = _state_dir_for_install_root(base)
+        lock, _lock_path = _load_install_lock(state_dir)
+        entry = _lock_path_entry(lock, installed)
+        if entry is None:
+            raise click.ClickException(f"Path not found in lockfile: {installed}")
+        resolved_version = str(entry.get("version") or "").strip()
+        if not resolved_version:
+            raise click.ClickException(
+                f"Installed path is missing a version in the lockfile: {installed}"
+            )
+        resolved_path_dir = _installed_path_dir(
+            base=base,
+            slug=installed,
+            version=resolved_version,
+            entry=entry,
+        ).expanduser().resolve()
+        if activated:
+            activation = entry.get("activation")
+            if not isinstance(activation, dict):
+                raise click.ClickException(
+                    f"No activation metadata recorded for installed path: {installed}"
+                )
+            activation_host = str(activation.get("host") or "").strip().lower()
+            activation_scope = str(activation.get("scope") or "").strip().lower()
+            if not activation_host or not activation_scope:
+                raise click.ClickException(
+                    f"Incomplete activation metadata recorded for installed path: {installed}"
+                )
+            activated_root = _activate_install_root(
+                activation_host,
+                activation_scope,
+                cwd=Path.cwd(),
+            )
+    elif activated:
+        activated_root = resolved_path_dir
+
     try:
-        report = run_doctor(path_dir=Path(path_dir), fix=fix, overwrite=overwrite)
+        report = run_doctor(
+            path_dir=resolved_path_dir,
+            fix=fix,
+            overwrite=overwrite,
+            host=host,
+            activated_root=activated_root,
+            model_override=model,
+        )
     except PathDoctorError as exc:
         raise click.ClickException(str(exc)) from exc
 
@@ -911,19 +1135,53 @@ def export_skill_cmd(path_dir: str, host: str) -> None:
     required=True,
     help="Host scope (e.g. project, personal, repo, user, admin, workspace, shared).",
 )
+@click.option("--slug", default=None, help="Installed path slug to activate from the lockfile.")
+@click.option("--version", "path_version", default=None, help="Installed path version override.")
+@click.option(
+    "--dir",
+    "install_dir",
+    default=".wayfinder/paths",
+    show_default=True,
+    help="Base install directory used during install.",
+)
 @click.option(
     "--path", "path_dir", default=None, help="Local path directory to render from."
 )
 @click.option(
     "--export-path", default=None, help="Existing rendered skill export directory."
 )
+@click.option("--model", default=None, help="Optional host model override.")
 def activate_cmd(
     host: str,
     scope: str,
+    slug: str | None,
+    path_version: str | None,
+    install_dir: str,
     path_dir: str | None,
     export_path: str | None,
+    model: str | None,
 ) -> None:
-    source_path = Path(path_dir).expanduser().resolve() if path_dir else None
+    if slug and (path_dir or export_path):
+        raise click.ClickException("--slug cannot be used with --path or --export-path")
+    source_path: Path | None
+    if slug:
+        base = _canonical_install_root(install_dir)
+        state_dir = _state_dir_for_install_root(base)
+        lock, _lock_path = _load_install_lock(state_dir)
+        entry = _lock_path_entry(lock, slug)
+        if entry is None:
+            raise click.ClickException(f"Path not found in lockfile: {slug}")
+        resolved_version = path_version or str(entry.get("version") or "").strip()
+        if not resolved_version:
+            raise click.ClickException(f"Installed path is missing a version in the lockfile: {slug}")
+        source_path = _installed_path_dir(
+            base=base,
+            slug=slug,
+            version=resolved_version,
+            entry=entry,
+        ).expanduser().resolve()
+    else:
+        source_path = Path(path_dir).expanduser().resolve() if path_dir else None
     rendered_export_path = (
         Path(export_path).expanduser().resolve() if export_path else None
     )
@@ -932,6 +1190,7 @@ def activate_cmd(
         scope=scope,
         path_dir=source_path,
         export_path=rendered_export_path,
+        model=model,
     )
 
     activation_recorded = False
@@ -949,6 +1208,7 @@ def activate_cmd(
                 mode=str(result["mode"]),
                 dest=Path(str(result["dest"])),
                 applied=[str(item) for item in result["applied"]],
+                model=model,
             )
             activation_recorded = True
 
@@ -1395,6 +1655,15 @@ def _install_path_version(
         warnings.append(f"Could not create install intent: {exc}")
 
     dest.mkdir(parents=True, exist_ok=True)
+    if intent_payload and intent_signature:
+        (dest / "install-intent.json").write_text(
+            json.dumps(
+                {"intent": intent_payload, "signature": intent_signature},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     try:
         client.download_bundle(slug=slug, version=desired_version, out_path=bundle_path)
     except PathsApiError as exc:
@@ -1484,7 +1753,37 @@ def _install_path(
     force: bool,
     no_verify: bool,
     api_url: str | None,
-) -> None:
+) -> dict[str, Any]:
+    return _install_path_with_options(
+        slug=slug,
+        path_version=path_version,
+        install_dir=install_dir,
+        force=force,
+        no_verify=no_verify,
+        api_url=api_url,
+    )
+
+
+def _install_path_with_options(
+    *,
+    slug: str,
+    path_version: str | None,
+    install_dir: str,
+    force: bool,
+    no_verify: bool,
+    api_url: str | None,
+    host: str | None = None,
+    scope: str | None = None,
+    model: str | None = None,
+    activate: bool = False,
+    include_dependencies: bool = False,
+    _visited: set[str] | None = None,
+) -> dict[str, Any]:
+    visited = set(_visited or set())
+    if slug in visited:
+        return {"slug": slug, "skipped": True, "reason": "already_visited"}
+    visited.add(slug)
+
     client = PathsApiClient(api_base_url=api_url)
     path_obj, versions = _read_path_registry_detail(client, slug=slug)
     desired_version = _default_install_version(
@@ -1507,7 +1806,85 @@ def _install_path(
         force=force,
         no_verify=no_verify,
     )
-    _echo_json({"ok": True, "result": {"slug": slug, **result}})
+    response: dict[str, Any] = {"slug": slug, **result}
+    installed_path = Path(str(result["dest"]))
+
+    dependency_results: list[dict[str, Any]] = []
+    normalized_host = str(host or "").strip().lower() or None
+    normalized_scope = (
+        _normalize_host_scope(normalized_host, scope)
+        if normalized_host and scope
+        else None
+    )
+    if normalized_host and normalized_scope and include_dependencies:
+        dependency_results = _install_required_dependencies_for_path(
+            path_dir=installed_path,
+            host=normalized_host,
+            scope=normalized_scope,
+            install_dir=install_dir,
+            force=force,
+            no_verify=no_verify,
+            api_url=api_url,
+            model=model,
+            activate=activate,
+            visited=visited,
+        )
+    if dependency_results:
+        response["dependencies"] = dependency_results
+
+    if activate and normalized_host and normalized_scope:
+        activation_result = _activate_export(
+            host=normalized_host,
+            scope=normalized_scope,
+            path_dir=installed_path,
+            model=model,
+        )
+        _run_host_doctor(
+            path_dir=installed_path,
+            host=normalized_host,
+            activated_root=_activate_install_root(
+                normalized_host,
+                normalized_scope,
+                cwd=Path.cwd(),
+            ),
+            model=model,
+        )
+        base = _canonical_install_root(install_dir)
+        state_dir = _state_dir_for_install_root(base)
+        lock, lock_path = _load_install_lock(state_dir)
+        entry = _lock_path_entry(lock, slug) or {}
+        _record_activation_for_entry(
+            lock=lock,
+            lock_path=lock_path,
+            slug=slug,
+            entry=entry,
+            host=normalized_host,
+            scope=normalized_scope,
+            mode=str(activation_result["mode"]),
+            dest=Path(str(activation_result["dest"])),
+            applied=[str(item) for item in activation_result["applied"]],
+            model=model,
+            include_dependencies=include_dependencies,
+            dependencies=[
+                {
+                    "path_slug": item.get("slug"),
+                    "version": item.get("version"),
+                }
+                for item in dependency_results
+                if isinstance(item, dict) and item.get("version")
+            ],
+        )
+        response["activated"] = True
+        response["activation"] = activation_result
+        response["next_steps"] = (
+            [
+                "Restart OpenCode if it was already running so new plugins are loaded.",
+                f"Run /{_load_path_manifest(installed_path).pipeline.entry_command if _load_path_manifest(installed_path).pipeline and _load_path_manifest(installed_path).pipeline.entry_command else _load_path_manifest(installed_path).skill.name}.",
+            ]
+            if normalized_host == "opencode"
+            else []
+        )
+    return response
 
 
 def _explicit_activation_target(
@@ -1552,6 +1929,24 @@ def _resolve_update_activation_target(
 )
 @click.option("--force", is_flag=True, help="Overwrite existing files.")
 @click.option("--no-verify", is_flag=True, help="Skip bundle SHA-256 verification.")
+@click.option(
+    "--host",
+    default=None,
+    type=click.Choice(["claude", "opencode", "codex", "openclaw"], case_sensitive=False),
+    help="Optional host activation target.",
+)
+@click.option("--scope", default=None, help="Optional activation scope.")
+@click.option(
+    "--activate/--no-activate",
+    default=None,
+    help="Activate after install. Defaults to on when --host and --scope are provided.",
+)
+@click.option("--model", default=None, help="Optional host model override.")
+@click.option(
+    "--include-dependencies/--no-include-dependencies",
+    default=True,
+    help="Install required dependency skills for supported hosts.",
+)
 @click.option("--api-url", "api_url", default=None, help="Override Paths API base URL.")
 def install_cmd(
     slug: str,
@@ -1559,16 +1954,30 @@ def install_cmd(
     install_dir: str,
     force: bool,
     no_verify: bool,
+    host: str | None,
+    scope: str | None,
+    activate: bool | None,
+    model: str | None,
+    include_dependencies: bool,
     api_url: str | None,
 ) -> None:
-    _install_path(
+    if (host is None) != (scope is None):
+        raise click.ClickException("--host and --scope must be provided together")
+    should_activate = bool(activate) if activate is not None else bool(host and scope)
+    result = _install_path_with_options(
         slug=slug,
         path_version=path_version,
         install_dir=install_dir,
         force=force,
         no_verify=no_verify,
+        host=host,
+        scope=scope,
+        model=model,
+        activate=should_activate,
+        include_dependencies=include_dependencies,
         api_url=api_url,
     )
+    _echo_json({"ok": True, "result": result})
 
 
 @path_cli.command(
@@ -1596,7 +2005,7 @@ def pull_cmd(
     no_verify: bool,
     api_url: str | None,
 ) -> None:
-    _install_path(
+    result = _install_path(
         slug=slug,
         path_version=path_version,
         install_dir=install_dir,
@@ -1604,6 +2013,7 @@ def pull_cmd(
         no_verify=no_verify,
         api_url=api_url,
     )
+    _echo_json({"ok": True, "result": result})
 
 
 @path_cli.command(
@@ -1713,15 +2123,44 @@ def update_cmd(
         scope=scope,
         cwd=Path.cwd(),
     )
+    activation_options = _activation_options_from_entry(activation_entry)
+    activation_model = activation_options.get("model")
+    include_dependencies = activation_options.get("include_dependencies")
+    if include_dependencies is None:
+        include_dependencies = False
     if activation_target is None:
         result["manual_activate_command"] = _manual_activate_command(path_dir=installed_path)
         _echo_json({"ok": True, "result": result})
         return
 
+    if include_dependencies:
+        result["dependencies"] = _install_required_dependencies_for_path(
+            path_dir=installed_path,
+            host=activation_target.host,
+            scope=activation_target.scope,
+            install_dir=install_dir,
+            force=force,
+            no_verify=no_verify,
+            api_url=api_url,
+            model=activation_model,
+            activate=False,
+            visited={slug},
+        )
     activation_result = _activate_export(
         host=activation_target.host,
         scope=activation_target.scope,
         path_dir=installed_path,
+        model=activation_model,
+    )
+    _run_host_doctor(
+        path_dir=installed_path,
+        host=activation_target.host,
+        activated_root=_activate_install_root(
+            activation_target.host,
+            activation_target.scope,
+            cwd=Path.cwd(),
+        ),
+        model=activation_model,
     )
     lock, lock_path = _load_install_lock(state_dir)
     updated_entry = _lock_path_entry(lock, slug) or {}
@@ -1735,6 +2174,9 @@ def update_cmd(
         mode=str(activation_result["mode"]),
         dest=Path(str(activation_result["dest"])),
         applied=[str(item) for item in activation_result["applied"]],
+        model=activation_model,
+        include_dependencies=bool(include_dependencies),
+        dependencies=result.get("dependencies"),
     )
 
     result["activated"] = True

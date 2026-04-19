@@ -9,7 +9,11 @@ from typing import Any
 import yaml
 from packaging.version import InvalidVersion, Version
 
-from wayfinder_paths.paths.pipeline import DEFAULT_ARTIFACTS_DIR, DEFAULT_PRIMARY_HOSTS
+from wayfinder_paths.paths.pipeline import (
+    DEFAULT_ARTIFACTS_DIR,
+    DEFAULT_PRIMARY_HOSTS,
+    get_pipeline_archetype,
+)
 
 
 class PathManifestError(Exception):
@@ -28,6 +32,7 @@ _SKILL_MAX_DESCRIPTION_LENGTH = 1024
 _SKILL_SOURCES = {"generated", "provided"}
 _RUNTIME_MODES = {"thin", "embedded"}
 _BOOTSTRAP_MODES = {"uv", "pipx", "venv"}
+_OPENCODE_AGENT_MODES = {"all", "subagent"}
 _DEFAULT_RUNTIME_PACKAGE = "wayfinder-paths"
 _DEFAULT_RUNTIME_PYTHON = ">=3.12,<3.13"
 _DEFAULT_BOOTSTRAP = "uv"
@@ -117,6 +122,15 @@ class PathSkillPortableConfig:
 
 
 @dataclass(frozen=True)
+class PathSkillDependencyConfig:
+    name: str
+    path_slug: str
+    required: bool
+    host_names: dict[str, str]
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class PathPipelineConfig:
     archetype: str | None
     graph_path: str | None
@@ -159,6 +173,11 @@ class PathHostTargetConfig:
     command_dir: str | None
     plugin_dir: str | None
     tool_dir: str | None
+    model: str | None
+    recommended_models: tuple[str, ...]
+    command_subtask: bool | None
+    orchestrator_mode: str | None
+    artifact_gate: bool | None
     raw: dict[str, Any]
 
 
@@ -199,6 +218,7 @@ class PathSkillConfig:
     openclaw: PathSkillOpenClawConfig | None
     runtime: PathSkillRuntimeConfig | None
     portable: PathSkillPortableConfig | None
+    dependencies: tuple[PathSkillDependencyConfig, ...]
     uses_portable_alias: bool
     raw: dict[str, Any]
 
@@ -332,6 +352,24 @@ def _parse_host_target_config(
     obj = _ensure_object(raw_obj, name=name)
     if obj is None:
         return None
+    recommended_models = _parse_string_list(
+        obj.get("recommended_models"),
+        name=f"{name}.recommended_models",
+    )
+    command_subtask = _parse_bool(
+        obj.get("command_subtask"),
+        name=f"{name}.command_subtask",
+    )
+    artifact_gate = _parse_bool(
+        obj.get("artifact_gate"),
+        name=f"{name}.artifact_gate",
+    )
+    orchestrator_mode = str(obj.get("orchestrator_mode", "")).strip() or None
+    if orchestrator_mode and orchestrator_mode not in _OPENCODE_AGENT_MODES:
+        raise PathManifestError(
+            f"{name}.orchestrator_mode must be one of: "
+            + ", ".join(sorted(_OPENCODE_AGENT_MODES))
+        )
     return PathHostTargetConfig(
         rules_file=str(obj.get("rules_file", "")).strip() or None,
         skill_dir=str(obj.get("skill_dir", "")).strip() or None,
@@ -341,6 +379,11 @@ def _parse_host_target_config(
         command_dir=str(obj.get("command_dir", "")).strip() or None,
         plugin_dir=str(obj.get("plugin_dir", "")).strip() or None,
         tool_dir=str(obj.get("tool_dir", "")).strip() or None,
+        model=str(obj.get("model", "")).strip() or None,
+        recommended_models=tuple(recommended_models),
+        command_subtask=command_subtask,
+        orchestrator_mode=orchestrator_mode,
+        artifact_gate=artifact_gate,
         raw=dict(obj),
     )
 
@@ -435,6 +478,97 @@ def _parse_openclaw_skill_config(raw_obj: Any) -> PathSkillOpenClawConfig | None
     )
 
 
+def _parse_skill_dependencies(
+    raw_obj: Any,
+) -> tuple[PathSkillDependencyConfig, ...]:
+    if raw_obj is None:
+        return ()
+    if not isinstance(raw_obj, list):
+        raise PathManifestError("wfpath.yaml skill.dependencies must be a list")
+
+    dependencies: list[PathSkillDependencyConfig] = []
+    for idx, item in enumerate(raw_obj):
+        if isinstance(item, str):
+            name = item.strip()
+            dep_obj = {"name": name}
+        else:
+            dep_obj = _ensure_object(
+                item,
+                name=f"wfpath.yaml skill.dependencies[{idx}]",
+                required=True,
+            )
+            assert dep_obj is not None
+            name = str(dep_obj.get("name", "")).strip()
+        if not name:
+            raise PathManifestError(
+                f"wfpath.yaml skill.dependencies[{idx}].name is required"
+            )
+        if len(name) > _SKILL_MAX_NAME_LENGTH or not _SKILL_NAME_RE.fullmatch(name):
+            raise PathManifestError(
+                "wfpath.yaml skill.dependencies[].name must be lowercase "
+                "letters/numbers/hyphens and <= 64 chars"
+            )
+        path_slug = str(dep_obj.get("path_slug", "")).strip() or name
+        if not _SLUG_RE.fullmatch(path_slug):
+            raise PathManifestError(
+                "wfpath.yaml skill.dependencies[].path_slug must be lowercase "
+                "letters/numbers/hyphens"
+            )
+        host_names_raw = _ensure_object(
+            dep_obj.get("host_names"),
+            name=f"wfpath.yaml skill.dependencies[{idx}].host_names",
+        ) or {}
+        host_names = {
+            str(key).strip(): str(value).strip()
+            for key, value in host_names_raw.items()
+            if str(key).strip() and str(value).strip()
+        }
+        required = _parse_bool(
+            dep_obj.get("required"),
+            name=f"wfpath.yaml skill.dependencies[{idx}].required",
+        )
+        dependencies.append(
+            PathSkillDependencyConfig(
+                name=name,
+                path_slug=path_slug,
+                required=True if required is None else required,
+                host_names=host_names,
+                raw=dict(dep_obj),
+            )
+        )
+    return tuple(dependencies)
+
+
+def resolve_skill_dependencies(
+    manifest: PathManifest,
+) -> tuple[PathSkillDependencyConfig, ...]:
+    defaults: list[PathSkillDependencyConfig] = []
+    if manifest.pipeline and manifest.pipeline.archetype:
+        try:
+            archetype = get_pipeline_archetype(manifest.pipeline.archetype)
+        except Exception:
+            archetype = None
+        if archetype is not None:
+            defaults = [
+                PathSkillDependencyConfig(
+                    name=name,
+                    path_slug=name,
+                    required=True,
+                    host_names={},
+                    raw={"name": name, "path_slug": name, "required": True},
+                )
+                for name in archetype.required_skills
+            ]
+
+    explicit = list(manifest.skill.dependencies) if manifest.skill else []
+    merged: dict[str, PathSkillDependencyConfig] = {
+        dependency.name: dependency for dependency in defaults
+    }
+    for dependency in explicit:
+        merged[dependency.name] = dependency
+    return tuple(merged.values())
+
+
 def _parse_portable_skill_config(raw_obj: Any) -> PathSkillPortableConfig | None:
     obj = _ensure_object(raw_obj, name="wfpath.yaml skill.portable")
     if obj is None:
@@ -522,6 +656,7 @@ def _parse_skill_config(raw_obj: Any) -> PathSkillConfig | None:
     instructions_path = str(obj.get("instructions", "")).strip() or None
     portable = _parse_portable_skill_config(obj.get("portable"))
     runtime = _parse_runtime_skill_config(obj.get("runtime"))
+    dependencies = _parse_skill_dependencies(obj.get("dependencies"))
     uses_portable_alias = runtime is None and portable is not None
     if runtime is None:
         runtime = _runtime_from_portable_config(portable)
@@ -564,6 +699,7 @@ def _parse_skill_config(raw_obj: Any) -> PathSkillConfig | None:
         openclaw=_parse_openclaw_skill_config(obj.get("openclaw")),
         runtime=runtime,
         portable=portable,
+        dependencies=dependencies,
         uses_portable_alias=uses_portable_alias,
         raw=dict(obj),
     )

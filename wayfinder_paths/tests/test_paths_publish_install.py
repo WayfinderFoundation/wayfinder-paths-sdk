@@ -8,6 +8,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import httpx
+import yaml
 from click.testing import CliRunner
 
 from wayfinder_paths.paths.builder import PathBuilder
@@ -734,7 +735,7 @@ def test_path_activate_records_activation_metadata_for_installed_path(tmp_path: 
         },
     )
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None):
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
         assert export_path is None
         assert path_dir == installed_path.resolve()
         return {
@@ -775,6 +776,73 @@ def test_path_activate_records_activation_metadata_for_installed_path(tmp_path: 
     assert activation["scope"] == "project"
     assert activation["mode"] == "install"
     assert activation["applied"][0].endswith(".claude/skills/activate-demo")
+
+
+def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypatch):
+    installed_path = tmp_path / ".wayfinder" / "paths" / "activate-demo" / "0.1.0"
+    init_path(
+        path_dir=installed_path,
+        slug="activate-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+    _write_paths_lockfile(
+        tmp_path,
+        {
+            "activate-demo": {
+                "version": "0.1.0",
+                "bundle_sha256": "abc123",
+                "path": str(installed_path),
+            }
+        },
+    )
+
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+        assert export_path is None
+        assert path_dir == installed_path.resolve()
+        assert model == "moonshot/kimi-k2-5"
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [str(Path.cwd() / ".opencode" / "skills" / "activate-demo")],
+        }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "activate",
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--slug",
+                "activate-demo",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+                "--model",
+                "moonshot/kimi-k2-5",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["result"]["activation_recorded"] is True
+
+    lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
+    activation = lock["paths"]["activate-demo"]["activation"]
+    assert activation["host"] == "opencode"
+    assert activation["scope"] == "project"
+    assert activation["model"] == "moonshot/kimi-k2-5"
 
 
 def test_path_activate_skips_doctor_for_installed_paths(tmp_path: Path, monkeypatch) -> None:
@@ -835,6 +903,281 @@ def test_path_activate_skips_doctor_for_installed_paths(tmp_path: Path, monkeypa
     ).exists()
 
 
+def test_path_install_opencode_activates_and_installs_required_dependencies(
+    tmp_path: Path, monkeypatch
+):
+    dependency_build = _build_path_bundle(tmp_path, slug="using-delta-lab", version="0.1.0")
+    main_path = tmp_path / "install-opencode-demo"
+    init_path(
+        path_dir=main_path,
+        slug="install-opencode-demo",
+        primary_kind="monitor",
+        with_skill=True,
+        with_applet=False,
+    )
+    manifest_path = main_path / "wfpath.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest.setdefault("skill", {})
+    manifest["skill"]["dependencies"] = [
+        {
+            "name": "using-delta-lab",
+            "path_slug": "using-delta-lab",
+            "required": True,
+        }
+    ]
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    main_build = PathBuilder.build(
+        path_dir=main_path, out_path=main_path / "dist" / "bundle.zip"
+    )
+
+    activation_calls: list[dict[str, object]] = []
+
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+                "model": model,
+            }
+        )
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [str(Path.cwd() / ".opencode" / "skills" / Path(str(path_dir)).name)],
+        }
+
+    def fake_run_host_doctor(*, path_dir, host, activated_root=None, model=None):
+        return PathDoctorReport(
+            ok=True,
+            slug=Path(path_dir).name,
+            version="0.1.0",
+            primary_kind="monitor",
+            errors=[],
+            warnings=[],
+            created_files=[],
+        )
+
+    class FakeInstallClient:
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            bundle = main_build if slug == "install-opencode-demo" else dependency_build
+            return {
+                "path": {"slug": slug, "latest_version": "0.1.0"},
+                "versions": [{"version": "0.1.0", "bundle_sha256": bundle.bundle_sha256}],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            bundle = main_build if slug == "install-opencode-demo" else dependency_build
+            return {"version": {"version": version, "bundle_sha256": bundle.bundle_sha256}}
+
+        def create_install_intent(self, **kwargs):
+            expires_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+            return {
+                "intent": {
+                    "intent_id": f"intent-{kwargs['slug']}",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": "aa" * 32,
+                    "issued_at": datetime.now(UTC).isoformat(),
+                    "expires_at": expires_at,
+                    "runtime": kwargs["runtime"],
+                },
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            bundle = (
+                main_build.bundle_path
+                if slug == "install-opencode-demo"
+                else dependency_build.bundle_path
+            )
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(bundle.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": "install-opencode",
+                "heartbeat_token": "heartbeat",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeInstallClient)
+    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr("wayfinder_paths.paths.cli._run_host_doctor", fake_run_host_doctor)
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "install",
+                "--slug",
+                "install-opencode-demo",
+                "--version",
+                "0.1.0",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--model",
+                "moonshot/kimi-k2-5",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["result"]["activated"] is True
+    assert payload["result"]["dependencies"][0]["slug"] == "using-delta-lab"
+    assert len(activation_calls) == 2
+    assert {Path(call["path_dir"]).parent.name for call in activation_calls} == {
+        "using-delta-lab",
+        "install-opencode-demo",
+    }
+    lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
+    assert lock["paths"]["install-opencode-demo"]["activation"]["dependencies"] == [
+        {"path_slug": "using-delta-lab", "version": "0.1.0"}
+    ]
+
+
+def test_path_install_claude_activates_and_installs_required_dependencies(
+    tmp_path: Path, monkeypatch
+):
+    dependency_build = _build_path_bundle(tmp_path, slug="using-delta-lab", version="0.1.0")
+    main_path = tmp_path / "install-claude-demo"
+    init_path(
+        path_dir=main_path,
+        slug="install-claude-demo",
+        primary_kind="monitor",
+        with_skill=True,
+        with_applet=False,
+    )
+    manifest_path = main_path / "wfpath.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest.setdefault("skill", {})
+    manifest["skill"]["dependencies"] = [
+        {
+            "name": "using-delta-lab",
+            "path_slug": "using-delta-lab",
+            "required": True,
+        }
+    ]
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    main_build = PathBuilder.build(
+        path_dir=main_path, out_path=main_path / "dist" / "bundle.zip"
+    )
+
+    activation_calls: list[dict[str, object]] = []
+
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+            }
+        )
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [str(Path.cwd() / ".claude" / "skills" / Path(str(path_dir)).name)],
+        }
+
+    class FakeInstallClient:
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            bundle = main_build if slug == "install-claude-demo" else dependency_build
+            return {
+                "path": {"slug": slug, "latest_version": "0.1.0"},
+                "versions": [{"version": "0.1.0", "bundle_sha256": bundle.bundle_sha256}],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            bundle = main_build if slug == "install-claude-demo" else dependency_build
+            return {"version": {"version": version, "bundle_sha256": bundle.bundle_sha256}}
+
+        def create_install_intent(self, **kwargs):
+            expires_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+            return {
+                "intent": {
+                    "intent_id": f"intent-{kwargs['slug']}",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": "aa" * 32,
+                    "issued_at": datetime.now(UTC).isoformat(),
+                    "expires_at": expires_at,
+                    "runtime": kwargs["runtime"],
+                },
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            bundle = (
+                main_build.bundle_path
+                if slug == "install-claude-demo"
+                else dependency_build.bundle_path
+            )
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(bundle.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": "install-claude",
+                "heartbeat_token": "heartbeat",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeInstallClient)
+    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "install",
+                "--slug",
+                "install-claude-demo",
+                "--version",
+                "0.1.0",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+                "--host",
+                "claude",
+                "--scope",
+                "project",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["result"]["activated"] is True
+    assert payload["result"]["dependencies"][0]["slug"] == "using-delta-lab"
+    assert len(activation_calls) == 2
+    assert {Path(call["path_dir"]).parent.name for call in activation_calls} == {
+        "using-delta-lab",
+        "install-claude-demo",
+    }
+
+
 def test_path_update_requires_existing_lock_entry(tmp_path: Path):
     _write_paths_lockfile(tmp_path, {})
 
@@ -870,7 +1213,7 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None):
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
         activation_calls.append(
             {
                 "host": host,
@@ -962,7 +1305,7 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None):
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
         activation_calls.append(
             {
                 "host": host,
@@ -1087,7 +1430,7 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None):
+    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
         activation_calls.append({"host": host, "scope": scope, "path_dir": str(path_dir)})
         return {
             "host": host,

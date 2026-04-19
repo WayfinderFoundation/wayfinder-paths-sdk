@@ -22,6 +22,7 @@ from wayfinder_paths.paths.pipeline import (
     load_pipeline_graph,
     validate_pipeline_graph,
 )
+from wayfinder_paths.paths.renderer import PathSkillRenderError, render_skill_exports
 from wayfinder_paths.paths.scaffold import slugify
 
 _ROOT_ASSET_RE = re.compile(r"""(?:src|href)=["']/(assets|_next)/""")
@@ -38,6 +39,7 @@ _RUNTIME_EXCLUDED_PREFIXES = (
     "node_modules/",
     ".wayfinder/",
 )
+_MARKDOWN_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
 
 class PathDoctorError(Exception):
@@ -693,11 +695,303 @@ def _validate_applet(
             created_files.append(f"{manifest.applet.build_dir}/assets/app.js")
 
 
+def _parse_markdown_frontmatter(path: Path) -> dict[str, Any]:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    match = _MARKDOWN_FRONTMATTER_RE.match(text)
+    if match is None:
+        return {}
+    try:
+        parsed = yaml.safe_load(match.group(1)) or {}
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _has_explicit_opencode_model(manifest: PathManifest, model_override: str | None) -> bool:
+    if model_override:
+        return True
+    host = manifest.host.opencode if manifest.host else None
+    return bool(host and host.model)
+
+
+def _required_opencode_skills(manifest: PathManifest) -> list[str]:
+    skill = manifest.skill
+    if skill and skill.dependencies:
+        return [
+            dependency.host_names.get("opencode") or dependency.name
+            for dependency in skill.dependencies
+        ]
+    if not manifest.pipeline or not manifest.pipeline.archetype:
+        return []
+    try:
+        archetype = get_pipeline_archetype(manifest.pipeline.archetype)
+    except Exception:
+        return []
+    return list(archetype.required_skills)
+
+
+def _validate_opencode_export(
+    *,
+    path_dir: Path,
+    manifest: PathManifest,
+    errors: list[DoctorIssue],
+    warnings: list[DoctorIssue],
+    model_override: str | None,
+) -> None:
+    skill = manifest.skill
+    if not skill or not skill.enabled:
+        return
+
+    try:
+        render_report = render_skill_exports(
+            path_dir=path_dir,
+            hosts=["opencode"],
+            opencode_model_override=model_override,
+        )
+    except PathSkillRenderError as exc:
+        _record_issue(errors, level="error", message=str(exc), path=path_dir)
+        return
+
+    export_info = render_report.exports.get("opencode")
+    if export_info is None:
+        _record_issue(
+            errors,
+            level="error",
+            message="OpenCode export was not rendered",
+            path=path_dir,
+        )
+        return
+
+    export_dir = export_info.export_dir
+    command_name = (
+        manifest.pipeline.entry_command
+        if manifest.pipeline and manifest.pipeline.entry_command
+        else skill.name
+    )
+    orchestrator_path = (
+        export_dir / "install" / ".opencode" / "agents" / f"{skill.name}-orchestrator.md"
+    )
+    command_path = export_dir / "install" / ".opencode" / "commands" / f"{command_name}.md"
+    opencode_config_path = export_dir / "install" / "opencode.json"
+    agents_md_path = export_dir / "install" / "AGENTS.md"
+    artifact_gate_path = (
+        export_dir / "install" / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
+    )
+
+    for required_path, label in (
+        (orchestrator_path, "OpenCode orchestrator"),
+        (command_path, "OpenCode command"),
+        (opencode_config_path, "opencode.json"),
+        (agents_md_path, "AGENTS.md"),
+    ):
+        if not required_path.exists():
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Missing {label} in rendered OpenCode export",
+                path=required_path,
+            )
+
+    if manifest.pipeline and not artifact_gate_path.exists():
+        _record_issue(
+            errors,
+            level="error",
+            message="Missing OpenCode artifact gate tool for pipeline export",
+            path=artifact_gate_path,
+        )
+
+    if orchestrator_path.exists():
+        frontmatter = _parse_markdown_frontmatter(orchestrator_path)
+        mode = str(frontmatter.get("mode") or "").strip()
+        if mode not in {"all", "subagent"}:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode orchestrator must use mode all or subagent",
+                path=orchestrator_path,
+            )
+        permission = frontmatter.get("permission") or {}
+        task_permission = permission.get("task") if isinstance(permission, dict) else {}
+        if not isinstance(task_permission, dict):
+            task_permission = {}
+        for blocked in ("general", "explore"):
+            if task_permission.get(blocked) == "allow":
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=f"OpenCode orchestrator must not allow task {blocked}",
+                    path=orchestrator_path,
+                )
+        for agent in manifest.agents:
+            worker_name = f"{skill.name}-{agent.agent_id}"
+            if task_permission.get(worker_name) != "allow":
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=f"OpenCode orchestrator must allow worker {worker_name}",
+                    path=orchestrator_path,
+                )
+        if not _has_explicit_opencode_model(manifest, model_override) and "model" in frontmatter:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode exports must not hardcode a model unless explicitly configured",
+                path=orchestrator_path,
+            )
+
+    if command_path.exists():
+        frontmatter = _parse_markdown_frontmatter(command_path)
+        if str(frontmatter.get("agent") or "").strip() != f"{skill.name}-orchestrator":
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode command must route to the orchestrator agent",
+                path=command_path,
+            )
+        if frontmatter.get("subtask") is not True:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode command must set subtask: true",
+                path=command_path,
+            )
+        command_text = command_path.read_text(encoding="utf-8", errors="ignore")
+        if "@inputs/" in command_text:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode command must not hardcode @inputs file references",
+                path=command_path,
+            )
+        if not _has_explicit_opencode_model(manifest, model_override) and "model" in frontmatter:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode command must not hardcode a model unless explicitly configured",
+                path=command_path,
+            )
+
+    for agent in manifest.agents:
+        worker_path = (
+            export_dir
+            / "install"
+            / ".opencode"
+            / "agents"
+            / f"{skill.name}-{agent.agent_id}.md"
+        )
+        if not worker_path.exists():
+            _record_issue(
+                errors,
+                level="error",
+                message=f"Missing OpenCode worker export for {agent.agent_id}",
+                path=worker_path,
+            )
+            continue
+        frontmatter = _parse_markdown_frontmatter(worker_path)
+        if str(frontmatter.get("mode") or "").strip() != "subagent":
+            _record_issue(
+                errors,
+                level="error",
+                message=f"OpenCode worker {agent.agent_id} must use mode subagent",
+                path=worker_path,
+            )
+        if frontmatter.get("hidden") is not True:
+            _record_issue(
+                errors,
+                level="error",
+                message=f"OpenCode worker {agent.agent_id} must be hidden",
+                path=worker_path,
+            )
+        if not _has_explicit_opencode_model(manifest, model_override) and "model" in frontmatter:
+            _record_issue(
+                errors,
+                level="error",
+                message="OpenCode worker exports must not hardcode a model unless explicitly configured",
+                path=worker_path,
+            )
+
+    if opencode_config_path.exists():
+        try:
+            config = json.loads(opencode_config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            _record_issue(
+                errors,
+                level="error",
+                message="Generated opencode.json must be valid JSON",
+                path=opencode_config_path,
+            )
+            config = {}
+        if isinstance(config, dict):
+            instructions = config.get("instructions") or []
+            if "AGENTS.md" not in instructions:
+                _record_issue(
+                    errors,
+                    level="error",
+                    message="Generated opencode.json must include AGENTS.md in instructions",
+                    path=opencode_config_path,
+                )
+
+    if agents_md_path.exists():
+        agents_md = agents_md_path.read_text(encoding="utf-8", errors="ignore")
+        if f"Wayfinder path: {manifest.slug}" not in agents_md:
+            _record_issue(
+                warnings,
+                level="warning",
+                message="Generated AGENTS.md is missing the Wayfinder path header",
+                path=agents_md_path,
+            )
+
+
+def _validate_opencode_activation_root(
+    *,
+    manifest: PathManifest,
+    activated_root: Path,
+    errors: list[DoctorIssue],
+) -> None:
+    skill = manifest.skill
+    if not skill or not skill.enabled:
+        return
+    command_name = (
+        manifest.pipeline.entry_command
+        if manifest.pipeline and manifest.pipeline.entry_command
+        else skill.name
+    )
+    required_paths = [
+        activated_root / ".opencode" / "skills" / skill.name / "SKILL.md",
+        activated_root / ".opencode" / "agents" / f"{skill.name}-orchestrator.md",
+        activated_root / ".opencode" / "commands" / f"{command_name}.md",
+        activated_root / "AGENTS.md",
+        activated_root / "opencode.json",
+    ]
+    if manifest.pipeline:
+        required_paths.append(
+            activated_root
+            / ".opencode"
+            / "tools"
+            / "wayfinder_artifact_gate.ts"
+        )
+    for dependency_name in _required_opencode_skills(manifest):
+        required_paths.append(
+            activated_root / ".opencode" / "skills" / dependency_name / "SKILL.md"
+        )
+    for required_path in required_paths:
+        if not required_path.exists():
+            _record_issue(
+                errors,
+                level="error",
+                message="Missing activated OpenCode file",
+                path=required_path,
+            )
+
+
 def run_doctor(
     *,
     path_dir: Path,
     fix: bool = False,
     overwrite: bool = False,
+    host: str | None = None,
+    activated_root: Path | None = None,
+    model_override: str | None = None,
 ) -> PathDoctorReport:
     path_dir = path_dir.resolve()
     if not path_dir.exists():
@@ -781,6 +1075,20 @@ def run_doctor(
             warnings=warnings,
             created_files=created_files,
         )
+        if host == "opencode":
+            _validate_opencode_export(
+                path_dir=path_dir,
+                manifest=manifest,
+                errors=errors,
+                warnings=warnings,
+                model_override=model_override,
+            )
+            if activated_root is not None:
+                _validate_opencode_activation_root(
+                    manifest=manifest,
+                    activated_root=activated_root.resolve(),
+                    errors=errors,
+                )
 
     return PathDoctorReport(
         ok=len(errors) == 0,
