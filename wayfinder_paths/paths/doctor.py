@@ -707,7 +707,9 @@ def _parse_markdown_frontmatter(path: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _has_explicit_opencode_model(manifest: PathManifest, model_override: str | None) -> bool:
+def _has_explicit_opencode_model(
+    manifest: PathManifest, model_override: str | None
+) -> bool:
     if model_override:
         return True
     host = manifest.host.opencode if manifest.host else None
@@ -769,9 +771,15 @@ def _validate_opencode_export(
         else skill.name
     )
     orchestrator_path = (
-        export_dir / "install" / ".opencode" / "agents" / f"{skill.name}-orchestrator.md"
+        export_dir
+        / "install"
+        / ".opencode"
+        / "agents"
+        / f"{skill.name}-orchestrator.md"
     )
-    command_path = export_dir / "install" / ".opencode" / "commands" / f"{command_name}.md"
+    command_path = (
+        export_dir / "install" / ".opencode" / "commands" / f"{command_name}.md"
+    )
     opencode_config_path = export_dir / "install" / "opencode.json"
     agents_md_path = export_dir / "install" / "AGENTS.md"
     artifact_gate_path = (
@@ -831,7 +839,10 @@ def _validate_opencode_export(
                     message=f"OpenCode orchestrator must allow worker {worker_name}",
                     path=orchestrator_path,
                 )
-        if not _has_explicit_opencode_model(manifest, model_override) and "model" in frontmatter:
+        if (
+            not _has_explicit_opencode_model(manifest, model_override)
+            and "model" in frontmatter
+        ):
             _record_issue(
                 errors,
                 level="error",
@@ -863,7 +874,10 @@ def _validate_opencode_export(
                 message="OpenCode command must not hardcode @inputs file references",
                 path=command_path,
             )
-        if not _has_explicit_opencode_model(manifest, model_override) and "model" in frontmatter:
+        if (
+            not _has_explicit_opencode_model(manifest, model_override)
+            and "model" in frontmatter
+        ):
             _record_issue(
                 errors,
                 level="error",
@@ -902,7 +916,10 @@ def _validate_opencode_export(
                 message=f"OpenCode worker {agent.agent_id} must be hidden",
                 path=worker_path,
             )
-        if not _has_explicit_opencode_model(manifest, model_override) and "model" in frontmatter:
+        if (
+            not _has_explicit_opencode_model(manifest, model_override)
+            and "model" in frontmatter
+        ):
             _record_issue(
                 errors,
                 level="error",
@@ -965,10 +982,7 @@ def _validate_opencode_activation_root(
     ]
     if manifest.pipeline:
         required_paths.append(
-            activated_root
-            / ".opencode"
-            / "tools"
-            / "wayfinder_artifact_gate.ts"
+            activated_root / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
         )
     for dependency_name in _required_opencode_skills(manifest):
         required_paths.append(
@@ -992,6 +1006,7 @@ def run_doctor(
     host: str | None = None,
     activated_root: Path | None = None,
     model_override: str | None = None,
+    validation_mode: str = "full",
 ) -> PathDoctorReport:
     path_dir = path_dir.resolve()
     if not path_dir.exists():
@@ -1008,6 +1023,7 @@ def run_doctor(
     errors: list[DoctorIssue] = []
     warnings: list[DoctorIssue] = []
     created_files: list[str] = []
+    installed_host_mode = validation_mode == "installed_host"
 
     manifest: PathManifest | None = None
     try:
@@ -1026,69 +1042,72 @@ def run_doctor(
                 path=manifest_path,
             )
 
-        ctx = _path_context(manifest)
-        _validate_components(path_dir=path_dir, manifest=manifest, warnings=warnings)
-
-        readme_path = path_dir / "README.md"
-        if not readme_path.exists():
-            _record_issue(
-                warnings,
-                level="warning",
-                message="Missing README.md",
-                path=readme_path,
+        if not installed_host_mode:
+            ctx = _path_context(manifest)
+            _validate_components(
+                path_dir=path_dir, manifest=manifest, warnings=warnings
             )
-            if fix:
-                rendered = _render_template(_read_template("README.md.tmpl"), ctx)
-                if _write_if_missing(readme_path, rendered, overwrite=overwrite):
-                    created_files.append("README.md")
 
-        _validate_skill(
-            path_dir=path_dir,
-            manifest=manifest,
-            ctx=ctx,
-            fix=fix,
-            overwrite=overwrite,
-            errors=errors,
-            warnings=warnings,
-            created_files=created_files,
-        )
-        _validate_pipeline(
-            path_dir=path_dir,
-            manifest=manifest,
-            errors=errors,
-            warnings=warnings,
-        )
-        _validate_runtime_skill_contract(
-            path_dir=path_dir,
-            manifest=manifest,
-            errors=errors,
-            warnings=warnings,
-        )
+            readme_path = path_dir / "README.md"
+            if not readme_path.exists():
+                _record_issue(
+                    warnings,
+                    level="warning",
+                    message="Missing README.md",
+                    path=readme_path,
+                )
+                if fix:
+                    rendered = _render_template(_read_template("README.md.tmpl"), ctx)
+                    if _write_if_missing(readme_path, rendered, overwrite=overwrite):
+                        created_files.append("README.md")
 
-        _validate_applet(
-            path_dir=path_dir,
-            manifest=manifest,
-            ctx=ctx,
-            fix=fix,
-            overwrite=overwrite,
-            errors=errors,
-            warnings=warnings,
-            created_files=created_files,
-        )
-        if host == "opencode":
-            _validate_opencode_export(
+            _validate_skill(
+                path_dir=path_dir,
+                manifest=manifest,
+                ctx=ctx,
+                fix=fix,
+                overwrite=overwrite,
+                errors=errors,
+                warnings=warnings,
+                created_files=created_files,
+            )
+            _validate_pipeline(
                 path_dir=path_dir,
                 manifest=manifest,
                 errors=errors,
                 warnings=warnings,
-                model_override=model_override,
             )
-            if activated_root is not None:
-                _validate_opencode_activation_root(
+            _validate_runtime_skill_contract(
+                path_dir=path_dir,
+                manifest=manifest,
+                errors=errors,
+                warnings=warnings,
+            )
+
+            _validate_applet(
+                path_dir=path_dir,
+                manifest=manifest,
+                ctx=ctx,
+                fix=fix,
+                overwrite=overwrite,
+                errors=errors,
+                warnings=warnings,
+                created_files=created_files,
+            )
+            if host == "opencode":
+                _validate_opencode_export(
+                    path_dir=path_dir,
                     manifest=manifest,
-                    activated_root=activated_root.resolve(),
                     errors=errors,
+                    warnings=warnings,
+                    model_override=model_override,
                 )
+        if host == "opencode" and activated_root is not None:
+            _validate_opencode_activation_root(
+                manifest=manifest,
+                activated_root=activated_root.resolve(),
+                errors=errors,
+            )
 
     return PathDoctorReport(
         ok=len(errors) == 0,

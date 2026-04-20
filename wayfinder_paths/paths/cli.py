@@ -302,6 +302,7 @@ def _run_host_doctor(
             host=host,
             activated_root=activated_root,
             model_override=model,
+            validation_mode="installed_host",
         )
     except PathDoctorError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -1064,6 +1065,7 @@ def doctor_cmd(
             host=host,
             activated_root=activated_root,
             model_override=model,
+            validation_mode="installed_host" if activated else "full",
         )
     except PathDoctorError as exc:
         raise click.ClickException(str(exc)) from exc
