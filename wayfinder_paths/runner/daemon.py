@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from loguru import logger
 
 from wayfinder_paths import __version__
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -29,6 +31,32 @@ from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 def _utc_epoch_s() -> int:
     return int(time.time())
+
+
+def _sync_job_to_backend(db: RunnerDB, name: str) -> None:
+    """Fire-and-forget push of job state to vault-backend."""
+    try:
+        job, state = db.get_job(name=name)
+    except KeyError:
+        return
+    from datetime import datetime
+
+    def _ts(epoch: int | None) -> str | None:
+        return datetime.fromtimestamp(epoch, tz=UTC).isoformat() if epoch else None
+
+    SCHEDULED_JOBS_CLIENT.sync_job(
+        name,
+        {
+            "job_type": job.type,
+            "status": state.status,
+            "interval_seconds": job.interval_seconds,
+            "payload": job.payload,
+            "last_run_at": _ts(state.last_run_at),
+            "next_run_at": _ts(state.next_run_at),
+            "consecutive_failures": state.consecutive_failures,
+            "last_error": state.last_error or "",
+        },
+    )
 
 
 def _safe_job_dirname(name: str) -> str:
@@ -283,6 +311,9 @@ class RunnerDaemon:
         )
 
         self._notify_session(rp, status=status, error_text=error_text)
+        self._report_run_to_backend(
+            rp, status=status, exit_code=exit_code, finished_at=finished_at
+        )
 
     def _notify_session(
         self,
@@ -308,6 +339,38 @@ class RunnerDaemon:
             }
         )
         OPENCODE_CLIENT.send_message(session_id, notification)
+
+    def _report_run_to_backend(
+        self,
+        rp: RunningProcess,
+        *,
+        status: str,
+        exit_code: int | None,
+        finished_at: int,
+    ) -> None:
+        from datetime import datetime
+
+        def _ts(epoch: int) -> str:
+            return datetime.fromtimestamp(epoch, tz=UTC).isoformat()
+
+        log_tail = ""
+        try:
+            log_tail = rp.log_path.read_text(errors="replace")[-4096:]
+        except Exception:  # noqa: BLE001
+            pass
+
+        SCHEDULED_JOBS_CLIENT.report_run(
+            rp.job_name,
+            {
+                "run_id": str(rp.run_id),
+                "status": status,
+                "started_at": _ts(rp.started_at),
+                "finished_at": _ts(finished_at),
+                "exit_code": exit_code,
+                "log_tail": log_tail,
+            },
+        )
+        _sync_job_to_backend(self._db, rp.job_name)
 
     def _shutdown_running_processes(self) -> None:
         with self._lock:
@@ -647,6 +710,7 @@ class RunnerDaemon:
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+        _sync_job_to_backend(self._db, name)
         return {"ok": True, "result": {"job_id": job_id, "name": name}}
 
     def ctl_update_job(
@@ -658,6 +722,7 @@ class RunnerDaemon:
             self._db.update_job(
                 name=name, payload=payload, interval_seconds=interval_seconds
             )
+            _sync_job_to_backend(self._db, name)
             return {"ok": True, "result": {"name": name}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -665,6 +730,7 @@ class RunnerDaemon:
     def ctl_pause_job(self, *, name: str) -> dict[str, Any]:
         try:
             self._db.set_job_status(name=name, status=JobStatus.PAUSED)
+            _sync_job_to_backend(self._db, name)
             return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -674,6 +740,7 @@ class RunnerDaemon:
             job, _ = self._db.get_job(name=name)
             self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
             self._db.set_next_run_at(job_id=job.id, next_run_at=_utc_epoch_s())
+            _sync_job_to_backend(self._db, name)
             return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -719,4 +786,5 @@ class RunnerDaemon:
                 return {"ok": False, "error": str(exc)}
             self._running_by_job.pop(job_id, None)
 
+        SCHEDULED_JOBS_CLIENT.delete_job(str(name))
         return {"ok": True, "result": {"name": str(name), "deleted": True}}
