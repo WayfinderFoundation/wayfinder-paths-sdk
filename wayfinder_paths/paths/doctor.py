@@ -716,6 +716,35 @@ def _has_explicit_opencode_model(
     return bool(host and host.model)
 
 
+def _opencode_tool_uses_supported_result_contract(tool_text: str) -> bool:
+    return "output: JSON.stringify(" in tool_text and "jsonOutput(" in tool_text
+
+
+def _opencode_tool_returns_bare_object(tool_text: str) -> bool:
+    compact = " ".join(tool_text.split())
+    return "return { ok:" in compact or "return {ok:" in compact
+
+
+def _validate_opencode_tool_contract(
+    *,
+    tool_path: Path,
+    label: str,
+    errors: list[DoctorIssue],
+) -> None:
+    if not tool_path.exists():
+        return
+    tool_text = tool_path.read_text(encoding="utf-8", errors="ignore")
+    if _opencode_tool_returns_bare_object(
+        tool_text
+    ) or not _opencode_tool_uses_supported_result_contract(tool_text):
+        _record_issue(
+            errors,
+            level="error",
+            message=f"{label} must return a string or an object with an output field",
+            path=tool_path,
+        )
+
+
 def _required_opencode_skills(manifest: PathManifest) -> list[str]:
     skill = manifest.skill
     if skill and skill.dependencies:
@@ -785,12 +814,18 @@ def _validate_opencode_export(
     artifact_gate_path = (
         export_dir / "install" / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
     )
+    compile_job_path = export_dir / "install" / ".opencode" / "tools" / "compile_job.ts"
+    validate_order_path = (
+        export_dir / "install" / ".opencode" / "tools" / "validate_order.ts"
+    )
 
     for required_path, label in (
         (orchestrator_path, "OpenCode orchestrator"),
         (command_path, "OpenCode command"),
         (opencode_config_path, "opencode.json"),
         (agents_md_path, "AGENTS.md"),
+        (compile_job_path, "OpenCode compile_job tool"),
+        (validate_order_path, "OpenCode validate_order tool"),
     ):
         if not required_path.exists():
             _record_issue(
@@ -958,6 +993,17 @@ def _validate_opencode_export(
                 path=agents_md_path,
             )
 
+    for tool_path, label in (
+        (artifact_gate_path, "OpenCode artifact gate tool"),
+        (compile_job_path, "OpenCode compile_job tool"),
+        (validate_order_path, "OpenCode validate_order tool"),
+    ):
+        _validate_opencode_tool_contract(
+            tool_path=tool_path,
+            label=label,
+            errors=errors,
+        )
+
 
 def _validate_opencode_activation_root(
     *,
@@ -984,6 +1030,12 @@ def _validate_opencode_activation_root(
         required_paths.append(
             activated_root / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
         )
+    required_paths.extend(
+        [
+            activated_root / ".opencode" / "tools" / "compile_job.ts",
+            activated_root / ".opencode" / "tools" / "validate_order.ts",
+        ]
+    )
     for dependency_name in _required_opencode_skills(manifest):
         required_paths.append(
             activated_root / ".opencode" / "skills" / dependency_name / "SKILL.md"
@@ -996,6 +1048,26 @@ def _validate_opencode_activation_root(
                 message="Missing activated OpenCode file",
                 path=required_path,
             )
+
+    for tool_path, label in (
+        (
+            activated_root / ".opencode" / "tools" / "wayfinder_artifact_gate.ts",
+            "Activated OpenCode artifact gate tool",
+        ),
+        (
+            activated_root / ".opencode" / "tools" / "compile_job.ts",
+            "Activated OpenCode compile_job tool",
+        ),
+        (
+            activated_root / ".opencode" / "tools" / "validate_order.ts",
+            "Activated OpenCode validate_order tool",
+        ),
+    ):
+        _validate_opencode_tool_contract(
+            tool_path=tool_path,
+            label=label,
+            errors=errors,
+        )
 
 
 def run_doctor(

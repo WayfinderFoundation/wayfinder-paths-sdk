@@ -317,9 +317,7 @@ def _opencode_orchestrator_permission_lines(
         ]
     )
     for agent in manifest.agents:
-        lines.append(
-            f'    "{_opencode_agent_name(skill.name, agent.agent_id)}": allow'
-        )
+        lines.append(f'    "{_opencode_agent_name(skill.name, agent.agent_id)}": allow')
     lines.extend(_opencode_bash_permission_block())
     lines.extend(
         [
@@ -531,6 +529,7 @@ def _render_opencode_orchestrator(
             [
                 "A final answer is forbidden until `wayfinder_artifact_gate_assert_required_artifacts` returns `ok: true`.",
                 "Use `wayfinder_artifact_gate_init_run` before worker fan-out and `wayfinder_artifact_gate_read_artifact` when citing artifacts.",
+                "Treat artifact-gate tool output as JSON and inspect `ok`, `run_id`, `artifact_dir`, `missing`, and `error` fields.",
             ]
         )
     lines.append("")
@@ -636,16 +635,28 @@ def _render_opencode_plugin_guard() -> str:
     )
 
 
+def _opencode_tool_result_helper_lines() -> list[str]:
+    return [
+        "function jsonOutput(payload) {",
+        "  return {",
+        "    output: JSON.stringify(payload, null, 2),",
+        "  }",
+        "}",
+        "",
+    ]
+
+
 def _render_opencode_tool(name: str, description: str) -> str:
     return "\n".join(
         [
             'import { tool } from "@opencode-ai/plugin"',
             "",
+            *_opencode_tool_result_helper_lines(),
             "export default tool({",
             f"  description: {json.dumps(description)},",
             "  args: {},",
             "  async execute() {",
-            f"    return {{ ok: true, tool: {json.dumps(name)} }}",
+            f"    return jsonOutput({{ ok: true, tool: {json.dumps(name)} }})",
             "  },",
             "})",
             "",
@@ -667,6 +678,7 @@ def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
             f"const ARTIFACTS_DIR = {json.dumps(artifacts_dir)}",
             f"const REQUIRED_FILES = {json.dumps(required_files)}",
             "",
+            *_opencode_tool_result_helper_lines(),
             "function resolveRoot(context) {",
             "  return context?.worktree ?? context?.directory ?? process.cwd()",
             "}",
@@ -685,7 +697,7 @@ def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
             "    const dir = join(resolveRoot(context), ARTIFACTS_DIR, runId)",
             "    mkdirSync(dir, { recursive: true })",
             '    writeFileSync(join(dir, "run.json"), JSON.stringify({ run_id: runId, slug: args.slug }, null, 2))',
-            "    return { ok: true, run_id: runId, artifact_dir: dir }",
+            "    return jsonOutput({ ok: true, run_id: runId, artifact_dir: dir })",
             "  },",
             "})",
             "",
@@ -696,14 +708,14 @@ def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
             "  },",
             "  async execute(args, context) {",
             "    if (!isSafeRelative(args.run_id)) {",
-            '      return { ok: false, error: "invalid_run_id" }',
+            '      return jsonOutput({ ok: false, error: "invalid_run_id" })',
             "    }",
             "    const dir = join(resolveRoot(context), ARTIFACTS_DIR, args.run_id)",
             "    const missing = REQUIRED_FILES.filter((file) => !existsSync(join(dir, file)))",
             "    if (missing.length > 0) {",
-            "      return { ok: false, missing, artifact_dir: dir }",
+            "      return jsonOutput({ ok: false, missing, artifact_dir: dir })",
             "    }",
-            "    return { ok: true, artifact_dir: dir }",
+            "    return jsonOutput({ ok: true, artifact_dir: dir })",
             "  },",
             "})",
             "",
@@ -715,16 +727,16 @@ def _render_opencode_artifact_gate_tool(manifest: PathManifest) -> str:
             "  },",
             "  async execute(args, context) {",
             "    if (!isSafeRelative(args.run_id) || !isSafeRelative(args.file)) {",
-            '      return { ok: false, error: "invalid_artifact_path" }',
+            '      return jsonOutput({ ok: false, error: "invalid_artifact_path" })',
             "    }",
             "    const path = join(resolveRoot(context), ARTIFACTS_DIR, args.run_id, args.file)",
             "    if (!existsSync(path)) {",
-            '      return { ok: false, error: "artifact_missing", path }',
+            '      return jsonOutput({ ok: false, error: "artifact_missing", path })',
             "    }",
             "    try {",
-            '      return { ok: true, path, artifact: JSON.parse(readFileSync(path, "utf8")) }',
+            '      return jsonOutput({ ok: true, path, artifact: JSON.parse(readFileSync(path, "utf8")) })',
             "    } catch {",
-            '      return { ok: false, error: "invalid_json_artifact", path }',
+            '      return jsonOutput({ ok: false, error: "invalid_json_artifact", path })',
             "    }",
             "  },",
             "})",

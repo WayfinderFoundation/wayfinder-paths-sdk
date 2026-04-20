@@ -61,6 +61,10 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     artifact_gate = (
         export_dir / "install" / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
     )
+    compile_job = export_dir / "install" / ".opencode" / "tools" / "compile_job.ts"
+    validate_order = (
+        export_dir / "install" / ".opencode" / "tools" / "validate_order.ts"
+    )
     opencode_config = export_dir / "install" / "opencode.json"
     export_manifest = json.loads(_read_text(export_dir / "runtime" / "export.json"))
 
@@ -89,11 +93,20 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     assert "@inputs/" not in _read_text(command)
     assert artifact_gate.exists()
     artifact_gate_text = _read_text(artifact_gate)
+    compile_job_text = _read_text(compile_job)
+    validate_order_text = _read_text(validate_order)
     assert "required_files: tool.schema.array" not in artifact_gate_text
     assert 'const REQUIRED_FILES = ["exposure_reader.json"' in artifact_gate_text
     assert (
         "context?.worktree ?? context?.directory ?? process.cwd()" in artifact_gate_text
     )
+    assert "return jsonOutput(" in artifact_gate_text
+    assert "output: JSON.stringify(payload, null, 2)" in artifact_gate_text
+    assert "return { ok:" not in artifact_gate_text
+    assert "return jsonOutput({ ok: true, tool: " in compile_job_text
+    assert "return { ok:" not in compile_job_text
+    assert "return jsonOutput({ ok: true, tool: " in validate_order_text
+    assert "return { ok:" not in validate_order_text
     assert "AGENTS.md" in opencode_config_payload["instructions"]
     assert (
         opencode_config_payload["agent"]["multi-asset-hedge-finder-orchestrator"][
@@ -145,6 +158,34 @@ def test_opencode_doctor_validates_rendered_export_contract(tmp_path: Path):
 
     assert not any("OpenCode" in issue.message for issue in report.errors)
     assert not any("orchestrator" in issue.message.lower() for issue in report.errors)
+
+
+def test_opencode_doctor_rejects_bare_object_tool_results(tmp_path: Path, monkeypatch):
+    path_dir = _make_pipeline_path(tmp_path)
+    render_report = render_skill_exports(path_dir=path_dir, hosts=["opencode"])
+    artifact_gate = (
+        render_report.exports["opencode"].export_dir
+        / "install"
+        / ".opencode"
+        / "tools"
+        / "wayfinder_artifact_gate.ts"
+    )
+    artifact_gate.write_text(
+        _read_text(artifact_gate).replace(
+            "return jsonOutput({ ok: true, run_id: runId, artifact_dir: dir })",
+            "return { ok: true, run_id: runId, artifact_dir: dir }",
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.doctor.render_skill_exports",
+        lambda **_: render_report,
+    )
+
+    report = run_doctor(path_dir=path_dir, host="opencode")
+
+    assert any("output field" in issue.message.lower() for issue in report.errors)
 
 
 def test_installed_host_doctor_skips_full_pipeline_validation(tmp_path: Path):
@@ -329,3 +370,29 @@ def test_claude_export_keeps_claude_dependency_language(tmp_path: Path):
 
     assert "/using-delta-lab" in claude_text
     assert "moonshot/kimi-k2-5" not in claude_text
+
+
+def test_claude_export_preserves_existing_agent_contract(tmp_path: Path):
+    path_dir = _make_pipeline_path(tmp_path)
+
+    report = render_skill_exports(path_dir=path_dir, hosts=["claude", "opencode"])
+    claude_agent = (
+        report.exports["claude"].export_dir
+        / "install"
+        / ".claude"
+        / "agents"
+        / "multi-asset-hedge-finder-exposure-reader.md"
+    )
+    claude_rules = (
+        report.exports["claude"].export_dir / "install" / ".claude" / "CLAUDE.md"
+    )
+    claude_settings = (
+        report.exports["claude"].export_dir / "install" / ".claude" / "settings.json"
+    )
+    claude_agent_text = _read_text(claude_agent)
+
+    assert "model: sonnet" in claude_agent_text
+    assert "output: JSON.stringify(payload, null, 2)" not in claude_agent_text
+    assert "wayfinder_artifact_gate" not in claude_agent_text
+    assert claude_rules.exists()
+    assert claude_settings.exists()
