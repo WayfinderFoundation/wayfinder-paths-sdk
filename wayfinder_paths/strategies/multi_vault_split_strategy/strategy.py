@@ -199,6 +199,7 @@ class MultiVaultSplitStrategy(Strategy):
         self.hyperliquid_adapter = HyperliquidAdapter(
             config=self.config,
             sign_callback=self.strategy_wallet_signing_callback,
+            sign_typed_data_callback=self.strategy_sign_typed_data,
             wallet_address=strat_addr,
         )
 

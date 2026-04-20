@@ -24,7 +24,7 @@ class TestAdapterUsesLiveMids:
 
         adapter = HyperliquidAdapter(
             config={},
-            sign_callback=AsyncMock(return_value="0x" + "00" * 65),
+            sign_typed_data_callback=AsyncMock(return_value="0x" + "00" * 65),
         )
 
         async def _no_broadcast(action, address):
