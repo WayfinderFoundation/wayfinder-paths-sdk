@@ -39,22 +39,12 @@ def _sync_job_to_backend(db: RunnerDB, name: str) -> None:
         job, state = db.get_job(name=name)
     except KeyError:
         return
-    from datetime import datetime
-
-    def _ts(epoch: int | None) -> str | None:
-        return datetime.fromtimestamp(epoch, tz=UTC).isoformat() if epoch else None
-
     SCHEDULED_JOBS_CLIENT.sync_job(
         name,
         {
-            "job_type": job.type,
             "status": state.status,
             "interval_seconds": job.interval_seconds,
             "payload": job.payload,
-            "last_run_at": _ts(state.last_run_at),
-            "next_run_at": _ts(state.next_run_at),
-            "consecutive_failures": state.consecutive_failures,
-            "last_error": state.last_error or "",
         },
     )
 
