@@ -40,6 +40,20 @@ class ScheduledJobsClient:
                 f"Failed to sync job {job_name} to backend"
             )
 
+    def sync_job_from_db(self, db: Any, name: str) -> None:
+        try:
+            job, state = db.get_job(name=name)
+        except KeyError:
+            return
+        self.sync_job(
+            name,
+            {
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            },
+        )
+
     def delete_job(self, job_name: str) -> None:
         try:
             self._client.delete(
