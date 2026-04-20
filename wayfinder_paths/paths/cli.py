@@ -485,7 +485,9 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
     for key, value in patch.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
             merged[key] = _deep_merge(merged[key], value)
-        elif key in merged and isinstance(merged[key], list) and isinstance(value, list):
+        elif (
+            key in merged and isinstance(merged[key], list) and isinstance(value, list)
+        ):
             combined: list[Any] = []
             for item in [*merged[key], *value]:
                 if item not in combined:
@@ -577,11 +579,18 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
     return applied
 
 
+def _activation_root_from_result(*, mode: str, dest: Path) -> Path:
+    if mode == "install":
+        return dest
+    return dest.parent
+
+
 def _activation_record(
     *,
     host: str,
     scope: str,
     mode: str,
+    root: Path,
     dest: Path,
     applied: list[str],
     model: str | None = None,
@@ -592,6 +601,7 @@ def _activation_record(
         "host": host,
         "scope": scope,
         "mode": mode,
+        "root": str(root),
         "dest": str(dest),
         "applied": list(applied),
         "updated_at": _iso_utc_now(),
@@ -626,12 +636,35 @@ def _activation_options_from_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "include_dependencies": bool(activation.get("include_dependencies"))
         if "include_dependencies" in activation
         else None,
-        "dependencies": (
-            dependencies
-            if isinstance(dependencies, list)
-            else []
-        ),
+        "dependencies": (dependencies if isinstance(dependencies, list) else []),
     }
+
+
+def _activation_root_from_entry(
+    entry: dict[str, Any],
+    *,
+    target: _ActivationTarget | None = None,
+) -> Path | None:
+    activation = entry.get("activation")
+    if not isinstance(activation, dict):
+        return None
+
+    host = str(activation.get("host") or "").strip().lower()
+    scope = _normalize_host_scope(host, str(activation.get("scope") or ""))
+    if target is not None and (host != target.host or scope != target.scope):
+        return None
+
+    raw_root = str(activation.get("root") or "").strip()
+    if raw_root:
+        return Path(raw_root).expanduser().resolve()
+
+    raw_dest = str(activation.get("dest") or "").strip()
+    mode = str(activation.get("mode") or "").strip().lower()
+    if not raw_dest or mode not in {"install", "copy"}:
+        return None
+
+    dest = Path(raw_dest).expanduser().resolve()
+    return _activation_root_from_result(mode=mode, dest=dest)
 
 
 def _infer_activation_target(*, cwd: Path) -> _ActivationTarget | None:
@@ -644,7 +677,9 @@ def _infer_activation_target(*, cwd: Path) -> _ActivationTarget | None:
     )
     for marker, host, scope in markers:
         if marker.exists():
-            candidates.append(_ActivationTarget(host=host, scope=scope, source="default"))
+            candidates.append(
+                _ActivationTarget(host=host, scope=scope, source="default")
+            )
     if len(candidates) != 1:
         return None
     return candidates[0]
@@ -712,6 +747,7 @@ def _record_activation_for_entry(
     host: str,
     scope: str,
     mode: str,
+    root: Path,
     dest: Path,
     applied: list[str],
     model: str | None = None,
@@ -723,6 +759,7 @@ def _record_activation_for_entry(
         host=host,
         scope=scope,
         mode=mode,
+        root=root,
         dest=dest,
         applied=applied,
         model=model,
@@ -740,6 +777,7 @@ def _activate_export(
     path_dir: Path | None = None,
     export_path: Path | None = None,
     model: str | None = None,
+    destination_root: Path | None = None,
 ) -> dict[str, Any]:
     if (path_dir is None) == (export_path is None):
         raise click.ClickException("Provide exactly one of --path or --export-path")
@@ -775,24 +813,26 @@ def _activate_export(
     export_manifest = _read_export_manifest(source_dir)
     install_targets = export_manifest.get("install_targets") or []
     if install_targets:
-        destination_root = _activate_install_root(
+        destination_root_path = destination_root or _activate_install_root(
             normalized_host, normalized_scope, cwd=Path.cwd()
         )
-        applied = _apply_install_targets(source_dir, destination_root)
-        dest = destination_root
+        applied = _apply_install_targets(source_dir, destination_root_path)
+        dest = destination_root_path
         mode = "install"
     else:
-        destination_root = _activate_destination(
+        destination_root_path = destination_root or _activate_destination(
             normalized_host, normalized_scope, cwd=Path.cwd()
         )
-        dest = destination_root / skill_name
+        dest = destination_root_path / skill_name
         _copy_export_tree(source_dir, dest)
         applied = [str(dest)]
         mode = "copy"
+    root = _activation_root_from_result(mode=mode, dest=dest)
     return {
         "host": normalized_host,
         "scope": normalized_scope,
         "source": str(source_dir),
+        "root": str(root),
         "dest": str(dest),
         "mode": mode,
         "applied": applied,
@@ -936,7 +976,11 @@ def eval_cmd(path_dir: str) -> None:
     help="Run host-specific validation.",
 )
 @click.option("--activated", is_flag=True, help="Validate an activated host install.")
-@click.option("--installed", default=None, help="Installed path slug to validate from the lockfile.")
+@click.option(
+    "--installed",
+    default=None,
+    help="Installed path slug to validate from the lockfile.",
+)
 @click.option(
     "--dir",
     "install_dir",
@@ -982,12 +1026,16 @@ def doctor_cmd(
             raise click.ClickException(
                 f"Installed path is missing a version in the lockfile: {installed}"
             )
-        resolved_path_dir = _installed_path_dir(
-            base=base,
-            slug=installed,
-            version=resolved_version,
-            entry=entry,
-        ).expanduser().resolve()
+        resolved_path_dir = (
+            _installed_path_dir(
+                base=base,
+                slug=installed,
+                version=resolved_version,
+                entry=entry,
+            )
+            .expanduser()
+            .resolve()
+        )
         if activated:
             activation = entry.get("activation")
             if not isinstance(activation, dict):
@@ -1135,8 +1183,12 @@ def export_skill_cmd(path_dir: str, host: str) -> None:
     required=True,
     help="Host scope (e.g. project, personal, repo, user, admin, workspace, shared).",
 )
-@click.option("--slug", default=None, help="Installed path slug to activate from the lockfile.")
-@click.option("--version", "path_version", default=None, help="Installed path version override.")
+@click.option(
+    "--slug", default=None, help="Installed path slug to activate from the lockfile."
+)
+@click.option(
+    "--version", "path_version", default=None, help="Installed path version override."
+)
 @click.option(
     "--dir",
     "install_dir",
@@ -1173,13 +1225,19 @@ def activate_cmd(
             raise click.ClickException(f"Path not found in lockfile: {slug}")
         resolved_version = path_version or str(entry.get("version") or "").strip()
         if not resolved_version:
-            raise click.ClickException(f"Installed path is missing a version in the lockfile: {slug}")
-        source_path = _installed_path_dir(
-            base=base,
-            slug=slug,
-            version=resolved_version,
-            entry=entry,
-        ).expanduser().resolve()
+            raise click.ClickException(
+                f"Installed path is missing a version in the lockfile: {slug}"
+            )
+        source_path = (
+            _installed_path_dir(
+                base=base,
+                slug=slug,
+                version=resolved_version,
+                entry=entry,
+            )
+            .expanduser()
+            .resolve()
+        )
     else:
         source_path = Path(path_dir).expanduser().resolve() if path_dir else None
     rendered_export_path = (
@@ -1206,6 +1264,15 @@ def activate_cmd(
                 host=str(result["host"]),
                 scope=str(result["scope"]),
                 mode=str(result["mode"]),
+                root=Path(
+                    str(
+                        result.get("root")
+                        or _activation_root_from_result(
+                            mode=str(result["mode"]),
+                            dest=Path(str(result["dest"])),
+                        )
+                    )
+                ),
                 dest=Path(str(result["dest"])),
                 applied=[str(item) for item in result["applied"]],
                 model=model,
@@ -1602,7 +1669,9 @@ def _default_update_version(
     path_obj: dict[str, Any],
     path_version: str | None,
 ) -> str:
-    desired_version = (path_version or str(path_obj.get("active_bonded_version") or "")).strip()
+    desired_version = (
+        path_version or str(path_obj.get("active_bonded_version") or "")
+    ).strip()
     if not desired_version:
         raise click.ClickException(
             "Path has no active bonded version. Use --version to install a specific public version."
@@ -1736,7 +1805,9 @@ def _install_path_version(
         "dest": str(dest),
         "extracted_files": len(extracted),
         "lockfile": str(lock_path),
-        "install_intent_id": intent_payload.get("intent_id") if intent_payload else None,
+        "install_intent_id": intent_payload.get("intent_id")
+        if intent_payload
+        else None,
         "installation_id": installation_id,
         "heartbeat_enabled": bool(installation_id and heartbeat_token),
         "verified_install": receipt_status in {"recorded", "duplicate"},
@@ -1842,10 +1913,14 @@ def _install_path_with_options(
         _run_host_doctor(
             path_dir=installed_path,
             host=normalized_host,
-            activated_root=_activate_install_root(
-                normalized_host,
-                normalized_scope,
-                cwd=Path.cwd(),
+            activated_root=Path(
+                str(
+                    activation_result.get("root")
+                    or _activation_root_from_result(
+                        mode=str(activation_result["mode"]),
+                        dest=Path(str(activation_result["dest"])),
+                    )
+                )
             ),
             model=model,
         )
@@ -1861,6 +1936,15 @@ def _install_path_with_options(
             host=normalized_host,
             scope=normalized_scope,
             mode=str(activation_result["mode"]),
+            root=Path(
+                str(
+                    activation_result.get("root")
+                    or _activation_root_from_result(
+                        mode=str(activation_result["mode"]),
+                        dest=Path(str(activation_result["dest"])),
+                    )
+                )
+            ),
             dest=Path(str(activation_result["dest"])),
             applied=[str(item) for item in activation_result["applied"]],
             model=model,
@@ -1932,7 +2016,9 @@ def _resolve_update_activation_target(
 @click.option(
     "--host",
     default=None,
-    type=click.Choice(["claude", "opencode", "codex", "openclaw"], case_sensitive=False),
+    type=click.Choice(
+        ["claude", "opencode", "codex", "openclaw"], case_sensitive=False
+    ),
     help="Optional host activation target.",
 )
 @click.option("--scope", default=None, help="Optional activation scope.")
@@ -2039,7 +2125,9 @@ def pull_cmd(
 @click.option(
     "--host",
     default=None,
-    type=click.Choice(["claude", "opencode", "codex", "openclaw"], case_sensitive=False),
+    type=click.Choice(
+        ["claude", "opencode", "codex", "openclaw"], case_sensitive=False
+    ),
     help="Activation host override.",
 )
 @click.option("--scope", default=None, help="Activation scope override.")
@@ -2065,7 +2153,9 @@ def update_cmd(
 
     current_version = str(entry.get("version") or "").strip()
     if not current_version:
-        raise click.ClickException(f"Installed path is missing a version in the lockfile: {slug}")
+        raise click.ClickException(
+            f"Installed path is missing a version in the lockfile: {slug}"
+        )
 
     client = PathsApiClient(api_base_url=api_url)
     path_obj, versions = _read_path_registry_detail(client, slug=slug)
@@ -2129,9 +2219,21 @@ def update_cmd(
     if include_dependencies is None:
         include_dependencies = False
     if activation_target is None:
-        result["manual_activate_command"] = _manual_activate_command(path_dir=installed_path)
+        result["manual_activate_command"] = _manual_activate_command(
+            path_dir=installed_path
+        )
         _echo_json({"ok": True, "result": result})
         return
+
+    activation_root = _activation_root_from_entry(
+        activation_entry,
+        target=activation_target,
+    )
+    if activation_root is not None and not activation_root.exists():
+        result["warnings"].append(
+            f"Recorded activation root no longer exists: {activation_root}. Falling back to the current environment."
+        )
+        activation_root = None
 
     if include_dependencies:
         result["dependencies"] = _install_required_dependencies_for_path(
@@ -2151,14 +2253,19 @@ def update_cmd(
         scope=activation_target.scope,
         path_dir=installed_path,
         model=activation_model,
+        destination_root=activation_root,
     )
     _run_host_doctor(
         path_dir=installed_path,
         host=activation_target.host,
-        activated_root=_activate_install_root(
-            activation_target.host,
-            activation_target.scope,
-            cwd=Path.cwd(),
+        activated_root=Path(
+            str(
+                activation_result.get("root")
+                or _activation_root_from_result(
+                    mode=str(activation_result["mode"]),
+                    dest=Path(str(activation_result["dest"])),
+                )
+            )
         ),
         model=activation_model,
     )
@@ -2172,6 +2279,15 @@ def update_cmd(
         host=activation_target.host,
         scope=activation_target.scope,
         mode=str(activation_result["mode"]),
+        root=Path(
+            str(
+                activation_result.get("root")
+                or _activation_root_from_result(
+                    mode=str(activation_result["mode"]),
+                    dest=Path(str(activation_result["dest"])),
+                )
+            )
+        ),
         dest=Path(str(activation_result["dest"])),
         applied=[str(item) for item in activation_result["applied"]],
         model=activation_model,

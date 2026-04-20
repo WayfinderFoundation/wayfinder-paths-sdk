@@ -8,6 +8,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import httpx
+import pytest
 import yaml
 from click.testing import CliRunner
 
@@ -702,7 +703,9 @@ def _build_path_bundle(tmp_path: Path, *, slug: str, version: str) -> PathBuilde
         with_applet=False,
         with_skill=True,
     )
-    return PathBuilder.build(path_dir=path_dir, out_path=path_dir / "dist" / "bundle.zip")
+    return PathBuilder.build(
+        path_dir=path_dir, out_path=path_dir / "dist" / "bundle.zip"
+    )
 
 
 def _write_paths_lockfile(tmp_path: Path, paths: dict[str, object]) -> Path:
@@ -715,7 +718,9 @@ def _write_paths_lockfile(tmp_path: Path, paths: dict[str, object]) -> Path:
     return lock_path
 
 
-def test_path_activate_records_activation_metadata_for_installed_path(tmp_path: Path, monkeypatch):
+def test_path_activate_records_activation_metadata_for_installed_path(
+    tmp_path: Path, monkeypatch
+):
     installed_path = tmp_path / ".wayfinder" / "paths" / "activate-demo" / "0.1.0"
     init_path(
         path_dir=installed_path,
@@ -735,9 +740,18 @@ def test_path_activate_records_activation_metadata_for_installed_path(tmp_path: 
         },
     )
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
         assert export_path is None
         assert path_dir == installed_path.resolve()
+        assert destination_root is None
         return {
             "host": host,
             "scope": scope,
@@ -747,7 +761,9 @@ def test_path_activate_records_activation_metadata_for_installed_path(tmp_path: 
             "applied": [str(Path.cwd() / ".claude" / "skills" / "activate-demo")],
         }
 
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -775,6 +791,7 @@ def test_path_activate_records_activation_metadata_for_installed_path(tmp_path: 
     assert activation["host"] == "claude"
     assert activation["scope"] == "project"
     assert activation["mode"] == "install"
+    assert activation["root"] == activation["dest"]
     assert activation["applied"][0].endswith(".claude/skills/activate-demo")
 
 
@@ -798,10 +815,19 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
         },
     )
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
         assert export_path is None
         assert path_dir == installed_path.resolve()
         assert model == "moonshot/kimi-k2-5"
+        assert destination_root is None
         return {
             "host": host,
             "scope": scope,
@@ -811,7 +837,9 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
             "applied": [str(Path.cwd() / ".opencode" / "skills" / "activate-demo")],
         }
 
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -843,9 +871,12 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
     assert activation["host"] == "opencode"
     assert activation["scope"] == "project"
     assert activation["model"] == "moonshot/kimi-k2-5"
+    assert activation["root"] == activation["dest"]
 
 
-def test_path_activate_skips_doctor_for_installed_paths(tmp_path: Path, monkeypatch) -> None:
+def test_path_activate_skips_doctor_for_installed_paths(
+    tmp_path: Path, monkeypatch
+) -> None:
     installed_path = tmp_path / ".wayfinder" / "paths" / "activate-demo" / "0.1.0"
     init_path(
         path_dir=installed_path,
@@ -865,7 +896,9 @@ def test_path_activate_skips_doctor_for_installed_paths(tmp_path: Path, monkeypa
         },
     )
 
-    def fake_run_doctor(*, path_dir: Path, fix: bool, overwrite: bool) -> PathDoctorReport:
+    def fake_run_doctor(
+        *, path_dir: Path, fix: bool, overwrite: bool
+    ) -> PathDoctorReport:
         return PathDoctorReport(
             ok=False,
             slug="activate-demo",
@@ -898,15 +931,19 @@ def test_path_activate_skips_doctor_for_installed_paths(tmp_path: Path, monkeypa
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["result"]["activation_recorded"] is True
-    assert Path(payload["result"]["dest"]).joinpath(
-        ".claude", "skills", "activate-demo", "SKILL.md"
-    ).exists()
+    assert (
+        Path(payload["result"]["dest"])
+        .joinpath(".claude", "skills", "activate-demo", "SKILL.md")
+        .exists()
+    )
 
 
 def test_path_install_opencode_activates_and_installs_required_dependencies(
     tmp_path: Path, monkeypatch
 ):
-    dependency_build = _build_path_bundle(tmp_path, slug="using-delta-lab", version="0.1.0")
+    dependency_build = _build_path_bundle(
+        tmp_path, slug="using-delta-lab", version="0.1.0"
+    )
     main_path = tmp_path / "install-opencode-demo"
     init_path(
         path_dir=main_path,
@@ -925,20 +962,31 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
             "required": True,
         }
     ]
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+    )
     main_build = PathBuilder.build(
         path_dir=main_path, out_path=main_path / "dist" / "bundle.zip"
     )
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
         activation_calls.append(
             {
                 "host": host,
                 "scope": scope,
                 "path_dir": str(path_dir),
                 "model": model,
+                "destination_root": str(destination_root) if destination_root else None,
             }
         )
         return {
@@ -947,7 +995,9 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
             "source": str(path_dir),
             "dest": str(Path.cwd()),
             "mode": "install",
-            "applied": [str(Path.cwd() / ".opencode" / "skills" / Path(str(path_dir)).name)],
+            "applied": [
+                str(Path.cwd() / ".opencode" / "skills" / Path(str(path_dir)).name)
+            ],
         }
 
     def fake_run_host_doctor(*, path_dir, host, activated_root=None, model=None):
@@ -969,12 +1019,16 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
             bundle = main_build if slug == "install-opencode-demo" else dependency_build
             return {
                 "path": {"slug": slug, "latest_version": "0.1.0"},
-                "versions": [{"version": "0.1.0", "bundle_sha256": bundle.bundle_sha256}],
+                "versions": [
+                    {"version": "0.1.0", "bundle_sha256": bundle.bundle_sha256}
+                ],
             }
 
         def get_path_version(self, *, slug: str, version: str):
             bundle = main_build if slug == "install-opencode-demo" else dependency_build
-            return {"version": {"version": version, "bundle_sha256": bundle.bundle_sha256}}
+            return {
+                "version": {"version": version, "bundle_sha256": bundle.bundle_sha256}
+            }
 
         def create_install_intent(self, **kwargs):
             expires_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
@@ -1009,8 +1063,12 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
             }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeInstallClient)
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
-    monkeypatch.setattr("wayfinder_paths.paths.cli._run_host_doctor", fake_run_host_doctor)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._run_host_doctor", fake_run_host_doctor
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -1053,7 +1111,9 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
 def test_path_install_claude_activates_and_installs_required_dependencies(
     tmp_path: Path, monkeypatch
 ):
-    dependency_build = _build_path_bundle(tmp_path, slug="using-delta-lab", version="0.1.0")
+    dependency_build = _build_path_bundle(
+        tmp_path, slug="using-delta-lab", version="0.1.0"
+    )
     main_path = tmp_path / "install-claude-demo"
     init_path(
         path_dir=main_path,
@@ -1072,19 +1132,30 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
             "required": True,
         }
     ]
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+    )
     main_build = PathBuilder.build(
         path_dir=main_path, out_path=main_path / "dist" / "bundle.zip"
     )
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
         activation_calls.append(
             {
                 "host": host,
                 "scope": scope,
                 "path_dir": str(path_dir),
+                "destination_root": str(destination_root) if destination_root else None,
             }
         )
         return {
@@ -1093,7 +1164,9 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
             "source": str(path_dir),
             "dest": str(Path.cwd()),
             "mode": "install",
-            "applied": [str(Path.cwd() / ".claude" / "skills" / Path(str(path_dir)).name)],
+            "applied": [
+                str(Path.cwd() / ".claude" / "skills" / Path(str(path_dir)).name)
+            ],
         }
 
     class FakeInstallClient:
@@ -1104,12 +1177,16 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
             bundle = main_build if slug == "install-claude-demo" else dependency_build
             return {
                 "path": {"slug": slug, "latest_version": "0.1.0"},
-                "versions": [{"version": "0.1.0", "bundle_sha256": bundle.bundle_sha256}],
+                "versions": [
+                    {"version": "0.1.0", "bundle_sha256": bundle.bundle_sha256}
+                ],
             }
 
         def get_path_version(self, *, slug: str, version: str):
             bundle = main_build if slug == "install-claude-demo" else dependency_build
-            return {"version": {"version": version, "bundle_sha256": bundle.bundle_sha256}}
+            return {
+                "version": {"version": version, "bundle_sha256": bundle.bundle_sha256}
+            }
 
         def create_install_intent(self, **kwargs):
             expires_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
@@ -1144,7 +1221,9 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
             }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeInstallClient)
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -1213,13 +1292,22 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
         activation_calls.append(
             {
                 "host": host,
                 "scope": scope,
                 "path_dir": str(path_dir),
                 "export_path": export_path,
+                "destination_root": str(destination_root) if destination_root else None,
             }
         )
         return {
@@ -1252,7 +1340,21 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
             }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._run_host_doctor",
+        lambda **kwargs: PathDoctorReport(
+            ok=True,
+            slug=None,
+            version=None,
+            primary_kind=None,
+            errors=[],
+            warnings=[],
+            created_files=[],
+        ),
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -1283,6 +1385,7 @@ def test_path_update_ignores_newer_latest_when_active_bonded_matches_install(
             "scope": "project",
             "path_dir": str(installed_path),
             "export_path": None,
+            "destination_root": None,
         }
     ]
 
@@ -1297,21 +1400,38 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
             "update-demo": {
                 "version": "1.0.0",
                 "bundle_sha256": "11" * 32,
-                "path": str(tmp_path / ".wayfinder" / "paths" / "update-demo" / "1.0.0"),
-                "activation": {"host": "claude", "scope": "project"},
+                "path": str(
+                    tmp_path / ".wayfinder" / "paths" / "update-demo" / "1.0.0"
+                ),
+                "activation": {
+                    "host": "claude",
+                    "scope": "project",
+                    "mode": "install",
+                    "dest": str(tmp_path / "project-root"),
+                },
             }
         },
     )
+    (tmp_path / "project-root").mkdir(parents=True, exist_ok=True)
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
         activation_calls.append(
             {
                 "host": host,
                 "scope": scope,
                 "path_dir": str(path_dir),
                 "export_path": export_path,
+                "destination_root": str(destination_root) if destination_root else None,
             }
         )
         return {
@@ -1373,7 +1493,21 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
             }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._run_host_doctor",
+        lambda **kwargs: PathDoctorReport(
+            ok=True,
+            slug=None,
+            version=None,
+            primary_kind=None,
+            errors=[],
+            warnings=[],
+            created_files=[],
+        ),
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -1403,8 +1537,11 @@ def test_path_update_reuses_lockfile_activation_for_live_bonded_upgrade(
         {
             "host": "claude",
             "scope": "project",
-            "path_dir": str(tmp_path / ".wayfinder" / "paths" / "update-demo" / "1.1.0"),
+            "path_dir": str(
+                tmp_path / ".wayfinder" / "paths" / "update-demo" / "1.1.0"
+            ),
             "export_path": None,
+            "destination_root": str((tmp_path / "project-root").resolve()),
         }
     ]
     lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
@@ -1423,15 +1560,32 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
             "default-demo": {
                 "version": "1.0.0",
                 "bundle_sha256": "11" * 32,
-                "path": str(tmp_path / ".wayfinder" / "paths" / "default-demo" / "1.0.0"),
+                "path": str(
+                    tmp_path / ".wayfinder" / "paths" / "default-demo" / "1.0.0"
+                ),
             }
         },
     )
 
     activation_calls: list[dict[str, object]] = []
 
-    def fake_activate_export(*, host, scope, path_dir=None, export_path=None, model=None):
-        activation_calls.append({"host": host, "scope": scope, "path_dir": str(path_dir)})
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+                "destination_root": str(destination_root) if destination_root else None,
+            }
+        )
         return {
             "host": host,
             "scope": scope,
@@ -1452,7 +1606,9 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
                     "latest_version": "1.2.0",
                     "active_bonded_version": "1.1.0",
                 },
-                "versions": [{"version": "1.1.0", "bundle_sha256": built.bundle_sha256}],
+                "versions": [
+                    {"version": "1.1.0", "bundle_sha256": built.bundle_sha256}
+                ],
             }
 
         def get_path_version(self, *, slug: str, version: str):
@@ -1472,10 +1628,28 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
             return out_path
 
         def submit_install_receipt(self, **kwargs):
-            return {"status": "recorded", "installation_id": "install-default", "heartbeat_token": "heartbeat-default"}
+            return {
+                "status": "recorded",
+                "installation_id": "install-default",
+                "heartbeat_token": "heartbeat-default",
+            }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
-    monkeypatch.setattr("wayfinder_paths.paths.cli._activate_export", fake_activate_export)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._run_host_doctor",
+        lambda **kwargs: PathDoctorReport(
+            ok=True,
+            slug=None,
+            version=None,
+            primary_kind=None,
+            errors=[],
+            warnings=[],
+            created_files=[],
+        ),
+    )
 
     runner = CliRunner()
     workspace = tmp_path / "workspace"
@@ -1501,7 +1675,10 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
         {
             "host": "claude",
             "scope": "project",
-            "path_dir": str(tmp_path / ".wayfinder" / "paths" / "default-demo" / "1.1.0"),
+            "path_dir": str(
+                tmp_path / ".wayfinder" / "paths" / "default-demo" / "1.1.0"
+            ),
+            "destination_root": None,
         }
     ]
 
@@ -1516,7 +1693,9 @@ def test_path_update_falls_back_to_pull_without_activation_target(
             "manual-demo": {
                 "version": "1.0.0",
                 "bundle_sha256": "11" * 32,
-                "path": str(tmp_path / ".wayfinder" / "paths" / "manual-demo" / "1.0.0"),
+                "path": str(
+                    tmp_path / ".wayfinder" / "paths" / "manual-demo" / "1.0.0"
+                ),
             }
         },
     )
@@ -1532,7 +1711,9 @@ def test_path_update_falls_back_to_pull_without_activation_target(
                     "latest_version": "1.2.0",
                     "active_bonded_version": "1.1.0",
                 },
-                "versions": [{"version": "1.1.0", "bundle_sha256": built.bundle_sha256}],
+                "versions": [
+                    {"version": "1.1.0", "bundle_sha256": built.bundle_sha256}
+                ],
             }
 
         def get_path_version(self, *, slug: str, version: str):
@@ -1552,7 +1733,11 @@ def test_path_update_falls_back_to_pull_without_activation_target(
             return out_path
 
         def submit_install_receipt(self, **kwargs):
-            return {"status": "recorded", "installation_id": "install-manual", "heartbeat_token": "heartbeat-manual"}
+            return {
+                "status": "recorded",
+                "installation_id": "install-manual",
+                "heartbeat_token": "heartbeat-manual",
+            }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
 
@@ -1581,6 +1766,439 @@ def test_path_update_falls_back_to_pull_without_activation_target(
         )
 
 
+def test_path_update_reuses_lockfile_activation_root_for_codex_repo(
+    tmp_path: Path, monkeypatch
+):
+    built = _build_path_bundle(tmp_path, slug="codex-demo", version="1.1.0")
+    codex_root = tmp_path / "codex-repo" / ".agents" / "skills"
+    codex_root.mkdir(parents=True, exist_ok=True)
+    _write_paths_lockfile(
+        tmp_path,
+        {
+            "codex-demo": {
+                "version": "1.0.0",
+                "bundle_sha256": "11" * 32,
+                "path": str(tmp_path / ".wayfinder" / "paths" / "codex-demo" / "1.0.0"),
+                "activation": {
+                    "host": "codex",
+                    "scope": "repo",
+                    "mode": "copy",
+                    "root": str(codex_root),
+                    "dest": str(codex_root / "codex-demo"),
+                },
+            }
+        },
+    )
+
+    activation_calls: list[dict[str, object]] = []
+
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+                "destination_root": str(destination_root) if destination_root else None,
+            }
+        )
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "root": str(destination_root),
+            "dest": str(Path(destination_root) / "codex-demo"),
+            "mode": "copy",
+            "applied": [str(Path(destination_root) / "codex-demo")],
+        }
+
+    class FakeUpdateClient:
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            return {
+                "path": {
+                    "slug": slug,
+                    "latest_version": "1.2.0",
+                    "active_bonded_version": "1.1.0",
+                },
+                "versions": [
+                    {"version": "1.1.0", "bundle_sha256": built.bundle_sha256}
+                ],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            return {
+                "version": {"version": version, "bundle_sha256": built.bundle_sha256}
+            }
+
+        def create_install_intent(self, **kwargs):
+            return {
+                "intent": {"intent_id": "intent-codex", "version": kwargs["version"]},
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(built.bundle_path.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": "install-codex",
+                "heartbeat_token": "heartbeat-codex",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "update",
+                "codex-demo",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["result"]["activated"] is True
+        assert payload["result"]["activation_source"] == "lockfile"
+
+    assert activation_calls == [
+        {
+            "host": "codex",
+            "scope": "repo",
+            "path_dir": str(tmp_path / ".wayfinder" / "paths" / "codex-demo" / "1.1.0"),
+            "destination_root": str(codex_root.resolve()),
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("slug", "host", "scope", "mode", "root"),
+    [
+        (
+            "opencode-demo",
+            "opencode",
+            "project",
+            "install",
+            lambda tmp_path: tmp_path / "opencode-project",
+        ),
+        (
+            "openclaw-demo",
+            "openclaw",
+            "workspace",
+            "copy",
+            lambda tmp_path: tmp_path / "openclaw-workspace" / "skills",
+        ),
+    ],
+)
+def test_path_update_reuses_lockfile_activation_root_for_other_supported_hosts(
+    tmp_path: Path,
+    monkeypatch,
+    slug: str,
+    host: str,
+    scope: str,
+    mode: str,
+    root,
+):
+    built = _build_path_bundle(tmp_path, slug=slug, version="1.1.0")
+    activation_root = root(tmp_path)
+    activation_root.mkdir(parents=True, exist_ok=True)
+    activation_dest = activation_root if mode == "install" else activation_root / slug
+    _write_paths_lockfile(
+        tmp_path,
+        {
+            slug: {
+                "version": "1.0.0",
+                "bundle_sha256": "11" * 32,
+                "path": str(tmp_path / ".wayfinder" / "paths" / slug / "1.0.0"),
+                "activation": {
+                    "host": host,
+                    "scope": scope,
+                    "mode": mode,
+                    "root": str(activation_root),
+                    "dest": str(activation_dest),
+                },
+            }
+        },
+    )
+
+    activation_calls: list[dict[str, object]] = []
+
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+                "destination_root": str(destination_root) if destination_root else None,
+            }
+        )
+        dest = (
+            Path(destination_root)
+            if mode == "install"
+            else Path(destination_root) / slug
+        )
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "root": str(destination_root),
+            "dest": str(dest),
+            "mode": mode,
+            "applied": [str(dest)],
+        }
+
+    class FakeUpdateClient:
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            return {
+                "path": {
+                    "slug": slug,
+                    "latest_version": "1.2.0",
+                    "active_bonded_version": "1.1.0",
+                },
+                "versions": [
+                    {"version": "1.1.0", "bundle_sha256": built.bundle_sha256}
+                ],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            return {
+                "version": {"version": version, "bundle_sha256": built.bundle_sha256}
+            }
+
+        def create_install_intent(self, **kwargs):
+            return {
+                "intent": {
+                    "intent_id": f"intent-{slug}",
+                    "version": kwargs["version"],
+                },
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(built.bundle_path.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": f"install-{slug}",
+                "heartbeat_token": f"heartbeat-{slug}",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._run_host_doctor",
+        lambda **kwargs: PathDoctorReport(
+            ok=True,
+            slug=None,
+            version=None,
+            primary_kind=None,
+            errors=[],
+            warnings=[],
+            created_files=[],
+        ),
+    )
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "update",
+                slug,
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["result"]["activated"] is True
+        assert payload["result"]["activation_source"] == "lockfile"
+
+    assert activation_calls == [
+        {
+            "host": host,
+            "scope": scope,
+            "path_dir": str(tmp_path / ".wayfinder" / "paths" / slug / "1.1.0"),
+            "destination_root": str(activation_root.resolve()),
+        }
+    ]
+
+
+def test_path_update_warns_and_falls_back_when_recorded_root_is_missing(
+    tmp_path: Path, monkeypatch
+):
+    built = _build_path_bundle(tmp_path, slug="missing-root-demo", version="1.1.0")
+    missing_root = tmp_path / "deleted-project-root"
+    _write_paths_lockfile(
+        tmp_path,
+        {
+            "missing-root-demo": {
+                "version": "1.0.0",
+                "bundle_sha256": "11" * 32,
+                "path": str(
+                    tmp_path / ".wayfinder" / "paths" / "missing-root-demo" / "1.0.0"
+                ),
+                "activation": {
+                    "host": "claude",
+                    "scope": "project",
+                    "mode": "install",
+                    "root": str(missing_root),
+                    "dest": str(missing_root),
+                },
+            }
+        },
+    )
+
+    activation_calls: list[dict[str, object]] = []
+
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+                "destination_root": str(destination_root) if destination_root else None,
+            }
+        )
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [str(Path.cwd() / ".claude" / "skills" / "missing-root-demo")],
+        }
+
+    class FakeUpdateClient:
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            return {
+                "path": {
+                    "slug": slug,
+                    "latest_version": "1.2.0",
+                    "active_bonded_version": "1.1.0",
+                },
+                "versions": [
+                    {"version": "1.1.0", "bundle_sha256": built.bundle_sha256}
+                ],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            return {
+                "version": {"version": version, "bundle_sha256": built.bundle_sha256}
+            }
+
+        def create_install_intent(self, **kwargs):
+            return {
+                "intent": {
+                    "intent_id": "intent-missing-root",
+                    "version": kwargs["version"],
+                },
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(built.bundle_path.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": "install-missing-root",
+                "heartbeat_token": "heartbeat-missing-root",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "update",
+                "missing-root-demo",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["result"]["activated"] is True
+        assert payload["result"]["warnings"]
+        assert (
+            "Recorded activation root no longer exists"
+            in payload["result"]["warnings"][0]
+        )
+
+    assert activation_calls == [
+        {
+            "host": "claude",
+            "scope": "project",
+            "path_dir": str(
+                tmp_path / ".wayfinder" / "paths" / "missing-root-demo" / "1.1.0"
+            ),
+            "destination_root": None,
+        }
+    ]
+
+
 def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatch):
     built = _build_path_bundle(tmp_path, slug="override-demo", version="1.0.1")
     _write_paths_lockfile(
@@ -1589,7 +2207,9 @@ def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatc
             "override-demo": {
                 "version": "1.0.0",
                 "bundle_sha256": "11" * 32,
-                "path": str(tmp_path / ".wayfinder" / "paths" / "override-demo" / "1.0.0"),
+                "path": str(
+                    tmp_path / ".wayfinder" / "paths" / "override-demo" / "1.0.0"
+                ),
             }
         },
     )
@@ -1605,7 +2225,9 @@ def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatc
                     "latest_version": "1.2.0",
                     "active_bonded_version": "1.1.0",
                 },
-                "versions": [{"version": "1.0.1", "bundle_sha256": built.bundle_sha256}],
+                "versions": [
+                    {"version": "1.0.1", "bundle_sha256": built.bundle_sha256}
+                ],
             }
 
         def get_path_version(self, *, slug: str, version: str):
@@ -1615,7 +2237,10 @@ def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatc
 
         def create_install_intent(self, **kwargs):
             return {
-                "intent": {"intent_id": "intent-override", "version": kwargs["version"]},
+                "intent": {
+                    "intent_id": "intent-override",
+                    "version": kwargs["version"],
+                },
                 "signature": "signed-intent",
             }
 
@@ -1625,7 +2250,11 @@ def test_path_update_allows_explicit_version_override(tmp_path: Path, monkeypatc
             return out_path
 
         def submit_install_receipt(self, **kwargs):
-            return {"status": "recorded", "installation_id": "install-override", "heartbeat_token": "heartbeat-override"}
+            return {
+                "status": "recorded",
+                "installation_id": "install-override",
+                "heartbeat_token": "heartbeat-override",
+            }
 
     monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeUpdateClient)
 
