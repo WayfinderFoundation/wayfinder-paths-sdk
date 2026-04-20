@@ -30,29 +30,23 @@ class ScheduledJobsClient:
             hdrs["X-API-KEY"] = api_key
         return hdrs
 
-    def sync_job(self, job_name: str, data: dict[str, Any]) -> None:
-        try:
-            self._client.put(
-                f"{self._base_url()}/{job_name}/", json=data, headers=self._headers()
-            )
-        except Exception:
-            logger.opt(exception=True).warning(
-                f"Failed to sync job {job_name} to backend"
-            )
-
     def sync_job_from_db(self, db: Any, name: str) -> None:
         try:
             job, state = db.get_job(name=name)
         except KeyError:
             return
-        self.sync_job(
-            name,
-            {
-                "status": state.status,
-                "interval_seconds": job.interval_seconds,
-                "payload": job.payload,
-            },
-        )
+        try:
+            self._client.put(
+                f"{self._base_url()}/{name}/",
+                json={
+                    "status": state.status,
+                    "interval_seconds": job.interval_seconds,
+                    "payload": job.payload,
+                },
+                headers=self._headers(),
+            )
+        except Exception:
+            logger.opt(exception=True).warning(f"Failed to sync job {name} to backend")
 
     def delete_job(self, job_name: str) -> None:
         try:

@@ -286,9 +286,9 @@ class RunnerDaemon:
 
         self._notify_session(rp, status=status, error_text=error_text)
 
-        log_tail = ""
+        log_output = ""
         try:
-            log_tail = rp.log_path.read_text(errors="replace")[-4096:]
+            log_output = rp.log_path.read_text(errors="replace")
         except Exception:  # noqa: BLE001
             pass
         SCHEDULED_JOBS_CLIENT.report_run(
@@ -299,7 +299,7 @@ class RunnerDaemon:
                 "started_at": datetime.fromtimestamp(rp.started_at, tz=UTC).isoformat(),
                 "finished_at": datetime.fromtimestamp(finished_at, tz=UTC).isoformat(),
                 "exit_code": exit_code,
-                "log_tail": log_tail,
+                "log_output": log_output,
             },
         )
         SCHEDULED_JOBS_CLIENT.sync_job_from_db(self._db, rp.job_name)
