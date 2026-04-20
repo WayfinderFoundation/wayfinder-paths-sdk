@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.testing import fake_signing
 
 
 class TestHyperliquidCancelOrder:
@@ -15,7 +16,7 @@ class TestHyperliquidCancelOrder:
         ):
             adapter = HyperliquidAdapter(
                 config={},
-                sign_callback=AsyncMock(return_value="0x" + "00" * 65),
+                signing=fake_signing(sign=AsyncMock(return_value="0x" + "00" * 65)),
             )
             adapter._sign_and_broadcast_hypecore = AsyncMock(
                 return_value={"status": "ok"}

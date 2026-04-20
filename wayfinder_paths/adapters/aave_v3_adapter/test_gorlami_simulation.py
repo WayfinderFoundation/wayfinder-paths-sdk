@@ -7,6 +7,7 @@ from wayfinder_paths.adapters.aave_v3_adapter.adapter import AaveV3Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
 from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC, ZERO_ADDRESS
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -43,7 +44,7 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
 
     adapter = AaveV3Adapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 

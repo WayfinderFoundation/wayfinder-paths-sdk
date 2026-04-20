@@ -39,6 +39,7 @@ from wayfinder_paths.core.strategies.descriptors import (
     TokenExposure,
     Volatility,
 )
+from wayfinder_paths.core.utils.signing import signing_from_private_key
 
 from .boros_ops_mixin import BorosHypeBorosOpsMixin
 from .constants import (
@@ -263,20 +264,25 @@ class BorosHypeStrategy(
             else None
         )
 
-        self._sign_callback = (
-            self._make_sign_callback(strategy_pk) if strategy_pk else None
-        )
-        main_sign_callback = self._make_sign_callback(main_pk) if main_pk else None
+        if strategy_pk and user_address:
+            self.strategy_signing = signing_from_private_key(strategy_pk, user_address)
+            self._sign_callback = self.strategy_signing.sign
+        else:
+            self._sign_callback = None
+
+        main_addr_pk = main_wallet.get("address") if main_wallet else None
+        if main_pk and main_addr_pk:
+            self.main_signing = signing_from_private_key(main_pk, main_addr_pk)
 
         self.boros_adapter = BorosAdapter(
             config=self._config,
-            sign_callback=self._sign_callback,
+            signing=self.strategy_signing,
             wallet_address=user_address,
         )
 
         self.hyperliquid_adapter = HyperliquidAdapter(
             config=self._config,
-            sign_callback=self.strategy_sign_typed_data,
+            signing=self.strategy_signing,
         )
 
         strat_addr = (strategy_wallet or {}).get("address")
@@ -284,14 +290,14 @@ class BorosHypeStrategy(
 
         self.balance_adapter = BalanceAdapter(
             config=self._config,
-            main_sign_callback=main_sign_callback,
-            strategy_sign_callback=self._sign_callback,
+            main_signing=self.main_signing,
+            strategy_signing=self.strategy_signing,
             main_wallet_address=main_addr,
             strategy_wallet_address=strat_addr,
         )
         self.brap_adapter = BRAPAdapter(
             config=self._config,
-            sign_callback=self._sign_callback,
+            signing=self.strategy_signing,
             wallet_address=strat_addr,
         )
 

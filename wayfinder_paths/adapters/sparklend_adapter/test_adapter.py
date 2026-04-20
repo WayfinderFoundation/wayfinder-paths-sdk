@@ -10,6 +10,7 @@ from wayfinder_paths.adapters.sparklend_adapter.adapter import (
     SparkLendAdapter,
 )
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
+from wayfinder_paths.testing import fake_signing
 
 FAKE_ADDR = "0x1234567890123456789012345678901234567890"
 FAKE_ASSET = "0x0000000000000000000000000000000000000001"
@@ -20,6 +21,7 @@ class TestSparkLendAdapter:
     def adapter(self):
         return SparkLendAdapter(
             config={},
+            signing=fake_signing(address=FAKE_ADDR),
             wallet_address=FAKE_ADDR,
         )
 

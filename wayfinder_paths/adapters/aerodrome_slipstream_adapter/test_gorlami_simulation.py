@@ -29,6 +29,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     round_tick_to_spacing,
     sqrt_price_x96_to_price,
 )
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -50,7 +51,7 @@ def _make_adapter(acct: Account) -> AerodromeSlipstreamAdapter:
         return signed.raw_transaction
 
     return AerodromeSlipstreamAdapter(
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 

@@ -11,6 +11,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -179,7 +180,7 @@ class PendleAdapter(BaseAdapter):
         base_url: str | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float = 30.0,
-        sign_callback: Callable | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("pendle_adapter", config)
@@ -193,7 +194,7 @@ class PendleAdapter(BaseAdapter):
         self.timeout = float(adapter_cfg.get("timeout", timeout))
 
         self._owns_client = False
-        self.sign_callback = sign_callback
+        self.signing = signing
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
@@ -223,9 +224,9 @@ class PendleAdapter(BaseAdapter):
         return self.wallet_address
 
     async def _send_tx(self, tx: dict[str, Any]) -> tuple[bool, Any]:
-        if self.sign_callback is None:
+        if self.signing is None:
             raise ValueError("sign_callback is required for tx execution")
-        txn_hash = await send_transaction(tx, self.sign_callback)
+        txn_hash = await send_transaction(tx, self.signing.sign)
         return True, txn_hash
 
     # ---------------------------
@@ -1766,11 +1767,11 @@ class PendleAdapter(BaseAdapter):
             amount = approval.get("amount")
             if not token or not amount:
                 continue
-            if not self.sign_callback:
+            if self.signing is None:
                 return False, {
-                    "error": "sign_callback is required",
+                    "error": "signing is required",
                     "stage": "approval",
-                    "details": {"error": "sign_callback is required"},
+                    "details": {"error": "signing is required"},
                 }
             approved, result = await ensure_allowance(
                 chain_id=chain_id,
@@ -1778,7 +1779,7 @@ class PendleAdapter(BaseAdapter):
                 owner=sender,
                 spender=spender,
                 amount=int(amount),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
             )
             if not approved:
                 return False, {
@@ -1899,10 +1900,10 @@ class PendleAdapter(BaseAdapter):
             amount = approval.get("amount")
             if not (isinstance(token, str) and token and amount is not None):
                 continue
-            if not self.sign_callback:
+            if self.signing is None:
                 return False, {
                     "stage": "approval",
-                    "error": "sign_callback is required",
+                    "error": "signing is required",
                     "token": token,
                 }
             try:
@@ -1912,7 +1913,7 @@ class PendleAdapter(BaseAdapter):
                     owner=sender,
                     spender=spender,
                     amount=int(str(amount)),
-                    signing_callback=self.sign_callback,
+                    signing_callback=self.signing.sign,
                 )
             except Exception as exc:  # noqa: BLE001
                 return False, {

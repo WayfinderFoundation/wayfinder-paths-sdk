@@ -6,6 +6,7 @@ from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.uniswap_adapter.base import UniswapV3BaseAdapter
 from wayfinder_paths.core.constants.contracts import UNISWAP_V3_FACTORY, UNISWAP_V3_NPM
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 
 SUPPORTED_CHAIN_IDS = set(UNISWAP_V3_NPM.keys())
 
@@ -17,7 +18,7 @@ class UniswapAdapter(UniswapV3BaseAdapter):
         self,
         config: dict[str, Any],
         *,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         chain_id = int(config.get("chain_id", 8453))
@@ -38,5 +39,5 @@ class UniswapAdapter(UniswapV3BaseAdapter):
             npm_address=UNISWAP_V3_NPM[chain_id],
             factory_address=UNISWAP_V3_FACTORY[chain_id],
             owner=owner,
-            sign_callback=sign_callback,
+            signing=signing,
         )

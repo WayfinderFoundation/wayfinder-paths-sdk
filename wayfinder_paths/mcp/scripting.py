@@ -4,10 +4,7 @@ import inspect
 from typing import Any
 
 from wayfinder_paths.core.config import CONFIG
-from wayfinder_paths.core.utils.wallets import (
-    get_wallet_sign_hash_callback,
-    get_wallet_signing_callback,
-)
+from wayfinder_paths.core.utils.signing import build_signing_callbacks
 
 
 async def get_adapter[T](
@@ -25,38 +22,33 @@ async def get_adapter[T](
     adapter_kwargs: dict[str, Any] = {"config": config}
 
     if wallet_label:
-        sign_cb, address = await get_wallet_signing_callback(wallet_label)
         params = set(inspect.signature(adapter_class.__init__).parameters)
+        signing = await build_signing_callbacks(wallet_label)
 
-        if "sign_callback" in params:
-            adapter_kwargs["sign_callback"] = sign_cb
+        if "signing" in params:
+            adapter_kwargs["signing"] = signing
             if "wallet_address" in params:
-                adapter_kwargs["wallet_address"] = address
-            if "sign_hash_callback" in params:
-                hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label)
-                adapter_kwargs["sign_hash_callback"] = hash_cb
+                adapter_kwargs["wallet_address"] = signing.address
 
-        elif "main_sign_callback" in params:
-            adapter_kwargs["main_sign_callback"] = sign_cb
+        elif "main_signing" in params:
+            adapter_kwargs["main_signing"] = signing
             if "main_wallet_address" in params:
-                adapter_kwargs["main_wallet_address"] = address
+                adapter_kwargs["main_wallet_address"] = signing.address
 
-            if "strategy_sign_callback" not in kwargs:
+            if "strategy_signing" not in kwargs:
                 if not strategy_wallet_label:
                     raise ValueError(
                         f"{adapter_class.__name__} requires a strategy wallet. "
                         "Pass strategy_wallet_label."
                     )
-                strategy_cb, strategy_addr = await get_wallet_signing_callback(
-                    strategy_wallet_label
-                )
-                adapter_kwargs["strategy_sign_callback"] = strategy_cb
+                strategy_signing = await build_signing_callbacks(strategy_wallet_label)
+                adapter_kwargs["strategy_signing"] = strategy_signing
                 if "strategy_wallet_address" in params:
-                    adapter_kwargs["strategy_wallet_address"] = strategy_addr
+                    adapter_kwargs["strategy_wallet_address"] = strategy_signing.address
 
         else:
             raise ValueError(
-                f"{adapter_class.__name__} does not accept a signing callback."
+                f"{adapter_class.__name__} does not accept signing callbacks."
             )
 
     adapter_kwargs.update(kwargs)

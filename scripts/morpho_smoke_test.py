@@ -12,9 +12,10 @@ from wayfinder_paths.core.clients.MorphoClient import MORPHO_CLIENT
 from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.hyperlend_abi import WETH_ABI
+from wayfinder_paths.core.utils.signing import build_signing_callbacks
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.run_strategy import create_signing_callback, get_strategy_config
+from wayfinder_paths.run_strategy import get_strategy_config
 
 
 def _pick_market_by_symbols(
@@ -71,8 +72,8 @@ async def main() -> None:
         raise ValueError(f"No strategy_wallet configured for label={args.wallet_label}")
     addr = to_checksum_address(str(addr))
 
-    signing_cb = create_signing_callback(addr, cfg)
-    adapter = MorphoAdapter(config=cfg, sign_callback=signing_cb, wallet_address=addr)
+    signing = await build_signing_callbacks(args.wallet_label)
+    adapter = MorphoAdapter(config=cfg, signing=signing, wallet_address=addr)
 
     chain_id = int(args.chain_id)
 
@@ -148,7 +149,7 @@ async def main() -> None:
                 chain_id=chain_id,
                 value=int(wrap_total),
             )
-            wrap_hash = await send_transaction(wrap_tx, signing_cb)
+            wrap_hash = await send_transaction(wrap_tx, signing.sign)
             print("wrap_weth_tx", wrap_hash)
 
         ok, tx = await adapter.supply_collateral(
@@ -207,7 +208,7 @@ async def main() -> None:
                 chain_id=chain_id,
                 value=buffer_wei,
             )
-            wrap_hash = await send_transaction(wrap_tx, signing_cb)
+            wrap_hash = await send_transaction(wrap_tx, signing.sign)
             print("wrap_weth_tx", wrap_hash)
 
         ok, tx = await adapter.repay(

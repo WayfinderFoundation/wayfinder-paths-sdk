@@ -9,6 +9,7 @@ import wayfinder_paths.adapters.uniswap_adapter.base as uniswap_base_module
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.projectx import PRJX_FACTORY, THBILL_USDC_POOL
+from wayfinder_paths.testing import fake_signing
 
 
 def test_init_requires_strategy_wallet():
@@ -143,7 +144,7 @@ class _FakeNpmContract:
 async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeypatch):
     adapter = ProjectXLiquidityAdapter(
         {"pool_address": THBILL_USDC_POOL},
-        sign_callback=AsyncMock(return_value="0xsigned"),
+        signing=fake_signing(sign=AsyncMock(return_value="0xsigned")),
         wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter._balance_for_band = AsyncMock(return_value=None)
@@ -223,7 +224,7 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
 async def test_burn_position_calls_remove_liquidity():
     adapter = ProjectXLiquidityAdapter(
         {"pool_address": THBILL_USDC_POOL},
-        sign_callback=AsyncMock(return_value="0xsigned"),
+        signing=fake_signing(sign=AsyncMock(return_value="0xsigned")),
         wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     )
     adapter.remove_liquidity = AsyncMock(return_value=(True, "0xtx_burn"))

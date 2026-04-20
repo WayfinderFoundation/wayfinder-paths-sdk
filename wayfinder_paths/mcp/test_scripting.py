@@ -8,6 +8,7 @@ import pytest
 
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.wallets import get_local_sign_callback
 from wayfinder_paths.mcp.scripting import get_adapter
 
@@ -30,7 +31,7 @@ def _mock_find(wallets: dict[str, dict]):
         return wallets.get(label)
 
     return patch(
-        "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+        "wayfinder_paths.core.utils.signing.find_wallet_by_label",
         side_effect=find,
     )
 
@@ -70,7 +71,7 @@ class TestGetAdapter:
     @pytest.mark.asyncio
     async def test_raises_when_wallet_missing_private_key(self):
         class MockAdapter:
-            def __init__(self, config=None):
+            def __init__(self, config=None, *, signing: SigningCallbacks | None = None):
                 pass
 
         wallet = {"label": "test", "address": "0x" + "11" * 20}
@@ -89,16 +90,17 @@ class TestGetAdapter:
             assert adapter.config == {"foo": "bar"}
 
     @pytest.mark.asyncio
-    async def test_wires_sign_callback_and_wallet(self):
+    async def test_wires_signing_and_wallet(self):
         class MockAdapter:
-            def __init__(self, config=None, sign_callback=None, wallet_address=None):
+            def __init__(self, config=None, signing=None, wallet_address=None):
                 self.config = config
-                self.callback = sign_callback
+                self.signing = signing
                 self.wallet_address = wallet_address
 
         with _mock_find({"main": MAIN_WALLET}), _mock_config():
             adapter = await get_adapter(MockAdapter, "main")
-            assert adapter.callback is not None
+            assert adapter.signing is not None
+            assert adapter.signing.sign is not None
             assert adapter.wallet_address == MAIN_WALLET["address"]
 
     @pytest.mark.asyncio
@@ -126,26 +128,24 @@ class TestGetAdapter:
             assert adapter.custom_arg == "my_value"
 
     @pytest.mark.asyncio
-    async def test_caller_kwargs_override_auto_wired_callback(self):
+    async def test_caller_kwargs_override_auto_wired_signing(self):
         class MockAdapter:
-            def __init__(self, config=None, sign_callback=None):
-                self.callback = sign_callback
+            def __init__(self, config=None, signing=None):
+                self.signing = signing
 
-        custom_callback = MagicMock()
+        custom = MagicMock()
         with _mock_find({"main": MAIN_WALLET}), _mock_config():
-            adapter = await get_adapter(
-                MockAdapter, "main", sign_callback=custom_callback
-            )
-            assert adapter.callback is custom_callback
+            adapter = await get_adapter(MockAdapter, "main", signing=custom)
+            assert adapter.signing is custom
 
     @pytest.mark.asyncio
-    async def test_raises_when_adapter_has_no_callback_param(self):
+    async def test_raises_when_adapter_has_no_signing_param(self):
         class MockAdapter:
             def __init__(self, config=None):
                 pass
 
         with _mock_find({"main": MAIN_WALLET}), _mock_config():
-            with pytest.raises(ValueError, match="does not accept a signing callback"):
+            with pytest.raises(ValueError, match="does not accept signing callbacks"):
                 await get_adapter(MockAdapter, "main")
 
     @pytest.mark.asyncio
@@ -153,7 +153,7 @@ class TestGetAdapter:
         with _mock_find({"main": MAIN_WALLET}), _mock_config():
             adapter = await get_adapter(MoonwellAdapter, "main")
             assert isinstance(adapter, MoonwellAdapter)
-            assert adapter.sign_callback is not None
+            assert adapter.signing is not None
             assert adapter.wallet_address == MAIN_WALLET["address"]
 
     @pytest.mark.asyncio
@@ -162,25 +162,25 @@ class TestGetAdapter:
             def __init__(
                 self,
                 config=None,
-                main_sign_callback=None,
-                strategy_sign_callback=None,
                 *,
+                main_signing=None,
+                strategy_signing=None,
                 main_wallet_address=None,
                 strategy_wallet_address=None,
             ):
-                self.main_cb = main_sign_callback
-                self.strategy_cb = strategy_sign_callback
+                self.main_signing = main_signing
+                self.strategy_signing = strategy_signing
                 self.main_addr = main_wallet_address
                 self.strategy_addr = strategy_wallet_address
 
         wallets = {"main": MAIN_WALLET, "strat": STRATEGY_WALLET}
         with _mock_find(wallets), _mock_config():
             adapter = await get_adapter(DualAdapter, "main", "strat")
-            assert adapter.main_cb is not None
-            assert adapter.strategy_cb is not None
+            assert adapter.main_signing is not None
+            assert adapter.strategy_signing is not None
             assert adapter.main_addr == MAIN_WALLET["address"]
             assert adapter.strategy_addr == STRATEGY_WALLET["address"]
-            assert adapter.main_cb is not adapter.strategy_cb
+            assert adapter.main_signing is not adapter.strategy_signing
 
     @pytest.mark.asyncio
     async def test_dual_wallet_raises_without_strategy_label(self):
@@ -188,8 +188,9 @@ class TestGetAdapter:
             def __init__(
                 self,
                 config=None,
-                main_sign_callback=None,
-                strategy_sign_callback=None,
+                *,
+                main_signing=None,
+                strategy_signing=None,
             ):
                 pass
 
@@ -203,17 +204,16 @@ class TestGetAdapter:
             def __init__(
                 self,
                 config=None,
-                main_sign_callback=None,
-                strategy_sign_callback=None,
+                *,
+                main_signing=None,
+                strategy_signing=None,
             ):
-                self.strategy_cb = strategy_sign_callback
+                self.strategy_signing = strategy_signing
 
         custom = MagicMock()
         with _mock_find({"main": MAIN_WALLET}), _mock_config():
-            adapter = await get_adapter(
-                DualAdapter, "main", strategy_sign_callback=custom
-            )
-            assert adapter.strategy_cb is custom
+            adapter = await get_adapter(DualAdapter, "main", strategy_signing=custom)
+            assert adapter.strategy_signing is custom
 
     @pytest.mark.asyncio
     async def test_integration_balance_adapter(self):
@@ -221,7 +221,7 @@ class TestGetAdapter:
         with _mock_find(wallets), _mock_config():
             adapter = await get_adapter(BalanceAdapter, "main", "strat")
             assert isinstance(adapter, BalanceAdapter)
-            assert adapter.main_sign_callback is not None
-            assert adapter.strategy_sign_callback is not None
+            assert adapter.main_signing is not None
+            assert adapter.strategy_signing is not None
             assert adapter.main_wallet_address == MAIN_WALLET["address"]
             assert adapter.strategy_wallet_address == STRATEGY_WALLET["address"]

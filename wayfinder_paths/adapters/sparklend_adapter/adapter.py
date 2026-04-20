@@ -22,6 +22,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
@@ -36,14 +37,12 @@ class SparkLendAdapter(AaveV3Adapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         # SparkLend is Aave v3-based. We inherit common pool interactions from
         # AaveV3Adapter and keep Spark-specific reads/rate modes here.
-        super().__init__(
-            config=config, sign_callback=sign_callback, wallet_address=wallet_address
-        )
+        super().__init__(config=config, signing=signing, wallet_address=wallet_address)
         self.name = "sparklend_adapter"
 
         # Cache: (chain_id, underlying.lower()) -> reserve config dict
@@ -182,7 +181,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -226,7 +225,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 spender=pool,
                 amount=allowance_target,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -240,7 +239,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -325,7 +324,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -717,7 +716,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -803,7 +802,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 chain_id=chain_id,
                 value=value,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)

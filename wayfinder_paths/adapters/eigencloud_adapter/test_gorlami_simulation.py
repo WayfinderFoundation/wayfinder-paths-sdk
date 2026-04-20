@@ -7,6 +7,7 @@ from wayfinder_paths.adapters.eigencloud_adapter.adapter import EigenCloudAdapte
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.contracts import EIGENCLOUD_STRATEGIES
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -47,7 +48,7 @@ async def test_gorlami_eigencloud_deposit_queue_withdraw(gorlami):
 
     adapter = EigenCloudAdapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 

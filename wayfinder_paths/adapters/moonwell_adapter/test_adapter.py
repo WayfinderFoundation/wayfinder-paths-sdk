@@ -20,6 +20,7 @@ from wayfinder_paths.core.constants.contracts import (
     MOONWELL_VIEWS,
     MOONWELL_WELL_TOKEN,
 )
+from wayfinder_paths.testing import fake_signing
 
 
 class TestMoonwellAdapter:
@@ -27,6 +28,7 @@ class TestMoonwellAdapter:
     def adapter(self):
         return MoonwellAdapter(
             config={},
+            signing=fake_signing(),
             wallet_address="0x1234567890123456789012345678901234567890",
         )
 

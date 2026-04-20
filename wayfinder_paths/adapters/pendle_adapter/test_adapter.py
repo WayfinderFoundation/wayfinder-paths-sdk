@@ -10,6 +10,7 @@ import pytest
 from web3 import Web3
 
 from wayfinder_paths.adapters.pendle_adapter.adapter import PendleAdapter
+from wayfinder_paths.testing import fake_signing
 
 
 class TestPendleAdapter:
@@ -285,7 +286,7 @@ class TestPendleAdapter:
         adapter = PendleAdapter(
             config={},
             wallet_address="0x" + "a" * 40,
-            sign_callback=signing_callback,
+            signing=fake_signing(sign=signing_callback),
         )
 
         adapter.sdk_convert_v2 = AsyncMock(
@@ -488,7 +489,7 @@ class TestPendleAdapter:
         adapter = PendleAdapter(
             config={},
             wallet_address="0x" + "a" * 40,
-            sign_callback=signing_callback,
+            signing=fake_signing(sign=signing_callback),
         )
 
         # Mock sdk_swap_v2 to return a valid quote
@@ -534,7 +535,7 @@ class TestPendleAdapter:
         adapter = PendleAdapter(
             config={},
             wallet_address="0x" + "a" * 40,
-            sign_callback=AsyncMock(),
+            signing=fake_signing(sign=AsyncMock()),
         )
 
         adapter.sdk_swap_v2 = AsyncMock(
@@ -562,7 +563,7 @@ class TestPendleAdapter:
         adapter = PendleAdapter(
             config={},
             wallet_address="0x" + "a" * 40,
-            sign_callback=AsyncMock(return_value=b"\x00" * 65),
+            signing=fake_signing(sign=AsyncMock(return_value=b"\x00" * 65)),
         )
 
         adapter.sdk_swap_v2 = AsyncMock(
@@ -622,14 +623,14 @@ class TestPendleAdapter:
 
         assert success is False
         assert result["stage"] == "approval"
-        assert "sign_callback" in result["details"]["error"]
+        assert "signing" in result["details"]["error"]
 
     @pytest.mark.asyncio
     async def test_execute_swap_requires_strategy_wallet(self):
         """Test swap fails without strategy_wallet address."""
         adapter = PendleAdapter(
             config={},  # No strategy_wallet
-            sign_callback=AsyncMock(),
+            signing=fake_signing(sign=AsyncMock()),
         )
 
         with pytest.raises(ValueError, match="wallet_address is required"):

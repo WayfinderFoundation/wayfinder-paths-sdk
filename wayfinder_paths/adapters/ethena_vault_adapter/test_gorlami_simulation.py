@@ -12,6 +12,7 @@ from wayfinder_paths.core.constants.ethena_contracts import (
 )
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.tokens import get_token_balance, get_token_decimals
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -95,7 +96,7 @@ async def test_gorlami_ethena_deposit_cooldown_and_claim(gorlami):
 
     adapter = EthenaVaultAdapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 

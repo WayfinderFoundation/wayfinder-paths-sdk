@@ -9,6 +9,7 @@ from wayfinder_paths.core.constants.uniswap_v3_abi import (
     NONFUNGIBLE_POSITION_MANAGER_ABI,
     UNISWAP_V3_FACTORY_ABI,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
@@ -36,11 +37,11 @@ class UniswapV3BaseAdapter(BaseAdapter):
         npm_address: str,
         factory_address: str,
         owner: str,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         factory_abi: list[dict[str, Any]] | None = None,
     ) -> None:
         super().__init__(adapter_name, config)
-        self.sign_callback = sign_callback
+        self.signing = signing
         self.chain_id = int(chain_id)
         self.npm_address = to_checksum_address(str(npm_address))
         self.factory_address = to_checksum_address(str(factory_address))
@@ -90,7 +91,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount0_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=int(amount0_desired * 2),
             )
             await ensure_allowance(
@@ -99,7 +100,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount1_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=int(amount1_desired * 2),
             )
 
@@ -125,7 +126,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -152,7 +153,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount0_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=int(amount0_desired * 2),
             )
             await ensure_allowance(
@@ -161,7 +162,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 spender=to_checksum_address(self.npm_address),
                 amount=int(amount1_desired),
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=int(amount1_desired * 2),
             )
 
@@ -182,7 +183,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -241,7 +242,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -256,7 +257,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

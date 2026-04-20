@@ -21,6 +21,7 @@ from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
 from wayfinder_paths.core.constants.public_allocator_abi import PUBLIC_ALLOCATOR_ABI
 from wayfinder_paths.core.constants.rewards_abi import MERKL_DISTRIBUTOR_ABI
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
@@ -33,11 +34,11 @@ class MorphoAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("morpho_adapter", config or {})
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
@@ -148,7 +149,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -195,7 +196,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -677,7 +678,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=vault,
                 amount=int(assets),
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -691,7 +692,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -720,7 +721,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -749,7 +750,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=vault,
                 amount=MAX_UINT256,
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -763,7 +764,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -792,7 +793,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1039,7 +1040,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=acct,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1089,7 +1090,7 @@ class MorphoAdapter(BaseAdapter):
                     "data": str(tx_data),
                     "value": 0,
                 }
-                txn_hash = await send_transaction(tx, self.sign_callback)
+                txn_hash = await send_transaction(tx, self.signing.sign)
                 tx_hashes.append(str(txn_hash))
 
             return True, tx_hashes
@@ -1345,7 +1346,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=morpho,
                 amount=qty,
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1359,7 +1360,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1393,7 +1394,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1426,7 +1427,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=morpho,
                 amount=qty,
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1440,7 +1441,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1494,7 +1495,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1528,7 +1529,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1629,7 +1630,7 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(fee_value),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1688,7 +1689,7 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(value),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1870,7 +1871,7 @@ class MorphoAdapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=int(fee_value),
             )
-            realloc_hash = await send_transaction(tx, self.sign_callback)
+            realloc_hash = await send_transaction(tx, self.signing.sign)
 
             ok2, borrow_tx = await self.borrow(
                 chain_id=int(chain_id),
@@ -1974,7 +1975,7 @@ class MorphoAdapter(BaseAdapter):
                 spender=morpho,
                 amount=allowance_target,
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1994,7 +1995,7 @@ class MorphoAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

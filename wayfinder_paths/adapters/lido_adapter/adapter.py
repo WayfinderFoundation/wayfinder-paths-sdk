@@ -21,6 +21,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -74,11 +75,11 @@ class LidoAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("lido_adapter", config or {})
-        self.sign_callback = sign_callback
+        self.signing = signing
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
@@ -151,7 +152,7 @@ class LidoAdapter(BaseAdapter):
                     chain_id=chain_id,
                     value=amount_wei,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_transaction(tx, self.signing.sign)
                 return True, tx_hash
 
             if receive != "wstETH":
@@ -173,7 +174,7 @@ class LidoAdapter(BaseAdapter):
                 chain_id=chain_id,
                 value=amount_wei,
             )
-            stake_hash = await send_transaction(stake_tx, self.sign_callback)
+            stake_hash = await send_transaction(stake_tx, self.signing.sign)
 
             try:
                 after = await get_token_balance(
@@ -192,7 +193,7 @@ class LidoAdapter(BaseAdapter):
                     spender=entry["wsteth"],
                     amount=wrap_amount,
                     chain_id=chain_id,
-                    signing_callback=self.sign_callback,
+                    signing_callback=self.signing.sign,
                     approval_amount=MAX_UINT256,
                 )
                 if not approved[0]:
@@ -209,7 +210,7 @@ class LidoAdapter(BaseAdapter):
                     from_address=self.wallet_address,
                     chain_id=chain_id,
                 )
-                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
+                wrap_hash = await send_transaction(wrap_tx, self.signing.sign)
                 return True, {
                     "stake_tx": stake_hash,
                     "wrap_tx": wrap_hash,
@@ -241,7 +242,7 @@ class LidoAdapter(BaseAdapter):
                 spender=entry["wsteth"],
                 amount=amount_steth_wei,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -255,7 +256,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -280,7 +281,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -325,7 +326,7 @@ class LidoAdapter(BaseAdapter):
                 spender=entry["withdrawal_queue"],
                 amount=amount_wei,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -339,7 +340,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {
                 "tx": tx_hash,
                 "asset": asset,
@@ -418,7 +419,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

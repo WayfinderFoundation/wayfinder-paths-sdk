@@ -19,6 +19,7 @@ from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
@@ -152,11 +153,12 @@ class AaveV3Adapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback=None,
+        *,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("aave_v3_adapter", config or {})
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
@@ -715,7 +717,7 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=qty,
                 )
-                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
+                wrap_hash = await send_transaction(wrap_tx, self.signing.sign)
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -723,7 +725,7 @@ class AaveV3Adapter(BaseAdapter):
                     spender=pool,
                     amount=qty,
                     chain_id=int(chain_id),
-                    signing_callback=self.sign_callback,
+                    signing_callback=self.signing.sign,
                     approval_amount=MAX_UINT256,
                 )
                 if not approved[0]:
@@ -737,7 +739,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                supply_hash = await send_transaction(supply_tx, self.sign_callback)
+                supply_hash = await send_transaction(supply_tx, self.signing.sign)
                 return True, {"wrap_tx": wrap_hash, "supply_tx": supply_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -747,7 +749,7 @@ class AaveV3Adapter(BaseAdapter):
                 spender=pool,
                 amount=qty,
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -761,7 +763,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -798,7 +800,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                withdraw_hash = await send_transaction(withdraw_tx, self.sign_callback)
+                withdraw_hash = await send_transaction(withdraw_tx, self.signing.sign)
 
                 after = await get_token_balance(
                     wrapped, int(chain_id), strategy, block_identifier="pending"
@@ -815,7 +817,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                unwrap_hash = await send_transaction(unwrap_tx, self.sign_callback)
+                unwrap_hash = await send_transaction(unwrap_tx, self.signing.sign)
                 return True, {"withdraw_tx": withdraw_hash, "unwrap_tx": unwrap_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -827,7 +829,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -858,7 +860,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                borrow_hash = await send_transaction(borrow_tx, self.sign_callback)
+                borrow_hash = await send_transaction(borrow_tx, self.signing.sign)
 
                 unwrap_tx = await encode_call(
                     target=wrapped,
@@ -868,7 +870,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                unwrap_hash = await send_transaction(unwrap_tx, self.sign_callback)
+                unwrap_hash = await send_transaction(unwrap_tx, self.signing.sign)
                 return True, {"borrow_tx": borrow_hash, "unwrap_tx": unwrap_hash}
 
             asset = to_checksum_address(underlying_token)
@@ -880,7 +882,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -972,7 +974,7 @@ class AaveV3Adapter(BaseAdapter):
                     chain_id=int(chain_id),
                     value=int(value),
                 )
-                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
+                wrap_hash = await send_transaction(wrap_tx, self.signing.sign)
 
                 approved = await ensure_allowance(
                     token_address=wrapped,
@@ -980,7 +982,7 @@ class AaveV3Adapter(BaseAdapter):
                     spender=pool,
                     amount=MAX_UINT256 if repay_full else int(value),
                     chain_id=int(chain_id),
-                    signing_callback=self.sign_callback,
+                    signing_callback=self.signing.sign,
                     approval_amount=MAX_UINT256,
                 )
                 if not approved[0]:
@@ -994,7 +996,7 @@ class AaveV3Adapter(BaseAdapter):
                     from_address=strategy,
                     chain_id=int(chain_id),
                 )
-                repay_hash = await send_transaction(repay_tx, self.sign_callback)
+                repay_hash = await send_transaction(repay_tx, self.signing.sign)
                 return True, {"wrap_tx": wrap_hash, "repay_tx": repay_hash}
 
             repay_amount = MAX_UINT256 if repay_full else qty
@@ -1006,7 +1008,7 @@ class AaveV3Adapter(BaseAdapter):
                 spender=pool,
                 amount=allowance_target,
                 chain_id=int(chain_id),
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1020,7 +1022,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1047,7 +1049,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1118,7 +1120,7 @@ class AaveV3Adapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=int(chain_id),
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_transaction(tx, self.signing.sign)
             return True, txn_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

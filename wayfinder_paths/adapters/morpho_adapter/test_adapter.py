@@ -8,13 +8,14 @@ from wayfinder_paths.adapters.morpho_adapter.adapter import MorphoAdapter
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.morpho_constants import MERKL_DISTRIBUTOR_ADDRESS
+from wayfinder_paths.testing import fake_signing
 
 
 @pytest.fixture
 def adapter():
     return MorphoAdapter(
         config={},
-        sign_callback=AsyncMock(return_value=b"\x00" * 65),
+        signing=fake_signing(sign=AsyncMock(return_value=b"\x00" * 65)),
         wallet_address="0x81830bC5f811aF86fF6f17Fb9a619088B09Dff43",
     )
 

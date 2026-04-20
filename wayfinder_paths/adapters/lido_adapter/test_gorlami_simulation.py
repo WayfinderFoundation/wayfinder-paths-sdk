@@ -8,6 +8,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.tokens import get_token_balance
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -27,7 +28,7 @@ def _make_adapter(acct: Account) -> tuple[LidoAdapter, Account]:
 
     adapter = LidoAdapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
     return adapter, acct

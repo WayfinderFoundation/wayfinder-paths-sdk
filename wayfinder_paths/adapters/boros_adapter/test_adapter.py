@@ -14,6 +14,7 @@ from wayfinder_paths.adapters.boros_adapter.adapter import (
     BorosMarketQuote,
     BorosVault,
 )
+from wayfinder_paths.testing import fake_signing
 
 
 class TestBorosAdapter:
@@ -873,7 +874,7 @@ class TestBorosAdapter:
         self, adapter, mock_boros_client
     ):
         """Test deposit falls back to direct isolated->cross transfer when sweep is empty."""
-        adapter.sign_callback = object()
+        adapter.signing = fake_signing(sign=object())
 
         mock_boros_client.build_deposit_calldata = AsyncMock(
             return_value={
@@ -954,7 +955,7 @@ class TestBorosAdapter:
     async def test_deposit_to_isolated_margin_skips_cross_sweep(
         self, adapter, mock_boros_client
     ):
-        adapter.sign_callback = object()
+        adapter.signing = fake_signing(sign=object())
 
         mock_boros_client.build_deposit_calldata = AsyncMock(
             return_value={
@@ -1159,7 +1160,7 @@ class TestBorosAdapter:
     async def test_deposit_to_vault_direct_uses_isolated_router_mode(
         self, adapter, mock_boros_client
     ):
-        adapter.sign_callback = object()
+        adapter.signing = fake_signing(sign=object())
         adapter._get_vault_context_for_amm = AsyncMock(
             return_value={"market_id": 73, "is_isolated_only": True}
         )
@@ -1198,7 +1199,7 @@ class TestBorosAdapter:
     async def test_withdraw_from_vault_direct_uses_isolated_router_mode(
         self, adapter, mock_boros_client
     ):
-        adapter.sign_callback = object()
+        adapter.signing = fake_signing(sign=object())
         adapter._get_vault_context_for_amm = AsyncMock(
             return_value={"market_id": 73, "is_isolated_only": True}
         )
@@ -1287,7 +1288,7 @@ class TestBorosAdapter:
 
     @pytest.mark.asyncio
     async def test_bridge_hype_oft_rounds_amount_and_builds_tx(self, adapter):
-        adapter.sign_callback = object()
+        adapter.signing = fake_signing(sign=object())
 
         mock_contract = SimpleNamespace()
         mock_dec_fn = SimpleNamespace(call=AsyncMock(return_value=10))
@@ -1345,7 +1346,7 @@ class TestBorosAdapter:
     async def test_bridge_hype_oft_arbitrum_to_hyperevm_rounds_amount_and_builds_tx(
         self, adapter
     ):
-        adapter.sign_callback = object()
+        adapter.signing = fake_signing(sign=object())
 
         mock_contract = SimpleNamespace()
         mock_dec_fn = SimpleNamespace(call=AsyncMock(return_value=10))

@@ -17,6 +17,7 @@ from wayfinder_paths.core.constants.contracts import (
     ZERO_ADDRESS,
 )
 from wayfinder_paths.core.constants.eigencloud_abi import IDELEGATION_MANAGER_ABI
+from wayfinder_paths.testing import fake_signing
 
 FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 FAKE_STRATEGY = "0x1111111111111111111111111111111111111111"
@@ -79,7 +80,8 @@ def adapter():
 @pytest.fixture
 def adapter_with_signer():
     return EigenCloudAdapter(
-        sign_callback=AsyncMock(return_value="0xdeadbeef"), wallet_address=FAKE_WALLET
+        signing=fake_signing(sign=AsyncMock(return_value="0xdeadbeef")),
+        wallet_address=FAKE_WALLET,
     )
 
 
@@ -103,7 +105,7 @@ async def test_deposit_requires_wallet(adapter_no_wallet):
 async def test_deposit_requires_sign_callback(adapter):
     ok, msg = await adapter.deposit(strategy=FAKE_STRATEGY, amount=1)
     assert ok is False
-    assert "sign_callback" in str(msg).lower()
+    assert "signing" in str(msg).lower()
 
 
 @pytest.mark.asyncio

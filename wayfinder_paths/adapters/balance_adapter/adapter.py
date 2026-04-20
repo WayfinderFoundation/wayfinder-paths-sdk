@@ -8,6 +8,7 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -26,17 +27,21 @@ class BalanceAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any],
-        main_sign_callback=None,
-        strategy_sign_callback=None,
         *,
+        main_signing: SigningCallbacks | None = None,
+        strategy_signing: SigningCallbacks | None = None,
         main_wallet_address: str | None = None,
         strategy_wallet_address: str | None = None,
     ):
         super().__init__("balance", config)
-        self.main_sign_callback = main_sign_callback
-        self.strategy_sign_callback = strategy_sign_callback
-        self.main_wallet_address: str | None = main_wallet_address
-        self.strategy_wallet_address: str | None = strategy_wallet_address
+        self.main_signing = main_signing
+        self.strategy_signing = strategy_signing
+        self.main_wallet_address: str | None = main_wallet_address or (
+            main_signing.address if main_signing else None
+        )
+        self.strategy_wallet_address: str | None = strategy_wallet_address or (
+            strategy_signing.address if strategy_signing else None
+        )
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
 
@@ -248,13 +253,15 @@ class BalanceAdapter(BaseAdapter):
             amount=raw_amount,
         )
 
-        callback = (
-            self.main_sign_callback
+        bundle = (
+            self.main_signing
             if self.main_wallet_address
             and from_address.lower() == self.main_wallet_address.lower()
-            else self.strategy_sign_callback
+            else self.strategy_signing
         )
-        tx_hash = await send_transaction(transaction, callback)
+        if bundle is None:
+            return False, "signing is required"
+        tx_hash = await send_transaction(transaction, bundle.sign)
 
         if ledger_method:
             wallet_for_ledger = from_address if ledger_wallet == "from" else to_address

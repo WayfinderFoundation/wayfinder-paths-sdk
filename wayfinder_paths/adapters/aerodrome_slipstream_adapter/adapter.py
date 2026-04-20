@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any, TypedDict
 
 from eth_utils import keccak, to_checksum_address
@@ -34,6 +34,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
@@ -101,11 +102,11 @@ class AerodromeSlipstreamAdapter(
         self,
         config: AerodromeSlipstreamAdapterConfig | None = None,
         *,
-        sign_callback: Callable | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("aerodrome_slipstream_adapter", config or {})
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         entry = AERODROME_SLIPSTREAM_BY_CHAIN.get(CHAIN_ID_BASE)
         if not entry:
@@ -455,7 +456,7 @@ class AerodromeSlipstreamAdapter(
             from_address=owner,
             chain_id=CHAIN_ID_BASE,
         )
-        tx_hash = await send_transaction(tx, self.sign_callback)
+        tx_hash = await send_transaction(tx, self.signing.sign)
         return True, tx_hash
 
     async def _pool_and_gauge_for_position(
@@ -1738,8 +1739,8 @@ class AerodromeSlipstreamAdapter(
             return False, "amounts must be positive"
         if tick_upper <= tick_lower:
             return False, "tick_upper must be greater than tick_lower"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             _, deployment, npm_address = self._select_write_target(
@@ -1770,7 +1771,7 @@ class AerodromeSlipstreamAdapter(
                 spender=npm_address,
                 amount=amount0_desired,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved0[0]:
@@ -1782,7 +1783,7 @@ class AerodromeSlipstreamAdapter(
                 spender=npm_address,
                 amount=amount1_desired,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved1[0]:
@@ -1810,7 +1811,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=owner,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             token_id = await self._minted_erc721_token_id(
                 nft_contract=npm_address,
                 tx_hash=tx_hash,
@@ -1835,8 +1836,8 @@ class AerodromeSlipstreamAdapter(
     ) -> tuple[bool, Any]:
         if amount0_desired <= 0 or amount1_desired <= 0:
             return False, "amounts must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             variant, deployment, npm_address, owner = await self._resolve_token_manager(
@@ -1884,7 +1885,7 @@ class AerodromeSlipstreamAdapter(
                 spender=npm_address,
                 amount=amount0_desired,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved0[0]:
@@ -1896,7 +1897,7 @@ class AerodromeSlipstreamAdapter(
                 spender=npm_address,
                 amount=amount1_desired,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved1[0]:
@@ -1918,7 +1919,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -1941,8 +1942,8 @@ class AerodromeSlipstreamAdapter(
     ) -> tuple[bool, Any]:
         if liquidity <= 0:
             return False, "liquidity must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             variant, deployment, npm_address, owner = await self._resolve_token_manager(
@@ -1998,7 +1999,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -2017,8 +2018,8 @@ class AerodromeSlipstreamAdapter(
         amount0_max: int = MAX_UINT128,
         amount1_max: int = MAX_UINT128,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             variant, _, npm_address, owner = await self._resolve_token_manager(
@@ -2044,7 +2045,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -2060,8 +2061,8 @@ class AerodromeSlipstreamAdapter(
         token_id: int,
         position_manager: str | None = None,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             variant, _, npm_address, owner = await self._resolve_token_manager(
@@ -2080,7 +2081,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -2096,8 +2097,8 @@ class AerodromeSlipstreamAdapter(
         gauge: str,
         token_id: int,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             wallet = to_checksum_address(self.wallet_address)
@@ -2149,7 +2150,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -2161,8 +2162,8 @@ class AerodromeSlipstreamAdapter(
         gauge: str,
         token_id: int,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             tx = await encode_call(
                 target=to_checksum_address(gauge),
@@ -2172,7 +2173,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -2184,8 +2185,8 @@ class AerodromeSlipstreamAdapter(
         gauge: str,
         token_id: int,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             tx = await encode_call(
                 target=to_checksum_address(gauge),
@@ -2195,7 +2196,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

@@ -16,6 +16,7 @@ from wayfinder_paths.adapters.aerodrome_adapter.adapter import (
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.testing import fake_signing
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
 WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
@@ -28,7 +29,7 @@ FAKE_GAUGE = "0x0000000000000000000000000000000000000002"
 @pytest.fixture
 def adapter_with_signer():
     return AerodromeAdapter(
-        sign_callback=AsyncMock(return_value="0xsigned"),
+        signing=fake_signing(sign=AsyncMock(return_value="0xsigned")),
         wallet_address=FAKE_WALLET,
     )
 

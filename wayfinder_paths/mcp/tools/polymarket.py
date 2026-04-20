@@ -9,10 +9,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
     POLYGON_USDC_ADDRESS,
 )
-from wayfinder_paths.core.utils.wallets import (
-    get_wallet_sign_hash_callback,
-    get_wallet_signing_callback,
-)
+from wayfinder_paths.core.utils.signing import build_signing_callbacks
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -194,15 +191,10 @@ async def polymarket(
         return err("invalid_request", "wallet_label is required for open_orders")
 
     config: dict[str, Any] | None = None
-    sign_cb = None
-    sign_hash_cb = None
+    signing = None
     if want and waddr:
         try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+            signing = await build_signing_callbacks(want)
         except ValueError:
             pass
         config = dict(CONFIG)
@@ -210,8 +202,7 @@ async def polymarket(
 
     adapter = PolymarketAdapter(
         config=config,
-        sign_callback=sign_cb,
-        sign_hash_callback=sign_hash_cb,
+        signing=signing,
         wallet_address=waddr,
     )
     try:
@@ -390,7 +381,7 @@ async def polymarket(
         if action == "open_orders":
             if not want or not waddr:
                 return err("not_found", f"Unknown wallet_label: {wallet_label}")
-            if not sign_cb:
+            if signing is None:
                 return err(
                     "invalid_wallet",
                     "Wallet must include private_key_hex in config.json to fetch open orders",
@@ -453,13 +444,10 @@ async def polymarket_execute(
     condition_id: str | None = None,
 ) -> dict[str, Any]:
     try:
-        sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
+        signing = await build_signing_callbacks(wallet_label or "")
     except ValueError as e:
         return err("invalid_wallet", str(e))
-    try:
-        sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
-    except ValueError:
-        sign_hash_cb = None
+    sender = signing.address
     want = wallet_label
 
     tool_input = {
@@ -498,8 +486,7 @@ async def polymarket_execute(
     effects: list[dict[str, Any]] = []
     adapter = PolymarketAdapter(
         config=cfg,
-        sign_callback=sign_callback,
-        sign_hash_callback=sign_hash_cb,
+        signing=signing,
         wallet_address=sender,
     )
     try:

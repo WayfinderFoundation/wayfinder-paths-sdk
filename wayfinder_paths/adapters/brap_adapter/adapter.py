@@ -11,6 +11,7 @@ from wayfinder_paths.core.adapters.models import SWAP
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     is_native_token,
@@ -24,11 +25,11 @@ class BRAPAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ):
         super().__init__("brap_adapter", config)
-        self.sign_callback = sign_callback
+        self.signing = signing
         self.wallet_address: str | None = wallet_address
         self.token_adapter = TokenAdapter()
         self.ledger_adapter = LedgerAdapter()
@@ -192,10 +193,10 @@ class BRAPAdapter(BaseAdapter):
                 spender=spender,
                 amount=int(approve_amount),
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         self.logger.info(f"Swap broadcast: tx={txn_hash}")
 
         try:

@@ -8,6 +8,7 @@ from wayfinder_paths.adapters.sparklend_adapter.adapter import SparkLendAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -69,7 +70,7 @@ async def test_gorlami_sparklend_supply_borrow_repay_withdraw_claim(
 
     adapter = SparkLendAdapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 

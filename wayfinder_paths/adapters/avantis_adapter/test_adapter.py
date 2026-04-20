@@ -11,6 +11,7 @@ from wayfinder_paths.core.constants.contracts import (
     AVANTIS_VAULT_MANAGER,
     BASE_USDC,
 )
+from wayfinder_paths.testing import fake_signing
 
 FAKE_WALLET = "0x1234567890123456789012345678901234567890"
 
@@ -23,7 +24,7 @@ def adapter():
 @pytest.fixture
 def adapter_with_signer():
     return AvantisAdapter(
-        sign_callback=AsyncMock(return_value="0xdeadbeef"),
+        signing=fake_signing(sign=AsyncMock(return_value="0xdeadbeef")),
         wallet_address=FAKE_WALLET,
     )
 
@@ -96,7 +97,7 @@ async def test_borrow_and_repay_unsupported(adapter):
 async def test_deposit_requires_signing_callback(adapter):
     ok, msg = await adapter.deposit(amount=1)
     assert ok is False
-    assert "sign_callback" in str(msg).lower()
+    assert "signing" in str(msg).lower()
 
 
 @pytest.mark.asyncio
@@ -131,7 +132,7 @@ async def test_withdraw_requires_wallet(adapter_no_wallet):
 async def test_withdraw_requires_signing_callback(adapter):
     ok, msg = await adapter.withdraw(amount=1)
     assert ok is False
-    assert "sign_callback" in str(msg).lower()
+    assert "signing" in str(msg).lower()
 
 
 @pytest.mark.asyncio

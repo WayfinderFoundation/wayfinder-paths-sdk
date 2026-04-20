@@ -12,6 +12,7 @@ from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
+from wayfinder_paths.testing import fake_signing
 
 
 def test_adapter_type():
@@ -67,7 +68,7 @@ def test_split_withdrawal_amount_multi_chunk_adjusts_small_tail():
 async def test_stake_eth_receive_steth_calls_submit():
     adapter = LidoAdapter(
         config={},
-        sign_callback=AsyncMock(),
+        signing=fake_signing(sign=AsyncMock()),
         wallet_address="0x1111111111111111111111111111111111111111",
     )
     entry = LIDO_BY_CHAIN[CHAIN_ID_ETHEREUM]
@@ -101,7 +102,7 @@ async def test_stake_eth_receive_steth_calls_submit():
     assert kwargs["args"] == [ZERO_ADDRESS]
     assert kwargs["value"] == 123
     mock_send.assert_awaited_once_with(
-        {"to": entry["steth"], "data": "0x"}, adapter.sign_callback
+        {"to": entry["steth"], "data": "0x"}, adapter.signing.sign
     )
 
 
@@ -109,7 +110,7 @@ async def test_stake_eth_receive_steth_calls_submit():
 async def test_stake_eth_receive_wsteth_stakes_then_wraps_delta():
     adapter = LidoAdapter(
         config={},
-        sign_callback=AsyncMock(),
+        signing=fake_signing(sign=AsyncMock()),
         wallet_address="0x1111111111111111111111111111111111111111",
     )
     entry = LIDO_BY_CHAIN[CHAIN_ID_ETHEREUM]
@@ -165,7 +166,7 @@ async def test_stake_eth_receive_wsteth_stakes_then_wraps_delta():
 async def test_request_withdrawal_steth_splits_and_calls_queue():
     adapter = LidoAdapter(
         config={},
-        sign_callback=AsyncMock(),
+        signing=fake_signing(sign=AsyncMock()),
         wallet_address="0x1111111111111111111111111111111111111111",
     )
     entry = LIDO_BY_CHAIN[CHAIN_ID_ETHEREUM]
@@ -213,7 +214,7 @@ async def test_request_withdrawal_steth_splits_and_calls_queue():
 async def test_claim_withdrawals_sorts_and_dedupes_ids():
     adapter = LidoAdapter(
         config={},
-        sign_callback=AsyncMock(),
+        signing=fake_signing(sign=AsyncMock()),
         wallet_address="0x1111111111111111111111111111111111111111",
     )
     entry = LIDO_BY_CHAIN[CHAIN_ID_ETHEREUM]

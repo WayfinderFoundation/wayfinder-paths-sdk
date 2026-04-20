@@ -27,6 +27,7 @@ from wayfinder_paths.core.constants.eigencloud_abi import (
     ISTRATEGY_ABI,
     ISTRATEGY_MANAGER_ABI,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_erc20_metadata
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -91,11 +92,11 @@ class EigenCloudAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback: Any | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("eigencloud_adapter", config)
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
@@ -198,8 +199,8 @@ class EigenCloudAdapter(BaseAdapter):
         check_whitelist: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         if amount <= 0:
             return False, "amount must be positive"
@@ -243,7 +244,7 @@ class EigenCloudAdapter(BaseAdapter):
                 spender=EIGENCLOUD_STRATEGY_MANAGER,
                 amount=amount,
                 chain_id=CHAIN_ID_ETHEREUM,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not ok_appr:
@@ -260,7 +261,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {
                 "tx_hash": tx_hash,
                 "approve_tx_hash": approve_tx_hash,
@@ -325,8 +326,8 @@ class EigenCloudAdapter(BaseAdapter):
         approver_expiry: int = 0,
         approver_salt: Any = None,
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         op = to_checksum_address(operator)
         sig = _as_bytes(approver_signature)
@@ -341,7 +342,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -354,8 +355,8 @@ class EigenCloudAdapter(BaseAdapter):
         include_withdrawal_roots: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         stk = to_checksum_address(staker) if staker else self.wallet_address
 
@@ -368,7 +369,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
@@ -391,8 +392,8 @@ class EigenCloudAdapter(BaseAdapter):
         include_withdrawal_roots: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         op = to_checksum_address(new_operator)
         sig = _as_bytes(approver_signature)
@@ -407,7 +408,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
@@ -428,8 +429,8 @@ class EigenCloudAdapter(BaseAdapter):
         include_withdrawal_roots: bool = True,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         if not strategies:
             return False, "strategies is required"
@@ -451,7 +452,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
@@ -557,8 +558,8 @@ class EigenCloudAdapter(BaseAdapter):
         tokens_override: list[str] | None = None,
         block_identifier: int | str = "pending",
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         root_hex = _as_bytes32_hex(withdrawal_root)
 
@@ -622,7 +623,7 @@ class EigenCloudAdapter(BaseAdapter):
                     from_address=self.wallet_address,
                     chain_id=CHAIN_ID_ETHEREUM,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_transaction(tx, self.signing.sign)
                 return True, {
                     "tx_hash": tx_hash,
                     "withdrawal_root": root_hex,
@@ -684,8 +685,8 @@ class EigenCloudAdapter(BaseAdapter):
         *,
         claimer: str,
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         c = to_checksum_address(claimer)
         try:
@@ -697,7 +698,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -727,8 +728,8 @@ class EigenCloudAdapter(BaseAdapter):
         claim: Any,
         recipient: str,
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         rcpt = to_checksum_address(recipient)
         try:
@@ -740,7 +741,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -752,8 +753,8 @@ class EigenCloudAdapter(BaseAdapter):
         claims: list[Any],
         recipient: str,
     ) -> tuple[bool, Any]:
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         if not claims:
             return False, "claims is required"
@@ -768,7 +769,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -781,8 +782,8 @@ class EigenCloudAdapter(BaseAdapter):
         value: int = 0,
     ) -> tuple[bool, Any]:
         """Raw-calldata fallback for rewards claiming (e.g., from EigenLayer CLI/app)."""
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             raw_data = (
@@ -802,7 +803,7 @@ class EigenCloudAdapter(BaseAdapter):
                 "data": "0x" + data.hex(),
                 "value": value,
             }
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

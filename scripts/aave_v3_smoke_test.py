@@ -11,8 +11,9 @@ from wayfinder_paths.adapters.aave_v3_adapter import AaveV3Adapter
 from wayfinder_paths.core.config import load_config
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
 from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC, ZERO_ADDRESS
+from wayfinder_paths.core.utils.signing import build_signing_callbacks
 from wayfinder_paths.core.utils.tokens import get_token_balance
-from wayfinder_paths.run_strategy import create_signing_callback, get_strategy_config
+from wayfinder_paths.run_strategy import get_strategy_config
 
 
 async def main() -> None:
@@ -44,8 +45,8 @@ async def main() -> None:
         raise ValueError(f"No strategy_wallet configured for label={args.wallet_label}")
     addr = to_checksum_address(str(addr))
 
-    signing_cb = create_signing_callback(addr, cfg)
-    adapter = AaveV3Adapter(config=cfg, sign_callback=signing_cb, wallet_address=addr)
+    signing = await build_signing_callbacks(args.wallet_label)
+    adapter = AaveV3Adapter(config=cfg, signing=signing, wallet_address=addr)
 
     chain_id = int(args.chain_id)
     usdc_addr = (

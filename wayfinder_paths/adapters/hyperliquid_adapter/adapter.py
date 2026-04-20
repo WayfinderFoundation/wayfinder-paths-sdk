@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal, getcontext
 from typing import Any, Literal
 
@@ -38,6 +38,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
 
@@ -56,20 +57,16 @@ class HyperliquidAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback: Callable[[dict], Awaitable[str]] | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("hyperliquid_adapter", config)
 
         self._cache = Cache(Cache.MEMORY)
+        self.signing = signing
         self.wallet_address = to_checksum_address(
-            wallet_address
-            or ((config or {}).get("strategy_wallet") or {}).get("address")
-            or ((config or {}).get("main_wallet") or {}).get("address")
-            or ZERO_ADDRESS
+            wallet_address or (signing.address if signing else None) or ZERO_ADDRESS
         )
-
-        self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
 
     async def _post_across_dexes(
         self,
@@ -153,10 +150,10 @@ class HyperliquidAdapter(BaseAdapter):
     async def _sign(
         self, payload: str, action: dict[str, Any], address: str
     ) -> dict[str, Any] | None:
-        if self._sign_callback is None:
-            raise ValueError("No sign_callback configured")
+        if self.signing is None:
+            raise ValueError("No signing callbacks configured")
 
-        sig_hex = await self._sign_callback(payload)
+        sig_hex = await self.signing.sign_typed_data(payload)
         if not sig_hex:
             return None
         return self._sig_hex_to_hl_signature(sig_hex)
@@ -1316,8 +1313,8 @@ class HyperliquidAdapter(BaseAdapter):
         *,
         address: str | None = None,
     ) -> tuple[bool, str]:
-        if not self._sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing callbacks are required"
 
         sender = to_checksum_address(address or self.wallet_address)
         raw_amount = float_to_usd_int(float(amount))
@@ -1348,7 +1345,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             tx_hash = await send_transaction(
-                tx, self._sign_callback, wait_for_receipt=True
+                tx, self.signing.sign, wait_for_receipt=True
             )
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001

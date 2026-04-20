@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
 from eth_utils import to_checksum_address
@@ -25,6 +24,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -108,11 +108,11 @@ class EtherfiAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback: Callable | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("etherfi_adapter", config or {})
-        self.sign_callback = sign_callback
+        self.signing = signing
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
@@ -241,7 +241,7 @@ class EtherfiAdapter(BaseAdapter):
                 chain_id=chain_id,
                 value=amount_wei,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -267,7 +267,7 @@ class EtherfiAdapter(BaseAdapter):
                 spender=entry["weeth"],
                 amount=amount_eeth,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=approval_amount,
             )
             if not approved[0]:
@@ -281,7 +281,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -310,7 +310,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -336,7 +336,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -369,7 +369,7 @@ class EtherfiAdapter(BaseAdapter):
                 spender=entry["liquidity_pool"],
                 amount=amount_eeth,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=approval_amount,
             )
             if not approved[0]:
@@ -383,7 +383,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
 
             request_id: int | None = None
             if include_request_id:
@@ -438,7 +438,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
 
             request_id: int | None = None
             if include_request_id:
@@ -481,7 +481,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

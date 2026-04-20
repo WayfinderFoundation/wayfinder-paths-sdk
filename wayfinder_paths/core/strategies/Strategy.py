@@ -9,6 +9,7 @@ from loguru import logger
 from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.core.clients.TokenClient import TokenDetails
 from wayfinder_paths.core.strategies.descriptors import StratDescriptor
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 
 
 class StatusDict(TypedDict):
@@ -72,6 +73,35 @@ class Strategy(ABC):
         self.main_wallet_signing_callback = main_wallet_signing_callback
         self.strategy_wallet_signing_callback = strategy_wallet_signing_callback
         self.strategy_sign_typed_data = strategy_sign_typed_data
+
+        main_wallet = self.config.get("main_wallet")
+        main_addr = (
+            main_wallet["address"]
+            if isinstance(main_wallet, dict) and main_wallet.get("address")
+            else None
+        )
+        strategy_wallet = self.config.get("strategy_wallet")
+        strat_addr = (
+            strategy_wallet["address"]
+            if isinstance(strategy_wallet, dict) and strategy_wallet.get("address")
+            else None
+        )
+
+        self.main_signing: SigningCallbacks | None = (
+            SigningCallbacks(address=main_addr, sign=main_wallet_signing_callback)
+            if main_addr and main_wallet_signing_callback
+            else None
+        )
+        self.strategy_signing: SigningCallbacks | None = (
+            SigningCallbacks(
+                address=strat_addr,
+                sign=strategy_wallet_signing_callback,
+                sign_typed_data=strategy_sign_typed_data,
+            )
+            if strat_addr
+            and (strategy_wallet_signing_callback or strategy_sign_typed_data)
+            else None
+        )
 
     async def setup(self) -> None:
         pass

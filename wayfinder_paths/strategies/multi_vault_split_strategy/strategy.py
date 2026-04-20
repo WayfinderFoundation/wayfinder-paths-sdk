@@ -176,29 +176,29 @@ class MultiVaultSplitStrategy(Strategy):
 
         self.balance_adapter = BalanceAdapter(
             adapter_config,
-            main_sign_callback=self.main_wallet_signing_callback,
-            strategy_sign_callback=self.strategy_wallet_signing_callback,
+            main_signing=self.main_signing,
+            strategy_signing=self.strategy_signing,
             main_wallet_address=main_addr,
             strategy_wallet_address=strat_addr,
         )
         self.brap_adapter = BRAPAdapter(
             adapter_config,
-            sign_callback=self.strategy_wallet_signing_callback,
+            signing=self.strategy_signing,
             wallet_address=strat_addr,
         )
         self.boros_adapter = BorosAdapter(
             config=adapter_config,
-            sign_callback=self.strategy_wallet_signing_callback,
+            signing=self.strategy_signing,
             wallet_address=strat_addr,
         )
         self.avantis_adapter = AvantisAdapter(
             config=adapter_config,
-            sign_callback=self.strategy_wallet_signing_callback,
+            signing=self.strategy_signing,
             wallet_address=strat_addr,
         )
         self.hyperliquid_adapter = HyperliquidAdapter(
             config=self.config,
-            sign_callback=self.strategy_wallet_signing_callback,
+            signing=self.strategy_signing,
             wallet_address=strat_addr,
         )
 

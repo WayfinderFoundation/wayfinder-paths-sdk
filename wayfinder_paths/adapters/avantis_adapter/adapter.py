@@ -21,6 +21,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -41,12 +42,12 @@ class AvantisAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback: Any | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("avantis_adapter", config)
 
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
@@ -214,8 +215,8 @@ class AvantisAdapter(BaseAdapter):
         wallet = self.wallet_address
         if not wallet:
             return False, "wallet_address is required"
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         assets = int(amount)
         if assets <= 0:
@@ -235,7 +236,7 @@ class AvantisAdapter(BaseAdapter):
                 spender=vault,
                 amount=assets,
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -249,7 +250,7 @@ class AvantisAdapter(BaseAdapter):
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
-            txn_hash = await send_transaction(transaction, self.sign_callback)
+            txn_hash = await send_transaction(transaction, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -264,8 +265,8 @@ class AvantisAdapter(BaseAdapter):
         wallet = self.wallet_address
         if not wallet:
             return False, "wallet_address is required"
-        if not self.sign_callback:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         vault = to_checksum_address(vault_address) if vault_address else self.vault
 
@@ -299,7 +300,7 @@ class AvantisAdapter(BaseAdapter):
                 from_address=wallet,
                 chain_id=self.chain_id,
             )
-            txn_hash = await send_transaction(transaction, self.sign_callback)
+            txn_hash = await send_transaction(transaction, self.signing.sign)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)

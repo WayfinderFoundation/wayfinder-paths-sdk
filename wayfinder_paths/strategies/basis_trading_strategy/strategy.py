@@ -224,15 +224,15 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
             self.hyperliquid_adapter = HyperliquidAdapter(
                 config=adapter_config,
-                sign_callback=strategy_sign_typed_data,
+                signing=self.strategy_signing,
             )
             strat_addr = (self.config.get("strategy_wallet") or {}).get("address")
             main_addr = (self.config.get("main_wallet") or {}).get("address")
 
             self.balance_adapter = BalanceAdapter(
                 adapter_config,
-                main_sign_callback=self.main_wallet_signing_callback,
-                strategy_sign_callback=self.strategy_wallet_signing_callback,
+                main_signing=self.main_signing,
+                strategy_signing=self.strategy_signing,
                 main_wallet_address=main_addr,
                 strategy_wallet_address=strat_addr,
             )

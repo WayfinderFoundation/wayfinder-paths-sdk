@@ -19,6 +19,7 @@ from wayfinder_paths.core.constants.etherfi_contracts import (
     ETHERFI_BY_CHAIN,
     weeth_token_by_chain_id,
 )
+from wayfinder_paths.testing import fake_signing
 
 WALLET = "0x1234567890123456789012345678901234567890"
 ENTRY = ETHERFI_BY_CHAIN[CHAIN_ID_ETHEREUM]
@@ -30,7 +31,7 @@ PATCH_PREFIX = "wayfinder_paths.adapters.etherfi_adapter.adapter"
 def adapter():
     return EtherfiAdapter(
         config={},
-        sign_callback=AsyncMock(return_value=b"\x00" * 32),
+        signing=fake_signing(sign=AsyncMock(return_value=b"\x00" * 32)),
         wallet_address=WALLET,
     )
 

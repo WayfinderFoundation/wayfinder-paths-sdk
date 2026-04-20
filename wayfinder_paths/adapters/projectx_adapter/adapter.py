@@ -32,6 +32,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -206,7 +207,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
         self,
         config: dict[str, Any],
         *,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         if not wallet_address:
@@ -225,7 +226,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
             npm_address=PRJX_NPM,
             factory_address=PRJX_FACTORY,
             owner=owner,
-            sign_callback=sign_callback,
+            signing=signing,
             factory_abi=PROJECTX_FACTORY_ABI,
         )
 
@@ -775,7 +776,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 spender=PRJX_ROUTER,
                 amount=int(amount_in),
                 chain_id=PROJECTX_CHAIN_ID,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=int(amount_in * 2),
             )
 
@@ -859,7 +860,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 from_address=self.owner,
                 chain_id=PROJECTX_CHAIN_ID,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, str(tx_hash)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

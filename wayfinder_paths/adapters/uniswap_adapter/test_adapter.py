@@ -6,6 +6,7 @@ import pytest
 
 from wayfinder_paths.adapters.uniswap_adapter.adapter import UniswapAdapter
 from wayfinder_paths.core.utils.uniswap_v3_math import tick_to_price, ticks_for_range
+from wayfinder_paths.testing import fake_signing
 
 OWNER = "0xaAaAaAaaAaAaAaaAaAAAAAAAAaaaAaAaAaaAaaAa"
 TOKEN_A = "0x1111111111111111111111111111111111111111"
@@ -18,7 +19,7 @@ FAKE_POS_RAW = (0, OWNER, TOKEN_A, TOKEN_B, 3000, -120, 120, 5000, 0, 0, 10, 20)
 def _make_adapter(chain_id: int = 8453) -> UniswapAdapter:
     return UniswapAdapter(
         {"chain_id": chain_id},
-        sign_callback=AsyncMock(return_value=b"signed"),
+        signing=fake_signing(sign=AsyncMock(return_value=b"signed")),
         wallet_address=OWNER,
     )
 

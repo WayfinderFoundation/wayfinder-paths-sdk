@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -29,6 +28,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import (
     build_approve_transaction,
     get_token_balance,
@@ -90,13 +90,13 @@ class BorosAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback: Callable | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
         account_id: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__("boros_adapter", config)
-        self.sign_callback = sign_callback
+        self.signing = signing
         self._scaling_factor_cache: dict[int, int] = {}
         self._amm_address_cache: dict[int, str | None] = {}
         self._amm_id_by_market_cache: dict[int, int] = {}
@@ -492,9 +492,9 @@ class BorosAdapter(BaseAdapter):
             timeout: Transaction timeout in seconds.
             max_retries: Number of retry attempts for failed transactions.
         """
-        if not self.sign_callback:
+        if self.signing is None:
             return False, {
-                "error": "sign_callback not configured",
+                "error": "signing not configured",
                 "calldata": calldata,
             }
         if not self.wallet_address:
@@ -514,7 +514,7 @@ class BorosAdapter(BaseAdapter):
                 )
                 try:
                     tx_hash = await send_transaction(
-                        tx, self.sign_callback, wait_for_receipt=True
+                        tx, self.signing.sign, wait_for_receipt=True
                     )
                     results.append({"ok": True, "res": {"tx_hash": tx_hash}})
                 except Exception as e:
@@ -541,7 +541,7 @@ class BorosAdapter(BaseAdapter):
             )
             try:
                 tx_hash = await send_transaction(
-                    tx, self.sign_callback, wait_for_receipt=True
+                    tx, self.signing.sign, wait_for_receipt=True
                 )
                 return True, {
                     "status": "ok",
@@ -3007,9 +3007,9 @@ class BorosAdapter(BaseAdapter):
                 account_id=0,
             )
 
-            if not self.sign_callback or not self.wallet_address:
+            if self.signing is None or not self.wallet_address:
                 return False, {
-                    "error": "sign_callback or user_address not configured",
+                    "error": "signing or wallet_address not configured",
                     "calldata": calldata,
                 }
 
@@ -3031,7 +3031,7 @@ class BorosAdapter(BaseAdapter):
                     amount=int(amount_wei),
                 )
                 approve_hash = await send_transaction(
-                    approve_tx, self.sign_callback, wait_for_receipt=True
+                    approve_tx, self.signing.sign, wait_for_receipt=True
                 )
                 approve_res = {"tx_hash": approve_hash}
             except Exception as e:
@@ -3281,8 +3281,8 @@ class BorosAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any]]:
         if not self.wallet_address:
             return False, {"error": "wallet_address is required"}
-        if not self.sign_callback:
-            return False, {"error": "sign_callback is required"}
+        if self.signing is None:
+            return False, {"error": "signing is required"}
 
         net_cash = int(net_cash_in_wei)
         if net_cash <= 0:
@@ -3332,7 +3332,7 @@ class BorosAdapter(BaseAdapter):
                     chain_id=self.chain_id,
                 )
                 tx_hash = await send_transaction(
-                    tx, self.sign_callback, wait_for_receipt=True
+                    tx, self.signing.sign, wait_for_receipt=True
                 )
                 self._invalidate_lp_cache()
                 return True, {
@@ -3365,8 +3365,8 @@ class BorosAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any]]:
         if not self.wallet_address:
             return False, {"error": "wallet_address is required"}
-        if not self.sign_callback:
-            return False, {"error": "sign_callback is required"}
+        if self.signing is None:
+            return False, {"error": "signing is required"}
 
         context = None
         if market_id is None or is_isolated_only is None:
@@ -3403,7 +3403,7 @@ class BorosAdapter(BaseAdapter):
                 chain_id=self.chain_id,
             )
             tx_hash = await send_transaction(
-                tx, self.sign_callback, wait_for_receipt=True
+                tx, self.signing.sign, wait_for_receipt=True
             )
             self._invalidate_lp_cache()
             return True, {
@@ -3562,8 +3562,8 @@ class BorosAdapter(BaseAdapter):
     async def claim_rewards(self) -> tuple[bool, dict[str, Any]]:
         if not self.wallet_address:
             return False, {"error": "wallet_address is required"}
-        if not self.sign_callback:
-            return False, {"error": "sign_callback is required"}
+        if self.signing is None:
+            return False, {"error": "signing is required"}
 
         ok, proof = await self.get_claim_proof()
         if not ok:
@@ -3587,7 +3587,7 @@ class BorosAdapter(BaseAdapter):
 
         try:
             tx_hash = await send_transaction(
-                tx, self.sign_callback, wait_for_receipt=True
+                tx, self.signing.sign, wait_for_receipt=True
             )
             return True, {
                 "status": "claimed",
@@ -3619,8 +3619,8 @@ class BorosAdapter(BaseAdapter):
         if amount_wei <= 0:
             return True, {"status": "no_op", "amount_wei": 0}
 
-        if not self.sign_callback:
-            return False, {"error": "sign_callback not configured"}
+        if self.signing is None:
+            return False, {"error": "signing not configured"}
 
         sender = from_address or self.wallet_address
         recipient = to_address or self.wallet_address
@@ -3708,7 +3708,7 @@ class BorosAdapter(BaseAdapter):
                 value=int(total_value_wei),
             )
             tx_hash = await send_transaction(
-                tx, self.sign_callback, wait_for_receipt=True
+                tx, self.signing.sign, wait_for_receipt=True
             )
             return True, {
                 "status": "ok",
@@ -3746,8 +3746,8 @@ class BorosAdapter(BaseAdapter):
         if amount_wei <= 0:
             return True, {"status": "no_op", "amount_wei": 0}
 
-        if not self.sign_callback:
-            return False, {"error": "sign_callback not configured"}
+        if self.signing is None:
+            return False, {"error": "signing not configured"}
 
         sender = from_address or self.wallet_address
         recipient = to_address or self.wallet_address
@@ -3816,7 +3816,7 @@ class BorosAdapter(BaseAdapter):
                 value=int(native_fee_wei),
             )
             tx_hash = await send_transaction(
-                tx, self.sign_callback, wait_for_receipt=True
+                tx, self.signing.sign, wait_for_receipt=True
             )
             return True, {
                 "status": "ok",
@@ -4017,9 +4017,9 @@ class BorosAdapter(BaseAdapter):
                 slippage=slippage,
             )
 
-            if not self.sign_callback:
+            if self.signing is None:
                 return False, {
-                    "error": "sign_callback not configured",
+                    "error": "signing not configured",
                     "calldata": calldata,
                 }
 
@@ -4079,9 +4079,9 @@ class BorosAdapter(BaseAdapter):
                 tif=1,  # IOC
             )
 
-            if not self.sign_callback:
+            if self.signing is None:
                 return False, {
-                    "error": "sign_callback not configured",
+                    "error": "signing not configured",
                     "calldata": calldata,
                 }
 
@@ -4111,9 +4111,9 @@ class BorosAdapter(BaseAdapter):
                 cancel_all=cancel_all,
             )
 
-            if not self.sign_callback:
+            if self.signing is None:
                 return False, {
-                    "error": "sign_callback not configured",
+                    "error": "signing not configured",
                     "calldata": calldata,
                 }
 
@@ -4147,8 +4147,8 @@ class BorosAdapter(BaseAdapter):
             if not dest_address:
                 return False, {"error": "No destination address configured"}
 
-            if not self.sign_callback:
-                return False, {"error": "sign_callback not configured"}
+            if self.signing is None:
+                return False, {"error": "signing not configured"}
 
             # Encode finalizeVaultWithdrawal(address root, uint16 tokenId) directly
             # Function selector: keccak256("finalizeVaultWithdrawal(address,uint16)")[:4]
@@ -4170,7 +4170,7 @@ class BorosAdapter(BaseAdapter):
 
             try:
                 tx_hash = await send_transaction(
-                    tx, self.sign_callback, wait_for_receipt=True
+                    tx, self.signing.sign, wait_for_receipt=True
                 )
                 self._invalidate_lp_cache()
                 return True, {"status": "ok", "tx": {"tx_hash": tx_hash}}

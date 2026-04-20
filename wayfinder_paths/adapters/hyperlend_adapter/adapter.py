@@ -32,6 +32,7 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
@@ -76,11 +77,11 @@ class HyperlendAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("hyperlend_adapter", config)
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         self.ledger_adapter = LedgerAdapter()
         self.token_adapter = TokenAdapter()
@@ -343,7 +344,7 @@ class HyperlendAdapter(BaseAdapter):
                 spender=HYPERLEND_POOL,
                 amount=qty,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
             )
             if not approved[0]:
                 return approved
@@ -356,7 +357,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
 
         await self._record_pool_op(
             token_address=token_addr,
@@ -406,7 +407,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         await self._record_pool_op(
             token_address=token_addr,
             amount=qty,
@@ -443,7 +444,7 @@ class HyperlendAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=chain_id,
             )
-            borrow_tx_hash = await send_transaction(borrow_tx, self.sign_callback)
+            borrow_tx_hash = await send_transaction(borrow_tx, self.signing.sign)
 
             unwrap_tx = await encode_call(
                 target=asset,
@@ -453,7 +454,7 @@ class HyperlendAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=chain_id,
             )
-            unwrap_tx_hash = await send_transaction(unwrap_tx, self.sign_callback)
+            unwrap_tx_hash = await send_transaction(unwrap_tx, self.signing.sign)
             return True, {"borrow_tx": borrow_tx_hash, "unwrap_tx": unwrap_tx_hash}
         else:
             asset = to_checksum_address(underlying_token)
@@ -466,7 +467,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return True, txn_hash
 
     async def repay(
@@ -580,7 +581,7 @@ class HyperlendAdapter(BaseAdapter):
                 spender=HYPERLEND_POOL,
                 amount=allowance_target,
                 chain_id=chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -595,7 +596,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return True, txn_hash
 
     async def set_collateral(
@@ -617,7 +618,7 @@ class HyperlendAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=chain_id,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return True, txn_hash
 
     async def remove_collateral(
@@ -639,7 +640,7 @@ class HyperlendAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=chain_id,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return True, txn_hash
 
     async def _record_pool_op(

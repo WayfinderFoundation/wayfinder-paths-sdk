@@ -31,6 +31,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -111,11 +112,11 @@ class MoonwellAdapter(BaseAdapter):
     def __init__(
         self,
         config: dict[str, Any] | None = None,
-        sign_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("moonwell_adapter", config)
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         self.chain_id = CHAIN_ID_BASE
         self.chain_name = CHAIN_NAME
@@ -151,7 +152,7 @@ class MoonwellAdapter(BaseAdapter):
             spender=mtoken,
             amount=amount,
             chain_id=CHAIN_ID_BASE,
-            signing_callback=self.sign_callback,
+            signing_callback=self.signing.sign,
             approval_amount=MAX_UINT256,
         )
         if not approved[0]:
@@ -165,7 +166,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return (True, txn_hash)
 
     async def unlend(
@@ -191,7 +192,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return (True, txn_hash)
 
     async def borrow(
@@ -217,7 +218,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return (True, txn_hash)
 
     async def repay(
@@ -244,7 +245,7 @@ class MoonwellAdapter(BaseAdapter):
             spender=mtoken,
             amount=amount,
             chain_id=CHAIN_ID_BASE,
-            signing_callback=self.sign_callback,
+            signing_callback=self.signing.sign,
             approval_amount=MAX_UINT256,
         )
         if not approved[0]:
@@ -261,7 +262,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return (True, txn_hash)
 
     async def set_collateral(
@@ -282,7 +283,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
 
         try:
             async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
@@ -348,7 +349,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return (True, txn_hash)
 
     async def claim_rewards(
@@ -378,7 +379,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=CHAIN_ID_BASE,
         )
-        await send_transaction(transaction, self.sign_callback)
+        await send_transaction(transaction, self.signing.sign)
         return True, rewards
 
     async def _get_outstanding_rewards(self, account: str) -> dict[str, int]:
@@ -1468,5 +1469,5 @@ class MoonwellAdapter(BaseAdapter):
             chain_id=CHAIN_ID_BASE,
             value=amount,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_transaction(transaction, self.signing.sign)
         return (True, txn_hash)

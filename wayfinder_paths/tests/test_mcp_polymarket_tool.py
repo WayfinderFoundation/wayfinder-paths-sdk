@@ -6,23 +6,21 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
+from wayfinder_paths.testing import fake_signing
 
 _FIND_WALLET = "wayfinder_paths.mcp.utils.find_wallet_by_label"
-_GET_SIGN_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_signing_callback"
-_GET_HASH_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_sign_hash_callback"
+_BUILD_SIGNING = "wayfinder_paths.mcp.tools.polymarket.build_signing_callbacks"
 
 _ADDR = "0x000000000000000000000000000000000000dEaD"
 _WALLET = {"address": _ADDR, "private_key_hex": "0x" + "11" * 32}
-_SIGN_CB = AsyncMock(return_value=b"\x00" * 65)
-_HASH_CB = AsyncMock(return_value="0x" + "00" * 65)
+_FAKE_SIGNING = fake_signing(address=_ADDR)
 
 
 @pytest.mark.asyncio
 async def test_polymarket_status_uses_adapter_full_state():
     with (
         patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
-        patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
-        patch(_GET_HASH_CB, AsyncMock(return_value=(_HASH_CB, _ADDR))),
+        patch(_BUILD_SIGNING, AsyncMock(return_value=_FAKE_SIGNING)),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_full_user_state",
@@ -146,8 +144,7 @@ async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
 
     with (
         patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
-        patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
-        patch(_GET_HASH_CB, AsyncMock(return_value=(_HASH_CB, _ADDR))),
+        patch(_BUILD_SIGNING, AsyncMock(return_value=_FAKE_SIGNING)),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.bridge_deposit",
@@ -172,8 +169,7 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
 
     with (
         patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
-        patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
-        patch(_GET_HASH_CB, AsyncMock(return_value=(_HASH_CB, _ADDR))),
+        patch(_BUILD_SIGNING, AsyncMock(return_value=_FAKE_SIGNING)),
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.place_prediction",

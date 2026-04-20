@@ -42,6 +42,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
@@ -147,8 +148,7 @@ class PolymarketAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback=None,
-        sign_hash_callback=None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
         funder: str | None = None,
         signature_type: int | None = None,
@@ -163,8 +163,7 @@ class PolymarketAdapter(BaseAdapter):
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
-        self.sign_callback = sign_callback
-        self.sign_hash_callback = sign_hash_callback
+        self.signing = signing
         self._funder_override = funder
         self._signature_type = signature_type
 
@@ -1084,11 +1083,11 @@ class PolymarketAdapter(BaseAdapter):
 
     def _require_signer(self) -> tuple[str, Any]:
         addr = self._require_wallet_address()
-        if not self.sign_callback:
+        if self.signing is None:
             raise ValueError(
-                "sign_callback is required. Use get_adapter(PolymarketAdapter, wallet_label)."
+                "signing is required. Use get_adapter(PolymarketAdapter, wallet_label)."
             )
-        return addr, self.sign_callback
+        return addr, self.signing.sign
 
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
         cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=neg_risk)
@@ -1110,7 +1109,9 @@ class PolymarketAdapter(BaseAdapter):
                 signature_type=self._signature_type,
                 funder=funder,
                 address_override=addr,
-                sign_callback_override=self.sign_hash_callback,
+                sign_callback_override=(
+                    self.signing.sign_hash if self.signing else None
+                ),
             )
         return self._clob_client  # type: ignore[return-value]
 

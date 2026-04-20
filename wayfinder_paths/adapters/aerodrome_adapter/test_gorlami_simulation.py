@@ -18,6 +18,7 @@ from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAI
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_WETH
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
@@ -40,7 +41,7 @@ def _make_adapter(acct: Account) -> AerodromeAdapter:
         return signed.raw_transaction
 
     return AerodromeAdapter(
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 

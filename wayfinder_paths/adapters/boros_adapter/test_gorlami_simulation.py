@@ -6,6 +6,7 @@ from eth_account import Account
 from wayfinder_paths.adapters.boros_adapter import BorosAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 ARBITRUM_USDT = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"
@@ -41,7 +42,7 @@ async def _make_funded_boros_adapter(gorlami) -> tuple[BorosAdapter, str]:
 
     return (
         BorosAdapter(
-            sign_callback=sign_cb,
+            signing=fake_signing(sign=sign_cb),
             wallet_address=acct.address,
         ),
         acct.address,

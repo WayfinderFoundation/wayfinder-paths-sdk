@@ -19,6 +19,7 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     sqrt_price_x96_from_tick,
     tick_to_price_decimal,
 )
+from wayfinder_paths.testing import fake_signing
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS
 WEEK_SECONDS = aerodrome_common_module.WEEK_SECONDS
@@ -33,7 +34,7 @@ FAKE_NPM = "0x0000000000000000000000000000000000000003"
 def adapter_with_signer():
     return AerodromeSlipstreamAdapter(
         config={"deployments": ("initial",)},
-        sign_callback=AsyncMock(return_value="0xsigned"),
+        signing=fake_signing(sign=AsyncMock(return_value="0xsigned")),
         wallet_address=FAKE_WALLET,
     )
 

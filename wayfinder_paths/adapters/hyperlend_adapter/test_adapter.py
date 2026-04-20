@@ -11,6 +11,7 @@ from wayfinder_paths.core.constants.contracts import (
     HYPERLEND_WRAPPED_TOKEN_GATEWAY,
 )
 from wayfinder_paths.core.constants.hyperlend_abi import UI_POOL_RESERVE_KEYS
+from wayfinder_paths.testing import fake_signing
 
 
 class TestHyperlendAdapter:
@@ -22,6 +23,7 @@ class TestHyperlendAdapter:
     def adapter(self):
         return HyperlendAdapter(
             config={},
+            signing=fake_signing(),
             wallet_address="0x1234567890123456789012345678901234567890",
         )
 
@@ -545,7 +547,7 @@ class TestHyperlendAdapter:
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
             mock_record.return_value = None
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, txn = await adapter.lend(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -581,7 +583,7 @@ class TestHyperlendAdapter:
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
             mock_record.return_value = None
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, txn = await adapter.unlend(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -613,7 +615,7 @@ class TestHyperlendAdapter:
         ):
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, txn = await adapter.borrow(
                 underlying_token=token,
@@ -646,7 +648,7 @@ class TestHyperlendAdapter:
         ):
             mock_encode.side_effect = [{"tx": "borrow"}, {"tx": "unwrap"}]
             mock_send.side_effect = ["0xborrow", "0xunwrap"]
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, res = await adapter.borrow(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -693,7 +695,7 @@ class TestHyperlendAdapter:
             mock_allow.return_value = (True, "ok")
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, txn = await adapter.repay(
                 underlying_token=token,
@@ -731,7 +733,7 @@ class TestHyperlendAdapter:
         ):
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, txn = await adapter.repay(
                 underlying_token="0x0000000000000000000000000000000000000000",
@@ -795,7 +797,7 @@ class TestHyperlendAdapter:
             mock_bal.side_effect = [1000, 10000]  # debt, native balance
             mock_encode.return_value = {"tx": "data"}
             mock_send.return_value = "0xabc"
-            adapter.sign_callback = AsyncMock()
+            adapter.signing = fake_signing(sign=AsyncMock())
 
             ok, txn = await adapter.repay(
                 underlying_token="0x0000000000000000000000000000000000000000",

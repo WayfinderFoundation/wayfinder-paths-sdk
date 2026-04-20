@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +30,7 @@ from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
+from wayfinder_paths.core.utils.signing import SigningCallbacks
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_erc20_metadata,
@@ -141,11 +141,11 @@ class AerodromeAdapter(
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback: Callable | None = None,
+        signing: SigningCallbacks | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("aerodrome_adapter", config or {})
-        self.sign_callback = sign_callback
+        self.signing = signing
 
         deployment = AERODROME_BY_CHAIN.get(CHAIN_ID_BASE)
         if not deployment:
@@ -1021,8 +1021,8 @@ class AerodromeAdapter(
         if amountA_desired <= 0 or amountB_desired <= 0:
             return False, "amounts must be positive"
 
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             tA_native = is_native_token(tokenA)
@@ -1076,7 +1076,7 @@ class AerodromeAdapter(
                     spender=self.core_contracts["router"],
                     amount=token_amt,
                     chain_id=CHAIN_ID_BASE,
-                    signing_callback=self.sign_callback,
+                    signing_callback=self.signing.sign,
                     approval_amount=MAX_UINT256,
                 )
                 if not approved[0]:
@@ -1099,7 +1099,7 @@ class AerodromeAdapter(
                     chain_id=CHAIN_ID_BASE,
                     value=eth_amt,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_transaction(tx, self.signing.sign)
                 return True, tx_hash
 
             # ERC20-ERC20 path
@@ -1136,7 +1136,7 @@ class AerodromeAdapter(
                 spender=self.core_contracts["router"],
                 amount=amountA_desired,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approvedA[0]:
@@ -1148,7 +1148,7 @@ class AerodromeAdapter(
                 spender=self.core_contracts["router"],
                 amount=amountB_desired,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approvedB[0]:
@@ -1172,7 +1172,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1243,8 +1243,8 @@ class AerodromeAdapter(
         """Remove liquidity (wallet-held LP only)."""
         if liquidity <= 0:
             return False, "liquidity must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             tA_native = is_native_token(tokenA)
@@ -1288,7 +1288,7 @@ class AerodromeAdapter(
                 spender=self.core_contracts["router"],
                 amount=liquidity,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1336,7 +1336,7 @@ class AerodromeAdapter(
                     from_address=to_checksum_address(self.wallet_address),
                     chain_id=CHAIN_ID_BASE,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_transaction(tx, self.signing.sign)
                 return True, tx_hash
 
             ok_q, q = await self.quote_remove_liquidity(
@@ -1376,7 +1376,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1388,8 +1388,8 @@ class AerodromeAdapter(
         pool: str,
     ) -> tuple[bool, Any]:
         """Claim Pool fees for wallet-held LP (unstaked)."""
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             pool = to_checksum_address(pool)
             acct = to_checksum_address(self.wallet_address)
@@ -1414,7 +1414,7 @@ class AerodromeAdapter(
                 from_address=acct,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
         except Exception as exc:
             return False, str(exc)
@@ -1429,8 +1429,8 @@ class AerodromeAdapter(
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             gauge = to_checksum_address(gauge)
@@ -1458,7 +1458,7 @@ class AerodromeAdapter(
                 spender=gauge,
                 amount=amount,
                 chain_id=CHAIN_ID_BASE,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -1483,7 +1483,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1506,8 +1506,8 @@ class AerodromeAdapter(
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             gauge = to_checksum_address(gauge)
             tx = await encode_call(
@@ -1518,7 +1518,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

@@ -16,6 +16,7 @@ from wayfinder_paths.core.constants.ethena_contracts import (
     ETHENA_USDE_MAINNET,
     ethena_tokens_by_chain_id,
 )
+from wayfinder_paths.testing import fake_signing
 
 MOCK_WALLET = "0x1234567890123456789012345678901234567890"
 ADAPTER_MODULE = "wayfinder_paths.adapters.ethena_vault_adapter.adapter"
@@ -26,7 +27,7 @@ class TestEthenaVaultAdapter:
     def adapter(self):
         return EthenaVaultAdapter(
             config={},
-            sign_callback=AsyncMock(return_value=b"\x00" * 32),
+            signing=fake_signing(sign=AsyncMock(return_value=b"\x00" * 32)),
             wallet_address=MOCK_WALLET,
         )
 
@@ -43,7 +44,7 @@ class TestEthenaVaultAdapter:
 
     def test_no_wallet(self, readonly_adapter):
         assert readonly_adapter.wallet_address is None
-        assert readonly_adapter.sign_callback is None
+        assert readonly_adapter.signing is None
 
     # -- get_apy ---------------------------------------------------------------
 

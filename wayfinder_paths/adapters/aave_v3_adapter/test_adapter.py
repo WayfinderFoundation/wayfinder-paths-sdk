@@ -6,6 +6,7 @@ import pytest
 from wayfinder_paths.adapters.aave_v3_adapter.adapter import AaveV3Adapter
 from wayfinder_paths.core.constants.aave_v3_abi import UI_POOL_RESERVE_KEYS
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
+from wayfinder_paths.testing import fake_signing
 
 FAKE_ADDR = "0x1234567890123456789012345678901234567890"
 FAKE_ASSET = "0x0000000000000000000000000000000000000001"
@@ -16,6 +17,7 @@ class TestAaveV3Adapter:
     def adapter(self):
         return AaveV3Adapter(
             config={},
+            signing=fake_signing(address=FAKE_ADDR),
             wallet_address=FAKE_ADDR,
         )
 

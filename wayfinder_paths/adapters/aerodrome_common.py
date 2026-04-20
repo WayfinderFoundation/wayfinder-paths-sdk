@@ -377,8 +377,8 @@ class AerodromeVotingRewardsMixin:
         *,
         gauges: Sequence[str],
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         if not gauges:
             return False, "gauges cannot be empty"
         try:
@@ -391,7 +391,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -450,8 +450,8 @@ class AerodromeVotingRewardsMixin:
             return False, "amount must be positive"
         if lock_duration <= 0:
             return False, "lock_duration must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             owner = to_checksum_address(self.wallet_address)
@@ -461,7 +461,7 @@ class AerodromeVotingRewardsMixin:
                 spender=self.core_contracts["voting_escrow"],
                 amount=amount,
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -475,7 +475,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             token_id = await self._minted_erc721_token_id(
                 nft_contract=self.core_contracts["voting_escrow"],
                 tx_hash=tx_hash,
@@ -497,8 +497,8 @@ class AerodromeVotingRewardsMixin:
             return False, "amount must be positive"
         if lock_duration <= 0:
             return False, "lock_duration must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             owner = to_checksum_address(self.wallet_address)
@@ -509,7 +509,7 @@ class AerodromeVotingRewardsMixin:
                 spender=self.core_contracts["voting_escrow"],
                 amount=amount,
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -523,7 +523,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             token_id = await self._minted_erc721_token_id(
                 nft_contract=self.core_contracts["voting_escrow"],
                 tx_hash=tx_hash,
@@ -542,8 +542,8 @@ class AerodromeVotingRewardsMixin:
     ) -> tuple[bool, Any]:
         if amount <= 0:
             return False, "amount must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             owner = to_checksum_address(self.wallet_address)
@@ -553,7 +553,7 @@ class AerodromeVotingRewardsMixin:
                 spender=self.core_contracts["voting_escrow"],
                 amount=amount,
                 chain_id=self.chain_id,
-                signing_callback=self.sign_callback,
+                signing_callback=self.signing.sign,
                 approval_amount=MAX_UINT256,
             )
             if not approved[0]:
@@ -567,7 +567,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -581,8 +581,8 @@ class AerodromeVotingRewardsMixin:
     ) -> tuple[bool, Any]:
         if lock_duration <= 0:
             return False, "lock_duration must be positive"
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             tx = await encode_call(
                 target=self.core_contracts["voting_escrow"],
@@ -592,7 +592,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -603,8 +603,8 @@ class AerodromeVotingRewardsMixin:
         *,
         token_id: int,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             tx = await encode_call(
                 target=self.core_contracts["voting_escrow"],
@@ -614,7 +614,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -625,8 +625,8 @@ class AerodromeVotingRewardsMixin:
         *,
         token_id: int,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             tx = await encode_call(
                 target=self.core_contracts["voting_escrow"],
@@ -636,7 +636,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -647,8 +647,8 @@ class AerodromeVotingRewardsMixin:
         *,
         token_id: int,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             tx = await encode_call(
                 target=self.core_contracts["voting_escrow"],
@@ -658,7 +658,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -672,8 +672,8 @@ class AerodromeVotingRewardsMixin:
         weights: Sequence[int],
         check_window: bool = True,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         if not pools:
             return False, "pools cannot be empty"
         if len(pools) != len(weights):
@@ -697,7 +697,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -709,8 +709,8 @@ class AerodromeVotingRewardsMixin:
         token_id: int,
         check_window: bool = True,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         try:
             if check_window:
                 ok, reason = await self._can_vote_now(token_id=token_id)
@@ -725,7 +725,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1009,8 +1009,8 @@ class AerodromeVotingRewardsMixin:
         fee_reward_contracts: Sequence[str],
         token_lists: Sequence[Sequence[str]] | None = None,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         if not fee_reward_contracts:
             return False, "fee_reward_contracts cannot be empty"
         try:
@@ -1044,7 +1044,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1057,8 +1057,8 @@ class AerodromeVotingRewardsMixin:
         bribe_reward_contracts: Sequence[str],
         token_lists: Sequence[Sequence[str]] | None = None,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         if not bribe_reward_contracts:
             return False, "bribe_reward_contracts cannot be empty"
         try:
@@ -1092,7 +1092,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1125,8 +1125,8 @@ class AerodromeVotingRewardsMixin:
         token_id: int,
         skip_if_zero: bool = True,
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
 
         try:
             if skip_if_zero:
@@ -1147,7 +1147,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1158,8 +1158,8 @@ class AerodromeVotingRewardsMixin:
         *,
         token_ids: Sequence[int],
     ) -> tuple[bool, Any]:
-        if self.sign_callback is None:
-            return False, "sign_callback is required"
+        if self.signing is None:
+            return False, "signing is required"
         if not token_ids:
             return False, "token_ids cannot be empty"
         try:
@@ -1171,7 +1171,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_transaction(tx, self.signing.sign)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

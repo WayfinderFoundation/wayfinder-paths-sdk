@@ -14,6 +14,7 @@ from wayfinder_paths.core.constants.contracts import (
 )
 from wayfinder_paths.core.constants.morpho_abi import MORPHO_BLUE_ABI
 from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.testing import fake_signing
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(
@@ -78,7 +79,7 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
 
     adapter = MorphoAdapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 
@@ -273,7 +274,7 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
 
     adapter = MorphoAdapter(
         config={},
-        sign_callback=sign_cb,
+        signing=fake_signing(sign=sign_cb),
         wallet_address=acct.address,
     )
 
