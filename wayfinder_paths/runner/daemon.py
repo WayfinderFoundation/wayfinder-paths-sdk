@@ -302,7 +302,21 @@ class RunnerDaemon:
                 "log_output": log_output,
             },
         )
-        SCHEDULED_JOBS_CLIENT.sync_job_from_db(self._db, rp.job_name)
+        self._sync_job(rp.job_name)
+
+    def _sync_job(self, name: str) -> None:
+        try:
+            job, state = self._db.get_job(name=name)
+        except KeyError:
+            return
+        SCHEDULED_JOBS_CLIENT.sync_job(
+            name,
+            {
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            },
+        )
 
     def _notify_session(
         self,
@@ -667,7 +681,7 @@ class RunnerDaemon:
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
-        SCHEDULED_JOBS_CLIENT.sync_job_from_db(self._db, name)
+        self._sync_job(name)
         return {"ok": True, "result": {"job_id": job_id, "name": name}}
 
     def ctl_update_job(
@@ -679,7 +693,7 @@ class RunnerDaemon:
             self._db.update_job(
                 name=name, payload=payload, interval_seconds=interval_seconds
             )
-            SCHEDULED_JOBS_CLIENT.sync_job_from_db(self._db, name)
+            self._sync_job(name)
             return {"ok": True, "result": {"name": name}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -687,7 +701,7 @@ class RunnerDaemon:
     def ctl_pause_job(self, *, name: str) -> dict[str, Any]:
         try:
             self._db.set_job_status(name=name, status=JobStatus.PAUSED)
-            SCHEDULED_JOBS_CLIENT.sync_job_from_db(self._db, name)
+            self._sync_job(name)
             return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -697,7 +711,7 @@ class RunnerDaemon:
             job, _ = self._db.get_job(name=name)
             self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
             self._db.set_next_run_at(job_id=job.id, next_run_at=_utc_epoch_s())
-            SCHEDULED_JOBS_CLIENT.sync_job_from_db(self._db, name)
+            self._sync_job(name)
             return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
