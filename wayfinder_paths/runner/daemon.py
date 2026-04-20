@@ -286,25 +286,32 @@ class RunnerDaemon:
 
         self._notify_session(rp, status=status, error_text=error_text)
 
-        log_output = ""
-        try:
-            log_output = rp.log_path.read_text(errors="replace")
-        except Exception:  # noqa: BLE001
-            pass
-        SCHEDULED_JOBS_CLIENT.report_run(
-            rp.job_name,
-            {
-                "run_id": str(rp.run_id),
-                "status": status,
-                "started_at": datetime.fromtimestamp(rp.started_at, tz=UTC).isoformat(),
-                "finished_at": datetime.fromtimestamp(finished_at, tz=UTC).isoformat(),
-                "exit_code": exit_code,
-                "log_output": log_output,
-            },
-        )
-        self._sync_job(rp.job_name)
+        if os.environ.get("OPENCODE_INSTANCE_ID"):
+            log_output = ""
+            try:
+                log_output = rp.log_path.read_text(errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+            SCHEDULED_JOBS_CLIENT.report_run(
+                rp.job_name,
+                {
+                    "run_id": str(rp.run_id),
+                    "status": status,
+                    "started_at": datetime.fromtimestamp(
+                        rp.started_at, tz=UTC
+                    ).isoformat(),
+                    "finished_at": datetime.fromtimestamp(
+                        finished_at, tz=UTC
+                    ).isoformat(),
+                    "exit_code": exit_code,
+                    "log_output": log_output,
+                },
+            )
+            self._sync_job(rp.job_name)
 
     def _sync_job(self, name: str) -> None:
+        if not os.environ.get("OPENCODE_INSTANCE_ID"):
+            return
         try:
             job, state = self._db.get_job(name=name)
         except KeyError:
@@ -757,5 +764,6 @@ class RunnerDaemon:
                 return {"ok": False, "error": str(exc)}
             self._running_by_job.pop(job_id, None)
 
-        SCHEDULED_JOBS_CLIENT.delete_job(str(name))
+        if os.environ.get("OPENCODE_INSTANCE_ID"):
+            SCHEDULED_JOBS_CLIENT.delete_job(str(name))
         return {"ok": True, "result": {"name": str(name), "deleted": True}}
