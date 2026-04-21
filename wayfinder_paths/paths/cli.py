@@ -1296,11 +1296,19 @@ def activate_cmd(
 )
 @click.option("--parent-port", default=3333, show_default=True, type=int)
 @click.option("--applet-port", default=3334, show_default=True, type=int)
+@click.option(
+    "--api-base",
+    "api_base",
+    default="https://strategies.wayfinder.ai",
+    show_default=True,
+    help="Upstream proxied by the preview server for Delta Lab public routes (prod or dev Strategies host).",
+)
 def preview_cmd(
     path_dir: str,
     check: bool,
     parent_port: int,
     applet_port: int,
+    api_base: str,
 ) -> None:
     try:
         if check:
@@ -1323,6 +1331,7 @@ def preview_cmd(
             path_dir=Path(path_dir),
             parent_port=parent_port,
             applet_port=applet_port,
+            api_base=api_base,
         )
     except PathPreviewError as exc:
         raise click.ClickException(str(exc)) from exc
