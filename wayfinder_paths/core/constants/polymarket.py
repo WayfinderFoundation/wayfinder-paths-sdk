@@ -19,6 +19,8 @@ POLYGON_P_USDC_ADDRESS = "0x6bBCef9f7ef3B6C592c99e0f206a0DE94Ad0925f"
 
 # Polymarket contracts (CTF)
 POLYMARKET_CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+POLYMARKET_COLLATERAL_ONRAMP_ADDRESS = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS = "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
 
 # Exchanges / operators that may require approvals depending on market type.
 # NOTE: If interacting with the contracts directly, use V2 except for ClobAuthDomain
@@ -98,7 +100,7 @@ TOKEN_UNWRAP_ABI: list[dict[str, Any]] = [
     }
 ]
 
-POLYMARKET_PUSD_ONRAMP_ABI: list[dict[str, Any]] = [
+POLYMARKET_COLLATERAL_RAMP_ABI: list[dict[str, Any]] = [
     {
         "type": "function",
         "stateMutability": "nonpayable",
@@ -107,12 +109,6 @@ POLYMARKET_PUSD_ONRAMP_ABI: list[dict[str, Any]] = [
             {"name": "_asset", "type": "address", "internalType": "address"},
             {"name": "_to", "type": "address", "internalType": "address"},
             {"name": "_amount", "type": "uint256", "internalType": "uint256"},
-            {
-                "name": "_callbackReceiver",
-                "type": "address",
-                "internalType": "address",
-            },
-            {"name": "_data", "type": "bytes", "internalType": "bytes"},
         ],
         "outputs": [],
     },
@@ -124,12 +120,6 @@ POLYMARKET_PUSD_ONRAMP_ABI: list[dict[str, Any]] = [
             {"name": "_asset", "type": "address", "internalType": "address"},
             {"name": "_to", "type": "address", "internalType": "address"},
             {"name": "_amount", "type": "uint256", "internalType": "uint256"},
-            {
-                "name": "_callbackReceiver",
-                "type": "address",
-                "internalType": "address",
-            },
-            {"name": "_data", "type": "bytes", "internalType": "bytes"},
         ],
         "outputs": [],
     },

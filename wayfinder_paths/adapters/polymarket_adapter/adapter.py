@@ -37,7 +37,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_CLOB_BASE_URL,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_GAMMA_BASE_URL,
-    POLYMARKET_PUSD_ONRAMP_ABI,
+    POLYMARKET_COLLATERAL_RAMP_ABI,
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
@@ -153,14 +153,14 @@ async def _wrap_usdce_to_pusd(
     amount_base_unit: int,
     signing_callback,
 ) -> tuple[bool, dict[str, Any] | str]:
-    """Wrap Polygon USDC.e into pUSD via the Polymarket onramp proxy."""
+    """Wrap Polygon USDC.e into pUSD via the Polymarket CollateralOnramp."""
     try:
         recipient = to_checksum_address(recipient_address)
         approve_tx_hash: str | None = None
         ok_appr, appr = await ensure_allowance(
             token_address=POLYGON_USDC_E_ADDRESS,
             owner=owner_address,
-            spender=POLYGON_P_USDC_PROXY_ADDRESS,
+            spender=POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
             amount=amount_base_unit,
             chain_id=POLYGON_CHAIN_ID,
             signing_callback=signing_callback,
@@ -172,14 +172,12 @@ async def _wrap_usdce_to_pusd(
 
         tx = await encode_call(
             target=POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
-            abi=POLYMARKET_PUSD_ONRAMP_ABI,
+            abi=POLYMARKET_COLLATERAL_RAMP_ABI,
             fn_name="wrap",
             args=[
                 POLYGON_USDC_E_ADDRESS,
                 recipient,
                 amount_base_unit,
-                ZERO_ADDRESS,
-                HexBytes("0x"),
             ],
             from_address=owner_address,
             chain_id=POLYGON_CHAIN_ID,
@@ -207,19 +205,31 @@ async def _unwrap_pusd_to_usdce(
     amount_base_unit: int,
     signing_callback,
 ) -> tuple[bool, dict[str, Any] | str]:
-    """Unwrap Polygon pUSD into USDC.e via the Polymarket onramp proxy."""
+    """Unwrap Polygon pUSD into USDC.e via the Polymarket CollateralOfframp."""
     try:
         recipient = to_checksum_address(recipient_address)
+        approve_tx_hash: str | None = None
+        ok_appr, appr = await ensure_allowance(
+            token_address=POLYGON_P_USDC_PROXY_ADDRESS,
+            owner=owner_address,
+            spender=POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+            amount=amount_base_unit,
+            chain_id=POLYGON_CHAIN_ID,
+            signing_callback=signing_callback,
+        )
+        if not ok_appr:
+            return False, str(appr)
+        if isinstance(appr, str) and appr.startswith("0x"):
+            approve_tx_hash = appr
+
         tx = await encode_call(
             target=POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
-            abi=POLYMARKET_PUSD_ONRAMP_ABI,
+            abi=POLYMARKET_COLLATERAL_RAMP_ABI,
             fn_name="unwrap",
             args=[
                 POLYGON_USDC_E_ADDRESS,
                 recipient,
                 amount_base_unit,
-                ZERO_ADDRESS,
-                HexBytes("0x"),
             ],
             from_address=owner_address,
             chain_id=POLYGON_CHAIN_ID,
@@ -228,6 +238,7 @@ async def _unwrap_pusd_to_usdce(
         return True, {
             "method": "pusd_unwrap",
             "tx_hash": tx_hash,
+            "approve_tx_hash": approve_tx_hash,
             "from_chain_id": POLYGON_CHAIN_ID,
             "from_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
             "to_chain_id": POLYGON_CHAIN_ID,
@@ -1007,7 +1018,7 @@ class PolymarketAdapter(BaseAdapter):
         """Prepare Polymarket collateral on Polygon.
 
         Preferred Polygon fast paths:
-        - USDC.e -> pUSD via the Polymarket onramp proxy
+        - USDC.e -> pUSD via the Polymarket CollateralOnramp
         - USDC -> USDC.e via BRAP, then wrap to pUSD
 
         Fallback (async): Polymarket Bridge deposit address transfer from
@@ -1183,7 +1194,7 @@ class PolymarketAdapter(BaseAdapter):
         """Withdraw Polymarket V2 collateral to a destination token.
 
         Preferred Polygon fast paths:
-        - pUSD -> USDC.e via the Polymarket onramp proxy
+        - pUSD -> USDC.e via the Polymarket CollateralOfframp
         - pUSD -> USDC.e -> USDC via BRAP on Polygon
 
         Fallback (async): unwrap to USDC.e, then transfer to the Polymarket
