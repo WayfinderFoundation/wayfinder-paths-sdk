@@ -175,6 +175,7 @@ async def wallets(
     include_zero_positions: bool = False,
     remote: bool = False,
     policies: list[dict] = [],  # noqa: B006
+    wallet_type: str | None = None,
 ) -> dict[str, Any]:
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
@@ -204,7 +205,9 @@ async def wallets(
                 )
 
         if remote:
-            result = await create_remote_wallet(label=want, policies=policies)
+            result = await create_remote_wallet(
+                label=want, policies=policies, wallet_type=wallet_type
+            )
             refreshed = await load_wallets()
             return ok(
                 {

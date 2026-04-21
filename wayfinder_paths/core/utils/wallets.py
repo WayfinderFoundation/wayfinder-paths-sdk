@@ -16,7 +16,7 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-from wayfinder_paths.policies.session import build_session_policy
+from wayfinder_paths.policies.session import build_session_policy, build_strategy_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -305,14 +305,21 @@ async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
+    wallet_type: str | None = None,
 ) -> dict[str, Any]:
-    if len(policies) == 0:
+    if wallet_type == "strategy":
+        if not policies:
+            policies = [build_strategy_policy()]
+    elif not policies:
         wallet_type = "session"
         policies = [build_session_policy()]
     else:
         wallet_type = "policy"
     result = await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
+        chain_type=chain_type,
+        policies=policies,
+        label=label,
+        wallet_type=wallet_type,
     )
     if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(
