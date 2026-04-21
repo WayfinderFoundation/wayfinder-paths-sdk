@@ -22,6 +22,7 @@ from py_clob_client_v2.config import (  # type: ignore[import-untyped]
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
@@ -35,6 +36,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_CLOB_BASE_URL,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_GAMMA_BASE_URL,
+    POLYMARKET_PUSD_ONRAMP_ABI,
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
@@ -139,6 +141,97 @@ async def _try_brap_swap_polygon(
         }
     except Exception:
         return None
+
+
+async def _wrap_usdce_to_pusd(
+    *,
+    owner_address: str,
+    recipient_address: str,
+    amount_base_unit: int,
+    signing_callback,
+) -> tuple[bool, dict[str, Any] | str]:
+    """Wrap Polygon USDC.e into pUSD via the Polymarket onramp proxy."""
+    try:
+        approve_tx_hash: str | None = None
+        ok_appr, appr = await ensure_allowance(
+            token_address=POLYGON_USDC_E_ADDRESS,
+            owner=to_checksum_address(owner_address),
+            spender=POLYGON_P_USDC_PROXY_ADDRESS,
+            amount=int(amount_base_unit),
+            chain_id=POLYGON_CHAIN_ID,
+            signing_callback=signing_callback,
+        )
+        if not ok_appr:
+            return False, str(appr)
+        if isinstance(appr, str) and appr.startswith("0x"):
+            approve_tx_hash = appr
+
+        tx = await encode_call(
+            target=POLYGON_P_USDC_PROXY_ADDRESS,
+            abi=POLYMARKET_PUSD_ONRAMP_ABI,
+            fn_name="wrap",
+            args=[
+                to_checksum_address(POLYGON_USDC_E_ADDRESS),
+                to_checksum_address(recipient_address),
+                int(amount_base_unit),
+                ZERO_ADDRESS,
+                HexBytes("0x"),
+            ],
+            from_address=owner_address,
+            chain_id=POLYGON_CHAIN_ID,
+        )
+        tx_hash = await send_transaction(tx, signing_callback)
+        return True, {
+            "method": "pusd_wrap",
+            "tx_hash": tx_hash,
+            "approve_tx_hash": approve_tx_hash,
+            "from_chain_id": POLYGON_CHAIN_ID,
+            "from_token_address": POLYGON_USDC_E_ADDRESS,
+            "to_chain_id": POLYGON_CHAIN_ID,
+            "to_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
+            "amount_base_unit": str(amount_base_unit),
+            "recipient_address": to_checksum_address(recipient_address),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+async def _unwrap_pusd_to_usdce(
+    *,
+    owner_address: str,
+    recipient_address: str,
+    amount_base_unit: int,
+    signing_callback,
+) -> tuple[bool, dict[str, Any] | str]:
+    """Unwrap Polygon pUSD into USDC.e via the Polymarket onramp proxy."""
+    try:
+        tx = await encode_call(
+            target=POLYGON_P_USDC_PROXY_ADDRESS,
+            abi=POLYMARKET_PUSD_ONRAMP_ABI,
+            fn_name="unwrap",
+            args=[
+                to_checksum_address(POLYGON_USDC_E_ADDRESS),
+                to_checksum_address(recipient_address),
+                int(amount_base_unit),
+                ZERO_ADDRESS,
+                HexBytes("0x"),
+            ],
+            from_address=owner_address,
+            chain_id=POLYGON_CHAIN_ID,
+        )
+        tx_hash = await send_transaction(tx, signing_callback)
+        return True, {
+            "method": "pusd_unwrap",
+            "tx_hash": tx_hash,
+            "from_chain_id": POLYGON_CHAIN_ID,
+            "from_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
+            "to_chain_id": POLYGON_CHAIN_ID,
+            "to_token_address": POLYGON_USDC_E_ADDRESS,
+            "amount_base_unit": str(amount_base_unit),
+            "recipient_address": to_checksum_address(recipient_address),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
 
 
 class PolymarketAdapter(BaseAdapter):
@@ -906,17 +999,21 @@ class PolymarketAdapter(BaseAdapter):
         recipient_address: str,
         token_decimals: int = 6,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Convert a supported token → USDC.e (Polymarket collateral).
+        """Prepare Polymarket collateral on Polygon.
 
-        Preferred path (fast, on-chain): BRAP swap on Polygon, when possible.
-        Fallback (async, bridge service): Polymarket Bridge deposit address transfer
-        from `from_chain_id` (see `bridge_supported_assets()`).
+        Preferred Polygon fast paths:
+        - USDC.e -> pUSD via the Polymarket onramp proxy
+        - USDC -> USDC.e via BRAP, then wrap to pUSD
+
+        Fallback (async): Polymarket Bridge deposit address transfer from
+        `from_chain_id`, which currently lands as USDC.e and may need wrapping.
         """
         from_address, sign_cb = self._require_signer()
         from_token = to_checksum_address(from_token_address)
         base_units = to_erc20_raw(amount, token_decimals)
 
         rcpt = to_checksum_address(recipient_address)
+        usdce_balance_before_swap: int | None = None
         async with web3_from_chain_id(from_chain_id) as web3:
             bal = await get_token_balance(
                 from_token,
@@ -932,6 +1029,10 @@ class PolymarketAdapter(BaseAdapter):
                 )
                 if from_chain_id == POLYGON_CHAIN_ID:
                     acct = to_checksum_address(from_address)
+                    pusd = web3.eth.contract(
+                        address=POLYGON_P_USDC_PROXY_ADDRESS,
+                        abi=ERC20_ABI,
+                    )
                     usdce = web3.eth.contract(
                         address=to_checksum_address(POLYGON_USDC_E_ADDRESS),
                         abi=ERC20_ABI,
@@ -940,29 +1041,56 @@ class PolymarketAdapter(BaseAdapter):
                         address=to_checksum_address(POLYGON_USDC_ADDRESS),
                         abi=ERC20_ABI,
                     )
-                    usdce_bal, usdc_bal = await read_only_calls_multicall_or_gather(
+                    pusd_bal, usdce_bal, usdc_bal = (
+                        await read_only_calls_multicall_or_gather(
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
+                            Call(pusd, "balanceOf", args=(acct,), postprocess=int),
                             Call(usdce, "balanceOf", args=(acct,), postprocess=int),
                             Call(usdc, "balanceOf", args=(acct,), postprocess=int),
                         ],
                         block_identifier="pending",
                     )
+                    )
                     msg += (
                         " Polygon balances: "
-                        f"usdc_e_base_units={usdce_bal}, usdc_base_units={usdc_bal}."
+                        f"pusd_base_units={pusd_bal}, "
+                        f"usdc_e_base_units={usdce_bal}, "
+                        f"usdc_base_units={usdc_bal}."
                     )
                     msg += (
-                        f" Note: Polymarket collateral is USDC.e ({POLYGON_USDC_E_ADDRESS}); "
-                        "if you already have USDC.e you can trade without running bridge_deposit."
+                        f" Note: Polymarket V2 collateral is pUSD ({POLYGON_P_USDC_PROXY_ADDRESS}); "
+                        f"USDC.e ({POLYGON_USDC_E_ADDRESS}) can be wrapped into pUSD on Polygon."
                     )
                 return False, msg
+
+            if (
+                from_chain_id == POLYGON_CHAIN_ID
+                and from_token == POLYGON_USDC_ADDRESS
+            ):
+                usdce_balance_before_swap = await get_token_balance(
+                    POLYGON_USDC_E_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    from_address,
+                    web3=web3,
+                    block_identifier="pending",
+                )
+
+        if (
+            from_chain_id == POLYGON_CHAIN_ID
+            and from_token == POLYGON_USDC_E_ADDRESS
+        ):
+            return await _wrap_usdce_to_pusd(
+                owner_address=from_address,
+                recipient_address=rcpt,
+                amount_base_unit=base_units,
+                signing_callback=sign_cb,
+            )
 
         if (
             from_chain_id == POLYGON_CHAIN_ID
             and from_token == to_checksum_address(POLYGON_USDC_ADDRESS)
-            and rcpt == from_address
         ):
             brap = await _try_brap_swap_polygon(
                 from_token_address=from_token,
@@ -972,7 +1100,51 @@ class PolymarketAdapter(BaseAdapter):
                 signing_callback=sign_cb,
             )
             if brap:
-                return True, {**brap, "recipient_address": rcpt}
+                usdce_balance_after_swap = await get_token_balance(
+                    POLYGON_USDC_E_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    from_address,
+                    block_identifier="pending",
+                )
+                wrapped_amount = max(
+                    0,
+                    usdce_balance_after_swap - int(usdce_balance_before_swap or 0),
+                )
+                if wrapped_amount <= 0:
+                    return False, (
+                        "BRAP swap completed, but no new USDC.e balance was detected "
+                        "for wrapping into pUSD."
+                    )
+
+                ok_wrap, wrap = await _wrap_usdce_to_pusd(
+                    owner_address=from_address,
+                    recipient_address=rcpt,
+                    amount_base_unit=wrapped_amount,
+                    signing_callback=sign_cb,
+                )
+                if not ok_wrap:
+                    return False, wrap
+                return True, {
+                    "method": "brap_then_wrap",
+                    "tx_hash": wrap.get("tx_hash"),
+                    "approve_tx_hash": brap.get("approve_tx_hash"),
+                    "from_chain_id": POLYGON_CHAIN_ID,
+                    "from_token_address": from_token,
+                    "to_chain_id": POLYGON_CHAIN_ID,
+                    "to_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
+                    "amount_base_unit": str(base_units),
+                    "recipient_address": rcpt,
+                    "provider": brap.get("provider"),
+                    "input_amount": brap.get("input_amount"),
+                    "output_amount": brap.get("output_amount"),
+                    "fee_estimate": brap.get("fee_estimate"),
+                    "swap_tx_hash": brap.get("tx_hash"),
+                    "swap_approve_tx_hash": brap.get("approve_tx_hash"),
+                    "wrap_tx_hash": wrap.get("tx_hash"),
+                    "wrap_approve_tx_hash": wrap.get("approve_tx_hash"),
+                    "swap": brap,
+                    "wrap": wrap,
+                }
 
         ok_addr, addr_data = await self.bridge_deposit_addresses(
             address=recipient_address
@@ -1012,15 +1184,36 @@ class PolymarketAdapter(BaseAdapter):
         recipient_addr: str,
         token_decimals: int = 6,
     ) -> tuple[bool, dict[str, Any] | str]:
-        """Convert USDC.e → destination token.
+        """Withdraw Polymarket V2 collateral to a destination token.
 
-        Preferred path (fast, on-chain): BRAP swap USDC.e -> USDC on Polygon, when possible.
-        Fallback (async, bridge service): Polymarket Bridge withdraw address transfer.
+        Preferred Polygon fast paths:
+        - pUSD -> USDC.e via the Polymarket onramp proxy
+        - pUSD -> USDC.e -> USDC via BRAP on Polygon
+
+        Fallback (async): unwrap to USDC.e, then transfer to the Polymarket
+        Bridge withdraw address.
         """
         from_address, sign_cb = self._require_signer()
         base_units = to_erc20_raw(amount_usdce, token_decimals)
 
         rcpt = to_checksum_address(recipient_addr)
+        ok_unwrap, unwrap = await _unwrap_pusd_to_usdce(
+            owner_address=from_address,
+            recipient_address=from_address,
+            amount_base_unit=base_units,
+            signing_callback=sign_cb,
+        )
+        if not ok_unwrap:
+            return False, unwrap
+
+        if (
+            int(to_chain_id) == POLYGON_CHAIN_ID
+            and to_checksum_address(to_token_address)
+            == to_checksum_address(POLYGON_USDC_E_ADDRESS)
+            and rcpt == to_checksum_address(from_address)
+        ):
+            return True, {**unwrap, "recipient_addr": rcpt}
+
         if (
             int(to_chain_id) == POLYGON_CHAIN_ID
             and to_checksum_address(to_token_address)
@@ -1035,7 +1228,26 @@ class PolymarketAdapter(BaseAdapter):
                 signing_callback=sign_cb,
             )
             if brap:
-                return True, {**brap, "recipient_addr": rcpt}
+                return True, {
+                    "method": "unwrap_then_brap",
+                    "tx_hash": brap.get("tx_hash"),
+                    "approve_tx_hash": brap.get("approve_tx_hash"),
+                    "from_chain_id": POLYGON_CHAIN_ID,
+                    "from_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
+                    "to_chain_id": POLYGON_CHAIN_ID,
+                    "to_token_address": to_token_address,
+                    "amount_base_unit": str(base_units),
+                    "recipient_addr": rcpt,
+                    "provider": brap.get("provider"),
+                    "input_amount": brap.get("input_amount"),
+                    "output_amount": brap.get("output_amount"),
+                    "fee_estimate": brap.get("fee_estimate"),
+                    "unwrap_tx_hash": unwrap.get("tx_hash"),
+                    "swap_tx_hash": brap.get("tx_hash"),
+                    "swap_approve_tx_hash": brap.get("approve_tx_hash"),
+                    "unwrap": unwrap,
+                    "swap": brap,
+                }
 
         ok_addr, addr_data = await self.bridge_withdraw_addresses(
             address=from_address,
@@ -1060,15 +1272,16 @@ class PolymarketAdapter(BaseAdapter):
         tx_hash = await send_transaction(tx, sign_cb)
 
         return True, {
-            "method": "polymarket_bridge",
+            "method": "polymarket_unwrap_then_brap",
             "tx_hash": tx_hash,
             "from_chain_id": POLYGON_CHAIN_ID,
-            "from_token_address": POLYGON_USDC_E_ADDRESS,
+            "from_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
             "withdraw_address": str(withdraw_evm),
             "amount_base_unit": str(base_units),
             "to_chain_id": str(to_chain_id),
             "to_token_address": to_token_address,
             "recipient_addr": to_checksum_address(recipient_addr),
+            "unwrap": unwrap,
         }
 
     def _require_wallet_address(self) -> str:

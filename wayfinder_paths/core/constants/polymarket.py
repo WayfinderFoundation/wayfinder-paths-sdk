@@ -97,3 +97,40 @@ TOKEN_UNWRAP_ABI: list[dict[str, Any]] = [
         "outputs": [],
     }
 ]
+
+POLYMARKET_PUSD_ONRAMP_ABI: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "name": "wrap",
+        "inputs": [
+            {"name": "_asset", "type": "address", "internalType": "address"},
+            {"name": "_to", "type": "address", "internalType": "address"},
+            {"name": "_amount", "type": "uint256", "internalType": "uint256"},
+            {
+                "name": "_callbackReceiver",
+                "type": "address",
+                "internalType": "address",
+            },
+            {"name": "_data", "type": "bytes", "internalType": "bytes"},
+        ],
+        "outputs": [],
+    },
+    {
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "name": "unwrap",
+        "inputs": [
+            {"name": "_asset", "type": "address", "internalType": "address"},
+            {"name": "_to", "type": "address", "internalType": "address"},
+            {"name": "_amount", "type": "uint256", "internalType": "uint256"},
+            {
+                "name": "_callbackReceiver",
+                "type": "address",
+                "internalType": "address",
+            },
+            {"name": "_data", "type": "bytes", "internalType": "bytes"},
+        ],
+        "outputs": [],
+    }
+]

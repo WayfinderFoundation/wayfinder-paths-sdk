@@ -339,11 +339,20 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
+        mock_web3 = MagicMock()
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
-            AsyncMock(return_value=2_000_000),
+            AsyncMock(side_effect=[2_000_000, 200_000, 1_199_000]),
         )
 
         best_quote = {
@@ -366,12 +375,24 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module,
             "ensure_allowance",
-            AsyncMock(return_value=(True, "0xapprove")),
+            AsyncMock(side_effect=[(True, "0xapprove_swap"), (True, "0xapprove_wrap")]),
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "encode_call",
+            AsyncMock(
+                return_value={
+                    "to": POLYGON_P_USDC_PROXY_ADDRESS,
+                    "from": from_address,
+                    "data": "0xwrap",
+                    "chainId": 137,
+                }
+            ),
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
             "send_transaction",
-            AsyncMock(return_value="0xswap"),
+            AsyncMock(side_effect=["0xswap", "0xwrap"]),
         )
 
         ok, res = await adapter.bridge_deposit(
@@ -383,9 +404,84 @@ class TestPolymarketAdapter:
         )
         assert ok is True
         assert isinstance(res, dict)
-        assert res["method"] == "brap"
+        assert res["method"] == "brap_then_wrap"
+        assert res["tx_hash"] == "0xwrap"
+        assert res["approve_tx_hash"] == "0xapprove_swap"
         assert res["from_token_address"].lower() == POLYGON_USDC_ADDRESS.lower()
-        assert res["to_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
+        assert res["to_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
+        assert res["provider"] == "enso"
+        assert res["input_amount"] == 1_000_000
+        assert res["output_amount"] == 999_000
+        assert res["swap_tx_hash"] == "0xswap"
+        assert res["swap_approve_tx_hash"] == "0xapprove_swap"
+        assert res["wrap_tx_hash"] == "0xwrap"
+        assert res["wrap_approve_tx_hash"] == "0xapprove_wrap"
+        assert res["swap"]["tx_hash"] == "0xswap"
+        assert res["wrap"]["tx_hash"] == "0xwrap"
+        assert res["wrap"]["amount_base_unit"] == "999000"
+
+    @pytest.mark.asyncio
+    async def test_bridge_deposit_wraps_usdce_to_pusd(self, adapter, monkeypatch):
+        from_address = "0x000000000000000000000000000000000000dEaD"
+        recipient_address = "0x000000000000000000000000000000000000bEEF"
+
+        async def sign_cb(_tx: dict) -> bytes:
+            return b""
+
+        mock_web3 = MagicMock()
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "ensure_allowance",
+            AsyncMock(return_value=(True, "0xapprove_wrap")),
+        )
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYGON_P_USDC_PROXY_ADDRESS,
+                "from": from_address,
+                "data": "0xwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "send_transaction",
+            AsyncMock(return_value="0xwrap"),
+        )
+
+        ok, res = await adapter.bridge_deposit(
+            from_chain_id=137,
+            from_token_address=POLYGON_USDC_E_ADDRESS,
+            amount=1.0,
+            recipient_address=recipient_address,
+            token_decimals=6,
+        )
+        assert ok is True
+        assert isinstance(res, dict)
+        assert res["method"] == "pusd_wrap"
+        assert res["tx_hash"] == "0xwrap"
+        assert res["to_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
+        assert res["recipient_address"].lower() == recipient_address.lower()
+        assert encode_call.await_args.kwargs["target"] == POLYGON_P_USDC_PROXY_ADDRESS
+        assert (
+            encode_call.await_args.kwargs["args"][0].lower()
+            == POLYGON_USDC_E_ADDRESS.lower()
+        )
+        assert encode_call.await_args.kwargs["args"][1].lower() == recipient_address.lower()
 
     @pytest.mark.asyncio
     async def test_bridge_deposit_falls_back_to_polymarket_bridge(
@@ -613,6 +709,15 @@ class TestPolymarketAdapter:
             "get_quote",
             AsyncMock(return_value={"best_quote": best_quote, "quotes": []}),
         )
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYGON_P_USDC_PROXY_ADDRESS,
+                "from": from_address,
+                "data": "0xunwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
         monkeypatch.setattr(
             polymarket_adapter_module,
             "ensure_allowance",
@@ -621,7 +726,7 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module,
             "send_transaction",
-            AsyncMock(return_value="0xswap"),
+            AsyncMock(side_effect=["0xunwrap", "0xswap"]),
         )
 
         ok, res = await adapter.bridge_withdraw(
@@ -633,9 +738,57 @@ class TestPolymarketAdapter:
         )
         assert ok is True
         assert isinstance(res, dict)
-        assert res["method"] == "brap"
-        assert res["from_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
+        assert res["method"] == "unwrap_then_brap"
+        assert res["tx_hash"] == "0xswap"
+        assert res["approve_tx_hash"] == "0xapprove"
+        assert res["from_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
         assert res["to_token_address"].lower() == POLYGON_USDC_ADDRESS.lower()
+        assert res["provider"] == "enso"
+        assert res["input_amount"] == 1_000_000
+        assert res["output_amount"] == 999_000
+        assert res["unwrap_tx_hash"] == "0xunwrap"
+        assert res["swap_tx_hash"] == "0xswap"
+        assert res["swap_approve_tx_hash"] == "0xapprove"
+        assert res["unwrap"]["tx_hash"] == "0xunwrap"
+        assert res["swap"]["tx_hash"] == "0xswap"
+        assert encode_call.await_args.kwargs["fn_name"] == "unwrap"
+
+    @pytest.mark.asyncio
+    async def test_bridge_withdraw_unwraps_to_polygon_usdce(self, adapter, monkeypatch):
+        from_address = "0x000000000000000000000000000000000000dEaD"
+
+        async def sign_cb(_tx: dict) -> bytes:
+            return b""
+
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYGON_P_USDC_PROXY_ADDRESS,
+                "from": from_address,
+                "data": "0xunwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "send_transaction",
+            AsyncMock(return_value="0xunwrap"),
+        )
+
+        ok, res = await adapter.bridge_withdraw(
+            amount_usdce=1.0,
+            to_chain_id=137,
+            to_token_address=POLYGON_USDC_E_ADDRESS,
+            recipient_addr=from_address,
+            token_decimals=6,
+        )
+        assert ok is True
+        assert isinstance(res, dict)
+        assert res["method"] == "pusd_unwrap"
+        assert res["tx_hash"] == "0xunwrap"
+        assert res["to_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
+        assert encode_call.await_args.kwargs["fn_name"] == "unwrap"
 
     @pytest.mark.asyncio
     async def test_bridge_withdraw_falls_back_to_polymarket_bridge(
@@ -647,6 +800,15 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYGON_P_USDC_PROXY_ADDRESS,
+                "from": from_address,
+                "data": "0xunwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",
@@ -677,7 +839,7 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module,
             "send_transaction",
-            AsyncMock(return_value="0xtransfer"),
+            AsyncMock(side_effect=["0xunwrap", "0xtransfer"]),
         )
 
         ok, res = await adapter.bridge_withdraw(
@@ -689,5 +851,6 @@ class TestPolymarketAdapter:
         )
         assert ok is True
         assert isinstance(res, dict)
-        assert res["method"] == "polymarket_bridge"
+        assert res["method"] == "unwrap_then_bridge"
         assert res["tx_hash"] == "0xtransfer"
+        assert res["unwrap"]["tx_hash"] == "0xunwrap"
