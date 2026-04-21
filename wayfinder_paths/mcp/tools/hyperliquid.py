@@ -9,8 +9,8 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.utils.wallets import get_wallet_sign_typed_data_callback
 from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
+from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
@@ -286,24 +286,17 @@ async def hyperliquid_execute(
     preview_obj = await build_hyperliquid_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
-    try:
-        sign_callback, sender = await get_wallet_sign_typed_data_callback(want)
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
-
     strategy_raw = CONFIG.get("strategy")
     strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
     config: dict[str, Any] = dict(strategy_cfg)
-    config["main_wallet"] = {"address": sender}
-    config["strategy_wallet"] = {"address": sender}
 
     effects: list[dict[str, Any]] = []
 
-    adapter = HyperliquidAdapter(
-        config=config,
-        sign_callback=sign_callback,
-        wallet_address=sender,
-    )
+    try:
+        adapter = await get_adapter(HyperliquidAdapter, want, config_overrides=config)
+    except ValueError as e:
+        return err("invalid_wallet", str(e))
+    sender = adapter.wallet_address
 
     if action == "withdraw":
         if amount_usdc is None:

@@ -158,6 +158,10 @@ def get_etherscan_api_key() -> str | None:
     return os.environ.get("ETHERSCAN_API_KEY")
 
 
+def is_opencode_instance() -> bool:
+    return bool(os.environ.get("OPENCODE_INSTANCE_ID"))
+
+
 def get_opencode_instance_id() -> str:
     if not (instance_id := os.environ.get("OPENCODE_INSTANCE_ID")):
         raise RuntimeError(

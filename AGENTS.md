@@ -97,6 +97,16 @@ await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
 
 Projections are scoped per chart — switching markets shows only that chart's projections. The backend is type-agnostic; new projection types only need a frontend renderer.
 
+## Scheduled Jobs (backend sync)
+
+On OpenCode Cloud instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
+
+- **Job sync**: When a job is added, updated, paused, resumed, or deleted, the daemon pushes the current state to `PUT /instances/{id}/jobs/{name}/`
+- **Run sync**: After each run completes, the daemon pushes the full log output to `POST /instances/{id}/jobs/{name}/runs/`
+- **Local-only**: On non-cloud instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
+
+The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
+
 ## Project Overview
 
 Wayfinder Paths is a Python 3.12 public SDK for community-contributed DeFi trading strategies and adapters. It provides the building blocks for automated trading: adapters (exchange/protocol integrations), strategies (trading algorithms), and clients (low-level API wrappers). In production it can be integrated with a separate execution service for hosted signing/execution.

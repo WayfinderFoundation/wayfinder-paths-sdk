@@ -276,7 +276,8 @@ class BorosHypeStrategy(
 
         self.hyperliquid_adapter = HyperliquidAdapter(
             config=self._config,
-            sign_callback=self.strategy_sign_typed_data,
+            sign_callback=self._sign_callback,
+            sign_typed_data_callback=self.strategy_sign_typed_data,
         )
 
         strat_addr = (strategy_wallet or {}).get("address")

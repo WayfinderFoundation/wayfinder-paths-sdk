@@ -56,7 +56,8 @@ class HyperliquidAdapter(BaseAdapter):
         self,
         config: dict[str, Any] | None = None,
         *,
-        sign_callback: Callable[[dict], Awaitable[str]] | None = None,
+        sign_callback: Callable[[dict], Awaitable[bytes]] | None = None,
+        sign_typed_data_callback: Callable[[dict | str], Awaitable[str]] | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("hyperliquid_adapter", config)
@@ -70,6 +71,9 @@ class HyperliquidAdapter(BaseAdapter):
         )
 
         self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
+        self._sign_typed_data_callback: Callable[..., Awaitable[Any]] | None = (
+            sign_typed_data_callback
+        )
 
     async def _post_across_dexes(
         self,
@@ -153,10 +157,10 @@ class HyperliquidAdapter(BaseAdapter):
     async def _sign(
         self, payload: str, action: dict[str, Any], address: str
     ) -> dict[str, Any] | None:
-        if self._sign_callback is None:
-            raise ValueError("No sign_callback configured")
+        if self._sign_typed_data_callback is None:
+            raise ValueError("No sign_typed_data_callback configured")
 
-        sig_hex = await self._sign_callback(payload)
+        sig_hex = await self._sign_typed_data_callback(payload)
         if not sig_hex:
             return None
         return self._sig_hex_to_hl_signature(sig_hex)
