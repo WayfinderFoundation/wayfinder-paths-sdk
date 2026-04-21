@@ -10,13 +10,13 @@ from typing import Any, Literal
 import httpx
 from eth_utils import to_checksum_address
 from hexbytes import HexBytes
-from py_clob_client.client import ClobClient  # type: ignore[import-untyped]
-from py_clob_client.clob_types import (  # type: ignore[import-untyped]
+from py_clob_client_v2.client import ClobClient  # type: ignore[import-untyped]
+from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
     MarketOrderArgs,
     OpenOrderParams,
-    OrderArgs,
+    OrderArgsV2,
 )
-from py_clob_client.config import (  # type: ignore[import-untyped]
+from py_clob_client_v2.config import (  # type: ignore[import-untyped]
     get_contract_config,
 )
 
@@ -1195,11 +1195,12 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
-            order_args = OrderArgs(
+            order_args = OrderArgsV2(
                 token_id=token_id,
                 price=price,
                 size=size,
                 side=side,
+                # TODO: insert builder_code here
             )  # type: ignore[misc]
             order = await self.clob_client.create_order(order_args)
             resp = self.clob_client.post_order(order, "GTC", post_only)
