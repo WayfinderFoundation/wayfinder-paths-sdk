@@ -1043,8 +1043,11 @@ class PolymarketAdapter(BaseAdapter):
                         address=POLYGON_USDC_ADDRESS,
                         abi=ERC20_ABI,
                     )
-                    pusd_bal, usdce_bal, usdc_bal = (
-                        await read_only_calls_multicall_or_gather(
+                    (
+                        pusd_bal,
+                        usdce_bal,
+                        usdc_bal,
+                    ) = await read_only_calls_multicall_or_gather(
                         web3=web3,
                         chain_id=POLYGON_CHAIN_ID,
                         calls=[
@@ -1053,7 +1056,6 @@ class PolymarketAdapter(BaseAdapter):
                             Call(usdc, "balanceOf", args=(acct,), postprocess=int),
                         ],
                         block_identifier="pending",
-                    )
                     )
                     msg += (
                         " Polygon balances: "
@@ -1067,10 +1069,7 @@ class PolymarketAdapter(BaseAdapter):
                     )
                 return False, msg
 
-            if (
-                from_chain_id == POLYGON_CHAIN_ID
-                and from_token == POLYGON_USDC_ADDRESS
-            ):
+            if from_chain_id == POLYGON_CHAIN_ID and from_token == POLYGON_USDC_ADDRESS:
                 usdce_balance_before_swap = await get_token_balance(
                     POLYGON_USDC_E_ADDRESS,
                     POLYGON_CHAIN_ID,
@@ -1079,10 +1078,7 @@ class PolymarketAdapter(BaseAdapter):
                     block_identifier="pending",
                 )
 
-        if (
-            from_chain_id == POLYGON_CHAIN_ID
-            and from_token == POLYGON_USDC_E_ADDRESS
-        ):
+        if from_chain_id == POLYGON_CHAIN_ID and from_token == POLYGON_USDC_E_ADDRESS:
             return await _wrap_usdce_to_pusd(
                 owner_address=from_address,
                 recipient_address=rcpt,
@@ -1090,10 +1086,7 @@ class PolymarketAdapter(BaseAdapter):
                 signing_callback=sign_cb,
             )
 
-        if (
-            from_chain_id == POLYGON_CHAIN_ID
-            and from_token == POLYGON_USDC_ADDRESS
-        ):
+        if from_chain_id == POLYGON_CHAIN_ID and from_token == POLYGON_USDC_ADDRESS:
             brap = await _try_brap_swap_polygon(
                 from_token_address=from_token,
                 to_token_address=POLYGON_USDC_E_ADDRESS,
@@ -1148,9 +1141,7 @@ class PolymarketAdapter(BaseAdapter):
                     "wrap": wrap,
                 }
 
-        ok_addr, addr_data = await self.bridge_deposit_addresses(
-            address=rcpt
-        )
+        ok_addr, addr_data = await self.bridge_deposit_addresses(address=rcpt)
         if not ok_addr:
             return False, addr_data
 
@@ -1210,16 +1201,14 @@ class PolymarketAdapter(BaseAdapter):
 
         if (
             to_chain_id == POLYGON_CHAIN_ID
-            and to_checksum_address(to_token_address)
-            == POLYGON_USDC_E_ADDRESS
+            and to_checksum_address(to_token_address) == POLYGON_USDC_E_ADDRESS
             and rcpt == from_address
         ):
             return True, {**unwrap, "recipient_addr": rcpt}
 
         if (
             to_chain_id == POLYGON_CHAIN_ID
-            and to_checksum_address(to_token_address)
-            == POLYGON_USDC_ADDRESS
+            and to_checksum_address(to_token_address) == POLYGON_USDC_ADDRESS
             and rcpt == from_address
         ):
             brap = await _try_brap_swap_polygon(
@@ -1549,7 +1538,11 @@ class PolymarketAdapter(BaseAdapter):
                     address=POLYGON_USDC_ADDRESS,
                     abi=ERC20_ABI,
                 )
-                bal_pusd, bal_usdce, bal_usdc = await read_only_calls_multicall_or_gather(
+                (
+                    bal_pusd,
+                    bal_usdce,
+                    bal_usdc,
+                ) = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=POLYGON_CHAIN_ID,
                     calls=[

@@ -481,7 +481,10 @@ class TestPolymarketAdapter:
             encode_call.await_args.kwargs["args"][0].lower()
             == POLYGON_USDC_E_ADDRESS.lower()
         )
-        assert encode_call.await_args.kwargs["args"][1].lower() == recipient_address.lower()
+        assert (
+            encode_call.await_args.kwargs["args"][1].lower()
+            == recipient_address.lower()
+        )
 
     @pytest.mark.asyncio
     async def test_bridge_deposit_falls_back_to_polymarket_bridge(
