@@ -27,6 +27,7 @@ from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
     MAX_UINT256,
     POLYGON_CHAIN_ID,
+    POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
     POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
@@ -1091,9 +1092,9 @@ class PolymarketAdapter(BaseAdapter):
         return addr, self.sign_callback
 
     def _contract_addrs(self, *, neg_risk: bool = False) -> dict[str, str]:
-        cfg = get_contract_config(POLYGON_CHAIN_ID, neg_risk=neg_risk)
+        cfg = get_contract_config(POLYGON_CHAIN_ID)
         return {
-            "exchange": str(cfg.exchange),
+            "exchange": str(cfg.neg_risk_exchange_v2 if neg_risk else cfg.exchange_v2),
             "collateral": str(cfg.collateral),
             "conditional_tokens": str(cfg.conditional_tokens),
         }
@@ -1293,6 +1294,7 @@ class PolymarketAdapter(BaseAdapter):
             "orders": None,
             "recentActivity": None,
             "recentTrades": None,
+            "pusd_balance": None,
             "usdc_e_balance": None,
             "usdc_balance": None,
             "balances": None,
@@ -1320,6 +1322,10 @@ class PolymarketAdapter(BaseAdapter):
 
         async def _fetch_balances() -> tuple[bool, dict[str, Any] | str]:
             async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                pusd = web3.eth.contract(
+                    address=to_checksum_address(POLYGON_P_USDC_PROXY_ADDRESS),
+                    abi=ERC20_ABI,
+                )
                 usdce = web3.eth.contract(
                     address=to_checksum_address(POLYGON_USDC_E_ADDRESS),
                     abi=ERC20_ABI,
@@ -1328,16 +1334,23 @@ class PolymarketAdapter(BaseAdapter):
                     address=to_checksum_address(POLYGON_USDC_ADDRESS),
                     abi=ERC20_ABI,
                 )
-                bal_usdce, bal_usdc = await read_only_calls_multicall_or_gather(
+                bal_pusd, bal_usdce, bal_usdc = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=POLYGON_CHAIN_ID,
                     calls=[
+                        Call(pusd, "balanceOf", args=(addr,), postprocess=int),
                         Call(usdce, "balanceOf", args=(addr,), postprocess=int),
                         Call(usdc, "balanceOf", args=(addr,), postprocess=int),
                     ],
                     block_identifier="pending",
                 )
             return True, {
+                "pusd": {
+                    "address": POLYGON_P_USDC_PROXY_ADDRESS,
+                    "decimals": 6,
+                    "amount_base_units": bal_pusd,
+                    "amount": bal_pusd / 1_000_000,
+                },
                 "usdc_e": {
                     "address": POLYGON_USDC_E_ADDRESS,
                     "decimals": 6,
@@ -1436,6 +1449,7 @@ class PolymarketAdapter(BaseAdapter):
             if bal_ok:
                 ok_any = True
                 out["balances"] = bal_data
+                out["pusd_balance"] = bal_data["pusd"]["amount"]
                 out["usdc_e_balance"] = bal_data["usdc_e"]["amount"]
                 out["usdc_balance"] = bal_data["usdc"]["amount"]
             else:

@@ -6,6 +6,7 @@ import pytest
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.constants.polymarket import (
+    POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
 )
@@ -287,7 +288,7 @@ class TestPolymarketAdapter:
 
         mock_contract = MagicMock()
         mock_contract.functions.balanceOf.return_value = MagicMock(
-            call=AsyncMock(side_effect=[1_230_000, 4_560_000])
+            call=AsyncMock(side_effect=[7_890_000, 1_230_000, 4_560_000])
         )
         mock_web3 = MagicMock()
         mock_web3.eth.contract.return_value = mock_contract
@@ -323,8 +324,11 @@ class TestPolymarketAdapter:
         assert state["openOrders"] == [{"id": "order_1"}]
         assert state["orders"] == [{"id": "order_1"}]
 
+        assert state["pusd_balance"] == pytest.approx(7.89)
         assert state["usdc_e_balance"] == pytest.approx(1.23)
         assert state["usdc_balance"] == pytest.approx(4.56)
+        assert state["balances"]["pusd"]["address"] == POLYGON_P_USDC_PROXY_ADDRESS
+        assert state["balances"]["pusd"]["amount_base_units"] == 7_890_000
         assert state["balances"]["usdc_e"]["amount_base_units"] == 1_230_000
         assert state["balances"]["usdc"]["amount_base_units"] == 4_560_000
 
