@@ -78,7 +78,13 @@ ignore = [
 known-first-party = ["wayfinder_paths"]
 
 [tool.pytest.ini_options]
-testpaths = ["wayfinder_paths/"]
+testpaths = [
+    "wayfinder_paths/tests",
+    "wayfinder_paths/strategies",
+    "wayfinder_paths/adapters",
+    "wayfinder_paths/core",
+    "wayfinder_paths/mcp",
+]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

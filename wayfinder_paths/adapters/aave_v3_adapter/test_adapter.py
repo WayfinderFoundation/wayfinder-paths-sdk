@@ -355,6 +355,82 @@ class TestAaveV3Adapter:
         assert tx == "0xtx"
         assert mock_encode.await_count == 1
 
+    @pytest.mark.asyncio
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        new_callable=AsyncMock,
+        return_value="0xabc",
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.ensure_allowance",
+        new_callable=AsyncMock,
+        return_value=(True, "ok"),
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.get_token_balance",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.encode_call",
+        new_callable=AsyncMock,
+        return_value={"to": FAKE_ADDR},
+    )
+    async def test_repay_full_erc20_uses_debt_plus_buffer_amount(
+        self,
+        mock_encode,
+        mock_balance,
+        mock_allowance,
+        _mock_send,
+        adapter,
+    ):
+        adapter._variable_debt_token = AsyncMock(
+            return_value="0x00000000000000000000000000000000000000dE"
+        )
+        mock_balance.side_effect = [123, 200]
+
+        ok, tx = await adapter.repay(
+            chain_id=42161,
+            underlying_token=FAKE_ASSET,
+            qty=0,
+            repay_full=True,
+        )
+
+        assert ok is True
+        assert tx == "0xabc"
+        assert mock_allowance.await_args.kwargs["amount"] == 124
+        assert mock_encode.await_args.kwargs["args"][1] == 124
+
+    @pytest.mark.asyncio
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.ensure_allowance",
+        new_callable=AsyncMock,
+    )
+    @patch(
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.get_token_balance",
+        new_callable=AsyncMock,
+    )
+    async def test_repay_full_erc20_requires_enough_wallet_balance(
+        self,
+        mock_balance,
+        mock_allowance,
+        adapter,
+    ):
+        adapter._variable_debt_token = AsyncMock(
+            return_value="0x00000000000000000000000000000000000000dE"
+        )
+        mock_balance.side_effect = [123, 122]
+
+        ok, message = await adapter.repay(
+            chain_id=42161,
+            underlying_token=FAKE_ASSET,
+            qty=0,
+            repay_full=True,
+        )
+
+        assert ok is False
+        assert "insufficient token balance for repay_full" in message
+        mock_allowance.assert_not_awaited()
+
     # ---- native via ZERO_ADDRESS ----
 
     @pytest.mark.asyncio
