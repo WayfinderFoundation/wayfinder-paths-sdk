@@ -16,7 +16,7 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-from wayfinder_paths.policies.session import build_session_policy
+from wayfinder_paths.policies.session import build_session_policy, build_strategy_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -51,6 +51,7 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                 "type": "remote",
                 "chain_type": w.get("chain_type", "ethereum"),
                 "wallet_type": w.get("wallet_type", "session"),
+                "strategy_slug": w.get("strategy_slug"),
                 "session_expires_at": w.get("session_expires_at"),
                 "session_expires_in": w.get("session_expires_in"),
             }
@@ -305,14 +306,23 @@ async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
+    strategy_slug: str | None = None,
 ) -> dict[str, Any]:
-    if len(policies) == 0:
+    if strategy_slug:
+        wallet_type = "strategy"
+        if len(policies) == 0:
+            policies = [build_strategy_policy()]
+    elif len(policies) == 0:
         wallet_type = "session"
         policies = [build_session_policy()]
     else:
         wallet_type = "policy"
     result = await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
+        chain_type=chain_type,
+        policies=policies,
+        label=label,
+        wallet_type=wallet_type,
+        strategy_slug=strategy_slug,
     )
     if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(

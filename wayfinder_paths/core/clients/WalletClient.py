@@ -25,6 +25,7 @@ class WalletClient(WayfinderClient):
         *,
         chain_type: str = "ethereum",
         label: str = "",
+        strategy_slug: str | None = None,
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/wallets/"
         body: dict[str, Any] = {
@@ -33,6 +34,8 @@ class WalletClient(WayfinderClient):
             "chain_type": chain_type,
             "label": label,
         }
+        if strategy_slug:
+            body["strategy_slug"] = strategy_slug
         resp = await self._authed_request("POST", url, json=body)
         return resp.json()
 

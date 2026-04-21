@@ -68,6 +68,7 @@ async def runner(
     # Strategy payload fields
     strategy: str | None = None,
     strategy_action: str | None = None,
+    strategy_slug: str | None = None,
     config: str | None = None,
     wallet_label: str | None = None,
     timeout_seconds: int | None = None,
@@ -311,6 +312,8 @@ async def runner(
                         "config": (config or "config.json").strip(),
                     }
                 )
+                if strategy_slug:
+                    job_payload["strategy_slug"] = str(strategy_slug).strip()
             else:
                 sp = (script_path or "").strip()
                 if not sp:
