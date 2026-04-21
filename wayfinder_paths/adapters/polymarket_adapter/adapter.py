@@ -19,6 +19,7 @@ from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
 from py_clob_client_v2.config import (  # type: ignore[import-untyped]
     get_contract_config,
 )
+from wayfinder_paths.core.config import get_polygon_builder_code
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
@@ -40,6 +41,8 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
+    POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
+    POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -168,7 +171,7 @@ async def _wrap_usdce_to_pusd(
             approve_tx_hash = appr
 
         tx = await encode_call(
-            target=POLYGON_P_USDC_PROXY_ADDRESS,
+            target=POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
             abi=POLYMARKET_PUSD_ONRAMP_ABI,
             fn_name="wrap",
             args=[
@@ -208,7 +211,7 @@ async def _unwrap_pusd_to_usdce(
     try:
         recipient = to_checksum_address(recipient_address)
         tx = await encode_call(
-            target=POLYGON_P_USDC_PROXY_ADDRESS,
+            target=POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
             abi=POLYMARKET_PUSD_ONRAMP_ABI,
             fn_name="unwrap",
             args=[
@@ -1303,6 +1306,16 @@ class PolymarketAdapter(BaseAdapter):
             "conditional_tokens": str(cfg.conditional_tokens),
         }
 
+    def _builder_code(self) -> str | None:
+        system = self.config.get("system", {})
+        if isinstance(system, dict):
+            builder_code = system.get("polymarket_builder_code")
+            if isinstance(builder_code, str):
+                builder_code = builder_code.strip()
+                if builder_code:
+                    return builder_code
+        return get_polygon_builder_code()
+
     @property
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
         if self._clob_client is None:
@@ -1400,12 +1413,18 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
+            builder_code = self._builder_code()
+            order_kwargs: dict[str, Any] = {
+                "token_id": token_id,
+                "price": price,
+                "size": size,
+                "side": side,
+            }
+            if builder_code:
+                order_kwargs["builder_code"] = builder_code
+
             order_args = OrderArgsV2(
-                token_id=token_id,
-                price=price,
-                size=size,
-                side=side,
-                # TODO: insert builder_code here
+                **order_kwargs,
             )  # type: ignore[misc]
             order = await self.clob_client.create_order(order_args)
             resp = self.clob_client.post_order(order, "GTC", post_only)
@@ -1430,12 +1449,17 @@ class PolymarketAdapter(BaseAdapter):
             return False, msg
 
         try:
-            order_args = MarketOrderArgs(  # type: ignore[misc]
-                token_id=token_id,
-                side=side,
-                amount=amount,
-                price=price or 0.0,
-            )
+            builder_code = self._builder_code()
+            order_kwargs: dict[str, Any] = {
+                "token_id": token_id,
+                "side": side,
+                "amount": amount,
+                "price": price or 0.0,
+            }
+            if builder_code:
+                order_kwargs["builder_code"] = builder_code
+
+            order_args = MarketOrderArgs(**order_kwargs)  # type: ignore[misc]
             order = await self.clob_client.create_market_order(order_args)
             resp = self.clob_client.post_order(order, order_args.order_type, False)
             return True, resp if isinstance(resp, dict) else {"result": resp}
