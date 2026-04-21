@@ -401,13 +401,28 @@ def _render_claude_rules(manifest: PathManifest) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Simple tools that map directly to a permission name.
+_SIMPLE_TOOL_PERMISSIONS: dict[str, str] = {
+    "websearch": "WebSearch",
+    "webfetch": "WebFetch",
+}
+
+# Bash command patterns to pre-authorize when agents declare "bash".
+_BASH_ALLOW_PATTERNS: tuple[str, ...] = (
+    "Bash(python *)",
+    "Bash(poetry run python *)",
+    "Bash(cat *)",
+    "Bash(ls *)",
+)
+
+
 def _render_claude_settings(manifest: PathManifest, skill: PathSkillConfig) -> str:
     matchers = "|".join(
         _claude_agent_name(skill.name, agent.agent_id) for agent in manifest.agents
     )
     inject_cmd = f'python "$CLAUDE_PROJECT_DIR/.claude/skills/{skill.name}/scripts/inject_run_context.py"'
     validate_cmd = f'python "$CLAUDE_PROJECT_DIR/.claude/skills/{skill.name}/scripts/validate_hook.py"'
-    hooks = {
+    settings: dict[str, Any] = {
         "hooks": {
             "SubagentStart": [
                 {
@@ -435,7 +450,29 @@ def _render_claude_settings(manifest: PathManifest, skill: PathSkillConfig) -> s
             ],
         }
     }
-    return json.dumps(hooks, indent=2) + "\n"
+
+    # Collect tools that need explicit permission from all agents.
+    allow_entries: list[str] = []
+    has_bash = False
+    for agent in manifest.agents:
+        for tool in agent.tools:
+            tool_lower = tool.lower()
+            if tool_lower in _SIMPLE_TOOL_PERMISSIONS:
+                perm = _SIMPLE_TOOL_PERMISSIONS[tool_lower]
+                if perm not in allow_entries:
+                    allow_entries.append(perm)
+            if tool_lower == "bash":
+                has_bash = True
+    if has_bash:
+        for pattern in _BASH_ALLOW_PATTERNS:
+            if pattern not in allow_entries:
+                allow_entries.append(pattern)
+    if allow_entries:
+        settings["permissions"] = {
+            "allow": sorted(allow_entries),
+        }
+
+    return json.dumps(settings, indent=2) + "\n"
 
 
 def _render_opencode_agents_md(manifest: PathManifest, skill: PathSkillConfig) -> str:

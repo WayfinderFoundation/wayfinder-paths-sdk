@@ -9,7 +9,12 @@ import yaml
 
 from wayfinder_paths.paths.doctor import PathDoctorError, run_doctor
 from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
-from wayfinder_paths.paths.pipeline import STANDARD_OUTPUT_CONTRACT
+from wayfinder_paths.paths.pipeline import (
+    STANDARD_OUTPUT_CONTRACT,
+    PipelineGraphError,
+    archetype_output_contract,
+    get_pipeline_archetype,
+)
 from wayfinder_paths.paths.renderer import PathSkillRenderError, render_skill_exports
 
 
@@ -64,6 +69,7 @@ def _evaluate_fixture_case(
     path_dir: Path,
     eval_path: Path,
     payload: dict[str, Any],
+    required_contract: tuple[str, ...] = STANDARD_OUTPUT_CONTRACT,
 ) -> list[EvalIssue]:
     fixture_name = str(payload.get("fixture") or "").strip()
     if not fixture_name:
@@ -77,9 +83,7 @@ def _evaluate_fixture_case(
         raise PathEvalError(f"{fixture_path} output must be an object")
 
     issues: list[EvalIssue] = []
-    missing_fields = [
-        field for field in STANDARD_OUTPUT_CONTRACT if field not in output
-    ]
+    missing_fields = [field for field in required_contract if field not in output]
     if missing_fields:
         issues.append(
             EvalIssue(
@@ -180,6 +184,15 @@ def run_path_eval(*, path_dir: Path) -> PathEvalReport:
     except PathManifestError as exc:
         raise PathEvalError(str(exc)) from exc
 
+    required_contract = STANDARD_OUTPUT_CONTRACT
+    if manifest.pipeline and manifest.pipeline.archetype:
+        try:
+            required_contract = archetype_output_contract(
+                get_pipeline_archetype(manifest.pipeline.archetype)
+            )
+        except PipelineGraphError:
+            pass
+
     try:
         doctor_report = run_doctor(path_dir=path_dir, fix=False, overwrite=False)
     except PathDoctorError as exc:
@@ -215,6 +228,7 @@ def run_path_eval(*, path_dir: Path) -> PathEvalReport:
                     path_dir=path_dir,
                     eval_path=eval_path,
                     payload=payload,
+                    required_contract=required_contract,
                 )
             )
             continue

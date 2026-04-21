@@ -16,8 +16,8 @@ from wayfinder_paths.paths.manifest import (
     resolve_skill_runtime,
 )
 from wayfinder_paths.paths.pipeline import (
-    STANDARD_OUTPUT_CONTRACT,
     PipelineGraphError,
+    archetype_output_contract,
     get_pipeline_archetype,
     load_pipeline_graph,
     validate_pipeline_graph,
@@ -229,8 +229,9 @@ def _validate_pipeline(
         )
         return
 
-    missing_output_fields = set(STANDARD_OUTPUT_CONTRACT) - set(
-        pipeline.output_contract or STANDARD_OUTPUT_CONTRACT
+    required_output_contract = archetype_output_contract(archetype)
+    missing_output_fields = set(required_output_contract) - set(
+        pipeline.output_contract or required_output_contract
     )
     if missing_output_fields:
         _record_issue(

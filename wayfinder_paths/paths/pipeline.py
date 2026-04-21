@@ -77,6 +77,9 @@ class PipelineArchetype:
     # Skills that must be loaded before writing any scripts for this archetype.
     # The skill renderer injects these as prerequisites in generated instructions.
     required_skills: tuple[str, ...] = ()
+    # Archetype-specific output-contract fields appended to STANDARD_OUTPUT_CONTRACT.
+    # Used by pipelines that produce additional required artifacts (e.g. narrative-radar's trade_book).
+    extra_output_contract: tuple[str, ...] = ()
 
 
 _ARCHETYPES: dict[str, PipelineArchetype] = {
@@ -395,6 +398,196 @@ _ARCHETYPES: dict[str, PipelineArchetype] = {
             ),
         ),
     ),
+    "narrative-radar": PipelineArchetype(
+        archetype_id="narrative-radar",
+        entry_command="narrative-radar",
+        required_skills=(
+            "using-polymarket-adapter",
+            "using-hyperliquid-adapter",
+            "using-alpha-lab",
+        ),
+        extra_output_contract=("trade_book",),
+        required_policy_sections=(
+            "archetype",
+            "domains",
+            "verification_protocol",
+            "novelty_gate",
+            "adversarial",
+            "confidence",
+            "portfolio_strategy",
+            "null_state",
+        ),
+        required_nodes=(
+            "intake",
+            "geopolitical_scan",
+            "macro_scan",
+            "regulatory_scan",
+            "tech_scan",
+            "structural_scan",
+            "thesis_synthesis",
+            "novelty_gate",
+            "pre_mortem",
+            "consensus_audit",
+            "historical_analog",
+            "portfolio_strategy",
+            "compile_inventory",
+            "display_compose",
+            "finalize",
+        ),
+        default_edges=(
+            ("intake", "geopolitical_scan"),
+            ("intake", "macro_scan"),
+            ("intake", "regulatory_scan"),
+            ("intake", "tech_scan"),
+            ("intake", "structural_scan"),
+            ("geopolitical_scan", "thesis_synthesis"),
+            ("macro_scan", "thesis_synthesis"),
+            ("regulatory_scan", "thesis_synthesis"),
+            ("tech_scan", "thesis_synthesis"),
+            ("structural_scan", "thesis_synthesis"),
+            ("thesis_synthesis", "novelty_gate"),
+            ("novelty_gate", "pre_mortem"),
+            ("pre_mortem", "consensus_audit"),
+            ("consensus_audit", "historical_analog"),
+            ("historical_analog", "portfolio_strategy"),
+            ("portfolio_strategy", "compile_inventory"),
+            ("compile_inventory", "display_compose"),
+            ("display_compose", "finalize"),
+        ),
+        default_failure_edges=(
+            ("geopolitical_scan", "retryable_error", "geopolitical_scan", 1),
+            ("macro_scan", "retryable_error", "macro_scan", 1),
+            ("regulatory_scan", "retryable_error", "regulatory_scan", 1),
+            ("tech_scan", "retryable_error", "tech_scan", 1),
+            ("structural_scan", "retryable_error", "structural_scan", 1),
+            ("novelty_gate", "all_killed", "finalize", 0),
+            ("historical_analog", "all_rejected", "compile_inventory", 0),
+            ("portfolio_strategy", "no_instruments", "compile_inventory", 0),
+        ),
+        input_slots=(
+            ArchetypeInputSlot(
+                name="scan_config",
+                file_type="yaml",
+                path="inputs/scan_config.yaml",
+                schema="schemas/scan_config.schema.json",
+                required=True,
+            ),
+            ArchetypeInputSlot(
+                name="inventory",
+                file_type="json",
+                path="inputs/inventory.json",
+                schema="schemas/inventory.schema.json",
+                required=False,
+            ),
+            ArchetypeInputSlot(
+                name="portfolio",
+                file_type="yaml",
+                path="inputs/portfolio.yaml",
+                schema="schemas/portfolio.schema.json",
+                required=False,
+            ),
+            ArchetypeInputSlot(
+                name="watchlist",
+                file_type="yaml",
+                path="inputs/watchlist.yaml",
+                schema="schemas/watchlist.schema.json",
+                required=False,
+            ),
+        ),
+        agents=(
+            ArchetypeAgent(
+                agent_id="geopolitical-analyst",
+                phase="geopolitical_scan",
+                description="Research interstate tensions, alliance shifts, conflict escalation ladders, and sanctions trajectories using think tank publications and diplomatic signals.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="geopolitical_scan.json",
+            ),
+            ArchetypeAgent(
+                agent_id="macro-strategist",
+                phase="macro_scan",
+                description="Research fiscal sustainability, monetary policy divergence, trade imbalances, and commodity supply constraints using central bank and institutional publications.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="macro_scan.json",
+            ),
+            ArchetypeAgent(
+                agent_id="regulatory-tracker",
+                phase="regulatory_scan",
+                description="Track legislation in pipeline, enforcement pattern shifts, consultation papers, and international regulatory coordination.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="regulatory_scan.json",
+            ),
+            ArchetypeAgent(
+                agent_id="tech-scout",
+                phase="tech_scan",
+                description="Identify technology capability thresholds approaching, adoption curves accelerating, and infrastructure buildouts that will reshape markets.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="tech_scan.json",
+            ),
+            ArchetypeAgent(
+                agent_id="structural-analyst",
+                phase="structural_scan",
+                description="Research demographic shifts, energy transition milestones, supply chain restructuring, and institutional changes with long-cycle market implications.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="structural_scan.json",
+            ),
+            ArchetypeAgent(
+                agent_id="thesis-synthesizer",
+                phase="thesis_synthesis",
+                description="Merge domain scan outputs, deduplicate theses, reconcile cross-domain reinforcement, and apply confidence updates to the existing inventory.",
+                tools=("read", "glob", "grep", "bash"),
+                output_name="thesis_synthesis.json",
+            ),
+            ArchetypeAgent(
+                agent_id="novelty-gate",
+                phase="novelty_gate",
+                description="Filter out theses that are already mainstream by checking coverage volume in major financial media and existing Polymarket market liquidity.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="novelty_gate.json",
+            ),
+            ArchetypeAgent(
+                agent_id="pre-mortem-analyst",
+                phase="pre_mortem",
+                description="For each surviving thesis, assume it is wrong and construct the most likely failure scenario to expose weak causal chains and confirmation bias.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="pre_mortem.json",
+            ),
+            ArchetypeAgent(
+                agent_id="consensus-auditor",
+                phase="consensus_audit",
+                description="Search for contrarian takes on each thesis, find the strongest counter-arguments, and flag theses where the consensus view contradicts the thesis.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="consensus_audit.json",
+            ),
+            ArchetypeAgent(
+                agent_id="historical-analogist",
+                phase="historical_analog",
+                description="Find the closest historical parallel for each thesis, evaluate what happened, and assess whether the base rate supports the thesis materializing.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="historical_analog.json",
+            ),
+            ArchetypeAgent(
+                agent_id="portfolio-strategist",
+                phase="portfolio_strategy",
+                description="For validated theses, map to tradeable instruments on Polymarket and Hyperliquid, define transmission mechanisms, and propose trade structures with monitoring triggers.",
+                tools=("read", "glob", "grep", "bash", "webfetch", "websearch"),
+                output_name="portfolio_strategy.json",
+            ),
+            ArchetypeAgent(
+                agent_id="inventory-compiler",
+                phase="compile_inventory",
+                description="Compile the final thesis inventory with confidence trajectories, evidence logs, portfolio actions, and monitoring checklists for persistence across runs.",
+                tools=("read", "glob", "grep", "bash"),
+                output_name="inventory.json",
+            ),
+            ArchetypeAgent(
+                agent_id="display-composer",
+                phase="display_compose",
+                description="Transform the compiled inventory into a display-ready applet data bundle with human-readable summaries, plain-English descriptions, editorial tags, and computed layout hints.",
+                tools=("read", "glob", "grep", "bash"),
+                output_name="display.json",
+            ),
+        ),
+    ),
 }
 
 
@@ -411,6 +604,10 @@ def get_pipeline_archetype(archetype_id: str) -> PipelineArchetype:
         raise PipelineGraphError(
             f"Unknown pipeline archetype '{normalized}'. Expected one of: {expected}"
         ) from exc
+
+
+def archetype_output_contract(archetype: PipelineArchetype) -> tuple[str, ...]:
+    return STANDARD_OUTPUT_CONTRACT + archetype.extra_output_contract
 
 
 def default_pipeline_graph(archetype_id: str) -> PipelineGraph:
