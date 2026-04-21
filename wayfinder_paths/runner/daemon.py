@@ -425,8 +425,6 @@ class RunnerDaemon:
             env.update({str(k): str(v) for k, v in payload_env.items()})
         if payload.get("wallet_label"):
             env["WAYFINDER_WALLET_LABEL"] = str(payload.get("wallet_label"))
-        if payload.get("strategy_slug"):
-            env["WAYFINDER_STRATEGY_SLUG"] = str(payload.get("strategy_slug"))
         env = _with_repo_pythonpath(env, repo_root=self._paths.repo_root)
 
         try:

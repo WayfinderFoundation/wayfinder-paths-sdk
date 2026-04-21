@@ -51,7 +51,6 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
                 "type": "remote",
                 "chain_type": w.get("chain_type", "ethereum"),
                 "wallet_type": w.get("wallet_type", "session"),
-                "strategy_slug": w.get("strategy_slug"),
                 "session_expires_at": w.get("session_expires_at"),
                 "session_expires_in": w.get("session_expires_in"),
             }
@@ -306,13 +305,12 @@ async def create_remote_wallet(
     label: str = "",
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
-    strategy_slug: str | None = None,
+    wallet_type: str | None = None,
 ) -> dict[str, Any]:
-    if strategy_slug:
-        wallet_type = "strategy"
-        if len(policies) == 0:
+    if wallet_type == "strategy":
+        if not policies:
             policies = [build_strategy_policy()]
-    elif len(policies) == 0:
+    elif not policies:
         wallet_type = "session"
         policies = [build_session_policy()]
     else:
@@ -322,7 +320,6 @@ async def create_remote_wallet(
         policies=policies,
         label=label,
         wallet_type=wallet_type,
-        strategy_slug=strategy_slug,
     )
     if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(
