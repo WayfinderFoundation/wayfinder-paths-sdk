@@ -9,6 +9,7 @@ from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
     get_opencode_instance_id,
+    is_opencode_instance,
 )
 
 
@@ -31,6 +32,8 @@ class ScheduledJobsClient:
         return hdrs
 
     def sync_job(self, job_name: str, data: dict[str, Any]) -> None:
+        if not is_opencode_instance():
+            return
         try:
             self._client.put(
                 f"{self._base_url()}/{job_name}/",
@@ -43,6 +46,8 @@ class ScheduledJobsClient:
             )
 
     def delete_job(self, job_name: str) -> None:
+        if not is_opencode_instance():
+            return
         try:
             self._client.delete(
                 f"{self._base_url()}/{job_name}/", headers=self._headers()
@@ -53,6 +58,8 @@ class ScheduledJobsClient:
             )
 
     def report_run(self, job_name: str, run_data: dict[str, Any]) -> None:
+        if not is_opencode_instance():
+            return
         try:
             self._client.post(
                 f"{self._base_url()}/{job_name}/runs/",

@@ -17,6 +17,7 @@ from loguru import logger
 from wayfinder_paths import __version__
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -286,7 +287,7 @@ class RunnerDaemon:
 
         self._notify_session(rp, status=status, error_text=error_text)
 
-        if os.environ.get("OPENCODE_INSTANCE_ID"):
+        if is_opencode_instance():
             log_output = ""
             try:
                 log_output = rp.log_path.read_text(errors="replace")
@@ -310,7 +311,7 @@ class RunnerDaemon:
             self._sync_job(rp.job_name)
 
     def _sync_job(self, name: str) -> None:
-        if not os.environ.get("OPENCODE_INSTANCE_ID"):
+        if not is_opencode_instance():
             return
         try:
             job, state = self._db.get_job(name=name)
@@ -764,6 +765,6 @@ class RunnerDaemon:
                 return {"ok": False, "error": str(exc)}
             self._running_by_job.pop(job_id, None)
 
-        if os.environ.get("OPENCODE_INSTANCE_ID"):
+        if is_opencode_instance():
             SCHEDULED_JOBS_CLIENT.delete_job(str(name))
         return {"ok": True, "result": {"name": str(name), "deleted": True}}
