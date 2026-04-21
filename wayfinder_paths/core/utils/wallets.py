@@ -36,12 +36,10 @@ def _load_local_wallets() -> list[dict[str, Any]]:
 
 
 async def load_remote_wallets() -> list[dict[str, Any]]:
-    api_key = get_api_key()
-    if not api_key:
+    if not get_api_key() or not is_opencode_instance():
         return []
     try:
-        instance_id = get_opencode_instance_id() if is_opencode_instance() else None
-        raw = await WALLET_CLIENT.list_wallets(instance_id=instance_id)
+        raw = await WALLET_CLIENT.list_wallets(instance_id=get_opencode_instance_id())
         wallets = []
         for i, w in enumerate(raw):
             addr = w.get("wallet_address")
