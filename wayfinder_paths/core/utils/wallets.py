@@ -302,11 +302,13 @@ async def get_wallet_sign_hash_callback(label: str):
 
 
 async def create_remote_wallet(
-    label: str = "",
+    label: str,
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
     wallet_type: str | None = None,
 ) -> dict[str, Any]:
+    if not label.strip():
+        raise ValueError("label is required")
     if wallet_type == "strategy":
         if not policies:
             policies = [build_strategy_policy()]
