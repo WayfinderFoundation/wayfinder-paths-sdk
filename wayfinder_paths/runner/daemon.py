@@ -146,6 +146,8 @@ class RunnerDaemon:
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
 
+        self._reconcile_with_backend()
+
         self._control = RunnerControlServer(
             sock_path=self._paths.sock_path, daemon=self
         )
@@ -325,6 +327,18 @@ class RunnerDaemon:
                 "payload": job.payload,
             },
         )
+
+    def _reconcile_with_backend(self) -> None:
+        if not is_opencode_instance():
+            return
+        local_names = {str(j["name"]) for j in self._db.list_jobs()}
+        remote = SCHEDULED_JOBS_CLIENT.list_jobs()
+        remote_names = {str(j["job_name"]) for j in remote}
+        for orphan in remote_names - local_names:
+            logger.info(f"Reconcile: deleting remote-only job {orphan}")
+            SCHEDULED_JOBS_CLIENT.delete_job(orphan)
+        for name in local_names:
+            self._sync_job(name)
 
     def _notify_session(
         self,
