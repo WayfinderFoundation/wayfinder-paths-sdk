@@ -382,14 +382,14 @@ def _slot_placeholder(slot: ArchetypeInputSlot, *, archetype: str) -> str:
             return (
                 "watch:\n"
                 "  # Themes to investigate or track specifically.\n"
-                "  # - label: \"EU fiscal rules enforcement\"\n"
+                '  # - label: "EU fiscal rules enforcement"\n'
                 "  #   domain: macro\n"
                 "  #   keywords:\n"
-                "  #     - \"EU fiscal compact\"\n"
-                "  #     - \"Italian sovereign debt\"\n"
+                '  #     - "EU fiscal compact"\n'
+                '  #     - "Italian sovereign debt"\n'
                 "ignore:\n"
                 "  # Known themes to exclude (already mainstream).\n"
-                "  # - \"Bitcoin ETF approval\"\n"
+                '  # - "Bitcoin ETF approval"\n'
             )
     if slot.file_type == "markdown":
         title = slot.name.replace("_", " ").title()
@@ -735,7 +735,7 @@ def _pipeline_policy_template(archetype: str) -> str:
             "  # saturated, a thesis PASSES novelty if the specific mechanism\n"
             "  # or instrument leg is still uncrowded (zero Polymarket volume\n"
             "  # + no published sell-side note on the specific angle).\n"
-            '  relaxed_pass_on_angle: true\n'
+            "  relaxed_pass_on_angle: true\n"
             "\n"
             "adversarial:\n"
             "  pre_mortem:\n"
@@ -1167,7 +1167,7 @@ def _pipeline_agent_body(agent: ArchetypeAgent, *, archetype: str) -> str:
             "VERIFICATION PROTOCOL (mandatory — a thesis that fails any check "
             "MUST be dropped, not downgraded):",
             "1. Currency check: BEFORE writing any candidate thesis, run at "
-            "least one WebSearch for `\"<event label>\" <current year>` to "
+            'least one WebSearch for `"<event label>" <current year>` to '
             "confirm the catalyst has NOT already fired, been cancelled, or "
             "been superseded. Record that search in `currency_check` and drop "
             "the thesis if `already_happened` is true.",
@@ -1183,8 +1183,8 @@ def _pipeline_agent_body(agent: ArchetypeAgent, *, archetype: str) -> str:
             "count must be >= 3 * number_of_theses. Self-check before "
             "returning — if the floor is not met, keep searching.",
             "5. Already-happened skepticism: for each candidate, explicitly "
-            "ask yourself \"has this catalyst already fired, been cancelled, "
-            "or been superseded?\" Answer in `currency_check.already_happened` "
+            'ask yourself "has this catalyst already fired, been cancelled, '
+            'or been superseded?" Answer in `currency_check.already_happened` '
             "and cite the source that confirms the answer. Any `true` here "
             "means DROP the thesis.",
             "6. Executability check: every thesis MUST declare `executability` "
@@ -1344,7 +1344,7 @@ def _pipeline_agent_body(agent: ArchetypeAgent, *, archetype: str) -> str:
                     "Use Alpha Lab to check if the topic has high-score recent insights.",
                     "Kill theses that exceed BOTH the mainstream article threshold AND the Polymarket volume threshold in the policy.",
                     "A thesis with zero mainstream coverage and no Polymarket markets is maximally novel.",
-                    "RELAXED MODE (when `scan_config.filter_mode == \"relaxed\"` or `novelty_gate.relaxed_pass_on_angle == true`): if headline coverage is saturated BUT the specific mechanism / specific catalyst date / specific investable instrument leg is uncrowded (zero Polymarket volume on the specific leg AND no published sell-side note on the specific angle), PASS the thesis with a note in `novelty_notes.relaxed_pass_reason` describing which leg remains uncrowded. Do NOT kill on headline saturation alone.",
+                    'RELAXED MODE (when `scan_config.filter_mode == "relaxed"` or `novelty_gate.relaxed_pass_on_angle == true`): if headline coverage is saturated BUT the specific mechanism / specific catalyst date / specific investable instrument leg is uncrowded (zero Polymarket volume on the specific leg AND no published sell-side note on the specific angle), PASS the thesis with a note in `novelty_notes.relaxed_pass_reason` describing which leg remains uncrowded. Do NOT kill on headline saturation alone.',
                     "Use bash to run Polymarket adapter scripts for market search.",
                 ],
             ),
@@ -1379,7 +1379,7 @@ def _pipeline_agent_body(agent: ArchetypeAgent, *, archetype: str) -> str:
                     "If the consensus view already accounts for this risk (e.g., it's widely discussed as a tail risk), the thesis is less novel than it appears — downgrade.",
                     "If everyone is positioned the same way on this thesis, it may be a crowded trade even if the thesis is correct — flag this.",
                     "A thesis where credible experts disagree is more interesting than one where everyone agrees.",
-                    "RELAXED MODE (when `scan_config.filter_mode == \"relaxed\"`): if the HEADLINE is crowded but a specific leg of the trade structure (e.g. a pair's short leg, an options skew, a second-order equity) is uncrowded — PASS the thesis and rescope the trade to the uncrowded leg only. Record the uncrowded leg in `relaxed_leg_rescope` and do not downgrade purely on headline crowdedness.",
+                    'RELAXED MODE (when `scan_config.filter_mode == "relaxed"`): if the HEADLINE is crowded but a specific leg of the trade structure (e.g. a pair\'s short leg, an options skew, a second-order equity) is uncrowded — PASS the thesis and rescope the trade to the uncrowded leg only. Record the uncrowded leg in `relaxed_leg_rescope` and do not downgrade purely on headline crowdedness.',
                 ],
             ),
             "historical-analogist": (
@@ -1533,15 +1533,15 @@ def _pipeline_agent_body(agent: ArchetypeAgent, *, archetype: str) -> str:
                     '    "radar_y": number   // confidence, for plot positioning',
                     "  }],",
                     '  "killed_theses": [{',
-                    '    // Same full shape as surviving theses (headline, summary, domain, tags,',
-                    '    // mechanism_steps, evidence, adversarial verdicts up to the kill stage),',
-                    '    // PLUS these two extra fields:',
+                    "    // Same full shape as surviving theses (headline, summary, domain, tags,",
+                    "    // mechanism_steps, evidence, adversarial verdicts up to the kill stage),",
+                    "    // PLUS these two extra fields:",
                     '    "killed_at_stage": "string",',
                     '    "kill_reason": "one sentence, plain English"',
-                    '    // Include all fields the thesis had when it was killed — mechanism_steps,',
-                    '    // evidence gathered so far, and adversarial verdicts for stages it passed',
-                    '    // through (leave later-stage verdicts null). This lets users inspect the',
-                    '    // full reasoning behind why a thesis was filtered out.',
+                    "    // Include all fields the thesis had when it was killed — mechanism_steps,",
+                    "    // evidence gathered so far, and adversarial verdicts for stages it passed",
+                    "    // through (leave later-stage verdicts null). This lets users inspect the",
+                    "    // full reasoning behind why a thesis was filtered out.",
                     "  }],",
                     '  "changes": {',
                     '    "description": "one sentence run diff summary",',

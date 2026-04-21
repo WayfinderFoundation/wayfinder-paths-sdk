@@ -514,10 +514,13 @@ def _parse_skill_dependencies(
                 "wfpath.yaml skill.dependencies[].path_slug must be lowercase "
                 "letters/numbers/hyphens"
             )
-        host_names_raw = _ensure_object(
-            dep_obj.get("host_names"),
-            name=f"wfpath.yaml skill.dependencies[{idx}].host_names",
-        ) or {}
+        host_names_raw = (
+            _ensure_object(
+                dep_obj.get("host_names"),
+                name=f"wfpath.yaml skill.dependencies[{idx}].host_names",
+            )
+            or {}
+        )
         host_names = {
             str(key).strip(): str(value).strip()
             for key, value in host_names_raw.items()
