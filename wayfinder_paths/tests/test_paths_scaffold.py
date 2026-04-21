@@ -7,6 +7,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
+import yaml
 
 from wayfinder_paths.paths.builder import PathBuilder
 from wayfinder_paths.paths.doctor import run_doctor
@@ -234,23 +235,17 @@ def test_path_doctor_warns_on_legacy_skill_portable(tmp_path: Path):
     )
 
     manifest_path = path_dir / "wfpath.yaml"
+    manifest_data = yaml_safe_load(manifest_path)
+    skill = manifest_data.get("skill")
+    assert isinstance(skill, dict)
+    runtime = skill.pop("runtime", None)
+    assert isinstance(runtime, dict)
+    skill["portable"] = {
+        "python": runtime["python"],
+        "package": runtime["package"],
+    }
     manifest_path.write_text(
-        manifest_path.read_text(encoding="utf-8").replace(
-            "  runtime:\n"
-            "    mode: thin\n"
-            '    package: "wayfinder-paths"\n'
-            '    version: "0.8.0"\n'
-            '    python: ">=3.12,<3.13"\n'
-            '    component: "main"\n'
-            "    bootstrap: uv\n"
-            "    fallback_bootstrap: pipx\n"
-            "    prefer_existing_runtime: true\n"
-            "    require_api_key: false\n"
-            '    api_key_env: "WAYFINDER_API_KEY"\n'
-            '    config_path_env: "WAYFINDER_CONFIG_PATH"\n',
-            '  portable:\n    python: ">=3.12,<3.13"\n    package: "wayfinder-paths"\n',
-        ),
-        encoding="utf-8",
+        yaml.safe_dump(manifest_data, sort_keys=False), encoding="utf-8"
     )
 
     report = run_doctor(path_dir=path_dir, fix=False)
