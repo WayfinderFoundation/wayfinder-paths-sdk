@@ -20,11 +20,10 @@ from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
 from py_clob_client_v2.config import (  # type: ignore[import-untyped]
     get_contract_config,
 )
-from wayfinder_paths.core.config import get_polygon_builder_code
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
-from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.config import get_polygon_builder_code
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
     CONDITIONAL_TOKENS_ABI,
@@ -36,14 +35,14 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
     POLYMARKET_BRIDGE_BASE_URL,
     POLYMARKET_CLOB_BASE_URL,
+    POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+    POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
+    POLYMARKET_COLLATERAL_RAMP_ABI,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_GAMMA_BASE_URL,
-    POLYMARKET_COLLATERAL_RAMP_ABI,
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
-    POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
-    POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -1484,9 +1483,7 @@ class PolymarketAdapter(BaseAdapter):
             return False, msg
         try:
             if hasattr(self.clob_client, "cancel_order"):
-                resp = self.clob_client.cancel_order(
-                    OrderPayload(orderID=order_id)
-                )
+                resp = self.clob_client.cancel_order(OrderPayload(orderID=order_id))
             else:
                 resp = self.clob_client.cancel(order_id)
             return True, resp if isinstance(resp, dict) else {"result": resp}

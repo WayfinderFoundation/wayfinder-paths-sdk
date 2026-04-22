@@ -97,6 +97,7 @@ def get_api_base_url() -> str:
         return str(api_url).strip()
     return "https://wayfinder.ai/api"
 
+
 def get_polygon_builder_code() -> str | None:
     system = CONFIG.get("system", {})
     polymarket_builder_code = system.get("polymarket_builder_code")
@@ -105,6 +106,7 @@ def get_polygon_builder_code() -> str | None:
         if polymarket_builder_code:
             return polymarket_builder_code
     return None
+
 
 def get_api_key() -> str | None:
     system = CONFIG.get("system", {})

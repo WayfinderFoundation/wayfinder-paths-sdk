@@ -6,11 +6,11 @@ import pytest
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.constants.polymarket import (
-    POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
-    POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
     POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
+    POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+    POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
 )
 
 
@@ -478,7 +478,10 @@ class TestPolymarketAdapter:
         assert res["tx_hash"] == "0xwrap"
         assert res["to_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
         assert res["recipient_address"].lower() == recipient_address.lower()
-        assert encode_call.await_args.kwargs["target"] == POLYMARKET_COLLATERAL_ONRAMP_ADDRESS
+        assert (
+            encode_call.await_args.kwargs["target"]
+            == POLYMARKET_COLLATERAL_ONRAMP_ADDRESS
+        )
         assert (
             encode_call.await_args.kwargs["args"][0].lower()
             == POLYGON_USDC_E_ADDRESS.lower()
@@ -758,7 +761,10 @@ class TestPolymarketAdapter:
         assert res["unwrap"]["tx_hash"] == "0xunwrap"
         assert res["swap"]["tx_hash"] == "0xswap"
         assert encode_call.await_args.kwargs["fn_name"] == "unwrap"
-        assert encode_call.await_args.kwargs["target"] == POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS
+        assert (
+            encode_call.await_args.kwargs["target"]
+            == POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS
+        )
         assert encode_call.await_args.kwargs["args"][2] == 1_000_000
 
     @pytest.mark.asyncio
@@ -803,7 +809,10 @@ class TestPolymarketAdapter:
         assert res["approve_tx_hash"] == "0xapprove_unwrap"
         assert res["to_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
         assert encode_call.await_args.kwargs["fn_name"] == "unwrap"
-        assert encode_call.await_args.kwargs["target"] == POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS
+        assert (
+            encode_call.await_args.kwargs["target"]
+            == POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS
+        )
 
     @pytest.mark.asyncio
     async def test_bridge_withdraw_falls_back_to_polymarket_bridge(
