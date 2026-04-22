@@ -9,6 +9,7 @@ from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
     get_opencode_instance_id,
+    load_config,
 )
 
 
@@ -19,6 +20,7 @@ class ScheduledJobsClient:
         self._client = httpx.Client(timeout=httpx.Timeout(10), follow_redirects=True)
 
     def _base_url(self) -> str:
+        load_config()
         return (
             f"{get_api_base_url()}/opencode/instances/{get_opencode_instance_id()}/jobs"
         )
