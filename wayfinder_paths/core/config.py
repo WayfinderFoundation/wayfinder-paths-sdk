@@ -106,6 +106,8 @@ def get_polygon_builder_code() -> str | None:
         if polymarket_builder_code:
             return polymarket_builder_code
     return None
+
+
 def get_paths_api_base_url() -> str:
     system = CONFIG.get("system", {})
     paths_url = system.get("paths_api_base_url")
