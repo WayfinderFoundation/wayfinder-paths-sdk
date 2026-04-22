@@ -880,6 +880,6 @@ class TestPolymarketAdapter:
         )
         assert ok is True
         assert isinstance(res, dict)
-        assert res["method"] == "unwrap_then_bridge"
+        assert res["method"] == "polymarket_bridge"
         assert res["tx_hash"] == "0xtransfer"
         assert res["unwrap"]["tx_hash"] == "0xunwrap"

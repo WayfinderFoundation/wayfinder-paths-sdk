@@ -1277,7 +1277,7 @@ class PolymarketAdapter(BaseAdapter):
         tx_hash = await send_transaction(tx, sign_cb)
 
         return True, {
-            "method": "unwrap_then_bridge",
+            "method": "polymarket_bridge",
             "tx_hash": tx_hash,
             "from_chain_id": POLYGON_CHAIN_ID,
             "from_token_address": POLYGON_P_USDC_PROXY_ADDRESS,
