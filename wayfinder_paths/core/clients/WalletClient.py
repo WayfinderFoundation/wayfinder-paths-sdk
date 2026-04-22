@@ -22,9 +22,9 @@ class WalletClient(WayfinderClient):
         self,
         policies: list[dict],
         wallet_type: str,
+        label: str,
         *,
         chain_type: str = "ethereum",
-        label: str = "",
     ) -> dict[str, Any]:
         url = f"{get_api_base_url()}/wallets/"
         body: dict[str, Any] = {

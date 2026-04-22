@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "0.1",
+  "entry": "index.html",
+  "preferredHeight": 1260,
+  "readySelector": "[data-path-ready='true']",
+  "permissions": {
+    "bridge": [],
+    "externalOrigins": [],
+    "walletMode": "optional"
+  }
+}

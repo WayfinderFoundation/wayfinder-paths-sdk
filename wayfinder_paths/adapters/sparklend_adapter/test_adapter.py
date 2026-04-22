@@ -379,7 +379,9 @@ class TestSparkLendAdapter:
             "wayfinder_paths.adapters.sparklend_adapter.adapter.web3_utils.web3_from_chain_id",
             mock_web3_ctx,
         ):
-            ok, markets = await adapter.get_all_markets(chain_id=1, include_caps=False)
+            ok, markets = await adapter.get_all_markets(
+                chain_id=1, include_caps=False, include_rewards=False
+            )
 
         assert ok is True
         assert isinstance(markets, list)

@@ -6,17 +6,17 @@ from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
 
-from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
     CONFIG,
     get_api_key,
     get_opencode_instance_id,
+    is_opencode_instance,
     load_config_json,
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
-from wayfinder_paths.policies.session import build_session_policy
+from wayfinder_paths.policies.session import build_session_policy, build_strategy_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
@@ -36,12 +36,10 @@ def _load_local_wallets() -> list[dict[str, Any]]:
 
 
 async def load_remote_wallets() -> list[dict[str, Any]]:
-    api_key = get_api_key()
-    if not api_key:
+    if not get_api_key() or not is_opencode_instance():
         return []
     try:
-        instance_id = get_opencode_instance_id() if OPENCODE_CLIENT.healthy() else None
-        raw = await WALLET_CLIENT.list_wallets(instance_id=instance_id)
+        raw = await WALLET_CLIENT.list_wallets(instance_id=get_opencode_instance_id())
         wallets = []
         for i, w in enumerate(raw):
             addr = w.get("wallet_address")
@@ -303,20 +301,35 @@ async def get_wallet_sign_hash_callback(label: str):
 # ---------------------------------------------------------------------------
 
 
+VALID_REMOTE_WALLET_TYPES = ("session", "policy", "strategy")
+
+
 async def create_remote_wallet(
-    label: str = "",
+    label: str,
+    wallet_type: str,
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
 ) -> dict[str, Any]:
-    if len(policies) == 0:
-        wallet_type = "session"
-        policies = [build_session_policy()]
-    else:
-        wallet_type = "policy"
+    if not label.strip():
+        raise ValueError("label is required")
+    if wallet_type not in VALID_REMOTE_WALLET_TYPES:
+        raise ValueError(
+            f"wallet_type must be one of {VALID_REMOTE_WALLET_TYPES}, got {wallet_type!r}"
+        )
+    if not policies:
+        if wallet_type == "strategy":
+            policies = [build_strategy_policy()]
+        elif wallet_type == "session":
+            policies = [build_session_policy()]
+        else:
+            raise ValueError("policies is required when wallet_type=policy")
     result = await WALLET_CLIENT.create_wallet(
-        chain_type=chain_type, policies=policies, label=label, wallet_type=wallet_type
+        chain_type=chain_type,
+        policies=policies,
+        label=label,
+        wallet_type=wallet_type,
     )
-    if OPENCODE_CLIENT.healthy():
+    if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(
             result["wallet_address"], get_opencode_instance_id()
         )

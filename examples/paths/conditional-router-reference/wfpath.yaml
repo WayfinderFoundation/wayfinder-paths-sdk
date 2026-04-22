@@ -1,0 +1,176 @@
+schema_version: "0.1"
+
+slug: conditional-router-reference
+name: "Conditional Router Reference"
+version: "0.1.0"
+summary: "Reference path for the conditional-router strategy pipeline. This is the canonical in-repo example for policy-driven orchestration, null-state gating, and Claude/OpenCode exports."
+
+primary_kind: policy
+tags:
+  - conditional-router
+  - policy
+
+components:
+  - id: "main"
+    kind: script
+    path: "scripts/main.py"
+
+skill:
+  enabled: true
+  source: generated
+  name: "conditional-router-reference"
+  description: "Reference path for the conditional-router strategy pipeline. This is the canonical in-repo example for policy-driven orchestration, null-state gating, and Claude/OpenCode exports."
+  instructions: "skill/instructions.md"
+  runtime:
+    mode: thin
+    package: "wayfinder-paths"
+    version: "0.8.0"
+    python: ">=3.12,<3.13"
+    component: "main"
+    bootstrap: uv
+    fallback_bootstrap: pipx
+    prefer_existing_runtime: true
+    require_api_key: false
+    api_key_env: "WAYFINDER_API_KEY"
+    config_path_env: "WAYFINDER_CONFIG_PATH"
+
+pipeline:
+  archetype: "conditional-router"
+  graph: "pipeline/graph.yaml"
+  artifacts_dir: ".wf-artifacts"
+  entry_command: "conditional-bet"
+  primary_hosts:
+    - claude
+    - opencode
+  output_contract:
+    - signal_snapshot
+    - selected_playbook
+    - candidate_expressions
+    - null_state
+    - risk_checks
+    - job
+    - next_invalidation
+
+inputs:
+  slots:
+    thesis:
+      type: "markdown"
+      path: "inputs/thesis.md"
+      schema: "schemas/thesis.schema.json"
+      required: true
+    mappings:
+      type: "yaml"
+      path: "inputs/mappings.yaml"
+      schema: "schemas/mappings.schema.json"
+      required: false
+    preferences:
+      type: "yaml"
+      path: "inputs/preferences.yaml"
+      schema: "schemas/preferences.schema.json"
+      required: false
+
+agents:
+  - id: "thesis-normalizer"
+    phase: "normalize_thesis"
+    description: "Normalize rough user thesis text into structured thresholds and trade triggers."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+    output: ".wf-artifacts/$RUN_ID/normalize_thesis.json"
+    host_mode: "worker"
+  - id: "poly-scout"
+    phase: "market_research"
+    description: "Find candidate Polymarket markets and score liquidity, spread, history, and clarity."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+      - "webfetch"
+      - "websearch"
+    output: ".wf-artifacts/$RUN_ID/market_research.json"
+    host_mode: "worker"
+  - id: "proxy-mapper"
+    phase: "proxy_mapping"
+    description: "Map candidate conditions to direct and proxy expressions using the declared playbooks."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+    output: ".wf-artifacts/$RUN_ID/proxy_mapping.json"
+    host_mode: "worker"
+  - id: "qual-researcher"
+    phase: "qual_research"
+    description: "Summarize relevant qualitative context and flag unsupported assumptions."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+      - "webfetch"
+      - "websearch"
+    output: ".wf-artifacts/$RUN_ID/qual_research.json"
+    host_mode: "worker"
+  - id: "null-skeptic"
+    phase: "skeptic"
+    description: "Compare all candidates to the null state and reject weak edges."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+    output: ".wf-artifacts/$RUN_ID/skeptic.json"
+    host_mode: "worker"
+  - id: "risk-verifier"
+    phase: "risk_gate"
+    description: "Apply risk limits, downgrade unsafe actions to draft, or reject."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+    output: ".wf-artifacts/$RUN_ID/risk_gate.json"
+    host_mode: "worker"
+  - id: "job-compiler"
+    phase: "compile_job"
+    description: "Compile the validated policy into a monitorable runner job artifact."
+    tools:
+      - "read"
+      - "glob"
+      - "grep"
+      - "bash"
+    output: ".wf-artifacts/$RUN_ID/job.json"
+    host_mode: "worker"
+
+host:
+  claude:
+    rules_file: ".claude/CLAUDE.md"
+    skill_dir: ".claude/skills"
+    agent_dir: ".claude/agents"
+    settings_file: ".claude/settings.json"
+  opencode:
+    rules_file: "AGENTS.md"
+    config_file: "opencode.json"
+    skill_dir: ".opencode/skills"
+    agent_dir: ".opencode/agents"
+    command_dir: ".opencode/commands"
+    plugin_dir: ".opencode/plugins"
+    tool_dir: ".opencode/tools"
+
+runtime:
+  state_dir: ".wf-state"
+  tests_dir: "tests"
+  graph_nodes:
+    - "intake"
+    - "normalize_thesis"
+    - "market_research"
+    - "proxy_mapping"
+    - "qual_research"
+    - "synthesize"
+    - "skeptic"
+    - "risk_gate"
+    - "compile_job"
+    - "finalize"

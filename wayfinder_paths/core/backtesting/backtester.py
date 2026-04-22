@@ -40,7 +40,9 @@ def get_atomic_trade_scale(
     force_rebalance: bool,
     config: BacktestConfig,
 ) -> float:
-    long_cost_at1 = fee_cost_at1 = 0.0
+    # Margin-based cost: both longs and shorts require margin, not just longs.
+    # Margin per trade = notional / leverage.
+    margin_cost_at1 = fee_cost_at1 = 0.0
     for sym in symbols:
         price = float(current_prices[sym])
         if not price or price <= 0 or nav_before_trade <= 0:
@@ -59,10 +61,19 @@ def get_atomic_trade_scale(
             force_rebalance and reducing_gross
         ):
             continue
-        if trade_units > 0:
-            long_cost_at1 += trade_units * price
+        # Only count margin for the net increase in gross exposure (not the full trade).
+        # A flip from +1 to -1 has zero net gross change and should cost zero margin.
+        new_gross = abs(target_units * price)
+        old_gross = abs(current_units * price)
+        gross_increase = max(0.0, new_gross - old_gross)
+        if gross_increase > 0:
+            margin_cost_at1 += (
+                gross_increase / config.leverage
+                if config.leverage > 0
+                else gross_increase
+            )
         fee_cost_at1 += trade_notional * (config.fee_rate + config.slippage_rate)
-    total_required = long_cost_at1 + fee_cost_at1
+    total_required = margin_cost_at1 + fee_cost_at1
     return max(
         0.0, min(1.0, free_cash / total_required) if total_required > 1e-12 else 1.0
     )
@@ -157,9 +168,6 @@ def run_backtest(
         config.funding_rates = funding_aligned
 
     cash_balance = config.initial_capital
-    debt_balance = pd.DataFrame(
-        0.0, columns=["q", "notional"], index=symbols, dtype=float
-    )
     position_units = pd.Series(0.0, index=symbols, dtype=float)
 
     portfolio_values: list[float] = []
@@ -202,7 +210,16 @@ def run_backtest(
             and current_gross_notional / config.leverage > nav_before_trade + 1e-12
         )
 
-        free_cash = cash_balance - float(debt_balance["notional"].sum())
+        # Margin-based free cash: for perp strategies, shorts don't consume
+        # cash as loans — they require margin.  Available cash for new trades
+        # is portfolio value minus margin reserved for current positions.
+        current_gross_for_margin = float((position_units * current_prices).abs().sum())
+        margin_in_use = (
+            current_gross_for_margin / config.leverage
+            if config.leverage > 0
+            else current_gross_for_margin
+        )
+        free_cash = max(0.0, portfolio_value - margin_in_use)
         scale = get_atomic_trade_scale(
             symbols=symbols,
             current_prices=current_prices,
@@ -244,18 +261,6 @@ def run_backtest(
                 continue
 
             transaction_cost = trade_notional * (config.fee_rate + config.slippage_rate)
-
-            if trade_units < 0:  # adding short, increase debt
-                debt_balance.loc[sym, "q"] -= trade_units
-                debt_balance.loc[sym, "notional"] -= trade_units * price
-            elif debt_balance.loc[sym, "q"] > 0:  # adding long with outstanding debt
-                cover_r = min(abs(trade_units) / debt_balance.loc[sym, "q"], 1.0)
-                debt_balance.loc[sym, "notional"] -= (
-                    debt_balance.loc[sym, "notional"] * cover_r
-                )
-                debt_balance.loc[sym, "q"] = max(
-                    0.0, debt_balance.loc[sym, "q"] - abs(trade_units)
-                )
 
             cash_balance -= trade_units * price
             cash_balance -= transaction_cost

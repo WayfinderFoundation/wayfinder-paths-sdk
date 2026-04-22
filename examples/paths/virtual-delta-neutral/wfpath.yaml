@@ -1,0 +1,30 @@
+schema_version: "0.1"
+
+slug: virtual-delta-neutral
+name: "VIRTUAL Delta-Neutral Monitor"
+version: "0.1.0"
+summary: "Delta-neutral strategy: Moonwell VIRTUAL supply + short perp vs USDC yield. Anti-churn with 6h confirmation and 2-day cooldown."
+primary_kind: monitor
+
+tags:
+  - virtual
+  - delta-neutral
+  - moonwell
+  - hyperliquid
+  - monitor
+
+components:
+  - id: data-generator
+    kind: script
+    path: scripts/generate_data.py
+
+applet:
+  build_dir: "applet/dist"
+  manifest: "applet/applet.manifest.json"
+
+skill:
+  enabled: true
+  source: generated
+  name: "virtual-delta-neutral"
+  description: "Inspect the VIRTUAL delta-neutral monitor path, explain its monitoring logic, and preview or validate the applet assets."
+  instructions: "skill/instructions.md"

@@ -3436,6 +3436,7 @@ class BorosAdapter(BaseAdapter):
         effective_cash = int(net_cash_in_wei)
         amm_id: int | None = None
         match: BorosVault | None = None
+        min_isolated_cash_wei = 0
         ok, vaults = await self.get_vaults_summary(
             account=self.wallet_address, use_direct_lp_query=False
         )
@@ -3490,6 +3491,22 @@ class BorosAdapter(BaseAdapter):
                                 * effective_cash
                                 / int(net_cash_in_wei)
                             )
+                if (
+                    match.is_isolated_only
+                    and min_isolated_cash_wei > 0
+                    and effective_cash < min_isolated_cash_wei
+                ):
+                    min_isolated_cash = min_isolated_cash_wei / 1e18
+                    return False, {
+                        "error": (
+                            "Isolated-only Boros vault requires at least "
+                            f"{min_isolated_cash:.6f} cash units"
+                        ),
+                        "market_id": int(market_id),
+                        "required_cash_wei": int(min_isolated_cash_wei),
+                        "requested_cash_wei": int(net_cash_in_wei),
+                        "effective_cash_wei": int(effective_cash),
+                    }
 
         if amm_id is None:
             amm_id = await self._get_amm_id_for_market(int(market_id))

@@ -1,0 +1,8 @@
+name: "output-shape"
+type: "fixture"
+fixture: "base_case"
+assert:
+  null_state.selected: false
+  job.mode: "armed"
+  risk_checks.mode: "armed"
+  selected_playbook.id: "risk_off"

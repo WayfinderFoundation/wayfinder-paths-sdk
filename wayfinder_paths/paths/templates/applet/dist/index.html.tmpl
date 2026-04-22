@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <link rel="shortcut icon" href="data:," />
+    <link rel="apple-touch-icon" href="data:," />
+    <title>{{name}}</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+      }
+      body {
+        margin: 0;
+        padding: 16px;
+        background: #0b0f0c;
+        color: #e7f5ea;
+      }
+      .card {
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        padding: 16px;
+        background: rgba(255, 255, 255, 0.04);
+      }
+      pre {
+        overflow: auto;
+        background: rgba(255, 255, 255, 0.04);
+        padding: 12px;
+        border-radius: 12px;
+      }
+      button {
+        background: rgba(255, 255, 255, 0.06);
+        color: #e7f5ea;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        padding: 10px 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: rgba(255, 255, 255, 0.10);
+      }
+    </style>
+  </head>
+  <body data-path-ready="true">
+    <div class="card">
+      <div style="font-size: 14px; opacity: 0.8">Applet</div>
+      <div style="font-size: 20px; margin-top: 6px">{{name}}</div>
+      <div style="opacity: 0.75; margin-top: 10px">{{summary}}</div>
+
+      <div style="margin-top: 14px; display: flex; gap: 10px; flex-wrap: wrap">
+        <button type="button" data-action="bump">Bump state</button>
+        <button type="button" data-action="emit">Emit state</button>
+      </div>
+
+      <div style="margin-top: 14px; font-size: 13px; opacity: 0.8">
+        Current state (shareable via presets):
+      </div>
+      <pre data-path-state>{}</pre>
+    </div>
+
+    <script src="./assets/app.js"></script>
+  </body>
+</html>

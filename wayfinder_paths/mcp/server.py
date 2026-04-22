@@ -84,6 +84,7 @@ from wayfinder_paths.mcp.tools.run_script import run_script
 from wayfinder_paths.mcp.tools.runner import runner
 from wayfinder_paths.mcp.tools.strategies import run_strategy
 from wayfinder_paths.mcp.tools.wallets import wallets
+from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
 
@@ -185,6 +186,7 @@ mcp.tool()(clear_chart_projections)
 
 
 def main() -> None:
+    maybe_heartbeat_installed_paths(trigger="mcp-server")
     mcp.run()
 
 

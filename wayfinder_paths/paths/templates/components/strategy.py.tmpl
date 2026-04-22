@@ -1,0 +1,27 @@
+from __future__ import annotations
+
+
+def wfpath_meta() -> dict:
+    return {
+        "name": "{{name}}",
+        "kind": "strategy",
+        "ui_mode": "auto",
+        "tracking_mode": "hybrid",
+    }
+
+
+def wfpath_state() -> dict:
+    return {
+        "status": "idle",
+        "selection": {},
+        "metrics": {},
+        "positions": [],
+    }
+
+
+def wfpath_decision() -> dict:
+    return {
+        "summary": "TODO: describe the latest selection and why.",
+        "selected": {},
+        "candidates": [],
+    }

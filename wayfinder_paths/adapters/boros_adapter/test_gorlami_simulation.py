@@ -11,6 +11,7 @@ from wayfinder_paths.testing.gorlami import gorlami_configured
 ARBITRUM_USDT = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"
 ARBITRUM_USDT_DECIMALS = 6
 BOROS_TEST_DEPOSIT_TOKENS = 20.0
+BOROS_ISOLATED_TEST_DEPOSIT_TOKENS = 400.0
 
 pytestmark = pytest.mark.skipif(
     not gorlami_configured(),
@@ -36,7 +37,7 @@ async def _make_funded_boros_adapter(gorlami) -> tuple[BorosAdapter, str]:
         fork_info["fork_id"],
         ARBITRUM_USDT,
         acct.address,
-        100 * 10**ARBITRUM_USDT_DECIMALS,
+        1_000 * 10**ARBITRUM_USDT_DECIMALS,
     )
 
     return (
@@ -153,11 +154,36 @@ async def test_gorlami_boros_isolated_only_vault_round_trip(gorlami):
 
     ok, dep = await adapter.deposit_to_isolated_margin(
         collateral_address=ARBITRUM_USDT,
-        amount_wei=int(BOROS_TEST_DEPOSIT_TOKENS * 10**ARBITRUM_USDT_DECIMALS),
+        amount_wei=int(BOROS_ISOLATED_TEST_DEPOSIT_TOKENS * 10**ARBITRUM_USDT_DECIMALS),
         token_id=token_id,
         market_id=vault.market_id,
     )
     assert ok is True, dep
+
+    ok, account_vaults = await adapter.get_vaults_summary(
+        account=account,
+        use_direct_lp_query=False,
+    )
+    assert ok is True, account_vaults
+    account_vault = next(
+        (
+            entry
+            for entry in account_vaults
+            if int(entry.market_id) == int(vault.market_id)
+        ),
+        None,
+    )
+    assert account_vault is not None
+
+    available_cash_wei = int(
+        (((account_vault.raw or {}).get("user") or {}).get("availableBalanceToDeposit"))
+        or 0
+    )
+    min_isolated_cash_wei = int(fee_data.get("min_cash_isolated_wei") or 0)
+    if available_cash_wei < min_isolated_cash_wei:
+        pytest.skip(
+            "No isolated-only Boros vault with enough post-deposit available cash for a live fork round-trip"
+        )
 
     scaled_vault_cash = await adapter.unscaled_to_scaled_cash_wei(
         token_id,

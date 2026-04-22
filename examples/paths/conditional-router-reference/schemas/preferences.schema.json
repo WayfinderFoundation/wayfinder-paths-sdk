@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "conditional-router-preferences",
+  "type": "object",
+  "properties": {
+    "execution_mode": {
+      "type": "string",
+      "enum": [
+        "quote",
+        "draft",
+        "armed"
+      ]
+    },
+    "prefer_direct_market": {
+      "type": "boolean"
+    },
+    "max_candidates": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "allow_shorting": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": true
+}

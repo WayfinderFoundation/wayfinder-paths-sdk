@@ -97,6 +97,16 @@ await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
 
 Projections are scoped per chart — switching markets shows only that chart's projections. The backend is type-agnostic; new projection types only need a frontend renderer.
 
+## Scheduled Jobs (backend sync)
+
+On OpenCode Cloud instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
+
+- **Job sync**: When a job is added, updated, paused, resumed, or deleted, the daemon pushes the current state to `PUT /instances/{id}/jobs/{name}/`
+- **Run sync**: After each run completes, the daemon pushes the full log output to `POST /instances/{id}/jobs/{name}/runs/`
+- **Local-only**: On non-cloud instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
+
+The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
+
 ## Project Overview
 
 Wayfinder Paths is a Python 3.12 public SDK for community-contributed DeFi trading strategies and adapters. It provides the building blocks for automated trading: adapters (exchange/protocol integrations), strategies (trading algorithms), and clients (low-level API wrappers). In production it can be integrated with a separate execution service for hosted signing/execution.
@@ -415,12 +425,26 @@ just create-strategy "My Strategy Name"
 # Create new adapter
 just create-adapter "my_protocol"
 
+# Update one installed path to the live bonded version
+poetry run wayfinder path update my-path
+
+# Override the target version for one installed path
+poetry run wayfinder path update my-path --version 1.2.3
+
 # Run a strategy locally
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
 
 # Publish to PyPI (main branch only)
 just publish
 ```
+
+## Path updates
+
+- `poetry run wayfinder path update <slug>` is the single-path update command for installed paths.
+- Default target selection is the API's `active_bonded_version`, not `latest_version` and not a pending version still in probation.
+- `--version <x.y.z>` lets the user choose a specific public version explicitly.
+- The CLI checks `.wayfinder/paths.lock.json` for the installed version, pulls the target version when newer, and then tries to re-use stored activation metadata.
+- If activation metadata is missing, it tries one safe workspace default; if it still cannot determine an activation target, it completes the pull and prints the manual `path activate` command instead of failing.
 
 ## Architecture
 
@@ -506,6 +530,21 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 ## Wallets
 
 **On Wayfinder Cloud Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
+
+### Session vs strategy wallets
+
+Remote wallets come in two flavours — pick based on how the wallet will be used:
+
+- **Session wallet** (default, recommended for normal trading) — 1-hour TTL, refreshed while the user has the UI open. Use this for day-to-day trading where a human is present and approving actions.
+- **Strategy wallet** — 7-day TTL, intended for longer-running scheduled automation that signs without a human in the loop. Higher blast radius if the wallet leaks, so reach for it only when you actually need unattended signing across many hours; default to a session wallet otherwise.
+
+```bash
+# Session wallet (default)
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
+
+# Strategy wallet — pair with a strategy job on the runner daemon
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label my_strategy --remote --wallet_type strategy
+```
 
 **Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
 

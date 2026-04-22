@@ -1,0 +1,50 @@
+# {{name}}
+
+{{summary}}
+
+## What’s inside
+
+- `wfpath.yaml` (path manifest)
+- `{{component_path}}` (main component)
+- `skill/instructions.md` (canonical skill instructions, optional)
+- `applet/` (static UI, optional)
+
+## Build
+
+```bash
+wayfinder path fmt --path .
+wayfinder path doctor --path .
+wayfinder path render-skill --path .
+wayfinder path build --path . --out dist/bundle.zip
+```
+
+## Publish
+
+```bash
+export WAYFINDER_PATHS_API_URL="https://strategies-dev.wayfinder.ai"
+export WAYFINDER_API_KEY="wk_..."
+wayfinder path publish --path .
+```
+
+For bonded publishes:
+
+```bash
+wayfinder path publish --path . --bonded --owner-wallet 0xYourWallet --risk-tier execution
+```
+
+`wayfinder path publish` builds `bundle.zip` and `source.zip`, generates thin skill exports when this path has a skill, requests signed upload URLs from the Paths API, uploads artifacts directly to storage, then finalizes the submission and prints a manage URL plus the next required action.
+
+## Delta Lab applets
+
+If this path includes a presentation applet:
+
+- use the public Delta Lab timeseries endpoint for browser reads:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+- if the applet is embedded by the Strategies path page, same-origin `/api/v1/delta-lab/public/assets/<symbol>/timeseries/` is acceptable
+- prefer the host-provided base URL from the bridge (`wf:state.apiBase`, then `wf:hello` origin) instead of hardcoding or probing multiple environments
+- do not probe both dev and prod from the same applet build
+- do not call `/api/v1/delta-lab/symbols/`; it does not exist
+- treat non-200 responses, especially `404`, as expected unavailability and show a data-unavailable state instead of crashing
+- ensure every referenced file exists under `applet/dist/`
+- include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s
