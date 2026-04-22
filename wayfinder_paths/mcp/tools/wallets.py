@@ -205,8 +205,13 @@ async def wallets(
                 )
 
         if remote:
+            if not wallet_type:
+                return err(
+                    "invalid_request",
+                    "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                )
             result = await create_remote_wallet(
-                label=want, policies=policies, wallet_type=wallet_type
+                label=want, wallet_type=wallet_type, policies=policies
             )
             refreshed = await load_wallets()
             return ok(
