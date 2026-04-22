@@ -425,12 +425,26 @@ just create-strategy "My Strategy Name"
 # Create new adapter
 just create-adapter "my_protocol"
 
+# Update one installed path to the live bonded version
+poetry run wayfinder path update my-path
+
+# Override the target version for one installed path
+poetry run wayfinder path update my-path --version 1.2.3
+
 # Run a strategy locally
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
 
 # Publish to PyPI (main branch only)
 just publish
 ```
+
+## Path updates
+
+- `poetry run wayfinder path update <slug>` is the single-path update command for installed paths.
+- Default target selection is the API's `active_bonded_version`, not `latest_version` and not a pending version still in probation.
+- `--version <x.y.z>` lets the user choose a specific public version explicitly.
+- The CLI checks `.wayfinder/paths.lock.json` for the installed version, pulls the target version when newer, and then tries to re-use stored activation metadata.
+- If activation metadata is missing, it tries one safe workspace default; if it still cannot determine an activation target, it completes the pull and prints the manual `path activate` command instead of failing.
 
 ## Architecture
 

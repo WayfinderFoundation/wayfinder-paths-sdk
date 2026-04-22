@@ -13,6 +13,10 @@ dist/
 build/
 site/
 
+# Pack templates (used by `wayfinder pack init`) live under a `dist/` folder.
+!wayfinder_paths/packs/templates/applet/dist/
+!wayfinder_paths/packs/templates/applet/dist/**
+
 # Virtual environments
 .venv/
 venv/
@@ -60,8 +64,10 @@ abis/
 .claude/settings.local.json
 
 # Local runtime artifacts
+.build/
 *.sqlite3
 *.db
+examples/paths/
 
 # Ledger
 .ledger/

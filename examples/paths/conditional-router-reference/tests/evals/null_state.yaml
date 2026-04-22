@@ -1,0 +1,7 @@
+name: "null-state"
+type: "fixture"
+fixture: "null_state"
+assert:
+  null_state.selected: true
+  job.mode: "null"
+  selected_playbook.id: "null-state"
