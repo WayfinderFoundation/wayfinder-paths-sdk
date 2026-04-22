@@ -517,6 +517,21 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 
 **On Wayfinder Cloud Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
 
+### Session vs strategy wallets
+
+Remote wallets come in two flavours — pick based on how the wallet will be used:
+
+- **Session wallet** (default, recommended for normal trading) — 1-hour TTL, refreshed while the user has the UI open. Use this for day-to-day trading where a human is present and approving actions.
+- **Strategy wallet** — 7-day TTL, intended for longer-running scheduled automation that signs without a human in the loop. Higher blast radius if the wallet leaks, so reach for it only when you actually need unattended signing across many hours; default to a session wallet otherwise.
+
+```bash
+# Session wallet (default)
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
+
+# Strategy wallet — pair with a strategy job on the runner daemon
+poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label my_strategy --remote --wallet_type strategy
+```
+
 **Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
 ```bash
