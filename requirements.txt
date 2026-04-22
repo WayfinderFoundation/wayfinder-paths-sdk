@@ -32,3 +32,5 @@ ruff>=0.13.2
 
 # Optional: for specific adapters
 # ccxt>=3.0.0  # For centralized exchange adapters
+
+py_clob_client_v2 @ git+https://github.com/WayfinderFoundation/py-clob-client-v2-wayfinder.git@custom-signer
