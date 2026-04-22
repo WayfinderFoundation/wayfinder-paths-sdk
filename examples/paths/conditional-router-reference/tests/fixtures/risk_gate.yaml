@@ -1,0 +1,25 @@
+name: "risk_gate"
+output:
+  signal_snapshot:
+    recession_prob: 0.84
+  selected_playbook:
+    id: "crash_mode"
+    score: 0.74
+  candidate_expressions:
+    - id: "proxy-hl-basket"
+      type: "hyperliquid_proxy"
+      score: 0.74
+  null_state:
+    selected: false
+    reason: "Trade edge is real, but leverage must be reduced before arming."
+  risk_checks:
+    passed: false
+    mode: "draft"
+    leverage_ok: false
+    liquidity_ok: true
+    rejection_reason: "Requested leverage exceeds policy max_leverage."
+  job:
+    mode: "draft"
+    armed: false
+    poll_every: 300
+  next_invalidation: "resize crash_mode to fit max_leverage"

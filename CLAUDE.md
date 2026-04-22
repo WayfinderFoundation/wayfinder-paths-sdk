@@ -95,6 +95,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
 | Contract Dev          | `/contract-development`          |
+| Paths (search/install/update/build/publish) | `/developing-wayfinder-paths` |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
@@ -179,6 +180,25 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 **MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
 
 **Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
+
+## Pack applets
+
+When creating or updating a Wayfinder pack with a browser applet:
+
+- browser applets must use the public Delta Lab browser-safe route:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+- authenticated Delta Lab routes (`/api/v1/delta-lab/assets/...`) are for SDK/server-side use, not browser applets
+- take the base URL from the host bridge when available:
+  - prefer `wf:state.apiBase`
+  - otherwise use the `wf:hello` origin when embedded by the Strategies host
+  - do not probe both dev and prod from the same applet build
+- treat non-200 responses, especially `404`, as expected unavailability:
+  - show a clear "data unavailable" or "waiting for host API" state
+  - do not crash the applet on missing data
+- ensure every referenced static resource is present under `applet/dist/`
+- include explicit icon tags (`icon`, `shortcut icon`, `apple-touch-icon`) in the applet HTML to avoid implicit browser 404s for missing favicon resources
+- do not call `/api/v1/delta-lab/symbols/`; that route does not exist for pack applets
 
 ## Running strategies via MCP
 
@@ -548,12 +568,25 @@ just create-strategy "My Strategy Name"
 # Create new adapter
 just create-adapter "my_protocol"
 
+# Update one installed path to the live bonded version
+poetry run wayfinder path update my-path
+
+# Override the target version for one installed path
+poetry run wayfinder path update my-path --version 1.2.3
+
 # Run a strategy locally
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
 
 # Publish to PyPI (main branch only)
 just publish
 ```
+
+### Path updates
+
+- `poetry run wayfinder path update <slug>` compares the locally installed version in `.wayfinder/paths.lock.json` to the API's `active_bonded_version`.
+- By default it updates only to the current live bonded version, not `latest_version` and not a pending upgrade.
+- `--version <x.y.z>` overrides that default and installs a specific public version.
+- After pulling the new version, the CLI tries to re-use recorded activation metadata; if none is stored, it tries one safe workspace default; otherwise it falls back to pull-only and prints the manual `path activate` command.
 
 ## Architecture
 

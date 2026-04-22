@@ -1,0 +1,4 @@
+execution_mode: "draft"
+prefer_direct_market: false
+max_candidates: 4
+allow_shorting: true

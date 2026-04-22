@@ -1,0 +1,20 @@
+schema_version: "0.1"
+
+slug: temptest
+name: "Temptest"
+version: "0.1.0"
+
+primary_kind: script
+tags:
+  - test
+
+components:
+  - id: "main"
+    kind: script
+    path: "scripts/main.py"
+
+skill:
+  enabled: true
+  source: generated
+  name: "temptest"
+  description: "A simple test skill that prints 'test'."

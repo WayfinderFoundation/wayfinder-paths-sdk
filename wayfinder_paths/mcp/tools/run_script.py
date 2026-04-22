@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import os
 import sys
 import time
@@ -17,6 +16,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     repo_root,
 )
+from wayfinder_paths.paths.builder import _sha256_file
 
 
 def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]:
@@ -66,14 +66,6 @@ def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]
         )
 
     return True, resolved
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _truncate(text: str, *, max_chars: int = 20_000) -> str:

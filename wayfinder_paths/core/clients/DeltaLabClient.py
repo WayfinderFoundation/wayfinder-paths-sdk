@@ -12,6 +12,21 @@ from wayfinder_paths.core.config import get_api_base_url
 class DeltaLabClient(WayfinderClient):
     """Client for Delta Lab basis APY and delta-neutral strategy discovery."""
 
+    @staticmethod
+    def _normalize_series_param(
+        series: str | list[str] | tuple[str, ...] | None,
+    ) -> str | None:
+        if series is None:
+            return None
+        if isinstance(series, str):
+            normalized = series.strip()
+            return normalized or None
+
+        normalized_parts = [part.strip() for part in series if str(part).strip()]
+        if not normalized_parts:
+            return None
+        return ",".join(normalized_parts)
+
     async def get_basis_apy_sources(
         self,
         *,
@@ -215,7 +230,7 @@ class DeltaLabClient(WayfinderClient):
         lookback_days: int = 30,
         limit: int = 500,
         as_of: datetime | None = None,
-        series: str | None = None,
+        series: str | list[str] | tuple[str, ...] | None = None,
         venue: str | None = None,
         basis: bool = False,
     ) -> dict[str, pd.DataFrame]:
@@ -227,9 +242,10 @@ class DeltaLabClient(WayfinderClient):
             lookback_days: Number of days to look back (default: 30)
             limit: Maximum number of data points per series (default: 500, max: 10000)
             as_of: Query timestamp (default: now)
-            series: Comma-separated list of series to fetch (price, yield, lending,
-                   funding, pendle, boros) or alias "rates" for all rate series.
-                   If None, returns all series.
+            series: Comma-separated list of series to fetch, or a list/tuple of
+                   series names (price, yield, lending, funding, pendle, boros).
+                   The alias "rates" requests all rate series. If None, returns
+                   all series.
             venue: Venue name prefix to filter on. Applied to series that support
                    venue filtering (funding, lending, pendle, boros).
                    E.g. "hyperliquid", "moonwell". None means no filter.
@@ -258,8 +274,9 @@ class DeltaLabClient(WayfinderClient):
         }
         if as_of:
             params["as_of"] = as_of.isoformat()
-        if series is not None:
-            params["series"] = series
+        normalized_series = self._normalize_series_param(series)
+        if normalized_series is not None:
+            params["series"] = normalized_series
         if venue is not None:
             params["venue"] = venue
         if not basis:

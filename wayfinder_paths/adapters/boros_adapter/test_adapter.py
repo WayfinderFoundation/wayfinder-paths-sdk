@@ -1084,6 +1084,44 @@ class TestBorosAdapter:
         adapter._get_amm_id_for_market.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_deposit_to_vault_rejects_isolated_only_when_available_cap_drops_below_min_cash(
+        self, adapter
+    ):
+        adapter._get_amm_id_for_market = AsyncMock()
+        adapter.get_vaults_summary = AsyncMock(
+            return_value=(
+                True,
+                [
+                    BorosVault(
+                        amm_id=730,
+                        market_id=73,
+                        symbol="HYPERLIQUID-xyzCL-27MAR2026",
+                        is_isolated_only=True,
+                        raw={
+                            "tokenId": 3,
+                            "user": {"availableBalanceToDeposit": str(int(5 * 1e18))},
+                        },
+                    )
+                ],
+            )
+        )
+        adapter.get_cash_fee_data = AsyncMock(
+            return_value=(True, {"min_cash_isolated_wei": int(10 * 1e18)})
+        )
+        adapter.deposit_to_vault_direct = AsyncMock()
+
+        ok, res = await adapter.deposit_to_vault(
+            market_id=73,
+            net_cash_in_wei=20 * 10**18,
+        )
+
+        assert ok is False
+        assert "requires at least" in str(res.get("error") or "")
+        assert res["effective_cash_wei"] == 5 * 10**18
+        adapter.deposit_to_vault_direct.assert_not_awaited()
+        adapter._get_amm_id_for_market.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_get_amm_id_for_market_uses_cached_mapping(self, adapter):
         adapter._amm_id_by_market_cache[73] = 730
         adapter.get_vaults_summary = AsyncMock()

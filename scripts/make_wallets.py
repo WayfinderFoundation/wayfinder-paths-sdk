@@ -76,6 +76,12 @@ async def main():
         default="[]",
         help="Policies for remote wallet: '[]' for no policies (default), or JSON list",
     )
+    parser.add_argument(
+        "--wallet-type",
+        choices=["session", "policy", "strategy"],
+        default="session",
+        help="Remote wallet type: session (default, 1h TTL), strategy (7d TTL), or policy (custom)",
+    )
     args = parser.parse_args()
 
     # --default means "ensure main wallet exists" (and do nothing otherwise).
@@ -161,7 +167,9 @@ async def main():
     if args.remote:
         for label in labels_to_create:
             policies = json.loads(args.policies)
-            result = await create_remote_wallet(label=label, policies=policies)
+            result = await create_remote_wallet(
+                label=label, wallet_type=args.wallet_type, policies=policies
+            )
             print(
                 f"[remote] {result['wallet_address']}  (label: {result.get('label', label)})"
             )

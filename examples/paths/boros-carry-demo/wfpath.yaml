@@ -1,0 +1,31 @@
+schema_version: "0.1"
+
+slug: boros-carry-demo
+name: Boros Carry Backtest (Delta Lab Demo)
+version: 0.1.10
+summary: "Demo path: Boros carry vs underlying (+ perp funding). Includes a funding-vs-underlying long/short backtest and a static applet."
+primary_kind: monitor
+
+tags:
+  - demo
+  - delta-lab
+  - boros
+
+components:
+  - id: boros-backtest
+    kind: script
+    path: scripts/boros_backtest.py
+  - id: funding-vs-underlying
+    kind: script
+    path: scripts/funding_vs_underlying_backtest.py
+
+applet:
+  build_dir: "applet/dist"
+  manifest: "applet/applet.manifest.json"
+
+skill:
+  enabled: true
+  source: generated
+  name: "boros-carry-demo"
+  description: "Inspect the Boros carry demo path, explain the two backtests, and run the included scripts or applet preview."
+  instructions: "skill/instructions.md"

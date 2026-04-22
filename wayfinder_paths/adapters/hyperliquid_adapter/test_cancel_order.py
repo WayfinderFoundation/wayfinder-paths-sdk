@@ -15,7 +15,7 @@ class TestHyperliquidCancelOrder:
         ):
             adapter = HyperliquidAdapter(
                 config={},
-                sign_callback=AsyncMock(return_value="0x" + "00" * 65),
+                sign_typed_data_callback=AsyncMock(return_value="0x" + "00" * 65),
             )
             adapter._sign_and_broadcast_hypecore = AsyncMock(
                 return_value={"status": "ok"}

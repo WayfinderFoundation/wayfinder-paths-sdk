@@ -335,9 +335,14 @@ class SparkLendAdapter(AaveV3Adapter):
     # -----------------
 
     async def get_all_markets(
-        self, *, chain_id: int, include_caps: bool = True
+        self,
+        *,
+        chain_id: int,
+        include_caps: bool = True,
+        include_rewards: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
+            _ = include_rewards  # SparkLend currently has no separate rewards enrichment path.
             entry = self._entry(chain_id)
             data_provider_addr = entry.get("protocol_data_provider")
             if not data_provider_addr:

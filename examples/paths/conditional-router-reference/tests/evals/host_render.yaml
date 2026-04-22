@@ -1,0 +1,8 @@
+name: "host-render"
+type: "host_render"
+hosts:
+  - "claude"
+  - "opencode"
+expected_files:
+  - "install/.claude/skills/conditional-router-reference/SKILL.md"
+  - "install/.opencode/skills/conditional-router-reference/SKILL.md"

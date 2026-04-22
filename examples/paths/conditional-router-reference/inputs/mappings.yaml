@@ -1,0 +1,10 @@
+conditions:
+  recession:
+    polymarket_search: "US recession"
+    proxies:
+      risk_off:
+        sell: ["SOL", "DOGE"]
+      crash_mode:
+        short: ["SOL", "DOGE", "XRP"]
+      risk_on:
+        long: ["ETH", "SOL"]
