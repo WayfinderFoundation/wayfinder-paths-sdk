@@ -5,9 +5,9 @@ from typing import Any
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
-# POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
+POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 # v2 test url before crossover. once crossover is complete, v2 will use the original url
-POLYMARKET_CLOB_BASE_URL = "https://clob-v2.polymarket.com"
+# POLYMARKET_CLOB_BASE_URL = "https://clob-v2.polymarket.com"
 POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com"
 POLYMARKET_BRIDGE_BASE_URL = "https://bridge.polymarket.com"
 
