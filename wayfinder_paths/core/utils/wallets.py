@@ -301,22 +301,28 @@ async def get_wallet_sign_hash_callback(label: str):
 # ---------------------------------------------------------------------------
 
 
+VALID_REMOTE_WALLET_TYPES = ("session", "policy", "strategy")
+
+
 async def create_remote_wallet(
     label: str,
+    wallet_type: str,
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
-    wallet_type: str | None = None,
 ) -> dict[str, Any]:
     if not label.strip():
         raise ValueError("label is required")
-    if wallet_type == "strategy":
-        if not policies:
+    if wallet_type not in VALID_REMOTE_WALLET_TYPES:
+        raise ValueError(
+            f"wallet_type must be one of {VALID_REMOTE_WALLET_TYPES}, got {wallet_type!r}"
+        )
+    if not policies:
+        if wallet_type == "strategy":
             policies = [build_strategy_policy()]
-    elif not policies:
-        wallet_type = "session"
-        policies = [build_session_policy()]
-    else:
-        wallet_type = "policy"
+        elif wallet_type == "session":
+            policies = [build_session_policy()]
+        else:
+            raise ValueError("policies is required when wallet_type=policy")
     result = await WALLET_CLIENT.create_wallet(
         chain_type=chain_type,
         policies=policies,
