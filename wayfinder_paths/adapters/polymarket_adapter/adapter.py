@@ -15,6 +15,7 @@ from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
     MarketOrderArgs,
     OpenOrderParams,
     OrderArgsV2,
+    OrderPayload,
 )
 from py_clob_client_v2.config import (  # type: ignore[import-untyped]
     get_contract_config,
@@ -1482,7 +1483,12 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
-            resp = self.clob_client.cancel(order_id)
+            if hasattr(self.clob_client, "cancel_order"):
+                resp = self.clob_client.cancel_order(
+                    OrderPayload(orderID=order_id)
+                )
+            else:
+                resp = self.clob_client.cancel(order_id)
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1500,7 +1506,10 @@ class PolymarketAdapter(BaseAdapter):
             if token_id:
                 # CLOB uses `asset_id` for the outcome token id returned by Gamma `clobTokenIds`.
                 params = OpenOrderParams(asset_id=token_id)  # type: ignore[misc]
-            data = self.clob_client.get_orders(params)
+            if hasattr(self.clob_client, "get_open_orders"):
+                data = self.clob_client.get_open_orders(params)
+            else:
+                data = self.clob_client.get_orders(params)
             if isinstance(data, list):
                 return True, data
             if isinstance(data, dict) and isinstance(data.get("data"), list):
