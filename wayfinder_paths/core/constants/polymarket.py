@@ -25,7 +25,8 @@ POLYMARKET_COLLATERAL_ONRAMP_ADDRESS = "0x93070a847efEf7F70739046A929D47a521F5B8
 POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS = "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
 
 # Exchanges / operators that may require approvals depending on market type.
-# NOTE: If interacting with the contracts directly, use V2 except for ClobAuthDomain
+# NOTE: If interacting with the contracts directly, use version 2 except for ClobAuthDomain 
+# https://docs.polymarket.com/v2-migration#eip-712-domain
 POLYMARKET_CTF_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
 POLYMARKET_NEG_RISK_CTF_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
 POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
