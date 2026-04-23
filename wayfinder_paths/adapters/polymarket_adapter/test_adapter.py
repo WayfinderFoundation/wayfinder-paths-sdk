@@ -241,6 +241,82 @@ class TestPolymarketAdapter:
         assert quote["shares"] == pytest.approx(20.0)
 
     @pytest.mark.asyncio
+    async def test_place_limit_order_attaches_builder_code(self, adapter, monkeypatch):
+        builder_code = "0x" + "12" * 32
+        adapter.config = {"system": {"polymarket_builder_code": f" {builder_code} "}}
+
+        monkeypatch.setattr(
+            adapter,
+            "ensure_onchain_approvals",
+            AsyncMock(return_value=(True, {"ok": True})),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "ensure_api_creds",
+            AsyncMock(return_value=(True, {"ok": True})),
+        )
+
+        mock_clob = MagicMock()
+        mock_clob.create_order = AsyncMock(return_value={"signed": "limit_order"})
+        mock_clob.post_order.return_value = {"id": "order_1"}
+        adapter._clob_client = mock_clob
+
+        ok, res = await adapter.place_limit_order(
+            token_id="token_1",
+            side="BUY",
+            price=0.01,
+            size=5.0,
+            post_only=True,
+        )
+
+        assert ok is True
+        assert res == {"id": "order_1"}
+        order_args = mock_clob.create_order.await_args.args[0]
+        assert order_args.builder_code == builder_code
+        mock_clob.post_order.assert_called_once_with(
+            {"signed": "limit_order"},
+            "GTC",
+            True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_place_market_order_attaches_builder_code(self, adapter, monkeypatch):
+        builder_code = "0x" + "34" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
+
+        monkeypatch.setattr(
+            adapter,
+            "ensure_onchain_approvals",
+            AsyncMock(return_value=(True, {"ok": True})),
+        )
+        monkeypatch.setattr(
+            adapter,
+            "ensure_api_creds",
+            AsyncMock(return_value=(True, {"ok": True})),
+        )
+
+        mock_clob = MagicMock()
+        mock_clob.create_market_order = AsyncMock(return_value={"signed": "market"})
+        mock_clob.post_order.return_value = {"id": "order_2"}
+        adapter._clob_client = mock_clob
+
+        ok, res = await adapter.place_market_order(
+            token_id="token_1",
+            side="BUY",
+            amount=1.0,
+        )
+
+        assert ok is True
+        assert res == {"id": "order_2"}
+        order_args = mock_clob.create_market_order.await_args.args[0]
+        assert order_args.builder_code == builder_code
+        mock_clob.post_order.assert_called_once_with(
+            {"signed": "market"},
+            order_args.order_type,
+            False,
+        )
+
+    @pytest.mark.asyncio
     async def test_get_positions(self, adapter, monkeypatch):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
