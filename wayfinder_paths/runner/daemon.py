@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from loguru import logger
 
 from wayfinder_paths import __version__
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -142,6 +145,8 @@ class RunnerDaemon:
         aborted = self._db.mark_stale_running_runs_aborted(note="runner restarted")
         if aborted:
             logger.warning(f"Marked {aborted} stale RUNNING runs as ABORTED")
+
+        self._reconcile_with_backend()
 
         self._control = RunnerControlServer(
             sock_path=self._paths.sock_path, daemon=self
@@ -283,6 +288,58 @@ class RunnerDaemon:
         )
 
         self._notify_session(rp, status=status, error_text=error_text)
+
+        if is_opencode_instance():
+            log_output = ""
+            try:
+                log_output = rp.log_path.read_text(errors="replace")
+            except Exception:  # noqa: BLE001
+                pass
+            SCHEDULED_JOBS_CLIENT.report_run(
+                rp.job_name,
+                {
+                    "run_id": str(rp.run_id),
+                    "status": status,
+                    "started_at": datetime.fromtimestamp(
+                        rp.started_at, tz=UTC
+                    ).isoformat(),
+                    "finished_at": datetime.fromtimestamp(
+                        finished_at, tz=UTC
+                    ).isoformat(),
+                    "exit_code": exit_code,
+                    "log_output": log_output,
+                },
+            )
+            self._sync_job(rp.job_name)
+
+    def _sync_job(self, name: str) -> None:
+        if not is_opencode_instance():
+            return
+        try:
+            job, state = self._db.get_job(name=name)
+        except KeyError:
+            return
+        SCHEDULED_JOBS_CLIENT.sync_job(
+            name,
+            {
+                "job_type": job.type,
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            },
+        )
+
+    def _reconcile_with_backend(self) -> None:
+        if not is_opencode_instance():
+            return
+        local_names = {str(j["name"]) for j in self._db.list_jobs()}
+        remote = SCHEDULED_JOBS_CLIENT.list_jobs()
+        remote_names = {str(j["job_name"]) for j in remote}
+        for orphan in remote_names - local_names:
+            logger.info(f"Reconcile: deleting remote-only job {orphan}")
+            SCHEDULED_JOBS_CLIENT.delete_job(orphan)
+        for name in local_names:
+            self._sync_job(name)
 
     def _notify_session(
         self,
@@ -647,6 +704,7 @@ class RunnerDaemon:
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+        self._sync_job(name)
         return {"ok": True, "result": {"job_id": job_id, "name": name}}
 
     def ctl_update_job(
@@ -658,6 +716,7 @@ class RunnerDaemon:
             self._db.update_job(
                 name=name, payload=payload, interval_seconds=interval_seconds
             )
+            self._sync_job(name)
             return {"ok": True, "result": {"name": name}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -665,6 +724,7 @@ class RunnerDaemon:
     def ctl_pause_job(self, *, name: str) -> dict[str, Any]:
         try:
             self._db.set_job_status(name=name, status=JobStatus.PAUSED)
+            self._sync_job(name)
             return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -674,6 +734,7 @@ class RunnerDaemon:
             job, _ = self._db.get_job(name=name)
             self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
             self._db.set_next_run_at(job_id=job.id, next_run_at=_utc_epoch_s())
+            self._sync_job(name)
             return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
         except KeyError as exc:
             return {"ok": False, "error": str(exc)}
@@ -719,4 +780,6 @@ class RunnerDaemon:
                 return {"ok": False, "error": str(exc)}
             self._running_by_job.pop(job_id, None)
 
+        if is_opencode_instance():
+            SCHEDULED_JOBS_CLIENT.delete_job(str(name))
         return {"ok": True, "result": {"name": str(name), "deleted": True}}

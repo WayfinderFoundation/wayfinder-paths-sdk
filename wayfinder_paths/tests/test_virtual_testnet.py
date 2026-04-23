@@ -74,12 +74,11 @@ class TestGorlamiProxyAuth:
 
     @pytest.mark.asyncio
     async def test_proxy_round_trip(self, client):
-        # Uses X-API-KEY header (not the old Authorization: <gorlami_key>)
-        assert "X-API-KEY" in client.client.headers
-
         fork_info = await client.create_fork(chain_id=CHAIN_ID_BASE)
         fork_id = fork_info["fork_id"]
         try:
+            # Auth headers are injected lazily on the first outbound request.
+            assert "X-API-KEY" in client.headers
             assert fork_info["rpc_url"].startswith(client.base_url)
 
             wallet = "0x1234567890123456789012345678901234567890"

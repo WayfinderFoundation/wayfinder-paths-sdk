@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "conditional-router-mappings",
+  "type": "object",
+  "required": [
+    "conditions"
+  ],
+  "properties": {
+    "conditions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "polymarket_search": {
+            "type": "string"
+          },
+          "proxies": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "polymarket_search"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

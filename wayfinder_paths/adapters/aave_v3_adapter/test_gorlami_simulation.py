@@ -5,7 +5,7 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.aave_v3_adapter.adapter import AaveV3Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
-from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC, ZERO_ADDRESS
+from wayfinder_paths.core.constants.contracts import ARBITRUM_USDC
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
@@ -47,8 +47,6 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
         wallet_address=acct.address,
     )
 
-    wrapped = await adapter._wrapped_native(chain_id=chain_id)
-
     ok, markets = await adapter.get_all_markets(chain_id=chain_id, include_rewards=True)
     assert ok is True, markets
     assert isinstance(markets, list) and markets
@@ -58,10 +56,22 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
         for m in markets
         if str(m.get("underlying", "")).lower() == ARBITRUM_USDC.lower()
     )
-    weth_market = next(
-        m for m in markets if str(m.get("underlying", "")).lower() == wrapped.lower()
+    borrow_market = next(
+        m
+        for m in markets
+        if bool(m.get("borrowing_enabled"))
+        and not bool(m.get("is_frozen"))
+        and str(m.get("underlying", "")).lower() != ARBITRUM_USDC.lower()
+        and float(m.get("price_usd") or 0) > 0
     )
-
+    borrow_underlying = str(borrow_market.get("underlying") or "")
+    borrow_qty = max(
+        1,
+        int(
+            (5 / float(borrow_market.get("price_usd") or 1))
+            * (10 ** int(borrow_market.get("decimals") or 18))
+        ),
+    )
     # Basic non-native supply/withdraw.
     ok, tx = await adapter.lend(
         chain_id=chain_id,
@@ -80,17 +90,18 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    # Supply native (wrap+deposit WETH), borrow USDC, repay-full, withdraw-full.
+    # Use a currently collateral-enabled reserve on live Arbitrum.
+    # WETH is frozen on Aave v3 there, so native/WETH supply is not reliable on fork tests.
     ok, tx = await adapter.lend(
         chain_id=chain_id,
-        underlying_token=ZERO_ADDRESS,
-        qty=int(0.01 * 10**18),
+        underlying_token=ARBITRUM_USDC,
+        qty=100 * 10**6,
     )
     assert ok is True, tx
 
     ok, tx = await adapter.set_collateral(
         chain_id=chain_id,
-        underlying_token=wrapped,
+        underlying_token=ARBITRUM_USDC,
         use_as_collateral=True,
     )
     assert ok is True, tx
@@ -98,8 +109,8 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
 
     ok, tx = await adapter.borrow(
         chain_id=chain_id,
-        underlying_token=ARBITRUM_USDC,
-        qty=10 * 10**6,
+        underlying_token=borrow_underlying,
+        qty=borrow_qty,
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
@@ -109,19 +120,28 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     )
     assert ok is True, state
     assert any(
-        p.get("underlying", "").lower() == wrapped.lower()
+        p.get("underlying", "").lower() == ARBITRUM_USDC.lower()
         and int(p.get("supply_raw") or 0) > 0
         for p in state.get("positions") or []
     )
     assert any(
-        p.get("underlying", "").lower() == ARBITRUM_USDC.lower()
+        p.get("underlying", "").lower() == borrow_underlying.lower()
         and int(p.get("variable_borrow_raw") or 0) > 0
         for p in state.get("positions") or []
     )
 
+    # Interest can accrue between borrow and repay_full on live forks; seed a small buffer
+    # so the test exercises the closeout path instead of failing on dust.
+    await gorlami.set_erc20_balance(
+        fork_info["fork_id"],
+        borrow_underlying,
+        acct.address,
+        max(borrow_qty * 2, borrow_qty + 1),
+    )
+
     ok, tx = await adapter.repay(
         chain_id=chain_id,
-        underlying_token=ARBITRUM_USDC,
+        underlying_token=borrow_underlying,
         qty=0,
         repay_full=True,
     )
@@ -135,12 +155,12 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     assert all(
         int(p.get("variable_borrow_raw") or 0) == 0
         for p in state.get("positions") or []
-        if p.get("underlying", "").lower() == ARBITRUM_USDC.lower()
+        if p.get("underlying", "").lower() == borrow_underlying.lower()
     )
 
     ok, tx = await adapter.unlend(
         chain_id=chain_id,
-        underlying_token=ZERO_ADDRESS,
+        underlying_token=ARBITRUM_USDC,
         qty=0,
         withdraw_full=True,
     )
@@ -150,9 +170,7 @@ async def test_gorlami_aave_v3_supply_borrow_repay_withdraw_claim(gorlami):
     ok, tx = await adapter.claim_all_rewards(
         chain_id=chain_id,
         assets=[
-            str(weth_market.get("a_token") or ""),
             str(usdc_market.get("a_token") or ""),
-            str(usdc_market.get("variable_debt_token") or ""),
         ],
     )
     assert ok is True, tx

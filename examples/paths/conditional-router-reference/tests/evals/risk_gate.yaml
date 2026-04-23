@@ -1,0 +1,7 @@
+name: "risk-gate"
+type: "fixture"
+fixture: "risk_gate"
+assert:
+  null_state.selected: false
+  job.mode: "draft"
+  risk_checks.passed: false

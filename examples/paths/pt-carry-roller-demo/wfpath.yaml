@@ -1,0 +1,30 @@
+schema_version: "0.1"
+
+slug: pt-carry-roller-demo
+name: PT Carry Roller (Delta Lab Demo)
+version: 0.1.0
+summary: "Demo strategy path: pick a Pendle PT by net carry and roll it; applet shows selection + NAV using Delta Lab."
+primary_kind: strategy
+
+tags:
+  - demo
+  - delta-lab
+  - pendle
+  - pt
+  - carry
+
+components:
+  - id: pt-carry-backtest
+    kind: script
+    path: scripts/pt_carry_backtest.py
+
+applet:
+  build_dir: "applet/dist"
+  manifest: "applet/applet.manifest.json"
+
+skill:
+  enabled: true
+  source: generated
+  name: "pt-carry-roller-demo"
+  description: "Inspect the PT carry roller demo path, explain the PT selection logic, and run path validation or preview tasks."
+  instructions: "skill/instructions.md"
