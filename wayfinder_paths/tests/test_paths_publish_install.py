@@ -1286,9 +1286,7 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
     )
 
     sdk_root = tmp_path / "fake-sdk"
-    bundled_skill_dir = (
-        sdk_root / ".claude" / "skills" / "using-hyperliquid-adapter"
-    )
+    bundled_skill_dir = sdk_root / ".claude" / "skills" / "using-hyperliquid-adapter"
     bundled_skill_dir.mkdir(parents=True, exist_ok=True)
     (bundled_skill_dir / "SKILL.md").write_text(
         "---\nname: using-hyperliquid-adapter\ndescription: bundled sdk skill\n---\n",
@@ -1322,12 +1320,7 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
             "dest": str(Path.cwd()),
             "mode": "install",
             "applied": [
-                str(
-                    Path.cwd()
-                    / ".opencode"
-                    / "skills"
-                    / Path(str(path_dir)).name
-                )
+                str(Path.cwd() / ".opencode" / "skills" / Path(str(path_dir)).name)
             ],
         }
 
@@ -1363,7 +1356,10 @@ def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
             if slug != "install-opencode-bundled-demo":
                 raise AssertionError(f"unexpected registry lookup for {slug}")
             return {
-                "version": {"version": version, "bundle_sha256": main_build.bundle_sha256}
+                "version": {
+                    "version": version,
+                    "bundle_sha256": main_build.bundle_sha256,
+                }
             }
 
         def create_install_intent(self, **kwargs):

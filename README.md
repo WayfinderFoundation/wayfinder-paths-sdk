@@ -124,27 +124,6 @@ print("base_rpc:", (get_rpc_urls() or {}).get("8453"))
 PY
 ```
 
-### Wayfinder Cloud shells against a local backend
-
-If you provision a Wayfinder Cloud shell and want SDK/API calls to hit a local backend instead of the hosted backend:
-
-1. Provision the shell with your **dev** Wayfinder API key. The instance keeps that in `WAYFINDER_API_KEY`, which is what the shell uses for LLM/provider routing.
-2. Expose your local backend through ngrok (or another public tunnel).
-3. Add the ngrok hostname to Django `ALLOWED_HOSTS` if that local backend should use the dev database.
-4. Update `config.json` inside the shell workspace:
-
-```json
-{
-  "system": {
-    "api_base_url": "https://<your-ngrok-host>/api/v1",
-    "paths_api_base_url": "https://<your-ngrok-host>",
-    "api_key": "<your-local-api-key>"
-  }
-}
-```
-
-Keep `WAYFINDER_API_KEY` on the dev key unless you explicitly want to stop using the dev LLM/provider route.
-
 ### Supported Chains
 
 The SDK includes built-in support for these chain IDs:
