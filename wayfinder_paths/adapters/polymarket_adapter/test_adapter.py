@@ -39,9 +39,7 @@ class TestPolymarketAdapter:
         assert "geoBlockToken" not in params
 
     @pytest.mark.asyncio
-    async def test_clob_client_is_configured_with_python_v2_chain_id(
-        self, monkeypatch
-    ):
+    async def test_clob_client_is_configured_with_python_v2_chain_id(self, monkeypatch):
         calls = []
 
         class FakeClobClient:
