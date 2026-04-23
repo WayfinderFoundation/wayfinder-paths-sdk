@@ -1,3 +1,4 @@
+import inspect
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
@@ -25,6 +26,141 @@ class TestPolymarketAdapter:
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "POLYMARKET"
+
+    def test_clob_client_python_v2_constructor_signature(self):
+        params = inspect.signature(
+            polymarket_adapter_module.ClobClient.__init__
+        ).parameters
+
+        assert list(params)[:3] == ["self", "host", "chain_id"]
+        assert "chain" not in params
+        assert "chainId" not in params
+        assert "tickSizeTtlMs" not in params
+        assert "geoBlockToken" not in params
+
+    @pytest.mark.asyncio
+    async def test_clob_client_is_configured_with_python_v2_chain_id(
+        self, monkeypatch
+    ):
+        calls = []
+
+        class FakeClobClient:
+            def __init__(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+        async def sign_hash_callback(_payload):
+            return b""
+
+        monkeypatch.setattr(polymarket_adapter_module, "ClobClient", FakeClobClient)
+        adapter = PolymarketAdapter(
+            config={},
+            wallet_address="0x000000000000000000000000000000000000dEaD",
+            sign_hash_callback=sign_hash_callback,
+        )
+        try:
+            client = adapter.clob_client
+            assert isinstance(client, FakeClobClient)
+        finally:
+            await adapter.close()
+
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        assert args == ("https://clob.polymarket.com",)
+        assert kwargs["chain_id"] == 137
+        assert "chain" not in kwargs
+        assert "chainId" not in kwargs
+        assert kwargs["sign_callback_override"] is sign_hash_callback
+
+    @pytest.mark.asyncio
+    async def test_limit_order_uses_v2_order_args_without_legacy_fee_fields(
+        self, adapter
+    ):
+        builder_code = "0x" + "12" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
+        adapter.ensure_onchain_approvals = AsyncMock(return_value=(True, {}))
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.created_order = None
+
+            async def create_order(self, order_args):
+                self.created_order = order_args
+                return {"signed": True}
+
+            def post_order(self, order, order_type, post_only):
+                return {
+                    "order": order,
+                    "order_type": order_type,
+                    "post_only": post_only,
+                }
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.place_limit_order(
+            token_id="123",
+            side="BUY",
+            price=0.5,
+            size=10.0,
+            post_only=True,
+        )
+
+        assert ok is True
+        assert response["order_type"] == "GTC"
+        assert response["post_only"] is True
+        order_args = fake_clob_client.created_order
+        assert isinstance(order_args, polymarket_adapter_module.OrderArgsV2)
+        assert order_args.builder_code == builder_code
+        assert not hasattr(order_args, "fee_rate_bps")
+        assert not hasattr(order_args, "feeRateBps")
+        assert not hasattr(order_args, "nonce")
+        assert not hasattr(order_args, "taker")
+
+    @pytest.mark.asyncio
+    async def test_market_order_uses_v2_order_args_without_manual_fee_fields(
+        self, adapter
+    ):
+        builder_code = "0x" + "34" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
+        adapter.ensure_onchain_approvals = AsyncMock(return_value=(True, {}))
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.created_order = None
+
+            async def create_market_order(self, order_args):
+                self.created_order = order_args
+                return {"signed": True}
+
+            def post_order(self, order, order_type, post_only):
+                return {
+                    "order": order,
+                    "order_type": order_type,
+                    "post_only": post_only,
+                }
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.place_market_order(
+            token_id="123",
+            side="BUY",
+            amount=10.0,
+        )
+
+        assert ok is True
+        assert response["order_type"] == "FOK"
+        assert response["post_only"] is False
+        order_args = fake_clob_client.created_order
+        assert isinstance(order_args, polymarket_adapter_module.MarketOrderArgs)
+        assert order_args.builder_code == builder_code
+        assert order_args.user_usdc_balance == 0
+        assert not hasattr(order_args, "fee_rate_bps")
+        assert not hasattr(order_args, "feeRateBps")
+        assert not hasattr(order_args, "nonce")
+        assert not hasattr(order_args, "taker")
 
     @pytest.mark.asyncio
     async def test_list_markets(self, adapter, monkeypatch):
