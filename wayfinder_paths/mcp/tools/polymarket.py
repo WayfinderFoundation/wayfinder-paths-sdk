@@ -649,8 +649,8 @@ async def polymarket_execute(
                     "market_slug": str(market_slug) if market_slug else None,
                     "token_id": str(token_id) if token_id else None,
                     "outcome": str(outcome),
-                    "amount_collateral": float(buy_amount)
-                    if buy_amount is not None
+                    "amount_collateral": float(amount_collateral)
+                    if amount_collateral is not None
                     else None,
                     "shares": float(shares) if shares is not None else None,
                 },
