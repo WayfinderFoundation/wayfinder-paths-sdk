@@ -3446,15 +3446,15 @@ files = [
 ]
 
 [[package]]
-name = "py-clob-client-v2-signing-callback"
+name = "py-clob-client-v2-wayfinder"
 version = "1.0.0"
 description = ""
 optional = false
 python-versions = ">=3.9.10"
 groups = ["main"]
 files = [
-    {file = "py_clob_client_v2_signing_callback-1.0.0-py3-none-any.whl", hash = "sha256:e51aa5c80d4cf6c14e904b005d690a7abc4641a20e154b30739b1bc7fb0cad97"},
-    {file = "py_clob_client_v2_signing_callback-1.0.0.tar.gz", hash = "sha256:5b1ef7551c16ae386202450baf5c6037276c42ac81526fdc015da72a97af1029"},
+    {file = "py_clob_client_v2_wayfinder-1.0.0-py3-none-any.whl", hash = "sha256:ce89c0ea860019b435ca505c2d35bd22357e497a597f2b885335477a8bf1d69d"},
+    {file = "py_clob_client_v2_wayfinder-1.0.0.tar.gz", hash = "sha256:e7c6583f4af65cc120922ad41560fea34009e878f8d34a878168f7af6f01bbc6"},
 ]
 
 [package.dependencies]
@@ -5226,4 +5226,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "66b86e5f8d404d824bff901630fb66ce99707177cbe04b1c4407c2e5f4c1f368"
+content-hash = "b9c353b5c8acf292d0dc5f4d2f54492a91540b3f8c2ad2f5eaff520bc481d141"
