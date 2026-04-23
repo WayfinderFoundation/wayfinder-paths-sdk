@@ -28,9 +28,9 @@ ccxt = "^4.0"
 click = "^8.1.7"
 py-solc-x = "^2.0.0"
 matplotlib = "^3.10.8"
-py-clob-client-v2-signing-callback = "1.0.0"
 py-order-utils = "0.3.2"
 packaging = "^25.0"
+py-clob-client-v2-wayfinder = "1.0.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
