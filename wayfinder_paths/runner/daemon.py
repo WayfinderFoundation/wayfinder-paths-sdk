@@ -322,6 +322,7 @@ class RunnerDaemon:
         SCHEDULED_JOBS_CLIENT.sync_job(
             name,
             {
+                "job_type": job.type,
                 "status": state.status,
                 "interval_seconds": job.interval_seconds,
                 "payload": job.payload,
