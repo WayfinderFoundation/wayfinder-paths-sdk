@@ -703,7 +703,7 @@ class PolymarketAdapter(BaseAdapter):
         *,
         market_slug: str,
         outcome: str | int = "YES",
-        amount_usdc: float = 1.0,
+        amount_collateral: float = 1.0,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -716,7 +716,7 @@ class PolymarketAdapter(BaseAdapter):
         return await self.place_market_order(
             token_id=token_id,
             side="BUY",
-            amount=amount_usdc,
+            amount=amount_collateral,
         )
 
     async def cash_out_prediction(
