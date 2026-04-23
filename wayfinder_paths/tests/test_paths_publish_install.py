@@ -942,7 +942,7 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     tmp_path: Path, monkeypatch
 ):
     dependency_build = _build_path_bundle(
-        tmp_path, slug="using-delta-lab", version="0.1.0"
+        tmp_path, slug="custom-market-data-pack", version="0.1.0"
     )
     main_path = tmp_path / "install-opencode-demo"
     init_path(
@@ -957,8 +957,8 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     manifest.setdefault("skill", {})
     manifest["skill"]["dependencies"] = [
         {
-            "name": "using-delta-lab",
-            "path_slug": "using-delta-lab",
+            "name": "custom-market-data",
+            "path_slug": "custom-market-data-pack",
             "required": True,
         }
     ]
@@ -1096,15 +1096,15 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["result"]["activated"] is True
-    assert payload["result"]["dependencies"][0]["slug"] == "using-delta-lab"
+    assert payload["result"]["dependencies"][0]["slug"] == "custom-market-data-pack"
     assert len(activation_calls) == 2
     assert {Path(call["path_dir"]).parent.name for call in activation_calls} == {
-        "using-delta-lab",
+        "custom-market-data-pack",
         "install-opencode-demo",
     }
     lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
     assert lock["paths"]["install-opencode-demo"]["activation"]["dependencies"] == [
-        {"path_slug": "using-delta-lab", "version": "0.1.0"}
+        {"path_slug": "custom-market-data-pack", "version": "0.1.0"}
     ]
 
 
@@ -1112,7 +1112,7 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
     tmp_path: Path, monkeypatch
 ):
     dependency_build = _build_path_bundle(
-        tmp_path, slug="using-delta-lab", version="0.1.0"
+        tmp_path, slug="custom-market-data-pack", version="0.1.0"
     )
     main_path = tmp_path / "install-claude-demo"
     init_path(
@@ -1127,8 +1127,8 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
     manifest.setdefault("skill", {})
     manifest["skill"]["dependencies"] = [
         {
-            "name": "using-delta-lab",
-            "path_slug": "using-delta-lab",
+            "name": "custom-market-data",
+            "path_slug": "custom-market-data-pack",
             "required": True,
         }
     ]
@@ -1249,12 +1249,201 @@ def test_path_install_claude_activates_and_installs_required_dependencies(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["result"]["activated"] is True
-    assert payload["result"]["dependencies"][0]["slug"] == "using-delta-lab"
+    assert payload["result"]["dependencies"][0]["slug"] == "custom-market-data-pack"
     assert len(activation_calls) == 2
     assert {Path(call["path_dir"]).parent.name for call in activation_calls} == {
-        "using-delta-lab",
+        "custom-market-data-pack",
         "install-claude-demo",
     }
+
+
+def test_path_install_opencode_uses_bundled_sdk_skill_dependencies(
+    tmp_path: Path, monkeypatch
+):
+    main_path = tmp_path / "install-opencode-bundled-demo"
+    init_path(
+        path_dir=main_path,
+        slug="install-opencode-bundled-demo",
+        primary_kind="monitor",
+        with_skill=True,
+        with_applet=False,
+    )
+    manifest_path = main_path / "wfpath.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text())
+    manifest.setdefault("skill", {})
+    manifest["skill"]["dependencies"] = [
+        {
+            "name": "using-hyperliquid-adapter",
+            "path_slug": "using-hyperliquid-adapter",
+            "required": True,
+        }
+    ]
+    manifest_path.write_text(
+        yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8"
+    )
+    main_build = PathBuilder.build(
+        path_dir=main_path, out_path=main_path / "dist" / "bundle.zip"
+    )
+
+    sdk_root = tmp_path / "fake-sdk"
+    bundled_skill_dir = (
+        sdk_root / ".claude" / "skills" / "using-hyperliquid-adapter"
+    )
+    bundled_skill_dir.mkdir(parents=True, exist_ok=True)
+    (bundled_skill_dir / "SKILL.md").write_text(
+        "---\nname: using-hyperliquid-adapter\ndescription: bundled sdk skill\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("WAYFINDER_SDK_ROOT", str(sdk_root))
+
+    activation_calls: list[dict[str, object]] = []
+
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
+        activation_calls.append(
+            {
+                "host": host,
+                "scope": scope,
+                "path_dir": str(path_dir),
+            }
+        )
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "root": str(Path.cwd()),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [
+                str(
+                    Path.cwd()
+                    / ".opencode"
+                    / "skills"
+                    / Path(str(path_dir)).name
+                )
+            ],
+        }
+
+    def fake_run_host_doctor(*, path_dir, host, activated_root=None, model=None):
+        return PathDoctorReport(
+            ok=True,
+            slug=Path(path_dir).name,
+            version="0.1.0",
+            primary_kind="monitor",
+            errors=[],
+            warnings=[],
+            created_files=[],
+        )
+
+    class FakeInstallClient:
+        calls: list[str] = []
+
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            self.__class__.calls.append(slug)
+            if slug != "install-opencode-bundled-demo":
+                raise AssertionError(f"unexpected registry lookup for {slug}")
+            return {
+                "path": {"slug": slug, "latest_version": "0.1.0"},
+                "versions": [
+                    {"version": "0.1.0", "bundle_sha256": main_build.bundle_sha256}
+                ],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            if slug != "install-opencode-bundled-demo":
+                raise AssertionError(f"unexpected registry lookup for {slug}")
+            return {
+                "version": {"version": version, "bundle_sha256": main_build.bundle_sha256}
+            }
+
+        def create_install_intent(self, **kwargs):
+            expires_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+            return {
+                "intent": {
+                    "intent_id": f"intent-{kwargs['slug']}",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": "aa" * 32,
+                    "issued_at": datetime.now(UTC).isoformat(),
+                    "expires_at": expires_at,
+                    "runtime": kwargs["runtime"],
+                },
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            if slug != "install-opencode-bundled-demo":
+                raise AssertionError(f"unexpected bundle download for {slug}")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(main_build.bundle_path.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": "install-opencode-bundled",
+                "heartbeat_token": "heartbeat",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeInstallClient)
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._run_host_doctor", fake_run_host_doctor
+    )
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "install",
+                "--slug",
+                "install-opencode-bundled-demo",
+                "--version",
+                "0.1.0",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    dependency_result = payload["result"]["dependencies"][0]
+    assert dependency_result["slug"] == "using-hyperliquid-adapter"
+    assert dependency_result["source"] == "sdk-bundled"
+    assert Path(dependency_result["dest"]).joinpath("SKILL.md").exists()
+    assert activation_calls == [
+        {
+            "host": "opencode",
+            "scope": "project",
+            "path_dir": str(
+                tmp_path
+                / ".wayfinder"
+                / "paths"
+                / "install-opencode-bundled-demo"
+                / "0.1.0"
+            ),
+        }
+    ]
+    assert FakeInstallClient.calls == ["install-opencode-bundled-demo"]
 
 
 def test_path_update_requires_existing_lock_entry(tmp_path: Path):
