@@ -1760,7 +1760,9 @@ def test_path_remove_opencode_deactivates_and_cleans_lockfile(
 
         skill_root = Path(".opencode") / "skills" / "remove-demo"
         assert skill_root.joinpath("SKILL.md").exists()
-        assert Path(".opencode").joinpath("agents", "remove-demo-orchestrator.md").exists()
+        assert (
+            Path(".opencode").joinpath("agents", "remove-demo-orchestrator.md").exists()
+        )
         assert Path("AGENTS.md").exists()
         assert Path("opencode.json").exists()
 
@@ -1787,11 +1789,21 @@ def test_path_remove_opencode_deactivates_and_cleans_lockfile(
         )
 
         assert not skill_root.exists()
-        assert not Path(".opencode").joinpath("agents", "remove-demo-orchestrator.md").exists()
-        agents_text = Path("AGENTS.md").read_text(encoding="utf-8") if Path("AGENTS.md").exists() else ""
+        assert (
+            not Path(".opencode")
+            .joinpath("agents", "remove-demo-orchestrator.md")
+            .exists()
+        )
+        agents_text = (
+            Path("AGENTS.md").read_text(encoding="utf-8")
+            if Path("AGENTS.md").exists()
+            else ""
+        )
         assert "wayfinder-path:remove-demo:opencode-rules" not in agents_text
         if Path("opencode.json").exists():
-            opencode_config = json.loads(Path("opencode.json").read_text(encoding="utf-8"))
+            opencode_config = json.loads(
+                Path("opencode.json").read_text(encoding="utf-8")
+            )
             assert "remove-demo-orchestrator" not in json.dumps(opencode_config)
 
     lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
