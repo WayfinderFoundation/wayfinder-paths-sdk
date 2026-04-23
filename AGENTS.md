@@ -32,6 +32,21 @@ When the SDK runs inside Wayfinder Cloud, two env vars are injected at startup:
 
 Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`.
 
+## Cloud shells against a local backend
+
+When you are running inside a Wayfinder Cloud shell but need SDK/API calls to hit a local backend:
+
+1. Keep the injected `WAYFINDER_API_KEY` env var on the instance pointed at the **dev** Wayfinder key. That is what the shell uses for LLM/provider routing.
+2. Expose your local backend through ngrok (or another public tunnel).
+3. Add that hostname to Django `ALLOWED_HOSTS` if the local backend should use the dev database.
+4. Update `config.json` inside the repo so the SDK talks to your local backend:
+   - `system.api_base_url = "https://<your-ngrok-host>/api/v1"`
+   - `system.paths_api_base_url = "https://<your-ngrok-host>"`
+   - `system.api_key = "<your-local-api-key>"`
+5. Do **not** overwrite `WAYFINDER_API_KEY` with the local backend key unless you intentionally want to stop using the dev LLM/provider route.
+
+If the user asks you to "point the shell at local", this is the contract to follow.
+
 ## Messaging the user (Cloud instances only)
 
 If you detected an OpenCode Cloud instance in "First-Time Setup" (health probe at `http://localhost:4096/global/health` returned `healthy: true`), you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. The backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly. The `message` field is rendered as Markdown (headings, lists, code blocks, tables, links) into a themed HTML email, so format it nicely.

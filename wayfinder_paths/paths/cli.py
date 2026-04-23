@@ -540,6 +540,94 @@ def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) 
     dest_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
 
 
+def _remove_markdown_section(dest_path: Path, *, section_id: str) -> bool:
+    if not dest_path.exists():
+        return False
+    begin = f"<!-- {section_id}:start -->"
+    end = f"<!-- {section_id}:end -->"
+    current = dest_path.read_text(encoding="utf-8")
+    if begin not in current or end not in current:
+        return False
+    start_idx = current.index(begin)
+    end_idx = current.index(end) + len(end)
+    updated = current[:start_idx] + current[end_idx:]
+    updated = updated.replace("\n\n\n", "\n\n").strip()
+    if updated:
+        dest_path.write_text(updated + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
+def _deep_remove(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(base)
+    for key, value in patch.items():
+        if key not in updated:
+            continue
+        current = updated[key]
+        if isinstance(current, dict) and isinstance(value, dict):
+            nested = _deep_remove(current, value)
+            if nested:
+                updated[key] = nested
+            else:
+                updated.pop(key, None)
+            continue
+        if isinstance(current, list) and isinstance(value, list):
+            remaining = [item for item in current if item not in value]
+            if remaining:
+                updated[key] = remaining
+            else:
+                updated.pop(key, None)
+            continue
+        if current == value:
+            updated.pop(key, None)
+    return updated
+
+
+def _remove_json_patch(dest_path: Path, patch_path: Path) -> bool:
+    if not dest_path.exists():
+        return False
+    try:
+        parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+        patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict) or not isinstance(patch_payload, dict):
+        return False
+    updated = _deep_remove(parsed, patch_payload)
+    if updated == parsed:
+        return False
+    if updated:
+        dest_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
+def _prune_empty_parents(path: Path, *, stop_at: Path) -> None:
+    stop = stop_at.expanduser().resolve()
+    current = path.expanduser().resolve()
+    while current != stop and stop in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
+def _remove_existing_path(path: Path, *, root: Path) -> bool:
+    target = path.expanduser().resolve()
+    root_resolved = root.expanduser().resolve()
+    if not target.exists():
+        return False
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    _prune_empty_parents(target.parent, stop_at=root_resolved)
+    return True
+
+
 def _copy_install_path(source: Path, destination: Path) -> None:
     if source.is_dir():
         _copy_export_tree(source, destination)
@@ -578,6 +666,34 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
             applied.append(str(dest))
             continue
     return applied
+
+
+def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
+    export_manifest = _read_export_manifest(source_dir)
+    install_targets = export_manifest.get("install_targets") or []
+    if not isinstance(install_targets, list):
+        return []
+    removed: list[str] = []
+    for target in reversed(install_targets):
+        if not isinstance(target, dict):
+            continue
+        op = str(target.get("op") or "").strip()
+        src = source_dir / str(target.get("source") or "").strip()
+        dest = destination_root / str(target.get("destination") or "").strip()
+        if op in {"copy_tree", "copy_file"}:
+            if _remove_existing_path(dest, root=destination_root):
+                removed.append(str(dest))
+            continue
+        if op == "merge_markdown":
+            section_id = str(target.get("section_id") or "").strip()
+            if section_id and _remove_markdown_section(dest, section_id=section_id):
+                removed.append(str(dest))
+            continue
+        if op == "merge_json":
+            if _remove_json_patch(dest, src):
+                removed.append(str(dest))
+            continue
+    return removed
 
 
 def _activation_root_from_result(*, mode: str, dest: Path) -> Path:
@@ -2001,6 +2117,72 @@ def _resolve_update_activation_target(
     return _infer_activation_target(cwd=cwd)
 
 
+def _remove_path_install(
+    *,
+    slug: str,
+    install_dir: str,
+    host: str | None,
+    scope: str | None,
+) -> dict[str, Any]:
+    base = _canonical_install_root(install_dir)
+    state_dir = _state_dir_for_install_root(base)
+    lock, lock_path = _load_install_lock(state_dir)
+    if not lock_path.exists() and not (state_dir / _LEGACY_LOCKFILE_NAME).exists():
+        raise click.ClickException(f"Lockfile not found: {lock_path}")
+
+    entry = _lock_path_entry(lock, slug)
+    if entry is None:
+        raise click.ClickException(f"Path not found in lockfile: {slug}")
+
+    version = str(entry.get("version") or "").strip()
+    installed_path = _installed_path_dir(
+        base=base,
+        slug=slug,
+        version=version,
+        entry=entry,
+    )
+    result: dict[str, Any] = {
+        "slug": slug,
+        "version": version or None,
+        "removed": False,
+        "deactivated": False,
+        "activation_source": "none",
+        "removed_paths": [],
+        "lockfile": str(lock_path),
+    }
+
+    activation_target = _resolve_update_activation_target(
+        entry=entry,
+        host=host,
+        scope=scope,
+        cwd=Path.cwd(),
+    )
+    if activation_target is not None and installed_path.exists():
+        activation_options = _activation_options_from_entry(entry)
+        activation_root = _activation_root_from_entry(entry, target=activation_target)
+        if activation_root is not None and activation_root.exists():
+            render_report = _render_installed_skill(
+                path_dir=installed_path,
+                host=activation_target.host,
+                model=activation_options.get("model"),
+            )
+            source_dir = render_report.exports[activation_target.host].export_dir
+            removed_paths = _remove_install_targets(source_dir, activation_root)
+            result["deactivated"] = bool(removed_paths)
+            result["activation_source"] = activation_target.source
+            result["removed_paths"] = removed_paths
+
+    if installed_path.exists():
+        shutil.rmtree(installed_path)
+        result["removed"] = True
+
+    paths_map = _lock_paths_map(lock)
+    paths_map.pop(slug, None)
+    lock["paths"] = paths_map
+    _write_install_lock(lock_path, lock)
+    return result
+
+
 @path_cli.command(name="install", help="Download and unpack a path bundle locally.")
 @click.option("--slug", required=True, help="Path slug.")
 @click.option(
@@ -2300,6 +2482,42 @@ def update_cmd(
     result["activated"] = True
     result["activation_source"] = activation_target.source
     result["activation"] = activation_result
+    _echo_json({"ok": True, "result": result})
+
+
+@path_cli.command(
+    name="remove",
+    help="Remove an installed path and deactivate it from the selected host scope.",
+)
+@click.argument("slug")
+@click.option(
+    "--dir",
+    "install_dir",
+    default=".wayfinder/paths",
+    show_default=True,
+    help="Base install directory.",
+)
+@click.option(
+    "--host",
+    default=None,
+    type=click.Choice(
+        ["claude", "opencode", "codex", "openclaw"], case_sensitive=False
+    ),
+    help="Activation host override.",
+)
+@click.option("--scope", default=None, help="Activation scope override.")
+def remove_cmd(
+    slug: str,
+    install_dir: str,
+    host: str | None,
+    scope: str | None,
+) -> None:
+    result = _remove_path_install(
+        slug=slug,
+        install_dir=install_dir,
+        host=host,
+        scope=scope,
+    )
     _echo_json({"ok": True, "result": result})
 
 
