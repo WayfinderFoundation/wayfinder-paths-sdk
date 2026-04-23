@@ -65,6 +65,45 @@ def _path_install_venue(*, runtime: str) -> str:
     return str(os.environ.get("WAYFINDER_PATHS_INSTALL_VENUE") or runtime).strip()
 
 
+def _sdk_root() -> Path | None:
+    env_root = str(os.environ.get("WAYFINDER_SDK_ROOT") or "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / ".claude" / "skills").is_dir():
+            return parent
+    return None
+
+
+def _sdk_skill_source_dir(skill_name: str, *, host: str) -> Path | None:
+    normalized = str(skill_name or "").strip()
+    if not normalized:
+        return None
+
+    sdk_root = _sdk_root()
+    if sdk_root is None:
+        return None
+
+    if host == "openclaw":
+        override_dir = sdk_root / "openclaw" / "skills" / normalized
+        if (override_dir / "SKILL.md").is_file():
+            return override_dir
+
+    base_dir = sdk_root / ".claude" / "skills" / normalized
+    if (base_dir / "SKILL.md").is_file():
+        return base_dir
+
+    override_dir = sdk_root / "openclaw" / "skills" / normalized
+    if (override_dir / "SKILL.md").is_file():
+        return override_dir
+
+    return None
+
+
 def _canonical_install_root(install_dir: str | Path) -> Path:
     base = Path(install_dir).expanduser()
     if base.name == _LEGACY_INSTALL_DIRNAME:
@@ -328,9 +367,29 @@ def _install_required_dependencies_for_path(
     for dependency in _manifest_skill_dependencies(manifest, host=host):
         if not dependency["required"]:
             continue
+        dependency_slug = str(dependency["path_slug"] or "").strip()
+        dependency_skill_name = str(
+            dependency.get("skill_name") or dependency.get("name") or dependency_slug
+        ).strip()
+        bundled_skill_dir = _sdk_skill_source_dir(dependency_slug, host=host)
+        if bundled_skill_dir is not None:
+            destination_root = _host_skill_directory(host, scope, cwd=Path.cwd())
+            destination = destination_root / dependency_skill_name
+            _copy_export_tree(bundled_skill_dir, destination)
+            dependency_results.append(
+                {
+                    "slug": dependency_slug,
+                    "skill_name": dependency_skill_name,
+                    "source": "sdk-bundled",
+                    "dest": str(destination),
+                    "applied": [str(destination)],
+                    "activated": True,
+                }
+            )
+            continue
         dependency_results.append(
             _install_path_with_options(
-                slug=str(dependency["path_slug"]),
+                slug=dependency_slug,
                 path_version=None,
                 install_dir=install_dir,
                 force=force,
@@ -505,6 +564,18 @@ def _normalize_host_scope(host: str, scope: str) -> str:
     if normalized_host == "opencode" and normalized_scope == "personal":
         return "user"
     return normalized_scope
+
+
+def _host_skill_directory(host: str, scope: str, *, cwd: Path) -> Path:
+    normalized_host = host.lower()
+    normalized_scope = _normalize_host_scope(host, scope)
+    if normalized_host == "opencode":
+        return (
+            _activate_install_root(normalized_host, normalized_scope, cwd=cwd)
+            / ".opencode"
+            / "skills"
+        )
+    return _activate_destination(normalized_host, normalized_scope, cwd=cwd)
 
 
 def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
