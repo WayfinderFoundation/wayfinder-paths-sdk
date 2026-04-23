@@ -1683,6 +1683,121 @@ def test_path_update_uses_default_activation_when_workspace_has_single_marker(
     ]
 
 
+def test_path_remove_opencode_deactivates_and_cleans_lockfile(
+    tmp_path: Path, monkeypatch
+):
+    built = _build_path_bundle(tmp_path, slug="remove-demo", version="1.0.0")
+
+    class FakeInstallClient:
+        def __init__(self, *, api_base_url=None):
+            self.api_base_url = api_base_url
+
+        def get_path(self, *, slug: str):
+            return {
+                "path": {"slug": slug, "latest_version": "1.0.0"},
+                "versions": [
+                    {"version": "1.0.0", "bundle_sha256": built.bundle_sha256}
+                ],
+            }
+
+        def get_path_version(self, *, slug: str, version: str):
+            return {
+                "version": {"version": version, "bundle_sha256": built.bundle_sha256}
+            }
+
+        def create_install_intent(self, **kwargs):
+            expires_at = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+            return {
+                "intent": {
+                    "intent_id": "intent-remove",
+                    "path_slug": kwargs["slug"],
+                    "version": kwargs["version"],
+                    "bundle_sha256": built.bundle_sha256,
+                    "issued_at": datetime.now(UTC).isoformat(),
+                    "expires_at": expires_at,
+                    "runtime": kwargs["runtime"],
+                },
+                "signature": "signed-intent",
+            }
+
+        def download_bundle(self, *, slug: str, version: str, out_path: Path):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(built.bundle_path.read_bytes())
+            return out_path
+
+        def submit_install_receipt(self, **kwargs):
+            return {
+                "status": "recorded",
+                "installation_id": "install-remove",
+                "heartbeat_token": "heartbeat-remove",
+            }
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.PathsApiClient", FakeInstallClient)
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    install_dir = tmp_path / ".wayfinder" / "paths"
+
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        install = runner.invoke(
+            path_cli,
+            [
+                "install",
+                "--slug",
+                "remove-demo",
+                "--version",
+                "1.0.0",
+                "--dir",
+                str(install_dir),
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+            ],
+        )
+        assert install.exit_code == 0, install.output
+
+        skill_root = Path(".opencode") / "skills" / "remove-demo"
+        assert skill_root.joinpath("SKILL.md").exists()
+        assert Path(".opencode").joinpath("agents", "remove-demo-orchestrator.md").exists()
+        assert Path("AGENTS.md").exists()
+        assert Path("opencode.json").exists()
+
+        remove = runner.invoke(
+            path_cli,
+            [
+                "remove",
+                "remove-demo",
+                "--dir",
+                str(install_dir),
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+            ],
+        )
+        assert remove.exit_code == 0, remove.output
+        payload = json.loads(remove.output)
+        assert payload["result"]["removed"] is True
+        assert payload["result"]["deactivated"] is True
+        assert any(
+            path.endswith(".opencode/skills/remove-demo")
+            for path in payload["result"]["removed_paths"]
+        )
+
+        assert not skill_root.exists()
+        assert not Path(".opencode").joinpath("agents", "remove-demo-orchestrator.md").exists()
+        agents_text = Path("AGENTS.md").read_text(encoding="utf-8") if Path("AGENTS.md").exists() else ""
+        assert "wayfinder-path:remove-demo:opencode-rules" not in agents_text
+        if Path("opencode.json").exists():
+            opencode_config = json.loads(Path("opencode.json").read_text(encoding="utf-8"))
+            assert "remove-demo-orchestrator" not in json.dumps(opencode_config)
+
+    lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
+    assert "remove-demo" not in lock["paths"]
+
+
 def test_path_update_falls_back_to_pull_without_activation_target(
     tmp_path: Path, monkeypatch
 ):
