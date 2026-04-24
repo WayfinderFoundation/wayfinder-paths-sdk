@@ -609,6 +609,38 @@ def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
     dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 
 
+_OPENCODE_CONFIG_INSTALL_KEYS = {"agent", "instructions"}
+
+
+def _is_opencode_config_path(path: Path) -> bool:
+    return path.name == "opencode.json"
+
+
+def _opencode_config_install_patch(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key in _OPENCODE_CONFIG_INSTALL_KEYS
+    }
+
+
+def _merge_opencode_config_patch(dest_path: Path, patch_path: Path) -> None:
+    current: dict[str, Any] = {}
+    if dest_path.exists():
+        try:
+            parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                current = parsed
+        except Exception:
+            current = {}
+    patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    if not isinstance(patch_payload, dict):
+        raise click.ClickException(f"Install patch must be a JSON object: {patch_path}")
+    merged = _deep_merge(current, _opencode_config_install_patch(patch_payload))
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+
+
 def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) -> None:
     begin = f"<!-- {section_id}:start -->"
     end = f"<!-- {section_id}:end -->"
@@ -689,6 +721,26 @@ def _remove_json_patch(dest_path: Path, patch_path: Path) -> bool:
     return True
 
 
+def _remove_opencode_config_patch(dest_path: Path, patch_path: Path) -> bool:
+    if not dest_path.exists():
+        return False
+    try:
+        parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+        patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict) or not isinstance(patch_payload, dict):
+        return False
+    updated = _deep_remove(parsed, _opencode_config_install_patch(patch_payload))
+    if updated == parsed:
+        return False
+    if updated:
+        dest_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
 def _prune_empty_parents(path: Path, *, stop_at: Path) -> None:
     stop = stop_at.expanduser().resolve()
     current = path.expanduser().resolve()
@@ -759,7 +811,10 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
         if _should_merge_json_install_target(op=op, src=src, dest=dest):
-            _merge_json_file(dest, src)
+            if _is_opencode_config_path(dest):
+                _merge_opencode_config_patch(dest, src)
+            else:
+                _merge_json_file(dest, src)
             applied.append(str(dest))
             continue
         if op in {"copy_tree", "copy_file"}:
@@ -791,7 +846,12 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
         if _should_merge_json_install_target(op=op, src=src, dest=dest):
-            if _remove_json_patch(dest, src):
+            removed_json = (
+                _remove_opencode_config_patch(dest, src)
+                if _is_opencode_config_path(dest)
+                else _remove_json_patch(dest, src)
+            )
+            if removed_json:
                 removed.append(str(dest))
             continue
         if op in {"copy_tree", "copy_file"}:
