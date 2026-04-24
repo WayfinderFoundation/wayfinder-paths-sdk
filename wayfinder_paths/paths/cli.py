@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,19 @@ _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
 _LOCKFILE_NAME = "paths.lock.json"
 _LEGACY_LOCKFILE_NAME = "packs.lock.json"
+_OPENCODE_TOOL_RESULT_HELPER = "\n".join(
+    [
+        "function jsonOutput(payload) {",
+        "  return JSON.stringify(payload, null, 2)",
+        "}",
+    ]
+)
+_LEGACY_OPENCODE_TOOL_RESULT_RE = re.compile(
+    r"function\s+jsonOutput\s*\(\s*payload\s*\)\s*\{\s*"
+    r"return\s*\{\s*output\s*:\s*JSON\.stringify\s*\(\s*payload\s*,\s*null\s*,\s*2\s*\)\s*,?\s*\}\s*"
+    r"\}",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -704,7 +718,32 @@ def _copy_install_path(source: Path, destination: Path) -> None:
         _copy_export_tree(source, destination)
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if _is_opencode_tool_path(destination):
+        source_text = source.read_text(encoding="utf-8")
+        destination.write_text(
+            _normalize_opencode_tool_result_contract(source_text),
+            encoding="utf-8",
+        )
+        return
     shutil.copy2(source, destination)
+
+
+def _is_opencode_tool_path(path: Path) -> bool:
+    parts = path.parts
+    return ".opencode" in parts and "tools" in parts and path.suffix in {".js", ".ts"}
+
+
+def _normalize_opencode_tool_result_contract(tool_text: str) -> str:
+    return _LEGACY_OPENCODE_TOOL_RESULT_RE.sub(
+        _OPENCODE_TOOL_RESULT_HELPER,
+        tool_text,
+    )
+
+
+def _should_merge_json_install_target(*, op: str, src: Path, dest: Path) -> bool:
+    return op == "merge_json" or (
+        op == "copy_file" and dest.name == "opencode.json" and src.suffix == ".json"
+    )
 
 
 def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
@@ -719,12 +758,12 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
-        if op in {"copy_tree", "copy_file"}:
-            _copy_install_path(src, dest)
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            _merge_json_file(dest, src)
             applied.append(str(dest))
             continue
-        if op == "merge_json":
-            _merge_json_file(dest, src)
+        if op in {"copy_tree", "copy_file"}:
+            _copy_install_path(src, dest)
             applied.append(str(dest))
             continue
         if op == "merge_markdown":
@@ -751,6 +790,10 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            if _remove_json_patch(dest, src):
+                removed.append(str(dest))
+            continue
         if op in {"copy_tree", "copy_file"}:
             if _remove_existing_path(dest, root=destination_root):
                 removed.append(str(dest))
@@ -758,10 +801,6 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         if op == "merge_markdown":
             section_id = str(target.get("section_id") or "").strip()
             if section_id and _remove_markdown_section(dest, section_id=section_id):
-                removed.append(str(dest))
-            continue
-        if op == "merge_json":
-            if _remove_json_patch(dest, src):
                 removed.append(str(dest))
             continue
     return removed

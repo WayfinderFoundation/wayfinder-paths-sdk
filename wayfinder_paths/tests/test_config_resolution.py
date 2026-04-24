@@ -48,6 +48,24 @@ def test_load_config_json_supports_env_override(
     assert isinstance(rpc_urls, dict)
 
 
+def test_missing_explicit_config_does_not_clear_loaded_config(
+    restore_global_config: None, tmp_path: Path
+) -> None:
+    config.set_config(
+        {"system": {"api_base_url": "https://strategies-dev.wayfinder.ai/api/v1"}}
+    )
+
+    config.load_config(tmp_path / "missing.json")
+
+    assert config.get_api_base_url() == "https://strategies-dev.wayfinder.ai/api/v1"
+
+
+def test_api_base_url_defaults_to_strategies_api(restore_global_config: None) -> None:
+    config.set_config({})
+
+    assert config.get_api_base_url() == "https://strategies.wayfinder.ai/api/v1"
+
+
 @pytest.mark.asyncio
 async def test_web3s_fallback_to_rpc_proxy(
     restore_global_config: None,
