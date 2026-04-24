@@ -101,7 +101,7 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
         "context?.worktree ?? context?.directory ?? process.cwd()" in artifact_gate_text
     )
     assert "return jsonOutput(" in artifact_gate_text
-    assert "output: JSON.stringify(payload, null, 2)" in artifact_gate_text
+    assert "return JSON.stringify(payload, null, 2)" in artifact_gate_text
     assert "return { ok:" not in artifact_gate_text
     assert "return jsonOutput({ ok: true, tool: " in compile_job_text
     assert "return { ok:" not in compile_job_text
@@ -185,7 +185,9 @@ def test_opencode_doctor_rejects_bare_object_tool_results(tmp_path: Path, monkey
 
     report = run_doctor(path_dir=path_dir, host="opencode")
 
-    assert any("output field" in issue.message.lower() for issue in report.errors)
+    assert any(
+        "string result contract" in issue.message.lower() for issue in report.errors
+    )
 
 
 def test_installed_host_doctor_skips_full_pipeline_validation(tmp_path: Path):
@@ -392,7 +394,7 @@ def test_claude_export_preserves_existing_agent_contract(tmp_path: Path):
     claude_agent_text = _read_text(claude_agent)
 
     assert "model: sonnet" in claude_agent_text
-    assert "output: JSON.stringify(payload, null, 2)" not in claude_agent_text
+    assert "return JSON.stringify(payload, null, 2)" not in claude_agent_text
     assert "wayfinder_artifact_gate" not in claude_agent_text
     assert claude_rules.exists()
     assert claude_settings.exists()

@@ -675,9 +675,7 @@ def _render_opencode_plugin_guard() -> str:
 def _opencode_tool_result_helper_lines() -> list[str]:
     return [
         "function jsonOutput(payload) {",
-        "  return {",
-        "    output: JSON.stringify(payload, null, 2),",
-        "  }",
+        "  return JSON.stringify(payload, null, 2)",
         "}",
         "",
     ]

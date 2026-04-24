@@ -707,6 +707,12 @@ def _copy_install_path(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _should_merge_json_install_target(*, op: str, src: Path, dest: Path) -> bool:
+    return op == "merge_json" or (
+        op == "copy_file" and dest.name == "opencode.json" and src.suffix == ".json"
+    )
+
+
 def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
     export_manifest = _read_export_manifest(source_dir)
     install_targets = export_manifest.get("install_targets") or []
@@ -719,12 +725,12 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
-        if op in {"copy_tree", "copy_file"}:
-            _copy_install_path(src, dest)
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            _merge_json_file(dest, src)
             applied.append(str(dest))
             continue
-        if op == "merge_json":
-            _merge_json_file(dest, src)
+        if op in {"copy_tree", "copy_file"}:
+            _copy_install_path(src, dest)
             applied.append(str(dest))
             continue
         if op == "merge_markdown":
@@ -751,6 +757,10 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            if _remove_json_patch(dest, src):
+                removed.append(str(dest))
+            continue
         if op in {"copy_tree", "copy_file"}:
             if _remove_existing_path(dest, root=destination_root):
                 removed.append(str(dest))
@@ -758,10 +768,6 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         if op == "merge_markdown":
             section_id = str(target.get("section_id") or "").strip()
             if section_id and _remove_markdown_section(dest, section_id=section_id):
-                removed.append(str(dest))
-            continue
-        if op == "merge_json":
-            if _remove_json_patch(dest, src):
                 removed.append(str(dest))
             continue
     return removed
