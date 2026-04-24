@@ -201,9 +201,7 @@ class CompoundAdapter(BaseAdapter):
         self, chain_id: int | None = None
     ) -> list[CompoundMarketSeed]:
         chain_ids = (
-            [chain_id]
-            if chain_id is not None
-            else COMPOUND_COMET_BY_CHAIN.keys()
+            [chain_id] if chain_id is not None else COMPOUND_COMET_BY_CHAIN.keys()
         )
         seeds: list[CompoundMarketSeed] = []
         for cid in chain_ids:
@@ -639,7 +637,9 @@ class CompoundAdapter(BaseAdapter):
                         "price_feed": asset_info["price_feed"],
                         "price": price_raw,
                         "price_usd": (
-                            _price_to_float(price_raw) if price_raw is not None else None
+                            _price_to_float(price_raw)
+                            if price_raw is not None
+                            else None
                         ),
                         "scale": asset_info["scale"],
                         "offset": asset_info["offset"],
@@ -879,7 +879,9 @@ class CompoundAdapter(BaseAdapter):
                 price_raw = asset.get("price")
                 asset_decimals = asset.get("decimals") or 0
                 balance_decimal = _amount_to_decimal(balance, asset_decimals)
-                price_usd = _price_to_float(price_raw) if price_raw is not None else None
+                price_usd = (
+                    _price_to_float(price_raw) if price_raw is not None else None
+                )
                 usd_value = (
                     balance_decimal * price_usd if price_usd is not None else None
                 )
@@ -1005,10 +1007,9 @@ class CompoundAdapter(BaseAdapter):
                     (item.get("balance") or 0) > 0
                     for item in payload.get("collateral_positions", [])
                 )
-                has_base = (
-                    (payload.get("supplied_base") or 0) > 0
-                    or (payload.get("borrowed_base") or 0) > 0
-                )
+                has_base = (payload.get("supplied_base") or 0) > 0 or (
+                    payload.get("borrowed_base") or 0
+                ) > 0
                 if include_zero_positions or has_collateral or has_base:
                     positions.append(payload)
             elif isinstance(payload, str):

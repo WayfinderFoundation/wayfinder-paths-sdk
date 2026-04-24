@@ -69,7 +69,9 @@ def _pick_collateral_asset(
     return None
 
 
-async def _select_live_market(adapter: CompoundAdapter) -> tuple[int, str, dict, dict, int]:
+async def _select_live_market(
+    adapter: CompoundAdapter,
+) -> tuple[int, str, dict, dict, int]:
     errors: list[str] = []
 
     for chain_id in CHAIN_PRIORITY:
@@ -142,9 +144,13 @@ async def test_gorlami_compound_supply_borrow_repay_withdraw_claim(gorlami) -> N
     )
 
     try:
-        chain_id, comet, market, collateral_asset_info, collateral_amount = (
-            await _select_live_market(adapter)
-        )
+        (
+            chain_id,
+            comet,
+            market,
+            collateral_asset_info,
+            collateral_amount,
+        ) = await _select_live_market(adapter)
     except httpx.ConnectError:
         pytest.skip(
             f"gorlami backend unavailable at {get_api_base_url()}/blockchain/gorlami"
