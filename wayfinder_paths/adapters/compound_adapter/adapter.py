@@ -116,7 +116,9 @@ def _parse_reward_owed(value: Any) -> tuple[str | None, int]:
 def _parse_reward_config(value: Any) -> dict[str, Any]:
     token = _coerce_tuple_value(value, 0, "token")
     return {
-        "token": (None if not token or token == ZERO_ADDRESS else to_checksum_address(token)),
+        "token": (
+            None if not token or token == ZERO_ADDRESS else to_checksum_address(token)
+        ),
         "rescale_factor": int(_coerce_tuple_value(value, 1, "rescaleFactor") or 0),
         "should_upscale": bool(_coerce_tuple_value(value, 2, "shouldUpscale") or False),
         "multiplier": int(_coerce_tuple_value(value, 3, "multiplier") or 0),
