@@ -115,6 +115,20 @@ def _parse_reward_owed(value: Any) -> tuple[str | None, int]:
     return to_checksum_address(token), int(_coerce_tuple_value(value, 1, "owed") or 0)
 
 
+def _parse_reward_config(value: Any) -> dict[str, Any]:
+    token = _coerce_tuple_value(value, 0, "token")
+    return {
+        "token": (
+            None
+            if not token or token == ZERO_ADDRESS
+            else to_checksum_address(str(token))
+        ),
+        "rescale_factor": int(_coerce_tuple_value(value, 1, "rescaleFactor") or 0),
+        "should_upscale": bool(_coerce_tuple_value(value, 2, "shouldUpscale") or False),
+        "multiplier": int(_coerce_tuple_value(value, 3, "multiplier") or 0),
+    }
+
+
 def _factor_to_float(raw: int) -> float:
     return raw / FACTOR_SCALE if raw else 0.0
 
@@ -316,38 +330,23 @@ class CompoundAdapter(BaseAdapter):
         rewards_contract: str,
         comet: str,
         chain_id: int,
+        web3: Any,
     ) -> dict[str, Any]:
         checksum_rewards = to_checksum_address(rewards_contract)
         checksum_comet = to_checksum_address(comet)
-        async with web3_from_chain_id(chain_id) as web3:
-            contract = web3.eth.contract(
-                address=checksum_rewards, abi=COMET_REWARDS_ABI
+        contract = web3.eth.contract(address=checksum_rewards, abi=COMET_REWARDS_ABI)
+        try:
+            raw = await contract.functions.rewardConfig(checksum_comet).call(
+                block_identifier="latest"
             )
-            try:
-                raw = await contract.functions.rewardConfig(checksum_comet).call(
-                    block_identifier="latest"
-                )
-            except Exception:
-                return {
-                    "token": None,
-                    "rescale_factor": 0,
-                    "should_upscale": False,
-                    "multiplier": 0,
-                }
-
-        token = _coerce_tuple_value(raw, 0, "token")
-        return {
-            "token": (
-                None
-                if not token or token == ZERO_ADDRESS
-                else to_checksum_address(token)
-            ),
-            "rescale_factor": int(_coerce_tuple_value(raw, 1, "rescaleFactor") or 0),
-            "should_upscale": bool(
-                _coerce_tuple_value(raw, 2, "shouldUpscale") or False
-            ),
-            "multiplier": int(_coerce_tuple_value(raw, 3, "multiplier") or 0),
-        }
+        except Exception:
+            return {
+                "token": None,
+                "rescale_factor": 0,
+                "should_upscale": False,
+                "multiplier": 0,
+            }
+        return _parse_reward_config(raw)
 
     async def _get_reward_owed(
         self,
@@ -357,6 +356,7 @@ class CompoundAdapter(BaseAdapter):
         comet: str,
         account: str,
         configured_reward_token: str | None,
+        web3: Any,
     ) -> dict[str, Any]:
         if configured_reward_token is None:
             return {"reward_token": None, "reward_owed": 0, "reward_error": None}
@@ -364,21 +364,18 @@ class CompoundAdapter(BaseAdapter):
         checksum_rewards = to_checksum_address(rewards_contract)
         checksum_comet = to_checksum_address(comet)
         checksum_account = to_checksum_address(account)
-        async with web3_from_chain_id(chain_id) as web3:
-            contract = web3.eth.contract(
-                address=checksum_rewards, abi=COMET_REWARDS_ABI
-            )
-            try:
-                raw_owed = await contract.functions.getRewardOwed(
-                    checksum_comet,
-                    checksum_account,
-                ).call(block_identifier="pending")
-            except Exception as exc:
-                return {
-                    "reward_token": configured_reward_token,
-                    "reward_owed": 0,
-                    "reward_error": str(exc),
-                }
+        contract = web3.eth.contract(address=checksum_rewards, abi=COMET_REWARDS_ABI)
+        try:
+            raw_owed = await contract.functions.getRewardOwed(
+                checksum_comet,
+                checksum_account,
+            ).call(block_identifier="pending")
+        except Exception as exc:
+            return {
+                "reward_token": configured_reward_token,
+                "reward_owed": 0,
+                "reward_error": str(exc),
+            }
 
         reward_token, reward_owed = _parse_reward_owed(raw_owed)
         return {
@@ -447,25 +444,40 @@ class CompoundAdapter(BaseAdapter):
                 target_reserves,
             ) = core_rows
 
-            supply_rate, borrow_rate = await read_only_calls_multicall_or_gather(
-                web3=web3,
-                chain_id=seed.chain_id,
-                calls=[
-                    Call(
-                        comet,
-                        "getSupplyRate",
-                        args=(utilization,),
-                        postprocess=int,
-                    ),
-                    Call(
-                        comet,
-                        "getBorrowRate",
-                        args=(utilization,),
-                        postprocess=int,
-                    ),
-                ],
-                block_identifier="pending",
+            rate_rows, reward_cfg, base_meta = await asyncio.gather(
+                read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=seed.chain_id,
+                    calls=[
+                        Call(
+                            comet,
+                            "getSupplyRate",
+                            args=(utilization,),
+                            postprocess=int,
+                        ),
+                        Call(
+                            comet,
+                            "getBorrowRate",
+                            args=(utilization,),
+                            postprocess=int,
+                        ),
+                    ],
+                    block_identifier="pending",
+                ),
+                self._reward_config(
+                    rewards_contract=seed.rewards,
+                    comet=seed.comet,
+                    chain_id=seed.chain_id,
+                    web3=web3,
+                ),
+                self._token_metadata(
+                    chain_id=seed.chain_id,
+                    token_address=base_token,
+                    web3=web3,
+                    fallback_decimals=base_decimals,
+                ),
             )
+            supply_rate, borrow_rate = rate_rows
 
             asset_infos: list[dict[str, Any]] = []
             if num_assets > 0:
@@ -487,7 +499,32 @@ class CompoundAdapter(BaseAdapter):
 
             total_collateral_rows: list[int] = []
             if asset_infos:
-                totals_raw = await read_only_calls_multicall_or_gather(
+                total_collateral_rows = [0 for _ in asset_infos]
+
+            base_price_raw: int | None = None
+            collateral_price_rows: list[int | None] = [None for _ in asset_infos]
+            metadata_coros = []
+            if reward_cfg["token"] is not None:
+                metadata_coros.append(
+                    self._token_metadata(
+                        chain_id=seed.chain_id,
+                        token_address=reward_cfg["token"],
+                        web3=web3,
+                    )
+                )
+            metadata_coros.extend(
+                self._token_metadata(
+                    chain_id=seed.chain_id,
+                    token_address=asset_info["asset"],
+                    web3=web3,
+                    fallback_decimals=_scale_to_decimals(asset_info["scale"]),
+                )
+                for asset_info in asset_infos
+            )
+
+            metadata_rows: list[TokenMetadata] = []
+            if asset_infos and include_prices:
+                totals_task = read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=seed.chain_id,
                     calls=[
@@ -503,72 +540,96 @@ class CompoundAdapter(BaseAdapter):
                     ],
                     block_identifier="pending",
                 )
-                total_collateral_rows = [value or 0 for value in totals_raw]
-
-            base_price_raw: int | None = None
-            collateral_price_rows: list[int | None] = [None for _ in asset_infos]
-            if include_prices:
-                price_calls = [
-                    Call(
-                        comet,
-                        "getPrice",
-                        args=(base_token_price_feed,),
-                        postprocess=int,
-                    )
-                ] + [
-                    Call(
-                        comet,
-                        "getPrice",
-                        args=(info["price_feed"],),
-                        postprocess=int,
-                    )
-                    for info in asset_infos
-                ]
-                price_rows = await read_only_calls_multicall_or_gather(
+                price_task = read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=seed.chain_id,
-                    calls=price_calls,
+                    calls=[
+                        Call(
+                            comet,
+                            "getPrice",
+                            args=(base_token_price_feed,),
+                            postprocess=int,
+                        )
+                    ]
+                    + [
+                        Call(
+                            comet,
+                            "getPrice",
+                            args=(info["price_feed"],),
+                            postprocess=int,
+                        )
+                        for info in asset_infos
+                    ],
                     block_identifier="pending",
                 )
+                if metadata_coros:
+                    totals_raw, price_rows, metadata_rows = await asyncio.gather(
+                        totals_task,
+                        price_task,
+                        asyncio.gather(*metadata_coros),
+                    )
+                else:
+                    totals_raw, price_rows = await asyncio.gather(
+                        totals_task,
+                        price_task,
+                    )
+                total_collateral_rows = [value or 0 for value in totals_raw]
                 if price_rows:
                     base_price_raw = price_rows[0]
                     collateral_price_rows = price_rows[1:]
-
-            reward_cfg = await self._reward_config(
-                rewards_contract=seed.rewards,
-                comet=seed.comet,
-                chain_id=seed.chain_id,
-            )
-
-            base_meta = await self._token_metadata(
-                chain_id=seed.chain_id,
-                token_address=base_token,
-                web3=web3,
-                fallback_decimals=base_decimals,
-            )
+            elif asset_infos:
+                totals_task = read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=seed.chain_id,
+                    calls=[
+                        Call(
+                            comet,
+                            "totalsCollateral",
+                            args=(info["asset"],),
+                            postprocess=lambda row: int(
+                                _coerce_tuple_value(row, 0, "totalSupplyAsset") or 0
+                            ),
+                        )
+                        for info in asset_infos
+                    ],
+                    block_identifier="pending",
+                )
+                if metadata_coros:
+                    totals_raw, metadata_rows = await asyncio.gather(
+                        totals_task,
+                        asyncio.gather(*metadata_coros),
+                    )
+                else:
+                    totals_raw = await totals_task
+                total_collateral_rows = [value or 0 for value in totals_raw]
+            elif include_prices:
+                price_task = comet.functions.getPrice(base_token_price_feed).call(
+                    block_identifier="pending"
+                )
+                if metadata_coros:
+                    base_price_raw, metadata_rows = await asyncio.gather(
+                        price_task,
+                        asyncio.gather(*metadata_coros),
+                    )
+                else:
+                    base_price_raw = await price_task
+            elif metadata_coros:
+                metadata_rows = list(await asyncio.gather(*metadata_coros))
 
             reward_meta: TokenMetadata | None = None
+            collateral_metas: list[TokenMetadata] = metadata_rows
             if reward_cfg["token"] is not None:
-                reward_meta = await self._token_metadata(
-                    chain_id=seed.chain_id,
-                    token_address=reward_cfg["token"],
-                    web3=web3,
-                )
+                reward_meta = metadata_rows[0]
+                collateral_metas = metadata_rows[1:]
 
             collateral_assets: list[dict[str, Any]] = []
-            for asset_info, total_supply_asset, price_raw in zip(
+            for asset_info, asset_meta, total_supply_asset, price_raw in zip(
                 asset_infos,
+                collateral_metas,
                 total_collateral_rows or [0 for _ in asset_infos],
                 collateral_price_rows,
                 strict=True,
             ):
-                fallback_collateral_decimals = _scale_to_decimals(asset_info["scale"])
-                asset_meta = await self._token_metadata(
-                    chain_id=seed.chain_id,
-                    token_address=asset_info["asset"],
-                    web3=web3,
-                    fallback_decimals=fallback_collateral_decimals,
-                )
                 collateral_assets.append(
                     {
                         "asset": asset_meta.address,
@@ -781,11 +842,21 @@ class CompoundAdapter(BaseAdapter):
                     for asset in market.get("collateral_assets") or []
                 ]
 
-                rows = await read_only_calls_multicall_or_gather(
-                    web3=web3,
-                    chain_id=chain_id,
-                    calls=read_calls,
-                    block_identifier="pending",
+                rows, reward_read = await asyncio.gather(
+                    read_only_calls_multicall_or_gather(
+                        web3=web3,
+                        chain_id=chain_id,
+                        calls=read_calls,
+                        block_identifier="pending",
+                    ),
+                    self._get_reward_owed(
+                        chain_id=chain_id,
+                        rewards_contract=market["rewards"],
+                        comet=market["comet"],
+                        account=checksum_account,
+                        configured_reward_token=market.get("reward_token"),
+                        web3=web3,
+                    ),
                 )
 
             supplied_base = rows[0]
@@ -795,14 +866,6 @@ class CompoundAdapter(BaseAdapter):
             is_liquidatable = rows[4]
             user_basic = rows[5]
             collateral_balances = rows[6:]
-
-            reward_read = await self._get_reward_owed(
-                chain_id=chain_id,
-                rewards_contract=market["rewards"],
-                comet=market["comet"],
-                account=checksum_account,
-                configured_reward_token=market.get("reward_token"),
-            )
 
             reward_decimals = market.get("reward_token_decimals")
             collateral_positions: list[dict[str, Any]] = []
@@ -1078,17 +1141,19 @@ class CompoundAdapter(BaseAdapter):
 
         try:
             checksum_comet = to_checksum_address(comet)
-            checksum_base = await self._resolve_base_token(
-                chain_id=chain_id,
-                comet=checksum_comet,
-                base_token=base_token,
+            checksum_base, market_result = await asyncio.gather(
+                self._resolve_base_token(
+                    chain_id=chain_id,
+                    comet=checksum_comet,
+                    base_token=base_token,
+                ),
+                self.get_market(
+                    chain_id=chain_id,
+                    comet=checksum_comet,
+                    include_prices=False,
+                ),
             )
-
-            ok, market_or_error = await self.get_market(
-                chain_id=chain_id,
-                comet=checksum_comet,
-                include_prices=False,
-            )
+            ok, market_or_error = market_result
             if not ok or not isinstance(market_or_error, dict):
                 return False, str(market_or_error)
             market = market_or_error
@@ -1280,11 +1345,13 @@ class CompoundAdapter(BaseAdapter):
             seed = self._find_market_seed(chain_id=chain_id, comet=comet)
             checksum_comet = to_checksum_address(comet)
             checksum_rewards = to_checksum_address(rewards_contract or seed.rewards)
-            reward_cfg = await self._reward_config(
-                rewards_contract=checksum_rewards,
-                comet=checksum_comet,
-                chain_id=chain_id,
-            )
+            async with web3_from_chain_id(chain_id) as web3:
+                reward_cfg = await self._reward_config(
+                    rewards_contract=checksum_rewards,
+                    comet=checksum_comet,
+                    chain_id=chain_id,
+                    web3=web3,
+                )
             if reward_cfg["token"] is None:
                 return False, f"rewards not configured for comet={checksum_comet}"
 
