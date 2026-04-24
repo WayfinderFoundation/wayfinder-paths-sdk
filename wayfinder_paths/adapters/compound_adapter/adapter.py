@@ -60,10 +60,8 @@ def _coerce_tuple_value(value: Any, idx: int, key: str) -> Any:
 def _parse_asset_info(value: Any) -> dict[str, Any]:
     return {
         "offset": int(_coerce_tuple_value(value, 0, "offset") or 0),
-        "asset": to_checksum_address(str(_coerce_tuple_value(value, 1, "asset"))),
-        "price_feed": to_checksum_address(
-            str(_coerce_tuple_value(value, 2, "priceFeed"))
-        ),
+        "asset": to_checksum_address(_coerce_tuple_value(value, 1, "asset")),
+        "price_feed": to_checksum_address(_coerce_tuple_value(value, 2, "priceFeed")),
         "scale": int(_coerce_tuple_value(value, 3, "scale") or 0),
         "borrow_collateral_factor_raw": int(
             _coerce_tuple_value(value, 4, "borrowCollateralFactor") or 0
@@ -118,11 +116,7 @@ def _parse_reward_owed(value: Any) -> tuple[str | None, int]:
 def _parse_reward_config(value: Any) -> dict[str, Any]:
     token = _coerce_tuple_value(value, 0, "token")
     return {
-        "token": (
-            None
-            if not token or token == ZERO_ADDRESS
-            else to_checksum_address(str(token))
-        ),
+        "token": (None if not token or token == ZERO_ADDRESS else to_checksum_address(token)),
         "rescale_factor": int(_coerce_tuple_value(value, 1, "rescaleFactor") or 0),
         "should_upscale": bool(_coerce_tuple_value(value, 2, "shouldUpscale") or False),
         "multiplier": int(_coerce_tuple_value(value, 3, "multiplier") or 0),
@@ -395,8 +389,8 @@ class CompoundAdapter(BaseAdapter):
                 web3=web3,
                 chain_id=seed.chain_id,
                 calls=[
-                    Call(comet, "name", postprocess=str),
-                    Call(comet, "symbol", postprocess=str),
+                    Call(comet, "name"),
+                    Call(comet, "symbol"),
                     Call(
                         comet,
                         "baseToken",
@@ -407,18 +401,18 @@ class CompoundAdapter(BaseAdapter):
                         "baseTokenPriceFeed",
                         postprocess=to_checksum_address,
                     ),
-                    Call(comet, "baseScale", postprocess=int),
-                    Call(comet, "decimals", postprocess=int),
-                    Call(comet, "numAssets", postprocess=int),
-                    Call(comet, "totalSupply", postprocess=int),
-                    Call(comet, "totalBorrow", postprocess=int),
+                    Call(comet, "baseScale"),
+                    Call(comet, "decimals"),
+                    Call(comet, "numAssets"),
+                    Call(comet, "totalSupply"),
+                    Call(comet, "totalBorrow"),
                     Call(comet, "totalsBasic", postprocess=_parse_totals_basic),
-                    Call(comet, "getUtilization", postprocess=int),
-                    Call(comet, "baseBorrowMin", postprocess=int),
-                    Call(comet, "baseMinForRewards", postprocess=int),
-                    Call(comet, "baseTrackingSupplySpeed", postprocess=int),
-                    Call(comet, "baseTrackingBorrowSpeed", postprocess=int),
-                    Call(comet, "targetReserves", postprocess=int),
+                    Call(comet, "getUtilization"),
+                    Call(comet, "baseBorrowMin"),
+                    Call(comet, "baseMinForRewards"),
+                    Call(comet, "baseTrackingSupplySpeed"),
+                    Call(comet, "baseTrackingBorrowSpeed"),
+                    Call(comet, "targetReserves"),
                 ],
                 block_identifier="pending",
             )
@@ -451,13 +445,11 @@ class CompoundAdapter(BaseAdapter):
                             comet,
                             "getSupplyRate",
                             args=(utilization,),
-                            postprocess=int,
                         ),
                         Call(
                             comet,
                             "getBorrowRate",
                             args=(utilization,),
-                            postprocess=int,
                         ),
                     ],
                     block_identifier="pending",
@@ -546,7 +538,6 @@ class CompoundAdapter(BaseAdapter):
                             comet,
                             "getPrice",
                             args=(base_token_price_feed,),
-                            postprocess=int,
                         )
                     ]
                     + [
@@ -554,7 +545,6 @@ class CompoundAdapter(BaseAdapter):
                             comet,
                             "getPrice",
                             args=(info["price_feed"],),
-                            postprocess=int,
                         )
                         for info in asset_infos
                     ],
@@ -612,7 +602,7 @@ class CompoundAdapter(BaseAdapter):
                 else:
                     base_price_raw = await price_task
             elif metadata_coros:
-                metadata_rows = list(await asyncio.gather(*metadata_coros))
+                metadata_rows = await asyncio.gather(*metadata_coros)
 
             reward_meta: TokenMetadata | None = None
             collateral_metas: list[TokenMetadata] = metadata_rows
@@ -786,8 +776,14 @@ class CompoundAdapter(BaseAdapter):
                 comet=comet,
                 include_prices=include_prices,
             )
-            if not ok or not isinstance(market_or_error, dict):
-                return False, str(market_or_error)
+            if not ok:
+                return False, (
+                    market_or_error
+                    if isinstance(market_or_error, str)
+                    else "failed to load Compound market"
+                )
+            if not isinstance(market_or_error, dict):
+                return False, "invalid market payload"
             market = market_or_error
 
             async with web3_from_chain_id(chain_id) as web3:
@@ -800,31 +796,26 @@ class CompoundAdapter(BaseAdapter):
                         comet_contract,
                         "balanceOf",
                         args=(checksum_account,),
-                        postprocess=int,
                     ),
                     Call(
                         comet_contract,
                         "borrowBalanceOf",
                         args=(checksum_account,),
-                        postprocess=int,
                     ),
                     Call(
                         comet_contract,
                         "baseTrackingAccrued",
                         args=(checksum_account,),
-                        postprocess=int,
                     ),
                     Call(
                         comet_contract,
                         "isBorrowCollateralized",
                         args=(checksum_account,),
-                        postprocess=bool,
                     ),
                     Call(
                         comet_contract,
                         "isLiquidatable",
                         args=(checksum_account,),
-                        postprocess=bool,
                     ),
                     Call(
                         comet_contract,
@@ -837,7 +828,6 @@ class CompoundAdapter(BaseAdapter):
                         comet_contract,
                         "collateralBalanceOf",
                         args=(checksum_account, asset["asset"]),
-                        postprocess=int,
                     )
                     for asset in market.get("collateral_assets") or []
                 ]
@@ -1048,8 +1038,6 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        amount = int(amount)
-        chain_id = int(chain_id)
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -1098,8 +1086,6 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        amount = int(amount)
-        chain_id = int(chain_id)
         if amount <= 0 and not withdraw_full:
             return False, "amount must be positive unless withdraw_full=True"
 
@@ -1135,8 +1121,6 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        amount = int(amount)
-        chain_id = int(chain_id)
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -1155,8 +1139,14 @@ class CompoundAdapter(BaseAdapter):
                 ),
             )
             ok, market_or_error = market_result
-            if not ok or not isinstance(market_or_error, dict):
-                return False, str(market_or_error)
+            if not ok:
+                return False, (
+                    market_or_error
+                    if isinstance(market_or_error, str)
+                    else "failed to load Compound market"
+                )
+            if not isinstance(market_or_error, dict):
+                return False, "invalid market payload"
             market = market_or_error
             base_borrow_min = market.get("base_borrow_min") or 0
             if base_borrow_min > 0 and amount < base_borrow_min:
@@ -1190,8 +1180,6 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        amount = int(amount)
-        chain_id = int(chain_id)
         if amount <= 0 and not repay_full:
             return False, "amount must be positive unless repay_full=True"
 
@@ -1240,8 +1228,6 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        amount = int(amount)
-        chain_id = int(chain_id)
         if amount <= 0:
             return False, "amount must be positive"
 
@@ -1291,8 +1277,6 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        amount = int(amount)
-        chain_id = int(chain_id)
         if amount <= 0 and not withdraw_full:
             return False, "amount must be positive unless withdraw_full=True"
 
@@ -1342,7 +1326,6 @@ class CompoundAdapter(BaseAdapter):
             return False, "sign_callback is required"
 
         try:
-            chain_id = int(chain_id)
             seed = self._find_market_seed(chain_id=chain_id, comet=comet)
             checksum_comet = to_checksum_address(comet)
             checksum_rewards = to_checksum_address(rewards_contract or seed.rewards)
