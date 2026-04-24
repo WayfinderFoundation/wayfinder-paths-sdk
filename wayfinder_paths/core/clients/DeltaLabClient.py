@@ -652,8 +652,25 @@ class DeltaLabClient(WayfinderClient):
     ) -> list[dict[str, Any]]:
         """List all (asset, market, role) triples a symbol participates in.
 
-        Returns one row per (market_id, role). Role values observed:
-        BASE, LENDING_ASSET, etc. Chain filter is optional.
+        Returns one row per (market_id, role). Row fields include
+        `market_id, role, venue, venue_id, venue_type, market_type,
+        external_id, asset_id, asset_symbol, asset_chain_id, market_chain_id`.
+
+        **`chain_id` param gotcha.** This filter matches the *asset's*
+        `chain_id`, NOT the *market's* chain. For canonical cross-chain
+        tokens (ETH, BTC, USDC, …) the asset record has
+        `asset_chain_id = null`, so ANY non-null `chain_id` value here
+        returns zero rows even when markets exist on that chain.
+
+        For "show me ETH markets on BSC" style queries, either:
+
+        - call unfiltered and filter client-side on `market_chain_id`::
+
+              rows = await client.get_asset_markets(symbol="ETH")
+              bsc = [r for r in rows if r["market_chain_id"] == 56]
+
+        - or use `search_markets(basis_root="ETH", chain_id=56)` — its
+          `chain_id` param correctly filters on `market.chain_id`.
         """
         payload = await self._dl_request(
             "GET",
@@ -703,8 +720,10 @@ class DeltaLabClient(WayfinderClient):
         limit: int = 25,
         offset: int = 0,
     ) -> dict[str, Any]:
-        """List basis-root symbols ordered by symbol.
+        """List basis-root symbols in ASCII symbol order.
 
+        Server orders by `symbol` ASCII-ascending, so numeric-prefixed symbols
+        (`0G`, `10`, `100M`, `1HR`, `1INCH`, ...) precede alphabetic ones.
         Returns the full envelope (`items, count, total_count`) so callers can
         page via `iter_list` or build their own loop. Default limit is 25 —
         the full catalog is ~3,900 roots.
@@ -791,7 +810,7 @@ class DeltaLabClient(WayfinderClient):
         asset_id: int,
         direction: str = "both",
         depth: int = 1,
-        relation_type: str | None = None,
+        relation_types: list[str] | tuple[str, ...] | str | None = None,
     ) -> list[dict[str, Any]]:
         """Walk the asset-relation graph outward from a single asset.
 
@@ -799,19 +818,84 @@ class DeltaLabClient(WayfinderClient):
         Default `depth=1` keeps the payload small — bump to 2/3 only when you
         need multi-hop paths (see `get_graph_paths` for targeted shortest-path
         queries). Symbols are inlined on each row for readability.
+
+        `relation_types` accepts a single string (`"WRAPS"`) or a list
+        (`["WRAPS", "REBASING_TO_BASE"]`) — consistent with
+        `get_graph_paths`. Lists are CSV-joined for the server's
+        `relation_type` param.
         """
         if depth < 1 or depth > 3:
             raise ValueError(f"depth must be between 1 and 3, got {depth}")
+        rt: str | None
+        if relation_types is None:
+            rt = None
+        elif isinstance(relation_types, str):
+            rt = relation_types
+        else:
+            rt = ",".join(relation_types) or None
         payload = await self._dl_request(
             "GET",
             f"/assets/id/{asset_id}/relations/",
             params={
                 "direction": direction,
                 "depth": depth,
-                "relation_type": relation_type,
+                "relation_type": rt,
             },
         )
         return self._unwrap_items(payload)
+
+    async def summarize_asset_relations(
+        self,
+        *,
+        asset_id: int,
+        direction: str = "both",
+        depth: int = 1,
+        relation_types: list[str] | tuple[str, ...] | str | None = None,
+        examples_per_type: int = 3,
+    ) -> dict[str, Any]:
+        """Compact summary of an asset's relation graph, grouped by type.
+
+        Same input space as `get_asset_relations`, but returns a
+        dict like::
+
+            {
+                "asset_id": 2,
+                "total": 112,
+                "by_relation_type": {
+                    "WRAPS": {"count": 84, "examples": ["wstETH", "sfrxETH", "rETH"]},
+                    "REBASING_TO_BASE": {"count": 22, "examples": ["stETH", ...]},
+                    ...
+                },
+            }
+
+        Agent-friendly alternative when the raw list would be hundreds of
+        rows (e.g. depth=1 on ETH = 112 rows). Preserves the raw list at
+        `"items"` if the caller wants to drill in.
+        """
+        items = await self.get_asset_relations(
+            asset_id=asset_id,
+            direction=direction,
+            depth=depth,
+            relation_types=relation_types,
+        )
+        groups: dict[str, dict[str, Any]] = {}
+        for row in items:
+            rtype = row.get("relation_type") or "UNKNOWN"
+            g = groups.setdefault(rtype, {"count": 0, "examples": []})
+            g["count"] += 1
+            if len(g["examples"]) < examples_per_type:
+                label = (
+                    row.get("from_asset_symbol")
+                    or row.get("to_asset_symbol")
+                    or str(row.get("from_asset_id") or row.get("to_asset_id"))
+                )
+                g["examples"].append(label)
+        return {
+            "asset_id": asset_id,
+            "total": len(items),
+            "by_relation_type": groups,
+            "items": items,
+        }
 
     async def get_graph_paths(
         self,
@@ -859,6 +943,7 @@ class DeltaLabClient(WayfinderClient):
         self,
         *,
         q: str | None = None,
+        query: str | None = None,
         chain_id: int | None = None,
         basis_root: str | None = None,
         has_address: bool | None = None,
@@ -873,9 +958,15 @@ class DeltaLabClient(WayfinderClient):
         `/search/assets/` which supports projection, basis filtering, and
         `has_address` filtering.
 
+        `q` and `query` are accepted as synonyms — `query` matches the
+        legacy `search_assets` kwarg, so copy-paste from either signature
+        works. If both are given, `q` wins.
+
         Returns the full envelope `{items, count, has_more, offset}` so
         callers can paginate explicitly.
         """
+        if q is None and query is not None:
+            q = query
         return await self._dl_request(
             "GET",
             "/search/assets/",
@@ -1588,6 +1679,23 @@ class DeltaLabClient(WayfinderClient):
         funding TS + per-(market, asset) lending TS on the client, but in
         one server-side call. Use for backtests / structured analysis —
         not MCP (payloads are typically 50–500 KB).
+
+        **Important — no `instrument_type` filter.** The server ranks across
+        all instrument types and takes the top `instrument_limit`. If
+        Boros/Pendle opps dominate a basis (common for ETH LONG),
+        `lending_ts` comes back **empty** even when lending markets exist
+        for that basis. For lending-only / perp-only / pendle-only
+        hydration, compose instead::
+
+            page = await client.search_opportunities(
+                basis_root="ETH", side="LONG",
+                instrument_type="LENDING_SUPPLY", limit=20,
+            )
+            pairs = [(o["market_id"], o["deposit_asset_id"]) for o in page["items"]]
+            lending_ts = await client.bulk_lending(pairs=pairs, lookback_days=30)
+
+        See rules/v2-surface.md in the `using-delta-lab` skill for the
+        full set of composition recipes.
         """
         if side is not None and side not in ("LONG", "SHORT"):
             raise ValueError(f"side must be LONG or SHORT, got {side!r}")

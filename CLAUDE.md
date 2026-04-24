@@ -177,9 +177,17 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 - **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
 - **Borrow routes:** `ltv_max`, `liq_threshold`, `liquidation_penalty`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
 
-**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
+**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT`. Only the timeseries methods (`get_asset_timeseries`, `get_asset_price_ts`, `get_asset_yield_ts`, `get_market_lending_ts`, `get_market_pendle_ts`, `get_market_boros_ts`, `get_instrument_funding_ts`, and all `bulk_*` TS variants) return `pd.DataFrame`. Screening / top-APY / opportunity methods return plain dicts or lists; `*_latest` methods return typed dataclasses (or `None`).
 
 **Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
+
+**Expanded Python-client surface** (entity / catalog / graph / search / point-TS+latest / bulk / orchestration): see `/using-delta-lab` → `rules/v2-surface.md`. Highlights:
+
+- Typed `*_latest` snapshots that merge raw-value + stats in one call (`get_asset_price_latest(asset_id)` → `PriceLatest(price_usd, ret_{1,7,30,90}d, vol_{7,30,90}d, mdd_{30,90}d)`; `get_market_lending_latest(market_id, asset_id)` → full 50-field screening record).
+- Discovery-shape search: `search_opportunities(basis_root, side="LONG", limit=25)` returns the trimmed opp shape; use the enriched `get_basis_apy_sources(...)` only when drilling into a specific opportunity.
+- Orchestration bundles: `explore(symbol, relations_depth=1)` for one-shot discovery; `fetch_backtest_bundle(basis_root=..., side=..., lookback_days=30)` returns a typed `BacktestBundle` (opportunities DataFrame + funding_ts + lending_ts) — use only in scripts/backtests, never MCP.
+- Bulk methods auto-chunk at 100 ids with 5-way concurrency (`bulk_prices`, `bulk_latest_lending`, …) and return `dict[int, DataFrame]` or `dict[(market_id, asset_id), ...]`.
+- Errors surface as `DeltaLabAPIError(code, message, status)` (codes: `not_found`, `bulk_cap_exceeded`, `invalid_*`, `array_length_mismatch`, `missing_parameter`). `*_latest(...)` soft-resolves `not_found` to `None` — sparse snapshots are not errors.
 
 ## Pack applets
 

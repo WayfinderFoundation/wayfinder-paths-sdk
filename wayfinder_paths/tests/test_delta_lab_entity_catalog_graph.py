@@ -222,7 +222,7 @@ async def test_get_asset_relations_passes_params(
         ],
     )
     rels = await c.get_asset_relations(
-        asset_id=2, direction="forward", depth=2, relation_type="WRAPS"
+        asset_id=2, direction="forward", depth=2, relation_types="WRAPS"
     )
     assert rels[0]["relation_type"] == "WRAPS"
     assert mock.await_args.kwargs["params"] == {
@@ -263,6 +263,51 @@ async def test_get_graph_paths_serializes_relation_types(
         "max_hops": 2,
         "relation_types": "WRAPS,REBASING_TO_BASE",
     }
+
+
+@pytest.mark.asyncio
+async def test_get_asset_relations_accepts_list_of_types(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, mock = _make_client(
+        monkeypatch,
+        [{"items": [{"relation_type": "WRAPS"}], "count": 1}],
+    )
+    await c.get_asset_relations(
+        asset_id=2, relation_types=["WRAPS", "REBASING_TO_BASE"]
+    )
+    assert mock.await_args.kwargs["params"]["relation_type"] == "WRAPS,REBASING_TO_BASE"
+
+
+@pytest.mark.asyncio
+async def test_summarize_asset_relations_groups_by_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, _ = _make_client(
+        monkeypatch,
+        [
+            {
+                "items": [
+                    {"relation_type": "WRAPS", "from_asset_symbol": "wstETH"},
+                    {"relation_type": "WRAPS", "from_asset_symbol": "sfrxETH"},
+                    {"relation_type": "WRAPS", "from_asset_symbol": "rETH"},
+                    {"relation_type": "WRAPS", "from_asset_symbol": "ankrETH"},
+                    {"relation_type": "REBASING_TO_BASE", "from_asset_symbol": "stETH"},
+                    {"relation_type": "BASIS", "from_asset_symbol": "LP-ETH"},
+                ],
+                "count": 6,
+            }
+        ],
+    )
+    summary = await c.summarize_asset_relations(asset_id=2, examples_per_type=2)
+    assert summary["asset_id"] == 2 and summary["total"] == 6
+    groups = summary["by_relation_type"]
+    assert groups["WRAPS"]["count"] == 4
+    assert groups["WRAPS"]["examples"] == ["wstETH", "sfrxETH"]  # capped at 2
+    assert groups["REBASING_TO_BASE"]["count"] == 1
+    assert groups["BASIS"]["count"] == 1
+    # Raw items still reachable
+    assert len(summary["items"]) == 6
 
 
 def test_get_graph_paths_guards_max_hops() -> None:

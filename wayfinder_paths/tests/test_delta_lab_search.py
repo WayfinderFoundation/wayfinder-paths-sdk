@@ -64,6 +64,19 @@ async def test_search_assets_v2_hits_new_endpoint_and_passes_filters(
 
 
 @pytest.mark.asyncio
+async def test_search_assets_v2_accepts_query_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, mock = _make_client(
+        monkeypatch,
+        [{"items": [{"asset_id": 2, "symbol": "ETH"}], "count": 1, "has_more": False}],
+    )
+    await c.search_assets_v2(query="ETH", limit=3)
+    # query should be normalized onto q=
+    assert mock.await_args.kwargs["params"]["q"] == "ETH"
+
+
+@pytest.mark.asyncio
 async def test_search_assets_v2_does_not_collide_with_legacy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
