@@ -31,25 +31,32 @@ standard flow. Key recipes:
 ### "Lending backtest data for X basis"
 
 `fetch_backtest_bundle(basis_root="ETH", side="LONG")` ranks across **all**
-instrument types; if Boros/Pendle opps dominate the ranking, `lending_ts`
-comes back empty even when lending markets exist for that basis. The
-bundle API has no `instrument_type` filter. For lending-only, compose:
+instrument types; if Boros/Pendle opps dominate, `lending_ts` comes back
+empty even when lending markets exist for that basis. Two choices:
+
+**Shortcut — typed bundle helpers** (preferred):
 
 ```python
-# 1) Pick the lending opps you care about
+bundle = await DELTA_LAB_CLIENT.fetch_lending_bundle(
+    basis_root="ETH", side="LONG", lookback_days=30, instrument_limit=25
+)
+# same BacktestBundle shape, but scoped to LENDING_SUPPLY opportunities.
+# Sibling: fetch_perp_bundle(...) for PERP-only.
+```
+
+**Manual compose** (when you want a different `instrument_type` or extra
+post-processing):
+
+```python
 page = await DELTA_LAB_CLIENT.search_opportunities(
     basis_root="ETH", side="LONG", instrument_type="LENDING_SUPPLY", limit=20
 )
 opps = page["items"]
 pairs = [(o["market_id"], o["deposit_asset_id"]) for o in opps]
 inst_ids = [o["instrument_id"] for o in opps if o.get("instrument_id")]
-
-# 2) Fan out the TS directly (auto-chunked at 100)
 lending_ts = await DELTA_LAB_CLIENT.bulk_lending(pairs=pairs, lookback_days=30)
 funding_ts = await DELTA_LAB_CLIENT.bulk_funding(instrument_ids=inst_ids, lookback_days=30)
 ```
-
-Same pattern works for `instrument_type="PERP" / "PENDLE_PT" / "BOROS_MARKET"`.
 
 ### "What wraps/derives from X?"
 
@@ -65,6 +72,28 @@ wraps = await DELTA_LAB_CLIENT.get_asset_relations(
     asset_id=2, depth=1, relation_types="WRAPS"
 )
 ```
+
+### "Richest basis symbols" / "which basis has the most opportunities"
+
+The `/list/basis-roots/` endpoint doesn't expose a `sort_by` param yet,
+so there's no one-shot "top N richest" call. Two compositions depending
+on what the user really means by "richest":
+
+```python
+# A) Most opportunities indexed (catalog-level count):
+#    walk all roots once, sort client-side. ~468 KB; scripts only.
+roots = [
+    r async for r in DELTA_LAB_CLIENT.iter_list("/list/basis-roots/", batch=500)
+]
+top = sorted(roots, key=lambda r: r.get("opportunity_count", 0), reverse=True)[:20]
+
+# B) Highest-APY opportunity available right now (MCP-friendly):
+top_apy = await DELTA_LAB_CLIENT.get_top_apy(limit=100, lookback_days=7)
+# then group opportunities by `basis_symbol` and take per-group max.
+```
+
+Prefer (B) for agent turns — (A) is only worth it in a script when you
+genuinely need the full catalog ranked.
 
 ### "Top APY across multiple symbols"
 

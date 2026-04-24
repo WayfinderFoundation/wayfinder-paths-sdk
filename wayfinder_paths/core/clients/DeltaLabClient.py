@@ -105,6 +105,23 @@ class DeltaLabClient(WayfinderClient):
         return []
 
     @staticmethod
+    def _alias_screen_items(payload: Any) -> Any:
+        """Normalize `{data, count}` screening envelopes to also expose `items`.
+
+        The legacy `/screen/*` endpoints return `{"data": [...], "count": N}`;
+        `/search/*` returns `{"items": [...], "count": N, "has_more": ...}`.
+        This helper adds an `items` alias so `_unwrap_items` + downstream
+        consumers work uniformly across both. `data` is preserved for back-compat.
+        """
+        if (
+            isinstance(payload, dict)
+            and "items" not in payload
+            and isinstance(payload.get("data"), list)
+        ):
+            payload["items"] = payload["data"]
+        return payload
+
+    @staticmethod
     def _to_df(rows: list[dict[str, Any]], *, ts_col: str = "ts") -> pd.DataFrame:
         """Convert a list of TS rows to a DataFrame indexed on `ts_col`."""
         if not rows:
@@ -480,7 +497,7 @@ class DeltaLabClient(WayfinderClient):
         elif asset_ids:
             params["asset_ids"] = ",".join(str(a) for a in asset_ids)
         response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return self._alias_screen_items(response.json())
 
     async def screen_lending(
         self,
@@ -527,7 +544,7 @@ class DeltaLabClient(WayfinderClient):
         if exclude_frozen:
             params["exclude_frozen"] = "true"
         response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return self._alias_screen_items(response.json())
 
     async def screen_perp(
         self,
@@ -566,7 +583,7 @@ class DeltaLabClient(WayfinderClient):
         if venue:
             params["venue"] = venue
         response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return self._alias_screen_items(response.json())
 
     async def screen_borrow_routes(
         self,
@@ -633,7 +650,7 @@ class DeltaLabClient(WayfinderClient):
             params["mode_type"] = mode_type
 
         response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return self._alias_screen_items(response.json())
 
     # ------------------------------------------------------------------
     # Pass 2: Entity lookups
@@ -1742,6 +1759,133 @@ class DeltaLabClient(WayfinderClient):
             lending_ts=lending_ts,
             funding_ts=funding_ts,
             raw=payload,
+        )
+
+    async def fetch_lending_bundle(
+        self,
+        *,
+        basis_root: str,
+        side: str = "LONG",
+        lookback_days: int = 30,
+        limit_per_key: int = 500,
+        instrument_limit: int = 25,
+    ) -> BacktestBundle:
+        """Lending-only companion to `fetch_backtest_bundle`.
+
+        Composes `search_opportunities(instrument_type="LENDING_SUPPLY")`
+        → `bulk_lending` → `bulk_funding` into the same `BacktestBundle`
+        shape. Use this when the basis root's top opportunities are
+        dominated by Boros/Pendle and the vanilla `fetch_backtest_bundle`
+        returns an empty `lending_ts` (see its docstring for the trap).
+        """
+        return await self._fetch_typed_bundle(
+            basis_root=basis_root,
+            side=side,
+            instrument_type="LENDING_SUPPLY",
+            lookback_days=lookback_days,
+            limit_per_key=limit_per_key,
+            instrument_limit=instrument_limit,
+        )
+
+    async def fetch_perp_bundle(
+        self,
+        *,
+        basis_root: str,
+        side: str = "LONG",
+        lookback_days: int = 30,
+        limit_per_key: int = 500,
+        instrument_limit: int = 25,
+    ) -> BacktestBundle:
+        """Perp-only companion to `fetch_backtest_bundle`.
+
+        Same shape as `fetch_lending_bundle` but scoped to PERP
+        instruments. `funding_ts` is always populated (if the
+        instrument has data); `lending_ts` will be empty.
+        """
+        return await self._fetch_typed_bundle(
+            basis_root=basis_root,
+            side=side,
+            instrument_type="PERP",
+            lookback_days=lookback_days,
+            limit_per_key=limit_per_key,
+            instrument_limit=instrument_limit,
+        )
+
+    async def _fetch_typed_bundle(
+        self,
+        *,
+        basis_root: str,
+        side: str,
+        instrument_type: str,
+        lookback_days: int,
+        limit_per_key: int,
+        instrument_limit: int,
+    ) -> BacktestBundle:
+        """Shared composition used by `fetch_lending_bundle` / `fetch_perp_bundle`."""
+        if side not in ("LONG", "SHORT"):
+            raise ValueError(f"side must be LONG or SHORT, got {side!r}")
+
+        page = await self.search_opportunities(
+            basis_root=basis_root,
+            side=side,
+            instrument_type=instrument_type,
+            limit=instrument_limit,
+        )
+        opps = page.get("items", [])
+
+        # Extract ids for downstream bulk fan-out.
+        inst_ids = [o["instrument_id"] for o in opps if o.get("instrument_id")]
+        pairs: list[tuple[int, int]] = []
+        for o in opps:
+            m = o.get("market_id")
+            a = o.get("deposit_asset_id") or o.get("basis_asset_id")
+            if m is not None and a is not None:
+                pairs.append((int(m), int(a)))
+
+        # Fan out TS concurrently (auto-chunked by the bulk helpers).
+        lending_task = (
+            self.bulk_lending(
+                pairs=pairs, lookback_days=lookback_days, limit_per_key=limit_per_key
+            )
+            if pairs and instrument_type.startswith("LENDING")
+            else None
+        )
+        funding_task = (
+            self.bulk_funding(
+                instrument_ids=inst_ids,
+                lookback_days=lookback_days,
+                limit_per_key=limit_per_key,
+            )
+            if inst_ids and instrument_type == "PERP"
+            else None
+        )
+        import asyncio as _asyncio
+
+        tasks = [t for t in (lending_task, funding_task) if t is not None]
+        results = await _asyncio.gather(*tasks) if tasks else []
+        lending_ts: dict[tuple[int, int], pd.DataFrame] = {}
+        funding_ts: dict[int, pd.DataFrame] = {}
+        if lending_task is not None:
+            lending_ts = results[0]
+            if funding_task is not None:
+                funding_ts = results[1]
+        elif funding_task is not None:
+            funding_ts = results[0]
+
+        return BacktestBundle(
+            basis_root=basis_root,
+            side=side,
+            lookback_days=lookback_days,
+            start=None,
+            end=None,
+            opportunities=pd.DataFrame(opps),
+            lending_ts=lending_ts,
+            funding_ts=funding_ts,
+            raw={
+                "source": "client_composed",
+                "instrument_type": instrument_type,
+                "opportunities_page": page,
+            },
         )
 
 

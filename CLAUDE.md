@@ -146,48 +146,13 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 
 **Examples:** `wayfinder://alpha-lab/search/_/all/_/_/20` (all), `wayfinder://alpha-lab/search/_/twitter_post/_/_/10` (twitter), `wayfinder://alpha-lab/search/ETH/all/_/_/10` (ETH). Client: `await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)`.
 
-## Delta Lab MCP resources (yield discovery)
+## Delta Lab (yield discovery)
 
-**Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
+**Load `/using-delta-lab` for the full surface** — MCP URIs, v2 Python client (entity / catalog / graph / search / TS / latest / bulk / `explore` / `fetch_backtest_bundle`), typed records, and composition recipes.
 
-**⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
-
-**MCP resources (quick queries):**
-
-- `wayfinder://delta-lab/symbols` - List basis symbols
-- `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
-- `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
-- `wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LOOKBACK}/{LIMIT}` - Delta-neutral pairs for symbol
-- `wayfinder://delta-lab/assets/{asset_id}` - Asset metadata by ID
-- `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
-- `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
-- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Timeseries for exact asset (no basis expansion)
-- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}/{VENUE}` - Timeseries filtered by venue
-- `wayfinder://delta-lab/basis/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Timeseries expanded to basis group (USDC → USDC+sUSDC+aUSDC...)
-- `wayfinder://delta-lab/basis/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}/{VENUE}` - Basis timeseries filtered by venue
-- `wayfinder://delta-lab/screen/price/{SORT}/{LIMIT}/{BASIS}` - Screen assets by price features
-- `wayfinder://delta-lab/screen/lending/{SORT}/{LIMIT}/{BASIS}` - Screen lending markets
-- `wayfinder://delta-lab/screen/perp/{SORT}/{LIMIT}/{BASIS}` - Screen perp markets
-- `wayfinder://delta-lab/screen/borrow-routes/{SORT}/{LIMIT}/{BASIS}/{BORROW_BASIS}` - Screen borrow routes (collateral → borrow)
-
-**Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
-
-- **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
-- **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
-- **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
-- **Borrow routes:** `ltv_max`, `liq_threshold`, `liquidation_penalty`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
-
-**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT`. Only the timeseries methods (`get_asset_timeseries`, `get_asset_price_ts`, `get_asset_yield_ts`, `get_market_lending_ts`, `get_market_pendle_ts`, `get_market_boros_ts`, `get_instrument_funding_ts`, and all `bulk_*` TS variants) return `pd.DataFrame`. Screening / top-APY / opportunity methods return plain dicts or lists; `*_latest` methods return typed dataclasses (or `None`).
-
-**Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
-
-**Expanded Python-client surface** (entity / catalog / graph / search / point-TS+latest / bulk / orchestration): see `/using-delta-lab` → `rules/v2-surface.md`. Highlights:
-
-- Typed `*_latest` snapshots that merge raw-value + stats in one call (`get_asset_price_latest(asset_id)` → `PriceLatest(price_usd, ret_{1,7,30,90}d, vol_{7,30,90}d, mdd_{30,90}d)`; `get_market_lending_latest(market_id, asset_id)` → full 50-field screening record).
-- Discovery-shape search: `search_opportunities(basis_root, side="LONG", limit=25)` returns the trimmed opp shape; use the enriched `get_basis_apy_sources(...)` only when drilling into a specific opportunity.
-- Orchestration bundles: `explore(symbol, relations_depth=1)` for one-shot discovery; `fetch_backtest_bundle(basis_root=..., side=..., lookback_days=30)` returns a typed `BacktestBundle` (opportunities DataFrame + funding_ts + lending_ts) — use only in scripts/backtests, never MCP.
-- Bulk methods auto-chunk at 100 ids with 5-way concurrency (`bulk_prices`, `bulk_latest_lending`, …) and return `dict[int, DataFrame]` or `dict[(market_id, asset_id), ...]`.
-- Errors surface as `DeltaLabAPIError(code, message, status)` (codes: `not_found`, `bulk_cap_exceeded`, `invalid_*`, `array_length_mismatch`, `missing_parameter`). `*_latest(...)` soft-resolves `not_found` to `None` — sparse snapshots are not errors.
+- **APY format:** decimal floats (`0.98 = 98%`, NOT 0.98%). Multiply by 100 to display.
+- **MCP philosophy:** quick snapshots only. Anything plot / filter / multi-day / bulk → Python client. Only TS methods return `pd.DataFrame`; `*_latest` returns typed dataclasses (or `None` for sparse data); search / screening / opportunity methods return dicts.
+- **Most-used MCP URIs:** `wayfinder://delta-lab/top-apy/{LB}/{N}`, `wayfinder://delta-lab/{SYM}/apy-sources/{LB}/{N}`, `wayfinder://delta-lab/{SYM}/timeseries/{SERIES}/{LB}/{N}`, `wayfinder://delta-lab/screen/{lending|perp|price|borrow-routes}/{sort}/{N}/{basis}`. Full URI list + valid sort columns are in the skill.
 
 ## Pack applets
 

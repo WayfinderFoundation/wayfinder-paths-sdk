@@ -320,3 +320,89 @@ async def test_fetch_backtest_bundle_side_guard():
     c = DeltaLabClient()
     with pytest.raises(ValueError, match="side must be"):
         await c.fetch_backtest_bundle(basis_root="ETH", side="both")
+
+
+@pytest.mark.asyncio
+async def test_fetch_lending_bundle_composes_search_and_bulk(monkeypatch):
+    c, mock = _make_client(
+        monkeypatch,
+        [
+            # 1st call: search_opportunities
+            {
+                "items": [
+                    {
+                        "instrument_id": 100,
+                        "market_id": 912,
+                        "deposit_asset_id": 2,
+                        "side": "LONG",
+                    },
+                    {
+                        "instrument_id": 101,
+                        "market_id": 913,
+                        "deposit_asset_id": 2,
+                        "side": "LONG",
+                    },
+                ],
+                "count": 2,
+                "has_more": False,
+            },
+            # 2nd call: bulk_lending
+            {
+                "912:2": [{"ts": "2026-04-22T20:00:00+00:00", "supply_apr": 0.008}],
+                "913:2": [{"ts": "2026-04-22T20:00:00+00:00", "supply_apr": 0.009}],
+            },
+        ],
+    )
+    bundle = await c.fetch_lending_bundle(
+        basis_root="ETH", side="LONG", lookback_days=2, instrument_limit=5
+    )
+    assert bundle.basis_root == "ETH" and bundle.side == "LONG"
+    assert len(bundle.opportunities) == 2
+    assert set(bundle.lending_ts.keys()) == {(912, 2), (913, 2)}
+    assert bundle.funding_ts == {}  # lending-only doesn't fan out funding
+    # Verify the URL path targeted search/opportunities then bulk/lending
+    paths = [call.args[1] for call in mock.await_args_list]
+    assert "/search/opportunities/" in paths[0]
+    assert "/bulk/lending/" in paths[1]
+
+
+@pytest.mark.asyncio
+async def test_fetch_perp_bundle_fans_funding(monkeypatch):
+    c, _ = _make_client(
+        monkeypatch,
+        [
+            {
+                "items": [{"instrument_id": 200, "market_id": 18900, "side": "LONG"}],
+                "count": 1,
+                "has_more": False,
+            },
+            {"200": [{"ts": "2026-04-22T20:00:00+00:00", "funding_rate": 0.0001}]},
+        ],
+    )
+    bundle = await c.fetch_perp_bundle(basis_root="ETH", side="LONG", lookback_days=2)
+    assert bundle.funding_ts.keys() == {200}
+    assert bundle.lending_ts == {}  # perp-only doesn't fan out lending
+
+
+@pytest.mark.asyncio
+async def test_fetch_lending_bundle_side_guard():
+    c = DeltaLabClient()
+    with pytest.raises(ValueError, match="side must be"):
+        await c.fetch_lending_bundle(basis_root="ETH", side="BOTH")
+
+
+def test_alias_screen_items_adds_items_key():
+    out = DeltaLabClient._alias_screen_items({"data": [{"a": 1}], "count": 1})
+    assert out["items"] is out["data"]
+
+
+def test_alias_screen_items_preserves_existing_items():
+    original = {"items": [{"a": 1}], "count": 1}
+    out = DeltaLabClient._alias_screen_items(original)
+    assert out is original  # idempotent
+    assert "data" not in out
+
+
+def test_alias_screen_items_no_op_on_non_dict():
+    assert DeltaLabClient._alias_screen_items([1, 2, 3]) == [1, 2, 3]
+    assert DeltaLabClient._alias_screen_items(None) is None
