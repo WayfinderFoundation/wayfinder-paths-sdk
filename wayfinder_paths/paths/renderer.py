@@ -558,6 +558,8 @@ def _render_opencode_orchestrator(
             "Invoke only the declared Wayfinder worker subagents.",
             "Do not invoke `general` or `explore`.",
             "Create a run id and write all phase artifacts under `.wf-artifacts/<run_id>/`.",
+            "Run executable path components through the installed skill's `scripts/wf_run.py` wrapper.",
+            "Do not run files under `path/` directly; that bypasses runtime config setup.",
             "If a skill, worker, tool, model, or data source is unavailable, stop with a diagnostic.",
         ]
     )
@@ -627,6 +629,7 @@ def _render_opencode_command(
             "- Invoke only the declared Wayfinder worker subagents.",
             "- Do not invoke `general` or `explore`.",
             "- Create a run id and write all phase artifacts under `.wf-artifacts/<run_id>/`.",
+            "- Execute path code through the installed skill's `scripts/wf_run.py` wrapper, not direct files under `path/`.",
         ]
     )
     if _opencode_artifact_gate_enabled(manifest):

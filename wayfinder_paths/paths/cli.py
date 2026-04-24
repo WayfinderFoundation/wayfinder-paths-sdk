@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,19 @@ _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
 _LOCKFILE_NAME = "paths.lock.json"
 _LEGACY_LOCKFILE_NAME = "packs.lock.json"
+_OPENCODE_TOOL_RESULT_HELPER = "\n".join(
+    [
+        "function jsonOutput(payload) {",
+        "  return JSON.stringify(payload, null, 2)",
+        "}",
+    ]
+)
+_LEGACY_OPENCODE_TOOL_RESULT_RE = re.compile(
+    r"function\s+jsonOutput\s*\(\s*payload\s*\)\s*\{\s*"
+    r"return\s*\{\s*output\s*:\s*JSON\.stringify\s*\(\s*payload\s*,\s*null\s*,\s*2\s*\)\s*,?\s*\}\s*"
+    r"\}",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -704,7 +718,26 @@ def _copy_install_path(source: Path, destination: Path) -> None:
         _copy_export_tree(source, destination)
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if _is_opencode_tool_path(destination):
+        source_text = source.read_text(encoding="utf-8")
+        destination.write_text(
+            _normalize_opencode_tool_result_contract(source_text),
+            encoding="utf-8",
+        )
+        return
     shutil.copy2(source, destination)
+
+
+def _is_opencode_tool_path(path: Path) -> bool:
+    parts = path.parts
+    return ".opencode" in parts and "tools" in parts and path.suffix in {".js", ".ts"}
+
+
+def _normalize_opencode_tool_result_contract(tool_text: str) -> str:
+    return _LEGACY_OPENCODE_TOOL_RESULT_RE.sub(
+        _OPENCODE_TOOL_RESULT_HELPER,
+        tool_text,
+    )
 
 
 def _should_merge_json_install_target(*, op: str, src: Path, dest: Path) -> bool:
