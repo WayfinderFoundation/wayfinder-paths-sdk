@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+# Minimal ABIs for Compound III / Comet proxy interactions and rewards.
+
 COMET_ABI = [
     {
         "inputs": [],
