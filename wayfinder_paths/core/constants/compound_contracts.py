@@ -126,31 +126,6 @@ COMPOUND_COMET_BY_CHAIN: dict[int, dict[str, Any]] = {
             },
         },
     },
-    10: {
-        "chain_name": "optimism",
-        "configurator": to_checksum_address(
-            "0x84E93EC6170ED630f5ebD89A1AAE72d4F63f2713"
-        ),
-        "rewards": to_checksum_address("0x443EA0340cb75a160F31A440722dec7b5bc3C2E9"),
-        "bulker": to_checksum_address("0xcb3643CC8294B23171272845473dEc49739d4Ba3"),
-        "markets": {
-            "usdc": {
-                "comet": to_checksum_address(
-                    "0x2e44e174f7D53F0212823acC11C01A11d58c5bCB"
-                )
-            },
-            "usdt": {
-                "comet": to_checksum_address(
-                    "0x995E394b8B2437aC8Ce61Ee0bC610D617962B214"
-                )
-            },
-            "weth": {
-                "comet": to_checksum_address(
-                    "0xE36A30D249f7761327fd973001A32010b521b6Fd"
-                )
-            },
-        },
-    },
     CHAIN_ID_POLYGON: {
         "chain_name": "polygon",
         "configurator": to_checksum_address(
@@ -167,96 +142,6 @@ COMPOUND_COMET_BY_CHAIN: dict[int, dict[str, Any]] = {
             "usdt": {
                 "comet": to_checksum_address(
                     "0xaeB318360f27748Acb200CE616E389A6C9409a07"
-                )
-            },
-        },
-    },
-    534352: {
-        "chain_name": "scroll",
-        "configurator": to_checksum_address(
-            "0xECAB0bEEa3e5DEa0c35d3E69468EAC20098032D7"
-        ),
-        "rewards": to_checksum_address("0x70167D30964cbFDc315ECAe02441Af747bE0c5Ee"),
-        "bulker": to_checksum_address("0x53C6D04e3EC7031105bAeA05B36cBc3C987C56fA"),
-        "markets": {
-            "usdc": {
-                "comet": to_checksum_address(
-                    "0xB2f97c1Bd3bf02f5e74d13f02E3e26F93D77CE44"
-                )
-            },
-        },
-    },
-    59144: {
-        "chain_name": "linea",
-        "configurator": to_checksum_address(
-            "0x970FfD8E335B8fa4cd5c869c7caC3a90671d5Dc3"
-        ),
-        "rewards": to_checksum_address("0x2c7118c4C88B9841FCF839074c26Ae8f035f2921"),
-        "bulker": to_checksum_address("0x023ee795361B28cDbB94e302983578486A0A5f1B"),
-        "markets": {
-            "usdc": {
-                "comet": to_checksum_address(
-                    "0x8D38A3d6B3c3B7d96D6536DA7Eef94A9d7dbC991"
-                )
-            },
-            "weth": {
-                "comet": to_checksum_address(
-                    "0x60F2058379716A64a7A5d29219397e79bC552194"
-                )
-            },
-        },
-    },
-    2020: {
-        "chain_name": "ronin",
-        "configurator": to_checksum_address(
-            "0x966c72F456FC248D458784EF3E0b6d042be115F2"
-        ),
-        "rewards": to_checksum_address("0x31CdEe8609Bc15fD33cc525f101B70a81b2B1E59"),
-        "bulker": to_checksum_address("0x840281FaD56DD88afba052B7F18Be2A65796Ecc6"),
-        "markets": {
-            "weth": {
-                "comet": to_checksum_address(
-                    "0x4006eD4097Ee51c09A04c3B0951D28CCf19e6DFE"
-                )
-            },
-            "wron": {
-                "comet": to_checksum_address(
-                    "0xc0Afdbd1cEB621Ef576BA969ce9D4ceF78Dbc0c0"
-                )
-            },
-        },
-    },
-    130: {
-        "chain_name": "unichain",
-        "configurator": to_checksum_address(
-            "0x8df378453Ff9dEFFa513367CDF9b3B53726303e9"
-        ),
-        "rewards": to_checksum_address("0x6f7D514bbD4aFf3BcD1140B7344b32f063dEe486"),
-        "bulker": to_checksum_address("0x58EbB8Db8b4FdF2dCbbB16E04c2F5b952963B514"),
-        "markets": {
-            "usdc": {
-                "comet": to_checksum_address(
-                    "0x2c7118c4C88B9841FCF839074c26Ae8f035f2921"
-                )
-            },
-            "weth": {
-                "comet": to_checksum_address(
-                    "0x6C987dDE50dB1dcDd32Cd4175778C2a291978E2a"
-                )
-            },
-        },
-    },
-    5000: {
-        "chain_name": "mantle",
-        "configurator": to_checksum_address(
-            "0xb77Cd4cD000957283D8BAf53cD782ECf029cF7DB"
-        ),
-        "rewards": to_checksum_address("0xCd83CbBFCE149d141A5171C3D6a0F0fCCeE225Ab"),
-        "bulker": to_checksum_address("0x67DFCa85CcEEFA2C5B1dB4DEe3BEa716A28B9baa"),
-        "markets": {
-            "usde": {
-                "comet": to_checksum_address(
-                    "0x606174f62cd968d8e684c645080fa694c1D7786E"
                 )
             },
         },

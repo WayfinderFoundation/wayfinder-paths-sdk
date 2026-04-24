@@ -27,7 +27,8 @@ class TestCompoundAdapter:
         self, adapter: CompoundAdapter
     ) -> None:
         seeds = adapter._list_market_seeds()
-        assert len(seeds) == 28
+        assert len(seeds) == 17
+        assert {seed.chain_id for seed in seeds} == {1, 137, 8453, 42161}
         assert any(seed.chain_id == 1 and seed.market_name == "usdc" for seed in seeds)
         assert any(
             seed.chain_id == 8453 and seed.market_name == "usdc" for seed in seeds

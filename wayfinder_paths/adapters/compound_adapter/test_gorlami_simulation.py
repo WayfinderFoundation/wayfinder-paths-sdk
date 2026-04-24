@@ -16,8 +16,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-CHAIN_PRIORITY = [8453, 42161, 10, 137, 1, 534352, 59144, 130, 2020, 5000]
-PREFERRED_COLLATERAL_SYMBOLS = ("WETH", "WSTETH", "WBTC", "CBBTC", "WRON")
+CHAIN_PRIORITY = [8453, 42161, 137, 1]
+PREFERRED_COLLATERAL_SYMBOLS = ("WETH", "WSTETH", "WBTC", "CBBTC")
 
 
 def _raw_amount_from_usd(*, price_usd: float | None, decimals: int, usd: float) -> int:
