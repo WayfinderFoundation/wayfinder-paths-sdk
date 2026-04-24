@@ -110,39 +110,37 @@ def _parse_user_basic(value: Any) -> dict[str, int]:
 
 def _parse_reward_owed(value: Any) -> tuple[str | None, int]:
     token = _coerce_tuple_value(value, 0, "token")
-    if not token or str(token) == ZERO_ADDRESS:
+    if not token or token == ZERO_ADDRESS:
         return None, int(_coerce_tuple_value(value, 1, "owed") or 0)
-    return to_checksum_address(str(token)), int(
-        _coerce_tuple_value(value, 1, "owed") or 0
-    )
+    return to_checksum_address(token), int(_coerce_tuple_value(value, 1, "owed") or 0)
 
 
 def _factor_to_float(raw: int) -> float:
-    return float(raw) / float(FACTOR_SCALE) if raw else 0.0
+    return raw / FACTOR_SCALE if raw else 0.0
 
 
 def _price_to_float(raw: int | None) -> float | None:
     if raw is None:
         return None
-    return float(raw) / float(PRICE_SCALE)
+    return raw / PRICE_SCALE
 
 
 def _amount_to_decimal(raw: int, decimals: int) -> float:
     if decimals < 0:
         return float(raw)
-    return float(raw) / float(10**decimals)
+    return raw / (10**decimals)
 
 
 def _rate_to_apr(raw_rate: int) -> float:
     if raw_rate <= 0:
         return 0.0
-    return (float(raw_rate) / float(MANTISSA)) * float(SECONDS_PER_YEAR)
+    return (raw_rate / MANTISSA) * SECONDS_PER_YEAR
 
 
 def _scale_to_decimals(scale: int) -> int | None:
     if scale <= 0:
         return None
-    value = int(scale)
+    value = scale
     decimals = 0
     while value > 1 and value % 10 == 0:
         value //= 10
@@ -153,13 +151,12 @@ def _scale_to_decimals(scale: int) -> int | None:
 
 
 def _pause_flags_to_dict(flags: int) -> dict[str, bool]:
-    flags_int = int(flags)
     return {
-        "supply_paused": bool(flags_int & (1 << 0)),
-        "transfer_paused": bool(flags_int & (1 << 1)),
-        "withdraw_paused": bool(flags_int & (1 << 2)),
-        "absorb_paused": bool(flags_int & (1 << 3)),
-        "buy_paused": bool(flags_int & (1 << 4)),
+        "supply_paused": bool(flags & (1 << 0)),
+        "transfer_paused": bool(flags & (1 << 1)),
+        "withdraw_paused": bool(flags & (1 << 2)),
+        "absorb_paused": bool(flags & (1 << 3)),
+        "buy_paused": bool(flags & (1 << 4)),
     }
 
 
@@ -181,7 +178,7 @@ class CompoundAdapter(BaseAdapter):
 
     @staticmethod
     def _entry(chain_id: int) -> dict[str, Any]:
-        entry = COMPOUND_COMET_BY_CHAIN.get(int(chain_id))
+        entry = COMPOUND_COMET_BY_CHAIN.get(chain_id)
         if not entry:
             raise ValueError(f"Unsupported Compound chain_id={chain_id}")
         return entry
@@ -190,29 +187,28 @@ class CompoundAdapter(BaseAdapter):
         self, chain_id: int | None = None
     ) -> list[CompoundMarketSeed]:
         chain_ids = (
-            [int(chain_id)]
+            [chain_id]
             if chain_id is not None
-            else list(COMPOUND_COMET_BY_CHAIN.keys())
+            else COMPOUND_COMET_BY_CHAIN.keys()
         )
         seeds: list[CompoundMarketSeed] = []
         for cid in chain_ids:
             entry = self._entry(cid)
-            shared_rewards = to_checksum_address(str(entry["rewards"]))
-            shared_bulker = to_checksum_address(str(entry["bulker"]))
-            configurator = to_checksum_address(str(entry["configurator"]))
-            chain_name = str(entry["chain_name"])
+            shared_rewards = to_checksum_address(entry["rewards"])
+            shared_bulker = to_checksum_address(entry["bulker"])
+            configurator = to_checksum_address(entry["configurator"])
+            chain_name = entry["chain_name"]
             markets = entry.get("markets") or {}
             for market_name, market_cfg in markets.items():
-                market = dict(market_cfg)
                 seeds.append(
                     CompoundMarketSeed(
-                        chain_id=int(cid),
+                        chain_id=cid,
                         chain_name=chain_name,
-                        market_name=str(market_name),
-                        comet=to_checksum_address(str(market["comet"])),
+                        market_name=market_name,
+                        comet=to_checksum_address(market_cfg["comet"]),
                         rewards=shared_rewards,
                         bulker=to_checksum_address(
-                            str(market.get("bulker") or shared_bulker)
+                            market_cfg.get("bulker") or shared_bulker
                         ),
                         configurator=configurator,
                     )
@@ -240,7 +236,7 @@ class CompoundAdapter(BaseAdapter):
         fallback_decimals: int | None = None,
     ) -> TokenMetadata:
         checksum_token = to_checksum_address(token_address)
-        cache_key = (int(chain_id), checksum_token.lower())
+        cache_key = (chain_id, checksum_token.lower())
         cached = self._token_metadata_cache.get(cache_key)
         if cached:
             return cached
@@ -253,18 +249,16 @@ class CompoundAdapter(BaseAdapter):
             )
             metadata = TokenMetadata(
                 address=checksum_token,
-                symbol=str(symbol or ""),
-                name=str(name or ""),
-                decimals=int(decimals),
+                symbol=symbol or "",
+                name=name or "",
+                decimals=decimals,
             )
         except Exception:
             metadata = TokenMetadata(
                 address=checksum_token,
                 symbol="",
                 name="",
-                decimals=int(
-                    fallback_decimals if fallback_decimals is not None else 18
-                ),
+                decimals=fallback_decimals if fallback_decimals is not None else 18,
             )
 
         self._token_metadata_cache[cache_key] = metadata
@@ -277,14 +271,14 @@ class CompoundAdapter(BaseAdapter):
         comet: str,
         base_token: str | None = None,
     ) -> str:
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(
                 address=to_checksum_address(comet), abi=COMET_ABI
             )
             onchain_base_token = await contract.functions.baseToken().call(
                 block_identifier="latest"
             )
-        resolved = to_checksum_address(str(onchain_base_token))
+        resolved = to_checksum_address(onchain_base_token)
         if (
             base_token is not None
             and resolved.lower() != to_checksum_address(base_token).lower()
@@ -304,7 +298,7 @@ class CompoundAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         checksum_comet = to_checksum_address(comet)
         checksum_asset = to_checksum_address(asset)
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(address=checksum_comet, abi=COMET_ABI)
             raw_info = await contract.functions.getAssetInfoByAddress(
                 checksum_asset
@@ -325,7 +319,7 @@ class CompoundAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         checksum_rewards = to_checksum_address(rewards_contract)
         checksum_comet = to_checksum_address(comet)
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(
                 address=checksum_rewards, abi=COMET_REWARDS_ABI
             )
@@ -345,8 +339,8 @@ class CompoundAdapter(BaseAdapter):
         return {
             "token": (
                 None
-                if not token or str(token) == ZERO_ADDRESS
-                else to_checksum_address(str(token))
+                if not token or token == ZERO_ADDRESS
+                else to_checksum_address(token)
             ),
             "rescale_factor": int(_coerce_tuple_value(raw, 1, "rescaleFactor") or 0),
             "should_upscale": bool(
@@ -370,7 +364,7 @@ class CompoundAdapter(BaseAdapter):
         checksum_rewards = to_checksum_address(rewards_contract)
         checksum_comet = to_checksum_address(comet)
         checksum_account = to_checksum_address(account)
-        async with web3_from_chain_id(int(chain_id)) as web3:
+        async with web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(
                 address=checksum_rewards, abi=COMET_REWARDS_ABI
             )
@@ -389,7 +383,7 @@ class CompoundAdapter(BaseAdapter):
         reward_token, reward_owed = _parse_reward_owed(raw_owed)
         return {
             "reward_token": reward_token or configured_reward_token,
-            "reward_owed": int(reward_owed),
+            "reward_owed": reward_owed,
             "reward_error": None,
         }
 
@@ -411,12 +405,12 @@ class CompoundAdapter(BaseAdapter):
                     Call(
                         comet,
                         "baseToken",
-                        postprocess=lambda value: to_checksum_address(str(value)),
+                        postprocess=to_checksum_address,
                     ),
                     Call(
                         comet,
                         "baseTokenPriceFeed",
-                        postprocess=lambda value: to_checksum_address(str(value)),
+                        postprocess=to_checksum_address,
                     ),
                     Call(comet, "baseScale", postprocess=int),
                     Call(comet, "decimals", postprocess=int),
@@ -460,13 +454,13 @@ class CompoundAdapter(BaseAdapter):
                     Call(
                         comet,
                         "getSupplyRate",
-                        args=(int(utilization),),
+                        args=(utilization,),
                         postprocess=int,
                     ),
                     Call(
                         comet,
                         "getBorrowRate",
-                        args=(int(utilization),),
+                        args=(utilization,),
                         postprocess=int,
                     ),
                 ],
@@ -474,7 +468,7 @@ class CompoundAdapter(BaseAdapter):
             )
 
             asset_infos: list[dict[str, Any]] = []
-            if int(num_assets) > 0:
+            if num_assets > 0:
                 raw_asset_infos = await read_only_calls_multicall_or_gather(
                     web3=web3,
                     chain_id=seed.chain_id,
@@ -485,11 +479,11 @@ class CompoundAdapter(BaseAdapter):
                             args=(i,),
                             postprocess=_parse_asset_info,
                         )
-                        for i in range(int(num_assets))
+                        for i in range(num_assets)
                     ],
                     block_identifier="latest",
                 )
-                asset_infos = [dict(row) for row in raw_asset_infos]
+                asset_infos = raw_asset_infos
 
             total_collateral_rows: list[int] = []
             if asset_infos:
@@ -500,7 +494,7 @@ class CompoundAdapter(BaseAdapter):
                         Call(
                             comet,
                             "totalsCollateral",
-                            args=(str(info["asset"]),),
+                            args=(info["asset"],),
                             postprocess=lambda row: int(
                                 _coerce_tuple_value(row, 0, "totalSupplyAsset") or 0
                             ),
@@ -509,7 +503,7 @@ class CompoundAdapter(BaseAdapter):
                     ],
                     block_identifier="pending",
                 )
-                total_collateral_rows = [int(value or 0) for value in totals_raw]
+                total_collateral_rows = [value or 0 for value in totals_raw]
 
             base_price_raw: int | None = None
             collateral_price_rows: list[int | None] = [None for _ in asset_infos]
@@ -525,7 +519,7 @@ class CompoundAdapter(BaseAdapter):
                     Call(
                         comet,
                         "getPrice",
-                        args=(str(info["price_feed"]),),
+                        args=(info["price_feed"],),
                         postprocess=int,
                     )
                     for info in asset_infos
@@ -537,8 +531,8 @@ class CompoundAdapter(BaseAdapter):
                     block_identifier="pending",
                 )
                 if price_rows:
-                    base_price_raw = int(price_rows[0])
-                    collateral_price_rows = [int(value) for value in price_rows[1:]]
+                    base_price_raw = price_rows[0]
+                    collateral_price_rows = price_rows[1:]
 
             reward_cfg = await self._reward_config(
                 rewards_contract=seed.rewards,
@@ -548,16 +542,16 @@ class CompoundAdapter(BaseAdapter):
 
             base_meta = await self._token_metadata(
                 chain_id=seed.chain_id,
-                token_address=str(base_token),
+                token_address=base_token,
                 web3=web3,
-                fallback_decimals=int(base_decimals),
+                fallback_decimals=base_decimals,
             )
 
             reward_meta: TokenMetadata | None = None
             if reward_cfg["token"] is not None:
                 reward_meta = await self._token_metadata(
                     chain_id=seed.chain_id,
-                    token_address=str(reward_cfg["token"]),
+                    token_address=reward_cfg["token"],
                     web3=web3,
                 )
 
@@ -568,12 +562,10 @@ class CompoundAdapter(BaseAdapter):
                 collateral_price_rows,
                 strict=True,
             ):
-                fallback_collateral_decimals = _scale_to_decimals(
-                    int(asset_info["scale"])
-                )
+                fallback_collateral_decimals = _scale_to_decimals(asset_info["scale"])
                 asset_meta = await self._token_metadata(
                     chain_id=seed.chain_id,
-                    token_address=str(asset_info["asset"]),
+                    token_address=asset_info["asset"],
                     web3=web3,
                     fallback_decimals=fallback_collateral_decimals,
                 )
@@ -583,79 +575,75 @@ class CompoundAdapter(BaseAdapter):
                         "symbol": asset_meta.symbol,
                         "name": asset_meta.name,
                         "decimals": asset_meta.decimals,
-                        "price_feed": str(asset_info["price_feed"]),
-                        "price": int(price_raw) if price_raw is not None else None,
-                        "price_usd": _price_to_float(int(price_raw))
-                        if price_raw is not None
-                        else None,
-                        "scale": int(asset_info["scale"]),
-                        "offset": int(asset_info["offset"]),
-                        "borrow_collateral_factor_raw": int(
+                        "price_feed": asset_info["price_feed"],
+                        "price": price_raw,
+                        "price_usd": (
+                            _price_to_float(price_raw) if price_raw is not None else None
+                        ),
+                        "scale": asset_info["scale"],
+                        "offset": asset_info["offset"],
+                        "borrow_collateral_factor_raw": asset_info[
+                            "borrow_collateral_factor_raw"
+                        ],
+                        "borrow_collateral_factor": _factor_to_float(
                             asset_info["borrow_collateral_factor_raw"]
                         ),
-                        "borrow_collateral_factor": _factor_to_float(
-                            int(asset_info["borrow_collateral_factor_raw"])
-                        ),
-                        "liquidate_collateral_factor_raw": int(
+                        "liquidate_collateral_factor_raw": asset_info[
+                            "liquidate_collateral_factor_raw"
+                        ],
+                        "liquidate_collateral_factor": _factor_to_float(
                             asset_info["liquidate_collateral_factor_raw"]
                         ),
-                        "liquidate_collateral_factor": _factor_to_float(
-                            int(asset_info["liquidate_collateral_factor_raw"])
-                        ),
-                        "liquidation_factor_raw": int(
+                        "liquidation_factor_raw": asset_info["liquidation_factor_raw"],
+                        "liquidation_factor": _factor_to_float(
                             asset_info["liquidation_factor_raw"]
                         ),
-                        "liquidation_factor": _factor_to_float(
-                            int(asset_info["liquidation_factor_raw"])
-                        ),
-                        "supply_cap": int(asset_info["supply_cap"]),
-                        "total_supply_asset": int(total_supply_asset),
+                        "supply_cap": asset_info["supply_cap"],
+                        "total_supply_asset": total_supply_asset,
                     }
                 )
 
-        base_supply_apr = _rate_to_apr(int(supply_rate))
-        base_borrow_apr = _rate_to_apr(int(borrow_rate))
+        base_supply_apr = _rate_to_apr(supply_rate)
+        base_borrow_apr = _rate_to_apr(borrow_rate)
 
         return {
             "protocol": "compound",
-            "chain_id": int(seed.chain_id),
+            "chain_id": seed.chain_id,
             "chain_name": seed.chain_name,
             "market_name": seed.market_name,
             "market_key": f"{seed.chain_name}:{seed.market_name}",
             "comet": seed.comet,
-            "comet_name": str(comet_name),
-            "comet_symbol": str(comet_symbol),
+            "comet_name": comet_name,
+            "comet_symbol": comet_symbol,
             "rewards": seed.rewards,
             "bulker": seed.bulker,
             "configurator": seed.configurator,
             "base_token": base_meta.address,
             "base_token_symbol": base_meta.symbol,
             "base_token_name": base_meta.name,
-            "base_token_decimals": int(base_meta.decimals),
-            "base_token_price_feed": str(base_token_price_feed),
-            "base_token_price": int(base_price_raw)
-            if base_price_raw is not None
-            else None,
+            "base_token_decimals": base_meta.decimals,
+            "base_token_price_feed": base_token_price_feed,
+            "base_token_price": base_price_raw,
             "base_token_price_usd": _price_to_float(base_price_raw),
-            "base_scale": int(base_scale),
-            "num_assets": int(num_assets),
+            "base_scale": base_scale,
+            "num_assets": num_assets,
             "collateral_assets": collateral_assets,
-            "total_supply": int(total_supply),
-            "total_borrow": int(total_borrow),
-            "totals_basic": dict(totals_basic),
-            "pause_state": _pause_flags_to_dict(int(totals_basic["pause_flags"])),
-            "utilization": int(utilization),
-            "base_supply_rate": int(supply_rate),
-            "base_borrow_rate": int(borrow_rate),
-            "base_supply_apr": float(base_supply_apr),
-            "base_borrow_apr": float(base_borrow_apr),
-            "base_supply_apy": float(apr_to_apy(base_supply_apr)),
-            "base_borrow_apy": float(apr_to_apy(base_borrow_apr)),
-            "base_borrow_min": int(base_borrow_min),
-            "base_min_for_rewards": int(base_min_for_rewards),
-            "base_tracking_supply_speed": int(base_tracking_supply_speed),
-            "base_tracking_borrow_speed": int(base_tracking_borrow_speed),
-            "target_reserves": int(target_reserves),
+            "total_supply": total_supply,
+            "total_borrow": total_borrow,
+            "totals_basic": totals_basic,
+            "pause_state": _pause_flags_to_dict(totals_basic["pause_flags"]),
+            "utilization": utilization,
+            "base_supply_rate": supply_rate,
+            "base_borrow_rate": borrow_rate,
+            "base_supply_apr": base_supply_apr,
+            "base_borrow_apr": base_borrow_apr,
+            "base_supply_apy": apr_to_apy(base_supply_apr),
+            "base_borrow_apy": apr_to_apy(base_borrow_apr),
+            "base_borrow_min": base_borrow_min,
+            "base_min_for_rewards": base_min_for_rewards,
+            "base_tracking_supply_speed": base_tracking_supply_speed,
+            "base_tracking_borrow_speed": base_tracking_borrow_speed,
+            "target_reserves": target_reserves,
             "reward_token": reward_meta.address if reward_meta else None,
             "reward_token_symbol": reward_meta.symbol if reward_meta else None,
             "reward_token_name": reward_meta.name if reward_meta else None,
@@ -671,10 +659,10 @@ class CompoundAdapter(BaseAdapter):
         include_prices: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            seed = self._find_market_seed(chain_id=int(chain_id), comet=comet)
+            seed = self._find_market_seed(chain_id=chain_id, comet=comet)
             market = await self._load_market_snapshot(
                 seed=seed,
-                include_prices=bool(include_prices),
+                include_prices=include_prices,
             )
             return True, market
         except Exception as exc:
@@ -688,14 +676,14 @@ class CompoundAdapter(BaseAdapter):
         concurrency: int = 4,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         seeds = self._list_market_seeds(chain_id)
-        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+        semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def _load(seed: CompoundMarketSeed) -> tuple[bool, dict[str, Any] | str]:
             async with semaphore:
                 try:
                     market = await self._load_market_snapshot(
                         seed=seed,
-                        include_prices=bool(include_prices),
+                        include_prices=include_prices,
                     )
                     return True, market
                 except Exception as exc:
@@ -714,9 +702,9 @@ class CompoundAdapter(BaseAdapter):
 
         markets.sort(
             key=lambda market: (
-                int(market["chain_id"]),
-                str(market["market_name"]),
-                str(market["comet"]).lower(),
+                market["chain_id"],
+                market["market_name"],
+                market["comet"].lower(),
             )
         )
         return True, markets
@@ -733,15 +721,15 @@ class CompoundAdapter(BaseAdapter):
         checksum_account = to_checksum_address(account)
         try:
             ok, market_or_error = await self.get_market(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=comet,
-                include_prices=bool(include_prices),
+                include_prices=include_prices,
             )
             if not ok or not isinstance(market_or_error, dict):
                 return False, str(market_or_error)
-            market = dict(market_or_error)
+            market = market_or_error
 
-            async with web3_from_chain_id(int(chain_id)) as web3:
+            async with web3_from_chain_id(chain_id) as web3:
                 comet_contract = web3.eth.contract(
                     address=to_checksum_address(comet),
                     abi=COMET_ABI,
@@ -787,7 +775,7 @@ class CompoundAdapter(BaseAdapter):
                     Call(
                         comet_contract,
                         "collateralBalanceOf",
-                        args=(checksum_account, str(asset["asset"])),
+                        args=(checksum_account, asset["asset"]),
                         postprocess=int,
                     )
                     for asset in market.get("collateral_assets") or []
@@ -795,23 +783,23 @@ class CompoundAdapter(BaseAdapter):
 
                 rows = await read_only_calls_multicall_or_gather(
                     web3=web3,
-                    chain_id=int(chain_id),
+                    chain_id=chain_id,
                     calls=read_calls,
                     block_identifier="pending",
                 )
 
-            supplied_base = int(rows[0])
-            borrowed_base = int(rows[1])
-            base_tracking_accrued = int(rows[2])
-            is_borrow_collateralized = bool(rows[3])
-            is_liquidatable = bool(rows[4])
-            user_basic = dict(rows[5])
-            collateral_balances = [int(value) for value in rows[6:]]
+            supplied_base = rows[0]
+            borrowed_base = rows[1]
+            base_tracking_accrued = rows[2]
+            is_borrow_collateralized = rows[3]
+            is_liquidatable = rows[4]
+            user_basic = rows[5]
+            collateral_balances = rows[6:]
 
             reward_read = await self._get_reward_owed(
-                chain_id=int(chain_id),
-                rewards_contract=str(market["rewards"]),
-                comet=str(market["comet"]),
+                chain_id=chain_id,
+                rewards_contract=market["rewards"],
+                comet=market["comet"],
                 account=checksum_account,
                 configured_reward_token=market.get("reward_token"),
             )
@@ -823,71 +811,70 @@ class CompoundAdapter(BaseAdapter):
                 collateral_balances,
                 strict=True,
             ):
-                if not include_zero_collateral and int(balance) == 0:
+                if not include_zero_collateral and balance == 0:
                     continue
                 price_raw = asset.get("price")
-                asset_decimals = int(asset.get("decimals") or 0)
-                balance_decimal = _amount_to_decimal(int(balance), asset_decimals)
-                price_usd = (
-                    _price_to_float(int(price_raw)) if price_raw is not None else None
-                )
+                asset_decimals = asset.get("decimals") or 0
+                balance_decimal = _amount_to_decimal(balance, asset_decimals)
+                price_usd = _price_to_float(price_raw) if price_raw is not None else None
                 usd_value = (
                     balance_decimal * price_usd if price_usd is not None else None
                 )
                 collateral_positions.append(
                     {
-                        "asset": str(asset["asset"]),
-                        "symbol": str(asset.get("symbol") or ""),
-                        "name": str(asset.get("name") or ""),
+                        "asset": asset["asset"],
+                        "symbol": asset.get("symbol") or "",
+                        "name": asset.get("name") or "",
                         "decimals": asset_decimals,
-                        "balance": int(balance),
+                        "balance": balance,
                         "balance_decimal": balance_decimal,
-                        "price_feed": str(asset.get("price_feed") or ""),
+                        "price_feed": asset.get("price_feed") or "",
                         "price": price_raw,
                         "price_usd": price_usd,
                         "usd_value": usd_value,
-                        "scale": int(asset.get("scale") or 0),
-                        "borrow_collateral_factor_raw": int(
-                            asset.get("borrow_collateral_factor_raw") or 0
-                        ),
-                        "borrow_collateral_factor": float(
-                            asset.get("borrow_collateral_factor") or 0.0
-                        ),
-                        "liquidate_collateral_factor_raw": int(
-                            asset.get("liquidate_collateral_factor_raw") or 0
-                        ),
-                        "liquidate_collateral_factor": float(
-                            asset.get("liquidate_collateral_factor") or 0.0
-                        ),
-                        "liquidation_factor_raw": int(
-                            asset.get("liquidation_factor_raw") or 0
-                        ),
-                        "liquidation_factor": float(
-                            asset.get("liquidation_factor") or 0.0
-                        ),
-                        "supply_cap": int(asset.get("supply_cap") or 0),
-                        "total_supply_asset": int(asset.get("total_supply_asset") or 0),
+                        "scale": asset.get("scale") or 0,
+                        "borrow_collateral_factor_raw": asset.get(
+                            "borrow_collateral_factor_raw"
+                        )
+                        or 0,
+                        "borrow_collateral_factor": asset.get(
+                            "borrow_collateral_factor"
+                        )
+                        or 0.0,
+                        "liquidate_collateral_factor_raw": asset.get(
+                            "liquidate_collateral_factor_raw"
+                        )
+                        or 0,
+                        "liquidate_collateral_factor": asset.get(
+                            "liquidate_collateral_factor"
+                        )
+                        or 0.0,
+                        "liquidation_factor_raw": asset.get("liquidation_factor_raw")
+                        or 0,
+                        "liquidation_factor": asset.get("liquidation_factor") or 0.0,
+                        "supply_cap": asset.get("supply_cap") or 0,
+                        "total_supply_asset": asset.get("total_supply_asset") or 0,
                     }
                 )
 
-            base_decimals = int(market.get("base_token_decimals") or 0)
-            reward_owed = int(reward_read["reward_owed"])
+            base_decimals = market.get("base_token_decimals") or 0
+            reward_owed = reward_read["reward_owed"]
             return (
                 True,
                 {
                     "protocol": "compound",
-                    "chain_id": int(chain_id),
-                    "chain_name": str(market["chain_name"]),
-                    "market_name": str(market["market_name"]),
-                    "market_key": str(market["market_key"]),
+                    "chain_id": chain_id,
+                    "chain_name": market["chain_name"],
+                    "market_name": market["market_name"],
+                    "market_key": market["market_key"],
                     "account": checksum_account,
-                    "comet": str(market["comet"]),
-                    "base_token": str(market["base_token"]),
-                    "base_token_symbol": str(market.get("base_token_symbol") or ""),
+                    "comet": market["comet"],
+                    "base_token": market["base_token"],
+                    "base_token_symbol": market.get("base_token_symbol") or "",
                     "base_token_decimals": base_decimals,
                     "supplied_base": supplied_base,
                     "borrowed_base": borrowed_base,
-                    "net_base": int(supplied_base - borrowed_base),
+                    "net_base": supplied_base - borrowed_base,
                     "supplied_base_decimal": _amount_to_decimal(
                         supplied_base, base_decimals
                     ),
@@ -907,7 +894,7 @@ class CompoundAdapter(BaseAdapter):
                     "reward_token_decimals": reward_decimals,
                     "reward_owed": reward_owed,
                     "reward_owed_decimal": (
-                        _amount_to_decimal(reward_owed, int(reward_decimals))
+                        _amount_to_decimal(reward_owed, reward_decimals)
                         if reward_decimals is not None
                         else None
                     ),
@@ -934,7 +921,7 @@ class CompoundAdapter(BaseAdapter):
 
         checksum_account = to_checksum_address(resolved_account)
         seeds = self._list_market_seeds(chain_id)
-        semaphore = asyncio.Semaphore(max(1, int(concurrency)))
+        semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def _load(seed: CompoundMarketSeed) -> tuple[bool, dict[str, Any] | str]:
             async with semaphore:
@@ -942,8 +929,8 @@ class CompoundAdapter(BaseAdapter):
                     chain_id=seed.chain_id,
                     comet=seed.comet,
                     account=checksum_account,
-                    include_prices=bool(include_prices),
-                    include_zero_collateral=bool(include_zero_collateral),
+                    include_prices=include_prices,
+                    include_zero_collateral=include_zero_collateral,
                 )
 
         results = await asyncio.gather(*[_load(seed) for seed in seeds])
@@ -952,12 +939,12 @@ class CompoundAdapter(BaseAdapter):
         for ok, payload in results:
             if ok and isinstance(payload, dict):
                 has_collateral = any(
-                    int(item.get("balance") or 0) > 0
-                    for item in payload.get("collateral_positions") or []
+                    (item.get("balance") or 0) > 0
+                    for item in payload.get("collateral_positions", [])
                 )
                 has_base = (
-                    int(payload.get("supplied_base") or 0) > 0
-                    or int(payload.get("borrowed_base") or 0) > 0
+                    (payload.get("supplied_base") or 0) > 0
+                    or (payload.get("borrowed_base") or 0) > 0
                 )
                 if include_zero_positions or has_collateral or has_base:
                     positions.append(payload)
@@ -969,9 +956,9 @@ class CompoundAdapter(BaseAdapter):
 
         positions.sort(
             key=lambda position: (
-                int(position["chain_id"]),
-                str(position["market_name"]),
-                str(position["comet"]).lower(),
+                position["chain_id"],
+                position["market_name"],
+                position["comet"].lower(),
             )
         )
         return (
@@ -979,7 +966,7 @@ class CompoundAdapter(BaseAdapter):
             {
                 "protocol": "compound",
                 "account": checksum_account,
-                "chain_id": int(chain_id) if chain_id is not None else None,
+                "chain_id": chain_id,
                 "position_count": len(positions),
                 "positions": positions,
                 "errors": errors,
@@ -997,13 +984,15 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        if int(amount) <= 0:
+        amount = int(amount)
+        chain_id = int(chain_id)
+        if amount <= 0:
             return False, "amount must be positive"
 
         try:
             checksum_comet = to_checksum_address(comet)
             checksum_base = await self._resolve_base_token(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 base_token=base_token,
             )
@@ -1012,8 +1001,8 @@ class CompoundAdapter(BaseAdapter):
                 token_address=checksum_base,
                 owner=self.wallet_address,
                 spender=checksum_comet,
-                amount=int(amount),
-                chain_id=int(chain_id),
+                amount=amount,
+                chain_id=chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1024,9 +1013,9 @@ class CompoundAdapter(BaseAdapter):
                 target=checksum_comet,
                 abi=COMET_ABI,
                 fn_name="supply",
-                args=[checksum_base, int(amount)],
+                args=[checksum_base, amount],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
@@ -1045,24 +1034,26 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        if int(amount) <= 0 and not withdraw_full:
+        amount = int(amount)
+        chain_id = int(chain_id)
+        if amount <= 0 and not withdraw_full:
             return False, "amount must be positive unless withdraw_full=True"
 
         try:
             checksum_comet = to_checksum_address(comet)
             checksum_base = await self._resolve_base_token(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 base_token=base_token,
             )
-            withdraw_amount = int(MAX_UINT256 if withdraw_full else amount)
+            withdraw_amount = MAX_UINT256 if withdraw_full else amount
             tx = await encode_call(
                 target=checksum_comet,
                 abi=COMET_ABI,
                 fn_name="withdraw",
                 args=[checksum_base, withdraw_amount],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
@@ -1080,27 +1071,29 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        if int(amount) <= 0:
+        amount = int(amount)
+        chain_id = int(chain_id)
+        if amount <= 0:
             return False, "amount must be positive"
 
         try:
             checksum_comet = to_checksum_address(comet)
             checksum_base = await self._resolve_base_token(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 base_token=base_token,
             )
 
             ok, market_or_error = await self.get_market(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 include_prices=False,
             )
             if not ok or not isinstance(market_or_error, dict):
                 return False, str(market_or_error)
-            market = dict(market_or_error)
-            base_borrow_min = int(market.get("base_borrow_min") or 0)
-            if base_borrow_min > 0 and int(amount) < base_borrow_min:
+            market = market_or_error
+            base_borrow_min = market.get("base_borrow_min") or 0
+            if base_borrow_min > 0 and amount < base_borrow_min:
                 return (
                     False,
                     f"amount must be >= baseBorrowMin ({base_borrow_min}) for comet={checksum_comet}",
@@ -1110,9 +1103,9 @@ class CompoundAdapter(BaseAdapter):
                 target=checksum_comet,
                 abi=COMET_ABI,
                 fn_name="withdraw",
-                args=[checksum_base, int(amount)],
+                args=[checksum_base, amount],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
@@ -1131,24 +1124,26 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        if int(amount) <= 0 and not repay_full:
+        amount = int(amount)
+        chain_id = int(chain_id)
+        if amount <= 0 and not repay_full:
             return False, "amount must be positive unless repay_full=True"
 
         try:
             checksum_comet = to_checksum_address(comet)
             checksum_base = await self._resolve_base_token(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 base_token=base_token,
             )
-            supply_amount = int(MAX_UINT256 if repay_full else amount)
-            allowance_amount = int(MAX_UINT256 if repay_full else amount)
+            supply_amount = MAX_UINT256 if repay_full else amount
+            allowance_amount = MAX_UINT256 if repay_full else amount
             approved = await ensure_allowance(
                 token_address=checksum_base,
                 owner=self.wallet_address,
                 spender=checksum_comet,
                 amount=allowance_amount,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1161,7 +1156,7 @@ class CompoundAdapter(BaseAdapter):
                 fn_name="supply",
                 args=[checksum_base, supply_amount],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
@@ -1179,24 +1174,26 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        if int(amount) <= 0:
+        amount = int(amount)
+        chain_id = int(chain_id)
+        if amount <= 0:
             return False, "amount must be positive"
 
         try:
             checksum_comet = to_checksum_address(comet)
             asset_info = await self._get_collateral_asset_info(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 asset=collateral_asset,
             )
-            checksum_asset = to_checksum_address(str(asset_info["asset"]))
+            checksum_asset = to_checksum_address(asset_info["asset"])
 
             approved = await ensure_allowance(
                 token_address=checksum_asset,
                 owner=self.wallet_address,
                 spender=checksum_comet,
-                amount=int(amount),
-                chain_id=int(chain_id),
+                amount=amount,
+                chain_id=chain_id,
                 signing_callback=self.sign_callback,
                 approval_amount=MAX_UINT256,
             )
@@ -1207,9 +1204,9 @@ class CompoundAdapter(BaseAdapter):
                 target=checksum_comet,
                 abi=COMET_ABI,
                 fn_name="supply",
-                args=[checksum_asset, int(amount)],
+                args=[checksum_asset, amount],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
@@ -1228,28 +1225,28 @@ class CompoundAdapter(BaseAdapter):
     ) -> tuple[bool, Any]:
         if not self.sign_callback:
             return False, "sign_callback is required"
-        if int(amount) <= 0 and not withdraw_full:
+        amount = int(amount)
+        chain_id = int(chain_id)
+        if amount <= 0 and not withdraw_full:
             return False, "amount must be positive unless withdraw_full=True"
 
         try:
             checksum_comet = to_checksum_address(comet)
             asset_info = await self._get_collateral_asset_info(
-                chain_id=int(chain_id),
+                chain_id=chain_id,
                 comet=checksum_comet,
                 asset=collateral_asset,
             )
-            checksum_asset = to_checksum_address(str(asset_info["asset"]))
-            withdraw_amount = int(amount)
+            checksum_asset = to_checksum_address(asset_info["asset"])
+            withdraw_amount = amount
 
             if withdraw_full:
-                async with web3_from_chain_id(int(chain_id)) as web3:
+                async with web3_from_chain_id(chain_id) as web3:
                     contract = web3.eth.contract(address=checksum_comet, abi=COMET_ABI)
-                    withdraw_amount = int(
-                        await contract.functions.collateralBalanceOf(
-                            self.wallet_address,
-                            checksum_asset,
-                        ).call(block_identifier="pending")
-                    )
+                    withdraw_amount = await contract.functions.collateralBalanceOf(
+                        self.wallet_address,
+                        checksum_asset,
+                    ).call(block_identifier="pending")
                 if withdraw_amount <= 0:
                     return False, "no collateral balance available to withdraw"
 
@@ -1257,9 +1254,9 @@ class CompoundAdapter(BaseAdapter):
                 target=checksum_comet,
                 abi=COMET_ABI,
                 fn_name="withdraw",
-                args=[checksum_asset, int(withdraw_amount)],
+                args=[checksum_asset, withdraw_amount],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
@@ -1279,13 +1276,14 @@ class CompoundAdapter(BaseAdapter):
             return False, "sign_callback is required"
 
         try:
-            seed = self._find_market_seed(chain_id=int(chain_id), comet=comet)
+            chain_id = int(chain_id)
+            seed = self._find_market_seed(chain_id=chain_id, comet=comet)
             checksum_comet = to_checksum_address(comet)
             checksum_rewards = to_checksum_address(rewards_contract or seed.rewards)
             reward_cfg = await self._reward_config(
                 rewards_contract=checksum_rewards,
                 comet=checksum_comet,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             if reward_cfg["token"] is None:
                 return False, f"rewards not configured for comet={checksum_comet}"
@@ -1294,9 +1292,9 @@ class CompoundAdapter(BaseAdapter):
                 target=checksum_rewards,
                 abi=COMET_REWARDS_ABI,
                 fn_name="claim",
-                args=[checksum_comet, self.wallet_address, bool(should_accrue)],
+                args=[checksum_comet, self.wallet_address, should_accrue],
                 from_address=self.wallet_address,
-                chain_id=int(chain_id),
+                chain_id=chain_id,
             )
             txn_hash = await send_transaction(tx, self.sign_callback)
             return True, txn_hash
