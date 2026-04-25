@@ -26,9 +26,10 @@ hyperliquid-felix = "*"
 aiocache = "^0.12.3"
 ccxt = "^4.0"
 click = "^8.1.7"
-py-clob-client-felix = ">=0.23.3"
 py-solc-x = "^2.0.0"
 matplotlib = "^3.10.8"
+py-clob-client-v2-signing-callback = "1.0.0"
+py-order-utils = "0.3.2"
 packaging = "^25.0"
 
 [tool.poetry.group.dev.dependencies]
