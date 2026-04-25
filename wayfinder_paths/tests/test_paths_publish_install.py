@@ -1119,24 +1119,12 @@ def test_path_activate_opencode_preserves_existing_provider_config(tmp_path: Pat
     )
 
     base_opencode_config = {
-        "$schema": "https://opencode.ai/config.json",
         "model": "wayfinder/kimi-k2.5",
-        "snapshot": False,
-        "share": "disabled",
-        "autoupdate": False,
         "instructions": ["BASE.md"],
         "provider": {
             "wayfinder": {
-                "npm": "@ai-sdk/openai-compatible",
                 "name": "Wayfinder",
-                "options": {
-                    "baseURL": "https://llm-dev.wayfinder.ai/v1",
-                    "apiKey": "{env:WAYFINDER_API_KEY}",
-                },
-                "models": {
-                    "kimi-k2.5": {"name": "Kimi K2.5"},
-                    "kimi-k2-thinking": {"name": "Kimi K2 Thinking"},
-                },
+                "models": {"kimi-k2.5": {"name": "Kimi K2.5"}},
             }
         },
     }
