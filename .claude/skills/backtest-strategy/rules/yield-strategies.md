@@ -6,7 +6,8 @@ The engine is agnostic — Sharpe/drawdown math applies the same way.
 ## Core primitive
 
 ```python
-from wayfinder_paths.core.backtesting import build_yield_index, fetch_lending_rates
+from wayfinder_paths.core.backtesting.data import fetch_lending_rates
+from wayfinder_paths.core.backtesting.yield_strategies import build_yield_index
 
 # Discover venue names first (keys include chain suffix: "moonwell-base", "aave-v3-base")
 rates = await fetch_lending_rates("USDC", start, end)  # no venues filter

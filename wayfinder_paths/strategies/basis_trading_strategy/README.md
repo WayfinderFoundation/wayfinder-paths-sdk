@@ -144,9 +144,9 @@ Two modelling choices keep this approximation realistic:
 
 ```python
 import pandas as pd
-from wayfinder_paths.core.backtesting import (
-    fetch_prices, fetch_funding_rates, run_backtest, BacktestConfig,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.data import fetch_funding_rates, fetch_prices
+from wayfinder_paths.core.backtesting.types import BacktestConfig
 from wayfinder_paths.core.backtesting.data import convert_to_spot
 
 # --- Parameters from strategy source ---
