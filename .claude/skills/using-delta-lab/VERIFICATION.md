@@ -33,7 +33,7 @@ This document verifies that Claude can clearly understand WHAT, WHEN, and HOW to
 
 **SKILL.md provides instant TL;DR:**
 ```python
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 
 # Find all yield opportunities
 await DELTA_LAB_CLIENT.get_basis_apy_sources(basis_symbol="BTC", lookback_days=7)

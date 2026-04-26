@@ -115,9 +115,10 @@ The live strategy selects pools using **DeFi Llama data via the POOL adapter** â
 
 ```python
 import pandas as pd
-from wayfinder_paths.core.backtesting import (
-    build_yield_index, fetch_lending_rates, run_backtest, BacktestConfig,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.data import fetch_lending_rates
+from wayfinder_paths.core.backtesting.types import BacktestConfig
+from wayfinder_paths.core.backtesting.yield_strategies import build_yield_index
 
 # --- Parameters from strategy source ---
 ROTATION_COOLDOWN_HOURS = 14 * 24   # ROTATION_MIN_INTERVAL

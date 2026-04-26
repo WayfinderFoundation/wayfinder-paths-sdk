@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from wayfinder_paths.core.backtesting import quick_backtest
+from wayfinder_paths.core.backtesting.helpers import quick_backtest
 
 
 def simple_momentum(prices: pd.DataFrame, ctx: dict) -> pd.DataFrame:

@@ -31,7 +31,7 @@ All helpers are in `wayfinder_paths.core.backtesting`.
 
 ### Momentum
 ```python
-from wayfinder_paths.core.backtesting import quick_backtest
+from wayfinder_paths.core.backtesting.helpers import quick_backtest
 
 def momentum(prices, ctx):
     returns = prices.pct_change(24)
@@ -44,7 +44,7 @@ result = await quick_backtest(momentum, ["BTC", "ETH"], "2025-08-01", "2026-01-0
 
 ### Delta-neutral
 ```python
-from wayfinder_paths.core.backtesting import backtest_delta_neutral
+from wayfinder_paths.core.backtesting.helpers import backtest_delta_neutral
 
 result = await backtest_delta_neutral(
     ["BTC", "ETH"], "2025-08-01", "2026-01-01",

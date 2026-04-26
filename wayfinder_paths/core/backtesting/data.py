@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
 
 

@@ -17,7 +17,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import (
     MIN_NOTIONAL_USD,
     PairedFiller,
 )
-from wayfinder_paths.core.strategies import StatusTuple
+from wayfinder_paths.core.strategies.Strategy import StatusTuple
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
 from .constants import (

@@ -122,8 +122,8 @@ import asyncio
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
-from wayfinder_paths.core.backtesting import fetch_lending_rates
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
+from wayfinder_paths.core.backtesting.data import fetch_lending_rates
 
 LEVERAGE = 2.5          # mid-range estimate; live leverage is HF-controlled (~2-3x)
 START = "2025-08-13"    # oldest safe Delta Lab date; update as needed

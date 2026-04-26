@@ -10,7 +10,7 @@ metadata:
 **Delta Lab = Multi-protocol APY discovery tool**
 
 ```python
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 
 # Find all yield opportunities for an asset
 await DELTA_LAB_CLIENT.get_basis_apy_sources(basis_symbol="BTC", lookback_days=7)
