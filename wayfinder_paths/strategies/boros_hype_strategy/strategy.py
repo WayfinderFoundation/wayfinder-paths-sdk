@@ -18,19 +18,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.strategies import (
-    OPAConfig,
-    OPALoopMixin,
-    StatusDict,
-    StatusTuple,
-    Strategy,
-)
-from wayfinder_paths.core.strategies import (
-    Plan as OPAPlan,
-)
-from wayfinder_paths.core.strategies import (
-    PlanStep as OPAPlanStep,
-)
 from wayfinder_paths.core.strategies.descriptors import (
     Complexity,
     Directionality,
@@ -38,6 +25,21 @@ from wayfinder_paths.core.strategies.descriptors import (
     StratDescriptor,
     TokenExposure,
     Volatility,
+)
+from wayfinder_paths.core.strategies.opa_loop import (
+    OPAConfig,
+    OPALoopMixin,
+)
+from wayfinder_paths.core.strategies.opa_loop import (
+    Plan as OPAPlan,
+)
+from wayfinder_paths.core.strategies.opa_loop import (
+    PlanStep as OPAPlanStep,
+)
+from wayfinder_paths.core.strategies.Strategy import (
+    StatusDict,
+    StatusTuple,
+    Strategy,
 )
 
 from .boros_ops_mixin import BorosHypeBorosOpsMixin

@@ -47,7 +47,7 @@ ReadMcpResourceTool(server="wayfinder", uri="wayfinder://alpha-lab/types")
 Use the Python client when you need custom sort, min_score, or pagination:
 
 ```python
-from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
+from wayfinder_paths.core.clients.AlphaLabClient import ALPHA_LAB_CLIENT
 
 # Top 20 insights
 data = await ALPHA_LAB_CLIENT.search(limit=20)

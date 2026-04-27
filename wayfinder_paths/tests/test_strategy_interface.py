@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from wayfinder_paths.core.strategies import Strategy
+from wayfinder_paths.core.strategies.Strategy import Strategy
 
 
 def get_all_strategy_classes():
