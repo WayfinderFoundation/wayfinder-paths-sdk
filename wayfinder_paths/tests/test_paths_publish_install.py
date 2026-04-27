@@ -1108,6 +1108,58 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     ]
 
 
+def test_path_activate_opencode_preserves_existing_provider_config(tmp_path: Path):
+    path_dir = tmp_path / "provider-demo"
+    init_path(
+        path_dir=path_dir,
+        slug="provider-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+
+    base_opencode_config = {
+        "model": "wayfinder/kimi-k2.5",
+        "instructions": ["BASE.md"],
+        "provider": {
+            "wayfinder": {
+                "name": "Wayfinder",
+                "models": {"kimi-k2.5": {"name": "Kimi K2.5"}},
+            }
+        },
+    }
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        Path("opencode.json").write_text(
+            json.dumps(base_opencode_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            path_cli,
+            [
+                "activate",
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--path",
+                str(path_dir),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        opencode_config = json.loads(Path("opencode.json").read_text(encoding="utf-8"))
+
+    assert opencode_config["model"] == "wayfinder/kimi-k2.5"
+    assert opencode_config["provider"] == base_opencode_config["provider"]
+    assert opencode_config["instructions"] == ["BASE.md", "AGENTS.md"]
+    assert "provider-demo-orchestrator" in opencode_config["agent"]
+
+
 def test_path_install_claude_activates_and_installs_required_dependencies(
     tmp_path: Path, monkeypatch
 ):
