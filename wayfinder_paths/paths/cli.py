@@ -1491,6 +1491,12 @@ def export_skill_cmd(path_dir: str, host: str) -> None:
     "--export-path", default=None, help="Existing rendered skill export directory."
 )
 @click.option("--model", default=None, help="Optional host model override.")
+@click.option(
+    "--include-dependencies/--no-include-dependencies",
+    default=False,
+    help="Install and activate required dependency skills before activating this path.",
+)
+@click.option("--api-url", "api_url", default=None, help="Override Paths API base URL.")
 def activate_cmd(
     host: str,
     scope: str,
@@ -1500,6 +1506,8 @@ def activate_cmd(
     path_dir: str | None,
     export_path: str | None,
     model: str | None,
+    include_dependencies: bool,
+    api_url: str | None,
 ) -> None:
     if slug and (path_dir or export_path):
         raise click.ClickException("--slug cannot be used with --path or --export-path")
@@ -1531,6 +1539,20 @@ def activate_cmd(
     rendered_export_path = (
         Path(export_path).expanduser().resolve() if export_path else None
     )
+    dependency_results: list[dict[str, Any]] = []
+    if include_dependencies and source_path is not None:
+        dependency_results = _install_required_dependencies_for_path(
+            path_dir=source_path,
+            host=host,
+            scope=scope,
+            install_dir=install_dir,
+            force=False,
+            no_verify=False,
+            api_url=api_url,
+            model=model,
+            activate=True,
+            visited={slug} if slug else set(),
+        )
     result = _activate_export(
         host=host,
         scope=scope,
@@ -1538,6 +1560,8 @@ def activate_cmd(
         export_path=rendered_export_path,
         model=model,
     )
+    if dependency_results:
+        result["dependencies"] = dependency_results
 
     activation_recorded = False
     if source_path is not None:
@@ -1564,6 +1588,8 @@ def activate_cmd(
                 dest=Path(str(result["dest"])),
                 applied=[str(item) for item in result["applied"]],
                 model=model,
+                include_dependencies=include_dependencies,
+                dependencies=dependency_results,
             )
             activation_recorded = True
 
