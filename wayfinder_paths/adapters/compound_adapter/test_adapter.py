@@ -10,10 +10,7 @@ import pytest
 from wayfinder_paths.adapters.compound_adapter.adapter import (
     CompoundAdapter,
     _parse_asset_info,
-    _parse_reward_config,
-    _parse_reward_owed,
     _parse_totals_basic,
-    _parse_user_basic,
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.compound_abi import COMET_ABI, COMET_REWARDS_ABI
@@ -307,9 +304,17 @@ async def test_live_compound_struct_reads_normalize_across_direct_and_multicall(
     assert _parse_totals_basic(direct_rows["totals_basic"]) == _parse_totals_basic(
         multicall_rows[0]
     )
-    assert _parse_user_basic(direct_rows["user_basic"]) == _parse_user_basic(
-        multicall_rows[1]
-    )
+    assert {
+        "principal": int(direct_rows["user_basic"][0] or 0),
+        "base_tracking_index": int(direct_rows["user_basic"][1] or 0),
+        "base_tracking_accrued": int(direct_rows["user_basic"][2] or 0),
+        "assets_in": int(direct_rows["user_basic"][3] or 0),
+    } == {
+        "principal": int(multicall_rows[1][0] or 0),
+        "base_tracking_index": int(multicall_rows[1][1] or 0),
+        "base_tracking_accrued": int(multicall_rows[1][2] or 0),
+        "assets_in": int(multicall_rows[1][3] or 0),
+    }
     assert _parse_asset_info(direct_rows["asset_info"]) == _parse_asset_info(
         multicall_rows[2]
     )
@@ -317,9 +322,25 @@ async def test_live_compound_struct_reads_normalize_across_direct_and_multicall(
         direct_rows["asset_info_by_address"]
     ) == _parse_asset_info(multicall_rows[3])
     assert int(direct_rows["totals_collateral"][0]) == int(multicall_rows[4][0])
-    assert _parse_reward_config(direct_rows["reward_config"]) == _parse_reward_config(
-        multicall_rows[5]
-    )
-    assert _parse_reward_owed(direct_rows["reward_owed"]) == _parse_reward_owed(
-        multicall_rows[6]
+    direct_reward_token = direct_rows["reward_config"][0]
+    multicall_reward_token = multicall_rows[5][0]
+    assert {
+        "token": direct_reward_token.lower() if direct_reward_token else None,
+        "rescale_factor": int(direct_rows["reward_config"][1] or 0),
+        "should_upscale": bool(direct_rows["reward_config"][2] or False),
+        "multiplier": int(direct_rows["reward_config"][3] or 0),
+    } == {
+        "token": multicall_reward_token.lower() if multicall_reward_token else None,
+        "rescale_factor": int(multicall_rows[5][1] or 0),
+        "should_upscale": bool(multicall_rows[5][2] or False),
+        "multiplier": int(multicall_rows[5][3] or 0),
+    }
+    direct_owed_token = direct_rows["reward_owed"][0]
+    multicall_owed_token = multicall_rows[6][0]
+    assert (
+        direct_owed_token.lower() if direct_owed_token else None,
+        int(direct_rows["reward_owed"][1] or 0),
+    ) == (
+        multicall_owed_token.lower() if multicall_owed_token else None,
+        int(multicall_rows[6][1] or 0),
     )

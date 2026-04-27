@@ -69,34 +69,6 @@ def _parse_totals_basic(value: Sequence[Any]) -> dict[str, int]:
     }
 
 
-def _parse_user_basic(value: Sequence[Any]) -> dict[str, int]:
-    return {
-        "principal": int(value[0] or 0),
-        "base_tracking_index": int(value[1] or 0),
-        "base_tracking_accrued": int(value[2] or 0),
-        "assets_in": int(value[3] or 0),
-    }
-
-
-def _parse_reward_owed(value: Sequence[Any]) -> tuple[str | None, int]:
-    token = value[0]
-    if not token or token == ZERO_ADDRESS:
-        return None, int(value[1] or 0)
-    return to_checksum_address(token), int(value[1] or 0)
-
-
-def _parse_reward_config(value: Sequence[Any]) -> dict[str, Any]:
-    token = value[0]
-    return {
-        "token": (
-            None if not token or token == ZERO_ADDRESS else to_checksum_address(token)
-        ),
-        "rescale_factor": int(value[1] or 0),
-        "should_upscale": bool(value[2] or False),
-        "multiplier": int(value[3] or 0),
-    }
-
-
 def _parse_total_collateral(value: Sequence[Any]) -> int:
     return int(value[0] or 0)
 
@@ -320,7 +292,17 @@ class CompoundAdapter(BaseAdapter):
                 "should_upscale": False,
                 "multiplier": 0,
             }
-        return _parse_reward_config(raw)
+        token = raw[0]
+        return {
+            "token": (
+                None
+                if not token or token == ZERO_ADDRESS
+                else to_checksum_address(token)
+            ),
+            "rescale_factor": int(raw[1] or 0),
+            "should_upscale": bool(raw[2] or False),
+            "multiplier": int(raw[3] or 0),
+        }
 
     async def _get_reward_owed(
         self,
@@ -353,7 +335,12 @@ class CompoundAdapter(BaseAdapter):
                 "reward_error": str(exc),
             }
 
-        reward_token, reward_owed = _parse_reward_owed(raw_owed)
+        reward_token = raw_owed[0]
+        reward_owed = int(raw_owed[1] or 0)
+        if not reward_token or reward_token == ZERO_ADDRESS:
+            reward_token = None
+        else:
+            reward_token = to_checksum_address(reward_token)
         return {
             "reward_token": reward_token or configured_reward_token,
             "reward_owed": reward_owed,
@@ -805,7 +792,6 @@ class CompoundAdapter(BaseAdapter):
                         comet_contract,
                         "userBasic",
                         args=(checksum_account,),
-                        postprocess=lambda row: _parse_user_basic(tuple(row)),
                     ),
                 ] + [
                     Call(
@@ -838,7 +824,13 @@ class CompoundAdapter(BaseAdapter):
             base_tracking_accrued = rows[2]
             is_borrow_collateralized = rows[3]
             is_liquidatable = rows[4]
-            user_basic = rows[5]
+            user_basic_row = tuple(rows[5])
+            user_basic = {
+                "principal": int(user_basic_row[0] or 0),
+                "base_tracking_index": int(user_basic_row[1] or 0),
+                "base_tracking_accrued": int(user_basic_row[2] or 0),
+                "assets_in": int(user_basic_row[3] or 0),
+            }
             collateral_balances = rows[6:]
 
             reward_decimals = market.get("reward_token_decimals")
