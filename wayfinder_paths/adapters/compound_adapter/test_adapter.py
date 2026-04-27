@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from wayfinder_paths.adapters.compound_adapter.adapter import CompoundAdapter
+from wayfinder_paths.adapters.compound_adapter.adapter import (
+    CompoundAdapter,
+    _parse_asset_info,
+    _parse_reward_config,
+    _parse_reward_owed,
+    _parse_totals_basic,
+    _parse_user_basic,
+)
 from wayfinder_paths.core.constants.base import MAX_UINT256
+from wayfinder_paths.core.constants.compound_abi import COMET_ABI, COMET_REWARDS_ABI
 from wayfinder_paths.core.constants.compound_contracts import COMPOUND_COMET_BY_CHAIN
+from wayfinder_paths.core.utils.multicall import (
+    Call,
+    read_only_calls_multicall_or_gather,
+)
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
 class TestCompoundAdapter:
@@ -183,3 +198,128 @@ class TestCompoundAdapter:
         assert ok is True
         assert tx == "0xabc"
         assert mock_encode.call_args.kwargs["args"][1] == MAX_UINT256
+
+
+async def _web3_or_skip(chain_id: int) -> tuple[Any, Any]:
+    ctx = web3_from_chain_id(chain_id)
+    try:
+        web3 = await ctx.__aenter__()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"RPC unreachable for chain {chain_id}: {exc}")
+    try:
+        await web3.eth.get_block_number()
+    except Exception as exc:  # noqa: BLE001
+        await ctx.__aexit__(None, None, None)
+        pytest.skip(f"RPC unreachable for chain {chain_id}: {exc}")
+    return ctx, web3
+
+
+@pytest.mark.asyncio
+@pytest.mark.local
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="Live Compound shape test - local only",
+)
+async def test_live_compound_struct_reads_normalize_across_direct_and_multicall() -> None:
+    chain_id = 8453
+    market = COMPOUND_COMET_BY_CHAIN[chain_id]["markets"]["usdc"]
+    comet_address = market["comet"]
+    rewards_address = COMPOUND_COMET_BY_CHAIN[chain_id]["rewards"]
+    account = "0x0000000000000000000000000000000000000001"
+
+    ctx, web3 = await _web3_or_skip(chain_id)
+    try:
+        comet = web3.eth.contract(address=comet_address, abi=COMET_ABI)
+        rewards = web3.eth.contract(address=rewards_address, abi=COMET_REWARDS_ABI)
+
+        direct_asset_info = await comet.functions.getAssetInfo(0).call(
+            block_identifier="latest"
+        )
+        asset_address = direct_asset_info[1]
+
+        direct_rows = {
+            "totals_basic": await comet.functions.totalsBasic().call(
+                block_identifier="latest"
+            ),
+            "user_basic": await comet.functions.userBasic(account).call(
+                block_identifier="latest"
+            ),
+            "asset_info": direct_asset_info,
+            "asset_info_by_address": await comet.functions.getAssetInfoByAddress(
+                asset_address
+            ).call(block_identifier="latest"),
+            "totals_collateral": await comet.functions.totalsCollateral(
+                asset_address
+            ).call(block_identifier="latest"),
+            "reward_config": await rewards.functions.rewardConfig(comet_address).call(
+                block_identifier="latest"
+            ),
+            "reward_owed": await rewards.functions.getRewardOwed(
+                comet_address,
+                account,
+            ).call(block_identifier="latest"),
+        }
+
+        multicall_rows = await read_only_calls_multicall_or_gather(
+            web3=web3,
+            chain_id=chain_id,
+            calls=[
+                Call(comet, "totalsBasic"),
+                Call(comet, "userBasic", args=(account,)),
+                Call(comet, "getAssetInfo", args=(0,)),
+                Call(comet, "getAssetInfoByAddress", args=(asset_address,)),
+                Call(comet, "totalsCollateral", args=(asset_address,)),
+                Call(rewards, "rewardConfig", args=(comet_address,)),
+                Call(rewards, "getRewardOwed", args=(comet_address, account)),
+            ],
+            block_identifier="latest",
+        )
+    finally:
+        await ctx.__aexit__(None, None, None)
+
+    raw_pairs = [
+        ("totals_basic", direct_rows["totals_basic"], multicall_rows[0]),
+        ("user_basic", direct_rows["user_basic"], multicall_rows[1]),
+        ("asset_info", direct_rows["asset_info"], multicall_rows[2]),
+        (
+            "asset_info_by_address",
+            direct_rows["asset_info_by_address"],
+            multicall_rows[3],
+        ),
+        ("totals_collateral", direct_rows["totals_collateral"], multicall_rows[4]),
+        ("reward_config", direct_rows["reward_config"], multicall_rows[5]),
+        ("reward_owed", direct_rows["reward_owed"], multicall_rows[6]),
+    ]
+
+    for _name, direct_value, multicall_value in raw_pairs:
+        assert isinstance(direct_value, (list, tuple))
+        assert isinstance(multicall_value, tuple)
+        assert len(direct_value) == len(multicall_value)
+
+    differences = [
+        name
+        for name, direct_value, multicall_value in raw_pairs
+        if type(direct_value) is not type(multicall_value)
+        or direct_value != multicall_value
+    ]
+    assert differences, "Expected at least one raw shape or value mismatch to justify normalization"
+
+    assert _parse_totals_basic(direct_rows["totals_basic"]) == _parse_totals_basic(
+        multicall_rows[0]
+    )
+    assert _parse_user_basic(direct_rows["user_basic"]) == _parse_user_basic(
+        multicall_rows[1]
+    )
+    assert _parse_asset_info(direct_rows["asset_info"]) == _parse_asset_info(
+        multicall_rows[2]
+    )
+    assert _parse_asset_info(
+        direct_rows["asset_info_by_address"]
+    ) == _parse_asset_info(multicall_rows[3])
+    assert int(direct_rows["totals_collateral"][0]) == int(multicall_rows[4][0])
+    assert _parse_reward_config(direct_rows["reward_config"]) == _parse_reward_config(
+        multicall_rows[5]
+    )
+    assert _parse_reward_owed(direct_rows["reward_owed"]) == _parse_reward_owed(
+        multicall_rows[6]
+    )
