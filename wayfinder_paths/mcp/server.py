@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ResourceError
 
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.mcp.resources.alpha_lab import get_alpha_types, search_alpha
 from wayfinder_paths.mcp.resources.contracts import (
     get_contract,
@@ -84,6 +86,7 @@ from wayfinder_paths.mcp.tools.run_script import run_script
 from wayfinder_paths.mcp.tools.runner import runner
 from wayfinder_paths.mcp.tools.strategies import run_strategy
 from wayfinder_paths.mcp.tools.wallets import wallets
+from wayfinder_paths.mcp.utils import err, ok
 from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
@@ -183,6 +186,36 @@ mcp.tool()(get_frontend_context)
 mcp.tool()(add_chart_projection)
 mcp.tool()(remove_chart_projection)
 mcp.tool()(clear_chart_projections)
+
+
+async def read_resource(uri: str) -> dict:
+    """Read an MCP resource by URI.
+
+    Use for reads exposed as resources, e.g. `wayfinder://wallets`,
+    `wayfinder://balances/main`, `wayfinder://strategies`,
+    `wayfinder://delta-lab/top-apy/7/20`.
+    """
+    try:
+        contents = await mcp.read_resource(uri)
+    except ValueError as exc:
+        return err("not_found", str(exc))
+    except ResourceError as exc:
+        return err("resource_read_failed", str(exc))
+
+    parts = [
+        {
+            "mime_type": c.mime_type,
+            "text": c.content
+            if isinstance(c.content, str)
+            else c.content.decode("utf-8", errors="replace"),
+        }
+        for c in contents
+    ]
+    return ok({"contents": parts})
+
+
+if is_opencode_instance():
+    mcp.tool()(read_resource)
 
 
 def main() -> None:
