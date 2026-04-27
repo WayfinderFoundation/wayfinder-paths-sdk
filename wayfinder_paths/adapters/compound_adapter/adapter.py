@@ -43,6 +43,7 @@ class TokenMetadata:
     name: str
     decimals: int
 
+
 def _parse_asset_info(value: Sequence[Any]) -> dict[str, Any]:
     return {
         "offset": int(value[0] or 0),
@@ -54,6 +55,7 @@ def _parse_asset_info(value: Sequence[Any]) -> dict[str, Any]:
         "liquidation_factor_raw": int(value[6] or 0),
         "supply_cap": int(value[7] or 0),
     }
+
 
 def _parse_total_collateral(value: Sequence[Any]) -> int:
     return int(value[0] or 0)
@@ -79,6 +81,7 @@ def _rate_to_apr(raw_rate: int) -> float:
     if raw_rate <= 0:
         return 0.0
     return (raw_rate / MANTISSA) * SECONDS_PER_YEAR
+
 
 class CompoundAdapter(BaseAdapter):
     adapter_type: str = "COMPOUND"

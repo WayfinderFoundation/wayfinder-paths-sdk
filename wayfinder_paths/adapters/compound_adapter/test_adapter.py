@@ -216,7 +216,9 @@ async def _web3_or_skip(chain_id: int) -> tuple[Any, Any]:
     os.environ.get("CI") == "true",
     reason="Live Compound shape test - local only",
 )
-async def test_live_compound_struct_reads_normalize_across_direct_and_multicall() -> None:
+async def test_live_compound_struct_reads_normalize_across_direct_and_multicall() -> (
+    None
+):
     chain_id = 8453
     market = COMPOUND_COMET_BY_CHAIN[chain_id]["markets"]["usdc"]
     comet_address = market["comet"]
@@ -298,7 +300,9 @@ async def test_live_compound_struct_reads_normalize_across_direct_and_multicall(
         if type(direct_value) is not type(multicall_value)
         or direct_value != multicall_value
     ]
-    assert differences, "Expected at least one raw shape or value mismatch to justify normalization"
+    assert differences, (
+        "Expected at least one raw shape or value mismatch to justify normalization"
+    )
 
     assert {
         "base_supply_index": int(direct_rows["totals_basic"][0] or 0),
@@ -333,9 +337,9 @@ async def test_live_compound_struct_reads_normalize_across_direct_and_multicall(
     assert _parse_asset_info(direct_rows["asset_info"]) == _parse_asset_info(
         multicall_rows[2]
     )
-    assert _parse_asset_info(
-        direct_rows["asset_info_by_address"]
-    ) == _parse_asset_info(multicall_rows[3])
+    assert _parse_asset_info(direct_rows["asset_info_by_address"]) == _parse_asset_info(
+        multicall_rows[3]
+    )
     assert int(direct_rows["totals_collateral"][0]) == int(multicall_rows[4][0])
     direct_reward_token = direct_rows["reward_config"][0]
     multicall_reward_token = multicall_rows[5][0]
