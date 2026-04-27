@@ -10,7 +10,6 @@ import pytest
 from wayfinder_paths.adapters.compound_adapter.adapter import (
     CompoundAdapter,
     _parse_asset_info,
-    _parse_totals_basic,
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.compound_abi import COMET_ABI, COMET_REWARDS_ABI
@@ -301,9 +300,25 @@ async def test_live_compound_struct_reads_normalize_across_direct_and_multicall(
     ]
     assert differences, "Expected at least one raw shape or value mismatch to justify normalization"
 
-    assert _parse_totals_basic(direct_rows["totals_basic"]) == _parse_totals_basic(
-        multicall_rows[0]
-    )
+    assert {
+        "base_supply_index": int(direct_rows["totals_basic"][0] or 0),
+        "base_borrow_index": int(direct_rows["totals_basic"][1] or 0),
+        "tracking_supply_index": int(direct_rows["totals_basic"][2] or 0),
+        "tracking_borrow_index": int(direct_rows["totals_basic"][3] or 0),
+        "total_supply_base": int(direct_rows["totals_basic"][4] or 0),
+        "total_borrow_base": int(direct_rows["totals_basic"][5] or 0),
+        "last_accrual_time": int(direct_rows["totals_basic"][6] or 0),
+        "pause_flags": int(direct_rows["totals_basic"][7] or 0),
+    } == {
+        "base_supply_index": int(multicall_rows[0][0] or 0),
+        "base_borrow_index": int(multicall_rows[0][1] or 0),
+        "tracking_supply_index": int(multicall_rows[0][2] or 0),
+        "tracking_borrow_index": int(multicall_rows[0][3] or 0),
+        "total_supply_base": int(multicall_rows[0][4] or 0),
+        "total_borrow_base": int(multicall_rows[0][5] or 0),
+        "last_accrual_time": int(multicall_rows[0][6] or 0),
+        "pause_flags": int(multicall_rows[0][7] or 0),
+    }
     assert {
         "principal": int(direct_rows["user_basic"][0] or 0),
         "base_tracking_index": int(direct_rows["user_basic"][1] or 0),

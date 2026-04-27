@@ -55,20 +55,6 @@ def _parse_asset_info(value: Sequence[Any]) -> dict[str, Any]:
         "supply_cap": int(value[7] or 0),
     }
 
-
-def _parse_totals_basic(value: Sequence[Any]) -> dict[str, int]:
-    return {
-        "base_supply_index": int(value[0] or 0),
-        "base_borrow_index": int(value[1] or 0),
-        "tracking_supply_index": int(value[2] or 0),
-        "tracking_borrow_index": int(value[3] or 0),
-        "total_supply_base": int(value[4] or 0),
-        "total_borrow_base": int(value[5] or 0),
-        "last_accrual_time": int(value[6] or 0),
-        "pause_flags": int(value[7] or 0),
-    }
-
-
 def _parse_total_collateral(value: Sequence[Any]) -> int:
     return int(value[0] or 0)
 
@@ -93,30 +79,6 @@ def _rate_to_apr(raw_rate: int) -> float:
     if raw_rate <= 0:
         return 0.0
     return (raw_rate / MANTISSA) * SECONDS_PER_YEAR
-
-
-def _scale_to_decimals(scale: int) -> int | None:
-    if scale <= 0:
-        return None
-    value = scale
-    decimals = 0
-    while value > 1 and value % 10 == 0:
-        value //= 10
-        decimals += 1
-    if value == 1:
-        return decimals
-    return None
-
-
-def _pause_flags_to_dict(flags: int) -> dict[str, bool]:
-    return {
-        "supply_paused": bool(flags & (1 << 0)),
-        "transfer_paused": bool(flags & (1 << 1)),
-        "withdraw_paused": bool(flags & (1 << 2)),
-        "absorb_paused": bool(flags & (1 << 3)),
-        "buy_paused": bool(flags & (1 << 4)),
-    }
-
 
 class CompoundAdapter(BaseAdapter):
     adapter_type: str = "COMPOUND"
@@ -377,11 +339,7 @@ class CompoundAdapter(BaseAdapter):
                     Call(comet, "numAssets"),
                     Call(comet, "totalSupply"),
                     Call(comet, "totalBorrow"),
-                        Call(
-                            comet,
-                            "totalsBasic",
-                            postprocess=lambda row: _parse_totals_basic(tuple(row)),
-                        ),
+                    Call(comet, "totalsBasic"),
                     Call(comet, "getUtilization"),
                     Call(comet, "baseBorrowMin"),
                     Call(comet, "baseMinForRewards"),
@@ -410,6 +368,17 @@ class CompoundAdapter(BaseAdapter):
                 base_tracking_borrow_speed,
                 target_reserves,
             ) = core_rows
+            totals_basic_row = tuple(totals_basic)
+            totals_basic = {
+                "base_supply_index": int(totals_basic_row[0] or 0),
+                "base_borrow_index": int(totals_basic_row[1] or 0),
+                "tracking_supply_index": int(totals_basic_row[2] or 0),
+                "tracking_borrow_index": int(totals_basic_row[3] or 0),
+                "total_supply_base": int(totals_basic_row[4] or 0),
+                "total_borrow_base": int(totals_basic_row[5] or 0),
+                "last_accrual_time": int(totals_basic_row[6] or 0),
+                "pause_flags": int(totals_basic_row[7] or 0),
+            }
 
             rate_rows, reward_cfg, base_meta = await asyncio.gather(
                 read_only_calls_multicall_or_gather(
@@ -477,15 +446,25 @@ class CompoundAdapter(BaseAdapter):
                         web3=web3,
                     )
                 )
-            metadata_coros.extend(
-                self._token_metadata(
-                    chain_id=seed.chain_id,
-                    token_address=asset_info["asset"],
-                    web3=web3,
-                    fallback_decimals=_scale_to_decimals(asset_info["scale"]),
+            for asset_info in asset_infos:
+                scale = asset_info["scale"]
+                fallback_decimals: int | None = None
+                if scale > 0:
+                    value = scale
+                    decimals = 0
+                    while value > 1 and value % 10 == 0:
+                        value //= 10
+                        decimals += 1
+                    if value == 1:
+                        fallback_decimals = decimals
+                metadata_coros.append(
+                    self._token_metadata(
+                        chain_id=seed.chain_id,
+                        token_address=asset_info["asset"],
+                        web3=web3,
+                        fallback_decimals=fallback_decimals,
+                    )
                 )
-                for asset_info in asset_infos
-            )
 
             metadata_rows: list[TokenMetadata] = []
             if asset_infos and include_prices:
@@ -653,7 +632,13 @@ class CompoundAdapter(BaseAdapter):
             "total_supply": total_supply,
             "total_borrow": total_borrow,
             "totals_basic": totals_basic,
-            "pause_state": _pause_flags_to_dict(totals_basic["pause_flags"]),
+            "pause_state": {
+                "supply_paused": bool(totals_basic["pause_flags"] & (1 << 0)),
+                "transfer_paused": bool(totals_basic["pause_flags"] & (1 << 1)),
+                "withdraw_paused": bool(totals_basic["pause_flags"] & (1 << 2)),
+                "absorb_paused": bool(totals_basic["pause_flags"] & (1 << 3)),
+                "buy_paused": bool(totals_basic["pause_flags"] & (1 << 4)),
+            },
             "utilization": utilization,
             "base_supply_rate": supply_rate,
             "base_borrow_rate": borrow_rate,
