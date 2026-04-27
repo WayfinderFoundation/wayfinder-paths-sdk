@@ -112,7 +112,7 @@ poetry run python -m wayfinder_paths.run_strategy hyperlend_stable_yield_strateg
 The live strategy fetches rate history directly from the **HyperLend API**, not Delta Lab. Before attempting a backtest, verify whether Delta Lab has HyperLend supply rate data:
 
 ```python
-from wayfinder_paths.core.backtesting import fetch_lending_rates
+from wayfinder_paths.core.backtesting.data import fetch_lending_rates
 
 rates = await fetch_lending_rates("USDT0", "2025-08-01", "2026-02-01")
 print(rates["supply"].columns.tolist())  # check for any 'hyperlend-hyperevm' or similar
@@ -133,9 +133,10 @@ The approximation below uses rolling mean supply APY as a proxy for `p_best` and
 
 ```python
 import pandas as pd
-from wayfinder_paths.core.backtesting import (
-    build_yield_index, fetch_lending_rates, run_backtest, BacktestConfig,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.data import fetch_lending_rates
+from wayfinder_paths.core.backtesting.types import BacktestConfig
+from wayfinder_paths.core.backtesting.yield_strategies import build_yield_index
 
 # --- Parameters from strategy source ---
 LOOKBACK_HOURS = 168              # DEFAULT_LOOKBACK_HOURS (7 days of rate history)

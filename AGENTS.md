@@ -45,7 +45,7 @@ poetry run python -m wayfinder_paths.mcp.cli notify \
 
 **Python client:**
 ```python
-from wayfinder_paths.core.clients import NOTIFY_CLIENT
+from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
 
 await NOTIFY_CLIENT.notify(
     title="Rebalance complete",
@@ -84,7 +84,7 @@ If you detected an OpenCode Cloud instance, you can read what the user is viewin
 
 **Python client:**
 ```python
-from wayfinder_paths.core.clients import INSTANCE_STATE_CLIENT
+from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 
 state = await INSTANCE_STATE_CLIENT.get_state()
 chart_id = state["frontend_context"]["chart"]["id"]
@@ -229,7 +229,9 @@ Common mistakes when writing run scripts. **Read before writing any script.**
 
 ```python
 # CLIENTS (return data directly, raise exceptions on errors)
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT, POOL_CLIENT, TOKEN_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 
 # WRONG — clients don't return tuples
 ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌
