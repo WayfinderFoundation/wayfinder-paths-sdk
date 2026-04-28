@@ -874,6 +874,113 @@ def test_path_activate_supports_slug_for_installed_path(tmp_path: Path, monkeypa
     assert activation["root"] == activation["dest"]
 
 
+def test_path_activate_can_install_required_dependencies(tmp_path: Path, monkeypatch):
+    installed_path = tmp_path / ".wayfinder" / "paths" / "activate-demo" / "0.1.0"
+    init_path(
+        path_dir=installed_path,
+        slug="activate-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+    _write_paths_lockfile(
+        tmp_path,
+        {
+            "activate-demo": {
+                "version": "0.1.0",
+                "bundle_sha256": "abc123",
+                "path": str(installed_path),
+            }
+        },
+    )
+    dependency_calls: list[dict[str, object]] = []
+
+    def fake_install_dependencies(**kwargs):
+        dependency_calls.append(kwargs)
+        return [
+            {
+                "slug": "adapter-pack",
+                "version": "0.2.0",
+                "activated": True,
+            }
+        ]
+
+    def fake_activate_export(
+        *,
+        host,
+        scope,
+        path_dir=None,
+        export_path=None,
+        model=None,
+        destination_root=None,
+    ):
+        assert export_path is None
+        assert path_dir == installed_path.resolve()
+        assert model == "wayfinder/kimi-k2.5"
+        assert destination_root is None
+        return {
+            "host": host,
+            "scope": scope,
+            "source": str(path_dir),
+            "dest": str(Path.cwd()),
+            "mode": "install",
+            "applied": [str(Path.cwd() / ".opencode" / "skills" / "activate-demo")],
+        }
+
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._install_required_dependencies_for_path",
+        fake_install_dependencies,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli._activate_export", fake_activate_export
+    )
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        result = runner.invoke(
+            path_cli,
+            [
+                "activate",
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--slug",
+                "activate-demo",
+                "--dir",
+                str(tmp_path / ".wayfinder" / "paths"),
+                "--model",
+                "wayfinder/kimi-k2.5",
+                "--include-dependencies",
+                "--api-url",
+                "https://paths.example",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["result"]["activation_recorded"] is True
+        assert payload["result"]["dependencies"][0]["slug"] == "adapter-pack"
+
+    assert len(dependency_calls) == 1
+    call = dependency_calls[0]
+    assert call["path_dir"] == installed_path.resolve()
+    assert call["host"] == "opencode"
+    assert call["scope"] == "project"
+    assert call["install_dir"] == str(tmp_path / ".wayfinder" / "paths")
+    assert call["api_url"] == "https://paths.example"
+    assert call["model"] == "wayfinder/kimi-k2.5"
+    assert call["activate"] is True
+    assert call["visited"] == {"activate-demo"}
+
+    lock = json.loads((tmp_path / ".wayfinder" / "paths.lock.json").read_text())
+    activation = lock["paths"]["activate-demo"]["activation"]
+    assert activation["include_dependencies"] is True
+    assert activation["dependencies"][0]["slug"] == "adapter-pack"
+
+
 def test_path_activate_skips_doctor_for_installed_paths(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1106,6 +1213,58 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     assert lock["paths"]["install-opencode-demo"]["activation"]["dependencies"] == [
         {"path_slug": "custom-market-data-pack", "version": "0.1.0"}
     ]
+
+
+def test_path_activate_opencode_preserves_existing_provider_config(tmp_path: Path):
+    path_dir = tmp_path / "provider-demo"
+    init_path(
+        path_dir=path_dir,
+        slug="provider-demo",
+        primary_kind="monitor",
+        with_applet=False,
+        with_skill=True,
+    )
+
+    base_opencode_config = {
+        "model": "wayfinder/kimi-k2.5",
+        "instructions": ["BASE.md"],
+        "provider": {
+            "wayfinder": {
+                "name": "Wayfinder",
+                "models": {"kimi-k2.5": {"name": "Kimi K2.5"}},
+            }
+        },
+    }
+
+    runner = CliRunner()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    with runner.isolated_filesystem(temp_dir=str(workspace)):
+        Path("opencode.json").write_text(
+            json.dumps(base_opencode_config, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            path_cli,
+            [
+                "activate",
+                "--host",
+                "opencode",
+                "--scope",
+                "project",
+                "--path",
+                str(path_dir),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        opencode_config = json.loads(Path("opencode.json").read_text(encoding="utf-8"))
+
+    assert opencode_config["model"] == "wayfinder/kimi-k2.5"
+    assert opencode_config["provider"] == base_opencode_config["provider"]
+    assert opencode_config["instructions"] == ["BASE.md", "AGENTS.md"]
+    assert "provider-demo-orchestrator" in opencode_config["agent"]
 
 
 def test_path_install_claude_activates_and_installs_required_dependencies(

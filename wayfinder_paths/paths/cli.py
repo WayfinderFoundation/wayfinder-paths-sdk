@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,19 @@ _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
 _LOCKFILE_NAME = "paths.lock.json"
 _LEGACY_LOCKFILE_NAME = "packs.lock.json"
+_OPENCODE_TOOL_RESULT_HELPER = "\n".join(
+    [
+        "function jsonOutput(payload) {",
+        "  return JSON.stringify(payload, null, 2)",
+        "}",
+    ]
+)
+_LEGACY_OPENCODE_TOOL_RESULT_RE = re.compile(
+    r"function\s+jsonOutput\s*\(\s*payload\s*\)\s*\{\s*"
+    r"return\s*\{\s*output\s*:\s*JSON\.stringify\s*\(\s*payload\s*,\s*null\s*,\s*2\s*\)\s*,?\s*\}\s*"
+    r"\}",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -595,6 +609,38 @@ def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
     dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 
 
+_OPENCODE_CONFIG_INSTALL_KEYS = {"agent", "instructions"}
+
+
+def _is_opencode_config_path(path: Path) -> bool:
+    return path.name == "opencode.json"
+
+
+def _opencode_config_install_patch(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key in _OPENCODE_CONFIG_INSTALL_KEYS
+    }
+
+
+def _merge_opencode_config_patch(dest_path: Path, patch_path: Path) -> None:
+    current: dict[str, Any] = {}
+    if dest_path.exists():
+        try:
+            parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                current = parsed
+        except Exception:
+            current = {}
+    patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    if not isinstance(patch_payload, dict):
+        raise click.ClickException(f"Install patch must be a JSON object: {patch_path}")
+    merged = _deep_merge(current, _opencode_config_install_patch(patch_payload))
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+
+
 def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) -> None:
     begin = f"<!-- {section_id}:start -->"
     end = f"<!-- {section_id}:end -->"
@@ -675,6 +721,26 @@ def _remove_json_patch(dest_path: Path, patch_path: Path) -> bool:
     return True
 
 
+def _remove_opencode_config_patch(dest_path: Path, patch_path: Path) -> bool:
+    if not dest_path.exists():
+        return False
+    try:
+        parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+        patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict) or not isinstance(patch_payload, dict):
+        return False
+    updated = _deep_remove(parsed, _opencode_config_install_patch(patch_payload))
+    if updated == parsed:
+        return False
+    if updated:
+        dest_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
 def _prune_empty_parents(path: Path, *, stop_at: Path) -> None:
     stop = stop_at.expanduser().resolve()
     current = path.expanduser().resolve()
@@ -704,7 +770,32 @@ def _copy_install_path(source: Path, destination: Path) -> None:
         _copy_export_tree(source, destination)
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if _is_opencode_tool_path(destination):
+        source_text = source.read_text(encoding="utf-8")
+        destination.write_text(
+            _normalize_opencode_tool_result_contract(source_text),
+            encoding="utf-8",
+        )
+        return
     shutil.copy2(source, destination)
+
+
+def _is_opencode_tool_path(path: Path) -> bool:
+    parts = path.parts
+    return ".opencode" in parts and "tools" in parts and path.suffix in {".js", ".ts"}
+
+
+def _normalize_opencode_tool_result_contract(tool_text: str) -> str:
+    return _LEGACY_OPENCODE_TOOL_RESULT_RE.sub(
+        _OPENCODE_TOOL_RESULT_HELPER,
+        tool_text,
+    )
+
+
+def _should_merge_json_install_target(*, op: str, src: Path, dest: Path) -> bool:
+    return op == "merge_json" or (
+        op == "copy_file" and dest.name == "opencode.json" and src.suffix == ".json"
+    )
 
 
 def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
@@ -719,12 +810,15 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
-        if op in {"copy_tree", "copy_file"}:
-            _copy_install_path(src, dest)
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            if _is_opencode_config_path(dest):
+                _merge_opencode_config_patch(dest, src)
+            else:
+                _merge_json_file(dest, src)
             applied.append(str(dest))
             continue
-        if op == "merge_json":
-            _merge_json_file(dest, src)
+        if op in {"copy_tree", "copy_file"}:
+            _copy_install_path(src, dest)
             applied.append(str(dest))
             continue
         if op == "merge_markdown":
@@ -751,6 +845,15 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            removed_json = (
+                _remove_opencode_config_patch(dest, src)
+                if _is_opencode_config_path(dest)
+                else _remove_json_patch(dest, src)
+            )
+            if removed_json:
+                removed.append(str(dest))
+            continue
         if op in {"copy_tree", "copy_file"}:
             if _remove_existing_path(dest, root=destination_root):
                 removed.append(str(dest))
@@ -758,10 +861,6 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         if op == "merge_markdown":
             section_id = str(target.get("section_id") or "").strip()
             if section_id and _remove_markdown_section(dest, section_id=section_id):
-                removed.append(str(dest))
-            continue
-        if op == "merge_json":
-            if _remove_json_patch(dest, src):
                 removed.append(str(dest))
             continue
     return removed
@@ -1392,6 +1491,12 @@ def export_skill_cmd(path_dir: str, host: str) -> None:
     "--export-path", default=None, help="Existing rendered skill export directory."
 )
 @click.option("--model", default=None, help="Optional host model override.")
+@click.option(
+    "--include-dependencies/--no-include-dependencies",
+    default=False,
+    help="Install and activate required dependency skills before activating this path.",
+)
+@click.option("--api-url", "api_url", default=None, help="Override Paths API base URL.")
 def activate_cmd(
     host: str,
     scope: str,
@@ -1401,6 +1506,8 @@ def activate_cmd(
     path_dir: str | None,
     export_path: str | None,
     model: str | None,
+    include_dependencies: bool,
+    api_url: str | None,
 ) -> None:
     if slug and (path_dir or export_path):
         raise click.ClickException("--slug cannot be used with --path or --export-path")
@@ -1432,6 +1539,20 @@ def activate_cmd(
     rendered_export_path = (
         Path(export_path).expanduser().resolve() if export_path else None
     )
+    dependency_results: list[dict[str, Any]] = []
+    if include_dependencies and source_path is not None:
+        dependency_results = _install_required_dependencies_for_path(
+            path_dir=source_path,
+            host=host,
+            scope=scope,
+            install_dir=install_dir,
+            force=False,
+            no_verify=False,
+            api_url=api_url,
+            model=model,
+            activate=True,
+            visited={slug} if slug else set(),
+        )
     result = _activate_export(
         host=host,
         scope=scope,
@@ -1439,6 +1560,8 @@ def activate_cmd(
         export_path=rendered_export_path,
         model=model,
     )
+    if dependency_results:
+        result["dependencies"] = dependency_results
 
     activation_recorded = False
     if source_path is not None:
@@ -1465,6 +1588,8 @@ def activate_cmd(
                 dest=Path(str(result["dest"])),
                 applied=[str(item) for item in result["applied"]],
                 model=model,
+                include_dependencies=include_dependencies,
+                dependencies=dependency_results,
             )
             activation_recorded = True
 

@@ -7,7 +7,7 @@ Net delta ≈ 0; profit source is the funding rate paid by perp longs.
 
 from __future__ import annotations
 
-from wayfinder_paths.core.backtesting import backtest_delta_neutral
+from wayfinder_paths.core.backtesting.helpers import backtest_delta_neutral
 
 
 async def main() -> None:
