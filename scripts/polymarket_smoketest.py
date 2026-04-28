@@ -8,6 +8,7 @@ from typing import Any
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
+    POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
 )
@@ -83,7 +84,7 @@ async def main() -> int:
     adapter: PolymarketAdapter
     addr: str | None = None
     if args.execute:
-        adapter = get_adapter(PolymarketAdapter, args.wallet_label)
+        adapter = await get_adapter(PolymarketAdapter, args.wallet_label)
         addr = adapter._resolve_funder()
     else:
         adapter = PolymarketAdapter()
@@ -96,9 +97,13 @@ async def main() -> int:
             usdce0 = await get_token_balance(
                 POLYGON_USDC_E_ADDRESS, POLYGON_CHAIN_ID, addr
             )
+            pusd0 = await get_token_balance(
+                POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, addr
+            )
             print(f"Wallet: {addr}")
             print(f"USDC:   {usdc0 / 1e6:.6f}")
             print(f"USDC.e: {usdce0 / 1e6:.6f}")
+            print(f"pUSD:   {pusd0 / 1e6:.6f}")
 
         ok, markets = await adapter.search_markets_fuzzy(query=args.query, limit=20)
         if not ok:
@@ -137,13 +142,13 @@ async def main() -> int:
         if not addr:
             raise RuntimeError("Internal error: missing wallet address in execute mode")
 
-        # Convert USDC -> USDC.e if needed
-        usdce_before = await get_token_balance(
-            POLYGON_USDC_E_ADDRESS, POLYGON_CHAIN_ID, addr
+        # Prepare pUSD collateral if needed.
+        pusd_before = await get_token_balance(
+            POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, addr
         )
-        if (usdce_before / 1e6) < float(args.trade_usdce):
+        if (pusd_before / 1e6) < float(args.trade_usdce):
             print(
-                f"Converting {args.deposit_usdc} USDC -> USDC.e (BRAP preferred; bridge fallback)..."
+                f"Preparing {args.deposit_usdc} USDC as pUSD collateral (BRAP preferred; bridge fallback)..."
             )
             ok, dep = await adapter.bridge_deposit(
                 from_chain_id=POLYGON_CHAIN_ID,
@@ -156,24 +161,24 @@ async def main() -> int:
                 raise RuntimeError(f"bridge_deposit failed: {dep}")
             method = dep.get("method") if isinstance(dep, dict) else None
             print(
-                f"Convert tx (method={method or 'unknown'}): {dep.get('tx_hash') if isinstance(dep, dict) else None}"
+                f"Deposit tx (method={method or 'unknown'}): {dep.get('tx_hash') if isinstance(dep, dict) else None}"
             )
 
             if method == "polymarket_bridge":
-                # Bridge settlement is async; wait for USDC.e to arrive.
+                # Bridge settlement is async; wait for pUSD to arrive.
                 min_increase = int(float(args.trade_usdce) * 1_000_000)
-                usdce_after = await _wait_for_balance(
+                pusd_after = await _wait_for_balance(
                     address=addr,
-                    token_address=POLYGON_USDC_E_ADDRESS,
+                    token_address=POLYGON_P_USDC_PROXY_ADDRESS,
                     chain_id=POLYGON_CHAIN_ID,
                     min_increase=min_increase,
-                    initial=usdce_before,
+                    initial=pusd_before,
                     timeout_s=180,
                     poll_s=5,
                 )
-                print(f"USDC.e after deposit: {usdce_after / 1e6:.6f}")
+                print(f"pUSD after deposit: {pusd_after / 1e6:.6f}")
 
-        print("Ensuring on-chain approvals (USDC.e + ConditionalTokens)...")
+        print("Ensuring on-chain approvals (pUSD + ConditionalTokens)...")
         ok, appr = await adapter.ensure_onchain_approvals()
         if not ok:
             raise RuntimeError(f"ensure_onchain_approvals failed: {appr}")
@@ -205,16 +210,16 @@ async def main() -> int:
         else:
             print(f"SELL failed (may not have >=1 share yet): {sell}")
 
-        # Withdraw some USDC.e back to native USDC (bridge)
-        usdce_now = await get_token_balance(
-            POLYGON_USDC_E_ADDRESS, POLYGON_CHAIN_ID, addr
+        # Withdraw some pUSD back to native USDC.
+        pusd_now = await get_token_balance(
+            POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, addr
         )
-        if (usdce_now / 1e6) >= float(args.withdraw_usdce):
+        if (pusd_now / 1e6) >= float(args.withdraw_usdce):
             usdc_before = await get_token_balance(
                 POLYGON_USDC_ADDRESS, POLYGON_CHAIN_ID, addr
             )
             print(
-                f"Converting {args.withdraw_usdce} USDC.e -> USDC (BRAP preferred; bridge fallback)..."
+                f"Converting {args.withdraw_usdce} pUSD -> USDC (BRAP preferred; bridge fallback)..."
             )
             ok, wd = await adapter.bridge_withdraw(
                 amount_usdce=float(args.withdraw_usdce),
@@ -227,7 +232,7 @@ async def main() -> int:
                 raise RuntimeError(f"bridge_withdraw failed: {wd}")
             method = wd.get("method") if isinstance(wd, dict) else None
             print(
-                f"Convert tx (method={method or 'unknown'}): {wd.get('tx_hash') if isinstance(wd, dict) else None}"
+                f"Withdraw tx (method={method or 'unknown'}): {wd.get('tx_hash') if isinstance(wd, dict) else None}"
             )
             if wd.get("method") == "polymarket_bridge":
                 # Bridge settlement is async; wait for any USDC increase.
@@ -243,9 +248,13 @@ async def main() -> int:
 
         usdc1 = await get_token_balance(POLYGON_USDC_ADDRESS, POLYGON_CHAIN_ID, addr)
         usdce1 = await get_token_balance(POLYGON_USDC_E_ADDRESS, POLYGON_CHAIN_ID, addr)
+        pusd1 = await get_token_balance(
+            POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, addr
+        )
         print("Final balances:")
         print(f"USDC:   {usdc1 / 1e6:.6f}")
         print(f"USDC.e: {usdce1 / 1e6:.6f}")
+        print(f"pUSD:   {pusd1 / 1e6:.6f}")
         return 0
     finally:
         await adapter.close()
