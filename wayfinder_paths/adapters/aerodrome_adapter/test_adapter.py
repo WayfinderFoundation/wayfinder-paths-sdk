@@ -450,6 +450,72 @@ async def test_minted_erc721_token_id_reads_matching_transfer():
 
 
 @pytest.mark.asyncio
+async def test_minted_erc721_token_id_returns_none_for_non_matching_logs():
+    adapter = AerodromeAdapter()
+    nft_contract = "0x" + "12" * 20
+    other_contract = "0x" + "34" * 20
+    other_wallet = "0x" + "ab" * 20
+    mock_web3 = MagicMock()
+    mock_web3.codec = object()
+    mock_web3.eth.get_transaction_receipt = AsyncMock(
+        return_value={
+            "logs": [
+                {
+                    "address": other_contract,
+                    "topics": [aerodrome_common_module._ERC721_TRANSFER_TOPIC0],
+                },
+                {
+                    "address": nft_contract,
+                    "topics": [b"wrong-topic"],
+                },
+                {
+                    "address": nft_contract,
+                    "topics": [aerodrome_common_module._ERC721_TRANSFER_TOPIC0],
+                },
+                {
+                    "address": nft_contract,
+                    "topics": [aerodrome_common_module._ERC721_TRANSFER_TOPIC0],
+                },
+                {
+                    "address": nft_contract,
+                    "topics": [aerodrome_common_module._ERC721_TRANSFER_TOPIC0],
+                },
+                {
+                    "address": nft_contract,
+                    "topics": [aerodrome_common_module._ERC721_TRANSFER_TOPIC0],
+                },
+            ]
+        }
+    )
+
+    with (
+        patch.object(
+            aerodrome_common_module,
+            "web3_from_chain_id",
+            _web3_ctx(mock_web3),
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "get_event_data",
+            side_effect=[
+                {"args": {"from": ZERO_ADDRESS, "to": FAKE_WALLET}},
+                {"args": {"from": FAKE_WALLET, "to": FAKE_WALLET, "tokenId": 1}},
+                {"args": {"from": ZERO_ADDRESS, "to": other_wallet, "tokenId": 2}},
+                ValueError("bad log"),
+            ],
+        ) as mock_get_event_data,
+    ):
+        token_id = await adapter._minted_erc721_token_id(
+            nft_contract=nft_contract,
+            tx_hash="0xtxhash",
+            expected_to=FAKE_WALLET,
+        )
+
+    assert token_id is None
+    assert mock_get_event_data.call_count == 4
+
+
+@pytest.mark.asyncio
 async def test_get_reward_contracts_reads_fee_and_bribe_contracts():
     adapter = AerodromeAdapter()
     mock_web3 = MagicMock()
@@ -484,6 +550,21 @@ async def test_get_reward_contracts_reads_fee_and_bribe_contracts():
 
 
 @pytest.mark.asyncio
+async def test_claim_gauge_rewards_validates_inputs(adapter_with_signer):
+    adapter = AerodromeAdapter(wallet_address=FAKE_WALLET)
+
+    ok_missing_signer, msg_missing_signer = await adapter.claim_gauge_rewards(
+        gauges=[FAKE_GAUGE]
+    )
+    ok_empty, msg_empty = await adapter_with_signer.claim_gauge_rewards(gauges=[])
+
+    assert ok_missing_signer is False
+    assert msg_missing_signer == "sign_callback is required"
+    assert ok_empty is False
+    assert msg_empty == "gauges cannot be empty"
+
+
+@pytest.mark.asyncio
 async def test_ve_balance_of_nft_reads_balance():
     adapter = AerodromeAdapter()
     ve = MagicMock()
@@ -505,6 +586,23 @@ async def test_ve_balance_of_nft_reads_balance():
     assert ok is True
     assert balance == 123456
     ve.functions.balanceOfNFT.assert_called_once_with(7)
+
+
+@pytest.mark.asyncio
+async def test_ve_balance_of_nft_returns_clean_error_on_exception():
+    adapter = AerodromeAdapter()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(side_effect=RuntimeError("boom"))
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, msg = await adapter.ve_balance_of_nft(token_id=7)
+
+    assert ok is False
+    assert "boom" in msg
 
 
 @pytest.mark.asyncio
@@ -1346,6 +1444,43 @@ async def test_ve_locked_returns_structured_payload():
 
     assert ok is True
     assert data == {"amount": 42, "end": 99, "is_permanent": True}
+
+
+@pytest.mark.asyncio
+async def test_ve_locked_flattens_nested_tuple_payload():
+    adapter = AerodromeAdapter()
+    ve = MagicMock()
+    ve.functions.locked = MagicMock(return_value=_mock_call(((42, 99, True),)))
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(return_value=ve)
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, data = await adapter.ve_locked(token_id=1)
+
+    assert ok is True
+    assert data == {"amount": 42, "end": 99, "is_permanent": True}
+
+
+@pytest.mark.asyncio
+async def test_ve_locked_returns_clean_error_on_exception():
+    adapter = AerodromeAdapter()
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(side_effect=RuntimeError("boom"))
+
+    with patch.object(
+        aerodrome_common_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        ok, msg = await adapter.ve_locked(token_id=1)
+
+    assert ok is False
+    assert "boom" in msg
 
 
 @pytest.mark.asyncio

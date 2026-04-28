@@ -10,7 +10,7 @@ metadata:
 **Alpha Lab = Scored alpha insight feed**
 
 ```python
-from wayfinder_paths.core.clients import ALPHA_LAB_CLIENT
+from wayfinder_paths.core.clients.AlphaLabClient import ALPHA_LAB_CLIENT
 
 # Search all insights (sorted by score)
 await ALPHA_LAB_CLIENT.search()

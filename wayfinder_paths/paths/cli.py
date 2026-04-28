@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -44,6 +45,19 @@ _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
 _LOCKFILE_NAME = "paths.lock.json"
 _LEGACY_LOCKFILE_NAME = "packs.lock.json"
+_OPENCODE_TOOL_RESULT_HELPER = "\n".join(
+    [
+        "function jsonOutput(payload) {",
+        "  return JSON.stringify(payload, null, 2)",
+        "}",
+    ]
+)
+_LEGACY_OPENCODE_TOOL_RESULT_RE = re.compile(
+    r"function\s+jsonOutput\s*\(\s*payload\s*\)\s*\{\s*"
+    r"return\s*\{\s*output\s*:\s*JSON\.stringify\s*\(\s*payload\s*,\s*null\s*,\s*2\s*\)\s*,?\s*\}\s*"
+    r"\}",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +77,45 @@ def _iso_utc_now() -> str:
 
 def _path_install_venue(*, runtime: str) -> str:
     return str(os.environ.get("WAYFINDER_PATHS_INSTALL_VENUE") or runtime).strip()
+
+
+def _sdk_root() -> Path | None:
+    env_root = str(os.environ.get("WAYFINDER_SDK_ROOT") or "").strip()
+    if env_root:
+        candidate = Path(env_root).expanduser().resolve()
+        if candidate.exists():
+            return candidate
+
+    current = Path(__file__).resolve()
+    for parent in current.parents:
+        if (parent / ".claude" / "skills").is_dir():
+            return parent
+    return None
+
+
+def _sdk_skill_source_dir(skill_name: str, *, host: str) -> Path | None:
+    normalized = str(skill_name or "").strip()
+    if not normalized:
+        return None
+
+    sdk_root = _sdk_root()
+    if sdk_root is None:
+        return None
+
+    if host == "openclaw":
+        override_dir = sdk_root / "openclaw" / "skills" / normalized
+        if (override_dir / "SKILL.md").is_file():
+            return override_dir
+
+    base_dir = sdk_root / ".claude" / "skills" / normalized
+    if (base_dir / "SKILL.md").is_file():
+        return base_dir
+
+    override_dir = sdk_root / "openclaw" / "skills" / normalized
+    if (override_dir / "SKILL.md").is_file():
+        return override_dir
+
+    return None
 
 
 def _canonical_install_root(install_dir: str | Path) -> Path:
@@ -328,9 +381,29 @@ def _install_required_dependencies_for_path(
     for dependency in _manifest_skill_dependencies(manifest, host=host):
         if not dependency["required"]:
             continue
+        dependency_slug = str(dependency["path_slug"] or "").strip()
+        dependency_skill_name = str(
+            dependency.get("skill_name") or dependency.get("name") or dependency_slug
+        ).strip()
+        bundled_skill_dir = _sdk_skill_source_dir(dependency_slug, host=host)
+        if bundled_skill_dir is not None:
+            destination_root = _host_skill_directory(host, scope, cwd=Path.cwd())
+            destination = destination_root / dependency_skill_name
+            _copy_export_tree(bundled_skill_dir, destination)
+            dependency_results.append(
+                {
+                    "slug": dependency_slug,
+                    "skill_name": dependency_skill_name,
+                    "source": "sdk-bundled",
+                    "dest": str(destination),
+                    "applied": [str(destination)],
+                    "activated": True,
+                }
+            )
+            continue
         dependency_results.append(
             _install_path_with_options(
-                slug=str(dependency["path_slug"]),
+                slug=dependency_slug,
                 path_version=None,
                 install_dir=install_dir,
                 force=force,
@@ -507,6 +580,18 @@ def _normalize_host_scope(host: str, scope: str) -> str:
     return normalized_scope
 
 
+def _host_skill_directory(host: str, scope: str, *, cwd: Path) -> Path:
+    normalized_host = host.lower()
+    normalized_scope = _normalize_host_scope(host, scope)
+    if normalized_host == "opencode":
+        return (
+            _activate_install_root(normalized_host, normalized_scope, cwd=cwd)
+            / ".opencode"
+            / "skills"
+        )
+    return _activate_destination(normalized_host, normalized_scope, cwd=cwd)
+
+
 def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
     current: dict[str, Any] = {}
     if dest_path.exists():
@@ -520,6 +605,38 @@ def _merge_json_file(dest_path: Path, patch_path: Path) -> None:
     if not isinstance(patch_payload, dict):
         raise click.ClickException(f"Install patch must be a JSON object: {patch_path}")
     merged = _deep_merge(current, patch_payload)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
+
+
+_OPENCODE_CONFIG_INSTALL_KEYS = {"agent", "instructions"}
+
+
+def _is_opencode_config_path(path: Path) -> bool:
+    return path.name == "opencode.json"
+
+
+def _opencode_config_install_patch(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in payload.items()
+        if key in _OPENCODE_CONFIG_INSTALL_KEYS
+    }
+
+
+def _merge_opencode_config_patch(dest_path: Path, patch_path: Path) -> None:
+    current: dict[str, Any] = {}
+    if dest_path.exists():
+        try:
+            parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                current = parsed
+        except Exception:
+            current = {}
+    patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    if not isinstance(patch_payload, dict):
+        raise click.ClickException(f"Install patch must be a JSON object: {patch_path}")
+    merged = _deep_merge(current, _opencode_config_install_patch(patch_payload))
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     dest_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
 
@@ -540,12 +657,145 @@ def _merge_markdown_file(dest_path: Path, patch_path: Path, *, section_id: str) 
     dest_path.write_text(updated.rstrip() + "\n", encoding="utf-8")
 
 
+def _remove_markdown_section(dest_path: Path, *, section_id: str) -> bool:
+    if not dest_path.exists():
+        return False
+    begin = f"<!-- {section_id}:start -->"
+    end = f"<!-- {section_id}:end -->"
+    current = dest_path.read_text(encoding="utf-8")
+    if begin not in current or end not in current:
+        return False
+    start_idx = current.index(begin)
+    end_idx = current.index(end) + len(end)
+    updated = current[:start_idx] + current[end_idx:]
+    updated = updated.replace("\n\n\n", "\n\n").strip()
+    if updated:
+        dest_path.write_text(updated + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
+def _deep_remove(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(base)
+    for key, value in patch.items():
+        if key not in updated:
+            continue
+        current = updated[key]
+        if isinstance(current, dict) and isinstance(value, dict):
+            nested = _deep_remove(current, value)
+            if nested:
+                updated[key] = nested
+            else:
+                updated.pop(key, None)
+            continue
+        if isinstance(current, list) and isinstance(value, list):
+            remaining = [item for item in current if item not in value]
+            if remaining:
+                updated[key] = remaining
+            else:
+                updated.pop(key, None)
+            continue
+        if current == value:
+            updated.pop(key, None)
+    return updated
+
+
+def _remove_json_patch(dest_path: Path, patch_path: Path) -> bool:
+    if not dest_path.exists():
+        return False
+    try:
+        parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+        patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict) or not isinstance(patch_payload, dict):
+        return False
+    updated = _deep_remove(parsed, patch_payload)
+    if updated == parsed:
+        return False
+    if updated:
+        dest_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
+def _remove_opencode_config_patch(dest_path: Path, patch_path: Path) -> bool:
+    if not dest_path.exists():
+        return False
+    try:
+        parsed = json.loads(dest_path.read_text(encoding="utf-8"))
+        patch_payload = json.loads(patch_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict) or not isinstance(patch_payload, dict):
+        return False
+    updated = _deep_remove(parsed, _opencode_config_install_patch(patch_payload))
+    if updated == parsed:
+        return False
+    if updated:
+        dest_path.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")
+    else:
+        dest_path.unlink()
+    return True
+
+
+def _prune_empty_parents(path: Path, *, stop_at: Path) -> None:
+    stop = stop_at.expanduser().resolve()
+    current = path.expanduser().resolve()
+    while current != stop and stop in current.parents:
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
+def _remove_existing_path(path: Path, *, root: Path) -> bool:
+    target = path.expanduser().resolve()
+    root_resolved = root.expanduser().resolve()
+    if not target.exists():
+        return False
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    _prune_empty_parents(target.parent, stop_at=root_resolved)
+    return True
+
+
 def _copy_install_path(source: Path, destination: Path) -> None:
     if source.is_dir():
         _copy_export_tree(source, destination)
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if _is_opencode_tool_path(destination):
+        source_text = source.read_text(encoding="utf-8")
+        destination.write_text(
+            _normalize_opencode_tool_result_contract(source_text),
+            encoding="utf-8",
+        )
+        return
     shutil.copy2(source, destination)
+
+
+def _is_opencode_tool_path(path: Path) -> bool:
+    parts = path.parts
+    return ".opencode" in parts and "tools" in parts and path.suffix in {".js", ".ts"}
+
+
+def _normalize_opencode_tool_result_contract(tool_text: str) -> str:
+    return _LEGACY_OPENCODE_TOOL_RESULT_RE.sub(
+        _OPENCODE_TOOL_RESULT_HELPER,
+        tool_text,
+    )
+
+
+def _should_merge_json_install_target(*, op: str, src: Path, dest: Path) -> bool:
+    return op == "merge_json" or (
+        op == "copy_file" and dest.name == "opencode.json" and src.suffix == ".json"
+    )
 
 
 def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
@@ -560,12 +810,15 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         op = str(target.get("op") or "").strip()
         src = source_dir / str(target.get("source") or "").strip()
         dest = destination_root / str(target.get("destination") or "").strip()
-        if op in {"copy_tree", "copy_file"}:
-            _copy_install_path(src, dest)
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            if _is_opencode_config_path(dest):
+                _merge_opencode_config_patch(dest, src)
+            else:
+                _merge_json_file(dest, src)
             applied.append(str(dest))
             continue
-        if op == "merge_json":
-            _merge_json_file(dest, src)
+        if op in {"copy_tree", "copy_file"}:
+            _copy_install_path(src, dest)
             applied.append(str(dest))
             continue
         if op == "merge_markdown":
@@ -578,6 +831,39 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
             applied.append(str(dest))
             continue
     return applied
+
+
+def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
+    export_manifest = _read_export_manifest(source_dir)
+    install_targets = export_manifest.get("install_targets") or []
+    if not isinstance(install_targets, list):
+        return []
+    removed: list[str] = []
+    for target in reversed(install_targets):
+        if not isinstance(target, dict):
+            continue
+        op = str(target.get("op") or "").strip()
+        src = source_dir / str(target.get("source") or "").strip()
+        dest = destination_root / str(target.get("destination") or "").strip()
+        if _should_merge_json_install_target(op=op, src=src, dest=dest):
+            removed_json = (
+                _remove_opencode_config_patch(dest, src)
+                if _is_opencode_config_path(dest)
+                else _remove_json_patch(dest, src)
+            )
+            if removed_json:
+                removed.append(str(dest))
+            continue
+        if op in {"copy_tree", "copy_file"}:
+            if _remove_existing_path(dest, root=destination_root):
+                removed.append(str(dest))
+            continue
+        if op == "merge_markdown":
+            section_id = str(target.get("section_id") or "").strip()
+            if section_id and _remove_markdown_section(dest, section_id=section_id):
+                removed.append(str(dest))
+            continue
+    return removed
 
 
 def _activation_root_from_result(*, mode: str, dest: Path) -> Path:
@@ -1205,6 +1491,12 @@ def export_skill_cmd(path_dir: str, host: str) -> None:
     "--export-path", default=None, help="Existing rendered skill export directory."
 )
 @click.option("--model", default=None, help="Optional host model override.")
+@click.option(
+    "--include-dependencies/--no-include-dependencies",
+    default=False,
+    help="Install and activate required dependency skills before activating this path.",
+)
+@click.option("--api-url", "api_url", default=None, help="Override Paths API base URL.")
 def activate_cmd(
     host: str,
     scope: str,
@@ -1214,6 +1506,8 @@ def activate_cmd(
     path_dir: str | None,
     export_path: str | None,
     model: str | None,
+    include_dependencies: bool,
+    api_url: str | None,
 ) -> None:
     if slug and (path_dir or export_path):
         raise click.ClickException("--slug cannot be used with --path or --export-path")
@@ -1245,6 +1539,20 @@ def activate_cmd(
     rendered_export_path = (
         Path(export_path).expanduser().resolve() if export_path else None
     )
+    dependency_results: list[dict[str, Any]] = []
+    if include_dependencies and source_path is not None:
+        dependency_results = _install_required_dependencies_for_path(
+            path_dir=source_path,
+            host=host,
+            scope=scope,
+            install_dir=install_dir,
+            force=False,
+            no_verify=False,
+            api_url=api_url,
+            model=model,
+            activate=True,
+            visited={slug} if slug else set(),
+        )
     result = _activate_export(
         host=host,
         scope=scope,
@@ -1252,6 +1560,8 @@ def activate_cmd(
         export_path=rendered_export_path,
         model=model,
     )
+    if dependency_results:
+        result["dependencies"] = dependency_results
 
     activation_recorded = False
     if source_path is not None:
@@ -1278,6 +1588,8 @@ def activate_cmd(
                 dest=Path(str(result["dest"])),
                 applied=[str(item) for item in result["applied"]],
                 model=model,
+                include_dependencies=include_dependencies,
+                dependencies=dependency_results,
             )
             activation_recorded = True
 
@@ -2001,6 +2313,72 @@ def _resolve_update_activation_target(
     return _infer_activation_target(cwd=cwd)
 
 
+def _remove_path_install(
+    *,
+    slug: str,
+    install_dir: str,
+    host: str | None,
+    scope: str | None,
+) -> dict[str, Any]:
+    base = _canonical_install_root(install_dir)
+    state_dir = _state_dir_for_install_root(base)
+    lock, lock_path = _load_install_lock(state_dir)
+    if not lock_path.exists() and not (state_dir / _LEGACY_LOCKFILE_NAME).exists():
+        raise click.ClickException(f"Lockfile not found: {lock_path}")
+
+    entry = _lock_path_entry(lock, slug)
+    if entry is None:
+        raise click.ClickException(f"Path not found in lockfile: {slug}")
+
+    version = str(entry.get("version") or "").strip()
+    installed_path = _installed_path_dir(
+        base=base,
+        slug=slug,
+        version=version,
+        entry=entry,
+    )
+    result: dict[str, Any] = {
+        "slug": slug,
+        "version": version or None,
+        "removed": False,
+        "deactivated": False,
+        "activation_source": "none",
+        "removed_paths": [],
+        "lockfile": str(lock_path),
+    }
+
+    activation_target = _resolve_update_activation_target(
+        entry=entry,
+        host=host,
+        scope=scope,
+        cwd=Path.cwd(),
+    )
+    if activation_target is not None and installed_path.exists():
+        activation_options = _activation_options_from_entry(entry)
+        activation_root = _activation_root_from_entry(entry, target=activation_target)
+        if activation_root is not None and activation_root.exists():
+            render_report = _render_installed_skill(
+                path_dir=installed_path,
+                host=activation_target.host,
+                model=activation_options.get("model"),
+            )
+            source_dir = render_report.exports[activation_target.host].export_dir
+            removed_paths = _remove_install_targets(source_dir, activation_root)
+            result["deactivated"] = bool(removed_paths)
+            result["activation_source"] = activation_target.source
+            result["removed_paths"] = removed_paths
+
+    if installed_path.exists():
+        shutil.rmtree(installed_path)
+        result["removed"] = True
+
+    paths_map = _lock_paths_map(lock)
+    paths_map.pop(slug, None)
+    lock["paths"] = paths_map
+    _write_install_lock(lock_path, lock)
+    return result
+
+
 @path_cli.command(name="install", help="Download and unpack a path bundle locally.")
 @click.option("--slug", required=True, help="Path slug.")
 @click.option(
@@ -2300,6 +2678,42 @@ def update_cmd(
     result["activated"] = True
     result["activation_source"] = activation_target.source
     result["activation"] = activation_result
+    _echo_json({"ok": True, "result": result})
+
+
+@path_cli.command(
+    name="remove",
+    help="Remove an installed path and deactivate it from the selected host scope.",
+)
+@click.argument("slug")
+@click.option(
+    "--dir",
+    "install_dir",
+    default=".wayfinder/paths",
+    show_default=True,
+    help="Base install directory.",
+)
+@click.option(
+    "--host",
+    default=None,
+    type=click.Choice(
+        ["claude", "opencode", "codex", "openclaw"], case_sensitive=False
+    ),
+    help="Activation host override.",
+)
+@click.option("--scope", default=None, help="Activation scope override.")
+def remove_cmd(
+    slug: str,
+    install_dir: str,
+    host: str | None,
+    scope: str | None,
+) -> None:
+    result = _remove_path_install(
+        slug=slug,
+        install_dir=install_dir,
+        host=host,
+        scope=scope,
+    )
     _echo_json({"ok": True, "result": result})
 
 

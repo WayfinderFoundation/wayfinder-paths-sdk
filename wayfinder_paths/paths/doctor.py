@@ -718,7 +718,7 @@ def _has_explicit_opencode_model(
 
 
 def _opencode_tool_uses_supported_result_contract(tool_text: str) -> bool:
-    return "output: JSON.stringify(" in tool_text and "jsonOutput(" in tool_text
+    return "return JSON.stringify(" in tool_text and "jsonOutput(" in tool_text
 
 
 def _opencode_tool_returns_bare_object(tool_text: str) -> bool:
@@ -741,7 +741,7 @@ def _validate_opencode_tool_contract(
         _record_issue(
             errors,
             level="error",
-            message=f"{label} must return a string or an object with an output field",
+            message=f"{label} must return a string result contract",
             path=tool_path,
         )
 

@@ -36,16 +36,17 @@ Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env va
 
 If you detected an OpenCode Cloud instance in "First-Time Setup" (health probe at `http://localhost:4096/global/health` returned `healthy: true`), you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. The backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly. The `message` field is rendered as Markdown (headings, lists, code blocks, tables, links) into a themed HTML email, so format it nicely.
 
-**MCP CLI:**
+**MCP tool:**
 ```
-poetry run python -m wayfinder_paths.mcp.cli notify \
-  --title "Rebalance complete" \
-  --message "Moved **50 USDC** from Aave → Morpho.\n\n- tx: 0x…\n- new APY: 7.4%"
+notify(
+  title="Rebalance complete",
+  message="Moved **50 USDC** from Aave → Morpho.\n\n- tx: 0x…\n- new APY: 7.4%",
+)
 ```
 
 **Python client:**
 ```python
-from wayfinder_paths.core.clients import NOTIFY_CLIENT
+from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
 
 await NOTIFY_CLIENT.notify(
     title="Rebalance complete",
@@ -84,7 +85,7 @@ If you detected an OpenCode Cloud instance, you can read what the user is viewin
 
 **Python client:**
 ```python
-from wayfinder_paths.core.clients import INSTANCE_STATE_CLIENT
+from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 
 state = await INSTANCE_STATE_CLIENT.get_state()
 chart_id = state["frontend_context"]["chart"]["id"]
@@ -172,11 +173,13 @@ Strategy interface — all strategies implement these actions:
 
 **Mypy typing** - When adding or modifying Python code, ensure all _new/changed_ code is fully type-annotated and does not introduce new mypy errors.
 
-Run strategies via CLI:
+Run strategies via MCP:
 
-```bash
-poetry run python -m wayfinder_paths.run_strategy <strategy_name> --action status --config config.json
 ```
+run_strategy(strategy="<strategy_name>", action="status")
+```
+
+Discover names via the `wayfinder://strategies` resource. Fund-moving actions (`deposit`, `update`, `withdraw`, `exit`) trigger a safety review.
 
 ## Execution modes (one-off vs recurring)
 
@@ -229,7 +232,9 @@ Common mistakes when writing run scripts. **Read before writing any script.**
 
 ```python
 # CLIENTS (return data directly, raise exceptions on errors)
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT, POOL_CLIENT, TOKEN_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 
 # WRONG — clients don't return tuples
 ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌
@@ -369,26 +374,26 @@ Token identifiers (important for quoting/execution/lookups):
 
 **All scheduled/recurring tasks MUST go through the runner daemon.** Do not use cron, systemd timers, or background loops. The daemon handles job persistence, failure tracking, timeouts, and session notifications.
 
-```bash
-poetry run wayfinder runner start                # idempotent — safe to call multiple times
-poetry run wayfinder runner add-job \             # schedule a strategy
-  --name basis-update \
-  --type strategy \
-  --strategy basis_trading_strategy \
-  --action update \
-  --interval 600 \
-  --config ./config.json
-poetry run wayfinder runner add-job \             # schedule a script
-  --name check-balances \
-  --type script \
-  --script-path .wayfinder_runs/check_balances.py \
-  --interval 300
-poetry run wayfinder runner status               # show daemon + all jobs
-poetry run wayfinder runner run-once <job>        # trigger immediate run
-poetry run wayfinder runner pause <job>
-poetry run wayfinder runner resume <job>
-poetry run wayfinder runner delete <job>
-poetry run wayfinder runner stop                  # shut down daemon
+```
+runner(action="ensure_started")                       # idempotent — safe to call multiple times
+runner(action="add_job",                              # schedule a strategy
+       name="basis-update",
+       type="strategy",
+       strategy="basis_trading_strategy",
+       strategy_action="update",
+       interval_seconds=600,
+       config="./config.json")
+runner(action="add_job",                              # schedule a script
+       name="check-balances",
+       type="script",
+       script_path=".wayfinder_runs/check_balances.py",
+       interval_seconds=300)
+runner(action="status")                               # show daemon + all jobs
+runner(action="run_once", name="<name>")              # trigger immediate run
+runner(action="pause_job", name="<name>")
+runner(action="resume_job", name="<name>")
+runner(action="delete_job", name="<name>")
+runner(action="daemon_stop")                          # shut down daemon
 ```
 
 See `RUNNER_ARCHITECTURE.md`.
@@ -431,8 +436,8 @@ poetry run wayfinder path update my-path
 # Override the target version for one installed path
 poetry run wayfinder path update my-path --version 1.2.3
 
-# Run a strategy locally
-poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
+# Run a strategy via MCP
+# run_strategy(strategy="stablecoin_yield_strategy", action="status")
 
 # Publish to PyPI (main branch only)
 just publish
@@ -538,35 +543,24 @@ Remote wallets come in two flavours — pick based on how the wallet will be use
 - **Session wallet** (default, recommended for normal trading) — 1-hour TTL, refreshed while the user has the UI open. Use this for day-to-day trading where a human is present and approving actions.
 - **Strategy wallet** — 7-day TTL, intended for longer-running scheduled automation that signs without a human in the loop. Higher blast radius if the wallet leaks, so reach for it only when you actually need unattended signing across many hours; default to a session wallet otherwise.
 
-```bash
-# Session wallet (default)
-poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
+```
+# Session wallet (default, 1-hour TTL)
+wallets(action="create", label="main", remote=True, wallet_type="session")
 
-# Strategy wallet — pair with a strategy job on the runner daemon
-poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label my_strategy --remote --wallet_type strategy
+# Strategy wallet (7-day TTL) — pair with a strategy job on the runner
+wallets(action="create", label="my_strategy", remote=True, wallet_type="strategy")
 ```
 
-**Always read wallets through the MCP CLI. Never grep `config.json` for `wallets[]` or read wallet files directly.** The MCP wallet resource is the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
+**Always read wallets through the MCP resources below. Never grep `config.json` for `wallets[]` or read wallet files directly.** They are the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
-```bash
-# List all wallets (returns remote wallets on Wayfinder Cloud; merged local + remote elsewhere)
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets
+| Resource | What you get |
+|---|---|
+| `wayfinder://wallets` | List all wallets (remote on Cloud, merged local + remote elsewhere) |
+| `wayfinder://wallets/{label}` | Single wallet by label (includes profile / tracked protocols) |
+| `wayfinder://balances/{label}` | USD-aggregated balances, per-chain breakdown, spam-filtered |
+| `wayfinder://activity/{label}` | Recent on-chain activity |
 
-# Get a single wallet by label (includes profile / tracked protocols)
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://wallets/{label}
-
-# Wallet balances (USD-aggregated, per-chain breakdown, spam-filtered)
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://balances/{label}
-
-# Recent on-chain activity
-poetry run python -m wayfinder_paths.mcp.cli resource wayfinder://activity/{label}
-```
-
-To create a wallet on a Wayfinder Cloud Instance, always pass `--remote`:
-
-```bash
-poetry run python -m wayfinder_paths.mcp.cli wallets --action create --label main --remote
-```
+On a Wayfinder Cloud Instance, always pass `remote=True` when creating wallets — local wallets are rejected.
 
 In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
 

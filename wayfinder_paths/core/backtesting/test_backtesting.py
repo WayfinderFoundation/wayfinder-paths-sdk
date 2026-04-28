@@ -7,11 +7,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from wayfinder_paths.core.backtesting import (
-    BacktestConfig,
-    run_backtest,
-    run_multi_leverage_backtest,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.multi import run_multi_leverage_backtest
+from wayfinder_paths.core.backtesting.types import BacktestConfig
 
 
 @pytest.fixture
@@ -223,7 +221,7 @@ async def test_delta_neutral_funding_arbitrage():
 
     Strategy: Short perps with best funding rates + long spot to hedge.
     """
-    from wayfinder_paths.core.backtesting import (
+    from wayfinder_paths.core.backtesting.data import (
         convert_to_spot,
         fetch_funding_rates,
         fetch_prices,

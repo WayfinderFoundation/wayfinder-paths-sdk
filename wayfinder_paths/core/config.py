@@ -5,6 +5,7 @@ from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
+_DEFAULT_API_BASE_URL = "https://strategies.wayfinder.ai/api/v1"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 
 
@@ -75,7 +76,10 @@ def load_config(
     path: str | Path | None = None, *, require_exists: bool = False
 ) -> None:
     """Load config from disk into the global CONFIG dict."""
-    set_config(load_config_json(path, require_exists=require_exists))
+    cfg_path = resolve_config_path(path)
+    if not cfg_path.exists() and path is not None and not require_exists:
+        return
+    set_config(load_config_json(cfg_path, require_exists=require_exists))
 
 
 def set_rpc_urls(rpc_urls):
@@ -95,7 +99,7 @@ def get_api_base_url() -> str:
     api_url = system.get("api_base_url")
     if api_url:
         return str(api_url).strip()
-    return "https://wayfinder.ai/api"
+    return _DEFAULT_API_BASE_URL
 
 
 def get_polygon_builder_code() -> str | None:

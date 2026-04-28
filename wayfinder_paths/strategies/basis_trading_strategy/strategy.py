@@ -35,16 +35,16 @@ from wayfinder_paths.adapters.hyperliquid_adapter.utils import (
     usd_depth_in_band as hl_usd_depth_in_band,
 )
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
-from wayfinder_paths.core.analytics import (
+from wayfinder_paths.core.analytics.bootstrap import (
     block_bootstrap_paths as analytics_block_bootstrap_paths,
 )
-from wayfinder_paths.core.analytics import (
+from wayfinder_paths.core.analytics.stats import (
     percentile as analytics_percentile,
 )
-from wayfinder_paths.core.analytics import (
+from wayfinder_paths.core.analytics.stats import (
     rolling_min_sum as analytics_rolling_min_sum,
 )
-from wayfinder_paths.core.analytics import (
+from wayfinder_paths.core.analytics.stats import (
     z_from_conf as analytics_z_from_conf,
 )
 from wayfinder_paths.core.constants.contracts import HYPE_FEE_WALLET, HYPERLIQUID_BRIDGE

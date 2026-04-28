@@ -66,7 +66,7 @@ Use `all` as the basis param to screen across all assets, or a symbol like `ETH`
 **Purpose:** List all available basis symbols in Delta Lab.
 
 ```python
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 
 # Get all available symbols
 result = await DELTA_LAB_CLIENT.get_basis_symbols(get_all=True)
@@ -125,7 +125,7 @@ top_10 = sorted_symbols[:10]
 **Purpose:** Find all yield opportunities for a given asset across all protocols.
 
 ```python
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 
 # Get all BTC opportunities
 result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
