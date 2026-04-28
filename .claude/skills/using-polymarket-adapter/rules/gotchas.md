@@ -10,12 +10,13 @@
 
 - `get_price(...)` / `mcp__wayfinder__polymarket(action="price", ...)` returns the current quoted price.
 - `quote_market_order(...)` / `mcp__wayfinder__polymarket(action="quote", ...)` walks the live book and returns weighted-average execution, worst fill, and partial-fill status.
-- For quote requests: `BUY` uses USDC notional, `SELL` uses shares.
+- For quote requests: `BUY` uses pUSD, `SELL` uses shares.
 
-## USDC vs USDC.e (collateral mismatch)
+## pUSD vs USDC / USDC.e (collateral mismatch)
 
-- Trading collateral is **USDC.e** on Polygon (`0x2791…4174`), not native Polygon USDC (`0x3c49…3359`).
-- If you only have USDC, convert to USDC.e first (see `rules/deposits-withdrawals.md`).
+- Trading collateral is **pUSD** on Polygon, not native Polygon USDC.
+- **USDC.e** is the direct wrap asset for pUSD on Polygon.
+- If you only have Polygon USDC, use the adapter’s preparation flow to reach pUSD (see `rules/deposits-withdrawals.md`).
 
 ## Market is “found” but not tradable
 

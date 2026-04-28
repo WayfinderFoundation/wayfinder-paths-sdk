@@ -52,7 +52,7 @@ If you’re analyzing a market by slug, use `get_market_prices_history(market_sl
 ## Book-based quote vs price
 
 - Use `quote_market_order(token_id=..., side="BUY" | "SELL", amount=...)` when you need average execution from the current book.
-- `BUY amount` is USDC notional to spend; `SELL amount` is shares to sell.
+- `BUY amount` is pUSD to spend; `SELL amount` is shares to sell.
 - Quote returns weighted-average price, worst fill, partial-fill status, and per-level fills.
 - `get_price(...)` is not a substitute for this; it does not tell you the weighted average execution price for a sized trade.
 
