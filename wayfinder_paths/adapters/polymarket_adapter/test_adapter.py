@@ -1,3 +1,4 @@
+import inspect
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
@@ -6,8 +7,11 @@ import pytest
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.constants.polymarket import (
+    POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
+    POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+    POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
 )
 
 
@@ -22,6 +26,187 @@ class TestPolymarketAdapter:
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "POLYMARKET"
+
+    def test_clob_client_python_v2_constructor_signature(self):
+        params = inspect.signature(
+            polymarket_adapter_module.ClobClient.__init__
+        ).parameters
+
+        assert list(params)[:3] == ["self", "host", "chain_id"]
+        assert "chain" not in params
+        assert "chainId" not in params
+        assert "tickSizeTtlMs" not in params
+        assert "geoBlockToken" not in params
+
+    @pytest.mark.asyncio
+    async def test_clob_client_is_configured_with_python_v2_chain_id(self, monkeypatch):
+        calls = []
+
+        class FakeClobClient:
+            def __init__(self, *args, **kwargs):
+                calls.append((args, kwargs))
+
+        async def sign_hash_callback(_payload):
+            return b""
+
+        monkeypatch.setattr(polymarket_adapter_module, "ClobClient", FakeClobClient)
+        adapter = PolymarketAdapter(
+            config={},
+            wallet_address="0x000000000000000000000000000000000000dEaD",
+            sign_hash_callback=sign_hash_callback,
+        )
+        try:
+            client = adapter.clob_client
+            assert isinstance(client, FakeClobClient)
+        finally:
+            await adapter.close()
+
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        assert args == ("https://clob.polymarket.com",)
+        assert kwargs["chain_id"] == 137
+        assert "chain" not in kwargs
+        assert "chainId" not in kwargs
+        assert kwargs["sign_callback_override"] is sign_hash_callback
+
+    @pytest.mark.asyncio
+    async def test_limit_order_uses_v2_order_args_without_legacy_fee_fields(
+        self, adapter
+    ):
+        builder_code = "0x" + "12" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
+        adapter.ensure_onchain_approvals = AsyncMock(return_value=(True, {}))
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.created_order = None
+
+            async def create_order(self, order_args):
+                self.created_order = order_args
+                return {"signed": True}
+
+            def post_order(self, order, order_type, post_only):
+                return {
+                    "order": order,
+                    "order_type": order_type,
+                    "post_only": post_only,
+                }
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.place_limit_order(
+            token_id="123",
+            side="BUY",
+            price=0.5,
+            size=10.0,
+            post_only=True,
+        )
+
+        assert ok is True
+        assert response["order_type"] == "GTC"
+        assert response["post_only"] is True
+        order_args = fake_clob_client.created_order
+        assert isinstance(order_args, polymarket_adapter_module.OrderArgsV2)
+        assert order_args.builder_code == builder_code
+        assert not hasattr(order_args, "fee_rate_bps")
+        assert not hasattr(order_args, "feeRateBps")
+        assert not hasattr(order_args, "nonce")
+        assert not hasattr(order_args, "taker")
+
+    @pytest.mark.asyncio
+    async def test_market_order_uses_v2_order_args_without_manual_fee_fields(
+        self, adapter
+    ):
+        builder_code = "0x" + "34" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
+        adapter.ensure_onchain_approvals = AsyncMock(return_value=(True, {}))
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.created_order = None
+
+            async def create_market_order(self, order_args):
+                self.created_order = order_args
+                return {"signed": True}
+
+            def post_order(self, order, order_type, post_only):
+                return {
+                    "order": order,
+                    "order_type": order_type,
+                    "post_only": post_only,
+                }
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.place_market_order(
+            token_id="123",
+            side="BUY",
+            amount=10.0,
+        )
+
+        assert ok is True
+        assert response["order_type"] == "FOK"
+        assert response["post_only"] is False
+        order_args = fake_clob_client.created_order
+        assert isinstance(order_args, polymarket_adapter_module.MarketOrderArgs)
+        assert order_args.builder_code == builder_code
+        assert order_args.user_usdc_balance == 0
+        assert not hasattr(order_args, "fee_rate_bps")
+        assert not hasattr(order_args, "feeRateBps")
+        assert not hasattr(order_args, "nonce")
+        assert not hasattr(order_args, "taker")
+
+    @pytest.mark.asyncio
+    async def test_cancel_order_uses_v2_cancel_order(self, adapter):
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.payload = None
+
+            def cancel_order(self, payload):
+                self.payload = payload
+                return {"canceled": True}
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.cancel_order(order_id="order-123")
+
+        assert ok is True
+        assert response == {"canceled": True}
+        assert isinstance(
+            fake_clob_client.payload, polymarket_adapter_module.OrderPayload
+        )
+        assert fake_clob_client.payload.orderID == "order-123"
+
+    @pytest.mark.asyncio
+    async def test_list_open_orders_uses_v2_get_open_orders(self, adapter):
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.params = None
+
+            def get_open_orders(self, params):
+                self.params = params
+                return [{"id": "open-1"}]
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.list_open_orders(token_id="tok-123")
+
+        assert ok is True
+        assert response == [{"id": "open-1"}]
+        assert isinstance(
+            fake_clob_client.params, polymarket_adapter_module.OpenOrderParams
+        )
+        assert fake_clob_client.params.asset_id == "tok-123"
 
     @pytest.mark.asyncio
     async def test_list_markets(self, adapter, monkeypatch):
@@ -287,7 +472,7 @@ class TestPolymarketAdapter:
 
         mock_contract = MagicMock()
         mock_contract.functions.balanceOf.return_value = MagicMock(
-            call=AsyncMock(side_effect=[1_230_000, 4_560_000])
+            call=AsyncMock(side_effect=[7_890_000, 1_230_000, 4_560_000])
         )
         mock_web3 = MagicMock()
         mock_web3.eth.contract.return_value = mock_contract
@@ -323,8 +508,11 @@ class TestPolymarketAdapter:
         assert state["openOrders"] == [{"id": "order_1"}]
         assert state["orders"] == [{"id": "order_1"}]
 
+        assert state["pusd_balance"] == pytest.approx(7.89)
         assert state["usdc_e_balance"] == pytest.approx(1.23)
         assert state["usdc_balance"] == pytest.approx(4.56)
+        assert state["balances"]["pusd"]["address"] == POLYGON_P_USDC_PROXY_ADDRESS
+        assert state["balances"]["pusd"]["amount_base_units"] == 7_890_000
         assert state["balances"]["usdc_e"]["amount_base_units"] == 1_230_000
         assert state["balances"]["usdc"]["amount_base_units"] == 4_560_000
 
@@ -335,11 +523,20 @@ class TestPolymarketAdapter:
         async def sign_cb(_tx: dict) -> bytes:
             return b""
 
+        mock_web3 = MagicMock()
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
-            AsyncMock(return_value=2_000_000),
+            AsyncMock(side_effect=[2_000_000, 200_000, 1_199_000]),
         )
 
         best_quote = {
@@ -362,12 +559,24 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module,
             "ensure_allowance",
-            AsyncMock(return_value=(True, "0xapprove")),
+            AsyncMock(side_effect=[(True, "0xapprove_swap"), (True, "0xapprove_wrap")]),
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "encode_call",
+            AsyncMock(
+                return_value={
+                    "to": POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
+                    "from": from_address,
+                    "data": "0xwrap",
+                    "chainId": 137,
+                }
+            ),
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
             "send_transaction",
-            AsyncMock(return_value="0xswap"),
+            AsyncMock(side_effect=["0xswap", "0xwrap"]),
         )
 
         ok, res = await adapter.bridge_deposit(
@@ -379,9 +588,91 @@ class TestPolymarketAdapter:
         )
         assert ok is True
         assert isinstance(res, dict)
-        assert res["method"] == "brap"
+        assert res["method"] == "brap_then_wrap"
+        assert res["tx_hash"] == "0xwrap"
+        assert res["approve_tx_hash"] == "0xapprove_swap"
         assert res["from_token_address"].lower() == POLYGON_USDC_ADDRESS.lower()
-        assert res["to_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
+        assert res["to_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
+        assert res["provider"] == "enso"
+        assert res["input_amount"] == 1_000_000
+        assert res["output_amount"] == 999_000
+        assert res["swap_tx_hash"] == "0xswap"
+        assert res["swap_approve_tx_hash"] == "0xapprove_swap"
+        assert res["wrap_tx_hash"] == "0xwrap"
+        assert res["wrap_approve_tx_hash"] == "0xapprove_wrap"
+        assert res["swap"]["tx_hash"] == "0xswap"
+        assert res["wrap"]["tx_hash"] == "0xwrap"
+        assert res["wrap"]["amount_base_unit"] == "999000"
+
+    @pytest.mark.asyncio
+    async def test_bridge_deposit_wraps_usdce_to_pusd(self, adapter, monkeypatch):
+        from_address = "0x000000000000000000000000000000000000dEaD"
+        recipient_address = "0x000000000000000000000000000000000000bEEF"
+
+        async def sign_cb(_tx: dict) -> bytes:
+            return b""
+
+        mock_web3 = MagicMock()
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=2_000_000),
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "ensure_allowance",
+            AsyncMock(return_value=(True, "0xapprove_wrap")),
+        )
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
+                "from": from_address,
+                "data": "0xwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "send_transaction",
+            AsyncMock(return_value="0xwrap"),
+        )
+
+        ok, res = await adapter.bridge_deposit(
+            from_chain_id=137,
+            from_token_address=POLYGON_USDC_E_ADDRESS,
+            amount=1.0,
+            recipient_address=recipient_address,
+            token_decimals=6,
+        )
+        assert ok is True
+        assert isinstance(res, dict)
+        assert res["method"] == "pusd_wrap"
+        assert res["tx_hash"] == "0xwrap"
+        assert res["to_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
+        assert res["recipient_address"].lower() == recipient_address.lower()
+        assert (
+            encode_call.await_args.kwargs["target"]
+            == POLYMARKET_COLLATERAL_ONRAMP_ADDRESS
+        )
+        assert (
+            encode_call.await_args.kwargs["args"][0].lower()
+            == POLYGON_USDC_E_ADDRESS.lower()
+        )
+        assert (
+            encode_call.await_args.kwargs["args"][1].lower()
+            == recipient_address.lower()
+        )
+        assert encode_call.await_args.kwargs["args"][2] == 1_000_000
 
     @pytest.mark.asyncio
     async def test_bridge_deposit_falls_back_to_polymarket_bridge(
@@ -542,6 +833,56 @@ class TestPolymarketAdapter:
         assert parent_scan.await_count == 0
 
     @pytest.mark.asyncio
+    async def test_preflight_redeem_checks_pusd_candidate(self, adapter, monkeypatch):
+        condition_id = "0x" + "11" * 32
+        holder = "0x" + "22" * 20
+
+        monkeypatch.setattr(
+            adapter, "_outcome_index_sets", AsyncMock(return_value=[1, 2])
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_find_parent_collection_id",
+            AsyncMock(side_effect=ValueError({"code": -32005, "message": "too many"})),
+        )
+
+        helper = AsyncMock(
+            side_effect=[
+                [b"\x01" * 32, b"\x02" * 32],
+                [100, 200],
+                [0, 0],
+                [b"\x03" * 32, b"\x04" * 32],
+                [300, 400],
+                [10, 0],
+            ]
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            helper,
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = MagicMock()
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
+
+        ok, path = await adapter.preflight_redeem(
+            condition_id=condition_id, holder=holder
+        )
+
+        assert ok is True
+        assert isinstance(path, dict)
+        assert path["collateral"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
+        assert path["indexSets"] == [1]
+
+    @pytest.mark.asyncio
     async def test_preflight_redeem_ignores_log_scan_errors(self, adapter, monkeypatch):
         condition_id = "0x" + "11" * 32
         holder = "0x" + "22" * 20
@@ -551,7 +892,7 @@ class TestPolymarketAdapter:
         )
 
         mock_ctf = MagicMock()
-        # 3 collaterals × 2 index_sets = 6 calls per function
+        # 4 collaterals × 2 index_sets = 8 calls per function
         mock_ctf.functions.getCollectionId.return_value = MagicMock(
             call=AsyncMock(return_value=b"\x01" * 32)
         )
@@ -609,6 +950,15 @@ class TestPolymarketAdapter:
             "get_quote",
             AsyncMock(return_value={"best_quote": best_quote, "quotes": []}),
         )
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+                "from": from_address,
+                "data": "0xunwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
         monkeypatch.setattr(
             polymarket_adapter_module,
             "ensure_allowance",
@@ -617,7 +967,7 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module,
             "send_transaction",
-            AsyncMock(return_value="0xswap"),
+            AsyncMock(side_effect=["0xunwrap", "0xswap"]),
         )
 
         ok, res = await adapter.bridge_withdraw(
@@ -629,9 +979,72 @@ class TestPolymarketAdapter:
         )
         assert ok is True
         assert isinstance(res, dict)
-        assert res["method"] == "brap"
-        assert res["from_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
+        assert res["method"] == "unwrap_then_brap"
+        assert res["tx_hash"] == "0xswap"
+        assert res["approve_tx_hash"] == "0xapprove"
+        assert res["from_token_address"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
         assert res["to_token_address"].lower() == POLYGON_USDC_ADDRESS.lower()
+        assert res["provider"] == "enso"
+        assert res["input_amount"] == 1_000_000
+        assert res["output_amount"] == 999_000
+        assert res["unwrap_tx_hash"] == "0xunwrap"
+        assert res["swap_tx_hash"] == "0xswap"
+        assert res["swap_approve_tx_hash"] == "0xapprove"
+        assert res["unwrap"]["tx_hash"] == "0xunwrap"
+        assert res["swap"]["tx_hash"] == "0xswap"
+        assert encode_call.await_args.kwargs["fn_name"] == "unwrap"
+        assert (
+            encode_call.await_args.kwargs["target"]
+            == POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS
+        )
+        assert encode_call.await_args.kwargs["args"][2] == 1_000_000
+
+    @pytest.mark.asyncio
+    async def test_bridge_withdraw_unwraps_to_polygon_usdce(self, adapter, monkeypatch):
+        from_address = "0x000000000000000000000000000000000000dEaD"
+
+        async def sign_cb(_tx: dict) -> bytes:
+            return b""
+
+        monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "ensure_allowance",
+            AsyncMock(return_value=(True, "0xapprove_unwrap")),
+        )
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+                "from": from_address,
+                "data": "0xunwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "send_transaction",
+            AsyncMock(return_value="0xunwrap"),
+        )
+
+        ok, res = await adapter.bridge_withdraw(
+            amount_usdce=1.0,
+            to_chain_id=137,
+            to_token_address=POLYGON_USDC_E_ADDRESS,
+            recipient_addr=from_address,
+            token_decimals=6,
+        )
+        assert ok is True
+        assert isinstance(res, dict)
+        assert res["method"] == "pusd_unwrap"
+        assert res["tx_hash"] == "0xunwrap"
+        assert res["approve_tx_hash"] == "0xapprove_unwrap"
+        assert res["to_token_address"].lower() == POLYGON_USDC_E_ADDRESS.lower()
+        assert encode_call.await_args.kwargs["fn_name"] == "unwrap"
+        assert (
+            encode_call.await_args.kwargs["target"]
+            == POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS
+        )
 
     @pytest.mark.asyncio
     async def test_bridge_withdraw_falls_back_to_polymarket_bridge(
@@ -643,6 +1056,20 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "ensure_allowance",
+            AsyncMock(return_value=(True, "0xapprove_unwrap")),
+        )
+        encode_call = AsyncMock(
+            return_value={
+                "to": POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
+                "from": from_address,
+                "data": "0xunwrap",
+                "chainId": 137,
+            }
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "encode_call", encode_call)
         monkeypatch.setattr(
             polymarket_adapter_module.BRAP_CLIENT,
             "get_quote",
@@ -673,7 +1100,7 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module,
             "send_transaction",
-            AsyncMock(return_value="0xtransfer"),
+            AsyncMock(side_effect=["0xunwrap", "0xtransfer"]),
         )
 
         ok, res = await adapter.bridge_withdraw(
@@ -687,3 +1114,4 @@ class TestPolymarketAdapter:
         assert isinstance(res, dict)
         assert res["method"] == "polymarket_bridge"
         assert res["tx_hash"] == "0xtransfer"
+        assert res["unwrap"]["tx_hash"] == "0xunwrap"

@@ -66,9 +66,8 @@ A full end-to-end backtest is not possible from Delta Lab data alone. The most m
 ### HYPE perp funding backtest
 
 ```python
-from wayfinder_paths.core.backtesting import (
-    fetch_funding_rates, fetch_prices, backtest_delta_neutral,
-)
+from wayfinder_paths.core.backtesting.data import fetch_funding_rates, fetch_prices
+from wayfinder_paths.core.backtesting.helpers import backtest_delta_neutral
 
 # Check historical HYPE funding — this tells you if the perp short was
 # collecting funding (total_funding <= 0 means income received)

@@ -11,5 +11,4 @@ capabilities:
   - "bridge.deposit"
   - "bridge.withdraw"
 dependencies:
-  - "py-clob-client"
-
+  - "py-clob-client-v2-wayfinder"

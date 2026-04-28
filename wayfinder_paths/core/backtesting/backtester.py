@@ -5,7 +5,8 @@ This module provides simple backtesting functionality with realistic transaction
 proper position tracking, and comprehensive performance metrics.
 
 Basic usage:
-    >>> from wayfinder_paths.core.backtesting import run_backtest, BacktestConfig
+    >>> from wayfinder_paths.core.backtesting.backtester import run_backtest
+    >>> from wayfinder_paths.core.backtesting.types import BacktestConfig
     >>> config = BacktestConfig(leverage=2.0, fee_rate=0.0004)
     >>> result = run_backtest(prices_df, target_positions_df, config)
     >>> print(result.stats)

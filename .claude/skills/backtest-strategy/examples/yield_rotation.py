@@ -7,7 +7,7 @@ supply at the highest available APR. Uses trailing 7-day average rate as signal.
 
 from __future__ import annotations
 
-from wayfinder_paths.core.backtesting import backtest_yield_rotation
+from wayfinder_paths.core.backtesting.yield_strategies import backtest_yield_rotation
 
 
 async def main() -> None:

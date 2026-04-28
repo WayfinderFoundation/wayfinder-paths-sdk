@@ -102,6 +102,16 @@ def get_api_base_url() -> str:
     return _DEFAULT_API_BASE_URL
 
 
+def get_polygon_builder_code() -> str | None:
+    system = CONFIG.get("system", {})
+    polymarket_builder_code = system.get("polymarket_builder_code")
+    if isinstance(polymarket_builder_code, str):
+        polymarket_builder_code = polymarket_builder_code.strip()
+        if polymarket_builder_code:
+            return polymarket_builder_code
+    return None
+
+
 def get_paths_api_base_url() -> str:
     system = CONFIG.get("system", {})
     paths_url = system.get("paths_api_base_url")
