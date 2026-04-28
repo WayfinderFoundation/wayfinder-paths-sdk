@@ -179,7 +179,9 @@ class TestPolymarketAdapter:
 
         assert ok is True
         assert response == {"canceled": True}
-        assert isinstance(fake_clob_client.payload, polymarket_adapter_module.OrderPayload)
+        assert isinstance(
+            fake_clob_client.payload, polymarket_adapter_module.OrderPayload
+        )
         assert fake_clob_client.payload.orderID == "order-123"
 
     @pytest.mark.asyncio
