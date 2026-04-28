@@ -26,13 +26,13 @@ Fast path:
 ok, res = await adapter.place_prediction(
     market_slug="bitcoin-above-70k-on-february-9",
     outcome="YES",
-    amount_usdc=2.0,  # collateral to spend (USDC.e)
+    amount_collateral=2.0,  # dollar-denominated buy amount; spent as pUSD collateral under V2
 )
 ```
 
 MCP shortcut:
 
-- `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_usdc=2)`
+- `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_collateral=2)`
 
 Lower-level control (CLOB token id + side):
 

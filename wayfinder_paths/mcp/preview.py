@@ -276,7 +276,7 @@ async def build_polymarket_execute_preview(
             f"market_slug: {req.get('market_slug')}\n"
             f"outcome: {req.get('outcome')}\n"
             f"token_id: {req.get('token_id')}\n"
-            f"amount_usdc: {req.get('amount_usdc')}\n"
+            f"amount_collateral: {req.get('amount_collateral')}\n"
             f"shares: {req.get('shares')}"
         )
         return {"summary": header + base + details, "recipient_mismatch": False}
