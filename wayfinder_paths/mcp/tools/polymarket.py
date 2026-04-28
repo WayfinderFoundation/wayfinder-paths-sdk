@@ -305,9 +305,7 @@ async def polymarket(
                 try:
                     quote_amount = float(amount_collateral)
                 except (TypeError, ValueError):
-                    return err(
-                        "invalid_request", "amount_collateral must be a number"
-                    )
+                    return err("invalid_request", "amount_collateral must be a number")
             else:
                 if shares is None:
                     return err("invalid_request", "shares is required for SELL quote")
