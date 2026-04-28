@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,86 +44,21 @@ class TokenMetadata:
     decimals: int
 
 
-def _coerce_tuple_value(value: Any, idx: int, key: str) -> Any:
-    if isinstance(value, dict):
-        return value.get(key)
-    try:
-        attr = getattr(value, key)
-        return attr() if callable(attr) else attr
-    except Exception:
-        pass
-    try:
-        return value[idx]
-    except Exception:
-        return None
-
-
-def _parse_asset_info(value: Any) -> dict[str, Any]:
+def _parse_asset_info(value: Sequence[Any]) -> dict[str, Any]:
     return {
-        "offset": int(_coerce_tuple_value(value, 0, "offset") or 0),
-        "asset": to_checksum_address(_coerce_tuple_value(value, 1, "asset")),
-        "price_feed": to_checksum_address(_coerce_tuple_value(value, 2, "priceFeed")),
-        "scale": int(_coerce_tuple_value(value, 3, "scale") or 0),
-        "borrow_collateral_factor_raw": int(
-            _coerce_tuple_value(value, 4, "borrowCollateralFactor") or 0
-        ),
-        "liquidate_collateral_factor_raw": int(
-            _coerce_tuple_value(value, 5, "liquidateCollateralFactor") or 0
-        ),
-        "liquidation_factor_raw": int(
-            _coerce_tuple_value(value, 6, "liquidationFactor") or 0
-        ),
-        "supply_cap": int(_coerce_tuple_value(value, 7, "supplyCap") or 0),
+        "offset": int(value[0] or 0),
+        "asset": to_checksum_address(value[1]),
+        "price_feed": to_checksum_address(value[2]),
+        "scale": int(value[3] or 0),
+        "borrow_collateral_factor_raw": int(value[4] or 0),
+        "liquidate_collateral_factor_raw": int(value[5] or 0),
+        "liquidation_factor_raw": int(value[6] or 0),
+        "supply_cap": int(value[7] or 0),
     }
 
 
-def _parse_totals_basic(value: Any) -> dict[str, int]:
-    return {
-        "base_supply_index": int(_coerce_tuple_value(value, 0, "baseSupplyIndex") or 0),
-        "base_borrow_index": int(_coerce_tuple_value(value, 1, "baseBorrowIndex") or 0),
-        "tracking_supply_index": int(
-            _coerce_tuple_value(value, 2, "trackingSupplyIndex") or 0
-        ),
-        "tracking_borrow_index": int(
-            _coerce_tuple_value(value, 3, "trackingBorrowIndex") or 0
-        ),
-        "total_supply_base": int(_coerce_tuple_value(value, 4, "totalSupplyBase") or 0),
-        "total_borrow_base": int(_coerce_tuple_value(value, 5, "totalBorrowBase") or 0),
-        "last_accrual_time": int(_coerce_tuple_value(value, 6, "lastAccrualTime") or 0),
-        "pause_flags": int(_coerce_tuple_value(value, 7, "pauseFlags") or 0),
-    }
-
-
-def _parse_user_basic(value: Any) -> dict[str, int]:
-    return {
-        "principal": int(_coerce_tuple_value(value, 0, "principal") or 0),
-        "base_tracking_index": int(
-            _coerce_tuple_value(value, 1, "baseTrackingIndex") or 0
-        ),
-        "base_tracking_accrued": int(
-            _coerce_tuple_value(value, 2, "baseTrackingAccrued") or 0
-        ),
-        "assets_in": int(_coerce_tuple_value(value, 3, "assetsIn") or 0),
-    }
-
-
-def _parse_reward_owed(value: Any) -> tuple[str | None, int]:
-    token = _coerce_tuple_value(value, 0, "token")
-    if not token or token == ZERO_ADDRESS:
-        return None, int(_coerce_tuple_value(value, 1, "owed") or 0)
-    return to_checksum_address(token), int(_coerce_tuple_value(value, 1, "owed") or 0)
-
-
-def _parse_reward_config(value: Any) -> dict[str, Any]:
-    token = _coerce_tuple_value(value, 0, "token")
-    return {
-        "token": (
-            None if not token or token == ZERO_ADDRESS else to_checksum_address(token)
-        ),
-        "rescale_factor": int(_coerce_tuple_value(value, 1, "rescaleFactor") or 0),
-        "should_upscale": bool(_coerce_tuple_value(value, 2, "shouldUpscale") or False),
-        "multiplier": int(_coerce_tuple_value(value, 3, "multiplier") or 0),
-    }
+def _parse_total_collateral(value: Sequence[Any]) -> int:
+    return int(value[0] or 0)
 
 
 def _factor_to_float(raw: int) -> float:
@@ -145,29 +81,6 @@ def _rate_to_apr(raw_rate: int) -> float:
     if raw_rate <= 0:
         return 0.0
     return (raw_rate / MANTISSA) * SECONDS_PER_YEAR
-
-
-def _scale_to_decimals(scale: int) -> int | None:
-    if scale <= 0:
-        return None
-    value = scale
-    decimals = 0
-    while value > 1 and value % 10 == 0:
-        value //= 10
-        decimals += 1
-    if value == 1:
-        return decimals
-    return None
-
-
-def _pause_flags_to_dict(flags: int) -> dict[str, bool]:
-    return {
-        "supply_paused": bool(flags & (1 << 0)),
-        "transfer_paused": bool(flags & (1 << 1)),
-        "withdraw_paused": bool(flags & (1 << 2)),
-        "absorb_paused": bool(flags & (1 << 3)),
-        "buy_paused": bool(flags & (1 << 4)),
-    }
 
 
 class CompoundAdapter(BaseAdapter):
@@ -308,9 +221,11 @@ class CompoundAdapter(BaseAdapter):
         checksum_asset = to_checksum_address(asset)
         async with web3_from_chain_id(chain_id) as web3:
             contract = web3.eth.contract(address=checksum_comet, abi=COMET_ABI)
-            raw_info = await contract.functions.getAssetInfoByAddress(
-                checksum_asset
-            ).call(block_identifier="latest")
+            raw_info = tuple(
+                await contract.functions.getAssetInfoByAddress(checksum_asset).call(
+                    block_identifier="latest"
+                )
+            )
         info = _parse_asset_info(raw_info)
         if info["asset"].lower() != checksum_asset.lower():
             raise ValueError(
@@ -330,8 +245,10 @@ class CompoundAdapter(BaseAdapter):
         checksum_comet = to_checksum_address(comet)
         contract = web3.eth.contract(address=checksum_rewards, abi=COMET_REWARDS_ABI)
         try:
-            raw = await contract.functions.rewardConfig(checksum_comet).call(
-                block_identifier="latest"
+            raw = tuple(
+                await contract.functions.rewardConfig(checksum_comet).call(
+                    block_identifier="latest"
+                )
             )
         except Exception:
             return {
@@ -340,7 +257,17 @@ class CompoundAdapter(BaseAdapter):
                 "should_upscale": False,
                 "multiplier": 0,
             }
-        return _parse_reward_config(raw)
+        token = raw[0]
+        return {
+            "token": (
+                None
+                if not token or token == ZERO_ADDRESS
+                else to_checksum_address(token)
+            ),
+            "rescale_factor": int(raw[1] or 0),
+            "should_upscale": bool(raw[2] or False),
+            "multiplier": int(raw[3] or 0),
+        }
 
     async def _get_reward_owed(
         self,
@@ -360,10 +287,12 @@ class CompoundAdapter(BaseAdapter):
         checksum_account = to_checksum_address(account)
         contract = web3.eth.contract(address=checksum_rewards, abi=COMET_REWARDS_ABI)
         try:
-            raw_owed = await contract.functions.getRewardOwed(
-                checksum_comet,
-                checksum_account,
-            ).call(block_identifier="pending")
+            raw_owed = tuple(
+                await contract.functions.getRewardOwed(
+                    checksum_comet,
+                    checksum_account,
+                ).call(block_identifier="pending")
+            )
         except Exception as exc:
             return {
                 "reward_token": configured_reward_token,
@@ -371,7 +300,12 @@ class CompoundAdapter(BaseAdapter):
                 "reward_error": str(exc),
             }
 
-        reward_token, reward_owed = _parse_reward_owed(raw_owed)
+        reward_token = raw_owed[0]
+        reward_owed = int(raw_owed[1] or 0)
+        if not reward_token or reward_token == ZERO_ADDRESS:
+            reward_token = None
+        else:
+            reward_token = to_checksum_address(reward_token)
         return {
             "reward_token": reward_token or configured_reward_token,
             "reward_owed": reward_owed,
@@ -408,7 +342,7 @@ class CompoundAdapter(BaseAdapter):
                     Call(comet, "numAssets"),
                     Call(comet, "totalSupply"),
                     Call(comet, "totalBorrow"),
-                    Call(comet, "totalsBasic", postprocess=_parse_totals_basic),
+                    Call(comet, "totalsBasic"),
                     Call(comet, "getUtilization"),
                     Call(comet, "baseBorrowMin"),
                     Call(comet, "baseMinForRewards"),
@@ -437,6 +371,17 @@ class CompoundAdapter(BaseAdapter):
                 base_tracking_borrow_speed,
                 target_reserves,
             ) = core_rows
+            totals_basic_row = tuple(totals_basic)
+            totals_basic = {
+                "base_supply_index": int(totals_basic_row[0] or 0),
+                "base_borrow_index": int(totals_basic_row[1] or 0),
+                "tracking_supply_index": int(totals_basic_row[2] or 0),
+                "tracking_borrow_index": int(totals_basic_row[3] or 0),
+                "total_supply_base": int(totals_basic_row[4] or 0),
+                "total_borrow_base": int(totals_basic_row[5] or 0),
+                "last_accrual_time": int(totals_basic_row[6] or 0),
+                "pause_flags": int(totals_basic_row[7] or 0),
+            }
 
             rate_rows, reward_cfg, base_meta = await asyncio.gather(
                 read_only_calls_multicall_or_gather(
@@ -481,7 +426,7 @@ class CompoundAdapter(BaseAdapter):
                             comet,
                             "getAssetInfo",
                             args=(i,),
-                            postprocess=_parse_asset_info,
+                            postprocess=lambda row: _parse_asset_info(tuple(row)),
                         )
                         for i in range(num_assets)
                     ],
@@ -504,15 +449,25 @@ class CompoundAdapter(BaseAdapter):
                         web3=web3,
                     )
                 )
-            metadata_coros.extend(
-                self._token_metadata(
-                    chain_id=seed.chain_id,
-                    token_address=asset_info["asset"],
-                    web3=web3,
-                    fallback_decimals=_scale_to_decimals(asset_info["scale"]),
+            for asset_info in asset_infos:
+                scale = asset_info["scale"]
+                fallback_decimals: int | None = None
+                if scale > 0:
+                    value = scale
+                    decimals = 0
+                    while value > 1 and value % 10 == 0:
+                        value //= 10
+                        decimals += 1
+                    if value == 1:
+                        fallback_decimals = decimals
+                metadata_coros.append(
+                    self._token_metadata(
+                        chain_id=seed.chain_id,
+                        token_address=asset_info["asset"],
+                        web3=web3,
+                        fallback_decimals=fallback_decimals,
+                    )
                 )
-                for asset_info in asset_infos
-            )
 
             metadata_rows: list[TokenMetadata] = []
             if asset_infos and include_prices:
@@ -524,9 +479,7 @@ class CompoundAdapter(BaseAdapter):
                             comet,
                             "totalsCollateral",
                             args=(info["asset"],),
-                            postprocess=lambda row: int(
-                                _coerce_tuple_value(row, 0, "totalSupplyAsset") or 0
-                            ),
+                            postprocess=lambda row: _parse_total_collateral(tuple(row)),
                         )
                         for info in asset_infos
                     ],
@@ -576,9 +529,7 @@ class CompoundAdapter(BaseAdapter):
                             comet,
                             "totalsCollateral",
                             args=(info["asset"],),
-                            postprocess=lambda row: int(
-                                _coerce_tuple_value(row, 0, "totalSupplyAsset") or 0
-                            ),
+                            postprocess=lambda row: _parse_total_collateral(tuple(row)),
                         )
                         for info in asset_infos
                     ],
@@ -684,7 +635,13 @@ class CompoundAdapter(BaseAdapter):
             "total_supply": total_supply,
             "total_borrow": total_borrow,
             "totals_basic": totals_basic,
-            "pause_state": _pause_flags_to_dict(totals_basic["pause_flags"]),
+            "pause_state": {
+                "supply_paused": bool(totals_basic["pause_flags"] & (1 << 0)),
+                "transfer_paused": bool(totals_basic["pause_flags"] & (1 << 1)),
+                "withdraw_paused": bool(totals_basic["pause_flags"] & (1 << 2)),
+                "absorb_paused": bool(totals_basic["pause_flags"] & (1 << 3)),
+                "buy_paused": bool(totals_basic["pause_flags"] & (1 << 4)),
+            },
             "utilization": utilization,
             "base_supply_rate": supply_rate,
             "base_borrow_rate": borrow_rate,
@@ -823,7 +780,6 @@ class CompoundAdapter(BaseAdapter):
                         comet_contract,
                         "userBasic",
                         args=(checksum_account,),
-                        postprocess=_parse_user_basic,
                     ),
                 ] + [
                     Call(
@@ -856,7 +812,13 @@ class CompoundAdapter(BaseAdapter):
             base_tracking_accrued = rows[2]
             is_borrow_collateralized = rows[3]
             is_liquidatable = rows[4]
-            user_basic = rows[5]
+            user_basic_row = tuple(rows[5])
+            user_basic = {
+                "principal": int(user_basic_row[0] or 0),
+                "base_tracking_index": int(user_basic_row[1] or 0),
+                "base_tracking_accrued": int(user_basic_row[2] or 0),
+                "assets_in": int(user_basic_row[3] or 0),
+            }
             collateral_balances = rows[6:]
 
             reward_decimals = market.get("reward_token_decimals")

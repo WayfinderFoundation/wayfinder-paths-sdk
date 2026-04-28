@@ -167,7 +167,7 @@ Adapters live in `wayfinder_paths/adapters` and encapsulate protocol-specific lo
 - `BorosAdapter` (Boros fixed-rate markets, margin accounts, and vaults)
 - `BRAPAdapter` (cross-chain swaps + bridges)
 - `CCXTAdapter` (multi-exchange CEX trading via CCXT)
-- `CompoundAdapter` (Compound III / Comet lending, collateral, borrowing, and rewards across official markets)
+- `CompoundAdapter` (Compound III / Comet lending, collateral, borrowing, and rewards on Ethereum, Base, Arbitrum, and Polygon)
 - `EthenaVaultAdapter` (Ethena sUSDe staking vault with cooldown withdrawals)
 - `EtherfiAdapter` (ether.fi ETH liquid restaking via eETH / weETH with async withdrawals)
 - `HyperlendAdapter` (HyperLend lending/borrowing)
