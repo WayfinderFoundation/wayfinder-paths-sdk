@@ -47,7 +47,9 @@ ok, res = await adapter.bridge_deposit(
 )
 ```
 
-### pUSD / USDC.e → Polygon native USDC (withdraw)
+### pUSD → Polygon native USDC (withdraw)
+
+`bridge_withdraw()` starts from Polymarket collateral (`pUSD`) and will unwrap to `USDC.e` internally before delivering the requested destination asset.
 
 ```python
 from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID, POLYGON_USDC_ADDRESS
