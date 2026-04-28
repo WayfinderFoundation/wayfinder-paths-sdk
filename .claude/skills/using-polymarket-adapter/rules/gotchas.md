@@ -10,7 +10,7 @@
 
 - `get_price(...)` / `mcp__wayfinder__polymarket(action="price", ...)` returns the current quoted price.
 - `quote_market_order(...)` / `mcp__wayfinder__polymarket(action="quote", ...)` walks the live book and returns weighted-average execution, worst fill, and partial-fill status.
-- For quote requests: `BUY` uses pUSD / dollar-denominated collateral, `SELL` uses shares.
+- For quote requests: `BUY` uses pUSD, `SELL` uses shares.
 
 ## pUSD vs USDC / USDC.e (collateral mismatch)
 
