@@ -937,7 +937,7 @@ class PolymarketAdapter(BaseAdapter):
         from_token_address: str,
         recipient_address: str,
         to_chain_id: int | str = POLYGON_CHAIN_ID,
-        to_token_address: str = POLYGON_USDC_E_ADDRESS,
+        to_token_address: str = POLYGON_P_USDC_PROXY_ADDRESS,
     ) -> tuple[bool, dict[str, Any] | str]:
         body = {
             "fromAmountBaseUnit": from_amount_base_unit,
@@ -1024,7 +1024,7 @@ class PolymarketAdapter(BaseAdapter):
         Other supported source tokens / chains are not normalized here via an
         arbitrary BRAP route. They currently fall back to the async Polymarket
         Bridge deposit-address flow from `from_chain_id`, which lands as
-        USDC.e and may still need wrapping to pUSD afterward.
+        pUSD on Polygon.
         """
         from_address, sign_cb = self._require_signer()
         from_token = to_checksum_address(from_token_address)
@@ -1485,10 +1485,7 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
         try:
-            if hasattr(self.clob_client, "cancel_order"):
-                resp = self.clob_client.cancel_order(OrderPayload(orderID=order_id))
-            else:
-                resp = self.clob_client.cancel(order_id)
+            resp = self.clob_client.cancel_order(OrderPayload(orderID=order_id))
             return True, resp if isinstance(resp, dict) else {"result": resp}
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -1506,10 +1503,7 @@ class PolymarketAdapter(BaseAdapter):
             if token_id:
                 # CLOB uses `asset_id` for the outcome token id returned by Gamma `clobTokenIds`.
                 params = OpenOrderParams(asset_id=token_id)  # type: ignore[misc]
-            if hasattr(self.clob_client, "get_open_orders"):
-                data = self.clob_client.get_open_orders(params)
-            else:
-                data = self.clob_client.get_orders(params)
+            data = self.clob_client.get_open_orders(params)
             if isinstance(data, list):
                 return True, data
             if isinstance(data, dict) and isinstance(data.get("data"), list):
@@ -1915,6 +1909,7 @@ class PolymarketAdapter(BaseAdapter):
 
         collaterals = candidate_collaterals or [
             POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+            POLYGON_P_USDC_PROXY_ADDRESS,
             POLYGON_USDC_ADDRESS,
             POLYGON_USDC_E_ADDRESS,
         ]

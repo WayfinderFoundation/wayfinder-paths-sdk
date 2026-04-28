@@ -161,6 +161,52 @@ class TestPolymarketAdapter:
         assert not hasattr(order_args, "taker")
 
     @pytest.mark.asyncio
+    async def test_cancel_order_uses_v2_cancel_order(self, adapter):
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.payload = None
+
+            def cancel_order(self, payload):
+                self.payload = payload
+                return {"canceled": True}
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.cancel_order(order_id="order-123")
+
+        assert ok is True
+        assert response == {"canceled": True}
+        assert isinstance(fake_clob_client.payload, polymarket_adapter_module.OrderPayload)
+        assert fake_clob_client.payload.orderID == "order-123"
+
+    @pytest.mark.asyncio
+    async def test_list_open_orders_uses_v2_get_open_orders(self, adapter):
+        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+
+        class FakeClobClient:
+            def __init__(self):
+                self.params = None
+
+            def get_open_orders(self, params):
+                self.params = params
+                return [{"id": "open-1"}]
+
+        fake_clob_client = FakeClobClient()
+        adapter._clob_client = fake_clob_client
+
+        ok, response = await adapter.list_open_orders(token_id="tok-123")
+
+        assert ok is True
+        assert response == [{"id": "open-1"}]
+        assert isinstance(
+            fake_clob_client.params, polymarket_adapter_module.OpenOrderParams
+        )
+        assert fake_clob_client.params.asset_id == "tok-123"
+
+    @pytest.mark.asyncio
     async def test_list_markets(self, adapter, monkeypatch):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
@@ -785,6 +831,56 @@ class TestPolymarketAdapter:
         assert parent_scan.await_count == 0
 
     @pytest.mark.asyncio
+    async def test_preflight_redeem_checks_pusd_candidate(self, adapter, monkeypatch):
+        condition_id = "0x" + "11" * 32
+        holder = "0x" + "22" * 20
+
+        monkeypatch.setattr(
+            adapter, "_outcome_index_sets", AsyncMock(return_value=[1, 2])
+        )
+        monkeypatch.setattr(
+            adapter,
+            "_find_parent_collection_id",
+            AsyncMock(side_effect=ValueError({"code": -32005, "message": "too many"})),
+        )
+
+        helper = AsyncMock(
+            side_effect=[
+                [b"\x01" * 32, b"\x02" * 32],
+                [100, 200],
+                [0, 0],
+                [b"\x03" * 32, b"\x04" * 32],
+                [300, 400],
+                [10, 0],
+            ]
+        )
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "read_only_calls_multicall_or_gather",
+            helper,
+        )
+
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = MagicMock()
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
+
+        ok, path = await adapter.preflight_redeem(
+            condition_id=condition_id, holder=holder
+        )
+
+        assert ok is True
+        assert isinstance(path, dict)
+        assert path["collateral"].lower() == POLYGON_P_USDC_PROXY_ADDRESS.lower()
+        assert path["indexSets"] == [1]
+
+    @pytest.mark.asyncio
     async def test_preflight_redeem_ignores_log_scan_errors(self, adapter, monkeypatch):
         condition_id = "0x" + "11" * 32
         holder = "0x" + "22" * 20
@@ -794,7 +890,7 @@ class TestPolymarketAdapter:
         )
 
         mock_ctf = MagicMock()
-        # 3 collaterals × 2 index_sets = 6 calls per function
+        # 4 collaterals × 2 index_sets = 8 calls per function
         mock_ctf.functions.getCollectionId.return_value = MagicMock(
             call=AsyncMock(return_value=b"\x01" * 32)
         )
