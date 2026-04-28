@@ -146,7 +146,7 @@ Important distinction:
 
 - `get_price(...)` returns the current quoted price from the CLOB API.
 - `quote_market_order(...)` walks the live book and estimates the actual average execution price, worst fill price, and partial-fill depth for a market-sized trade.
-- For `BUY`, `amount` is USDC notional to spend.
+- For `BUY`, `amount` is pUSD notional to spend.
 - For `SELL`, `amount` is shares to sell.
 
 ### Price history (time series)
