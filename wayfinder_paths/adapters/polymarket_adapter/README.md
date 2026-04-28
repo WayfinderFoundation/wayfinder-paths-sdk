@@ -14,8 +14,7 @@ The adapter wraps these public services:
 - **Gamma API** (`https://gamma-api.polymarket.com`): markets/events metadata + search
 - **CLOB API** (`https://clob.polymarket.com`): prices, orderbooks, and historic price time series
 - **Data API** (`https://data-api.polymarket.com`): positions, trades, activity (useful for PnL/exposure views)
-- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. In the normal Polygon path, this adapter may first swap **USDC <-> USDC.e** via BRAP, then wrap or unwrap **USDC.e <-> pUSD** on top of that.
-
+- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket’s deposit/withdraw address flow, which is asynchronous and may land as USDC.e before any later wrap/unwrap step.
 
 Trading uses the Python V2 client installed in this repo:
 

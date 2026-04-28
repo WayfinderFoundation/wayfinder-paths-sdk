@@ -1017,12 +1017,14 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         """Prepare Polymarket collateral on Polygon.
 
-        Preferred Polygon fast paths:
+        Direct fast paths implemented here:
         - USDC.e -> pUSD via the Polymarket CollateralOnramp
-        - USDC -> USDC.e via BRAP, then wrap to pUSD
+        - Polygon native USDC -> USDC.e via BRAP, then wrap to pUSD
 
-        Fallback (async): Polymarket Bridge deposit address transfer from
-        `from_chain_id`, which currently lands as USDC.e and may need wrapping.
+        Other supported source tokens / chains are not normalized here via an
+        arbitrary BRAP route. They currently fall back to the async Polymarket
+        Bridge deposit-address flow from `from_chain_id`, which lands as
+        USDC.e and may still need wrapping to pUSD afterward.
         """
         from_address, sign_cb = self._require_signer()
         from_token = to_checksum_address(from_token_address)
@@ -1193,12 +1195,13 @@ class PolymarketAdapter(BaseAdapter):
     ) -> tuple[bool, dict[str, Any] | str]:
         """Withdraw Polymarket V2 collateral to a destination token.
 
-        Preferred Polygon fast paths:
+        Direct fast paths implemented here:
         - pUSD -> USDC.e via the Polymarket CollateralOfframp
-        - pUSD -> USDC.e -> USDC via BRAP on Polygon
+        - pUSD -> USDC.e -> Polygon native USDC via BRAP
 
-        Fallback (async): unwrap to USDC.e, then transfer to the Polymarket
-        Bridge withdraw address.
+        For other destination assets / chains, the adapter unwraps to USDC.e
+        and then falls back to the async Polymarket bridge withdraw-address
+        flow.
         """
         from_address, sign_cb = self._require_signer()
         base_units = to_erc20_raw(amount_usdce, token_decimals)
