@@ -1,12 +1,15 @@
-"""Wayfinder Paths MCP server (FastMCP).
+"""Wayfinder Paths MCP server (FastMCP tool registry).
 
-Run locally (via Claude Code .mcp.json):
-  poetry run python -m wayfinder_paths.mcp.server
+Defines the FastMCP `mcp` instance and registers all tools/resources. The
+module no longer runs a server — that's split out:
+
+- `wayfinder mcp serve`   — Rust streamable-http frontend (production)
+- `wayfinder mcp stdio`   — FastMCP stdio server (Claude Code .mcp.json)
+- `wayfinder mcp worker`  — Python worker daemon (spawned by Rust frontend)
+- `wayfinder mcp manifest` — emit tools/list JSON for build-time bake
 """
 
 from __future__ import annotations
-
-import asyncio
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ResourceError
@@ -87,7 +90,6 @@ from wayfinder_paths.mcp.tools.runner import runner
 from wayfinder_paths.mcp.tools.strategies import run_strategy
 from wayfinder_paths.mcp.tools.wallets import wallets
 from wayfinder_paths.mcp.utils import err, ok
-from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
 
@@ -213,18 +215,3 @@ async def read_resource(uri: str) -> dict:
 
 if is_opencode_instance():
     mcp.tool()(read_resource)
-
-
-def main() -> None:
-    maybe_heartbeat_installed_paths(trigger="mcp-server")
-    mcp.run()
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except RuntimeError as exc:
-        if "asyncio.run()" in str(exc) and asyncio.get_event_loop().is_running():
-            main()
-        else:
-            raise

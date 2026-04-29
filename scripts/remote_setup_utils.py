@@ -111,7 +111,7 @@ def ensure_mcp_json(*, config_path: Path, repo_root: Path = REPO_ROOT) -> None:
         mcp_servers["wayfinder"] = wayfinder
 
     wayfinder["command"] = "poetry"
-    wayfinder["args"] = ["run", "python", "-m", "wayfinder_paths.mcp.server"]
+    wayfinder["args"] = ["run", "wayfinder", "mcp", "stdio"]
 
     env = wayfinder.get("env")
     if not isinstance(env, dict):

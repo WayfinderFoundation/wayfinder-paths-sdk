@@ -109,6 +109,19 @@ def mcp_worker(socket_path: str) -> None:
     asyncio.run(worker_mod.run(socket_path))
 
 
+@mcp_cli.command("stdio")
+def mcp_stdio() -> None:
+    """Run the FastMCP server over stdio.
+
+    Used by Claude Code's `.mcp.json` and any other MCP client that prefers
+    spawning a stdio subprocess over connecting to the Rust streamable-http
+    frontend. Replaces the legacy `python -m wayfinder_paths.mcp.server`
+    invocation.
+    """
+    from wayfinder_paths.mcp.server import mcp
+    mcp.run()
+
+
 @mcp_cli.command("manifest")
 def mcp_manifest() -> None:
     """Print the tool manifest JSON to stdout (run at image build time).
