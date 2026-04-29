@@ -156,6 +156,13 @@ impl WorkerClient {
                 let _ = tx.send(msg);
             }
         }
+        // Worker died. Reset state so the next call() respawns instead of
+        // writing into a dead socket, and drop every pending sender so any
+        // in-flight callers fail fast with `worker response channel closed`
+        // instead of waiting out the 300s call timeout.
+        *self.writer.lock().await = None;
+        *self.started.lock().await = false;
+        self.pending.clear();
     }
 
     async fn call(self: &Arc<Self>, name: &str, arguments: Value) -> Result<Value> {
@@ -192,6 +199,16 @@ async fn main() -> Result<()> {
         )
         .init();
     let args = Args::parse();
+
+    // Fail fast on missing inputs so a misconfigured deploy surfaces a clear
+    // error here instead of an opaque `Command::spawn` failure later in
+    // ensure_started.
+    if !args.worker_python.is_file() {
+        anyhow::bail!("worker_python not found: {}", args.worker_python.display());
+    }
+    if !args.worker_script.is_file() {
+        anyhow::bail!("worker_script not found: {}", args.worker_script.display());
+    }
 
     let manifest_bytes = tokio::fs::read(&args.manifest)
         .await
