@@ -338,11 +338,21 @@ For applet authors and agents:
 ## Claude MCP Integration
 
 The repo includes an MCP server for Claude Code (see `.mcp.json`).
-Start it with:
+Start it manually with:
 
 ```bash
-poetry run python -m wayfinder_paths.mcp.server
+poetry run wayfinder mcp stdio
 ```
+
+For the production streamable-http path used by the cloud-harness OpenCode
+image, see `wayfinder_mcp_rs/README.md` — that's the Rust frontend that
+forwards `tools/call` to a Python worker. The four `wayfinder mcp`
+subcommands are:
+
+- `wayfinder mcp serve`    — Rust streamable-http frontend (production)
+- `wayfinder mcp stdio`    — FastMCP stdio server (Claude Code `.mcp.json`)
+- `wayfinder mcp worker`   — Python worker daemon (spawned by Rust frontend)
+- `wayfinder mcp manifest` — emit tools/list JSON for build-time bake
 
 ### MCP Tools (actions)
 

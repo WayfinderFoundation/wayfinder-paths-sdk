@@ -38,9 +38,12 @@ This repo ships:
 - Claude Code skills under `.claude/skills/` for strategy development + adapter exploration.
 - A local, gitignored runs directory at `.wayfinder_runs/` for one-off “execution mode” scripts.
 
-MCP server entrypoint:
+MCP server entrypoints (`wayfinder mcp` subgroup):
 
-- `poetry run python -m wayfinder_paths.mcp.server`
+- `poetry run wayfinder mcp stdio`    — FastMCP stdio for Claude Code `.mcp.json`
+- `poetry run wayfinder mcp serve`    — Rust streamable-http frontend (production, used by the cloud-harness OpenCode image)
+- `poetry run wayfinder mcp worker`   — Python worker daemon (normally spawned by the Rust frontend; rarely run directly)
+- `poetry run wayfinder mcp manifest` — emit tools/list JSON for image-build-time bake
 
 Simulation / scenario testing (vnet only):
 
