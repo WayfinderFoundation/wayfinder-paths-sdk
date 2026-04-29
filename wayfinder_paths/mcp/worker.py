@@ -52,14 +52,16 @@ async def _serve_one(writer: asyncio.StreamWriter, rid: str, name: str, args: di
         result = await _dispatch(name, args)
         payload = {"id": rid, "result": result}
     except Exception as exc:
-        payload = {
-            "id": rid,
-            "error": {
-                "code": -32000,
-                "message": f"{type(exc).__name__}: {exc}",
-                "traceback": traceback.format_exc(),
-            },
+        err: dict = {
+            "code": -32000,
+            "message": f"{type(exc).__name__}: {exc}",
         }
+        # Tracebacks across the MCP boundary (worker → frontend → opencode →
+        # agent context) are noisy on routine tool errors. Include only when
+        # explicitly debugging.
+        if os.environ.get("WAYFINDER_MCP_DEBUG"):
+            err["traceback"] = traceback.format_exc()
+        payload = {"id": rid, "error": err}
     line = (json.dumps(payload, default=str) + "\n").encode("utf-8")
     writer.write(line)
     try:
