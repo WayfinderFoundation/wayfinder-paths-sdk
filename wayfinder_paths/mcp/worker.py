@@ -21,10 +21,6 @@ from mcp.server.fastmcp.exceptions import ToolError
 from wayfinder_paths.mcp.server import mcp
 
 
-def _list_tool_names() -> list[str]:
-    return [t.name for t in mcp._tool_manager.list_tools()]
-
-
 async def _dispatch(name: str, arguments: dict) -> dict:
     tool = mcp._tool_manager.get_tool(name)
     if tool is None:
@@ -71,14 +67,16 @@ async def _serve_one(writer: asyncio.StreamWriter, rid: str, name: str, args: di
 
 
 async def run(socket_path: str) -> None:
-    """Run the worker on the given Unix socket. Public entry; called from
-    `wayfinder mcp worker` and from a manual `python -m wayfinder_paths.mcp.worker`."""
+    """Run the worker on the given Unix socket. Spawned by the Rust frontend
+    (`wayfinder-mcp --worker-script wayfinder_paths/mcp/worker.py`); also
+    runnable manually as `python -m wayfinder_paths.mcp.worker --socket ...`."""
     if os.path.exists(socket_path):
         os.unlink(socket_path)
     server = await asyncio.start_unix_server(_handle_client, path=socket_path)
     os.chmod(socket_path, 0o600)
+    tool_count = len(mcp._tool_manager.list_tools())
     print(
-        f"wayfinder-mcp-worker ready socket={socket_path} tools={len(_list_tool_names())}",
+        f"wayfinder-mcp-worker ready socket={socket_path} tools={tool_count}",
         file=sys.stderr,
         flush=True,
     )

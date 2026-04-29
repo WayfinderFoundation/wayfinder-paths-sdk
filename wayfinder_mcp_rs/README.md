@@ -4,9 +4,10 @@ Tiny axum-based HTTP frontend that speaks the MCP `streamable-http` transport.
 
 - Boots in <100 ms (vs the Python `FastMCP` path's ~7 s cold-start)
 - Serves `initialize` + `tools/list` from a static manifest baked at build time
-  (`/etc/wayfinder-mcp/tools.json` by default — generate via `wayfinder mcp manifest`)
+  (`/etc/wayfinder-mcp/tools.json` by default — generate via
+  `python -m wayfinder_paths.mcp.manifest`)
 - Forwards `tools/call` over a Unix socket to a Python worker
-  (`wayfinder mcp worker` — defined in `wayfinder_paths/mcp/worker.py`)
+  (`wayfinder_paths/mcp/worker.py`)
 
 The worker holds the loaded `FastMCP` instance for the container's lifetime,
 so the heavy SDK imports (web3, ccxt, adapters) are paid **once** at worker
@@ -31,21 +32,27 @@ RUN cargo build --release --bin wayfinder-mcp \
 
 FROM <runtime-base>
 COPY --from=rust-builder /build/target/release/wayfinder-mcp /usr/local/bin/wayfinder-mcp
-RUN wayfinder mcp manifest > /etc/wayfinder-mcp/tools.json   # bake the catalog
-CMD ["wayfinder", "mcp", "serve"]
+RUN python -m wayfinder_paths.mcp.manifest > /etc/wayfinder-mcp/tools.json
+CMD ["/usr/local/bin/wayfinder-mcp", \
+     "--manifest", "/etc/wayfinder-mcp/tools.json", \
+     "--worker-script", "/opt/wayfinder-paths-sdk/wayfinder_paths/mcp/worker.py", \
+     "--worker-python", "/opt/wayfinder-paths-sdk/.venv/bin/python"]
 ```
 
 ## Run
 
 ```bash
-# launch the frontend (it spawns the Python worker over a Unix socket itself)
-wayfinder mcp serve
+# launch the frontend (spawns the Python worker over a Unix socket itself)
+wayfinder-mcp \
+  --manifest /etc/wayfinder-mcp/tools.json \
+  --worker-script /path/to/wayfinder_paths/mcp/worker.py \
+  --worker-python /path/to/.venv/bin/python
 
 # or run the Python worker directly for debugging
-wayfinder mcp worker --socket /tmp/wayfinder-mcp.sock
+python -m wayfinder_paths.mcp.worker --socket /tmp/wayfinder-mcp.sock
 
 # print the tool catalog (use at image build time)
-wayfinder mcp manifest > tools.json
+python -m wayfinder_paths.mcp.manifest > tools.json
 ```
 
 Env overrides (all optional):
