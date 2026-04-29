@@ -111,8 +111,17 @@ def mcp_worker(socket_path: str) -> None:
 
 @mcp_cli.command("manifest")
 def mcp_manifest() -> None:
-    """Print the tool manifest JSON to stdout (run at image build time)."""
-    manifest_mod.main()
+    """Print the tool manifest JSON to stdout (run at image build time).
+
+    Spawns a fresh Python subprocess that imports
+    wayfinder_paths.mcp.manifest standalone — the manifest module sets
+    OPENCODE_INSTANCE_ID before importing the FastMCP server so the
+    `read_resource` tool registers (it's gated on that env var). Importing
+    manifest.main() in-process here would be too late, since the parent
+    `wayfinder` CLI has already loaded wayfinder_paths.mcp.server with
+    the env unset, and the gate has already been evaluated.
+    """
+    os.execvp(sys.executable, [sys.executable, "-m", "wayfinder_paths.mcp.manifest"])
 
 
 if __name__ == "__main__":
