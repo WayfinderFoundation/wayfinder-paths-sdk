@@ -13,9 +13,13 @@ if os.getenv("RUN_POLYMARKET_LIVE_TESTS", "").lower() not in ("1", "true", "yes"
 
 
 @pytest.fixture
-def live_adapter():
+async def live_adapter():
     wallet_label = os.getenv("POLYMARKET_WALLET_LABEL", "main")
-    return get_adapter(PolymarketAdapter, wallet_label)
+    adapter = await get_adapter(PolymarketAdapter, wallet_label)
+    try:
+        yield adapter
+    finally:
+        await adapter.close()
 
 
 class TestPolymarketLiveRead:

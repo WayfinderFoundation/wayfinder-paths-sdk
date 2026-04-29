@@ -165,7 +165,7 @@ async def polymarket(
     # clob data
     token_id: str | None = None,
     side: Literal["BUY", "SELL"] = "BUY",
-    amount_usdc: float | None = None,
+    amount_collateral: float | None = None,
     shares: float | None = None,
     interval: str | None = "1d",
     start_ts: int | None = None,
@@ -297,14 +297,15 @@ async def polymarket(
 
         if action == "quote":
             if side == "BUY":
-                if amount_usdc is None:
+                if amount_collateral is None:
                     return err(
-                        "invalid_request", "amount_usdc is required for BUY quote"
+                        "invalid_request",
+                        "amount_collateral is required for BUY quote",
                     )
                 try:
-                    quote_amount = float(amount_usdc)
+                    quote_amount = float(amount_collateral)
                 except (TypeError, ValueError):
-                    return err("invalid_request", "amount_usdc must be a number")
+                    return err("invalid_request", "amount_collateral must be a number")
             else:
                 if shares is None:
                     return err("invalid_request", "shares is required for SELL quote")
@@ -441,7 +442,7 @@ async def polymarket_execute(
     market_slug: str | None = None,
     outcome: str | int = "YES",
     token_id: str | None = None,
-    amount_usdc: float | None = None,
+    amount_collateral: float | None = None,
     shares: float | None = None,
     # limit/cancel
     side: Literal["BUY", "SELL"] = "BUY",
@@ -477,7 +478,7 @@ async def polymarket_execute(
         "market_slug": market_slug,
         "outcome": outcome,
         "token_id": token_id,
-        "amount_usdc": amount_usdc,
+        "amount_collateral": amount_collateral,
         "shares": shares,
         "side": side,
         "price": price,
@@ -590,12 +591,15 @@ async def polymarket_execute(
         if action in {"buy", "sell"}:
             if market_slug:
                 if action == "buy":
-                    if amount_usdc is None:
-                        return err("invalid_request", "amount_usdc is required for buy")
+                    if amount_collateral is None:
+                        return err(
+                            "invalid_request",
+                            "amount_collateral is required for buy",
+                        )
                     ok_trade, res = await adapter.place_prediction(
                         market_slug=str(market_slug),
                         outcome=outcome,
-                        amount_usdc=float(amount_usdc),
+                        amount_collateral=float(amount_collateral),
                     )
                 else:
                     if shares is None:
@@ -610,12 +614,15 @@ async def polymarket_execute(
                 if not tid:
                     return err("invalid_request", "token_id or market_slug is required")
                 if action == "buy":
-                    if amount_usdc is None:
-                        return err("invalid_request", "amount_usdc is required for buy")
+                    if amount_collateral is None:
+                        return err(
+                            "invalid_request",
+                            "amount_collateral is required for buy",
+                        )
                     ok_trade, res = await adapter.place_market_order(
                         token_id=tid,
                         side="BUY",
-                        amount=float(amount_usdc),
+                        amount=float(amount_collateral),
                     )
                 else:
                     if shares is None:
@@ -640,8 +647,8 @@ async def polymarket_execute(
                     "market_slug": str(market_slug) if market_slug else None,
                     "token_id": str(token_id) if token_id else None,
                     "outcome": str(outcome),
-                    "amount_usdc": float(amount_usdc)
-                    if amount_usdc is not None
+                    "amount_collateral": float(amount_collateral)
+                    if amount_collateral is not None
                     else None,
                     "shares": float(shares) if shares is not None else None,
                 },
