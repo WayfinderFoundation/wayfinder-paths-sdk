@@ -36,7 +36,11 @@ class OpenCodeClient:
             return []
 
     def find_runner_session(self) -> str | None:
-        """Find the session that invoked runner add-job."""
+        """Find the session that invoked runner add-job (CLI or MCP tool).
+
+        The CLI verb is `add-job` (hyphen); the wayfinder_runner MCP action is
+        `add_job` (underscore). Match either so MCP-driven jobs also bind.
+        """
         for session in self.list_sessions():
             session_id = session["id"]
             try:
@@ -46,7 +50,7 @@ class OpenCodeClient:
                         params={"limit": 50},
                     ).json()
                 )
-                if "runner" in raw and ADD_JOB_VERB in raw:
+                if "runner" in raw and (ADD_JOB_VERB in raw or "add_job" in raw):
                     return session_id
             except Exception:
                 continue
