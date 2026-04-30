@@ -6,7 +6,7 @@ This file provides guidance when working with code in this repository.
 
 **IMPORTANT: On every new conversation, check if setup is needed:**
 
-1. **Detect Cloud Instance first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a Cloud instance — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
+1. **Detect Shells Instance first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a Shells instance — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
 
 2. If `config.json` does NOT exist:
    - Run: `python3 scripts/setup.py`
@@ -21,20 +21,20 @@ This file provides guidance when working with code in this repository.
 
 4. If everything is configured, proceed normally
 
-## Wayfinder Cloud Instance Environment Variables
+## Wayfinder Shells Instance Environment Variables
 
-When the SDK runs inside Wayfinder Cloud, two env vars are injected at startup:
+When the SDK runs inside Wayfinder Shells, two env vars are injected at startup:
 
 | Variable               | What it is                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------------- |
 | `WAYFINDER_API_KEY`    | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
-| `OPENCODE_INSTANCE_ID` | The Wayfinder Cloud identifier for this runtime. Useful for logs / diagnostics.        |
+| `OPENCODE_INSTANCE_ID` | The Wayfinder Shells identifier for this runtime. Useful for logs / diagnostics.       |
 
 Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`.
 
-## Messaging the user (Cloud instances only)
+## Messaging the user (Shells instances only)
 
-If you detected an OpenCode Cloud instance in "First-Time Setup" (health probe at `http://localhost:4096/global/health` returned `healthy: true`), you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. The backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly. The `message` field is rendered as Markdown (headings, lists, code blocks, tables, links) into a themed HTML email, so format it nicely.
+If you detected a Wayfinder Shells instance in "First-Time Setup" (health probe at `http://localhost:4096/global/health` returned `healthy: true`), you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. The backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly. The `message` field is rendered as Markdown (headings, lists, code blocks, tables, links) into a themed HTML email, so format it nicely.
 
 **MCP tool:**
 ```
@@ -58,7 +58,7 @@ Both POST to `/api/v1/opencode/notify/` on vault-backend with your `WAYFINDER_AP
 
 ## Frontend Context (reading UI state + drawing on charts)
 
-If you detected an OpenCode Cloud instance, you can read what the user is viewing and project overlays (price lines, markers, series) onto their chart in real-time.
+If you detected a Wayfinder Shells instance, you can read what the user is viewing and project overlays (price lines, markers, series) onto their chart in real-time.
 
 **MCP tools:**
 
@@ -100,11 +100,11 @@ Projections are scoped per chart — switching markets shows only that chart's p
 
 ## Scheduled Jobs (backend sync)
 
-On OpenCode Cloud instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
+On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
 
 - **Job sync**: When a job is added, updated, paused, resumed, or deleted, the daemon pushes the current state to `PUT /instances/{id}/jobs/{name}/`
 - **Run sync**: After each run completes, the daemon pushes the full log output to `POST /instances/{id}/jobs/{name}/runs/`
-- **Local-only**: On non-cloud instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
+- **Local-only**: On non-Shells instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
 
 The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
 
@@ -534,7 +534,7 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 
 ## Wallets
 
-**On Wayfinder Cloud Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Cloud.
+**On Wayfinder Shells Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Shells.
 
 ### Session vs strategy wallets
 
@@ -551,16 +551,16 @@ wallets(action="create", label="main", remote=True, wallet_type="session")
 wallets(action="create", label="my_strategy", remote=True, wallet_type="strategy")
 ```
 
-**Always read wallets through the MCP resources below. Never grep `config.json` for `wallets[]` or read wallet files directly.** They are the only source of truth — on Wayfinder Cloud the remote wallets are not in `config.json`, so reading the file misses them entirely.
+**Always read wallets through the MCP resources below. Never grep `config.json` for `wallets[]` or read wallet files directly.** They are the only source of truth — on Wayfinder Shells the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
 | Resource | What you get |
 |---|---|
-| `wayfinder://wallets` | List all wallets (remote on Cloud, merged local + remote elsewhere) |
+| `wayfinder://wallets` | List all wallets (remote on Shells, merged local + remote elsewhere) |
 | `wayfinder://wallets/{label}` | Single wallet by label (includes profile / tracked protocols) |
 | `wayfinder://balances/{label}` | USD-aggregated balances, per-chain breakdown, spam-filtered |
 | `wayfinder://activity/{label}` | Recent on-chain activity |
 
-On a Wayfinder Cloud Instance, always pass `remote=True` when creating wallets — local wallets are rejected.
+On a Wayfinder Shells Instance, always pass `remote=True` when creating wallets — local wallets are rejected.
 
 In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
 
@@ -570,7 +570,7 @@ Config priority: Constructor parameter > config.json > Environment variable (`WA
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
 
-On a Wayfinder Cloud Instance, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Cloud environment variables](#wayfinder-cloud-environment-variables).
+On a Wayfinder Shells Instance, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Shells environment variables](#wayfinder-shells-instance-environment-variables).
 
 ## CI/CD Pipeline
 
