@@ -971,7 +971,7 @@ class TestPolymarketAdapter:
         )
 
         ok, res = await adapter.bridge_withdraw(
-            amount_usdce=1.0,
+            amount_pusd=1.0,
             to_chain_id=137,
             to_token_address=POLYGON_USDC_ADDRESS,
             recipient_addr=from_address,
@@ -1028,7 +1028,7 @@ class TestPolymarketAdapter:
         )
 
         ok, res = await adapter.bridge_withdraw(
-            amount_usdce=1.0,
+            amount_pusd=1.0,
             to_chain_id=137,
             to_token_address=POLYGON_USDC_E_ADDRESS,
             recipient_addr=from_address,
@@ -1104,7 +1104,7 @@ class TestPolymarketAdapter:
         )
 
         ok, res = await adapter.bridge_withdraw(
-            amount_usdce=1.0,
+            amount_pusd=1.0,
             to_chain_id=137,
             to_token_address=POLYGON_USDC_ADDRESS,
             recipient_addr=from_address,
