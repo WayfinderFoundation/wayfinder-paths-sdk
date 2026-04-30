@@ -11,21 +11,32 @@ def test_repo_root_finds_pyproject():
 
 
 def test_parse_amount_to_raw_scales_and_floors():
-    assert parse_amount_to_raw("1", 6) == 1_000_000
+    assert parse_amount_to_raw("1.0", 6) == 1_000_000
     # Flooring: 1.23456789 with 6 decimals -> 1_234_567
     assert parse_amount_to_raw("1.23456789", 6) == 1_234_567
 
 
 def test_parse_amount_to_raw_rejects_non_positive():
     with pytest.raises(ValueError, match="positive"):
-        parse_amount_to_raw("0", 18)
+        parse_amount_to_raw("0.0", 18)
     with pytest.raises(ValueError, match="positive"):
-        parse_amount_to_raw("-1", 18)
+        parse_amount_to_raw("-1.0", 18)
 
 
 def test_parse_amount_to_raw_rejects_too_small_after_scaling():
     with pytest.raises(ValueError, match="too small"):
         parse_amount_to_raw("0.0000001", 6)
+
+
+def test_parse_amount_to_raw_rejects_integer_strings_as_likely_raw():
+    # The agent has been pasting raw smallest-unit balances (no decimal)
+    # straight into amount fields — reject at the boundary.
+    with pytest.raises(ValueError, match="needs a decimal"):
+        parse_amount_to_raw("10627176835031753880", 18)
+    with pytest.raises(ValueError, match="needs a decimal"):
+        parse_amount_to_raw("13263060", 6)
+    with pytest.raises(ValueError, match="needs a decimal"):
+        parse_amount_to_raw("1", 18)
 
 
 def test_sha256_json_is_stable_for_key_order():

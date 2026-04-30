@@ -133,8 +133,14 @@ async def resolve_wallet_address(
 
 
 def parse_amount_to_raw(amount: str, decimals: int) -> int:
+    s = str(amount).strip()
+    if "." not in s:
+        raise ValueError(
+            "The input amount needs a decimal, as it is a human readable "
+            "amount, and NOT IN WEI. Please input the human readable amount"
+        )
     try:
-        d = Decimal(str(amount).strip())
+        d = Decimal(s)
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"Invalid amount: {amount}") from exc
     if d <= 0:
