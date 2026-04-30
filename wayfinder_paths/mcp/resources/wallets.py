@@ -58,6 +58,20 @@ def _balance_usd(entry: dict[str, Any]) -> float:
         return 0.0
 
 
+def _disambiguate_amount(entry: dict[str, Any]) -> dict[str, Any]:
+    """Rename `amount` (raw smallest-units int) → `amount_raw` and
+    `amount_decimal` (human float) → `amount_human` so LLM agents reading
+    balances can't paste the raw value into a tx `value` field unaware that
+    it's already scaled.
+    """
+    out = {k: v for k, v in entry.items() if k not in ("amount", "amount_decimal")}
+    if "amount" in entry:
+        out["amount_raw"] = entry["amount"]
+    if "amount_decimal" in entry:
+        out["amount_human"] = entry["amount_decimal"]
+    return out
+
+
 async def get_wallet_balances(label: str) -> str:
     w = await find_wallet_by_label(label)
     if not w:
@@ -72,7 +86,7 @@ async def get_wallet_balances(label: str) -> str:
             wallet_address=address,
             exclude_spam_tokens=True,
         )
-        # Filter out Solana by default (EVM wallets)
+        # Filter out Solana by default (EVM wallets), then disambiguate amounts.
         if isinstance(data, dict) and isinstance(data.get("balances"), list):
             balances_list = [b for b in data["balances"] if isinstance(b, dict)]
             filtered = [
@@ -80,9 +94,9 @@ async def get_wallet_balances(label: str) -> str:
                 for b in balances_list
                 if str(b.get("network", "")).lower() != "solana"
             ]
+            data = dict(data)
+            data["balances"] = [_disambiguate_amount(b) for b in filtered]
             if len(filtered) != len(balances_list):
-                data = dict(data)
-                data["balances"] = filtered
                 data["total_balance_usd"] = sum(_balance_usd(b) for b in filtered)
                 breakdown: dict[str, float] = {}
                 for b in filtered:
