@@ -208,7 +208,7 @@ class TestQuoteSwapLive:
             wallet_label="main",
             from_token="usd-coin-arbitrum",
             to_token="ethereum-arbitrum",
-            amount="1",
+            amount="1.0",
             slippage_bps=100,
         )
 

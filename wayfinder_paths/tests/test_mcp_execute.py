@@ -96,7 +96,7 @@ async def test_resolve_token_meta_normal_erc20_unchanged():
 @pytest.mark.asyncio
 async def test_execute_validation_error_is_structured():
     # swap requires from_token and to_token
-    out = await execute(kind="swap", wallet_label="main", amount="1")
+    out = await execute(kind="swap", wallet_label="main", amount="1.0")
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
     assert isinstance(out["error"]["details"], list)
@@ -178,7 +178,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             wallet_label="main",
             from_token="from",
             to_token="to",
-            amount="1",
+            amount="1.0",
             slippage_bps=50,
         )
         assert out1["ok"] is True
