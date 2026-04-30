@@ -1187,7 +1187,7 @@ class PolymarketAdapter(BaseAdapter):
     async def bridge_withdraw(
         self,
         *,
-        amount_usdce: str | float,
+        amount_pusd: str | float,
         to_chain_id: int,
         to_token_address: str,
         recipient_addr: str,
@@ -1204,7 +1204,7 @@ class PolymarketAdapter(BaseAdapter):
         flow.
         """
         from_address, sign_cb = self._require_signer()
-        base_units = to_erc20_raw(amount_usdce, token_decimals)
+        base_units = to_erc20_raw(amount_pusd, token_decimals)
 
         rcpt = to_checksum_address(recipient_addr)
         ok_unwrap, unwrap = await _unwrap_pusd_to_usdce(

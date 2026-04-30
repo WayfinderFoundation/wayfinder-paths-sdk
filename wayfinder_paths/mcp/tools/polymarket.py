@@ -433,7 +433,7 @@ async def polymarket_execute(
     from_token_address: str = POLYGON_USDC_ADDRESS,
     amount: float | None = None,
     recipient_address: str | None = None,
-    amount_usdce: float | None = None,
+    amount_pusd: float | None = None,
     to_chain_id: int = POLYGON_CHAIN_ID,
     to_token_address: str = POLYGON_USDC_ADDRESS,
     recipient_addr: str | None = None,
@@ -470,7 +470,7 @@ async def polymarket_execute(
         "from_token_address": from_token_address,
         "amount": amount,
         "recipient_address": recipient_address,
-        "amount_usdce": amount_usdce,
+        "amount_pusd": amount_pusd,
         "to_chain_id": to_chain_id,
         "to_token_address": to_token_address,
         "recipient_addr": recipient_addr,
@@ -552,13 +552,13 @@ async def polymarket_execute(
             return _done(status)
 
         if action == "bridge_withdraw":
-            if amount_usdce is None:
+            if amount_pusd is None:
                 return err(
-                    "invalid_request", "amount_usdce is required for bridge_withdraw"
+                    "invalid_request", "amount_pusd is required for bridge_withdraw"
                 )
             rcpt = normalize_address(recipient_addr) or sender
             ok_wd, res = await adapter.bridge_withdraw(
-                amount_usdce=float(amount_usdce),
+                amount_pusd=float(amount_pusd),
                 to_chain_id=int(to_chain_id),
                 to_token_address=str(to_token_address),
                 recipient_addr=str(rcpt),
@@ -580,7 +580,7 @@ async def polymarket_execute(
                 status=status,
                 chain_id=int(POLYGON_CHAIN_ID),
                 details={
-                    "amount_usdce": float(amount_usdce),
+                    "amount_pusd": float(amount_pusd),
                     "to_chain_id": int(to_chain_id),
                     "to_token_address": str(to_token_address),
                     "recipient_addr": str(rcpt),
