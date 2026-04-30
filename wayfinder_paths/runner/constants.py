@@ -22,8 +22,10 @@ class RunStatus(StrEnum):
 JOB_TYPE_STRATEGY: Final[str] = "strategy"
 JOB_TYPE_SCRIPT: Final[str] = "script"
 
-# Command identifier — used in CLI and session discovery
-ADD_JOB_VERB: Final[str] = "add-job"
+# How the "add job" action appears on each surface. Both forms are used by
+# session-message discovery to find the chat that registered a job.
+ADD_JOB_CLI_VERB: Final[str] = "add-job"  # CLI command name (Click convention)
+ADD_JOB_MCP_ACTION: Final[str] = "add_job"  # MCP action key (JSON identifier)
 
 # Control protocol limits
 MAX_LINE_BYTES: Final[int] = 1024 * 1024
