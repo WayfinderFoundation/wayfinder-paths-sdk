@@ -263,7 +263,7 @@ async def build_polymarket_execute_preview(
             "route: BRAP swap preferred; Polymarket Bridge fallback\n"
             f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
             f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"
-            f"amount_usdce: {req.get('amount_usdce')}\n"
+            f"amount_pusd: {req.get('amount_pusd')}\n"
             f"to_chain_id: {req.get('to_chain_id')}\n"
             f"to_token_address: {req.get('to_token_address')}\n"
             f"recipient_addr: {req.get('recipient_addr')}"
@@ -276,7 +276,7 @@ async def build_polymarket_execute_preview(
             f"market_slug: {req.get('market_slug')}\n"
             f"outcome: {req.get('outcome')}\n"
             f"token_id: {req.get('token_id')}\n"
-            f"amount_usdc: {req.get('amount_usdc')}\n"
+            f"amount_collateral: {req.get('amount_collateral')}\n"
             f"shares: {req.get('shares')}"
         )
         return {"summary": header + base + details, "recipient_mismatch": False}

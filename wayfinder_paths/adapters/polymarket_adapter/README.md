@@ -5,7 +5,7 @@ Adapter for Polymarket market discovery (Gamma), market data + history (CLOB), u
 - **Type**: `POLYMARKET`
 - **Module**: `wayfinder_paths.adapters.polymarket_adapter.adapter.PolymarketAdapter`
 - **Default chain**: Polygon mainnet (`137`)
-- **Trading collateral**: **USDC.e** on Polygon (`0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174`, 6 decimals)
+- **Trading collateral**: **pUSD** on Polygon (`0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`, 6 decimals, proxy)
 
 ## Overview
 
@@ -14,11 +14,11 @@ The adapter wraps these public services:
 - **Gamma API** (`https://gamma-api.polymarket.com`): markets/events metadata + search
 - **CLOB API** (`https://clob.polymarket.com`): prices, orderbooks, and historic price time series
 - **Data API** (`https://data-api.polymarket.com`): positions, trades, activity (useful for PnL/exposure views)
-- **Bridge API** (`https://bridge.polymarket.com`): helper endpoints for converting between tokens (used here to convert **USDC → USDC.e** and **USDC.e → USDC**)
+- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket’s deposit/withdraw address flow, which is asynchronous and settles as pUSD on Polygon.
 
-Trading uses the official Python client:
+Trading uses the Python V2 client installed in this repo:
 
-- `py-clob-client` (installed in this repo via Poetry)
+- `py-clob-client-v2-wayfinder` (import path: `py_clob_client_v2`)
 
 ## Assets & Identifiers
 
@@ -32,14 +32,17 @@ Collateral tokens on Polygon:
 
 | Token | Address | Notes |
 | --- | --- | --- |
-| **USDC.e** | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` | **Required** for trading collateral on Polymarket |
-| USDC (native Polygon) | `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` | Not accepted as CLOB collateral; convert to USDC.e |
+| **pUSD** | `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB` | **Required CLOB collateral on Polymarket V2** |
+| USDC.e | `0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174` | Not accepted as CLOB collateral; the adapter can wrap it into pUSD on Polygon |
+| USDC (native Polygon) | `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359` | Not accepted as CLOB collateral; the adapter can swap it to USDC.e, then wrap into pUSD |
 
 Outcome “shares” are **not ERC20s**. They’re represented on-chain as Conditional Tokens (ERC1155 positions), and on the CLOB as **`token_id` strings** from `clobTokenIds`.
 
 Important clarification:
-- On Polygon, many wallets/UIs label `0x2791...` as “USDC”. In this repo we refer to it as **USDC.e** because it’s the (bridged) USDC token Polymarket uses as collateral.
-- `0x3c499c...` is **Circle native USDC on Polygon** and is **not** accepted as Polymarket collateral.
+- For Polymarket V2 trading, **pUSD** is the actual collateral used by the exchange.
+- On Polygon, many wallets/UIs label `0x2791...` as “USDC”. In this repo we refer to it as **USDC.e** because it’s the bridged USDC token. It must be wrapped into **pUSD** before trading.
+- `0x3c499c...` is native Polygon USDC and must be converted to **USDC.e**, then wrapped into **pUSD**, before trading.
+
 
 ## Usage
 
@@ -72,11 +75,11 @@ from wayfinder_paths.mcp.scripting import get_adapter
 adapter = await get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
 ```
 
-## End-to-end cycle (USDC → USDC.e → buy → sell/redeem → USDC)
+## End-to-end cycle (USDC / USDC.e -> pUSD -> buy -> sell/redeem -> pUSD -> USDC.e / USDC)
 
 Typical lifecycle for an automated agent:
 
-1) **Acquire USDC.e** (Polymarket collateral). Use `bridge_deposit` only if you have *native Polygon USDC* (`0x3c499c...`); skip if you already have USDC.e (`0x2791...`).
+1) **Acquire pUSD** (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
 2) **Search and select a market** (Gamma `public-search` / `markets`, filter for `enableOrderBook` + `acceptingOrders`).
 3) **Resolve the CLOB token id** for the desired outcome (`resolve_clob_token_id`).
 4) **Approve once** (`ensure_onchain_approvals`).
@@ -143,7 +146,7 @@ Important distinction:
 
 - `get_price(...)` returns the current quoted price from the CLOB API.
 - `quote_market_order(...)` walks the live book and estimates the actual average execution price, worst fill price, and partial-fill depth for a market-sized trade.
-- For `BUY`, `amount` is USDC notional to spend.
+- For `BUY`, `amount` is pUSD notional to spend.
 - For `SELL`, `amount` is shares to sell.
 
 ### Price history (time series)
@@ -173,16 +176,16 @@ Interpretation:
 - `hist["history"]` is a list of `{ "t": <unix_ts>, "p": <price> }`
 - `p` is best treated as an **implied probability** (0–1)
 
-## Getting USDC.e (required collateral)
+## Getting pUSD (required trading collateral)
 
-Polymarket trades use **USDC.e**, not native Polygon USDC.
+Polymarket V2 trades use **pUSD** as the actual CLOB collateral. The adapter can prepare pUSD from Polygon USDC or USDC.e for you.
 
 ### Funding from other chains (Base, Arbitrum, etc.)
 
-If funds are not on Polygon, use a BRAP swap to go directly to USDC.e — don't bridge to Polygon USDC first:
+If funds are not on Polygon, use a BRAP swap to go directly to Polygon USDC.e first, then wrap into pUSD on Polygon:
 
 ```python
-# Example: Base USDC → Polygon USDC.e via BRAP
+# Example: Base USDC -> Polygon USDC.e via BRAP
 mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10",
     from_token="usd-coin-base",
     to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
@@ -190,16 +193,18 @@ mcp__wayfinder__execute(kind="swap", wallet_label="main", amount="10",
 
 ### Option A (recommended): BRAP swap (fast, on-chain)
 
-The adapter’s `bridge_deposit()` / `bridge_withdraw()` methods prefer a **BRAP** (DEX/aggregator) swap on Polygon:
+The adapter’s `bridge_deposit()` / `bridge_withdraw()` methods prepare and unwind **Polymarket V2 collateral**:
 
-- USDC (native Polygon) → **USDC.e** (bridged)
-- **USDC.e** → USDC (native Polygon)
+- Polygon USDC -> USDC.e -> pUSD
+- Polygon USDC.e -> pUSD
+- pUSD -> USDC.e
+- pUSD -> USDC.e -> Polygon USDC
 
-Only run `bridge_deposit()` if you actually have **native Polygon USDC** (`0x3c499c...`). If you already have **USDC.e** (`0x2791...`), you can skip this step and trade.
+Only run `bridge_deposit()` if you want the adapter to prepare pUSD for trading. If you already hold pUSD, you can trade directly after approvals.
 
 If BRAP quoting/execution fails (no route / API error), it falls back to the **Polymarket Bridge** deposit/withdraw flow.
 
-Convert native Polygon USDC → USDC.e:
+Prepare Polymarket V2 collateral from native Polygon USDC:
 
 ```python
 from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID, POLYGON_USDC_ADDRESS
@@ -212,7 +217,7 @@ ok, res = await adapter.bridge_deposit(
 )
 ```
 
-Convert USDC.e → native Polygon USDC:
+Unwind Polymarket V2 collateral back to native Polygon USDC:
 
 ```python
 from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID, POLYGON_USDC_ADDRESS
@@ -227,9 +232,12 @@ ok, res = await adapter.bridge_withdraw(
 
 Notes:
 
-- If the result has `method="brap"`, the conversion is a normal on-chain swap (no bridge status needed).
-- If the result has `method="polymarket_bridge"`, the conversion is **asynchronous**; use `bridge_status(address=...)` and/or poll balances.
-- `mcp__wayfinder__polymarket_execute(action="bridge_deposit", ...)` defaults `from_token_address` to native Polygon USDC (`0x3c499c...`). If your wallet only has USDC.e (`0x2791...`), the transfer will fail; check `mcp__wayfinder__polymarket(action="status", wallet_label=...)` first.
+- If the result has `method="brap"`, the adapter performed a direct Polygon swap leg only.
+- If the result has `method="pusd_wrap"` or `method="pusd_unwrap"`, the adapter wrapped or unwrapped Polymarket V2 collateral directly on Polygon.
+- If the result has `method="brap_then_wrap"`, the adapter swapped Polygon USDC to USDC.e via BRAP, then wrapped USDC.e into pUSD.
+- If the result has `method="unwrap_then_brap"`, the adapter unwrapped pUSD into USDC.e, then swapped USDC.e to Polygon USDC via BRAP.
+- If the result has `method="polymarket_bridge"`, the flow is asynchronous and uses the Polymarket bridge deposit/withdraw path; use `bridge_status(address=...)` and/or poll balances.
+- `mcp__wayfinder__polymarket_execute(action="bridge_deposit", ...)` defaults `from_token_address` to native Polygon USDC (`0x3c499c...`). If your wallet only has USDC.e (`0x2791...`), override the token address or check balances first.
 
 ### Option B: Polymarket Bridge conversion (fallback)
 
@@ -241,7 +249,7 @@ The Polymarket Bridge fallback works by transferring tokens to bridge-generated 
 
 Trading needs:
 
-- ERC20 allowance of **USDC.e** to the exchange(s)
+- ERC20 allowance of **pUSD** to the exchange(s)
 - ERC1155 `setApprovalForAll` on ConditionalTokens to the exchange(s)
 
 ```python
@@ -256,7 +264,7 @@ This can broadcast multiple transactions the first time you run it.
 ok, res = await adapter.place_prediction(
     market_slug="bitcoin-above-70k-on-february-9",
     outcome="YES",
-    amount_usdc=2.0,  # collateral to spend (USDC.e)
+    amount_collateral=2.0,  # dollar-denominated buy amount; spent as pUSD collateral under V2
 )
 ```
 
@@ -334,6 +342,13 @@ Trading (authenticated CLOB):
 
 - `ensure_onchain_approvals`, `place_market_order`, `place_limit_order`, `cancel_order`, `list_open_orders`
 - Convenience: `place_prediction`, `cash_out_prediction`
+
+## Builder attribution
+
+Optional builder attribution is supported.
+
+- Set `system.polymarket_builder_code` in `config.json` to attach your builder code on every order.
+- `config.example.json` includes the same field as `null` so users know where to put it.
 
 Redemption (on-chain):
 

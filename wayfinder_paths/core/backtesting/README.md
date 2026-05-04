@@ -14,7 +14,7 @@ Simple, realistic backtesting framework for strategy development and validation.
 ## Quick Start
 
 ```python
-from wayfinder_paths.core.backtesting import quick_backtest
+from wayfinder_paths.core.backtesting.helpers import quick_backtest
 
 def my_strategy(prices, ctx):
     """Simple momentum strategy."""
@@ -40,12 +40,9 @@ print(result.stats)
 For full control over data fetching and configuration:
 
 ```python
-from wayfinder_paths.core.backtesting import (
-    fetch_prices,
-    fetch_funding_rates,
-    run_backtest,
-    BacktestConfig,
-)
+from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.data import fetch_funding_rates, fetch_prices
+from wayfinder_paths.core.backtesting.types import BacktestConfig
 
 # Fetch data
 prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01")
@@ -148,7 +145,7 @@ config = BacktestConfig(
 Compare performance across leverage levels:
 
 ```python
-from wayfinder_paths.core.backtesting import run_multi_leverage_backtest
+from wayfinder_paths.core.backtesting.multi import run_multi_leverage_backtest
 
 results = run_multi_leverage_backtest(
     prices=prices,

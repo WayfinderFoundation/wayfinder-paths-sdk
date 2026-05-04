@@ -95,6 +95,7 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 | Simulation / Dry-run  | `/simulation-dry-run`            |
 | Backtesting           | `/backtest-strategy`             |
 | Contract Dev          | `/contract-development`          |
+| Paths (search/install/update/build/publish) | `/developing-wayfinder-paths` |
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
@@ -145,40 +146,32 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 
 **Examples:** `wayfinder://alpha-lab/search/_/all/_/_/20` (all), `wayfinder://alpha-lab/search/_/twitter_post/_/_/10` (twitter), `wayfinder://alpha-lab/search/ETH/all/_/_/10` (ETH). Client: `await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)`.
 
-## Delta Lab MCP resources (yield discovery)
+## Delta Lab (yield discovery)
 
-**Load `/using-delta-lab` skill for detailed docs.** Quick reference below.
+**Load `/using-delta-lab` for the full surface** — MCP URIs, v2 Python client (entity / catalog / graph / search / TS / latest / bulk / `explore` / `fetch_backtest_bundle`), typed records, and composition recipes.
 
-**⚠️ APY Format:** All APY values are **decimal floats** (0.98 = 98%, NOT 0.98%). Multiply by 100 to display as percentage.
+- **APY format:** decimal floats (`0.98 = 98%`, NOT 0.98%). Multiply by 100 to display.
+- **MCP philosophy:** quick snapshots only. Anything plot / filter / multi-day / bulk → Python client. Only TS methods return `pd.DataFrame`; `*_latest` returns typed dataclasses (or `None` for sparse data); search / screening / opportunity methods return dicts.
+- **Most-used MCP URIs:** `wayfinder://delta-lab/top-apy/{LB}/{N}`, `wayfinder://delta-lab/{SYM}/apy-sources/{LB}/{N}`, `wayfinder://delta-lab/{SYM}/timeseries/{SERIES}/{LB}/{N}`, `wayfinder://delta-lab/screen/{lending|perp|price|borrow-routes}/{sort}/{N}/{basis}`. Full URI list + valid sort columns are in the skill.
 
-**MCP resources (quick queries):**
+## Pack applets
 
-- `wayfinder://delta-lab/symbols` - List basis symbols
-- `wayfinder://delta-lab/top-apy/{LOOKBACK}/{LIMIT}` - **Top APYs across ALL symbols**
-- `wayfinder://delta-lab/{SYMBOL}/apy-sources/{LOOKBACK}/{LIMIT}` - Top yield opportunities for symbol
-- `wayfinder://delta-lab/{SYMBOL}/delta-neutral/{LOOKBACK}/{LIMIT}` - Delta-neutral pairs for symbol
-- `wayfinder://delta-lab/assets/{asset_id}` - Asset metadata by ID
-- `wayfinder://delta-lab/assets/by-address/{ADDRESS}` - Assets by contract address
-- `wayfinder://delta-lab/{SYMBOL}/basis` - Basis group membership
-- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Timeseries for exact asset (no basis expansion)
-- `wayfinder://delta-lab/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}/{VENUE}` - Timeseries filtered by venue
-- `wayfinder://delta-lab/basis/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}` - Timeseries expanded to basis group (USDC → USDC+sUSDC+aUSDC...)
-- `wayfinder://delta-lab/basis/{SYMBOL}/timeseries/{SERIES}/{LOOKBACK}/{LIMIT}/{VENUE}` - Basis timeseries filtered by venue
-- `wayfinder://delta-lab/screen/price/{SORT}/{LIMIT}/{BASIS}` - Screen assets by price features
-- `wayfinder://delta-lab/screen/lending/{SORT}/{LIMIT}/{BASIS}` - Screen lending markets
-- `wayfinder://delta-lab/screen/perp/{SORT}/{LIMIT}/{BASIS}` - Screen perp markets
-- `wayfinder://delta-lab/screen/borrow-routes/{SORT}/{LIMIT}/{BASIS}/{BORROW_BASIS}` - Screen borrow routes (collateral → borrow)
+When creating or updating a Wayfinder pack with a browser applet:
 
-**Screening resources** return cross-venue feature snapshots for quick comparison. Use `{BASIS}` to filter by basis symbol (e.g. `ETH`) or `all` for everything. Key sort columns:
-
-- **Price:** `price_usd`, `ret_1d`, `ret_7d`, `ret_30d`, `vol_7d`, `vol_30d`, `mdd_30d`
-- **Lending:** `net_supply_apr_now`, `combined_net_supply_apr_now`, `supply_tvl_usd`, `util_now`, `borrow_spike_score`
-- **Perp:** `funding_now`, `funding_mean_7d`, `funding_mean_30d`, `basis_now`, `oi_now`, `volume_24h`
-- **Borrow routes:** `ltv_max`, `liq_threshold`, `liquidation_penalty`, `debt_ceiling_usd`, `venue_name`, `market_label`, `created_at`
-
-**MCP philosophy:** Quick snapshots only. For plotting/filtering/multi-day analysis, use `DELTA_LAB_CLIENT` (returns DataFrames).
-
-**Examples:** `wayfinder://delta-lab/top-apy/7/20`, `wayfinder://delta-lab/BTC/apy-sources/7/10`, `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/all`, `wayfinder://delta-lab/screen/perp/funding_now/20/ETH`. Client: `await DELTA_LAB_CLIENT.get_top_apy(lookback_days=14, limit=50)` — remember APY 0.98 = 98%.
+- browser applets must use the public Delta Lab browser-safe route:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+- authenticated Delta Lab routes (`/api/v1/delta-lab/assets/...`) are for SDK/server-side use, not browser applets
+- take the base URL from the host bridge when available:
+  - prefer `wf:state.apiBase`
+  - otherwise use the `wf:hello` origin when embedded by the Strategies host
+  - do not probe both dev and prod from the same applet build
+- treat non-200 responses, especially `404`, as expected unavailability:
+  - show a clear "data unavailable" or "waiting for host API" state
+  - do not crash the applet on missing data
+- ensure every referenced static resource is present under `applet/dist/`
+- include explicit icon tags (`icon`, `shortcut icon`, `apple-touch-icon`) in the applet HTML to avoid implicit browser 404s for missing favicon resources
+- do not call `/api/v1/delta-lab/symbols/`; that route does not exist for pack applets
 
 ## Running strategies via MCP
 
@@ -336,7 +329,9 @@ Common mistakes when writing run scripts. **Read before writing any script.**
 
 ```python
 # CLIENTS (return data directly, raise exceptions on errors)
-from wayfinder_paths.core.clients import DELTA_LAB_CLIENT, POOL_CLIENT, TOKEN_CLIENT
+from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
+from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 
 # WRONG — clients don't return tuples
 ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError: too many values to unpack
@@ -548,12 +543,25 @@ just create-strategy "My Strategy Name"
 # Create new adapter
 just create-adapter "my_protocol"
 
+# Update one installed path to the live bonded version
+poetry run wayfinder path update my-path
+
+# Override the target version for one installed path
+poetry run wayfinder path update my-path --version 1.2.3
+
 # Run a strategy locally
 poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
 
 # Publish to PyPI (main branch only)
 just publish
 ```
+
+### Path updates
+
+- `poetry run wayfinder path update <slug>` compares the locally installed version in `.wayfinder/paths.lock.json` to the API's `active_bonded_version`.
+- By default it updates only to the current live bonded version, not `latest_version` and not a pending upgrade.
+- `--version <x.y.z>` overrides that default and installs a specific public version.
+- After pulling the new version, the CLI tries to re-use recorded activation metadata; if none is stored, it tries one safe workspace default; otherwise it falls back to pull-only and prints the manual `path activate` command.
 
 ## Architecture
 

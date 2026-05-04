@@ -70,7 +70,12 @@ async def test_polymarket_quote_uses_adapter_quote_by_token_id():
             ),
         ),
     ):
-        out = await polymarket("quote", token_id="tok_yes", side="BUY", amount_usdc=4.2)
+        out = await polymarket(
+            "quote",
+            token_id="tok_yes",
+            side="BUY",
+            amount_collateral=4.2,
+        )
         assert out["ok"] is True
         assert out["result"]["action"] == "quote"
         assert out["result"]["token_id"] == "tok_yes"
@@ -110,7 +115,7 @@ async def test_polymarket_quote_uses_adapter_quote_by_market_slug():
 
 
 @pytest.mark.asyncio
-async def test_polymarket_quote_buy_requires_amount_usdc():
+async def test_polymarket_quote_buy_requires_amount_collateral():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
         out = await polymarket("quote", token_id="tok_yes", side="BUY")
         assert out["ok"] is False
@@ -134,7 +139,12 @@ async def test_polymarket_quote_surfaces_adapter_failure():
             new=AsyncMock(return_value=(False, "order book unavailable")),
         ),
     ):
-        out = await polymarket("quote", token_id="tok_yes", side="BUY", amount_usdc=4.2)
+        out = await polymarket(
+            "quote",
+            token_id="tok_yes",
+            side="BUY",
+            amount_collateral=4.2,
+        )
         assert out["ok"] is False
         assert out["error"]["code"] == "error"
         assert "order book unavailable" in out["error"]["message"]
@@ -185,7 +195,7 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
             wallet_label="main",
             market_slug="bitcoin-above-70k-on-february-9",
             outcome="YES",
-            amount_usdc=2.0,
+            amount_collateral=2.0,
         )
         assert out["ok"] is True
         assert out["result"]["status"] == "confirmed"

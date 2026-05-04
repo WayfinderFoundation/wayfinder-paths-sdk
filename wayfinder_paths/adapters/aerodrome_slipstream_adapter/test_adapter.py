@@ -241,6 +241,96 @@ async def test_token_price_usdc_uses_client_and_cache():
 
 
 @pytest.mark.asyncio
+async def test_token_decimals_uses_common_cache():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    token = "0x0000000000000000000000000000000000000008"
+
+    with patch.object(
+        aerodrome_common_module,
+        "get_token_decimals",
+        new=AsyncMock(return_value=6),
+    ) as mock_get_token_decimals:
+        decimals1 = await adapter.token_decimals(token)
+        decimals2 = await adapter.token_decimals(token)
+
+    assert decimals1 == 6
+    assert decimals2 == 6
+    assert mock_get_token_decimals.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_token_symbol_uses_common_cache():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    token = "0x0000000000000000000000000000000000000009"
+    mock_web3 = MagicMock()
+
+    with (
+        patch.object(
+            aerodrome_common_module, "web3_from_chain_id", _web3_ctx(mock_web3)
+        ),
+        patch.object(
+            aerodrome_common_module,
+            "get_erc20_metadata",
+            new=AsyncMock(return_value=("AERO", "Aerodrome", 18)),
+        ) as mock_get_erc20_metadata,
+    ):
+        symbol1 = await adapter.token_symbol(token)
+        symbol2 = await adapter.token_symbol(token)
+
+    assert symbol1 == "AERO"
+    assert symbol2 == "AERO"
+    assert mock_get_erc20_metadata.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_token_price_usdc_from_market_data_falls_back_to_raw_lookup():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    token = "0x0000000000000000000000000000000000000010"
+
+    with patch.object(
+        aerodrome_common_module.TOKEN_CLIENT,
+        "get_token_details",
+        new=AsyncMock(
+            side_effect=[
+                RuntimeError("primary lookup failed"),
+                {"price_usd": "2.5"},
+            ]
+        ),
+    ) as mock_get_token_details:
+        price = await adapter._token_price_usdc_from_market_data(token)
+
+    assert price == pytest.approx(2.5)
+    assert mock_get_token_details.await_args_list[0].args[0] == f"base_{token}"
+    assert mock_get_token_details.await_args_list[0].kwargs == {"market_data": True}
+    assert mock_get_token_details.await_args_list[1].args[0] == token
+    assert mock_get_token_details.await_args_list[1].kwargs == {
+        "market_data": True,
+        "chain_id": CHAIN_ID_BASE,
+    }
+
+
+@pytest.mark.asyncio
+async def test_token_price_usdc_from_market_data_ignores_invalid_values():
+    adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
+    token = "0x0000000000000000000000000000000000000011"
+
+    with patch.object(
+        aerodrome_common_module.TOKEN_CLIENT,
+        "get_token_details",
+        new=AsyncMock(
+            side_effect=[
+                {"price_usd": 0},
+                {"price_usd": math.nan},
+            ]
+        ),
+    ) as mock_get_token_details:
+        price = await adapter._token_price_usdc_from_market_data(token)
+
+    assert price is None
+    assert mock_get_token_details.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_slipstream_best_pool_for_pair_prefers_highest_liquidity():
     adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     matches = [

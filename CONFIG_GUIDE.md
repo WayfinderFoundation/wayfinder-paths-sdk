@@ -60,8 +60,9 @@ The `config.json` file has three main sections:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `api_key` | Yes | Wayfinder API key (sent as `X-API-KEY` header) |
-| `api_base_url` | No | API endpoint (default: `https://wayfinder.ai/api`) |
+| `api_base_url` | No | API endpoint (default: `https://strategies.wayfinder.ai/api/v1`) |
 | `etherscan_api_key` | No | Etherscan V2 API key (used for Solidity contract verification) |
+| `polymarket_builder_code` | No | Optional Polymarket v2 builder code for order attribution / builder rewards when builder support is enabled |
 
 The API key is automatically loaded and included in all API requests (including Gorlami dry-runs). You don't need to pass it explicitly to strategies or clients.
 

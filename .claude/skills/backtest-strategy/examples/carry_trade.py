@@ -8,7 +8,7 @@ Only enters when the spread exceeds a minimum threshold.
 
 from __future__ import annotations
 
-from wayfinder_paths.core.backtesting import backtest_carry_trade
+from wayfinder_paths.core.backtesting.yield_strategies import backtest_carry_trade
 
 
 async def main() -> None:

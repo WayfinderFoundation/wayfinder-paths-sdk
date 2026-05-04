@@ -196,6 +196,38 @@ class AaveV3Adapter(BaseAdapter):
             self._wrapped_native_by_chain[int(chain_id)] = wrapped
             return wrapped
 
+    async def _variable_debt_token(
+        self,
+        *,
+        chain_id: int,
+        underlying_token: str,
+    ) -> str:
+        asset = to_checksum_address(underlying_token)
+        cache_key = (int(chain_id), asset.lower())
+        cached = self._variable_debt_token_by_chain_underlying.get(cache_key)
+        if cached:
+            return cached
+
+        ok, markets = await self.get_all_markets(
+            chain_id=int(chain_id), include_rewards=False
+        )
+        if not ok or not isinstance(markets, list):
+            raise ValueError(f"failed to resolve reserves for chain_id={chain_id}")
+
+        for market in markets:
+            if str(market.get("underlying") or "").lower() != asset.lower():
+                continue
+            variable_debt_token = str(market.get("variable_debt_token") or "")
+            if not variable_debt_token:
+                break
+            resolved = to_checksum_address(variable_debt_token)
+            self._variable_debt_token_by_chain_underlying[cache_key] = resolved
+            return resolved
+
+        raise ValueError(
+            f"could not resolve variable debt token for asset={asset} on chain_id={chain_id}"
+        )
+
     async def get_all_markets(
         self,
         *,
@@ -908,33 +940,10 @@ class AaveV3Adapter(BaseAdapter):
 
                 if repay_full:
                     # Read current variable debt (debt token balance) and wrap a small buffer.
-                    v_debt = self._variable_debt_token_by_chain_underlying.get(
-                        (int(chain_id), wrapped.lower())
+                    v_debt = await self._variable_debt_token(
+                        chain_id=int(chain_id),
+                        underlying_token=wrapped,
                     )
-                    if not v_debt:
-                        ok, markets = await self.get_all_markets(
-                            chain_id=int(chain_id), include_rewards=False
-                        )
-                        if not ok or not isinstance(markets, list):
-                            return (
-                                False,
-                                f"failed to resolve reserves for chain_id={chain_id}",
-                            )
-                        for m in markets:
-                            if (
-                                str(m.get("underlying") or "").lower()
-                                == wrapped.lower()
-                            ):
-                                v_debt = str(m.get("variable_debt_token") or "")
-                                break
-                        if not v_debt:
-                            return (
-                                False,
-                                "could not resolve variable debt token for wrapped native",
-                            )
-                        self._variable_debt_token_by_chain_underlying[
-                            (int(chain_id), wrapped.lower())
-                        ] = to_checksum_address(v_debt)
 
                     debt = await get_token_balance(
                         str(v_debt),
@@ -997,9 +1006,38 @@ class AaveV3Adapter(BaseAdapter):
                 repay_hash = await send_transaction(repay_tx, self.sign_callback)
                 return True, {"wrap_tx": wrap_hash, "repay_tx": repay_hash}
 
-            repay_amount = MAX_UINT256 if repay_full else qty
             asset = to_checksum_address(underlying_token)
-            allowance_target = MAX_UINT256 if repay_full else qty
+            repay_amount = qty
+            allowance_target = qty
+            if repay_full:
+                v_debt = await self._variable_debt_token(
+                    chain_id=int(chain_id),
+                    underlying_token=asset,
+                )
+                debt = await get_token_balance(
+                    str(v_debt),
+                    int(chain_id),
+                    strategy,
+                    block_identifier="pending",
+                )
+                if debt <= 0:
+                    return True, None
+
+                asset_balance = await get_token_balance(
+                    asset,
+                    int(chain_id),
+                    strategy,
+                    block_identifier="pending",
+                )
+                if asset_balance < int(debt):
+                    return (
+                        False,
+                        f"insufficient token balance for repay_full (debt_raw={debt}, balance_raw={asset_balance})",
+                    )
+                buffer_raw = max(1, int(debt) // 10_000)  # 0.01%
+                repay_amount = min(int(asset_balance), int(debt) + buffer_raw)
+                allowance_target = int(repay_amount)
+
             approved = await ensure_allowance(
                 token_address=asset,
                 owner=strategy,

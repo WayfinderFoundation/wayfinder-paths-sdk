@@ -3,18 +3,18 @@
 ## MCP tools (Claude Code)
 
 - Read-only: `mcp__wayfinder__polymarket` (search, market metadata, prices/books/history, status)
-- Writes: `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit/cancel, close, redeem)
+- Writes: `mcp__wayfinder__polymarket_execute` (prepare / unwind collateral, buy/sell, limit/cancel, close, redeem)
 
 ## Preconditions (for write paths)
 
 - Polygon RPC configured (`strategy.rpc_urls["137"]`)
 - Wallet configured (local with `private_key_hex` or remote via Privy)
 - Have Polygon gas token for tx fees
-- Have **USDC.e** balance (see `rules/deposits-withdrawals.md`)
+- Have **pUSD** ready, or use `bridge_deposit()` / `polymarket_execute(action="bridge_deposit", ...)` to prepare it (see `rules/deposits-withdrawals.md`)
 
 ## Approvals + API creds (automatic)
 
-Trading requires ERC20 allowance of **USDC.e** and ERC1155 `setApprovalForAll` on ConditionalTokens to exchange contracts. These are handled automatically on every order — `ensure_onchain_approvals()` is idempotent and called before every `place_market_order` and `place_limit_order`.
+Trading requires ERC20 allowance of **pUSD** and ERC1155 `setApprovalForAll` on ConditionalTokens to exchange contracts. These are handled automatically on every order — `ensure_onchain_approvals()` is idempotent and called before every `place_market_order` and `place_limit_order`.
 
 API creds (`ensure_api_creds()`) are also derived automatically before order placement.
 
@@ -26,13 +26,13 @@ Fast path:
 ok, res = await adapter.place_prediction(
     market_slug="bitcoin-above-70k-on-february-9",
     outcome="YES",
-    amount_usdc=2.0,  # collateral to spend (USDC.e)
+    amount_collateral=2.0,  # dollar-denominated buy amount; spent as pUSD collateral under V2
 )
 ```
 
 MCP shortcut:
 
-- `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_usdc=2)`
+- `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_collateral=2)`
 
 Lower-level control (CLOB token id + side):
 

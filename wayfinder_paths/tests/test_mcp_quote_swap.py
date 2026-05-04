@@ -220,7 +220,7 @@ async def test_quote_swap_accepts_top_level_brap_shape():
             wallet_label="main",
             from_token="usd-coin-arbitrum",
             to_token="tether-arbitrum",
-            amount="1",
+            amount="1.0",
         )
 
     assert out["ok"] is True

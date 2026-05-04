@@ -165,7 +165,7 @@ async def polymarket(
     # clob data
     token_id: str | None = None,
     side: Literal["BUY", "SELL"] = "BUY",
-    amount_usdc: float | None = None,
+    amount_collateral: float | None = None,
     shares: float | None = None,
     interval: str | None = "1d",
     start_ts: int | None = None,
@@ -297,14 +297,15 @@ async def polymarket(
 
         if action == "quote":
             if side == "BUY":
-                if amount_usdc is None:
+                if amount_collateral is None:
                     return err(
-                        "invalid_request", "amount_usdc is required for BUY quote"
+                        "invalid_request",
+                        "amount_collateral is required for BUY quote",
                     )
                 try:
-                    quote_amount = float(amount_usdc)
+                    quote_amount = float(amount_collateral)
                 except (TypeError, ValueError):
-                    return err("invalid_request", "amount_usdc must be a number")
+                    return err("invalid_request", "amount_collateral must be a number")
             else:
                 if shares is None:
                     return err("invalid_request", "shares is required for SELL quote")
@@ -432,7 +433,7 @@ async def polymarket_execute(
     from_token_address: str = POLYGON_USDC_ADDRESS,
     amount: float | None = None,
     recipient_address: str | None = None,
-    amount_usdce: float | None = None,
+    amount_pusd: float | None = None,
     to_chain_id: int = POLYGON_CHAIN_ID,
     to_token_address: str = POLYGON_USDC_ADDRESS,
     recipient_addr: str | None = None,
@@ -441,7 +442,7 @@ async def polymarket_execute(
     market_slug: str | None = None,
     outcome: str | int = "YES",
     token_id: str | None = None,
-    amount_usdc: float | None = None,
+    amount_collateral: float | None = None,
     shares: float | None = None,
     # limit/cancel
     side: Literal["BUY", "SELL"] = "BUY",
@@ -469,7 +470,7 @@ async def polymarket_execute(
         "from_token_address": from_token_address,
         "amount": amount,
         "recipient_address": recipient_address,
-        "amount_usdce": amount_usdce,
+        "amount_pusd": amount_pusd,
         "to_chain_id": to_chain_id,
         "to_token_address": to_token_address,
         "recipient_addr": recipient_addr,
@@ -477,7 +478,7 @@ async def polymarket_execute(
         "market_slug": market_slug,
         "outcome": outcome,
         "token_id": token_id,
-        "amount_usdc": amount_usdc,
+        "amount_collateral": amount_collateral,
         "shares": shares,
         "side": side,
         "price": price,
@@ -551,13 +552,13 @@ async def polymarket_execute(
             return _done(status)
 
         if action == "bridge_withdraw":
-            if amount_usdce is None:
+            if amount_pusd is None:
                 return err(
-                    "invalid_request", "amount_usdce is required for bridge_withdraw"
+                    "invalid_request", "amount_pusd is required for bridge_withdraw"
                 )
             rcpt = normalize_address(recipient_addr) or sender
             ok_wd, res = await adapter.bridge_withdraw(
-                amount_usdce=float(amount_usdce),
+                amount_pusd=float(amount_pusd),
                 to_chain_id=int(to_chain_id),
                 to_token_address=str(to_token_address),
                 recipient_addr=str(rcpt),
@@ -579,7 +580,7 @@ async def polymarket_execute(
                 status=status,
                 chain_id=int(POLYGON_CHAIN_ID),
                 details={
-                    "amount_usdce": float(amount_usdce),
+                    "amount_pusd": float(amount_pusd),
                     "to_chain_id": int(to_chain_id),
                     "to_token_address": str(to_token_address),
                     "recipient_addr": str(rcpt),
@@ -590,12 +591,15 @@ async def polymarket_execute(
         if action in {"buy", "sell"}:
             if market_slug:
                 if action == "buy":
-                    if amount_usdc is None:
-                        return err("invalid_request", "amount_usdc is required for buy")
+                    if amount_collateral is None:
+                        return err(
+                            "invalid_request",
+                            "amount_collateral is required for buy",
+                        )
                     ok_trade, res = await adapter.place_prediction(
                         market_slug=str(market_slug),
                         outcome=outcome,
-                        amount_usdc=float(amount_usdc),
+                        amount_collateral=float(amount_collateral),
                     )
                 else:
                     if shares is None:
@@ -610,12 +614,15 @@ async def polymarket_execute(
                 if not tid:
                     return err("invalid_request", "token_id or market_slug is required")
                 if action == "buy":
-                    if amount_usdc is None:
-                        return err("invalid_request", "amount_usdc is required for buy")
+                    if amount_collateral is None:
+                        return err(
+                            "invalid_request",
+                            "amount_collateral is required for buy",
+                        )
                     ok_trade, res = await adapter.place_market_order(
                         token_id=tid,
                         side="BUY",
-                        amount=float(amount_usdc),
+                        amount=float(amount_collateral),
                     )
                 else:
                     if shares is None:
@@ -640,8 +647,8 @@ async def polymarket_execute(
                     "market_slug": str(market_slug) if market_slug else None,
                     "token_id": str(token_id) if token_id else None,
                     "outcome": str(outcome),
-                    "amount_usdc": float(amount_usdc)
-                    if amount_usdc is not None
+                    "amount_collateral": float(amount_collateral)
+                    if amount_collateral is not None
                     else None,
                     "shares": float(shares) if shares is not None else None,
                 },

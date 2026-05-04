@@ -5,6 +5,7 @@ from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
+_DEFAULT_API_BASE_URL = "https://strategies.wayfinder.ai/api/v1"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 
 
@@ -75,7 +76,10 @@ def load_config(
     path: str | Path | None = None, *, require_exists: bool = False
 ) -> None:
     """Load config from disk into the global CONFIG dict."""
-    set_config(load_config_json(path, require_exists=require_exists))
+    cfg_path = resolve_config_path(path)
+    if not cfg_path.exists() and path is not None and not require_exists:
+        return
+    set_config(load_config_json(cfg_path, require_exists=require_exists))
 
 
 def set_rpc_urls(rpc_urls):
@@ -95,7 +99,40 @@ def get_api_base_url() -> str:
     api_url = system.get("api_base_url")
     if api_url:
         return str(api_url).strip()
-    return "https://wayfinder.ai/api"
+    return _DEFAULT_API_BASE_URL
+
+
+def get_polygon_builder_code() -> str | None:
+    system = CONFIG.get("system", {})
+    polymarket_builder_code = system.get("polymarket_builder_code")
+    if isinstance(polymarket_builder_code, str):
+        polymarket_builder_code = polymarket_builder_code.strip()
+        if polymarket_builder_code:
+            return polymarket_builder_code
+    return None
+
+
+def get_paths_api_base_url() -> str:
+    system = CONFIG.get("system", {})
+    paths_url = system.get("paths_api_base_url")
+    if paths_url:
+        return str(paths_url).strip().rstrip("/")
+
+    env_url = os.environ.get("WAYFINDER_PATHS_API_URL")
+    if env_url:
+        return str(env_url).strip().rstrip("/")
+
+    # Fallback: derive from api_base_url by stripping known API path suffixes
+    base = get_api_base_url().strip().rstrip("/")
+    for suffix in ("/api/v1", "/api"):
+        if base.endswith(suffix):
+            return base[: -len(suffix)]
+    return base
+
+
+def allow_local_wallets() -> bool:
+    system = CONFIG.get("system", {})
+    return bool(system.get("allow_local_wallets", True))
 
 
 def get_api_key() -> str | None:
@@ -133,6 +170,10 @@ def get_etherscan_api_key() -> str | None:
     if api_key:
         return str(api_key).strip()
     return os.environ.get("ETHERSCAN_API_KEY")
+
+
+def is_opencode_instance() -> bool:
+    return bool(os.environ.get("OPENCODE_INSTANCE_ID"))
 
 
 def get_opencode_instance_id() -> str:

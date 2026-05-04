@@ -86,7 +86,7 @@ def _mock_balance_transfers(strategy: BorosHypeStrategy) -> None:
         strategy.hyperliquid_adapter.get_spot_user_state = AsyncMock(
             return_value=(True, {"balances": []})
         )
-        strategy.hyperliquid_adapter._coin_to_asset = {"HYPE": 0}
+        strategy.hyperliquid_adapter.get_spot_asset_id = AsyncMock(return_value=10000)
         strategy.hyperliquid_adapter.wait_for_deposit = AsyncMock(
             return_value=(True, 0.0)
         )
@@ -152,6 +152,19 @@ def mock_external_apy_fetches(monkeypatch):
     monkeypatch.setattr(
         "wayfinder_paths.strategies.boros_hype_strategy.strategy.fetch_lhype_apy",
         AsyncMock(return_value=None),
+    )
+    fake_hl_info = SimpleNamespace(
+        coin_to_asset={"HYPE": 0},
+        asset_to_sz_decimals={0: 4},
+        asset_to_coin={0: "HYPE"},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+        lambda: fake_hl_info,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.adapters.hyperliquid_adapter.info.get_info",
+        lambda: fake_hl_info,
     )
 
 

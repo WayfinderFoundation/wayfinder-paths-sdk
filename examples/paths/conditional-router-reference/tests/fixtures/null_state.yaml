@@ -1,0 +1,27 @@
+name: "null_state"
+output:
+  signal_snapshot:
+    recession_prob: 0.41
+  selected_playbook:
+    id: "null-state"
+    score: 0.44
+  candidate_expressions:
+    - id: "direct-polymarket"
+      type: "direct_polymarket"
+      score: 0.40
+    - id: "proxy-hl-basket"
+      type: "hyperliquid_proxy"
+      score: 0.43
+  null_state:
+    selected: true
+    reason: "No candidate clears the minimum score threshold."
+  risk_checks:
+    passed: true
+    mode: "null"
+    leverage_ok: true
+    liquidity_ok: false
+  job:
+    mode: "null"
+    armed: false
+    poll_every: 300
+  next_invalidation: "recession_prob >= 0.60"

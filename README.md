@@ -76,7 +76,7 @@ Use `config.example.json` as a template. The SDK reads `config.json` by default.
 Key fields:
 
 - `system.api_key`: Wayfinder API key (or set `WAYFINDER_API_KEY` env var)
-- `system.api_base_url`: API base URL (defaults to `https://wayfinder.ai/api` if omitted)
+- `system.api_base_url`: API base URL (defaults to `https://strategies.wayfinder.ai/api/v1` if omitted)
 - `strategy.rpc_urls`: *(optional)* chain ID -> RPC URL(s) (string or list). If omitted for a chain, reads default to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/`.
 - `wallets`: local wallets with `label`, `address`, and `private_key_hex`. Remote wallets (Privy server wallets) are auto-fetched when `system.api_key` is configured.
 
@@ -267,6 +267,73 @@ poetry run python wayfinder_paths/run_strategy.py --script .wayfinder_runs/my_fl
 **Scope:** Vnets fork EVM chains (Base, Arbitrum, Ethereum, etc.) only. Off-chain or non-EVM protocols like Hyperliquid **cannot** be simulated — dry-runs only apply to on-chain EVM transactions.
 
 Uses your existing Wayfinder API key — no extra config needed. See the `/simulation-dry-run` skill for full details.
+
+## Paths
+
+Wayfinder paths bundle a manifest, runtime component, optional applet, and optional host skill exports into a publishable artifact.
+
+### Publish a path
+
+```bash
+export WAYFINDER_PATHS_API_URL="https://strategies-dev.wayfinder.ai"
+export WAYFINDER_API_KEY="wk_..."
+
+poetry run wayfinder path fmt --path examples/paths/virtual-delta-neutral
+poetry run wayfinder path doctor --path examples/paths/virtual-delta-neutral
+poetry run wayfinder path publish --path examples/paths/virtual-delta-neutral
+```
+
+For bonded publishes, add the owner wallet and requested risk tier:
+
+```bash
+poetry run wayfinder path publish \
+  --path examples/paths/virtual-delta-neutral \
+  --bonded \
+  --owner-wallet 0xYourWallet \
+  --risk-tier execution
+```
+
+What `wayfinder path publish` does now:
+
+- builds `bundle.zip` and `source.zip`
+- renders thin host skill exports when the path has a skill
+- calls `POST /api/v1/paths/publish/init/`
+- uploads artifacts directly to signed object-storage URLs
+- calls `POST /api/v1/paths/publish/finalize/`
+- prints the resulting `manageUrl`, `reviewState`, `publishState`, and `nextAction`
+
+The backend no longer proxies archive bytes during ingest. Uploaded artifacts land in quarantine storage first, then E2B performs review and rebuild verification before approved artifacts are promoted to the published bucket.
+
+### Agent Guidance
+
+If you are automating path publication:
+
+- prefer `wayfinder path publish` over custom multipart upload scripts
+- run `wayfinder path fmt` and `wayfinder path doctor` before publish
+- assume `WAYFINDER_PATHS_API_URL` points at the Strategies backend and `WAYFINDER_API_KEY` provides auth when required
+- surface `manageUrl`, `ownerLinkRequired`, `reviewState`, `publishState`, and `nextAction` exactly as returned
+- if `ownerLinkRequired` is `true`, the next step is owner wallet linking and bonding, not another publish
+- if `reviewState` is `review`, direct the owner to the submissions page to read the recommended changes
+
+### Delta Lab For Applets
+
+Use two different Delta Lab access patterns depending on what is running:
+
+- SDK scripts, MCP tools, and agent-side Python should use `DELTA_LAB_CLIENT` with `system.api_base_url`, for example `https://strategies.wayfinder.ai/api/v1/delta-lab/...`
+- presentation applets shown on the public path page should use the public browser-safe timeseries endpoint:
+  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+
+For applet authors and agents:
+
+- if the applet is served by the path page on Strategies, same-origin `/api/v1/delta-lab/public/assets/...` is acceptable
+- if the applet may run in preview, E2B, or any static host, take the base from the host bridge (`wf:state.apiBase` first, then `wf:hello` origin) instead of inventing one in the browser
+- do not probe both dev and prod from the same applet build
+- do not call `/api/v1/delta-lab/symbols/`; that route does not exist
+- use the public `.../public/assets/<symbol>/timeseries/` route for presentation data, and reserve authenticated Delta Lab routes for SDK/server-side use
+- treat non-200 responses, especially `404`, as expected unavailability and show a clear fallback UI instead of crashing the applet
+- make sure every referenced static asset exists under `applet/dist/`
+- include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s
 
 ## Claude MCP Integration
 

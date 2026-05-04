@@ -1,0 +1,53 @@
+(function () {
+  let state = { counter: 0, updatedAt: new Date().toISOString() };
+
+  function post(message) {
+    try {
+      window.parent?.postMessage(message, "*");
+    } catch {
+      // ignore
+    }
+  }
+
+  function render() {
+    const el = document.querySelector("[data-path-state]");
+    if (el) el.textContent = JSON.stringify(state, null, 2);
+  }
+
+  window.addEventListener("message", (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== "object") return;
+
+    if (msg.type === "wf:hello") {
+      post({ type: "wf:hello_ack", version: "0.1" });
+      post({ type: "wf:state", state });
+      return;
+    }
+
+    if (msg.type === "wf:apply_state" && msg.state && typeof msg.state === "object") {
+      state = { ...(msg.state || {}) };
+      render();
+      post({ type: "wf:state", state });
+      return;
+    }
+  });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const action = target.getAttribute("data-action");
+    if (!action) return;
+
+    if (action === "bump") {
+      state = { ...state, counter: (Number(state.counter) || 0) + 1, updatedAt: new Date().toISOString() };
+      render();
+    }
+
+    if (action === "emit") {
+      post({ type: "wf:state", state });
+    }
+  });
+
+  render();
+})();
+

@@ -1,0 +1,51 @@
+archetype: conditional-router
+
+signals:
+  recession_prob:
+    source: "polymarket"
+    query: "US recession"
+    field: "implied_probability"
+    liquidity_floor_usd: 25000
+    max_spread_cents: 3
+
+playbooks:
+  risk_off:
+    when: "recession_prob >= 0.60"
+    options:
+      - type: "hyperliquid_basket"
+        side: "sell"
+        symbols: ["SOL", "DOGE"]
+        size_pct: 0.20
+
+  crash_mode:
+    when: "recession_prob >= 0.80"
+    options:
+      - type: "hyperliquid_basket"
+        side: "short"
+        symbols: ["SOL", "DOGE", "XRP"]
+        leverage: 2
+        size_pct: 0.35
+
+  risk_on:
+    when: "recession_prob < 0.35"
+    options:
+      - type: "hyperliquid_basket"
+        side: "long"
+        symbols: ["ETH", "SOL"]
+        size_pct: 0.20
+
+null_state:
+  action: "hold"
+  require_score_above: 0.65
+
+risk:
+  max_notional_usd: 25000
+  max_leverage: 2
+  margin_mode: "isolated"
+  max_daily_loss_pct: 3
+  stop_loss_pct: 1.5
+  take_profit_pct: 4.0
+
+scheduler:
+  poll_seconds: 300
+  cooldown_seconds: 21600

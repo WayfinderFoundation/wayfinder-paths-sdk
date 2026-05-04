@@ -1,0 +1,53 @@
+nodes:
+  - id: "intake"
+  - id: "normalize_thesis"
+  - id: "market_research"
+  - id: "proxy_mapping"
+  - id: "qual_research"
+  - id: "synthesize"
+  - id: "skeptic"
+  - id: "risk_gate"
+  - id: "compile_job"
+  - id: "finalize"
+
+edges:
+  - from: "intake"
+    to: "normalize_thesis"
+  - from: "normalize_thesis"
+    to: "market_research"
+  - from: "normalize_thesis"
+    to: "proxy_mapping"
+  - from: "normalize_thesis"
+    to: "qual_research"
+  - from: "market_research"
+    to: "synthesize"
+  - from: "proxy_mapping"
+    to: "synthesize"
+  - from: "qual_research"
+    to: "synthesize"
+  - from: "synthesize"
+    to: "skeptic"
+  - from: "skeptic"
+    to: "risk_gate"
+  - from: "risk_gate"
+    to: "compile_job"
+  - from: "compile_job"
+    to: "finalize"
+
+failure_edges:
+  - from: "market_research"
+    on: "retryable_error"
+    to: "market_research"
+    max_retries: 1
+  - from: "market_research"
+    on: "exhausted"
+    to: "skeptic"
+    max_retries: 0
+  - from: "risk_gate"
+    on: "failed"
+    to: "finalize"
+    max_retries: 0
+  - from: "compile_job"
+    on: "failed"
+    to: "finalize"
+    max_retries: 0
