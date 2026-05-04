@@ -96,26 +96,51 @@ def _resolve_perp_asset_id(
 
 
 async def _resolve_spot_asset_id(
-    adapter: HyperliquidAdapter, *, coin: str | None
+    adapter: HyperliquidAdapter,
+    *,
+    coin: str | None,
+    asset_id: int | None = None,
 ) -> tuple[bool, int | dict[str, Any]]:
-    c = _PERP_SUFFIX_RE.sub("", (coin or "").strip()).strip().upper()
+    if asset_id is not None:
+        try:
+            aid = int(asset_id)
+        except (TypeError, ValueError):
+            return False, {"code": "invalid_request", "message": "asset_id must be int"}
+        if aid < 10000:
+            return False, {
+                "code": "invalid_request",
+                "message": (
+                    f"spot asset_id must be >= 10000 (got {aid}); "
+                    "use is_spot=False for perp asset ids"
+                ),
+            }
+        return True, aid
+
+    c = (coin or "").strip().upper()
     if not c:
         return False, {
             "code": "invalid_request",
-            "message": "coin is required for spot orders",
+            "message": "coin or asset_id is required for spot orders",
+        }
+    if "/" not in c:
+        return False, {
+            "code": "invalid_request",
+            "message": (
+                f"spot coin must be the full pair, e.g. 'BTC/USDC' or 'BTC/USDH' (got '{c}'). "
+                "USDC and USDH are separate spot quotes — pass the explicit pair, "
+                "or pass asset_id."
+            ),
         }
 
-    # get_spot_assets populates cache, then we look up
     ok, assets = await adapter.get_spot_assets()
     if not ok:
         return False, {"code": "error", "message": "Failed to fetch spot assets"}
 
-    pair_name = f"{c}/USDC"
-    spot_aid = assets.get(pair_name)
+    spot_aid = assets.get(c)
     if spot_aid is None:
         return False, {
             "code": "not_found",
-            "message": f"Unknown spot pair: {pair_name}",
+            "message": f"Unknown spot pair: {c}",
         }
     return True, spot_aid
 
@@ -466,7 +491,9 @@ async def hyperliquid_execute(
         return None
 
     if is_spot:
-        ok_aid, aid_or_err = await _resolve_spot_asset_id(adapter, coin=coin)
+        ok_aid, aid_or_err = await _resolve_spot_asset_id(
+            adapter, coin=coin, asset_id=asset_id
+        )
     else:
         ok_aid, aid_or_err = _resolve_perp_asset_id(
             adapter, coin=coin, asset_id=asset_id

@@ -38,7 +38,7 @@ Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
 - `HYPE/USDC` is native and available
 - `PURR/USDC` is the OG spot pair (index 0)
 
-**Coin name resolution:** The MCP tool resolves `coin="HYPE"` to `HYPE/USDC`. If you need a different quote (e.g., `HYPE/USDH`), use `asset_id` directly.
+**Spot `coin` must be the explicit pair, not the bare token.** Many tokens trade against multiple quotes (e.g. `BTC/USDC` and `BTC/USDH` both exist). Pass `coin="BTC/USDC"` or `coin="BTC/USDH"` — never `coin="BTC"`. If you already know the asset id, pass `asset_id=` and omit `coin`. The two are interchangeable; `asset_id` short-circuits the pair lookup.
 
 **`is_spot` must be explicit:** When using `hyperliquid_execute(action="place_order", ...)`:
 

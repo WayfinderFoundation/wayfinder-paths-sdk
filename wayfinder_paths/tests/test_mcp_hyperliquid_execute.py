@@ -9,6 +9,7 @@ from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
 from wayfinder_paths.mcp.tools.hyperliquid import (
     _resolve_builder_fee,
     _resolve_perp_asset_id,
+    _resolve_spot_asset_id,
     hyperliquid_execute,
 )
 
@@ -33,6 +34,72 @@ def test_resolve_perp_asset_id_accepts_coin_and_strips_perp_suffix():
     ok, res = _resolve_perp_asset_id(StubAdapter(), coin="HYPE-perp", asset_id=None)
     assert ok is True
     assert res == 7
+
+
+class _SpotStubAdapter:
+    def __init__(self, assets: dict[str, int]):
+        self._assets = assets
+
+    async def get_spot_assets(self):
+        return True, self._assets
+
+
+@pytest.mark.asyncio
+async def test_resolve_spot_asset_id_accepts_explicit_pair():
+    adapter = _SpotStubAdapter(
+        {"BTC/USDC": 10142, "BTC/USDH": 10999, "USDH/USDC": 10230}
+    )
+
+    ok, res = await _resolve_spot_asset_id(adapter, coin="BTC/USDC")
+    assert ok is True
+    assert res == 10142
+
+    ok, res = await _resolve_spot_asset_id(adapter, coin="BTC/USDH")
+    assert ok is True
+    assert res == 10999
+
+    ok, res = await _resolve_spot_asset_id(adapter, coin="usdh/usdc")
+    assert ok is True
+    assert res == 10230
+
+
+@pytest.mark.asyncio
+async def test_resolve_spot_asset_id_rejects_bare_token():
+    adapter = _SpotStubAdapter({"BTC/USDC": 10142, "BTC/USDH": 10999})
+
+    ok, err = await _resolve_spot_asset_id(adapter, coin="BTC")
+    assert ok is False
+    assert err["code"] == "invalid_request"
+    assert "BTC/USDC" in err["message"] or "full pair" in err["message"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_spot_asset_id_accepts_asset_id():
+    adapter = _SpotStubAdapter({})
+
+    ok, res = await _resolve_spot_asset_id(adapter, coin=None, asset_id=10230)
+    assert ok is True
+    assert res == 10230
+
+
+@pytest.mark.asyncio
+async def test_resolve_spot_asset_id_rejects_perp_asset_id():
+    adapter = _SpotStubAdapter({})
+
+    ok, err = await _resolve_spot_asset_id(adapter, coin=None, asset_id=7)
+    assert ok is False
+    assert err["code"] == "invalid_request"
+    assert ">= 10000" in err["message"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_spot_asset_id_unknown_pair():
+    adapter = _SpotStubAdapter({"BTC/USDC": 10142})
+
+    ok, err = await _resolve_spot_asset_id(adapter, coin="DOGE/USDC")
+    assert ok is False
+    assert err["code"] == "not_found"
+    assert "DOGE/USDC" in err["message"]
 
 
 @pytest.mark.asyncio
