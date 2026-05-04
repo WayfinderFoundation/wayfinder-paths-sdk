@@ -58,6 +58,7 @@ For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid` (user state, mids, meta, `wait_for_deposit`, `wait_for_withdrawal`)
 - Writes: `mcp__wayfinder__hyperliquid_execute`:
   - `place_order` (perp and spot, with `is_spot` flag)
+  - `place_outcome_order` (HIP-4 outcome markets — see [outcomes.md](outcomes.md))
   - `place_trigger_order` (stop-loss / take-profit, perp only — see below)
   - `cancel_order`
   - `update_leverage`

@@ -232,7 +232,7 @@ When a user wants **immediate, one-off execution**:
 
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
-- **Hyperliquid perps/spot:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, etc.). The skill covers both the MCP tool interface and the Python adapter.
+- **Hyperliquid perps/spot/outcomes:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel; HIP-4 outcome markets via `place_outcome_order`). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, outcome `outcome_id`/`side`, etc.). The skill covers both the MCP tool interface and the Python adapter.
 - **Polymarket:** use `mcp__wayfinder__polymarket` (search/status/history) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
@@ -259,7 +259,7 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction + Hyperliquid deposits/withdrawals: handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
+HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDH**, not USDC), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
 Polymarket quick flows:
 
