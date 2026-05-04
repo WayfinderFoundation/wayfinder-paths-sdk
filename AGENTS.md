@@ -98,6 +98,10 @@ await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
 
 Projections are scoped per chart — switching markets shows only that chart's projections. The backend is type-agnostic; new projection types only need a frontend renderer.
 
+## Memories
+
+Eagerly use the memory tools. Persist user preferences, recurring strategies, wallet labels, project context, and anything else the user is likely to reference again — read on session start, write whenever you learn something durable. Don't ration them: a memory the user has to repeat is a memory you should have written.
+
 ## Scheduled Jobs (backend sync)
 
 On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
@@ -107,6 +111,8 @@ On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon au
 - **Local-only**: On non-Shells instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
 
 The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
+
+**Don't silence `job_result` notifications.** When a scheduled job posts a `job_result` into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
 
 ## Project Overview
 
