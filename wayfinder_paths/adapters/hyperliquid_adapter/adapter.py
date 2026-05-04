@@ -24,7 +24,7 @@ from hyperliquid.utils.signing import (
     order_wires_to_order_action,
     user_signed_payload,
 )
-from hyperliquid.utils.types import BuilderInfo
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
@@ -43,6 +43,63 @@ from wayfinder_paths.core.utils.transaction import send_transaction
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"
+
+# HIP-4 outcome encoding (HL docs):
+#   asset id   = OUTCOME_ASSET_OFFSET + 10*outcome + side
+#   book coin  = "#<encoding>"   (l2Book / trades / allMids)
+#   token coin = "+<encoding>"   (spotClearinghouseState balances)
+# `side` is the index into `outcomeMeta.outcomes[].sideSpecs`. Today HL
+# ships sideSpecs=[Yes, No] for the binary daily, so 0=YES and 1=NO —
+# but multi-outcome contracts may reorder, so always read sideSpecs[side].name
+# instead of hardcoding a YES/NO convention.
+# Collateral: outcomes settle in USDH (spot token 360), not USDC. The spot
+# wallet must hold USDH before placing orders; outcomeMeta has no per-market
+# quote field, so the whole surface is treated as USDH-only.
+
+
+def outcome_encoding(outcome_id: int, side: int) -> int:
+    return 10 * outcome_id + side
+
+
+def outcome_asset_id(outcome_id: int, side: int) -> int:
+    return OUTCOME_ASSET_OFFSET + outcome_encoding(outcome_id, side)
+
+
+def outcome_book_coin(outcome_id: int, side: int) -> str:
+    return f"#{outcome_encoding(outcome_id, side)}"
+
+
+def outcome_token_coin(outcome_id: int, side: int) -> str:
+    return f"+{outcome_encoding(outcome_id, side)}"
+
+
+def parse_outcome_description(desc: str) -> dict[str, Any]:
+    """Decode the pipe-encoded outcome description, e.g.
+    "class:priceBinary|underlying:BTC|expiry:20260503-0600|targetPrice:78213|period:1d"
+    """
+    out: dict[str, Any] = {}
+    for part in (desc or "").split("|"):
+        idx = part.find(":")
+        if idx < 0:
+            continue
+        key, value = part[:idx], part[idx + 1 :]
+        if key == "class":
+            out["class"] = value
+        elif key == "underlying":
+            out["underlying"] = value
+        elif key == "targetPrice":
+            out["targetPrice"] = float(value)
+        elif key == "period":
+            out["period"] = value
+        elif key == "expiry":
+            # "YYYYMMDD-HHMM" UTC → ISO-8601
+            out["expiry"] = (
+                f"{value[0:4]}-{value[4:6]}-{value[6:8]}T"
+                f"{value[9:11]}:{value[11:13]}:00Z"
+            )
+    return out
+
+
 USER_DECLINED_ERROR = {
     "status": "err",
     "error": "User declined transaction. Please try again..",
@@ -581,6 +638,110 @@ class HyperliquidAdapter(BaseAdapter):
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
+        success = result.get("status") == "ok"
+        if success:
+            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+            success = not any(isinstance(s, dict) and s.get("error") for s in statuses)
+        return success, result
+
+    async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
+        """List HIP-4 outcome markets with parsed settlement spec and
+        per-side asset ids / book + token coin names."""
+        try:
+            meta = get_info().outcome_meta()
+        except Exception as exc:  # noqa: BLE001
+            self.logger.error(f"Failed to fetch outcome_meta: {exc}")
+            return False, []
+
+        out: list[dict[str, Any]] = []
+        for o in meta.get("outcomes", []):
+            outcome_id = int(o["outcome"])
+            spec = parse_outcome_description(o.get("description", ""))
+            out.append(
+                {
+                    "outcome_id": outcome_id,
+                    "name": o.get("name", ""),
+                    "description": o.get("description", ""),
+                    "underlying": spec.get("underlying"),
+                    "target_price": spec.get("targetPrice"),
+                    "expiry": spec.get("expiry"),
+                    "period": spec.get("period"),
+                    "class": spec.get("class"),
+                    "sides": [
+                        {
+                            "side": idx,
+                            "name": s.get("name", ""),
+                            "asset_id": outcome_asset_id(outcome_id, idx),
+                            "book_coin": outcome_book_coin(outcome_id, idx),
+                            "token_coin": outcome_token_coin(outcome_id, idx),
+                        }
+                        for idx, s in enumerate(o.get("sideSpecs", []))
+                    ],
+                }
+            )
+        return True, out
+
+    async def place_outcome_order(
+        self,
+        *,
+        outcome_id: int,
+        side: int,
+        is_buy: bool,
+        size: int,
+        address: str,
+        price: float | None = None,
+        slippage: float = 0.01,
+        tif: Literal["Ioc", "Gtc"] = "Ioc",
+        reduce_only: bool = False,
+        cloid: str | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Place an outcome order. Reuses the existing wire/sign/broadcast path.
+
+        HIP-4 ships zero-fee — no builder is sent. Sizes are integer contracts
+        (szDecimals=0). When `price` is omitted, anchor on the live mid via
+        `allMids()` and apply slippage.
+        """
+        if side not in (0, 1):
+            return False, {"status": "err", "error": f"side must be 0 or 1, got {side}"}
+        if slippage < 0 or slippage >= 1:
+            return False, {
+                "status": "err",
+                "error": f"slippage must be in [0, 1), got {slippage}",
+            }
+        if size != int(size) or int(size) <= 0:
+            return False, {
+                "status": "err",
+                "error": f"size must be a positive integer number of contracts, got {size}",
+            }
+        await self.ensure_dex_abstraction(address)
+
+        asset_id = outcome_asset_id(outcome_id, side)
+        book_coin = outcome_book_coin(outcome_id, side)
+
+        if price is None:
+            ok, mids = await self.get_all_mid_prices()
+            if not ok or book_coin not in mids:
+                return False, {
+                    "status": "err",
+                    "error": f"Could not fetch mid price for {book_coin}",
+                }
+            price = mids[book_coin] * ((1 + slippage) if is_buy else (1 - slippage))
+
+        # Clamp inside (0, 1); HL rejects 0/1.
+        price = max(0.0001, min(0.9999, float(price)))
+        price = round(float(f"{price:.5g}"), self._get_price_decimals(asset_id))
+
+        order_actions = self._create_hypecore_order_actions(
+            asset_id,
+            is_buy,
+            price,
+            int(size),
+            reduce_only,
+            {"limit": {"tif": tif}},
+            None,  # HIP-4 zero-fee; no builder
+            cloid,
+        )
+        result = await self._sign_and_broadcast_hypecore(order_actions, address)
         success = result.get("status") == "ok"
         if success:
             statuses = result.get("response", {}).get("data", {}).get("statuses", [])

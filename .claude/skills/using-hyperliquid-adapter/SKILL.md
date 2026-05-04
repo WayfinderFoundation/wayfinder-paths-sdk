@@ -17,4 +17,5 @@ Use this skill when you are:
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Data sources + I/O shapes for market data and time series
 - [rules/deposits-withdrawals.md](rules/deposits-withdrawals.md) - Bridge2 deposit/withdraw mechanics (chain, minimums, timing, monitoring)
 - [rules/execution-opportunities.md](rules/execution-opportunities.md) - Order/transfer/withdraw flows and required executor injection
+- [rules/outcomes.md](rules/outcomes.md) - HIP-4 outcome markets (binary/multi-outcome prediction contracts, asset id encoding, `place_outcome_order`)
 - [rules/gotchas.md](rules/gotchas.md) - Asset IDs, spot naming, and common integration pitfalls

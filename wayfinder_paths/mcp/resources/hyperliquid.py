@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 from wayfinder_paths.mcp.utils import resolve_wallet_address
@@ -28,6 +29,12 @@ async def get_spot_user_state(label: str) -> str:
 
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_spot_user_state(addr)
+    if success and isinstance(data, dict):
+        data["balances"] = [
+            b
+            for b in data.get("balances", [])
+            if not str(b.get("coin") or "").startswith("+")
+        ]
     return json.dumps(
         {"label": label, "address": addr, "success": success, "spot": data}, indent=2
     )
@@ -80,3 +87,41 @@ async def get_orderbook(coin: str) -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_l2_book(c, n_levels=20)
     return json.dumps({"coin": c, "success": success, "book": data}, indent=2)
+
+
+async def get_outcomes() -> str:
+    adapter = HyperliquidAdapter()
+    success, data = await adapter.get_outcome_markets()
+    return json.dumps({"success": success, "outcomes": data}, indent=2)
+
+
+async def get_outcome_user_state(label: str) -> str:
+    addr, _ = await resolve_wallet_address(wallet_label=label)
+    if not addr:
+        return json.dumps({"error": f"Wallet not found: {label}"})
+
+    adapter = HyperliquidAdapter()
+    success, data = await adapter.get_spot_user_state(addr)
+    positions: list[dict[str, Any]] = []
+    if success and isinstance(data, dict):
+        for bal in data.get("balances", []):
+            coin = str(bal.get("coin") or "")
+            if not coin.startswith("+"):
+                continue
+            if float(bal.get("total") or 0) == 0:
+                continue
+            encoding = int(coin[1:])
+            positions.append(
+                {
+                    "coin": coin,
+                    "outcome_id": encoding // 10,
+                    "side": encoding % 10,
+                    "total": bal.get("total"),
+                    "hold": bal.get("hold"),
+                    "entryNtl": bal.get("entryNtl"),
+                }
+            )
+    return json.dumps(
+        {"label": label, "address": addr, "success": success, "positions": positions},
+        indent=2,
+    )

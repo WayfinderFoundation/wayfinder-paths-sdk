@@ -1891,14 +1891,14 @@ files = [
 
 [[package]]
 name = "hyperliquid-felix"
-version = "0.21.0"
+version = "0.23.1"
 description = "SDK for Hyperliquid API trading with Python."
 optional = false
 python-versions = "<4.0,>=3.9"
 groups = ["main"]
 files = [
-    {file = "hyperliquid_felix-0.21.0-py3-none-any.whl", hash = "sha256:80ba6c2ee4bec6a94ddc24693d2891faa3df5f598a789992a72d1316a33c427e"},
-    {file = "hyperliquid_felix-0.21.0.tar.gz", hash = "sha256:8aa89a3a301a59c92e11d8ffeeabadea526e8dc6765fb2eb5ed45fd3d8527a9c"},
+    {file = "hyperliquid_felix-0.23.1-py3-none-any.whl", hash = "sha256:dd2a6cad80c51c5e754d713389ce2fbe3bd19cb1c234255ee377d4573a27e100"},
+    {file = "hyperliquid_felix-0.23.1.tar.gz", hash = "sha256:bdd744bfcd5bbece840945795a84d59e8af3c43b5602d7d52fe4a7562d18c557"},
 ]
 
 [package.dependencies]
@@ -5226,4 +5226,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "b9c353b5c8acf292d0dc5f4d2f54492a91540b3f8c2ad2f5eaff520bc481d141"
+content-hash = "f65925377dbfba564a27705eee50de51d5308191f47a6ff0c7163fdd802b0c9c"
