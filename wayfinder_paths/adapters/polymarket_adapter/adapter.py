@@ -1525,26 +1525,35 @@ class PolymarketAdapter(BaseAdapter):
         after: str | None = None,
         next_cursor: str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
-        ok, msg = await self.ensure_api_creds()
-        if not ok:
-            return False, str(msg)
-
         effective_builder_code = builder_code or self._builder_code()
         if not effective_builder_code:
             return False, "builder_code is required"
 
         try:
-            params = BuilderTradeParams(
-                builder_code=effective_builder_code,
-                id=trade_id,
-                maker_address=maker_address,
-                market=market,
-                asset_id=asset_id,
-                before=before,
-                after=after,
-            )
-            data = self.clob_client.get_builder_trades(params, next_cursor=next_cursor)
-            return True, data if isinstance(data, dict) else {"result": data}
+            params: dict[str, str] = {"builder_code": effective_builder_code}
+            if trade_id:
+                params["id"] = trade_id
+            if maker_address:
+                params["maker_address"] = maker_address
+            if market:
+                params["market"] = market
+            if asset_id:
+                params["asset_id"] = asset_id
+            if before:
+                params["before"] = before
+            if after:
+                params["after"] = after
+            if next_cursor:
+                params["next_cursor"] = next_cursor
+            res = await self._clob_http.get("/builder/trades", params=params)
+            res.raise_for_status()
+            data = res.json()
+            return True, {
+                "trades": list(data.get("data", [])),
+                "next_cursor": data.get("next_cursor"),
+                "limit": data.get("limit"),
+                "count": data.get("count"),
+            }
         except Exception as exc:
             return False, str(exc)
 
