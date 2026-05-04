@@ -209,49 +209,61 @@ class TestPolymarketAdapter:
         assert fake_clob_client.params.asset_id == "tok-123"
 
     @pytest.mark.asyncio
-    async def test_get_builder_trades_uses_configured_builder_code(self, adapter):
-        adapter.config = {"system": {"polymarket_builder_code": "0x" + "56" * 32}}
-        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+    async def test_get_builder_trades_uses_configured_builder_code(
+        self, adapter, monkeypatch
+    ):
+        builder_code = "0x" + "56" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
 
-        class FakeClobClient:
-            def __init__(self):
-                self.params = None
-                self.next_cursor = None
+        captured = {}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "data": [{"id": "trade-1"}],
+            "next_cursor": "abc",
+            "limit": 100,
+            "count": 1,
+        }
 
-            def get_builder_trades(self, params, next_cursor=None):
-                self.params = params
-                self.next_cursor = next_cursor
-                return {"trades": [{"id": "trade-1"}], "next_cursor": "abc"}
+        async def mock_get(path, params=None, **_kwargs):
+            captured["path"] = path
+            captured["params"] = params
+            return mock_resp
 
-        fake_clob_client = FakeClobClient()
-        adapter._clob_client = fake_clob_client
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
 
         ok, response = await adapter.get_builder_trades()
 
         assert ok is True
-        assert response == {"trades": [{"id": "trade-1"}], "next_cursor": "abc"}
-        assert isinstance(
-            fake_clob_client.params, polymarket_adapter_module.BuilderTradeParams
-        )
-        assert fake_clob_client.params.builder_code == "0x" + "56" * 32
-        assert fake_clob_client.next_cursor is None
+        assert response == {
+            "trades": [{"id": "trade-1"}],
+            "next_cursor": "abc",
+            "limit": 100,
+            "count": 1,
+        }
+        assert captured["path"] == "/builder/trades"
+        assert captured["params"]["builder_code"] == builder_code
 
     @pytest.mark.asyncio
-    async def test_get_builder_trades_forwards_filters_and_cursor(self, adapter):
-        adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+    async def test_get_builder_trades_forwards_filters_and_cursor(
+        self, adapter, monkeypatch
+    ):
+        captured = {}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "data": [],
+            "next_cursor": "next-2",
+            "limit": 100,
+            "count": 0,
+        }
 
-        class FakeClobClient:
-            def __init__(self):
-                self.params = None
-                self.next_cursor = None
+        async def mock_get(path, params=None, **_kwargs):
+            captured["path"] = path
+            captured["params"] = params
+            return mock_resp
 
-            def get_builder_trades(self, params, next_cursor=None):
-                self.params = params
-                self.next_cursor = next_cursor
-                return {"trades": [], "next_cursor": "next-2", "count": 0}
-
-        fake_clob_client = FakeClobClient()
-        adapter._clob_client = fake_clob_client
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
 
         ok, response = await adapter.get_builder_trades(
             builder_code="0x" + "78" * 32,
@@ -265,21 +277,22 @@ class TestPolymarketAdapter:
         )
 
         assert ok is True
-        assert response == {"trades": [], "next_cursor": "next-2", "count": 0}
-        assert isinstance(
-            fake_clob_client.params, polymarket_adapter_module.BuilderTradeParams
-        )
-        assert fake_clob_client.params.builder_code == "0x" + "78" * 32
-        assert fake_clob_client.params.id == "trade-123"
-        assert (
-            fake_clob_client.params.maker_address
-            == "0x000000000000000000000000000000000000dEaD"
-        )
-        assert fake_clob_client.params.market == "market-1"
-        assert fake_clob_client.params.asset_id == "asset-1"
-        assert fake_clob_client.params.before == "2026-05-01T00:00:00Z"
-        assert fake_clob_client.params.after == "2026-04-01T00:00:00Z"
-        assert fake_clob_client.next_cursor == "cursor-1"
+        assert response == {
+            "trades": [],
+            "next_cursor": "next-2",
+            "limit": 100,
+            "count": 0,
+        }
+        assert captured["path"] == "/builder/trades"
+        p = captured["params"]
+        assert p["builder_code"] == "0x" + "78" * 32
+        assert p["id"] == "trade-123"
+        assert p["maker_address"] == "0x000000000000000000000000000000000000dEaD"
+        assert p["market"] == "market-1"
+        assert p["asset_id"] == "asset-1"
+        assert p["before"] == "2026-05-01T00:00:00Z"
+        assert p["after"] == "2026-04-01T00:00:00Z"
+        assert p["next_cursor"] == "cursor-1"
 
     @pytest.mark.asyncio
     async def test_list_markets(self, adapter, monkeypatch):
