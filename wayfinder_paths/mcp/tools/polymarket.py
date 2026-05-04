@@ -201,8 +201,6 @@ async def polymarket(
 
     if action == "open_orders" and not want:
         return err("invalid_request", "wallet_label is required for open_orders")
-    if action == "builder_trades" and not want:
-        return err("invalid_request", "wallet_label is required for builder_trades")
 
     config: dict[str, Any] | None = None
     sign_cb = None
@@ -422,14 +420,6 @@ async def polymarket(
             )
 
         if action == "builder_trades":
-            if not want or not waddr:
-                return err("not_found", f"Unknown wallet_label: {wallet_label}")
-            if not sign_hash_cb:
-                return err(
-                    "invalid_wallet",
-                    "Wallet must support hash signing to fetch builder trades",
-                    {"wallet_label": want},
-                )
             ok_bt, trades = await adapter.get_builder_trades(
                 builder_code=builder_code,
                 trade_id=trade_id,
@@ -439,14 +429,11 @@ async def polymarket(
                 before=before,
                 after=after,
                 next_cursor=next_cursor,
-                )
+            )
             if not ok_bt:
                 return err("error", str(trades))
-            configured_builder_code = None
-            if isinstance(config, dict):
-                system = config.get("system", {})
-                if isinstance(system, dict):
-                    configured_builder_code = system.get("polymarket_builder_code")
+            system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
+            configured_builder_code = system.get("polymarket_builder_code") if isinstance(system, dict) else None
             return ok(
                 {
                     "action": action,
