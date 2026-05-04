@@ -1,0 +1,99 @@
+# HIP-4 outcome markets (binary / multi-outcome prediction contracts)
+
+HIP-4 is a hypercore-native prediction-contract surface. Phase 1 ships **binary daily markets** (e.g. "BTC > $78,213 by 06:00 UTC"); the protocol generalizes to multi-outcome later. Outcomes settle daily at **06:00 UTC**, after which the `outcome_id` rolls and old ids stop trading.
+
+**Collateral / quote: USDH** (Hyperliquid's stablecoin, spot token id 360). All currently-live HIP-4 outcomes settle in USDH — `outcomeMeta` doesn't expose a per-market quote field, so treat the whole surface as USDH-only until HL deploys outcomes against another token. Fund the spot wallet with USDH before placing orders; a USDC balance won't be debited for outcome trades.
+
+## Asset id encoding
+
+Every outcome side has its own asset id and coin name:
+
+```
+encoding   = 10 * outcome_id + side
+asset_id   = 100_000_000 + encoding   # OUTCOME_ASSET_OFFSET
+book_coin  = f"#{encoding}"           # used by l2Book, trades, allMids
+token_coin = f"+{encoding}"           # used by spotClearinghouseState balances
+```
+
+`side` is the integer index into `outcomeMeta.outcomes[].sideSpecs`. The current binary daily ships `sideSpecs=[Yes, No]` so **0=YES, 1=NO**, but multi-outcome markets may reorder. **Always read `sideSpecs[side].name` from `get_outcome_markets()` rather than hardcoding YES/NO.**
+
+Helpers exported from `wayfinder_paths.adapters.hyperliquid_adapter.adapter`:
+
+- `outcome_asset_id(outcome_id, side) -> int`
+- `outcome_book_coin(outcome_id, side) -> str` (`"#<encoding>"`)
+- `outcome_token_coin(outcome_id, side) -> str` (`"+<encoding>"`)
+
+## Reads
+
+### Adapter
+
+- `HyperliquidAdapter.get_outcome_markets()` → `(ok, list[dict])` — one entry per live outcome with parsed `description` (underlying, expiry ISO, target price, period), `sideSpecs`, and per-side `asset_id`/`book_coin`/`token_coin`.
+- Per-side order book: `adapter.get_l2_book(outcome_book_coin(oid, side))`.
+- Mid prices: `adapter.get_all_mid_prices()` returns a dict keyed by `#<encoding>` for outcome sides.
+- **Positions live in spot user state, but the MCP `/spot` resource hides them.** The raw `HyperliquidAdapter.get_spot_user_state(address)` call still returns `balances[]` with `+<encoding>` entries — there's no dedicated outcome-positions endpoint upstream. Frontend filtering happens in `wayfinder://hyperliquid/{label}/outcomes` (see below).
+
+### MCP — three balance resources, one per surface
+
+| Resource | Returns |
+|---|---|
+| `wayfinder://hyperliquid/{label}/state` | Perp clearinghouse (cross/isolated margin, asset positions, withdrawable). |
+| `wayfinder://hyperliquid/{label}/spot` | Pure spot balances (`USDC`, `HYPE`, `USDH`, …). **`+N` outcome entries are filtered out** — read those via `/outcomes`. |
+| `wayfinder://hyperliquid/{label}/outcomes` | Outcome positions only — `+N` entries with non-zero total, parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`. |
+
+Other reads:
+
+- `wayfinder://hyperliquid/outcomes` (no label) — list live outcome markets.
+- `wayfinder://hyperliquid/book/{coin}` — pass the URL-encoded `#<encoding>` (e.g. `%2320` for `#20`).
+
+## Writes
+
+### MCP — `hyperliquid_execute(action="place_outcome_order", ...)`
+
+**Required:** `wallet_label`, `outcome_id` (int), `side` (int), `is_buy` (bool), `size` (int contracts).
+
+**Optional:** `order_type` (`"market"` default → IOC; `"limit"` → GTC), `price` (float, required for limit), `slippage` (default 0.01), `reduce_only`, `cloid`.
+
+**Notes:**
+- `size` is **integer contracts** (`szDecimals=0`).
+- HIP-4 is **zero-fee** — no builder approval flow; the dispatcher omits builder for outcome orders.
+- No leverage, no `is_spot`, no `coin` — outcome resolution is purely `outcome_id` + `side`.
+
+```python
+hyperliquid_execute(
+    action="place_outcome_order",
+    wallet_label="main",
+    outcome_id=20,
+    side=0,             # YES (verify via get_outcome_markets sideSpecs)
+    is_buy=True,
+    size=5,
+)
+```
+
+### MCP — cancel an outcome order
+
+Use the existing `cancel_order` action with the explicit asset id:
+
+```python
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import outcome_asset_id
+
+hyperliquid_execute(
+    action="cancel_order",
+    wallet_label="main",
+    asset_id=outcome_asset_id(20, 0),
+    order_id=123456,
+)
+```
+
+### Adapter (Python)
+
+- `HyperliquidAdapter.place_outcome_order(outcome_id, side, is_buy, size, address, price=None, slippage=0.01, tif="Ioc"|"Gtc", reduce_only=False, cloid=None)` → `(ok, result)`.
+- `HyperliquidAdapter.cancel_order(asset_id=outcome_asset_id(oid, side), order_id, address)`.
+
+## Gotchas
+
+- **Collateral is USDH, not USDC.** Outcome buys debit USDH (token 360) on the spot side. A USDC-only spot wallet will fail to place orders even with plenty of buying power. Use the existing spot pair `USDH/USDC` (or transfer in) to fund USDH first.
+- **Daily settlement rolls outcome ids.** A live `outcome_id=20` at 05:55 UTC may be expired by 06:05 UTC and a new id replaces it. Re-fetch `get_outcome_markets()` rather than caching ids across days.
+- **Sizes are integer contracts.** The adapter rejects non-integer `size` loudly; don't pass floats.
+- **Price decimals follow the spot rule** (`MAX_DECIMALS=8`, 5-sig-figs); for typical 0..1 outcome prices this means up to ~5 decimals.
+- **No builder fees.** Empirically verified across thousands of fills — the builder field is not honored on outcomes. Don't try to attach one.
+- **Phase 1 is binary only**, but treat `side` as an arbitrary index into `sideSpecs` so multi-outcome works without code changes.

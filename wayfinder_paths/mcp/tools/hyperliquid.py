@@ -221,6 +221,7 @@ def _annotate_hl_profile(
 async def hyperliquid_execute(
     action: Literal[
         "place_order",
+        "place_outcome_order",
         "place_trigger_order",
         "cancel_order",
         "update_leverage",
@@ -233,6 +234,8 @@ async def hyperliquid_execute(
     coin: str | None = None,
     asset_id: int | None = None,
     is_spot: bool | None = None,
+    outcome_id: int | None = None,
+    side: int | None = None,
     order_type: Literal["market", "limit"] = "market",
     is_buy: bool | None = None,
     size: float | None = None,
@@ -281,6 +284,8 @@ async def hyperliquid_execute(
         "trigger_price": trigger_price,
         "tpsl": tpsl,
         "is_market_trigger": is_market_trigger,
+        "outcome_id": outcome_id,
+        "side": side,
     }
     tool_input = {"request": key_input}
     preview_obj = await build_hyperliquid_execute_preview(tool_input)
@@ -376,6 +381,77 @@ async def hyperliquid_execute(
             action=action,
             status=status,
             details={"usd_amount": amt, "to_perp": to_perp},
+        )
+
+        return response
+
+    if action == "place_outcome_order":
+        if outcome_id is None or side is None:
+            return err(
+                "invalid_request",
+                "outcome_id and side are required for place_outcome_order",
+            )
+        if is_buy is None or size is None:
+            return err(
+                "invalid_request",
+                "is_buy and size are required for place_outcome_order",
+            )
+        if order_type == "limit" and price is None:
+            return err("invalid_request", "price is required for limit orders")
+
+        ok_order, res = await adapter.place_outcome_order(
+            outcome_id=int(outcome_id),
+            side=int(side),
+            is_buy=bool(is_buy),
+            size=int(size),
+            price=None if price is None else float(price),
+            slippage=float(slippage),
+            tif="Ioc" if order_type == "market" else "Gtc",
+            reduce_only=bool(reduce_only),
+            cloid=cloid,
+            address=sender,
+        )
+        effects.append(
+            {
+                "type": "hl",
+                "label": "place_outcome_order",
+                "ok": ok_order,
+                "result": res,
+            }
+        )
+        status = "confirmed" if ok_order else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": sender,
+                "outcome_id": int(outcome_id),
+                "side": int(side),
+                "order": {
+                    "order_type": order_type,
+                    "is_buy": bool(is_buy),
+                    "size": int(size),
+                    "price": float(price) if price is not None else None,
+                    "slippage": float(slippage),
+                    "reduce_only": bool(reduce_only),
+                    "cloid": cloid,
+                },
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="place_outcome_order",
+            status=status,
+            details={
+                "outcome_id": int(outcome_id),
+                "side": int(side),
+                "is_buy": bool(is_buy),
+                "size": int(size),
+            },
         )
 
         return response

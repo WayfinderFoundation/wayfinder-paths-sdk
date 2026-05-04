@@ -50,6 +50,8 @@ from wayfinder_paths.mcp.resources.hyperliquid import (
     get_mid_price,
     get_mid_prices,
     get_orderbook,
+    get_outcome_user_state,
+    get_outcomes,
     get_spot_assets,
     get_spot_user_state,
     get_user_state,
@@ -105,11 +107,13 @@ mcp.resource("wayfinder://tokens/gas/{chain_code}")(get_gas_token)
 mcp.resource("wayfinder://tokens/search/{chain_code}/{query}")(fuzzy_search_tokens)
 mcp.resource("wayfinder://hyperliquid/{label}/state")(get_user_state)
 mcp.resource("wayfinder://hyperliquid/{label}/spot")(get_spot_user_state)
+mcp.resource("wayfinder://hyperliquid/{label}/outcomes")(get_outcome_user_state)
 mcp.resource("wayfinder://hyperliquid/prices")(get_mid_prices)
 mcp.resource("wayfinder://hyperliquid/prices/{coin}")(get_mid_price)
 mcp.resource("wayfinder://hyperliquid/markets")(get_markets)
 mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
 mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
+mcp.resource("wayfinder://hyperliquid/outcomes")(get_outcomes)
 mcp.resource("wayfinder://contracts")(list_contracts)
 mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
 mcp.resource("wayfinder://alpha-lab/types")(get_alpha_types)

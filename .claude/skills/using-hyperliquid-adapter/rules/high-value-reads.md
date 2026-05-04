@@ -52,6 +52,14 @@ Use one of:
 
 ### Account state
 
+Three MCP resources, one per asset surface (split so the agent doesn't have to disambiguate):
+
+- `wayfinder://hyperliquid/{label}/state` — perp clearinghouse (margin summary, asset positions, withdrawable).
+- `wayfinder://hyperliquid/{label}/spot` — **pure spot only** (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out at the resource layer.
+- `wayfinder://hyperliquid/{label}/outcomes` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
+
+Adapter calls (raw, no filtering — both still expose outcome `+N` entries on the spot side):
+
 - Perp account state: `HyperliquidAdapter.get_user_state(address)`
 - Spot balances: `HyperliquidAdapter.get_spot_user_state(address)`
 - Orders/fills:
