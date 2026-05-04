@@ -12,7 +12,6 @@ from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from py_clob_client_v2.client import ClobClient  # type: ignore[import-untyped]
 from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
-    BuilderTradeParams,
     MarketOrderArgs,
     OpenOrderParams,
     OrderArgsV2,

@@ -433,7 +433,11 @@ async def polymarket(
             if not ok_bt:
                 return err("error", str(trades))
             system = CONFIG.get("system", {}) if isinstance(CONFIG, dict) else {}
-            configured_builder_code = system.get("polymarket_builder_code") if isinstance(system, dict) else None
+            configured_builder_code = (
+                system.get("polymarket_builder_code")
+                if isinstance(system, dict)
+                else None
+            )
             return ok(
                 {
                     "action": action,
