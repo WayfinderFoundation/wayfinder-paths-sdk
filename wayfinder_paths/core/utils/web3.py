@@ -1,5 +1,7 @@
+import logging
 from contextlib import asynccontextmanager
 
+import httpx
 from web3 import AsyncHTTPProvider, AsyncWeb3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.module import Module
@@ -14,6 +16,8 @@ from wayfinder_paths.core.constants.chains import (
     POA_MIDDLEWARE_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.retry import retry_async
+
+logger = logging.getLogger(__name__)
 
 
 class HyperModule(Module):
@@ -72,6 +76,30 @@ def _wayfinder_auth_headers() -> dict[str, str]:
     return headers
 
 
+_pool_size_cache: dict[int, int] = {}
+
+
+def _fetch_pool_size(chain_id: int) -> int:
+    """Probes the proxy for its fan-out width; positive results cached per process.
+
+    Synchronous, so the first call per chain blocks the asyncio loop for one
+    HTTPS round-trip (~50-200ms). Failures are NOT cached so a transient
+    network blip on the very first call doesn't pin the SDK to single-URL
+    fallback for the rest of the process lifetime.
+    """
+    if (cached := _pool_size_cache.get(chain_id)) is not None:
+        return cached
+    url = f"{get_api_base_url()}/blockchain/rpc/{chain_id}/count/"
+    try:
+        resp = httpx.get(url, headers=_wayfinder_auth_headers(), timeout=5)
+        size = int(resp.json()["size"])
+    except (httpx.HTTPError, ValueError, KeyError) as exc:
+        logger.warning("RPC pool-size probe failed for chain %s: %s", chain_id, exc)
+        return 0
+    _pool_size_cache[chain_id] = size
+    return size
+
+
 def _get_rpcs_for_chain_id(chain_id: int) -> list:
     mapping = get_rpc_urls()
     rpcs = mapping.get(str(chain_id))
@@ -79,8 +107,12 @@ def _get_rpcs_for_chain_id(chain_id: int) -> list:
         # User overrides
         rpcs = mapping.get(chain_id)
     if rpcs is None:
-        # WF proxy RPCs
-        rpcs = [f"{get_api_base_url()}/blockchain/rpc/{chain_id}/"]
+        base = get_api_base_url()
+        n = _fetch_pool_size(chain_id)
+        if n:
+            rpcs = [f"{base}/blockchain/rpc/{chain_id}/{i}/" for i in range(n)]
+        else:
+            rpcs = [f"{base}/blockchain/rpc/{chain_id}/"]
 
     if isinstance(rpcs, str):
         return [rpcs]
