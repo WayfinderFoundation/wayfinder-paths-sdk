@@ -12,6 +12,7 @@ from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from py_clob_client_v2.client import ClobClient  # type: ignore[import-untyped]
 from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
+    BuilderTradeParams,
     MarketOrderArgs,
     OpenOrderParams,
     OrderArgsV2,
@@ -1510,6 +1511,41 @@ class PolymarketAdapter(BaseAdapter):
                 return True, data["data"]
             return True, []
         except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_builder_trades(
+        self,
+        *,
+        builder_code: str | None = None,
+        trade_id: str | None = None,
+        maker_address: str | None = None,
+        market: str | None = None,
+        asset_id: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        next_cursor: str | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        ok, msg = await self.ensure_api_creds()
+        if not ok:
+            return False, str(msg)
+
+        effective_builder_code = builder_code or self._builder_code()
+        if not effective_builder_code:
+            return False, "builder_code is required"
+
+        try:
+            params = BuilderTradeParams(
+                builder_code=effective_builder_code,
+                id=trade_id,
+                maker_address=maker_address,
+                market=market,
+                asset_id=asset_id,
+                before=before,
+                after=after,
+            )
+            data = self.clob_client.get_builder_trades(params, next_cursor=next_cursor)
+            return True, data if isinstance(data, dict) else {"result": data}
+        except Exception as exc:
             return False, str(exc)
 
     async def get_full_user_state(

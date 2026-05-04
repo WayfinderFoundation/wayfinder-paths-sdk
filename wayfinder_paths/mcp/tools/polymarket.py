@@ -137,6 +137,7 @@ async def polymarket(
         "price_history",
         "bridge_status",
         "open_orders",
+        "builder_trades",
     ],
     *,
     wallet_label: str | None = None,
@@ -171,6 +172,14 @@ async def polymarket(
     start_ts: int | None = None,
     end_ts: int | None = None,
     fidelity: int | None = None,
+    builder_code: str | None = None,
+    trade_id: str | None = None,
+    maker_address: str | None = None,
+    market: str | None = None,
+    asset_id: str | None = None,
+    before: str | None = None,
+    after: str | None = None,
+    next_cursor: str | None = None,
 ) -> dict[str, Any]:
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
 
@@ -192,6 +201,8 @@ async def polymarket(
 
     if action == "open_orders" and not want:
         return err("invalid_request", "wallet_label is required for open_orders")
+    if action == "builder_trades" and not want:
+        return err("invalid_request", "wallet_label is required for builder_trades")
 
     config: dict[str, Any] | None = None
     sign_cb = None
@@ -407,6 +418,42 @@ async def polymarket(
                     "wallet_label": want,
                     "account": waddr,
                     "openOrders": orders,
+                }
+            )
+
+        if action == "builder_trades":
+            if not want or not waddr:
+                return err("not_found", f"Unknown wallet_label: {wallet_label}")
+            if not sign_hash_cb:
+                return err(
+                    "invalid_wallet",
+                    "Wallet must support hash signing to fetch builder trades",
+                    {"wallet_label": want},
+                )
+            ok_bt, trades = await adapter.get_builder_trades(
+                builder_code=builder_code,
+                trade_id=trade_id,
+                maker_address=normalize_address(maker_address),
+                market=market,
+                asset_id=asset_id,
+                before=before,
+                after=after,
+                next_cursor=next_cursor,
+                )
+            if not ok_bt:
+                return err("error", str(trades))
+            configured_builder_code = None
+            if isinstance(config, dict):
+                system = config.get("system", {})
+                if isinstance(system, dict):
+                    configured_builder_code = system.get("polymarket_builder_code")
+            return ok(
+                {
+                    "action": action,
+                    "wallet_label": want,
+                    "account": waddr,
+                    "builderCode": builder_code or configured_builder_code,
+                    "builderTrades": trades,
                 }
             )
 
