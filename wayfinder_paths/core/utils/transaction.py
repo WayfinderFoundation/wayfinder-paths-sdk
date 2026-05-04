@@ -100,9 +100,7 @@ async def nonce_transaction(transaction: dict):
         nonces = await asyncio.gather(
             *[_get_nonce(web3, from_address) for web3 in web3s]
         )
-
-        nonce = max(nonces)
-        transaction["nonce"] = nonce
+        transaction["nonce"] = max(nonces)
 
     return transaction
 
