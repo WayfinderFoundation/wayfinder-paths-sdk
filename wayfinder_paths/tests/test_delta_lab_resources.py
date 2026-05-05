@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.resources import delta_lab
+from wayfinder_paths.mcp.tools import delta_lab
 
 
 class TestSearchDeltaLabAssets:
