@@ -38,13 +38,14 @@ async def _wallet_coins(addr: str) -> list[dict[str, Any]]:
     for b in data.get("balances") or []:
         if not isinstance(b, dict):
             continue
-        if str(b.get("network", "")).lower() == "solana":
+        chain = str(b.get("chain", "")).lower()
+        if chain == "solana":
             continue
         out.append(
             {
                 "symbol": b.get("symbol"),
-                "balance": b.get("balance"),
-                "chain": b.get("network"),
+                "balance": b.get("amount_decimal"),
+                "chain": b.get("chain"),
             }
         )
     return out
