@@ -37,16 +37,28 @@ async def add_chart_projection(
     The chart_id is available at frontend_context.chart.id (e.g. "hl-perp-BTC").
     Call get_frontend_context() first to read it.
 
-    Supported types:
+    Supported types (engine-agnostic; the FE renderer maps to TradingView shapes):
       - horizontal_line: config = {price, color?, label?}
-      - marker: config = {time (unix sec), position (aboveBar/belowBar),
-                          shape (circle/arrowUp/arrowDown), color?, label?}
-      - line_series: config = {data: [{time, value}], color?, label?,
-                               line_width?}
+      - vertical_line:   config = {time (unix sec), color?, label?}
+      - marker:          config = {time, price?, shape? (arrow_up /
+                                   arrow_down / flag / icon / emoji), color?}
+      - range:           config = {from_time?, to_time?, from_price, to_price,
+                                   color?}
+      - text_label:      config = {time, price, text, color?}
+      - trend:           config = {from: {time, price}, to: {time, price},
+                                   color?, label?}
+
+    Notes:
+      - `marker` does not accept a `label` — TV's marker shapes auto-generate
+        text. Use `text_label` for an annotated point.
+      - All `time` values are unix seconds.
+      - Adding a chart projection emits a state-changed notification; the FE
+        renders within one poll cycle (~5s) or sooner if the SSE stream is
+        connected.
 
     Args:
         chart_id: Chart key like "hl-perp-BTC" or "hl-perp-ETH".
-        type: Projection type: horizontal_line, marker, or line_series.
+        type: Projection type (see list above).
         config: Type-specific configuration dict.
     """
     if not is_opencode_instance():
