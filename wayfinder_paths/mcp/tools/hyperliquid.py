@@ -8,15 +8,22 @@ from typing import Any, Literal
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
+    ARBITRUM_USDC_ADDRESS,
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
+    HYPERLIQUID_BRIDGE_ADDRESS,
 )
+from wayfinder_paths.core.utils.tokens import build_send_transaction
+from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
+    normalize_address,
     ok,
+    parse_amount_to_raw,
     resolve_wallet_address,
 )
 
@@ -150,6 +157,7 @@ async def hyperliquid_execute(
         "place_trigger_order",
         "cancel_order",
         "update_leverage",
+        "deposit",
         "withdraw",
         "spot_to_perp_transfer",
         "perp_to_spot_transfer",
@@ -195,6 +203,8 @@ async def hyperliquid_execute(
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
       - `update_leverage`: set `leverage` and `is_cross` for an asset.
+      - `deposit`: bridge `amount_usdc` from Arbitrum USDC into the HL perp account
+        (≥ 5 USDC; below is lost). Auto-waits for the perp clearinghouse credit before returning.
       - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
       - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
 
@@ -258,6 +268,86 @@ async def hyperliquid_execute(
     except ValueError as e:
         return err("invalid_wallet", str(e))
     sender = adapter.wallet_address
+
+    if action == "deposit":
+        if amount_usdc is None:
+            return err("invalid_request", "amount_usdc is required for deposit")
+        try:
+            amt = float(amount_usdc)
+        except (TypeError, ValueError):
+            return err("invalid_request", "amount_usdc must be a number")
+        if amt < 5:
+            return err(
+                "invalid_request",
+                "amount_usdc must be >= 5 USDC (HL deposits below are lost)",
+            )
+
+        try:
+            sign_callback, deposit_sender = await get_wallet_signing_callback(want)
+        except ValueError as exc:
+            return err("invalid_wallet", str(exc))
+
+        recipient = (
+            normalize_address(HYPERLIQUID_BRIDGE_ADDRESS) or HYPERLIQUID_BRIDGE_ADDRESS
+        )
+        chain_id = 42161
+        amount_raw = parse_amount_to_raw(str(amt), 6)
+        transaction = await build_send_transaction(
+            from_address=deposit_sender,
+            to_address=recipient,
+            token_address=ARBITRUM_USDC_ADDRESS,
+            chain_id=chain_id,
+            amount=int(amount_raw),
+        )
+        try:
+            tx_hash = await send_transaction(
+                transaction, sign_callback, wait_for_receipt=True
+            )
+            sent_ok = True
+            sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": chain_id}
+        except Exception as exc:  # noqa: BLE001
+            sent_ok = False
+            sent_result = {"error": str(exc), "chain_id": chain_id}
+        effects.append(
+            {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
+        )
+
+        if sent_ok:
+            ok_landed, final_balance = await adapter.wait_for_deposit(
+                deposit_sender, amt
+            )
+            effects.append(
+                {
+                    "type": "hl",
+                    "label": "wait_for_credit",
+                    "ok": ok_landed,
+                    "result": {
+                        "confirmed": bool(ok_landed),
+                        "final_balance_usd": float(final_balance),
+                    },
+                }
+            )
+
+        status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": deposit_sender,
+                "amount_usdc": amt,
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
+        _annotate_hl_profile(
+            address=deposit_sender,
+            label=want,
+            action="deposit",
+            status=status,
+            details={"amount_usdc": amt, "chain_id": chain_id},
+        )
+        return response
 
     if action == "withdraw":
         if amount_usdc is None:

@@ -4,11 +4,7 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.core.constants.hyperliquid import (
-    ARBITRUM_USDC_TOKEN_ID,
-    HYPE_FEE_WALLET,
-    HYPERLIQUID_BRIDGE_ADDRESS,
-)
+from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
 from wayfinder_paths.core.constants.polymarket import (
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
@@ -47,17 +43,6 @@ async def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
             f"sender: {sender or '(unknown)'}\n"
             f"recipient: {recipient or '(unknown)'}"
         )
-    elif kind == "hyperliquid_deposit":
-        recipient = normalize_address(HYPERLIQUID_BRIDGE_ADDRESS)
-        summary = (
-            "EXECUTE hyperliquid_deposit (Bridge2)\n"
-            f"wallet_label: {wallet_label}\n"
-            f"token: {ARBITRUM_USDC_TOKEN_ID}\n"
-            f"amount: {req.get('amount')}\n"
-            "chain_id: 42161\n"
-            f"sender: {sender or '(unknown)'}\n"
-            f"recipient: {recipient or '(missing)'}"
-        )
     elif kind == "send":
         summary = (
             "EXECUTE send\n"
@@ -72,8 +57,6 @@ async def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
         summary = f"EXECUTE {kind or '(unknown kind)'}\nwallet_label: {wallet_label}"
 
     mismatch = bool(sender and recipient and sender.lower() != recipient.lower())
-    if kind == "hyperliquid_deposit":
-        mismatch = False  # deposit recipient is fixed; mismatch is expected
     return {"summary": summary, "recipient_mismatch": mismatch}
 
 

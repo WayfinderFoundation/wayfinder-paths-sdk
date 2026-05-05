@@ -5,14 +5,8 @@ from typing import Any, Literal
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.hyperliquid import (
-    ARBITRUM_USDC_ADDRESS,
-    ARBITRUM_USDC_TOKEN_ID,
-    HYPERLIQUID_BRIDGE_ADDRESS,
-)
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
@@ -33,7 +27,7 @@ from wayfinder_paths.mcp.utils import (
 
 
 class ExecutionRequest(BaseModel):
-    kind: Literal["swap", "send", "hyperliquid_deposit"]
+    kind: Literal["swap", "send"]
     wallet_label: str = Field(..., description="config.json wallet label (e.g. main)")
 
     # Shared
@@ -76,37 +70,7 @@ class ExecutionRequest(BaseModel):
                 raise ValueError("send requires recipient")
             if str(self.token).strip().lower() == "native" and self.chain_id is None:
                 raise ValueError("send requires chain_id when token='native'")
-        if self.kind == "hyperliquid_deposit":
-            # Hard-coded Bridge2 deposit: Arbitrum USDC -> Hyperliquid bridge address.
-            # Allow callers to omit token/recipient entirely; if provided, they must match.
-            if self.recipient and _addr_lower(self.recipient) != _addr_lower(
-                HYPERLIQUID_BRIDGE_ADDRESS
-            ):
-                raise ValueError("hyperliquid_deposit recipient must be bridge address")
-            if self.token and str(self.token).strip() != ARBITRUM_USDC_TOKEN_ID:
-                raise ValueError(
-                    f"hyperliquid_deposit token must be {ARBITRUM_USDC_TOKEN_ID}"
-                )
-            if self.chain_id is not None and int(self.chain_id) != 42161:
-                raise ValueError(
-                    "hyperliquid_deposit chain_id must be 42161 (Arbitrum)"
-                )
-            try:
-                amt = float(self.amount)
-            except (TypeError, ValueError):
-                amt = None
-            if amt is not None and amt < 5:
-                raise ValueError(
-                    "hyperliquid_deposit amount must be >= 5 USDC (deposits below are lost)"
-                )
         return self
-
-
-def _addr_lower(addr: str | None) -> str | None:
-    if not addr:
-        return None
-    a = str(addr).strip()
-    return a.lower() if a else None
 
 
 def _compact_quote(
@@ -248,7 +212,7 @@ def _annotate_profile(
 
 async def core_execute(
     *,
-    kind: Literal["swap", "send", "hyperliquid_deposit"],
+    kind: Literal["swap", "send"],
     wallet_label: str,
     amount: str,
     # Shared optional
@@ -262,11 +226,12 @@ async def core_execute(
     token: str | None = None,
     chain_id: int | None = None,
 ) -> dict[str, Any]:
-    """Broadcast on-chain transactions: cross-chain swap, token send, or Hyperliquid bridge deposit.
+    """Broadcast on-chain transactions: cross-chain swap or token send.
 
     **Always quote before swapping** — call `onchain_quote_swap` first, confirm route + output
     with the user, then run this. The tool waits for the receipt and returns `status="confirmed"`
-    only on `status=1`.
+    only on `status=1`. For Hyperliquid bridge deposits use
+    `hyperliquid_execute(action="deposit", amount_usdc=...)`.
 
     Kinds:
       - `swap`: BRAP cross-chain/cross-DEX swap. Requires `from_token`, `to_token`, `amount`
@@ -274,12 +239,9 @@ async def core_execute(
         Resolves token symbols/IDs via `TokenResolver`, ensures ERC-20 allowance, then broadcasts.
       - `send`: ERC-20 or native transfer. Requires `token`, `recipient`, `amount`. Pass
         `chain_id` when `token="native"`.
-      - `hyperliquid_deposit`: hardcoded Arbitrum USDC → HL Bridge2 deposit. Only `amount`
-        (≥ 5 USDC; below is lost) is required; `token`/`recipient`/`chain_id` if provided
-        must match the bridge constants.
 
     Args:
-        kind: "swap" | "send" | "hyperliquid_deposit".
+        kind: "swap" | "send".
         wallet_label: Required — config.json wallet label.
         amount: Human-units string (e.g. "1000" or "0.5").
         recipient: Destination address (defaults to sender for swap; required for send).
@@ -545,63 +507,6 @@ async def core_execute(
             status=status,
             chain_id=int(chain_id),
             details={"recipient": recipient, "amount": req.amount, "token": token_q},
-        )
-
-        return ok(response)
-
-    if req.kind == "hyperliquid_deposit":
-        recipient = normalize_address(HYPERLIQUID_BRIDGE_ADDRESS)
-        chain_id = 42161
-        token_address = ARBITRUM_USDC_ADDRESS
-        decimals = 6
-        response: dict[str, Any] = {
-            "kind": req.kind,
-            "sender": sender,
-            "recipient": recipient,
-            "preview": preview_text,
-            "effects": {},
-        }
-
-        try:
-            amount_raw = parse_amount_to_raw(req.amount, decimals)
-        except ValueError as exc:
-            response = err("invalid_amount", str(exc))
-            return response
-
-        transaction = await build_send_transaction(
-            from_address=sender,
-            to_address=recipient,
-            token_address=token_address,
-            chain_id=chain_id,
-            amount=int(amount_raw),
-        )
-
-        sent_ok, sent = await _broadcast(sign_callback, transaction, chain_id=chain_id)
-        response["effects"]["deposit"] = sent
-
-        landed_ok = False
-        if sent_ok:
-            hl_adapter = HyperliquidAdapter()
-            landed_ok, final_balance = await hl_adapter.wait_for_deposit(
-                sender, float(req.amount)
-            )
-            response["effects"]["wait_for_credit"] = {
-                "confirmed": bool(landed_ok),
-                "final_balance_usd": float(final_balance),
-            }
-
-        status = "confirmed" if sent_ok and landed_ok else "failed"
-        response["status"] = status
-        response["raw"] = {"transaction": transaction}
-
-        _annotate_profile(
-            address=sender,
-            label=req.wallet_label,
-            protocol="hyperliquid",
-            action="hyperliquid_deposit",
-            status=status,
-            chain_id=chain_id,
-            details={"recipient": recipient, "amount": req.amount},
         )
 
         return ok(response)
