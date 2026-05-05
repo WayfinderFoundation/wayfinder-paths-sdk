@@ -172,6 +172,31 @@ async def polymarket_read(
     end_ts: int | None = None,
     fidelity: int | None = None,
 ) -> dict[str, Any]:
+    """Read-only Polymarket queries: account state, market discovery, prices, books, history.
+
+    Actions:
+      - `status`: full user state — positions, optional `include_orders` / `include_activity`
+        / `include_trades` with their respective `*_limit`s. Requires a wallet/account.
+      - `search`: fuzzy market search by `query`. `events_status` filters active/closed/archived;
+        `end_date_min` (YYYY-MM-DD) filters out resolved markets; `rerank` re-scores results.
+      - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
+      - `get_market` / `get_event`: fetch by `market_slug` / `event_slug`.
+      - `quote`: market-order quote. BUY needs `amount_collateral` (USDC), SELL needs `shares`.
+        Provide `market_slug`+`outcome` OR `token_id`.
+      - `price`: best `BUY`/`SELL` price for a `token_id`.
+      - `order_book`: full book for a `token_id`.
+      - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
+        (unix sec), `fidelity` (denser sampling for tight buckets).
+      - `bridge_status`: pUSD bridge state for an account.
+      - `open_orders`: requires Level-2 auth — wallet must have `private_key_hex` in config.
+
+    Args:
+        wallet_label / wallet_address / account: Target account; precedence is account >
+            wallet_address > wallet_label-resolved address.
+        outcome: "YES"/"NO" or numeric outcome index.
+        side: "BUY" or "SELL".
+        Other args: see action-specific descriptions above.
+    """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
 
     acct = normalize_address(account) or normalize_address(wallet_address) or waddr
@@ -453,6 +478,30 @@ async def polymarket_execute(
     # redeem
     condition_id: str | None = None,
 ) -> dict[str, Any]:
+    """Execute Polymarket trades, bridge collateral, cancel/redeem.
+
+    Polymarket settles on Polygon in pUSD (post-V2 rollover). Bridging in/out goes through
+    the official bridge; trading uses the CLOB.
+
+    Actions:
+      - `bridge_deposit`: bridge `amount` of `from_token_address` from `from_chain_id` into
+        Polymarket pUSD. `recipient_address` defaults to sender. `token_decimals` defaults to 6.
+      - `bridge_withdraw`: bridge `amount_pusd` out to `to_chain_id` / `to_token_address`.
+      - `buy` / `sell`: market order. Specify `market_slug`+`outcome` OR `token_id`. BUY needs
+        `amount_collateral` (USDC); SELL needs `shares`.
+      - `close_position`: SELL the full holding. Resolves token via `token_id`, or
+        `market_slug`+`outcome`, or `condition_id` (looks up holding via positions API).
+        Pass `shares` to partially close.
+      - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
+      - `cancel_order`: by `order_id`.
+      - `redeem_positions`: claim winnings on a resolved market by `condition_id`.
+
+    Args:
+        wallet_label: Required.
+        outcome: "YES"/"NO" or numeric index (default "YES").
+        side: "BUY" or "SELL" for limit orders.
+        Other args: see action-specific descriptions above.
+    """
     try:
         sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
     except ValueError as e:

@@ -131,6 +131,24 @@ async def hyperliquid_wait(
     lookback_s: int = 5,
     max_poll_time_s: int = 15 * 60,
 ) -> dict[str, Any]:
+    """Block until a Hyperliquid deposit credits or a withdrawal lands on Arbitrum.
+
+    Use after `core_execute(kind="hyperliquid_deposit", ...)` or `hyperliquid_execute(action="withdraw")`
+    to confirm before chaining dependent steps.
+
+    Actions:
+      - `wait_for_deposit`: poll perp clearinghouse balance until it grows by `expected_increase` USDC.
+      - `wait_for_withdrawal`: poll until a recent withdrawal record appears within `lookback_s` window.
+
+    Args:
+        action: Which event to wait on.
+        wallet_label / wallet_address: Resolve target account; one is required.
+        expected_increase: USDC delta to confirm deposit (required for `wait_for_deposit`).
+        timeout_s: Hard ceiling for `wait_for_deposit` polling.
+        poll_interval_s: Seconds between polls.
+        lookback_s: For withdrawals, how far back to scan recent records.
+        max_poll_time_s: Hard ceiling for `wait_for_withdrawal` polling (default 15 min).
+    """
     adapter = HyperliquidAdapter()
 
     addr, _ = await resolve_wallet_address(
@@ -256,6 +274,37 @@ async def hyperliquid_execute(
     tpsl: Literal["tp", "sl"] | None = None,
     is_market_trigger: bool = True,
 ) -> dict[str, Any]:
+    """Place orders, transfer collateral, or adjust leverage on Hyperliquid.
+
+    Builder attribution is mandatory — every order routes through the Wayfinder builder wallet
+    and the tool auto-approves the builder fee on first use.
+
+    Actions:
+      - `place_order`: spot or perp market/limit. Set `is_spot` explicitly. Size by either `size`
+        (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
+      - `place_outcome_order`: HIP-4 prediction outcome (settles in USDH). Requires `outcome_id`,
+        `side`, `is_buy`, integer `size`.
+      - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
+        the side that closes the position (long → False, short → True).
+      - `cancel_order`: by `order_id` or `cancel_cloid`.
+      - `update_leverage`: set `leverage` and `is_cross` for an asset.
+      - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
+      - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
+
+    Args:
+        wallet_label: Required — config.json wallet label.
+        coin / asset_id: Symbol (e.g. "BTC", "@107" spot, "xyz:SP500" HIP-3) or numeric asset id.
+        is_spot: Required for `place_order`; routes coin to the spot vs perp asset-id space.
+        side: HIP-4 outcome side (0 or 1).
+        order_type: "market" or "limit"; `price` required for limit.
+        size / usd_amount: Pick one. `usd_amount_kind` disambiguates perp notional vs margin.
+        slippage: Market-order slippage cap (0.01 = 1%, max 0.25).
+        reduce_only / cloid / order_id / cancel_cloid: Standard HL order flags / IDs.
+        leverage / is_cross: Used by `update_leverage` and (optionally) pre-order leverage adjust.
+        amount_usdc: USDC amount for `withdraw`.
+        builder_fee_tenths_bp: Override builder fee (default from config or hardcoded constant).
+        trigger_price / tpsl / is_market_trigger / price: Trigger-order parameters.
+    """
     want = str(wallet_label or "").strip()
     if not want:
         return err("invalid_request", "wallet_label is required")

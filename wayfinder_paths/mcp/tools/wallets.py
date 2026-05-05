@@ -177,6 +177,36 @@ async def core_wallets(
     policies: list[dict] = [],  # noqa: B006
     wallet_type: str | None = None,
 ) -> dict[str, Any]:
+    """Create wallets, annotate wallet profiles, and discover cross-protocol portfolios.
+
+    Read wallets via `wayfinder://wallets` resources — don't grep `config.json`. On Wayfinder
+    Shells instances all wallets must be remote (`remote=True`); local wallets are rejected.
+
+    Actions:
+      - `create`: provision a new wallet under `label`. On Shells set `remote=True` and pick
+        `wallet_type` ("session" 1h-TTL recommended, or "strategy" 7d-TTL for unattended jobs).
+        Optional `policies` list shapes the remote signing policy. Off Shells, omits `remote`
+        for a local mnemonic-derived wallet written to `config.json`.
+      - `annotate`: attach a `protocol` + `annotate_action` + `tool` + `status` record to the
+        wallet profile so future `discover_portfolio` calls know where to look.
+      - `discover_portfolio`: query each protocol the wallet has touched (or filter via
+        `protocols=[...]`) and aggregate positions. Set `parallel=True` for concurrent fan-out;
+        ≥3 protocols requires `parallel=True` or returns `requires_confirmation`.
+
+    Args:
+        label / wallet_label / wallet_address: Identify the target wallet.
+        protocol: Protocol slug for `annotate` (e.g. "hyperliquid", "moonwell").
+        annotate_action / tool / status / chain_id / details: Profile annotation fields.
+        protocols: Filter list for `discover_portfolio` (defaults to all profile-tracked protocols).
+        parallel: Fan out adapter calls concurrently in `discover_portfolio`.
+        include_zero_positions: Include dust / closed positions in adapter responses.
+        remote: True → remote (managed) wallet on `create`. Required on Shells.
+        policies: Remote-wallet signing policies (passed through to the wallet service).
+        wallet_type: "session" or "strategy" — required when `remote=True`.
+
+    Supported protocols for `discover_portfolio`: hyperliquid, hyperlend, moonwell, morpho,
+    boros, pendle, polymarket, aave.
+    """
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
 

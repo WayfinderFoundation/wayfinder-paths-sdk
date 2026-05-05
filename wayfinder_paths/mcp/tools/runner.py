@@ -77,11 +77,36 @@ async def core_runner(
     env: dict[str, str] | None = None,
     debug: bool = False,
 ) -> dict[str, Any]:
-    """Control the local runner daemon via its Unix socket.
+    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs.
 
-    Notes:
-      - Use `daemon_status`/`ensure_started`/`daemon_start`/`daemon_stop` to manage the daemon lifecycle.
-      - `add_job` creates a new job; `run_once` triggers an immediate execution.
+    All scheduled/recurring tasks MUST go through this tool. Don't use cron, systemd timers,
+    or background loops. The daemon owns persistence, failure tracking, timeouts, and (on
+    Wayfinder Shells) backend job/run sync.
+
+    Lifecycle actions:
+      - `daemon_status`: lightweight probe — has the socket, is anyone listening.
+      - `ensure_started`: idempotent start. Safe to call before adding a job.
+      - `daemon_start` / `daemon_stop`: explicit lifecycle. `daemon_start` accepts
+        `tick_seconds`, `max_workers`, `max_failures`, `default_timeout_seconds`, `log_level`.
+
+    Job actions:
+      - `add_job`: schedule a recurring `name` at `interval_seconds`. Two `type`s:
+          * `strategy` — pass `strategy`, `strategy_action`, optional `config`, `wallet_label`,
+            `timeout_seconds`. See `research_run_strategy` for action semantics.
+          * `script` — pass `script_path` (inside `.wayfinder_runs/`), optional `args`, `env`,
+            `timeout_seconds`.
+      - `update_job`: mutate an existing job's payload / interval.
+      - `pause_job` / `resume_job` / `delete_job`: by `name`.
+      - `run_once`: trigger an immediate run of `name` (off the schedule).
+
+    Inspection actions:
+      - `status`: daemon state + all jobs.
+      - `job_runs`: recent runs for a job (`name`, optional `limit`).
+      - `run_report`: detailed log for a single run (`run_id`, optional `tail_bytes`).
+
+    Args:
+        sock_path: Override the daemon socket (default: standard runner location).
+        debug: Verbose response payload for troubleshooting.
     """
 
     client = _client(sock_path)
