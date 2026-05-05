@@ -134,7 +134,7 @@ async def _annotate_script_run(
     )
 
 
-async def shared_run_script(
+async def run_script(
     *,
     script_path: str,
     args: list[str] | None = None,

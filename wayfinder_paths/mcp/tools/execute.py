@@ -245,7 +245,7 @@ def _annotate_profile(
     )
 
 
-async def shared_execute(
+async def execute(
     *,
     kind: Literal["swap", "send", "hyperliquid_deposit"],
     wallet_label: str,

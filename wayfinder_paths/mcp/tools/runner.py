@@ -33,7 +33,7 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
     )
 
 
-async def shared_runner(
+async def runner(
     action: Literal[
         "daemon_status",
         "daemon_start",
@@ -209,7 +209,7 @@ async def shared_runner(
                     }
                 )
 
-            started_resp = await shared_runner(  # type: ignore[misc]
+            started_resp = await runner(  # type: ignore[misc]
                 action="daemon_start",
                 sock_path=sock_path,
                 tick_seconds=tick_seconds,

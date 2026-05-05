@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.wallets import shared_wallets
+from wayfinder_paths.mcp.tools.wallets import wallets
 from wayfinder_paths.mcp.utils import resolve_wallet_address
 
 
@@ -28,7 +28,7 @@ async def test_wallets_discover_portfolio_requires_confirmation_when_many_protoc
         "wayfinder_paths.mcp.tools.wallets.WalletProfileStore.default",
         return_value=store,
     ):
-        out = await shared_wallets(
+        out = await wallets(
             "discover_portfolio",
             wallet_address="0x000000000000000000000000000000000000dEaD",
             parallel=False,

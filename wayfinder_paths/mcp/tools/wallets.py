@@ -158,7 +158,7 @@ async def _query_adapter(
         }
 
 
-async def shared_wallets(
+async def wallets(
     action: Literal["create", "annotate", "discover_portfolio"],
     *,
     label: str | None = None,
