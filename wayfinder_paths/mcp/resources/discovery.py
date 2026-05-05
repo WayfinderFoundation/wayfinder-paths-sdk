@@ -6,7 +6,7 @@ from typing import Any
 from wayfinder_paths.mcp.utils import read_text_excerpt, read_yaml, repo_root
 
 
-async def list_adapters() -> str:
+async def core_list_adapters() -> str:
     root = repo_root()
     base = root / "wayfinder_paths" / "adapters"
     if not base.exists():
@@ -32,7 +32,7 @@ async def list_adapters() -> str:
     return json.dumps({"adapters": items}, indent=2)
 
 
-async def list_strategies() -> str:
+async def core_list_strategies() -> str:
     root = repo_root()
     base = root / "wayfinder_paths" / "strategies"
     if not base.exists():
@@ -63,7 +63,7 @@ async def list_strategies() -> str:
     return json.dumps({"strategies": items}, indent=2)
 
 
-async def describe_adapter(name: str) -> str:
+async def core_describe_adapter(name: str) -> str:
     root = repo_root()
     target = root / "wayfinder_paths" / "adapters" / name
     if not target.exists():
@@ -84,7 +84,7 @@ async def describe_adapter(name: str) -> str:
     return json.dumps(out, indent=2)
 
 
-async def describe_strategy(name: str) -> str:
+async def core_describe_strategy(name: str) -> str:
     root = repo_root()
     target = root / "wayfinder_paths" / "strategies" / name
     if not target.exists():

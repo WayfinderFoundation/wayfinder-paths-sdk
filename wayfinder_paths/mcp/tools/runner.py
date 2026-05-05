@@ -33,7 +33,7 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
     )
 
 
-async def runner(
+async def core_runner(
     action: Literal[
         "daemon_status",
         "daemon_start",
@@ -209,7 +209,7 @@ async def runner(
                     }
                 )
 
-            started_resp = await runner(  # type: ignore[misc]
+            started_resp = await core_runner(  # type: ignore[misc]
                 action="daemon_start",
                 sock_path=sock_path,
                 tick_seconds=tick_seconds,

@@ -29,7 +29,7 @@ async def onchain_list_wallets() -> str:
     return json.dumps({"wallets": wallet_list}, indent=2)
 
 
-async def get_wallet(label: str) -> str:
+async def core_get_wallet(label: str) -> str:
     store = WalletProfileStore.default()
     w = await find_wallet_by_label(label)
     if not w:
@@ -58,7 +58,7 @@ def _balance_usd(entry: dict[str, Any]) -> float:
         return 0.0
 
 
-async def get_wallet_balances(label: str) -> str:
+async def core_get_wallet_balances(label: str) -> str:
     w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})

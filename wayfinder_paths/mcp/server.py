@@ -8,10 +8,9 @@ does not auto-pull resources into model context; the agent only sees them via
 the `read_resource` wrapper, which adds a redundant indirection. Plain tools
 land in the model's tool spec on every turn.
 
-Persona-scoped tools are namespaced as `{namespace}_{name}` so opencode's
-per-agent `tools` allowlist can use one glob (`wayfinder_<namespace>_*: true`)
-to scope a persona's surface. Cross-persona tools have no prefix — they're
-expected to be allowlisted by every persona.
+Every tool is named `{namespace}_{name}` so opencode's per-agent `tools`
+allowlist can use one glob (`wayfinder_<namespace>_*: true`) per namespace
+to scope a persona's surface.
 
 Namespaces:
   - shells       instance ↔ frontend bridge (chart projections, notify, ui ctx)
@@ -20,7 +19,8 @@ Namespaces:
   - onchain      token resolution, swaps, wallet activity
   - polymarket   prediction markets reads + writes
   - contracts    contract compile/deploy/call/abi
-  - (none)       shared cross-persona tools (discovery, wallets, run_script, …)
+  - core         cross-persona tools every subagent should allowlist
+                 (discovery, wallet reads, run_script, execute, runner)
 """
 
 from __future__ import annotations
@@ -46,10 +46,10 @@ from wayfinder_paths.mcp.resources.delta_lab import (
     research_search_delta_lab_assets,
 )
 from wayfinder_paths.mcp.resources.discovery import (
-    describe_adapter,
-    describe_strategy,
-    list_adapters,
-    list_strategies,
+    core_describe_adapter,
+    core_describe_strategy,
+    core_list_adapters,
+    core_list_strategies,
 )
 from wayfinder_paths.mcp.resources.hyperliquid import (
     hyperliquid_get_markets,
@@ -68,8 +68,8 @@ from wayfinder_paths.mcp.resources.tokens import (
     onchain_resolve_token,
 )
 from wayfinder_paths.mcp.resources.wallets import (
-    get_wallet,
-    get_wallet_balances,
+    core_get_wallet,
+    core_get_wallet_balances,
     onchain_get_wallet_activity,
     onchain_list_wallets,
 )
@@ -79,7 +79,7 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_execute,
     contracts_get_abi,
 )
-from wayfinder_paths.mcp.tools.execute import execute
+from wayfinder_paths.mcp.tools.execute import core_execute
 from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_execute, hyperliquid_wait
 from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_chart_projection,
@@ -90,10 +90,10 @@ from wayfinder_paths.mcp.tools.instance_state import (
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_read
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
-from wayfinder_paths.mcp.tools.run_script import run_script
-from wayfinder_paths.mcp.tools.runner import runner
+from wayfinder_paths.mcp.tools.run_script import core_run_script
+from wayfinder_paths.mcp.tools.runner import core_runner
 from wayfinder_paths.mcp.tools.strategies import research_run_strategy
-from wayfinder_paths.mcp.tools.wallets import wallets
+from wayfinder_paths.mcp.tools.wallets import core_wallets
 from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
@@ -156,17 +156,17 @@ mcp.tool()(contracts_get_abi)
 mcp.tool()(contracts_call)
 mcp.tool()(contracts_execute)
 
-# ─── shared (no namespace prefix — every persona sees these) ──────────
-mcp.tool()(list_adapters)
-mcp.tool()(list_strategies)
-mcp.tool()(describe_adapter)
-mcp.tool()(describe_strategy)
-mcp.tool()(get_wallet)
-mcp.tool()(get_wallet_balances)
-mcp.tool()(wallets)
-mcp.tool()(execute)
-mcp.tool()(run_script)
-mcp.tool()(runner)
+# ─── core_* (cross-persona — every subagent should allowlist these) ───
+mcp.tool()(core_list_adapters)
+mcp.tool()(core_list_strategies)
+mcp.tool()(core_describe_adapter)
+mcp.tool()(core_describe_strategy)
+mcp.tool()(core_get_wallet)
+mcp.tool()(core_get_wallet_balances)
+mcp.tool()(core_wallets)
+mcp.tool()(core_execute)
+mcp.tool()(core_run_script)
+mcp.tool()(core_runner)
 
 
 def main() -> None:
