@@ -103,13 +103,9 @@ mcp.tool()(remove_chart_projection)
 mcp.tool()(clear_chart_projections)
 
 # ─── research ──────────────────────────────────────────────────────────
-# Adapter/strategy discovery, alpha-lab insights, delta-lab snapshots.
+# Alpha-lab insights, delta-lab snapshots.
 # Bulk / time-series delta-lab lives in DELTA_LAB_CLIENT (Python), not MCP —
 # see the /using-delta-lab skill.
-mcp.tool()(list_adapters)
-mcp.tool()(list_strategies)
-mcp.tool()(describe_adapter)
-mcp.tool()(describe_strategy)
 mcp.tool()(get_alpha_types)
 mcp.tool()(search_alpha)
 mcp.tool()(get_basis_symbols)
@@ -165,7 +161,12 @@ mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
 
 # ─── shared (cross-persona) ────────────────────────────────────────────
-# Generic plumbing every persona uses.
+# Generic plumbing every persona uses, plus adapter/strategy discovery
+# (any persona may need to know what's available).
+mcp.tool()(list_adapters)
+mcp.tool()(list_strategies)
+mcp.tool()(describe_adapter)
+mcp.tool()(describe_strategy)
 mcp.tool()(wallets)
 mcp.tool()(execute)
 mcp.tool()(run_script)
