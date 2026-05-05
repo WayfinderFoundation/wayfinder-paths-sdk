@@ -11,21 +11,27 @@ import asyncio
 import json
 from typing import Any
 
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.adapters.hyperliquid_adapter import HL_ADAPTER
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.utils.wallets import (
-    get_wallet_sign_hash_callback,
-    get_wallet_signing_callback,
+    _build_sign_hash_callback,
+    _build_signing_callback,
 )
 from wayfinder_paths.mcp.utils import load_wallets, normalize_address
 
 _TOP_N = 25
 
-# Module-level adapter so its aiocache (60s/300s TTLs on meta calls) survives
-# across invocations. Constructing a fresh adapter per call defeats the cache.
-_HL = HyperliquidAdapter()
+
+def _try_build(builder: Any, wallet: dict[str, Any]) -> Any:
+    """Build a sign callback from an already-resolved wallet dict, or None
+    if the wallet has no signing material (e.g. remote wallet without policy)."""
+    try:
+        cb, _ = builder(wallet, wallet["label"])
+    except ValueError:
+        return None
+    return cb
 
 
 async def _wallet_coins(addr: str) -> list[dict[str, Any]]:
@@ -45,8 +51,7 @@ async def _wallet_coins(addr: str) -> list[dict[str, Any]]:
 def _hl_universe(meta_and_ctxs: list[Any]) -> tuple[list[str], list[str]]:
     """Return (top_25_perps, all_hip3_perps) sorted by 24h notional volume."""
     meta, ctxs = meta_and_ctxs[0], meta_and_ctxs[1]
-    # _aggregate in HyperliquidAdapter._post_across_dexes can return [{}, []]
-    # when every dex call failed — meta won't have a "universe" key.
+    # _post_across_dexes returns [{}, []] when all dex calls fail; .get guards.
     paired = [
         (u["name"], float(c.get("dayNtlVlm") or 0))
         for u, c in zip(meta.get("universe", []), ctxs, strict=False)
@@ -125,45 +130,27 @@ async def core_get_context(wallet_label: str = "main") -> str:
 
     tasks: list[Any] = [
         asyncio.gather(*coin_tasks),
-        _HL.get_meta_and_asset_ctxs(),
-        _HL.get_spot_assets(),
-        _HL.get_outcome_markets(),
+        HL_ADAPTER.get_meta_and_asset_ctxs(),
+        HL_ADAPTER.get_spot_assets(),
+        HL_ADAPTER.get_outcome_markets(),
     ]
 
-    if target_addr:
-        sign_cb = None
-        sign_hash_cb = None
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(target["label"])
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(target["label"])
-        except ValueError:
-            pass
+    if target and target_addr:
         cfg = dict(CONFIG)
         cfg["strategy_wallet"] = {"address": target_addr}
         pm_adapter = PolymarketAdapter(
             config=cfg,
-            sign_callback=sign_cb,
-            sign_hash_callback=sign_hash_cb,
+            sign_callback=_try_build(_build_signing_callback, target),
+            sign_hash_callback=_try_build(_build_sign_hash_callback, target),
             wallet_address=target_addr,
         )
         tasks.extend(
             [
-                _HL.get_user_state(target_addr),
-                _HL.get_open_orders(target_addr),
+                HL_ADAPTER.get_user_state(target_addr),
+                HL_ADAPTER.get_open_orders(target_addr),
                 pm_adapter.get_full_user_state(
                     account=target_addr, include_orders=True
                 ),
-            ]
-        )
-    else:
-        tasks.extend(
-            [
-                asyncio.sleep(0, result=(False, {})),
-                asyncio.sleep(0, result=(False, [])),
-                asyncio.sleep(0, result=(False, {})),
             ]
         )
 
@@ -177,9 +164,14 @@ async def core_get_context(wallet_label: str = "main") -> str:
     (meta_ok, hl_meta) = results[1]
     (spots_ok, hl_spots) = results[2]
     (outcomes_ok, hl_outcomes) = results[3]
-    (perp_ok, hl_perp) = results[4]
-    (orders_ok, hl_orders) = results[5]
-    (pm_ok, pm_state) = results[6]
+    if target_addr:
+        (perp_ok, hl_perp) = results[4]
+        (orders_ok, hl_orders) = results[5]
+        (pm_ok, pm_state) = results[6]
+    else:
+        perp_ok, hl_perp = False, {}
+        orders_ok, hl_orders = False, []
+        pm_ok, pm_state = False, {}
 
     wallets_with_addrs = [w for w in wallets if w.get("address")]
     wallets_thin = [

@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any, Literal
 
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.adapters.hyperliquid_adapter import HL_ADAPTER, HyperliquidAdapter
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -1078,9 +1078,8 @@ async def hyperliquid_get_state(label: str) -> str:
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
 
-    adapter = HyperliquidAdapter()
-    perp_ok, perp = await adapter.get_user_state(addr)
-    spot_ok, spot = await adapter.get_spot_user_state(addr)
+    perp_ok, perp = await HL_ADAPTER.get_user_state(addr)
+    spot_ok, spot = await HL_ADAPTER.get_spot_user_state(addr)
 
     spot_balances: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
@@ -1118,8 +1117,7 @@ async def hyperliquid_get_state(label: str) -> str:
 
 
 async def hyperliquid_get_mid_prices() -> str:
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_all_mid_prices()
+    success, data = await HL_ADAPTER.get_all_mid_prices()
     return json.dumps({"success": success, "prices": data}, indent=2)
 
 
@@ -1130,15 +1128,14 @@ async def hyperliquid_get_markets() -> str:
     listings (e.g. `xyz:SP500`) appear alongside core perps. `outcomes` covers HIP-4 binary /
     multi-outcome markets.
     """
-    adapter = HyperliquidAdapter()
     (
         (perp_ok, perp_data),
         (spot_ok, spot_data),
         (outcome_ok, outcome_data),
     ) = await asyncio.gather(
-        adapter.get_meta_and_asset_ctxs(),
-        adapter.get_spot_assets(),
-        adapter.get_outcome_markets(),
+        HL_ADAPTER.get_meta_and_asset_ctxs(),
+        HL_ADAPTER.get_spot_assets(),
+        HL_ADAPTER.get_outcome_markets(),
     )
     return json.dumps(
         {
