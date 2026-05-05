@@ -29,6 +29,7 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.mcp.resources.alpha_lab import (
     research_get_alpha_types,
     research_search_alpha,
@@ -99,11 +100,12 @@ from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 mcp = FastMCP("wayfinder")
 
 # ─── shells_* ──────────────────────────────────────────────────────────
-mcp.tool()(shells_get_frontend_context)
-mcp.tool()(shells_add_chart_projection)
-mcp.tool()(shells_remove_chart_projection)
-mcp.tool()(shells_clear_chart_projections)
-mcp.tool()(shells_notify)
+if is_opencode_instance():
+    mcp.tool()(shells_get_frontend_context)
+    mcp.tool()(shells_add_chart_projection)
+    mcp.tool()(shells_remove_chart_projection)
+    mcp.tool()(shells_clear_chart_projections)
+    mcp.tool()(shells_notify)
 
 # ─── research_* ────────────────────────────────────────────────────────
 # Bulk / time-series delta-lab lives in DELTA_LAB_CLIENT (Python), not MCP —
