@@ -24,7 +24,11 @@ async function fetchContext(): Promise<string> {
       name: "wayfinder_core_get_context",
       arguments: {},
     });
-    return JSON.stringify(res.content, null, 2);
+    const first = Array.isArray(res.content) ? res.content[0] : null;
+    if (first && "text" in first && typeof first.text === "string") {
+      return first.text;
+    }
+    return JSON.stringify(res.content);
   } catch (err) {
     return JSON.stringify({
       error: err instanceof Error ? err.message : String(err),
@@ -56,17 +60,5 @@ export const WayfinderContext: Plugin = async () => ({
         "</wayfinder-context>",
       ].join("\n"),
     );
-  },
-  // EXAMPLE: pre-tool-call arg mutation. Default wallet_label to "main" if
-  // the agent forgot to pass one to a wayfinder_core_execute call.
-  "tool.execute.before": async (input, output) => {
-    if (input.tool !== "wayfinder_core_execute") return;
-    if (
-      output.args &&
-      typeof output.args === "object" &&
-      !output.args.wallet_label
-    ) {
-      output.args.wallet_label = "main";
-    }
   },
 });

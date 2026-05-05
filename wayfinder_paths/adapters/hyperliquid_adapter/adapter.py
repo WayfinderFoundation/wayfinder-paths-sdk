@@ -648,7 +648,7 @@ class HyperliquidAdapter(BaseAdapter):
         """List HIP-4 outcome markets with parsed settlement spec and
         per-side asset ids / book + token coin names."""
         try:
-            meta = get_info().outcome_meta()
+            meta = await asyncio.to_thread(get_info().outcome_meta)
         except Exception as exc:  # noqa: BLE001
             self.logger.error(f"Failed to fetch outcome_meta: {exc}")
             return False, []

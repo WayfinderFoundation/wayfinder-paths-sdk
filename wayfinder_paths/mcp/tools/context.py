@@ -1,9 +1,8 @@
 """Thin per-call context bundle for the wayfinder-context opencode plugin.
 
-Returns a deliberately stripped-down view (coin balances, HL positions/orders,
-top market names, polymarket positions/orders) so the plugin can inject this
-into every system prompt without blowing up cost — and without volatile
-mark-to-market fields that would invalidate prompt caching every tick.
+Stripped to byte-stable fields (no USD values, mark prices, funding rates) so
+the plugin can inject this into every system prompt and still hit the 5-min
+prompt-cache window.
 """
 
 from __future__ import annotations
@@ -32,180 +31,113 @@ async def _wallet_coins(addr: str) -> list[dict[str, Any]]:
         )
     except Exception:
         return []
-    if not isinstance(data, dict):
-        return []
-    out: list[dict[str, Any]] = []
-    for b in data.get("balances") or []:
-        if not isinstance(b, dict):
-            continue
-        chain = str(b.get("chain", "")).lower()
-        if chain == "solana":
-            continue
-        out.append(
-            {
-                "symbol": b.get("symbol"),
-                "balance": b.get("amount_decimal"),
-                "chain": b.get("chain"),
-            }
-        )
-    return out
+    return [
+        {"symbol": b["symbol"], "balance": b["amount_decimal"], "chain": b["chain"]}
+        for b in data["balances"]
+        if b["chain"].lower() != "solana"
+    ]
 
 
-def _hl_universe(meta_and_ctxs: Any) -> tuple[list[str], list[str]]:
+def _hl_universe(meta_and_ctxs: list[Any]) -> tuple[list[str], list[str]]:
     """Return (top_25_perps, all_hip3_perps) sorted by 24h notional volume."""
-    if not isinstance(meta_and_ctxs, list) or len(meta_and_ctxs) < 2:
-        return [], []
     meta, ctxs = meta_and_ctxs[0], meta_and_ctxs[1]
-    if not isinstance(meta, dict) or not isinstance(ctxs, list):
-        return [], []
-    paired: list[tuple[str, float]] = []
-    for u, c in zip(meta.get("universe") or [], ctxs, strict=False):
-        if not isinstance(u, dict) or not isinstance(c, dict):
-            continue
-        name = str(u.get("name") or "")
-        if not name:
-            continue
-        try:
-            vol = float(c.get("dayNtlVlm") or 0)
-        except (TypeError, ValueError):
-            vol = 0.0
-        paired.append((name, vol))
+    # _aggregate in HyperliquidAdapter._post_across_dexes can return [{}, []]
+    # when every dex call failed — meta won't have a "universe" key.
+    paired = [
+        (u["name"], float(c.get("dayNtlVlm") or 0))
+        for u, c in zip(meta.get("universe", []), ctxs, strict=False)
+    ]
     paired.sort(key=lambda x: x[1], reverse=True)
     standard = [n for n, _ in paired if ":" not in n][:_TOP_N]
     hip3 = [n for n, _ in paired if ":" in n]
     return standard, hip3
 
 
-def _hl_spots(spot_assets: Any) -> list[str]:
-    if not isinstance(spot_assets, dict):
-        return []
-    return list(spot_assets.keys())[:_TOP_N]
+def _hl_outcomes(outcomes: list[dict[str, Any]]) -> list[str]:
+    return [m["name"] for m in outcomes if m.get("name")][:_TOP_N]
 
 
-def _hl_outcomes(outcomes: Any) -> list[str]:
-    if not isinstance(outcomes, list):
-        return []
-    names: list[str] = []
-    for m in outcomes:
-        if isinstance(m, dict):
-            n = m.get("name") or m.get("title") or m.get("description")
-            if n:
-                names.append(str(n))
-    return names[:_TOP_N]
+def _hl_positions(perp_state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {"coin": entry["position"]["coin"], "size": entry["position"]["szi"]}
+        for entry in perp_state.get("assetPositions", [])
+    ]
 
 
-def _hl_positions(perp_state: Any) -> list[dict[str, Any]]:
-    if not isinstance(perp_state, dict):
-        return []
-    out: list[dict[str, Any]] = []
-    for entry in perp_state.get("assetPositions") or []:
-        if not isinstance(entry, dict):
-            continue
-        pos = entry.get("position") or {}
-        if isinstance(pos, dict) and pos.get("coin"):
-            out.append({"coin": pos.get("coin"), "size": pos.get("szi")})
-    return out
+def _hl_open_orders(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "coin": o["coin"],
+            "side": o["side"],
+            "size": o["sz"],
+            "px": o["limitPx"],
+            "oid": o["oid"],
+        }
+        for o in orders
+    ]
 
 
-def _hl_open_orders(orders: Any) -> list[dict[str, Any]]:
-    if not isinstance(orders, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for o in orders:
-        if not isinstance(o, dict):
-            continue
-        out.append(
-            {
-                "coin": o.get("coin"),
-                "side": o.get("side"),
-                "size": o.get("sz"),
-                "px": o.get("limitPx"),
-                "oid": o.get("oid"),
-            }
-        )
-    return out
+def _pm_positions(pm_state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "market_slug": p.get("slug"),
+            "outcome": p.get("outcome"),
+            "shares": p.get("size"),
+        }
+        for p in pm_state.get("positions") or []
+    ]
 
 
-def _pm_positions(pm_state: Any) -> list[dict[str, Any]]:
-    if not isinstance(pm_state, dict):
-        return []
-    out: list[dict[str, Any]] = []
-    for p in pm_state.get("positions") or []:
-        if not isinstance(p, dict):
-            continue
-        out.append(
-            {
-                "market_slug": p.get("slug") or p.get("market_slug"),
-                "outcome": p.get("outcome"),
-                "shares": p.get("size"),
-            }
-        )
-    return out
-
-
-def _pm_open_orders(pm_state: Any) -> list[dict[str, Any]]:
-    if not isinstance(pm_state, dict):
-        return []
-    src = pm_state.get("openOrders") or pm_state.get("open_orders") or []
-    if not isinstance(src, list):
-        return []
-    out: list[dict[str, Any]] = []
-    for o in src:
-        if not isinstance(o, dict):
-            continue
-        out.append(
-            {
-                "market_slug": o.get("market_slug") or o.get("slug"),
-                "outcome": o.get("outcome"),
-                "side": o.get("side"),
-                "shares": o.get("size"),
-                "price": o.get("price"),
-                "oid": o.get("orderID") or o.get("oid"),
-            }
-        )
-    return out
+def _pm_open_orders(pm_state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "market_slug": o.get("slug"),
+            "outcome": o.get("outcome"),
+            "side": o.get("side"),
+            "shares": o.get("size"),
+            "price": o.get("price"),
+            "oid": o.get("orderID"),
+        }
+        for o in pm_state.get("openOrders") or []
+    ]
 
 
 async def core_get_context(wallet_label: str = "main") -> str:
-    """Thin context bundle for system-prompt injection.
-
-    Returns coin balances per wallet, HL positions/open-orders/top-market-names,
-    and Polymarket positions/open-orders. Strips USD values, mark prices, and
-    funding rates so the payload is byte-stable across the 5-min prompt-cache
-    window.
+    """Thin context bundle for system-prompt injection: coin balances per wallet,
+    HL positions/open-orders/top-market-names, Polymarket positions/open-orders.
 
     Args:
         wallet_label: Wallet for HL/PM state lookups. Defaults to "main".
     """
     wallets = await load_wallets()
     target = next((w for w in wallets if w.get("label") == wallet_label), None)
-    target_addr = normalize_address(target.get("address")) if target else None
+    target_addr = normalize_address(target["address"]) if target else None
 
     hl = HyperliquidAdapter()
+    pm_adapter: PolymarketAdapter | None = None
 
     coin_tasks = [
-        _wallet_coins(normalize_address(w.get("address")))
+        _wallet_coins(normalize_address(w["address"]))
         for w in wallets
         if w.get("address")
     ]
 
-    if target_addr:
-        hl_perp_task = hl.get_user_state(target_addr)
-        hl_orders_task = hl.get_open_orders(target_addr)
-    else:
-        hl_perp_task = asyncio.sleep(0, result=(False, {}))
-        hl_orders_task = asyncio.sleep(0, result=(False, []))
+    tasks: list[Any] = [
+        asyncio.gather(*coin_tasks) if coin_tasks else asyncio.sleep(0, result=[]),
+        hl.get_meta_and_asset_ctxs(),
+        hl.get_spot_assets(),
+        hl.get_outcome_markets(),
+    ]
 
-    pm_adapter: PolymarketAdapter | None = None
-    if target and target_addr:
+    if target_addr:
         sign_cb = None
         sign_hash_cb = None
         try:
-            sign_cb, _ = await get_wallet_signing_callback(target.get("label"))
+            sign_cb, _ = await get_wallet_signing_callback(target["label"])
         except ValueError:
             pass
         try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(target.get("label"))
+            sign_hash_cb, _ = await get_wallet_sign_hash_callback(target["label"])
         except ValueError:
             pass
         cfg = dict(CONFIG)
@@ -216,80 +148,63 @@ async def core_get_context(wallet_label: str = "main") -> str:
             sign_hash_callback=sign_hash_cb,
             wallet_address=target_addr,
         )
-        pm_state_task = pm_adapter.get_full_user_state(
-            account=target_addr, include_orders=True
+        tasks.extend(
+            [
+                hl.get_user_state(target_addr),
+                hl.get_open_orders(target_addr),
+                pm_adapter.get_full_user_state(
+                    account=target_addr, include_orders=True
+                ),
+            ]
         )
-    else:
-        pm_state_task = asyncio.sleep(0, result=(False, {}))
 
     try:
-        (
-            coins_per_wallet,
-            hl_meta,
-            hl_spots,
-            hl_outcomes,
-            hl_perp,
-            hl_orders,
-            pm_state,
-        ) = await asyncio.gather(
-            asyncio.gather(*coin_tasks) if coin_tasks else asyncio.sleep(0, result=[]),
-            hl.get_meta_and_asset_ctxs(),
-            hl.get_spot_assets(),
-            hl.get_outcome_markets(),
-            hl_perp_task,
-            hl_orders_task,
-            pm_state_task,
-        )
+        results = await asyncio.gather(*tasks)
     finally:
         if pm_adapter is not None:
             await pm_adapter.close()
 
-    wallets_thin: list[dict[str, Any]] = []
+    coins_per_wallet = results[0]
+    (meta_ok, hl_meta) = results[1]
+    (spots_ok, hl_spots) = results[2]
+    (outcomes_ok, hl_outcomes) = results[3]
+    (perp_ok, hl_perp), (orders_ok, hl_orders), (pm_ok, pm_state) = (
+        (results[4], results[5], results[6])
+        if target_addr
+        else ((False, {}), (False, []), (False, {}))
+    )
+
+    wallets_thin = []
     coins_iter = iter(coins_per_wallet)
     for w in wallets:
         if not w.get("address"):
             continue
         wallets_thin.append(
             {
-                "label": w.get("label"),
-                "address": normalize_address(w.get("address")),
+                "label": w["label"],
+                "address": normalize_address(w["address"]),
                 "coins": next(coins_iter, []),
             }
         )
 
-    top_25_perps, all_hip3_perps = _hl_universe(
-        hl_meta[1] if isinstance(hl_meta, tuple) else None
-    )
+    top_25_perps, all_hip3_perps = _hl_universe(hl_meta) if meta_ok else ([], [])
 
     return json.dumps(
         {
             "wallets": wallets_thin,
             "hyperliquid": {
-                "positions": _hl_positions(
-                    hl_perp[1] if isinstance(hl_perp, tuple) else None
-                ),
-                "open_orders": _hl_open_orders(
-                    hl_orders[1] if isinstance(hl_orders, tuple) else None
-                ),
+                "positions": _hl_positions(hl_perp) if perp_ok else [],
+                "open_orders": _hl_open_orders(hl_orders) if orders_ok else [],
                 "universe": {
                     "top_25_perps": top_25_perps,
-                    "top_25_spot": _hl_spots(
-                        hl_spots[1] if isinstance(hl_spots, tuple) else None
-                    ),
+                    "top_25_spot": list(hl_spots.keys())[:_TOP_N] if spots_ok else [],
                     "all_hip3_perps": all_hip3_perps,
-                    "top_25_hip4": _hl_outcomes(
-                        hl_outcomes[1] if isinstance(hl_outcomes, tuple) else None
-                    ),
+                    "top_25_hip4": _hl_outcomes(hl_outcomes) if outcomes_ok else [],
                 },
             },
             "polymarket": {
-                "positions": _pm_positions(
-                    pm_state[1] if isinstance(pm_state, tuple) else None
-                ),
-                "open_orders": _pm_open_orders(
-                    pm_state[1] if isinstance(pm_state, tuple) else None
-                ),
+                "positions": _pm_positions(pm_state) if pm_ok else [],
+                "open_orders": _pm_open_orders(pm_state) if pm_ok else [],
             },
-        },
-        indent=2,
+        }
     )
