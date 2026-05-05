@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from wayfinder_paths.mcp.resources.discovery import (
+from wayfinder_paths.mcp.tools.discovery import (
     core_describe_adapter,
     core_describe_strategy,
     core_list_adapters,

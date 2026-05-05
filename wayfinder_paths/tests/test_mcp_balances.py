@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.resources.wallets import core_get_wallet_balances
+from wayfinder_paths.mcp.tools.wallets import core_get_wallet_balances
 
 
 @pytest.fixture
@@ -28,9 +28,9 @@ async def test_get_wallet_balances_filters_solana(mock_wallet):
     )
 
     with (
-        patch("wayfinder_paths.mcp.resources.wallets.BALANCE_CLIENT", fake_client),
+        patch("wayfinder_paths.mcp.tools.wallets.BALANCE_CLIENT", fake_client),
         patch(
-            "wayfinder_paths.mcp.resources.wallets.find_wallet_by_label",
+            "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
             return_value=mock_wallet,
         ),
     ):
@@ -48,7 +48,7 @@ async def test_get_wallet_balances_filters_solana(mock_wallet):
 @pytest.mark.asyncio
 async def test_get_wallet_balances_wallet_not_found():
     with patch(
-        "wayfinder_paths.mcp.resources.wallets.find_wallet_by_label",
+        "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
         return_value=None,
     ):
         result = await core_get_wallet_balances("nonexistent")

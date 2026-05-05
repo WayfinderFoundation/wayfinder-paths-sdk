@@ -30,12 +30,17 @@ import asyncio
 from mcp.server.fastmcp import FastMCP
 
 from wayfinder_paths.core.config import is_opencode_instance
-from wayfinder_paths.mcp.resources.alpha_lab import (
+from wayfinder_paths.mcp.tools.alpha_lab import (
     research_get_alpha_types,
     research_search_alpha,
 )
-from wayfinder_paths.mcp.resources.contracts import contracts_get, contracts_list
-from wayfinder_paths.mcp.resources.delta_lab import (
+from wayfinder_paths.mcp.tools.contracts import (
+    contracts_compile,
+    contracts_deploy,
+    contracts_get,
+    contracts_list,
+)
+from wayfinder_paths.mcp.tools.delta_lab import (
     research_get_asset_basis_info,
     research_get_basis_apy_sources,
     research_get_basis_symbols,
@@ -46,13 +51,20 @@ from wayfinder_paths.mcp.resources.delta_lab import (
     research_screen_price,
     research_search_delta_lab_assets,
 )
-from wayfinder_paths.mcp.resources.discovery import (
+from wayfinder_paths.mcp.tools.discovery import (
     core_describe_adapter,
     core_describe_strategy,
     core_list_adapters,
     core_list_strategies,
 )
-from wayfinder_paths.mcp.resources.hyperliquid import (
+from wayfinder_paths.mcp.tools.evm_contract import (
+    contracts_call,
+    contracts_execute,
+    contracts_get_abi,
+)
+from wayfinder_paths.mcp.tools.execute import core_execute
+from wayfinder_paths.mcp.tools.hyperliquid import (
+    hyperliquid_execute,
     hyperliquid_get_markets,
     hyperliquid_get_mid_price,
     hyperliquid_get_mid_prices,
@@ -62,26 +74,8 @@ from wayfinder_paths.mcp.resources.hyperliquid import (
     hyperliquid_get_spot_assets,
     hyperliquid_get_spot_user_state,
     hyperliquid_get_user_state,
+    hyperliquid_wait,
 )
-from wayfinder_paths.mcp.resources.tokens import (
-    onchain_fuzzy_search_tokens,
-    onchain_get_gas_token,
-    onchain_resolve_token,
-)
-from wayfinder_paths.mcp.resources.wallets import (
-    core_get_wallet,
-    core_get_wallet_balances,
-    onchain_get_wallet_activity,
-    onchain_list_wallets,
-)
-from wayfinder_paths.mcp.tools.contracts import contracts_compile, contracts_deploy
-from wayfinder_paths.mcp.tools.evm_contract import (
-    contracts_call,
-    contracts_execute,
-    contracts_get_abi,
-)
-from wayfinder_paths.mcp.tools.execute import core_execute
-from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_execute, hyperliquid_wait
 from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_chart_projection,
     shells_clear_chart_projections,
@@ -94,7 +88,18 @@ from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.run_script import core_run_script
 from wayfinder_paths.mcp.tools.runner import core_runner
 from wayfinder_paths.mcp.tools.strategies import research_run_strategy
-from wayfinder_paths.mcp.tools.wallets import core_wallets
+from wayfinder_paths.mcp.tools.tokens import (
+    onchain_fuzzy_search_tokens,
+    onchain_get_gas_token,
+    onchain_resolve_token,
+)
+from wayfinder_paths.mcp.tools.wallets import (
+    core_get_wallet,
+    core_get_wallet_balances,
+    core_wallets,
+    onchain_get_wallet_activity,
+    onchain_list_wallets,
+)
 from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
