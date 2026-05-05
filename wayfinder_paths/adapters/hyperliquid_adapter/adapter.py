@@ -144,7 +144,7 @@ class HyperliquidAdapter(BaseAdapter):
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return get_info().post("/info", body)
+                    return await asyncio.to_thread(get_info().post, "/info", body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:

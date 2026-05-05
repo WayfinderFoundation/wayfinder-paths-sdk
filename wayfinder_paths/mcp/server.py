@@ -34,6 +34,7 @@ from wayfinder_paths.mcp.tools.alpha_lab import (
     research_get_alpha_types,
     research_search_alpha,
 )
+from wayfinder_paths.mcp.tools.context import core_get_context
 from wayfinder_paths.mcp.tools.contracts import (
     contracts_compile,
     contracts_deploy,
@@ -62,7 +63,6 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_markets,
     hyperliquid_get_mid_prices,
     hyperliquid_get_state,
-    hyperliquid_wait,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_chart_projection,
@@ -70,7 +70,11 @@ from wayfinder_paths.mcp.tools.instance_state import (
     shells_get_frontend_context,
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
-from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_read
+from wayfinder_paths.mcp.tools.polymarket import (
+    polymarket_execute,
+    polymarket_get_state,
+    polymarket_read,
+)
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.run_script import core_run_script
 from wayfinder_paths.mcp.tools.runner import core_runner
@@ -113,7 +117,6 @@ mcp.tool()(research_search_borrow_routes)
 
 # ─── hyperliquid_* ─────────────────────────────────────────────────────
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
-mcp.tool()(hyperliquid_wait)  # should nuke
 mcp.tool()(hyperliquid_execute)
 mcp.tool()(hyperliquid_get_state)
 mcp.tool()(hyperliquid_get_mid_prices)
@@ -128,6 +131,7 @@ mcp.tool()(onchain_quote_swap)
 
 # ─── polymarket_* ──────────────────────────────────────────────────────
 mcp.tool()(polymarket_read)
+mcp.tool()(polymarket_get_state)
 mcp.tool()(polymarket_execute)
 
 # ─── contracts_* ───────────────────────────────────────────────────────
@@ -140,6 +144,7 @@ mcp.tool()(contracts_execute)
 
 # ─── core_* (cross-persona — every subagent should allowlist these) ───
 mcp.tool()(core_get_adapters_and_strategies)
+mcp.tool()(core_get_context)
 mcp.tool()(core_get_wallets)
 mcp.tool()(core_wallets)
 mcp.tool()(core_execute)

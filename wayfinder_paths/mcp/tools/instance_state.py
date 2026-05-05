@@ -14,8 +14,9 @@ _NOT_OPENCODE_ERR = ("not_opencode_instance", "Not running on an OpenCode instan
 async def shells_get_frontend_context() -> dict[str, Any]:
     """Read the current frontend UI state.
 
-    Returns what the user is currently viewing: active chart (market, type,
-    interval) and any existing SDK projections per chart.
+    Returns stored frontend context and existing SDK projections per chart.
+    Active-chart syncing is currently disabled, so do not assume
+    frontend_context.chart is populated.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -34,23 +35,27 @@ async def shells_add_chart_projection(
 ) -> dict[str, Any]:
     """Add a projection (overlay) to a specific chart.
 
-    The chart_id is available at frontend_context.chart.id (e.g. "hl-perp-BTC").
-    Call get_frontend_context() first to read it.
+    Pass an explicit chart_id such as "hl-perp-BTC". Active-chart syncing is
+    currently disabled, so frontend_context.chart may be absent.
 
     Supported types (engine-agnostic; the FE renderer maps to TradingView shapes):
-      - horizontal_line: config = {price, color?, label?}
-      - vertical_line:   config = {time (unix sec), color?, label?}
+      - horizontal_line: config = {price, color?, label?, opacity?, thickness?}
+      - vertical_line:   config = {time (unix sec), color?, label?, opacity?,
+                                   thickness?}
       - marker:          config = {time, price?, shape? (arrow_up /
-                                   arrow_down / flag / icon / emoji), color?}
+                                   arrow_down / flag / icon / emoji), color?,
+                                   opacity?}
       - range:           config = {from_time?, to_time?, from_price, to_price,
-                                   color?}
-      - text_label:      config = {time, price, text, color?}
+                                   color?, opacity?, thickness?}
+      - text_label:      config = {time, price, text, color?, opacity?}
       - trend:           config = {from: {time, price}, to: {time, price},
-                                   color?, label?}
+                                   color?, label?, opacity?, thickness?}
 
     Notes:
       - `marker` does not accept a `label` — TV's marker shapes auto-generate
         text. Use `text_label` for an annotated point.
+      - `opacity` accepts 0..1 or 0..100. `line_width` is accepted as an alias
+        for `thickness`.
       - All `time` values are unix seconds.
       - Adding a chart projection emits a state-changed notification; the FE
         renders within one poll cycle (~5s) or sooner if the SSE stream is

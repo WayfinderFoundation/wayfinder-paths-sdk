@@ -56,43 +56,45 @@ await NOTIFY_CLIENT.notify(
 
 Both POST to `/api/v1/opencode/notify/` on vault-backend with your `WAYFINDER_API_KEY`. Limits: title ≤ 200 chars, message ≤ 20 000 chars.
 
-## Frontend Context (reading UI state + drawing on charts)
+## Chart Projections
 
-If you detected a Wayfinder Shells instance, you can read what the user is viewing and project overlays (price lines, markers, series) onto their chart in real-time.
+If you detected a Wayfinder Shells instance, you can project overlays onto chart IDs you know explicitly. Active frontend chart-context syncing is disabled for now, so do not rely on `frontend_context.chart.id` being present.
 
 **MCP tools:**
 
 | Tool | Args | Description |
 |------|------|-------------|
-| `get_frontend_context` | (none) | Read current chart context + all projections |
+| `get_frontend_context` | (none) | Read stored context + all projections |
 | `add_chart_projection` | `chart_id`, `type`, `config` | Add overlay to a chart |
-| `remove_chart_projection` | `chart_id`, `projection_id` | Remove a specific overlay |
 | `clear_chart_projections` | `chart_id` | Remove all overlays from a chart |
 
 **Typical flow:**
-1. Call `get_frontend_context` → returns `{frontend_context: {chart: {id: "hl-perp-BTC", market_id: "BTC", market_type: "hl-perp", interval: "1m"}}, sdk_projection: {...}}`
-2. Read `chart_id` from `frontend_context.chart.id` → `"hl-perp-BTC"`
-3. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support"}`
-4. Line appears on the user's chart in real-time
+1. Pick an explicit chart ID such as `"hl-perp-BTC"`.
+2. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support", "opacity": 0.85, "thickness": 2}`.
+3. The projection appears when the frontend is viewing that chart.
 
 **Projection types:**
 
 | type | config |
 |------|--------|
-| `horizontal_line` | `price`, `color?`, `label?` |
-| `marker` | `time` (unix sec), `position` (aboveBar/belowBar), `shape` (circle/arrowUp/arrowDown), `color?`, `label?` |
-| `line_series` | `data: [{time, value}]`, `color?`, `label?`, `line_width?` |
+| `horizontal_line` | `price`, `color?`, `label?`, `opacity?`, `thickness?` |
+| `vertical_line` | `time` (unix sec), `color?`, `label?`, `opacity?`, `thickness?` |
+| `marker` | `time` (unix sec), `price?`, `shape?` (`arrow_up`, `arrow_down`, `flag`, `icon`, `emoji`), `color?`, `opacity?` |
+| `range` | `from_time?`, `to_time?`, `from_price`, `to_price`, `color?`, `opacity?`, `thickness?` |
+| `text_label` | `time` (unix sec), `price`, `text`, `color?`, `opacity?` |
+| `trend` | `from: {time, price}`, `to: {time, price}`, `color?`, `label?`, `opacity?`, `thickness?` |
+
+`opacity` accepts `0..1` or `0..100`. `line_width` is accepted as an alias for `thickness`.
 
 **Python client:**
 ```python
 from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 
-state = await INSTANCE_STATE_CLIENT.get_state()
-chart_id = state["frontend_context"]["chart"]["id"]
+chart_id = "hl-perp-BTC"
 
 await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
     "type": "horizontal_line",
-    "config": {"price": 73500, "color": "#ef4444", "label": "Support"},
+    "config": {"price": 73500, "color": "#ef4444", "label": "Support", "thickness": 2},
 })
 ```
 
