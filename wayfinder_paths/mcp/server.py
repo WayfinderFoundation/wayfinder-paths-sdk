@@ -69,7 +69,11 @@ from wayfinder_paths.mcp.tools.instance_state import (
     shells_get_frontend_context,
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
-from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_read
+from wayfinder_paths.mcp.tools.polymarket import (
+    polymarket_execute,
+    polymarket_get_state,
+    polymarket_read,
+)
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.run_script import core_run_script
 from wayfinder_paths.mcp.tools.runner import core_runner
@@ -126,6 +130,7 @@ mcp.tool()(onchain_quote_swap)
 
 # ─── polymarket_* ──────────────────────────────────────────────────────
 mcp.tool()(polymarket_read)
+mcp.tool()(polymarket_get_state)
 mcp.tool()(polymarket_execute)
 
 # ─── contracts_* ───────────────────────────────────────────────────────
