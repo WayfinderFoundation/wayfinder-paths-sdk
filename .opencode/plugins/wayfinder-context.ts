@@ -33,16 +33,17 @@ async function fetchWallets(): Promise<string> {
 }
 
 const COMPACTION_RULES = [
-  "Compaction rules — preserve verbatim, do NOT paraphrase or summarize:",
-  "- Every wallet label, address, and the protocols each wallet has touched.",
-  "- Every scheduled job: name, type, interval, payload, last status.",
-  "- Every transaction hash, order ID, cloid, condition_id, and chain id from tool outputs.",
-  "- Every strategy lifecycle state change (deposit/update/withdraw/exit) with amounts and timestamps.",
-  "- Every user decision about which wallet, chain, slippage, or amount to use — these are commitments, not preferences.",
-  "Do summarize: high-level reasoning, search results that were rejected, intermediate quote comparisons that didn't lead to action.",
+  "COMPACTION RULES:",
+  "- Compact user preferences, tendencies and common actions and parameters",
+  "- Compact a list of previous transactions, and relevant information",
+  "EXCLUDE:",
+  "- Wallet balances (too volatile, better to fetch live)",
 ].join("\n");
 
 export const WayfinderContext: Plugin = async () => ({
+  "experimental.session.compacting": async (_input, output) => {
+    output.context.push(COMPACTION_RULES);
+  },
   "experimental.chat.system.transform": async (_input, output) => {
     const wallets = await fetchWallets();
     output.system.push(
@@ -55,19 +56,6 @@ export const WayfinderContext: Plugin = async () => ({
       ].join("\n"),
     );
   },
-  "experimental.session.compacting": async (_input, output) => {
-    const wallets = await fetchWallets();
-    output.context.push(COMPACTION_RULES);
-    output.context.push(
-      [
-        "<wallet-state-at-compaction>",
-        "Snapshot of wayfinder_core_get_wallets at the moment of compaction — keep these labels and addresses intact in the summary.",
-        wallets,
-        "</wallet-state-at-compaction>",
-      ].join("\n"),
-    );
-  },
-
   // EXAMPLE: pre-tool-call arg mutation. Default wallet_label to "main" if
   // the agent forgot to pass one to a wayfinder_core_execute call.
   "tool.execute.before": async (input, output) => {
