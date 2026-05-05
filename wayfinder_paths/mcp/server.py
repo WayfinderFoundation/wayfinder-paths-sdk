@@ -14,7 +14,8 @@ Registrations are grouped by intended subagent persona so a per-agent
   - state                 instance ↔ frontend bridge (chart projections, ui ctx)
   - research              discovery, alpha-lab, delta-lab
   - hyperliquid           HL perp/spot/HIP-3/HIP-4 reads + writes
-  - onchain-tokens        token/wallet resolution, swaps, polymarket
+  - onchain-tokens        token/wallet resolution, swaps
+  - polymarket            prediction markets reads + writes
   - contract-development  contract compile/deploy/call/abi
   - shared                used by every persona (run_script, execute, notify, …)
 """
@@ -138,7 +139,7 @@ mcp.tool()(get_orderbook)
 mcp.tool()(get_outcomes)
 
 # ─── onchain-tokens ────────────────────────────────────────────────────
-# Token resolution, wallet/balance lookups, swap quotes, polymarket.
+# Token resolution, wallet/balance lookups, swap quotes.
 mcp.tool()(resolve_token)
 mcp.tool()(get_gas_token)
 mcp.tool()(fuzzy_search_tokens)
@@ -147,6 +148,9 @@ mcp.tool()(get_wallet)
 mcp.tool()(get_wallet_balances)
 mcp.tool()(get_wallet_activity)
 mcp.tool()(quote_swap)
+
+# ─── polymarket ────────────────────────────────────────────────────────
+# Polymarket CLOB reads + writes (markets, positions, orders).
 mcp.tool()(polymarket)
 mcp.tool()(polymarket_execute)
 
