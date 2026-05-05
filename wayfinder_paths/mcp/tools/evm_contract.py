@@ -382,7 +382,7 @@ def _annotate(
     )
 
 
-async def contract_get_abi(
+async def contracts_get_abi(
     *,
     chain_id: int,
     contract_address: str,
@@ -470,7 +470,7 @@ async def contract_get_abi(
     )
 
 
-async def contract_call(
+async def contracts_call(
     *,
     chain_id: int,
     contract_address: str,
@@ -578,7 +578,7 @@ async def contract_call(
     return ok(result)
 
 
-async def contract_execute(
+async def contracts_execute(
     *,
     wallet_label: str,
     chain_id: int,

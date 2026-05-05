@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.strategies import run_strategy
+from wayfinder_paths.mcp.tools.strategies import research_run_strategy
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,14 +78,14 @@ def _patch_signing():
 
 @pytest.mark.asyncio
 async def test_empty_strategy_name():
-    out = await run_strategy(strategy="", action="status")
+    out = await research_run_strategy(strategy="", action="status")
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
 
 
 @pytest.mark.asyncio
 async def test_whitespace_strategy_name():
-    out = await run_strategy(strategy="   ", action="status")
+    out = await research_run_strategy(strategy="   ", action="status")
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
 
@@ -96,7 +96,7 @@ async def test_strategy_not_found():
         "wayfinder_paths.mcp.tools.strategies._load_strategy_class",
         side_effect=FileNotFoundError("Missing manifest.yaml for strategy: nope"),
     ):
-        out = await run_strategy(strategy="nope", action="status")
+        out = await research_run_strategy(strategy="nope", action="status")
     assert out["ok"] is False
     assert out["error"]["code"] == "not_found"
     assert "nope" in out["error"]["message"]
@@ -105,7 +105,7 @@ async def test_strategy_not_found():
 @pytest.mark.asyncio
 async def test_wip_strategy_adds_warning():
     with _patch_load(status="wip"), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
     assert "warning" in out
     assert "work-in-progress" in out["warning"]
@@ -120,7 +120,7 @@ async def test_wip_strategy_adds_warning():
 async def test_policy_no_callable():
     cls = type("Bare", (), {})
     with _patch_load(strategy_class=cls, status="active"):
-        out = await run_strategy(strategy="my_strat", action="policy")
+        out = await research_run_strategy(strategy="my_strat", action="policy")
     assert out["ok"] is True
     assert out["result"]["output"] == []
 
@@ -129,7 +129,7 @@ async def test_policy_no_callable():
 async def test_policy_sync():
     cls = type("WithPolicy", (), {"policies": classmethod(lambda cls: [{"rule": "a"}])})
     with _patch_load(strategy_class=cls, status="active"):
-        out = await run_strategy(strategy="my_strat", action="policy")
+        out = await research_run_strategy(strategy="my_strat", action="policy")
     assert out["ok"] is True
     assert out["result"]["output"] == [{"rule": "a"}]
 
@@ -141,7 +141,7 @@ async def test_policy_async():
 
     cls = type("WithAsyncPolicy", (), {"policies": staticmethod(async_policies)})
     with _patch_load(strategy_class=cls, status="active"):
-        out = await run_strategy(strategy="my_strat", action="policy")
+        out = await research_run_strategy(strategy="my_strat", action="policy")
     assert out["ok"] is True
     assert out["result"]["output"] == [{"rule": "async"}]
 
@@ -153,7 +153,7 @@ async def test_policy_raises():
 
     cls = type("BadPolicy", (), {"policies": staticmethod(bad_policies)})
     with _patch_load(strategy_class=cls, status="active"):
-        out = await run_strategy(strategy="my_strat", action="policy")
+        out = await research_run_strategy(strategy="my_strat", action="policy")
     assert out["ok"] is False
     assert out["error"]["code"] == "strategy_error"
     assert "boom" in out["error"]["message"]
@@ -167,7 +167,7 @@ async def test_policy_raises():
 @pytest.mark.asyncio
 async def test_status_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
     assert out["result"]["action"] == "status"
     assert out["result"]["output"] == {"portfolio": "ok"}
@@ -176,7 +176,9 @@ async def test_status_success():
 @pytest.mark.asyncio
 async def test_analyze_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="analyze", amount_usdc=500)
+        out = await research_run_strategy(
+            strategy="my_strat", action="analyze", amount_usdc=500
+        )
     assert out["ok"] is True
     assert out["result"]["action"] == "analyze"
     assert out["result"]["output"] == {"apy": 5.0}
@@ -186,7 +188,7 @@ async def test_analyze_success():
 async def test_analyze_not_supported():
     cls = _make_strategy_class(has_analyze=False)
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="analyze")
+        out = await research_run_strategy(strategy="my_strat", action="analyze")
     assert out["ok"] is False
     assert out["error"]["code"] == "not_supported"
 
@@ -194,7 +196,7 @@ async def test_analyze_not_supported():
 @pytest.mark.asyncio
 async def test_snapshot_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(
+        out = await research_run_strategy(
             strategy="my_strat", action="snapshot", amount_usdc=1000
         )
     assert out["ok"] is True
@@ -206,7 +208,7 @@ async def test_snapshot_success():
 async def test_snapshot_not_supported():
     cls = _make_strategy_class(has_snapshot=False)
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="snapshot")
+        out = await research_run_strategy(strategy="my_strat", action="snapshot")
     assert out["ok"] is False
     assert out["error"]["code"] == "not_supported"
 
@@ -214,7 +216,9 @@ async def test_snapshot_not_supported():
 @pytest.mark.asyncio
 async def test_quote_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="quote", amount_usdc=2000)
+        out = await research_run_strategy(
+            strategy="my_strat", action="quote", amount_usdc=2000
+        )
     assert out["ok"] is True
     assert out["result"]["action"] == "quote"
     assert out["result"]["output"] == {"expected_apy": 4.5}
@@ -224,7 +228,7 @@ async def test_quote_success():
 async def test_quote_not_supported():
     cls = _make_strategy_class(has_quote=False)
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="quote")
+        out = await research_run_strategy(strategy="my_strat", action="quote")
     assert out["ok"] is False
     assert out["error"]["code"] == "not_supported"
 
@@ -237,7 +241,7 @@ async def test_quote_not_supported():
 @pytest.mark.asyncio
 async def test_deposit_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(
+        out = await research_run_strategy(
             strategy="my_strat",
             action="deposit",
             main_token_amount=100.0,
@@ -252,7 +256,7 @@ async def test_deposit_success():
 @pytest.mark.asyncio
 async def test_deposit_missing_amount():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="deposit")
+        out = await research_run_strategy(strategy="my_strat", action="deposit")
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
     assert "main_token_amount" in out["error"]["message"]
@@ -262,7 +266,9 @@ async def test_deposit_missing_amount():
 async def test_deposit_backcompat_amount():
     """The `amount` parameter is accepted as a fallback for main_token_amount."""
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="deposit", amount=50.0)
+        out = await research_run_strategy(
+            strategy="my_strat", action="deposit", amount=50.0
+        )
     assert out["ok"] is True
     assert out["result"]["success"] is True
 
@@ -270,7 +276,7 @@ async def test_deposit_backcompat_amount():
 @pytest.mark.asyncio
 async def test_update_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="update")
+        out = await research_run_strategy(strategy="my_strat", action="update")
     assert out["ok"] is True
     assert out["result"]["action"] == "update"
     assert out["result"]["success"] is True
@@ -280,7 +286,7 @@ async def test_update_success():
 @pytest.mark.asyncio
 async def test_withdraw_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="withdraw")
+        out = await research_run_strategy(strategy="my_strat", action="withdraw")
     assert out["ok"] is True
     assert out["result"]["action"] == "withdraw"
     assert out["result"]["success"] is True
@@ -290,7 +296,9 @@ async def test_withdraw_success():
 @pytest.mark.asyncio
 async def test_withdraw_rejects_partial():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="withdraw", amount=50.0)
+        out = await research_run_strategy(
+            strategy="my_strat", action="withdraw", amount=50.0
+        )
     assert out["ok"] is False
     assert out["error"]["code"] == "not_supported"
     assert "partial" in out["error"]["message"]
@@ -299,7 +307,7 @@ async def test_withdraw_rejects_partial():
 @pytest.mark.asyncio
 async def test_exit_success():
     with _patch_load(), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="exit")
+        out = await research_run_strategy(strategy="my_strat", action="exit")
     assert out["ok"] is True
     assert out["result"]["action"] == "exit"
     assert out["result"]["success"] is True
@@ -310,7 +318,7 @@ async def test_exit_success():
 async def test_exit_not_supported():
     cls = _make_strategy_class(has_exit=False)
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="exit")
+        out = await research_run_strategy(strategy="my_strat", action="exit")
     assert out["ok"] is False
     assert out["error"]["code"] == "not_supported"
 
@@ -333,7 +341,7 @@ async def test_action_exception_returns_strategy_error():
     cls.__init__ = patched_init
 
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is False
     assert out["error"]["code"] == "strategy_error"
     assert "kaboom" in out["error"]["message"]
@@ -362,7 +370,7 @@ async def test_constructor_fallback_config_only():
         _patch_config(),
         _patch_signing(),
     ):
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
     assert out["result"]["output"]["mode"] == "config_only"
     assert "config_only" in call_log
@@ -380,7 +388,7 @@ async def test_constructor_fallback_no_args():
             self.setup = AsyncMock()
 
     with _patch_load(strategy_class=NoArgStrategy), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
     assert out["result"]["output"]["mode"] == "no_args"
     assert "no_args" in call_log
@@ -400,7 +408,7 @@ async def test_setup_called_before_action():
     cls.__init__ = patched_init
 
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        await run_strategy(strategy="my_strat", action="status")
+        await research_run_strategy(strategy="my_strat", action="status")
     setup_mock.assert_awaited_once()
 
 
@@ -409,7 +417,7 @@ async def test_no_setup_method_ok():
     """Strategies without setup() still work fine."""
     cls = _make_strategy_class(has_setup=False)
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
 
 
@@ -417,7 +425,7 @@ async def test_no_setup_method_ok():
 async def test_wip_warning_not_present_for_active():
     """Active strategies don't get the WIP warning."""
     with _patch_load(status="active"), _patch_config(), _patch_signing():
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True
     assert "warning" not in out
 
@@ -434,5 +442,5 @@ async def test_signing_cb_returns_none_when_wallet_not_found():
             side_effect=ValueError("not found"),
         ),
     ):
-        out = await run_strategy(strategy="my_strat", action="status")
+        out = await research_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is True

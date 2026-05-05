@@ -5,7 +5,7 @@ from typing import Any
 from wayfinder_paths.core.clients.AlphaLabClient import ALPHA_LAB_CLIENT
 
 
-async def search_alpha(
+async def research_search_alpha(
     query: str = "_",
     scan_type: str = "all",
     created_after: str = "_",
@@ -45,7 +45,7 @@ async def search_alpha(
         return {"error": str(exc)}
 
 
-async def get_alpha_types() -> list[str]:
+async def research_get_alpha_types() -> list[str]:
     """Get available Alpha Lab scan types."""
     try:
         return await ALPHA_LAB_CLIENT.get_types()

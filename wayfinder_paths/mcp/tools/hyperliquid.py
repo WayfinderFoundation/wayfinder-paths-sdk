@@ -120,7 +120,7 @@ async def _resolve_spot_asset_id(
     return True, spot_aid
 
 
-async def hyperliquid(
+async def hyperliquid_wait(
     action: Literal["wait_for_deposit", "wait_for_withdrawal"],
     *,
     wallet_label: str | None = None,

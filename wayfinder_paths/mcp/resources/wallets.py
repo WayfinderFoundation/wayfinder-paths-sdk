@@ -13,7 +13,7 @@ from wayfinder_paths.mcp.utils import (
 )
 
 
-async def list_wallets() -> str:
+async def onchain_list_wallets() -> str:
     store = WalletProfileStore.default()
     existing = await load_wallets()
     wallet_list = []
@@ -98,7 +98,7 @@ async def get_wallet_balances(label: str) -> str:
         return json.dumps({"error": str(exc)})
 
 
-async def get_wallet_activity(label: str) -> str:
+async def onchain_get_wallet_activity(label: str) -> str:
     w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})

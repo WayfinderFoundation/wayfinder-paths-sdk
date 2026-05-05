@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.polymarket import polymarket, polymarket_execute
+from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_read
 
 _FIND_WALLET = "wayfinder_paths.mcp.utils.find_wallet_by_label"
 _GET_SIGN_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_signing_callback"
@@ -26,14 +26,14 @@ async def test_polymarket_status_uses_adapter_full_state():
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_full_user_state",
-            new=AsyncMock(return_value=(True, {"protocol": "polymarket"})),
+            new=AsyncMock(return_value=(True, {"protocol": "polymarket_read"})),
         ),
     ):
-        out = await polymarket("status", wallet_label="main")
+        out = await polymarket_read("status", wallet_label="main")
         assert out["ok"] is True
         assert out["result"]["action"] == "status"
         assert out["result"]["ok"] is True
-        assert out["result"]["state"]["protocol"] == "polymarket"
+        assert out["result"]["state"]["protocol"] == "polymarket_read"
 
 
 @pytest.mark.asyncio
@@ -45,7 +45,7 @@ async def test_polymarket_search_uses_adapter_search():
             new=AsyncMock(return_value=(True, [{"slug": "m1"}])),
         ),
     ):
-        out = await polymarket("search", query="bitcoin", limit=1)
+        out = await polymarket_read("search", query="bitcoin", limit=1)
         assert out["ok"] is True
         assert out["result"]["action"] == "search"
         assert out["result"]["markets"][0]["slug"] == "m1"
@@ -70,7 +70,7 @@ async def test_polymarket_quote_uses_adapter_quote_by_token_id():
             ),
         ),
     ):
-        out = await polymarket(
+        out = await polymarket_read(
             "quote",
             token_id="tok_yes",
             side="BUY",
@@ -101,7 +101,7 @@ async def test_polymarket_quote_uses_adapter_quote_by_market_slug():
             ),
         ),
     ):
-        out = await polymarket(
+        out = await polymarket_read(
             "quote",
             market_slug="market-slug",
             outcome="YES",
@@ -117,7 +117,7 @@ async def test_polymarket_quote_uses_adapter_quote_by_market_slug():
 @pytest.mark.asyncio
 async def test_polymarket_quote_buy_requires_amount_collateral():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
-        out = await polymarket("quote", token_id="tok_yes", side="BUY")
+        out = await polymarket_read("quote", token_id="tok_yes", side="BUY")
         assert out["ok"] is False
         assert out["error"]["code"] == "invalid_request"
 
@@ -125,7 +125,7 @@ async def test_polymarket_quote_buy_requires_amount_collateral():
 @pytest.mark.asyncio
 async def test_polymarket_quote_sell_requires_shares():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
-        out = await polymarket("quote", token_id="tok_yes", side="SELL")
+        out = await polymarket_read("quote", token_id="tok_yes", side="SELL")
         assert out["ok"] is False
         assert out["error"]["code"] == "invalid_request"
 
@@ -139,7 +139,7 @@ async def test_polymarket_quote_surfaces_adapter_failure():
             new=AsyncMock(return_value=(False, "order book unavailable")),
         ),
     ):
-        out = await polymarket(
+        out = await polymarket_read(
             "quote",
             token_id="tok_yes",
             side="BUY",

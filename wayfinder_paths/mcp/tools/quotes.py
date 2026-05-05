@@ -59,7 +59,7 @@ def _unwrap_brap_quote_response(
     return [], None, 0
 
 
-async def quote_swap(
+async def onchain_quote_swap(
     *,
     wallet_label: str,
     from_token: str,

@@ -10,7 +10,7 @@ from wayfinder_paths.mcp.utils import resolve_wallet_address
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
 
 
-async def get_user_state(label: str) -> str:
+async def hyperliquid_get_user_state(label: str) -> str:
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
@@ -22,7 +22,7 @@ async def get_user_state(label: str) -> str:
     )
 
 
-async def get_spot_user_state(label: str) -> str:
+async def hyperliquid_get_spot_user_state(label: str) -> str:
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
@@ -40,13 +40,13 @@ async def get_spot_user_state(label: str) -> str:
     )
 
 
-async def get_mid_prices() -> str:
+async def hyperliquid_get_mid_prices() -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_all_mid_prices()
     return json.dumps({"success": success, "prices": data}, indent=2)
 
 
-async def get_mid_price(coin: str) -> str:
+async def hyperliquid_get_mid_price(coin: str) -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_all_mid_prices()
 
@@ -67,19 +67,19 @@ async def get_mid_price(coin: str) -> str:
     return json.dumps({"coin": want, "price": price, "success": price is not None})
 
 
-async def get_markets() -> str:
+async def hyperliquid_get_markets() -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_meta_and_asset_ctxs()
     return json.dumps({"success": success, "markets": data}, indent=2)
 
 
-async def get_spot_assets() -> str:
+async def hyperliquid_get_spot_assets() -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_spot_assets()
     return json.dumps({"success": success, "assets": data}, indent=2)
 
 
-async def get_orderbook(coin: str) -> str:
+async def hyperliquid_get_orderbook(coin: str) -> str:
     c = coin.strip()
     if not c:
         return json.dumps({"error": "coin is required"})
@@ -89,13 +89,13 @@ async def get_orderbook(coin: str) -> str:
     return json.dumps({"coin": c, "success": success, "book": data}, indent=2)
 
 
-async def get_outcomes() -> str:
+async def hyperliquid_get_outcomes() -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_outcome_markets()
     return json.dumps({"success": success, "outcomes": data}, indent=2)
 
 
-async def get_outcome_user_state(label: str) -> str:
+async def hyperliquid_get_outcome_user_state(label: str) -> str:
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})

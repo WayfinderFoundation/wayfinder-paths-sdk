@@ -40,7 +40,7 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
     return config
 
 
-async def run_strategy(
+async def research_run_strategy(
     *,
     strategy: str,
     action: Literal[

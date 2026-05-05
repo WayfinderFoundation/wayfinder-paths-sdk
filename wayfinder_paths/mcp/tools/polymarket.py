@@ -124,7 +124,7 @@ def _annotate(
     )
 
 
-async def polymarket(
+async def polymarket_read(
     action: Literal[
         "status",
         "search",

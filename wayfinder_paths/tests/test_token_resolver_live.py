@@ -19,7 +19,7 @@ def event_loop():
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true",
-    reason="Live quote_swap test — local only",
+    reason="Live onchain_quote_swap test — local only",
 )
 class TestNativeTokenQueries:
     @pytest.mark.asyncio
@@ -107,7 +107,7 @@ class TestNativeTokenQueries:
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true",
-    reason="Live quote_swap test — local only",
+    reason="Live onchain_quote_swap test — local only",
 )
 class TestCoingeckoIdQueries:
     @pytest.mark.asyncio
@@ -192,19 +192,19 @@ class TestCoingeckoIdQueries:
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true",
-    reason="Live quote_swap test — local only",
+    reason="Live onchain_quote_swap test — local only",
 )
 class TestQuoteSwapLive:
     @pytest.mark.asyncio
     async def test_quote_usdc_to_eth_on_arbitrum(self):
-        from wayfinder_paths.mcp.tools.quotes import quote_swap
+        from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
         from wayfinder_paths.mcp.utils import find_wallet_by_label
 
         wallet = find_wallet_by_label("main")
         if not wallet:
             pytest.skip("No 'main' wallet configured")
 
-        out = await quote_swap(
+        out = await onchain_quote_swap(
             wallet_label="main",
             from_token="usd-coin-arbitrum",
             to_token="ethereum-arbitrum",
@@ -212,7 +212,7 @@ class TestQuoteSwapLive:
             slippage_bps=100,
         )
 
-        assert out.get("ok") is True, f"quote_swap failed: {out}"
+        assert out.get("ok") is True, f"onchain_quote_swap failed: {out}"
         result = out["result"]
         assert result["from_token"] == "USDC"
         assert result["to_token"] == "ETH"
