@@ -55,6 +55,7 @@ from wayfinder_paths.mcp.resources.hyperliquid import (
     get_spot_assets,
     get_spot_user_state,
     get_user_state,
+    preflight_route,
 )
 from wayfinder_paths.mcp.resources.tokens import (
     fuzzy_search_tokens,
@@ -190,6 +191,11 @@ mcp.tool()(get_frontend_context)
 mcp.tool()(add_chart_projection)
 mcp.tool()(remove_chart_projection)
 mcp.tool()(clear_chart_projections)
+
+# Custom HTTP routes (in addition to the standard MCP /mcp endpoint).
+# Used by the .opencode/plugins/hl-preflight.ts plugin to fetch all HL state
+# in one call before any execute MCP tool runs.
+mcp.custom_route("/preflight/{label}", methods=["GET"])(preflight_route)
 
 
 async def read_resource(uri: str) -> dict:
