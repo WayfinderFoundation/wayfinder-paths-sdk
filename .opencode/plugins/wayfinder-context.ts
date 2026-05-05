@@ -24,11 +24,7 @@ async function fetchContext(): Promise<string> {
       name: "wayfinder_core_get_context",
       arguments: {},
     });
-    const first = Array.isArray(res.content) ? res.content[0] : null;
-    if (first && "text" in first && typeof first.text === "string") {
-      return first.text;
-    }
-    return JSON.stringify(res.content);
+    return (res.content as Array<{ text: string }>)[0].text;
   } catch (err) {
     return JSON.stringify({
       error: err instanceof Error ? err.message : String(err),

@@ -23,6 +23,10 @@ from wayfinder_paths.mcp.utils import load_wallets, normalize_address
 
 _TOP_N = 25
 
+# Module-level adapter so its aiocache (60s/300s TTLs on meta calls) survives
+# across invocations. Constructing a fresh adapter per call defeats the cache.
+_HL = HyperliquidAdapter()
+
 
 async def _wallet_coins(addr: str) -> list[dict[str, Any]]:
     try:
@@ -103,8 +107,7 @@ def _pm_open_orders(pm_state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def core_get_context(wallet_label: str = "main") -> str:
-    """Thin context bundle for system-prompt injection: coin balances per wallet,
-    HL positions/open-orders/top-market-names, Polymarket positions/open-orders.
+    """Thin context bundle for system-prompt injection.
 
     Args:
         wallet_label: Wallet for HL/PM state lookups. Defaults to "main".
@@ -113,9 +116,7 @@ async def core_get_context(wallet_label: str = "main") -> str:
     target = next((w for w in wallets if w.get("label") == wallet_label), None)
     target_addr = normalize_address(target["address"]) if target else None
 
-    hl = HyperliquidAdapter()
     pm_adapter: PolymarketAdapter | None = None
-
     coin_tasks = [
         _wallet_coins(normalize_address(w["address"]))
         for w in wallets
@@ -123,10 +124,10 @@ async def core_get_context(wallet_label: str = "main") -> str:
     ]
 
     tasks: list[Any] = [
-        asyncio.gather(*coin_tasks) if coin_tasks else asyncio.sleep(0, result=[]),
-        hl.get_meta_and_asset_ctxs(),
-        hl.get_spot_assets(),
-        hl.get_outcome_markets(),
+        asyncio.gather(*coin_tasks),
+        _HL.get_meta_and_asset_ctxs(),
+        _HL.get_spot_assets(),
+        _HL.get_outcome_markets(),
     ]
 
     if target_addr:
@@ -150,11 +151,19 @@ async def core_get_context(wallet_label: str = "main") -> str:
         )
         tasks.extend(
             [
-                hl.get_user_state(target_addr),
-                hl.get_open_orders(target_addr),
+                _HL.get_user_state(target_addr),
+                _HL.get_open_orders(target_addr),
                 pm_adapter.get_full_user_state(
                     account=target_addr, include_orders=True
                 ),
+            ]
+        )
+    else:
+        tasks.extend(
+            [
+                asyncio.sleep(0, result=(False, {})),
+                asyncio.sleep(0, result=(False, [])),
+                asyncio.sleep(0, result=(False, {})),
             ]
         )
 
@@ -168,24 +177,19 @@ async def core_get_context(wallet_label: str = "main") -> str:
     (meta_ok, hl_meta) = results[1]
     (spots_ok, hl_spots) = results[2]
     (outcomes_ok, hl_outcomes) = results[3]
-    (perp_ok, hl_perp), (orders_ok, hl_orders), (pm_ok, pm_state) = (
-        (results[4], results[5], results[6])
-        if target_addr
-        else ((False, {}), (False, []), (False, {}))
-    )
+    (perp_ok, hl_perp) = results[4]
+    (orders_ok, hl_orders) = results[5]
+    (pm_ok, pm_state) = results[6]
 
-    wallets_thin = []
-    coins_iter = iter(coins_per_wallet)
-    for w in wallets:
-        if not w.get("address"):
-            continue
-        wallets_thin.append(
-            {
-                "label": w["label"],
-                "address": normalize_address(w["address"]),
-                "coins": next(coins_iter, []),
-            }
-        )
+    wallets_with_addrs = [w for w in wallets if w.get("address")]
+    wallets_thin = [
+        {
+            "label": w["label"],
+            "address": normalize_address(w["address"]),
+            "coins": coins,
+        }
+        for w, coins in zip(wallets_with_addrs, coins_per_wallet, strict=True)
+    ]
 
     top_25_perps, all_hip3_perps = _hl_universe(hl_meta) if meta_ok else ([], [])
 
