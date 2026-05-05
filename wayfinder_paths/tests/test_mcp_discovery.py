@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from wayfinder_paths.mcp.resources.discovery import get_adapters_and_strategies
+from wayfinder_paths.mcp.tools.discovery import get_adapters_and_strategies
 
 
 @pytest.mark.asyncio
