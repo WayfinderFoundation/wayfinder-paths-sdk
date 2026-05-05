@@ -5,7 +5,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_read
+from wayfinder_paths.mcp.tools.polymarket import (
+    polymarket_execute,
+    polymarket_get_state,
+    polymarket_read,
+)
 
 _FIND_WALLET = "wayfinder_paths.mcp.utils.find_wallet_by_label"
 _GET_SIGN_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_signing_callback"
@@ -18,7 +22,7 @@ _HASH_CB = AsyncMock(return_value="0x" + "00" * 65)
 
 
 @pytest.mark.asyncio
-async def test_polymarket_status_uses_adapter_full_state():
+async def test_polymarket_get_state_uses_adapter_full_state():
     with (
         patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
         patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
@@ -29,9 +33,8 @@ async def test_polymarket_status_uses_adapter_full_state():
             new=AsyncMock(return_value=(True, {"protocol": "polymarket_read"})),
         ),
     ):
-        out = await polymarket_read("status", wallet_label="main")
+        out = await polymarket_get_state(wallet_label="main")
         assert out["ok"] is True
-        assert out["result"]["action"] == "status"
         assert out["result"]["ok"] is True
         assert out["result"]["state"]["protocol"] == "polymarket_read"
 
