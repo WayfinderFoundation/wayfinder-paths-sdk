@@ -74,27 +74,6 @@ async def shells_add_chart_projection(
         return err("projection_error", str(exc))
 
 
-async def shells_remove_chart_projection(
-    chart_id: str,
-    projection_id: str,
-) -> dict[str, Any]:
-    """Remove a projection from a chart by its ID.
-
-    Args:
-        chart_id: Chart key like "hl-perp-BTC".
-        projection_id: UUID of the projection to remove.
-    """
-    if not is_opencode_instance():
-        return err(*_NOT_OPENCODE_ERR)
-    try:
-        await INSTANCE_STATE_CLIENT.remove_projection(chart_id, projection_id)
-        return ok({"removed": projection_id})
-    except httpx.HTTPStatusError as exc:
-        return err("projection_http_error", f"HTTP {exc.response.status_code}")
-    except Exception as exc:  # noqa: BLE001
-        return err("projection_error", str(exc))
-
-
 async def shells_clear_chart_projections(chart_id: str) -> dict[str, Any]:
     """Remove all projections from a chart.
 

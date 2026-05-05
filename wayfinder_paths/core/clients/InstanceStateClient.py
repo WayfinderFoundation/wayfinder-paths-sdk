@@ -40,11 +40,6 @@ class InstanceStateClient(WayfinderClient):
         )
         return resp.json()
 
-    async def remove_projection(self, chart_id: str, projection_id: str) -> None:
-        await self._authed_request(
-            "DELETE", f"{self._base_url()}/sdk_projection/{chart_id}/{projection_id}/"
-        )
-
     async def clear_projections(self, chart_id: str) -> dict[str, Any]:
         return await self.patch_projection(chart_id, [])
 

@@ -154,7 +154,7 @@ async def research_get_top_apy(
         return {"error": str(exc)}
 
 
-async def research_screen_price(
+async def research_search_price(
     sort: str = "price_usd",
     limit: str = "100",
     basis: str = "all",
@@ -188,7 +188,7 @@ async def research_screen_price(
         return {"error": str(exc)}
 
 
-async def research_screen_lending(
+async def research_search_lending(
     sort: str = "net_supply_apr_now",
     limit: str = "100",
     basis: str = "all",
@@ -224,7 +224,7 @@ async def research_screen_lending(
         return {"error": str(exc)}
 
 
-async def research_screen_perp(
+async def research_search_perp(
     sort: str = "funding_now",
     limit: str = "100",
     basis: str = "all",
@@ -259,7 +259,7 @@ async def research_screen_perp(
         return {"error": str(exc)}
 
 
-async def research_screen_borrow_routes(
+async def research_search_borrow_routes(
     sort: str = "ltv_max",
     limit: str = "100",
     basis: str = "all",

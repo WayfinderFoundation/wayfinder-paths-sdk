@@ -49,12 +49,12 @@ class TestScreenBorrowRoutes:
     async def test_chain_code_is_mapped_to_chain_id(self):
         mock = AsyncMock(return_value={"data": [], "count": 0})
         with patch.object(delta_lab.DELTA_LAB_CLIENT, "screen_borrow_routes", mock):
-            result = await delta_lab.research_screen_borrow_routes(chain_id="base")
+            result = await delta_lab.research_search_borrow_routes(chain_id="base")
         mock.assert_awaited_once()
         assert mock.call_args.kwargs["chain_id"] == 8453
         assert result == {"data": [], "count": 0}
 
     @pytest.mark.asyncio
     async def test_unknown_chain_returns_error(self):
-        result = await delta_lab.research_screen_borrow_routes(chain_id="unknown")
+        result = await delta_lab.research_search_borrow_routes(chain_id="unknown")
         assert result["error"] == "unknown chain filter: 'unknown'"

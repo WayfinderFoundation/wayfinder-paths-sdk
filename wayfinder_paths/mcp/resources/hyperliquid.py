@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -83,15 +84,30 @@ async def hyperliquid_get_mid_price(coin: str) -> str:
 
 
 async def hyperliquid_get_markets() -> str:
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_meta_and_asset_ctxs()
-    return json.dumps({"success": success, "markets": data}, indent=2)
+    """Return the full HL universe in one shot: perps (incl. HIP-3 builder dexes), spot, HIP-4 outcomes.
 
-
-async def hyperliquid_get_spot_assets() -> str:
+    `perp` already merges across every builder-deployed dex via `_post_across_dexes`, so HIP-3
+    listings (e.g. `xyz:SP500`) appear alongside core perps. `outcomes` covers HIP-4 binary /
+    multi-outcome markets.
+    """
     adapter = HyperliquidAdapter()
-    success, data = await adapter.get_spot_assets()
-    return json.dumps({"success": success, "assets": data}, indent=2)
+    (
+        (perp_ok, perp_data),
+        (spot_ok, spot_data),
+        (outcome_ok, outcome_data),
+    ) = await asyncio.gather(
+        adapter.get_meta_and_asset_ctxs(),
+        adapter.get_spot_assets(),
+        adapter.get_outcome_markets(),
+    )
+    return json.dumps(
+        {
+            "perp": {"success": perp_ok, "markets": perp_data},
+            "spot": {"success": spot_ok, "assets": spot_data},
+            "outcomes": {"success": outcome_ok, "markets": outcome_data},
+        },
+        indent=2,
+    )
 
 
 async def hyperliquid_get_orderbook(coin: str) -> str:
@@ -102,9 +118,3 @@ async def hyperliquid_get_orderbook(coin: str) -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_l2_book(c, n_levels=20)
     return json.dumps({"coin": c, "success": success, "book": data}, indent=2)
-
-
-async def hyperliquid_get_outcomes() -> str:
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_outcome_markets()
-    return json.dumps({"success": success, "outcomes": data}, indent=2)
