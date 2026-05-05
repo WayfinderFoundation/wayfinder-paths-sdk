@@ -1116,27 +1116,6 @@ async def hyperliquid_get_mid_prices() -> str:
     return json.dumps({"success": success, "prices": data}, indent=2)
 
 
-async def hyperliquid_get_mid_price(coin: str) -> str:
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_all_mid_prices()
-
-    want = _PERP_SUFFIX_RE.sub("", coin.strip()).strip()
-    if not want:
-        return json.dumps({"error": "Invalid coin"})
-
-    price = None
-    if success and isinstance(data, dict):
-        for k, v in data.items():
-            if str(k).lower() == want.lower():
-                try:
-                    price = float(v)
-                except (TypeError, ValueError):
-                    pass
-                break
-
-    return json.dumps({"coin": want, "price": price, "success": price is not None})
-
-
 async def hyperliquid_get_markets() -> str:
     """Return the full HL universe in one shot: perps (incl. HIP-3 builder dexes), spot, HIP-4 outcomes.
 
@@ -1162,13 +1141,3 @@ async def hyperliquid_get_markets() -> str:
         },
         indent=2,
     )
-
-
-async def hyperliquid_get_orderbook(coin: str) -> str:
-    c = coin.strip()
-    if not c:
-        return json.dumps({"error": "coin is required"})
-
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_l2_book(c, n_levels=20)
-    return json.dumps({"coin": c, "success": success, "book": data}, indent=2)

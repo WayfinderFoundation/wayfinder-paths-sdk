@@ -455,17 +455,31 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
-async def core_get_wallets() -> str:
-    """List every configured wallet with its protocols and current balances."""
+async def core_get_wallets(label: str | None = None) -> str:
+    """List configured wallets with profile + protocols + current balances.
+
+    No args → every wallet. Pass `label` to filter to a single wallet (returns the same
+    shape, list with one entry, or `{"error": ...}` if not found).
+    """
     store = WalletProfileStore.default()
-    existing = await load_wallets()
+    if label is not None:
+        w = await find_wallet_by_label(label)
+        if not w:
+            return json.dumps({"error": f"Wallet not found: {label}"})
+        existing = [w]
+    else:
+        existing = await load_wallets()
 
     views: list[dict[str, Any]] = []
     addresses: list[str | None] = []
     for w in existing:
         view = public_wallet_view(w)
         addr = normalize_address(w.get("address"))
-        view["protocols"] = store.get_protocols_for_wallet(addr.lower()) if addr else []
+        if addr:
+            view["protocols"] = store.get_protocols_for_wallet(addr.lower())
+            view["profile"] = store.get_profile(addr)
+        else:
+            view["protocols"] = []
         views.append(view)
         addresses.append(addr)
 
@@ -476,37 +490,6 @@ async def core_get_wallets() -> str:
         view["balances"] = bal
 
     return json.dumps({"wallets": views}, indent=2)
-
-
-async def core_get_wallet(label: str) -> str:
-    store = WalletProfileStore.default()
-    w = await find_wallet_by_label(label)
-    if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
-
-    address = normalize_address(w.get("address"))
-    if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
-
-    profile = store.get_profile(address)
-    return json.dumps(
-        {"label": label, "address": address, "profile": profile}, indent=2
-    )
-
-
-async def core_get_wallet_balances(label: str) -> str:
-    w = await find_wallet_by_label(label)
-    if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
-
-    address = normalize_address(w.get("address"))
-    if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
-
-    data = await _fetch_balances(address)
-    if isinstance(data, dict) and "error" in data and len(data) == 1:
-        return json.dumps(data)
-    return json.dumps({"label": label, "address": address, "balances": data}, indent=2)
 
 
 async def onchain_get_wallet_activity(label: str) -> str:

@@ -27,7 +27,6 @@ from wayfinder_paths.mcp.utils import (
     resolve_wallet_address,
     sanitize_for_json,
     sha256_json,
-    summarize_abi,
 )
 
 
@@ -379,94 +378,6 @@ def _annotate(
         status=status,
         chain_id=chain_id,
         details=details,
-    )
-
-
-async def contracts_get_abi(
-    *,
-    chain_id: int,
-    contract_address: str,
-    resolve_proxy: bool = True,
-) -> dict[str, Any]:
-    """Fetch ABI for a deployed contract via Etherscan V2.
-
-    If *resolve_proxy* is true, attempts to resolve common proxy patterns
-    (EIP-1967 / ZeppelinOS / EIP-897) and fetch the implementation ABI.
-    """
-    addr = str(contract_address).strip()
-    if not addr:
-        return err("invalid_request", "contract_address is required")
-
-    impl: str | None = None
-    flavour: str | None = None
-    impl_error: str | None = None
-
-    if resolve_proxy:
-        try:
-            impl, flavour = await resolve_proxy_implementation(int(chain_id), addr)
-        except Exception:
-            impl, flavour = None, None
-
-        if impl:
-            try:
-                impl_abi = await fetch_contract_abi(int(chain_id), impl)
-            except ValueError as exc:
-                msg = str(exc)
-                code = _abi_error_code(msg)
-                if code == "missing_api_key":
-                    return err(code, msg)
-                impl_error = msg
-            except Exception as exc:
-                impl_error = str(exc)
-            else:
-                meta: dict[str, Any] = {
-                    "abi_source": "etherscan_v2_proxy",
-                    "proxy_address": _safe_checksum_address(addr),
-                    "implementation_address": impl,
-                    "proxy_flavour": flavour,
-                    "abi_sha256": sha256_json(impl_abi),
-                    "abi_address": impl,
-                }
-                return ok(
-                    {
-                        "chain_id": int(chain_id),
-                        "contract_address": _safe_checksum_address(addr),
-                        "abi": impl_abi,
-                        "abi_summary": summarize_abi(impl_abi),
-                        **meta,
-                    }
-                )
-
-    # Non-proxy / no proxy resolution
-    try:
-        abi_list = await fetch_contract_abi(int(chain_id), addr)
-    except ValueError as exc:
-        msg = str(exc)
-        details = {"implementation_abi_error": impl_error} if impl_error else None
-        return err(_abi_error_code(msg), msg, details)
-    except Exception as exc:
-        details = {"implementation_abi_error": impl_error} if impl_error else None
-        return err("abi_fetch_failed", str(exc), details)
-
-    meta: dict[str, Any] = {
-        "abi_source": "etherscan_v2",
-        "abi_sha256": sha256_json(abi_list),
-        "abi_address": _safe_checksum_address(addr),
-    }
-    if impl:
-        meta["proxy_address"] = _safe_checksum_address(addr)
-        meta["implementation_address"] = impl
-        meta["proxy_flavour"] = flavour
-    if impl_error:
-        meta["implementation_abi_error"] = impl_error
-    return ok(
-        {
-            "chain_id": int(chain_id),
-            "contract_address": _safe_checksum_address(addr),
-            "abi": abi_list,
-            "abi_summary": summarize_abi(abi_list),
-            **meta,
-        }
     )
 
 

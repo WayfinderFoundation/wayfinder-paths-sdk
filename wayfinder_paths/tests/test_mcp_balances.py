@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.wallets import core_get_wallet_balances
+from wayfinder_paths.mcp.tools.wallets import core_get_wallets
 
 
 @pytest.fixture
@@ -14,7 +14,7 @@ def mock_wallet():
 
 
 @pytest.mark.asyncio
-async def test_get_wallet_balances_filters_solana(mock_wallet):
+async def test_get_wallets_filters_solana(mock_wallet):
     fake_client = AsyncMock()
     fake_client.get_enriched_wallet_balances = AsyncMock(
         return_value={
@@ -31,14 +31,15 @@ async def test_get_wallet_balances_filters_solana(mock_wallet):
         patch("wayfinder_paths.mcp.tools.wallets.BALANCE_CLIENT", fake_client),
         patch(
             "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
-            return_value=mock_wallet,
+            new=AsyncMock(return_value=mock_wallet),
         ),
     ):
-        result = await core_get_wallet_balances("test")
+        result = await core_get_wallets(label="test")
 
     data = json.loads(result)
     assert "error" not in data
-    balances_data = data["balances"]
+    assert len(data["wallets"]) == 1
+    balances_data = data["wallets"][0]["balances"]
     assert balances_data["total_balance_usd"] == pytest.approx(3.5)
     assert balances_data["chain_breakdown"]["base"] == pytest.approx(1.5)
     assert balances_data["chain_breakdown"]["arbitrum"] == pytest.approx(2.0)
@@ -46,12 +47,12 @@ async def test_get_wallet_balances_filters_solana(mock_wallet):
 
 
 @pytest.mark.asyncio
-async def test_get_wallet_balances_wallet_not_found():
+async def test_get_wallets_label_not_found():
     with patch(
         "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
-        return_value=None,
+        new=AsyncMock(return_value=None),
     ):
-        result = await core_get_wallet_balances("nonexistent")
+        result = await core_get_wallets(label="nonexistent")
 
     data = json.loads(result)
     assert "error" in data

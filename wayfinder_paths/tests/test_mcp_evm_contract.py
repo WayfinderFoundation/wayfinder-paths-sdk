@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from web3 import AsyncWeb3
 
+from wayfinder_paths.mcp.tools.contracts import contracts_get
 from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_call,
     contracts_execute,
-    contracts_get_abi,
 )
 
 
@@ -386,7 +387,7 @@ async def test_contract_execute_encodes_sends_and_annotates():
 
 
 @pytest.mark.asyncio
-async def test_contract_get_abi_fetches_from_etherscan():
+async def test_contracts_get_fetches_from_etherscan():
     addr = "0x" + "12" * 20
     fetched_abi = [
         {
@@ -398,22 +399,26 @@ async def test_contract_get_abi_fetches_from_etherscan():
         }
     ]
 
-    with patch(
-        "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
-        new=AsyncMock(return_value=fetched_abi),
+    fake_store = Mock()
+    fake_store.get_metadata.return_value = None
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.contracts.ContractArtifactStore.default",
+            return_value=fake_store,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.contracts.fetch_contract_abi",
+            new=AsyncMock(return_value=fetched_abi),
+        ),
     ):
-        out = await contracts_get_abi(
-            chain_id=1, contract_address=addr, resolve_proxy=False
-        )
+        out = json.loads(await contracts_get(1, addr, resolve_proxy=False))
 
-    assert out["ok"] is True, out
-    result = out["result"]
-    assert result["abi"] == fetched_abi
-    assert result["abi_source"] == "etherscan_v2"
+    assert out["source"] == "etherscan_v2"
+    assert out["abi"] == fetched_abi
 
 
 @pytest.mark.asyncio
-async def test_contract_get_abi_prefers_proxy_implementation():
+async def test_contracts_get_prefers_proxy_implementation():
     proxy_addr = "0x" + "12" * 20
     impl_addr = "0x" + "56" * 20
     impl_abi = [
@@ -431,31 +436,33 @@ async def test_contract_get_abi_prefers_proxy_implementation():
         assert contract_address.lower() == impl_addr.lower()
         return impl_abi
 
+    fake_store = Mock()
+    fake_store.get_metadata.return_value = None
     with (
         patch(
-            "wayfinder_paths.mcp.tools.evm_contract.resolve_proxy_implementation",
+            "wayfinder_paths.mcp.tools.contracts.ContractArtifactStore.default",
+            return_value=fake_store,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.contracts.resolve_proxy_implementation",
             new=AsyncMock(
                 return_value=(AsyncWeb3.to_checksum_address(impl_addr), "EIP1967")
             ),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
+            "wayfinder_paths.mcp.tools.contracts.fetch_contract_abi",
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = await contracts_get_abi(
-            chain_id=1, contract_address=proxy_addr, resolve_proxy=True
-        )
+        out = json.loads(await contracts_get(1, proxy_addr, resolve_proxy=True))
 
-    assert out["ok"] is True, out
-    result = out["result"]
-    assert result["abi_source"] == "etherscan_v2_proxy"
-    assert result["implementation_address"] == AsyncWeb3.to_checksum_address(impl_addr)
-    assert result["abi"] == impl_abi
+    assert out["source"] == "etherscan_v2_proxy"
+    assert out["implementation_address"] == AsyncWeb3.to_checksum_address(impl_addr)
+    assert out["abi"] == impl_abi
 
 
 @pytest.mark.asyncio
-async def test_contract_get_abi_falls_back_to_proxy_abi_when_impl_fetch_fails():
+async def test_contracts_get_falls_back_to_proxy_abi_when_impl_fetch_fails():
     proxy_addr = "0x" + "12" * 20
     impl_addr = "0x" + "56" * 20
     proxy_abi = [
@@ -476,25 +483,25 @@ async def test_contract_get_abi_falls_back_to_proxy_abi_when_impl_fetch_fails():
             return proxy_abi
         raise AssertionError(f"unexpected ABI fetch address: {contract_address}")
 
+    fake_store = Mock()
+    fake_store.get_metadata.return_value = None
     with (
         patch(
-            "wayfinder_paths.mcp.tools.evm_contract.resolve_proxy_implementation",
+            "wayfinder_paths.mcp.tools.contracts.ContractArtifactStore.default",
+            return_value=fake_store,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.contracts.resolve_proxy_implementation",
             new=AsyncMock(
                 return_value=(AsyncWeb3.to_checksum_address(impl_addr), "EIP1967")
             ),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
+            "wayfinder_paths.mcp.tools.contracts.fetch_contract_abi",
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = await contracts_get_abi(
-            chain_id=1, contract_address=proxy_addr, resolve_proxy=True
-        )
+        out = json.loads(await contracts_get(1, proxy_addr, resolve_proxy=True))
 
-    assert out["ok"] is True, out
-    result = out["result"]
-    assert result["abi_source"] == "etherscan_v2"
-    assert result["implementation_address"] == AsyncWeb3.to_checksum_address(impl_addr)
-    assert "implementation_abi_error" in result
-    assert result["abi"] == proxy_abi
+    assert out["source"] == "etherscan_v2"
+    assert out["abi"] == proxy_abi

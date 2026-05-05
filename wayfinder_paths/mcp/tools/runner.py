@@ -92,7 +92,7 @@ async def core_runner(
     Job actions:
       - `add_job`: schedule a recurring `name` at `interval_seconds`. Two `type`s:
           * `strategy` — pass `strategy`, `strategy_action`, optional `config`, `wallet_label`,
-            `timeout_seconds`. See `research_run_strategy` for action semantics.
+            `timeout_seconds`. See `core_run_strategy` for action semantics.
           * `script` — pass `script_path` (inside `.wayfinder_runs/`), optional `args`, `env`,
             `timeout_seconds`.
       - `update_job`: mutate an existing job's payload / interval.

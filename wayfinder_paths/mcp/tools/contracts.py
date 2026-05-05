@@ -11,6 +11,8 @@ from loguru import logger
 from wayfinder_paths.core.utils.contracts import (
     deploy_contract as _deploy_contract,
 )
+from wayfinder_paths.core.utils.etherscan import fetch_contract_abi
+from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.solidity import SOLC_VERSION, compile_solidity
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
@@ -232,25 +234,77 @@ async def contracts_list() -> str:
     return json.dumps({"contracts": entries, "count": len(entries)}, indent=2)
 
 
-async def contracts_get(chain_id: str, address: str) -> str:
-    """Get full metadata and ABI for a deployed contract."""
+async def contracts_get(
+    chain_id: str | int,
+    address: str,
+    *,
+    resolve_proxy: bool = True,
+) -> str:
+    """Get ABI + metadata for a deployed contract.
+
+    Resolution order:
+      1. Local artifact store (contracts deployed via `contracts_deploy`) — returns full
+         deployment metadata + ABI.
+      2. Etherscan V2 fetch — returns ABI only. If `resolve_proxy` is true and the address
+         is a proxy (EIP-1967 / ZeppelinOS / EIP-897), fetches the implementation's ABI.
+    """
     store = ContractArtifactStore.default()
     cid = int(chain_id)
-    addr = str(address).strip().lower()
+    addr = str(address).strip()
+    addr_lc = addr.lower()
+    if not addr:
+        return json.dumps({"error": "address is required"})
 
-    metadata = store.get_metadata(cid, addr)
-    if not metadata:
-        return json.dumps(
-            {"error": f"No artifacts found for {address} on chain {chain_id}"}
-        )
+    metadata = store.get_metadata(cid, addr_lc)
+    if metadata:
+        result: dict[str, Any] = {"source": "local_artifacts", "metadata": metadata}
+        local_abi = store.get_abi(cid, addr_lc)
+        if local_abi is not None:
+            result["abi"] = local_abi
+        abi_path = store.get_abi_path(cid, addr_lc)
+        if abi_path is not None:
+            result["abi_path"] = str(abi_path)
+        return json.dumps(result, indent=2)
 
-    abi = store.get_abi(cid, addr)
-    result: dict[str, Any] = {"metadata": metadata}
-    if abi is not None:
-        result["abi"] = abi
+    impl: str | None = None
+    flavour: str | None = None
+    if resolve_proxy:
+        try:
+            impl, flavour = await resolve_proxy_implementation(cid, addr)
+        except Exception:
+            impl, flavour = None, None
 
-    abi_path = store.get_abi_path(cid, addr)
-    if abi_path is not None:
-        result["abi_path"] = str(abi_path)
+        if impl:
+            try:
+                impl_abi = await fetch_contract_abi(cid, impl)
+                return json.dumps(
+                    {
+                        "source": "etherscan_v2_proxy",
+                        "chain_id": cid,
+                        "contract_address": addr,
+                        "proxy_address": addr,
+                        "implementation_address": impl,
+                        "proxy_flavour": flavour,
+                        "abi": impl_abi,
+                        "abi_summary": summarize_abi(impl_abi),
+                    },
+                    indent=2,
+                )
+            except Exception:
+                pass
 
-    return json.dumps(result, indent=2)
+    try:
+        abi_list = await fetch_contract_abi(cid, addr)
+    except Exception as exc:
+        return json.dumps({"error": f"ABI not found locally or on Etherscan: {exc}"})
+
+    return json.dumps(
+        {
+            "source": "etherscan_v2",
+            "chain_id": cid,
+            "contract_address": addr,
+            "abi": abi_list,
+            "abi_summary": summarize_abi(abi_list),
+        },
+        indent=2,
+    )
