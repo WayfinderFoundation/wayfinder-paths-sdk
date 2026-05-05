@@ -17,11 +17,11 @@ function getClient(): Promise<Client> {
   return clientPromise;
 }
 
-async function fetchWallets(): Promise<string> {
+async function fetchContext(): Promise<string> {
   try {
     const client = await getClient();
     const res = await client.callTool({
-      name: "wayfinder_core_get_wallets",
+      name: "wayfinder_core_get_context",
       arguments: {},
     });
     return JSON.stringify(res.content, null, 2);
@@ -45,14 +45,15 @@ export const WayfinderContext: Plugin = async () => ({
     output.context.push(COMPACTION_RULES);
   },
   "experimental.chat.system.transform": async (_input, output) => {
-    const wallets = await fetchWallets();
+    const ctx = await fetchContext();
     output.system.push(
       [
-        "<wallet-state>",
-        "Live result of wayfinder_core_get_wallets — refreshed on every LLM call.",
-        "Verify against user intent before any execute tool call (correct label, sufficient balance on the right chain).",
-        wallets,
-        "</wallet-state>",
+        "<wayfinder-context>",
+        "Live result of wayfinder_core_get_context — refreshed on every LLM call.",
+        "Coin balances, HL positions/open-orders/top-markets, Polymarket positions/open-orders.",
+        "USD values and mark prices are intentionally excluded — fetch live via the rich tools when needed.",
+        ctx,
+        "</wayfinder-context>",
       ].join("\n"),
     );
   },
