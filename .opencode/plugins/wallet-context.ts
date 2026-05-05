@@ -62,4 +62,30 @@ export const WalletContext: Plugin = async () => ({
       ].join("\n"),
     )
   },
+
+  // EXAMPLE: pre-tool-call arg mutation. Default wallet_label to "main" if
+  // the agent forgot to pass one to a wayfinder_core_execute call.
+  "tool.execute.before": async (input, output) => {
+    if (input.tool !== "wayfinder_core_execute") return
+    if (output.args && typeof output.args === "object" && !output.args.wallet_label) {
+      output.args.wallet_label = "main"
+    }
+  },
+
+  // EXAMPLE: post-tool-call context injection. Append a fresh wallet snapshot
+  // to the tool's output string so the next LLM turn sees the impact of the
+  // call without needing a separate fetch.
+  "tool.execute.after": async (input, output) => {
+    if (!input.tool.endsWith("_execute") && !input.tool.endsWith("_run_strategy")) {
+      return
+    }
+    const wallets = await fetchWallets()
+    output.output = [
+      output.output,
+      "",
+      "<wallet-state-after-call>",
+      wallets,
+      "</wallet-state-after-call>",
+    ].join("\n")
+  },
 })
