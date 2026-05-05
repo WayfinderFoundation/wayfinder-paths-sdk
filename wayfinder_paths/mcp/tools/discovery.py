@@ -1,105 +1,64 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.mcp.utils import read_text_excerpt, read_yaml, repo_root
 
 
-async def core_list_adapters() -> str:
-    root = repo_root()
-    base = root / "wayfinder_paths" / "adapters"
-    if not base.exists():
-        return json.dumps({"error": f"Directory not found: {base}"})
+def _describe_dir(base: Path, name: str) -> dict[str, Any] | None:
+    target = base / name
+    manifest_path = target / "manifest.yaml"
+    if not manifest_path.exists():
+        return None
+    out: dict[str, Any] = {"name": name, "manifest": read_yaml(manifest_path)}
+    readme = read_text_excerpt(target / "README.md")
+    if readme:
+        out["readme_excerpt"] = readme
+    return out
 
+
+def _describe_all(base: Path) -> list[dict[str, Any]]:
+    if not base.exists():
+        return []
     items: list[dict[str, Any]] = []
     for child in sorted(base.iterdir()):
         if not child.is_dir():
             continue
-        manifest_path = child / "manifest.yaml"
-        if not manifest_path.exists():
-            continue
-        manifest = read_yaml(manifest_path)
-        items.append(
+        described = _describe_dir(base, child.name)
+        if described:
+            items.append(described)
+    return items
+
+
+async def get_adapters_and_strategies(name: str | None = None) -> str:
+    """List adapters and strategies with their manifests and README excerpts.
+
+    No args → full catalog of every adapter and strategy with manifest + readme excerpt.
+    Pass `name` to filter to a single adapter or strategy (matches across both directories).
+    """
+    root = repo_root()
+    adapters_base = root / "wayfinder_paths" / "adapters"
+    strategies_base = root / "wayfinder_paths" / "strategies"
+
+    if name:
+        adapter = _describe_dir(adapters_base, name)
+        strategy = _describe_dir(strategies_base, name)
+        if not adapter and not strategy:
+            return json.dumps({"error": f"Unknown adapter or strategy: {name}"})
+        return json.dumps(
             {
-                "name": child.name,
-                "entrypoint": manifest.get("entrypoint"),
-                "capabilities": manifest.get("capabilities", []),
-                "dependencies": manifest.get("dependencies", []),
-            }
+                "adapters": [adapter] if adapter else [],
+                "strategies": [strategy] if strategy else [],
+            },
+            indent=2,
         )
 
-    return json.dumps({"adapters": items}, indent=2)
-
-
-async def core_list_strategies() -> str:
-    root = repo_root()
-    base = root / "wayfinder_paths" / "strategies"
-    if not base.exists():
-        return json.dumps({"error": f"Directory not found: {base}"})
-
-    items: list[dict[str, Any]] = []
-    for child in sorted(base.iterdir()):
-        if not child.is_dir():
-            continue
-        manifest_path = child / "manifest.yaml"
-        if not manifest_path.exists():
-            continue
-        manifest = read_yaml(manifest_path)
-        adapters = manifest.get("adapters", [])
-        items.append(
-            {
-                "name": child.name,
-                "status": manifest.get("status", "stable"),
-                "entrypoint": manifest.get("entrypoint"),
-                "adapters": adapters if isinstance(adapters, list) else [],
-                "permissions_policy_present": bool(
-                    isinstance(manifest.get("permissions"), dict)
-                    and (manifest.get("permissions") or {}).get("policy")
-                ),
-            }
-        )
-
-    return json.dumps({"strategies": items}, indent=2)
-
-
-async def core_describe_adapter(name: str) -> str:
-    root = repo_root()
-    target = root / "wayfinder_paths" / "adapters" / name
-    if not target.exists():
-        return json.dumps({"error": f"Unknown adapter: {name}"})
-
-    manifest_path = target / "manifest.yaml"
-    if not manifest_path.exists():
-        return json.dumps({"error": f"Missing manifest.yaml for adapter: {name}"})
-
-    out: dict[str, Any] = {
-        "name": name,
-        "manifest": read_yaml(manifest_path),
-    }
-    readme = read_text_excerpt(target / "README.md")
-    if readme:
-        out["readme_excerpt"] = readme
-
-    return json.dumps(out, indent=2)
-
-
-async def core_describe_strategy(name: str) -> str:
-    root = repo_root()
-    target = root / "wayfinder_paths" / "strategies" / name
-    if not target.exists():
-        return json.dumps({"error": f"Unknown strategy: {name}"})
-
-    manifest_path = target / "manifest.yaml"
-    if not manifest_path.exists():
-        return json.dumps({"error": f"Missing manifest.yaml for strategy: {name}"})
-
-    out: dict[str, Any] = {
-        "name": name,
-        "manifest": read_yaml(manifest_path),
-    }
-    readme = read_text_excerpt(target / "README.md")
-    if readme:
-        out["readme_excerpt"] = readme
-
-    return json.dumps(out, indent=2)
+    return json.dumps(
+        {
+            "adapters": _describe_all(adapters_base),
+            "strategies": _describe_all(strategies_base),
+        },
+        indent=2,
+    )

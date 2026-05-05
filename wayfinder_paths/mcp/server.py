@@ -51,12 +51,7 @@ from wayfinder_paths.mcp.tools.delta_lab import (
     research_screen_price,
     research_search_delta_lab_assets,
 )
-from wayfinder_paths.mcp.tools.discovery import (
-    core_describe_adapter,
-    core_describe_strategy,
-    core_list_adapters,
-    core_list_strategies,
-)
+from wayfinder_paths.mcp.tools.discovery import get_adapters_and_strategies
 from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_call,
     contracts_execute,
@@ -69,11 +64,9 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_mid_price,
     hyperliquid_get_mid_prices,
     hyperliquid_get_orderbook,
-    hyperliquid_get_outcome_user_state,
     hyperliquid_get_outcomes,
     hyperliquid_get_spot_assets,
-    hyperliquid_get_spot_user_state,
-    hyperliquid_get_user_state,
+    hyperliquid_get_state,
     hyperliquid_wait,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
@@ -132,9 +125,7 @@ mcp.tool()(research_run_strategy)
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
 mcp.tool()(hyperliquid_wait)
 mcp.tool()(hyperliquid_execute)
-mcp.tool()(hyperliquid_get_user_state)
-mcp.tool()(hyperliquid_get_spot_user_state)
-mcp.tool()(hyperliquid_get_outcome_user_state)
+mcp.tool()(hyperliquid_get_state)
 mcp.tool()(hyperliquid_get_mid_prices)
 mcp.tool()(hyperliquid_get_mid_price)
 mcp.tool()(hyperliquid_get_markets)
@@ -164,10 +155,7 @@ mcp.tool()(contracts_call)
 mcp.tool()(contracts_execute)
 
 # ─── core_* (cross-persona — every subagent should allowlist these) ───
-mcp.tool()(core_list_adapters)
-mcp.tool()(core_list_strategies)
-mcp.tool()(core_describe_adapter)
-mcp.tool()(core_describe_strategy)
+mcp.tool()(get_adapters_and_strategies)
 mcp.tool()(core_get_wallet)
 mcp.tool()(core_get_wallet_balances)
 mcp.tool()(core_wallets)

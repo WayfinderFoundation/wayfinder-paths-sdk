@@ -4,59 +4,45 @@ import json
 
 import pytest
 
-from wayfinder_paths.mcp.tools.discovery import (
-    core_describe_adapter,
-    core_describe_strategy,
-    core_list_adapters,
-    core_list_strategies,
-)
+from wayfinder_paths.mcp.tools.discovery import get_adapters_and_strategies
 
 
 @pytest.mark.asyncio
-async def test_list_adapters_includes_hyperliquid():
-    out = await core_list_adapters()
+async def test_full_catalog_includes_known_entries():
+    out = await get_adapters_and_strategies()
     result = json.loads(out)
-    names = {i["name"] for i in result["adapters"]}
-    assert "hyperliquid_adapter" in names
+    adapter_names = {i["name"] for i in result["adapters"]}
+    strategy_names = {i["name"] for i in result["strategies"]}
+    assert "hyperliquid_adapter" in adapter_names
+    assert "boros_hype_strategy" in strategy_names
+    assert "basis_trading_strategy" in strategy_names
 
 
 @pytest.mark.asyncio
-async def test_list_strategies_includes_basis_and_boros():
-    out = await core_list_strategies()
+async def test_entries_carry_manifest():
+    out = await get_adapters_and_strategies()
     result = json.loads(out)
-    names = {i["name"] for i in result["strategies"]}
-    assert "boros_hype_strategy" in names
-    assert "basis_trading_strategy" in names
+    for entry in result["adapters"] + result["strategies"]:
+        assert isinstance(entry["manifest"], dict)
 
 
 @pytest.mark.asyncio
-async def test_describe_strategy_returns_manifest_and_readme_excerpt():
-    out = await core_describe_strategy("boros_hype_strategy")
+async def test_filter_by_name_returns_single_entry():
+    out = await get_adapters_and_strategies(name="boros_hype_strategy")
     result = json.loads(out)
-    assert result["name"] == "boros_hype_strategy"
-    assert isinstance(result.get("manifest"), dict)
+    assert result["adapters"] == []
+    assert len(result["strategies"]) == 1
+    assert result["strategies"][0]["name"] == "boros_hype_strategy"
+
+    out = await get_adapters_and_strategies(name="hyperliquid_adapter")
+    result = json.loads(out)
+    assert len(result["adapters"]) == 1
+    assert result["adapters"][0]["name"] == "hyperliquid_adapter"
+    assert result["strategies"] == []
 
 
 @pytest.mark.asyncio
-async def test_describe_adapter_returns_manifest():
-    out = await core_describe_adapter("hyperliquid_adapter")
+async def test_unknown_name_returns_error():
+    out = await get_adapters_and_strategies(name="does_not_exist")
     result = json.loads(out)
-    assert result["name"] == "hyperliquid_adapter"
-    assert isinstance(result.get("manifest"), dict)
-
-
-@pytest.mark.asyncio
-async def test_list_strategies_includes_status_field():
-    out = await core_list_strategies()
-    result = json.loads(out)
-    strategies = result["strategies"]
-    # All strategies should have a status field
-    for s in strategies:
-        assert "status" in s, f"Strategy {s['name']} missing status field"
-        assert s["status"] in ("stable", "wip", "deprecated")
-    # stablecoin_yield_strategy should be marked as wip
-    stablecoin = next(
-        (s for s in strategies if s["name"] == "stablecoin_yield_strategy"), None
-    )
-    assert stablecoin is not None, "stablecoin_yield_strategy not found"
-    assert stablecoin["status"] == "wip"
+    assert "error" in result

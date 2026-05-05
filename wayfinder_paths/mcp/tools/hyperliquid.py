@@ -1064,33 +1064,48 @@ async def hyperliquid_execute(
     return response
 
 
-async def hyperliquid_get_user_state(label: str) -> str:
+async def hyperliquid_get_state(label: str) -> str:
+    """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return json.dumps({"error": f"Wallet not found: {label}"})
 
     adapter = HyperliquidAdapter()
-    success, data = await adapter.get_user_state(addr)
+    perp_ok, perp = await adapter.get_user_state(addr)
+    spot_ok, spot = await adapter.get_spot_user_state(addr)
+
+    spot_balances: list[dict[str, Any]] = []
+    outcome_positions: list[dict[str, Any]] = []
+    if spot_ok and isinstance(spot, dict):
+        for bal in spot.get("balances", []):
+            coin = str(bal.get("coin") or "")
+            if coin.startswith("+"):
+                if float(bal.get("total") or 0) == 0:
+                    continue
+                encoding = int(coin[1:])
+                outcome_positions.append(
+                    {
+                        "coin": coin,
+                        "outcome_id": encoding // 10,
+                        "side": encoding % 10,
+                        "total": bal.get("total"),
+                        "hold": bal.get("hold"),
+                        "entryNtl": bal.get("entryNtl"),
+                    }
+                )
+            else:
+                spot_balances.append(bal)
+        spot["balances"] = spot_balances
+
     return json.dumps(
-        {"label": label, "address": addr, "success": success, "state": data}, indent=2
-    )
-
-
-async def hyperliquid_get_spot_user_state(label: str) -> str:
-    addr, _ = await resolve_wallet_address(wallet_label=label)
-    if not addr:
-        return json.dumps({"error": f"Wallet not found: {label}"})
-
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_spot_user_state(addr)
-    if success and isinstance(data, dict):
-        data["balances"] = [
-            b
-            for b in data.get("balances", [])
-            if not str(b.get("coin") or "").startswith("+")
-        ]
-    return json.dumps(
-        {"label": label, "address": addr, "success": success, "spot": data}, indent=2
+        {
+            "label": label,
+            "address": addr,
+            "perp": {"success": perp_ok, "state": perp},
+            "spot": {"success": spot_ok, "state": spot},
+            "outcomes": {"success": spot_ok, "positions": outcome_positions},
+        },
+        indent=2,
     )
 
 
@@ -1147,35 +1162,3 @@ async def hyperliquid_get_outcomes() -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_outcome_markets()
     return json.dumps({"success": success, "outcomes": data}, indent=2)
-
-
-async def hyperliquid_get_outcome_user_state(label: str) -> str:
-    addr, _ = await resolve_wallet_address(wallet_label=label)
-    if not addr:
-        return json.dumps({"error": f"Wallet not found: {label}"})
-
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_spot_user_state(addr)
-    positions: list[dict[str, Any]] = []
-    if success and isinstance(data, dict):
-        for bal in data.get("balances", []):
-            coin = str(bal.get("coin") or "")
-            if not coin.startswith("+"):
-                continue
-            if float(bal.get("total") or 0) == 0:
-                continue
-            encoding = int(coin[1:])
-            positions.append(
-                {
-                    "coin": coin,
-                    "outcome_id": encoding // 10,
-                    "side": encoding % 10,
-                    "total": bal.get("total"),
-                    "hold": bal.get("hold"),
-                    "entryNtl": bal.get("entryNtl"),
-                }
-            )
-    return json.dumps(
-        {"label": label, "address": addr, "success": success, "positions": positions},
-        indent=2,
-    )
