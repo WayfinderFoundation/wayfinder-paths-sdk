@@ -11,7 +11,7 @@ import asyncio
 import json
 from typing import Any
 
-from wayfinder_paths.adapters.hyperliquid_adapter import HL_ADAPTER
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT
 from wayfinder_paths.core.config import CONFIG
@@ -56,6 +56,7 @@ async def core_get_context(wallet_label: str = "main") -> str:
     target = next((w for w in wallets if w.get("label") == wallet_label), None)
     target_addr = normalize_address(target["address"]) if target else None
 
+    hl = HyperliquidAdapter()
     pm_adapter: PolymarketAdapter | None = None
     coin_tasks = [
         _wallet_coins(normalize_address(w["address"]))
@@ -65,9 +66,9 @@ async def core_get_context(wallet_label: str = "main") -> str:
 
     tasks: list[Any] = [
         asyncio.gather(*coin_tasks),
-        HL_ADAPTER.get_meta_and_asset_ctxs(),
-        HL_ADAPTER.get_spot_assets(),
-        HL_ADAPTER.get_outcome_markets(),
+        hl.get_meta_and_asset_ctxs(),
+        hl.get_spot_assets(),
+        hl.get_outcome_markets(),
     ]
 
     if target and target_addr:
@@ -81,8 +82,8 @@ async def core_get_context(wallet_label: str = "main") -> str:
         )
         tasks.extend(
             [
-                HL_ADAPTER.get_user_state(target_addr),
-                HL_ADAPTER.get_open_orders(target_addr),
+                hl.get_user_state(target_addr),
+                hl.get_open_orders(target_addr),
                 pm_adapter.get_full_user_state(
                     account=target_addr, include_orders=True
                 ),
