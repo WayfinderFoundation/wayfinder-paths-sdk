@@ -55,15 +55,12 @@ from wayfinder_paths.mcp.tools.discovery import core_get_adapters_and_strategies
 from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_call,
     contracts_execute,
-    contracts_get_abi,
 )
 from wayfinder_paths.mcp.tools.execute import core_execute
 from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_execute,
     hyperliquid_get_markets,
-    hyperliquid_get_mid_price,
     hyperliquid_get_mid_prices,
-    hyperliquid_get_orderbook,
     hyperliquid_get_state,
     hyperliquid_wait,
 )
@@ -77,15 +74,13 @@ from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.run_script import core_run_script
 from wayfinder_paths.mcp.tools.runner import core_runner
-from wayfinder_paths.mcp.tools.strategies import research_run_strategy
+from wayfinder_paths.mcp.tools.strategies import core_run_strategy
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
     onchain_resolve_token,
 )
 from wayfinder_paths.mcp.tools.wallets import (
-    core_get_wallet,
-    core_get_wallet_balances,
     core_get_wallets,
     core_wallets,
     onchain_get_wallet_activity,
@@ -115,17 +110,14 @@ mcp.tool()(research_search_price)
 mcp.tool()(research_search_lending)
 mcp.tool()(research_search_perp)
 mcp.tool()(research_search_borrow_routes)
-mcp.tool()(research_run_strategy)
 
 # ─── hyperliquid_* ─────────────────────────────────────────────────────
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
-mcp.tool()(hyperliquid_wait)
+mcp.tool()(hyperliquid_wait)  # should nuke
 mcp.tool()(hyperliquid_execute)
 mcp.tool()(hyperliquid_get_state)
 mcp.tool()(hyperliquid_get_mid_prices)
-mcp.tool()(hyperliquid_get_mid_price)
 mcp.tool()(hyperliquid_get_markets)
-mcp.tool()(hyperliquid_get_orderbook)
 
 # ─── onchain_* ─────────────────────────────────────────────────────────
 mcp.tool()(onchain_resolve_token)
@@ -140,21 +132,19 @@ mcp.tool()(polymarket_execute)
 
 # ─── contracts_* ───────────────────────────────────────────────────────
 mcp.tool()(contracts_list)
-mcp.tool()(contracts_get)
 mcp.tool()(contracts_compile)
 mcp.tool()(contracts_deploy)
-mcp.tool()(contracts_get_abi)
+mcp.tool()(contracts_get)
 mcp.tool()(contracts_call)
 mcp.tool()(contracts_execute)
 
 # ─── core_* (cross-persona — every subagent should allowlist these) ───
 mcp.tool()(core_get_adapters_and_strategies)
 mcp.tool()(core_get_wallets)
-mcp.tool()(core_get_wallet)
-mcp.tool()(core_get_wallet_balances)
 mcp.tool()(core_wallets)
 mcp.tool()(core_execute)
 mcp.tool()(core_run_script)
+mcp.tool()(core_run_strategy)
 mcp.tool()(core_runner)
 
 
