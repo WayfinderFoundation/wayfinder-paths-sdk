@@ -7,10 +7,12 @@ import pytest
 
 from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
 from wayfinder_paths.mcp.tools.hyperliquid import (
+    ResolvedCoin,
     _resolve_builder_fee,
     _resolve_perp_asset_id,
     _resolve_spot_asset_id,
     hyperliquid_execute,
+    resolve_coin,
 )
 
 
@@ -100,6 +102,153 @@ async def test_resolve_spot_asset_id_unknown_pair():
     assert ok is False
     assert err["code"] == "not_found"
     assert "DOGE/USDC" in err["message"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_coin — unified coin resolver across perp / HIP-3 / spot / outcome
+# ---------------------------------------------------------------------------
+
+
+class _ResolveCoinAdapter:
+    """Stub with both spot pair map and perp coin_to_asset map."""
+
+    def __init__(
+        self,
+        *,
+        spot_assets: dict[str, int] | None = None,
+        coin_to_asset: dict[str, int] | None = None,
+    ):
+        self._spot_assets = spot_assets or {}
+        self.coin_to_asset = coin_to_asset or {}
+
+    async def get_spot_assets(self):
+        return True, self._spot_assets
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_default_perp():
+    adapter = _ResolveCoinAdapter(coin_to_asset={"BTC": 0, "ETH": 1, "HYPE": 159})
+
+    ok, res = await resolve_coin(adapter, coin="BTC")
+    assert ok is True
+    assert res == ResolvedCoin(asset_id=0, surface="perp", mid_key="BTC", hl_coin="BTC")
+
+    ok, res = await resolve_coin(adapter, coin="HYPE")
+    assert ok is True
+    assert res.asset_id == 159
+    assert res.mid_key == "HYPE"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_hip3_perp():
+    adapter = _ResolveCoinAdapter(coin_to_asset={"BTC": 0, "xyz:NVDA": 110001})
+
+    ok, res = await resolve_coin(adapter, coin="xyz:NVDA")
+    assert ok is True
+    assert res.asset_id == 110001
+    assert res.surface == "perp"
+    assert res.mid_key == "xyz:NVDA"
+    assert res.hl_coin == "xyz:NVDA"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_spot_uses_at_index_for_mid_key():
+    adapter = _ResolveCoinAdapter(
+        spot_assets={"BTC/USDC": 10142, "BTC/USDH": 10999, "PURR/USDC": 10000}
+    )
+
+    ok, res = await resolve_coin(adapter, coin="BTC/USDC")
+    assert ok is True
+    assert res.asset_id == 10142
+    assert res.surface == "spot"
+    assert res.mid_key == "@142"
+    assert res.hl_coin == "@142"
+
+    ok, res = await resolve_coin(adapter, coin="BTC/USDH")
+    assert ok is True
+    assert res.mid_key == "@999"
+
+    ok, res = await resolve_coin(adapter, coin="PURR/USDC")
+    assert ok is True
+    assert res.mid_key == "PURR/USDC"
+    assert res.hl_coin == "PURR/USDC"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_spot_rejects_bare_token():
+    adapter = _ResolveCoinAdapter(spot_assets={"BTC/USDC": 10142})
+
+    ok, err = await resolve_coin(adapter, coin="BTC")
+    # "BTC" with no slash falls into perp path; perp dict is empty so not_found
+    assert ok is False
+    assert err["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_outcome_book_form():
+    adapter = _ResolveCoinAdapter()
+
+    ok, res = await resolve_coin(adapter, coin="#20")
+    assert ok is True
+    assert res.surface == "outcome"
+    assert res.asset_id == 100_000_020
+    assert res.mid_key == "#20"
+    assert res.hl_coin == "#20"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_outcome_balance_form_uses_book_for_pricing():
+    adapter = _ResolveCoinAdapter()
+
+    ok, res = await resolve_coin(adapter, coin="+21")
+    assert ok is True
+    assert res.surface == "outcome"
+    assert res.asset_id == 100_000_021
+    # balance form normalizes to book form for pricing
+    assert res.mid_key == "#21"
+    assert res.hl_coin == "#21"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_outcome_rejects_garbage():
+    adapter = _ResolveCoinAdapter()
+
+    ok, err = await resolve_coin(adapter, coin="#abc")
+    assert ok is False
+    assert err["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_from_asset_id_dispatches_by_range():
+    adapter = _ResolveCoinAdapter(
+        spot_assets={"BTC/USDC": 10142},
+        coin_to_asset={"BTC": 0, "xyz:NVDA": 110001},
+    )
+
+    ok, res = await resolve_coin(adapter, asset_id=0)
+    assert ok is True and res.surface == "perp" and res.hl_coin == "BTC"
+
+    ok, res = await resolve_coin(adapter, asset_id=10142)
+    assert ok is True and res.surface == "spot" and res.mid_key == "@142"
+
+    ok, res = await resolve_coin(adapter, asset_id=110001)
+    assert ok is True and res.surface == "perp" and res.hl_coin == "xyz:NVDA"
+
+    ok, res = await resolve_coin(adapter, asset_id=100_000_020)
+    assert ok is True and res.surface == "outcome" and res.mid_key == "#20"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_empty_input():
+    adapter = _ResolveCoinAdapter()
+
+    ok, err = await resolve_coin(adapter, coin=None)
+    assert ok is False
+    assert err["code"] == "invalid_request"
+
+    ok, err = await resolve_coin(adapter, coin="   ")
+    assert ok is False
+    assert err["code"] == "invalid_request"
 
 
 @pytest.mark.asyncio

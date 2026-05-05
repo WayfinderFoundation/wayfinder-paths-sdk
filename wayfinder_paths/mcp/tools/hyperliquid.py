@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Any, Literal
+
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 from wayfinder_paths.core.config import CONFIG
@@ -63,36 +66,26 @@ def _resolve_builder_fee(
 def _resolve_perp_asset_id(
     adapter: HyperliquidAdapter, *, coin: str | None, asset_id: int | None
 ) -> tuple[bool, int | dict[str, Any]]:
+    """Thin wrapper that flattens ResolvedCoin → asset_id, scoped to perp.
+
+    Strips the optional `-perp` / `_perp` / ` perp` suffix from the coin string
+    before delegating, and returns just the asset id (not the full ResolvedCoin)
+    so existing call sites stay unchanged.
+    """
     if asset_id is not None:
         try:
             return True, int(asset_id)
         except (TypeError, ValueError):
             return False, {"code": "invalid_request", "message": "asset_id must be int"}
 
-    c = (coin or "").strip()
-    if not c:
-        return False, {
-            "code": "invalid_request",
-            "message": "coin or asset_id is required",
-        }
-
-    c = _PERP_SUFFIX_RE.sub("", c).strip()
+    c = _PERP_SUFFIX_RE.sub("", (coin or "").strip()).strip()
     if not c:
         return False, {"code": "invalid_request", "message": "coin is required"}
 
-    mapping = adapter.coin_to_asset or {}
-    lower = {str(k).lower(): int(v) for k, v in mapping.items()}
-    aid = lower.get(c.lower())
-    if aid is None:
-        return (
-            False,
-            {
-                "code": "not_found",
-                "message": f"Unknown perp coin: {c}",
-                "details": {"coin": c},
-            },
-        )
-    return True, aid
+    ok, res = _resolve_perp_coin(adapter, c)
+    if not ok:
+        return False, res
+    return True, res.asset_id
 
 
 async def _resolve_spot_asset_id(
@@ -101,12 +94,18 @@ async def _resolve_spot_asset_id(
     coin: str | None,
     asset_id: int | None = None,
 ) -> tuple[bool, int | dict[str, Any]]:
+    """Thin wrapper that flattens ResolvedCoin → asset_id, scoped to spot.
+
+    Enforces the 'BASE/QUOTE' contract on `coin` and the `>= 10_000` range on
+    `asset_id` upfront so the error messages are spot-specific, then delegates
+    the actual lookup to resolve_coin.
+    """
     if asset_id is not None:
         try:
             aid = int(asset_id)
         except (TypeError, ValueError):
             return False, {"code": "invalid_request", "message": "asset_id must be int"}
-        if aid < 10000:
+        if aid < _SPOT_ASSET_OFFSET:
             return False, {
                 "code": "invalid_request",
                 "message": (
@@ -132,17 +131,171 @@ async def _resolve_spot_asset_id(
             ),
         }
 
+    ok, res = await resolve_coin(adapter, coin=c)
+    if not ok:
+        return False, res
+    return True, res.asset_id
+
+
+# ---------------------------------------------------------------------------
+# Unified coin resolver
+#
+# Hyperliquid coin strings come in four user-facing forms, each uniquely
+# decodable by syntax:
+#
+#   form               surface           example         hl_coin / mid_key
+#   ----               -------           -------         -----------------
+#   bare              default perp      "BTC"           "BTC"
+#   <dex>:<TICKER>    HIP-3 perp        "xyz:NVDA"      "xyz:NVDA"
+#   <BASE>/<QUOTE>    spot              "BTC/USDH"      "@<index>" (or "PURR/USDC")
+#   #<n>              HIP-4 outcome     "#20"           "#20"
+#   +<n>              HIP-4 outcome     "+20"           "#20"      (priced via book)
+#
+# Asset id ranges:
+#   0      .. 9_999          default perp
+#   10_000 .. 99_999          spot (index = aid - 10_000)
+#   100_000 .. 99_999_999     HIP-3 perp (per-dex bands of 10_000)
+#   100_000_000+              HIP-4 outcome (encoding = aid - OUTCOME_ASSET_OFFSET)
+
+_SPOT_ASSET_OFFSET = 10_000
+_HIP3_ASSET_OFFSET = 100_000
+
+
+@dataclass(frozen=True)
+class ResolvedCoin:
+    asset_id: int
+    surface: Literal["perp", "spot", "outcome"]
+    mid_key: str  # key into adapter.get_all_mid_prices()
+    hl_coin: str  # what to pass to /info l2Book, trades, etc.
+
+
+def _spot_mid_key(spot_index: int) -> str:
+    return "PURR/USDC" if spot_index == 0 else f"@{spot_index}"
+
+
+def _outcome_book_coin(encoding: int) -> str:
+    return f"#{encoding}"
+
+
+def _resolve_outcome_coin(c: str) -> tuple[bool, ResolvedCoin | dict[str, Any]]:
+    body = c[1:]
+    if not body.isdigit():
+        return False, {
+            "code": "invalid_request",
+            "message": f"outcome coin must be '#<n>' or '+<n>' with digits (got '{c}')",
+        }
+    encoding = int(body)
+    book_coin = _outcome_book_coin(encoding)
+    return True, ResolvedCoin(
+        asset_id=OUTCOME_ASSET_OFFSET + encoding,
+        surface="outcome",
+        mid_key=book_coin,
+        hl_coin=book_coin,
+    )
+
+
+async def _resolve_spot_coin(
+    adapter: HyperliquidAdapter, c: str
+) -> tuple[bool, ResolvedCoin | dict[str, Any]]:
+    pair = c.upper()
+    if pair.count("/") != 1 or pair.startswith("/") or pair.endswith("/"):
+        return False, {
+            "code": "invalid_request",
+            "message": (
+                f"spot coin must be 'BASE/QUOTE' (e.g. 'BTC/USDC' or 'BTC/USDH'), got '{c}'"
+            ),
+        }
     ok, assets = await adapter.get_spot_assets()
     if not ok:
         return False, {"code": "error", "message": "Failed to fetch spot assets"}
+    aid = assets.get(pair)
+    if aid is None:
+        return False, {"code": "not_found", "message": f"Unknown spot pair: {pair}"}
+    spot_index = aid - _SPOT_ASSET_OFFSET
+    mid_key = _spot_mid_key(spot_index)
+    return True, ResolvedCoin(
+        asset_id=aid, surface="spot", mid_key=mid_key, hl_coin=mid_key
+    )
 
-    spot_aid = assets.get(c)
-    if spot_aid is None:
+
+def _resolve_perp_coin(
+    adapter: HyperliquidAdapter, c: str
+) -> tuple[bool, ResolvedCoin | dict[str, Any]]:
+    mapping = adapter.coin_to_asset or {}
+    if c in mapping:
+        return True, ResolvedCoin(
+            asset_id=int(mapping[c]), surface="perp", mid_key=c, hl_coin=c
+        )
+    target = c.lower()
+    for k, v in mapping.items():
+        if str(k).lower() == target:
+            canonical = str(k)
+            return True, ResolvedCoin(
+                asset_id=int(v),
+                surface="perp",
+                mid_key=canonical,
+                hl_coin=canonical,
+            )
+    return False, {"code": "not_found", "message": f"Unknown perp coin: {c}"}
+
+
+def _resolve_from_asset_id(
+    adapter: HyperliquidAdapter, aid_raw: int
+) -> tuple[bool, ResolvedCoin | dict[str, Any]]:
+    try:
+        aid = int(aid_raw)
+    except (TypeError, ValueError):
+        return False, {"code": "invalid_request", "message": "asset_id must be int"}
+    if aid < 0:
         return False, {
-            "code": "not_found",
-            "message": f"Unknown spot pair: {c}",
+            "code": "invalid_request",
+            "message": "asset_id must be non-negative",
         }
-    return True, spot_aid
+
+    if aid >= OUTCOME_ASSET_OFFSET:
+        encoding = aid - OUTCOME_ASSET_OFFSET
+        book_coin = _outcome_book_coin(encoding)
+        return True, ResolvedCoin(
+            asset_id=aid, surface="outcome", mid_key=book_coin, hl_coin=book_coin
+        )
+
+    if _SPOT_ASSET_OFFSET <= aid < _HIP3_ASSET_OFFSET:
+        spot_index = aid - _SPOT_ASSET_OFFSET
+        mid_key = _spot_mid_key(spot_index)
+        return True, ResolvedCoin(
+            asset_id=aid, surface="spot", mid_key=mid_key, hl_coin=mid_key
+        )
+
+    # 0-9999 (default perp) or 100_000+ (HIP-3 perp): reverse lookup in coin_to_asset
+    for k, v in (adapter.coin_to_asset or {}).items():
+        if v == aid:
+            return True, ResolvedCoin(
+                asset_id=aid, surface="perp", mid_key=str(k), hl_coin=str(k)
+            )
+    # Asset id is in a perp range but not registered. Caller can still place an
+    # order, but mid-price lookups will fail (mid_key empty).
+    return True, ResolvedCoin(asset_id=aid, surface="perp", mid_key="", hl_coin="")
+
+
+async def resolve_coin(
+    adapter: HyperliquidAdapter,
+    *,
+    coin: str | None = None,
+    asset_id: int | None = None,
+) -> tuple[bool, ResolvedCoin | dict[str, Any]]:
+    if asset_id is not None:
+        return _resolve_from_asset_id(adapter, asset_id)
+    c = (coin or "").strip()
+    if not c:
+        return False, {
+            "code": "invalid_request",
+            "message": "coin or asset_id is required",
+        }
+    if c.startswith("#") or c.startswith("+"):
+        return _resolve_outcome_coin(c)
+    if "/" in c:
+        return await _resolve_spot_coin(adapter, c)
+    return _resolve_perp_coin(adapter, c)
 
 
 async def hyperliquid(
@@ -490,23 +643,33 @@ async def hyperliquid_execute(
                 continue
         return None
 
-    if is_spot:
-        ok_aid, aid_or_err = await _resolve_spot_asset_id(
-            adapter, coin=coin, asset_id=asset_id
-        )
-    else:
-        ok_aid, aid_or_err = _resolve_perp_asset_id(
-            adapter, coin=coin, asset_id=asset_id
-        )
-    if not ok_aid:
-        payload = aid_or_err if isinstance(aid_or_err, dict) else {}
+    ok_resolve, resolved = await resolve_coin(adapter, coin=coin, asset_id=asset_id)
+    if not ok_resolve:
+        payload = resolved if isinstance(resolved, dict) else {}
         response = err(
             payload.get("code") or "invalid_request",
             payload.get("message") or "Invalid asset",
             payload.get("details"),
         )
         return response
-    resolved_asset_id = int(aid_or_err)
+    if resolved.surface == "outcome":
+        response = err(
+            "invalid_request",
+            "outcome orders must use action='place_outcome_order'",
+        )
+        return response
+    expected_surface = "spot" if is_spot else "perp"
+    if resolved.surface != expected_surface:
+        response = err(
+            "invalid_request",
+            (
+                f"is_spot={is_spot} but coin resolved to surface={resolved.surface}. "
+                "Spot uses 'BASE/QUOTE' (e.g. 'BTC/USDC'); perp uses bare symbol "
+                "(e.g. 'BTC') or HIP-3 dex form ('xyz:NVDA')."
+            ),
+        )
+        return response
+    resolved_asset_id = resolved.asset_id
 
     if action == "update_leverage":
         if leverage is None:
@@ -841,31 +1004,41 @@ async def hyperliquid_execute(
                     margin_usd = None
 
         if px_for_sizing is None:
-            coin_name = _PERP_SUFFIX_RE.sub("", str(coin or "").strip()).strip()
-            if not coin_name:
-                coin_name = _coin_from_asset_id(resolved_asset_id) or ""
-            if not coin_name:
+            if not resolved.mid_key:
                 response = err(
                     "invalid_request",
-                    "coin is required when computing size from usd_amount for market orders",
+                    (
+                        "asset_id is in a perp range but not registered in "
+                        "coin_to_asset; cannot price for market sizing"
+                    ),
                 )
                 return response
             ok_mids, mids = await adapter.get_all_mid_prices()
             if not ok_mids or not isinstance(mids, dict):
                 response = err("price_error", "Failed to fetch mid prices")
                 return response
-            mid = None
-            for k, v in mids.items():
-                if str(k).lower() == coin_name.lower():
-                    try:
-                        mid = float(v)
-                    except (TypeError, ValueError):
-                        mid = None
-                    break
-            if mid is None or mid <= 0:
+            raw = mids.get(resolved.mid_key)
+            if raw is None:
                 response = err(
                     "price_error",
-                    f"Could not resolve mid price for {coin_name}",
+                    (
+                        f"No mid price for {resolved.hl_coin} (key={resolved.mid_key}); "
+                        "orderbook may be empty — supply explicit price for a limit order"
+                    ),
+                )
+                return response
+            try:
+                mid = float(raw)
+            except (TypeError, ValueError):
+                response = err(
+                    "price_error",
+                    f"Could not parse mid price for {resolved.hl_coin}: {raw!r}",
+                )
+                return response
+            if mid <= 0:
+                response = err(
+                    "price_error",
+                    f"Mid price for {resolved.hl_coin} is non-positive: {mid}",
                 )
                 return response
             px_for_sizing = mid

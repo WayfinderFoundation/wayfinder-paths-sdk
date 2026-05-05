@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import unquote
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.mcp.tools.hyperliquid import resolve_coin
 from wayfinder_paths.mcp.utils import resolve_wallet_address
 
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
@@ -47,24 +49,42 @@ async def get_mid_prices() -> str:
 
 
 async def get_mid_price(coin: str) -> str:
-    adapter = HyperliquidAdapter()
-    success, data = await adapter.get_all_mid_prices()
-
-    want = _PERP_SUFFIX_RE.sub("", coin.strip()).strip()
-    if not want:
+    decoded = unquote(coin or "").strip()
+    if not decoded:
         return json.dumps({"error": "Invalid coin"})
 
+    adapter = HyperliquidAdapter()
+    ok_resolve, resolved = await resolve_coin(adapter, coin=decoded)
+    if not ok_resolve:
+        payload = resolved if isinstance(resolved, dict) else {}
+        return json.dumps(
+            {
+                "coin": decoded,
+                "price": None,
+                "success": False,
+                "error": payload.get("message") or "Could not resolve coin",
+            }
+        )
+
+    success, data = await adapter.get_all_mid_prices()
     price = None
     if success and isinstance(data, dict):
-        for k, v in data.items():
-            if str(k).lower() == want.lower():
-                try:
-                    price = float(v)
-                except (TypeError, ValueError):
-                    pass
-                break
+        raw = data.get(resolved.mid_key)
+        if raw is not None:
+            try:
+                price = float(raw)
+            except (TypeError, ValueError):
+                price = None
 
-    return json.dumps({"coin": want, "price": price, "success": price is not None})
+    return json.dumps(
+        {
+            "coin": decoded,
+            "hl_coin": resolved.hl_coin,
+            "surface": resolved.surface,
+            "price": price,
+            "success": price is not None,
+        }
+    )
 
 
 async def get_markets() -> str:
@@ -80,13 +100,33 @@ async def get_spot_assets() -> str:
 
 
 async def get_orderbook(coin: str) -> str:
-    c = coin.strip()
-    if not c:
+    decoded = unquote(coin or "").strip()
+    if not decoded:
         return json.dumps({"error": "coin is required"})
 
     adapter = HyperliquidAdapter()
-    success, data = await adapter.get_l2_book(c, n_levels=20)
-    return json.dumps({"coin": c, "success": success, "book": data}, indent=2)
+    ok_resolve, resolved = await resolve_coin(adapter, coin=decoded)
+    if not ok_resolve:
+        payload = resolved if isinstance(resolved, dict) else {}
+        return json.dumps(
+            {
+                "coin": decoded,
+                "success": False,
+                "error": payload.get("message") or "Could not resolve coin",
+            },
+            indent=2,
+        )
+    success, data = await adapter.get_l2_book(resolved.hl_coin, n_levels=20)
+    return json.dumps(
+        {
+            "coin": decoded,
+            "hl_coin": resolved.hl_coin,
+            "surface": resolved.surface,
+            "success": success,
+            "book": data,
+        },
+        indent=2,
+    )
 
 
 async def get_outcomes() -> str:

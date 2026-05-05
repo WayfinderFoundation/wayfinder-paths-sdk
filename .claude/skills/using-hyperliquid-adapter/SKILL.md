@@ -14,6 +14,7 @@ Use this skill when you are:
 
 ## How to use
 
+- [rules/coin-naming.md](rules/coin-naming.md) - Canonical coin-string format per surface (perp / HIP-3 / spot / outcome) and asset-id ranges. **Read first** before any tool that takes `coin` or `asset_id`.
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Data sources + I/O shapes for market data and time series
 - [rules/deposits-withdrawals.md](rules/deposits-withdrawals.md) - Bridge2 deposit/withdraw mechanics (chain, minimums, timing, monitoring)
 - [rules/execution-opportunities.md](rules/execution-opportunities.md) - Order/transfer/withdraw flows and required executor injection

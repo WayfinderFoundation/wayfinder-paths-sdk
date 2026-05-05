@@ -22,45 +22,25 @@ Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **dex abstracti
 - HIP-3 asset IDs use offsets: first builder dex starts at 110000, then 120000, 130000, etc.
 - HIP-3 coin names are prefixed: `xyz:NVDA`, `vntl:SPACEX`, `hyna:BTC`, etc.
 
-## Asset ID conventions
+## Coin naming + asset id conventions
 
-- Perp assets: `asset_id < 10000`
-- Spot assets: `asset_id >= 10000`
-
-Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
+Canonical coin strings, asset id ranges, and how the resolver dispatches across all four surfaces (default perp, HIP-3 perp, spot, HIP-4 outcome) live in [coin-naming.md](coin-naming.md). Read that first.
 
 ## Spot trading gotchas
-
-**Available spot pairs are limited.** Common assets like BTC and ETH are NOT directly available. Instead:
-
-- Use `UBTC/USDC` for wrapped BTC
-- Use `UETH/USDC` for wrapped ETH
-- `HYPE/USDC` is native and available
-- `PURR/USDC` is the OG spot pair (index 0)
-
-**Spot `coin` must be the explicit pair, not the bare token.** Many tokens trade against multiple quotes (e.g. `BTC/USDC` and `BTC/USDH` both exist). Pass `coin="BTC/USDC"` or `coin="BTC/USDH"` — never `coin="BTC"`. If you already know the asset id, pass `asset_id=` and omit `coin`. The two are interchangeable; `asset_id` short-circuits the pair lookup.
 
 **`is_spot` must be explicit:** When using `hyperliquid_execute(action="place_order", ...)`:
 
 - `is_spot=True` for spot orders
 - `is_spot=False` for perp orders
 - Omitting `is_spot` returns an error
+- The resolver also validates `is_spot` against the coin format — passing `is_spot=True` with `coin="BTC"` is a hard error (use `BTC/USDC` or `BTC/USDH`)
 
 **Spot orders don't use leverage:**
 
 - `usd_amount` is always treated as notional (no `usd_amount_kind` required)
 - `leverage` and `reduce_only` are ignored for spot
 
-**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin. Use `spot_to_perp_transfer` / `perp_to_spot_transfer` to move USDC between them.
-
-## Spot L2 naming quirks
-
-The adapter implements special naming for spot orderbooks:
-
-- spot_index == 0 uses `"PURR/USDC"`
-- otherwise uses `"@{spot_index}"`
-
-If you request spot data by coin string, prefer the helper mapping from `get_spot_assets()`.
+**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin. Use `spot_to_perp_transfer` / `perp_to_spot_transfer` to move USDC between them. **USDC perp collateral and USDH spot are not the same asset** — to get USDH from a USDC perp deposit, transfer USDC perp → USDC spot, then trade USDC/USDH (which may be illiquid).
 
 ## Executor wiring
 
