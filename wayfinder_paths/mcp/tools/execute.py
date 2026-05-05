@@ -5,6 +5,7 @@ from typing import Any, Literal
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.hyperliquid import (
@@ -578,7 +579,18 @@ async def core_execute(
         sent_ok, sent = await _broadcast(sign_callback, transaction, chain_id=chain_id)
         response["effects"]["deposit"] = sent
 
-        status = "confirmed" if sent_ok else "failed"
+        landed_ok = False
+        if sent_ok:
+            hl_adapter = HyperliquidAdapter()
+            landed_ok, final_balance = await hl_adapter.wait_for_deposit(
+                sender, float(req.amount)
+            )
+            response["effects"]["wait_for_credit"] = {
+                "confirmed": bool(landed_ok),
+                "final_balance_usd": float(final_balance),
+            }
+
+        status = "confirmed" if sent_ok and landed_ok else "failed"
         response["status"] = status
         response["raw"] = {"transaction": transaction}
 

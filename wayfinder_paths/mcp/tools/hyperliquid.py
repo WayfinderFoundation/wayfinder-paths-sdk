@@ -122,101 +122,6 @@ async def _resolve_spot_asset_id(
     return True, spot_aid
 
 
-async def hyperliquid_wait(
-    action: Literal["wait_for_deposit", "wait_for_withdrawal"],
-    *,
-    wallet_label: str | None = None,
-    wallet_address: str | None = None,
-    expected_increase: float | None = None,
-    timeout_s: int = 120,
-    poll_interval_s: int = 5,
-    lookback_s: int = 5,
-    max_poll_time_s: int = 15 * 60,
-) -> dict[str, Any]:
-    """Block until a Hyperliquid deposit credits or a withdrawal lands on Arbitrum.
-
-    Use after `core_execute(kind="hyperliquid_deposit", ...)` or `hyperliquid_execute(action="withdraw")`
-    to confirm before chaining dependent steps.
-
-    Actions:
-      - `wait_for_deposit`: poll perp clearinghouse balance until it grows by `expected_increase` USDC.
-      - `wait_for_withdrawal`: poll until a recent withdrawal record appears within `lookback_s` window.
-
-    Args:
-        action: Which event to wait on.
-        wallet_label / wallet_address: Resolve target account; one is required.
-        expected_increase: USDC delta to confirm deposit (required for `wait_for_deposit`).
-        timeout_s: Hard ceiling for `wait_for_deposit` polling.
-        poll_interval_s: Seconds between polls.
-        lookback_s: For withdrawals, how far back to scan recent records.
-        max_poll_time_s: Hard ceiling for `wait_for_withdrawal` polling (default 15 min).
-    """
-    adapter = HyperliquidAdapter()
-
-    addr, _ = await resolve_wallet_address(
-        wallet_label=wallet_label, wallet_address=wallet_address
-    )
-    if not addr:
-        return err(
-            "invalid_request",
-            "wallet_label or wallet_address is required",
-            {"wallet_label": wallet_label, "wallet_address": wallet_address},
-        )
-
-    if action == "wait_for_deposit":
-        if expected_increase is None:
-            return err(
-                "invalid_request",
-                "expected_increase is required for wait_for_deposit",
-                {"expected_increase": expected_increase},
-            )
-        try:
-            inc = float(expected_increase)
-        except (TypeError, ValueError):
-            return err("invalid_request", "expected_increase must be a number")
-        if inc <= 0:
-            return err("invalid_request", "expected_increase must be positive")
-
-        ok_dep, final_bal = await adapter.wait_for_deposit(
-            addr,
-            inc,
-            timeout_s=int(timeout_s),
-            poll_interval_s=int(poll_interval_s),
-        )
-        return ok(
-            {
-                "wallet_address": addr,
-                "action": action,
-                "expected_increase": inc,
-                "confirmed": bool(ok_dep),
-                "final_balance_usd": float(final_bal),
-                "timeout_s": int(timeout_s),
-                "poll_interval_s": int(poll_interval_s),
-            }
-        )
-
-    if action == "wait_for_withdrawal":
-        ok_wd, withdrawals = await adapter.wait_for_withdrawal(
-            addr,
-            lookback_s=int(lookback_s),
-            max_poll_time_s=int(max_poll_time_s),
-            poll_interval_s=int(poll_interval_s),
-        )
-        return ok(
-            {
-                "wallet_address": addr,
-                "action": action,
-                "confirmed": bool(ok_wd),
-                "withdrawals": withdrawals,
-                "lookback_s": int(lookback_s),
-                "max_poll_time_s": int(max_poll_time_s),
-                "poll_interval_s": int(poll_interval_s),
-            }
-        )
-
-    return err("invalid_request", f"Unknown hyperliquid action: {action}")
-
-
 def _annotate_hl_profile(
     *,
     address: str,
@@ -369,7 +274,19 @@ async def hyperliquid_execute(
 
         ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
         effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
-        status = "confirmed" if ok_wd else "failed"
+
+        if ok_wd:
+            ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
+            effects.append(
+                {
+                    "type": "hl",
+                    "label": "wait_for_withdrawal",
+                    "ok": ok_landed,
+                    "result": withdrawals,
+                }
+            )
+
+        status = "confirmed" if all(e["ok"] for e in effects) else "failed"
         response = ok(
             {
                 "status": status,
