@@ -455,6 +455,24 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
+async def core_get_wallet_labels() -> str:
+    """List wallet labels + addresses + tracked protocols. No balance fetch.
+
+    Cheap counterpart to `core_get_wallets` for hot paths (e.g. injected into
+    every system prompt). Skips the per-wallet balance calls; if you need
+    balances, use `core_get_wallets`.
+    """
+    store = WalletProfileStore.default()
+    existing = await load_wallets()
+    views: list[dict[str, Any]] = []
+    for w in existing:
+        view = public_wallet_view(w)
+        addr = normalize_address(w.get("address"))
+        view["protocols"] = store.get_protocols_for_wallet(addr.lower()) if addr else []
+        views.append(view)
+    return json.dumps({"wallets": views}, indent=2)
+
+
 async def core_get_wallets(label: str | None = None) -> str:
     """List configured wallets with profile + protocols + current balances.
 

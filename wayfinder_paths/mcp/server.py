@@ -84,6 +84,7 @@ from wayfinder_paths.mcp.tools.tokens import (
     onchain_resolve_token,
 )
 from wayfinder_paths.mcp.tools.wallets import (
+    core_get_wallet_labels,
     core_get_wallets,
     core_wallets,
     onchain_get_wallet_activity,
@@ -144,6 +145,7 @@ mcp.tool()(contracts_execute)
 # ─── core_* (cross-persona — every subagent should allowlist these) ───
 mcp.tool()(core_get_adapters_and_strategies)
 mcp.tool()(core_get_wallets)
+mcp.tool()(core_get_wallet_labels)
 mcp.tool()(core_wallets)
 mcp.tool()(core_execute)
 mcp.tool()(core_run_script)
