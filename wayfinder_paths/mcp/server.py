@@ -2,6 +2,22 @@
 
 Run locally (via Claude Code .mcp.json):
   poetry run python -m wayfinder_paths.mcp.server
+
+All MCP exports are registered as tools. Resources were nuked because opencode
+does not auto-pull resources into model context; the agent only sees them via
+the `read_resource` wrapper, which adds a redundant indirection. Plain tools
+land in the model's tool spec on every turn.
+
+Registrations are grouped by intended subagent persona so a per-agent
+`tools` allowlist in opencode.json can scope each persona's surface:
+
+  - shells                instance ↔ frontend bridge (chart projections, notify, ui ctx)
+  - research              alpha-lab, delta-lab
+  - hyperliquid           HL perp/spot/HIP-3/HIP-4 reads + writes
+  - onchain-tokens        token/wallet resolution, swaps
+  - polymarket            prediction markets reads + writes
+  - contract-development  contract compile/deploy/call/abi
+  - shared                used by every persona (discovery, run_script, execute, …)
 """
 
 from __future__ import annotations
@@ -9,9 +25,7 @@ from __future__ import annotations
 import asyncio
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ResourceError
 
-from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.mcp.resources.alpha_lab import get_alpha_types, search_alpha
 from wayfinder_paths.mcp.resources.contracts import (
     get_contract,
@@ -77,107 +91,88 @@ from wayfinder_paths.mcp.tools.run_script import run_script
 from wayfinder_paths.mcp.tools.runner import runner
 from wayfinder_paths.mcp.tools.strategies import run_strategy
 from wayfinder_paths.mcp.tools.wallets import wallets
-from wayfinder_paths.mcp.utils import err, ok
 from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
 
-# Resources (read-only data)
-mcp.resource("wayfinder://adapters")(list_adapters)
-mcp.resource("wayfinder://strategies")(list_strategies)
-mcp.resource("wayfinder://adapters/{name}")(describe_adapter)
-mcp.resource("wayfinder://strategies/{name}")(describe_strategy)
-mcp.resource("wayfinder://wallets")(list_wallets)
-mcp.resource("wayfinder://wallets/{label}")(get_wallet)
-mcp.resource("wayfinder://balances/{label}")(get_wallet_balances)
-mcp.resource("wayfinder://activity/{label}")(get_wallet_activity)
-mcp.resource("wayfinder://tokens/resolve/{query}")(resolve_token)
-mcp.resource("wayfinder://tokens/gas/{chain_code}")(get_gas_token)
-mcp.resource("wayfinder://tokens/search/{chain_code}/{query}")(fuzzy_search_tokens)
-mcp.resource("wayfinder://hyperliquid/{label}/state")(get_user_state)
-mcp.resource("wayfinder://hyperliquid/{label}/spot")(get_spot_user_state)
-mcp.resource("wayfinder://hyperliquid/{label}/outcomes")(get_outcome_user_state)
-mcp.resource("wayfinder://hyperliquid/prices")(get_mid_prices)
-mcp.resource("wayfinder://hyperliquid/prices/{coin}")(get_mid_price)
-mcp.resource("wayfinder://hyperliquid/markets")(get_markets)
-mcp.resource("wayfinder://hyperliquid/spot-assets")(get_spot_assets)
-mcp.resource("wayfinder://hyperliquid/book/{coin}")(get_orderbook)
-mcp.resource("wayfinder://hyperliquid/outcomes")(get_outcomes)
-mcp.resource("wayfinder://contracts")(list_contracts)
-mcp.resource("wayfinder://contracts/{chain_id}/{address}")(get_contract)
-mcp.resource("wayfinder://alpha-lab/types")(get_alpha_types)
-mcp.resource(
-    "wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}"
-)(search_alpha)
-# Delta Lab MCP surface is intentionally narrow: quick snapshots only.
-# For time-series, single-asset lookups, by-asset-id screening, plotting, or
-# anything bulk, use DELTA_LAB_CLIENT in Python (see /using-delta-lab skill).
-mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
-mcp.resource("wayfinder://delta-lab/top-apy/{lookback_days}/{limit}")(get_top_apy)
-mcp.resource(
-    "wayfinder://delta-lab/{basis_symbol}/apy-sources/{lookback_days}/{limit}"
-)(get_basis_apy_sources)
-mcp.resource("wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}")(
-    search_delta_lab_assets
-)
-mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
-mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
-mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(
-    screen_lending
-)
-mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
-mcp.resource(
-    "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}"
-)(screen_borrow_routes)
+# ─── shells ────────────────────────────────────────────────────────────
+# Instance-state bridge between the agent and the shells frontend chart
+# panels (projections, frontend context) + user-facing notifications.
+mcp.tool()(get_frontend_context)
+mcp.tool()(add_chart_projection)
+mcp.tool()(remove_chart_projection)
+mcp.tool()(clear_chart_projections)
+mcp.tool()(notify)
 
-# Tools (actions/mutations)
-mcp.tool()(quote_swap)
+# ─── research ──────────────────────────────────────────────────────────
+# Alpha-lab insights, delta-lab snapshots.
+# Bulk / time-series delta-lab lives in DELTA_LAB_CLIENT (Python), not MCP —
+# see the /using-delta-lab skill.
+mcp.tool()(get_alpha_types)
+mcp.tool()(search_alpha)
+mcp.tool()(get_basis_symbols)
+mcp.tool()(get_basis_apy_sources)
+mcp.tool()(get_top_apy)
+mcp.tool()(get_asset_basis_info)
+mcp.tool()(search_delta_lab_assets)
+mcp.tool()(screen_price)
+mcp.tool()(screen_lending)
+mcp.tool()(screen_perp)
+mcp.tool()(screen_borrow_routes)
+mcp.tool()(run_strategy)
+
+# ─── hyperliquid ───────────────────────────────────────────────────────
+# Default-dex perp, spot, HIP-3 builder perps, HIP-4 outcomes.
+# Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
 mcp.tool()(hyperliquid)
 mcp.tool()(hyperliquid_execute)
+mcp.tool()(get_user_state)
+mcp.tool()(get_spot_user_state)
+mcp.tool()(get_outcome_user_state)
+mcp.tool()(get_mid_prices)
+mcp.tool()(get_mid_price)
+mcp.tool()(get_markets)
+mcp.tool()(get_spot_assets)
+mcp.tool()(get_orderbook)
+mcp.tool()(get_outcomes)
+
+# ─── onchain-tokens ────────────────────────────────────────────────────
+# Token resolution, wallet/balance lookups, swap quotes.
+mcp.tool()(resolve_token)
+mcp.tool()(get_gas_token)
+mcp.tool()(fuzzy_search_tokens)
+mcp.tool()(list_wallets)
+mcp.tool()(get_wallet)
+mcp.tool()(get_wallet_balances)
+mcp.tool()(get_wallet_activity)
+mcp.tool()(quote_swap)
+
+# ─── polymarket ────────────────────────────────────────────────────────
+# Polymarket CLOB reads + writes (markets, positions, orders).
 mcp.tool()(polymarket)
 mcp.tool()(polymarket_execute)
-mcp.tool()(run_strategy)
-mcp.tool()(run_script)
-mcp.tool()(execute)
-mcp.tool()(wallets)
-mcp.tool()(runner)
+
+# ─── contract-development ──────────────────────────────────────────────
+# Solidity compile/deploy + arbitrary EVM contract reads/writes.
+mcp.tool()(list_contracts)
+mcp.tool()(get_contract)
 mcp.tool()(compile_contract)
 mcp.tool()(deploy_contract)
 mcp.tool()(contract_get_abi)
 mcp.tool()(contract_call)
 mcp.tool()(contract_execute)
-mcp.tool()(notify)
-mcp.tool()(get_frontend_context)
-mcp.tool()(add_chart_projection)
-mcp.tool()(remove_chart_projection)
-mcp.tool()(clear_chart_projections)
 
-
-async def read_resource(uri: str) -> dict:
-    """Read an MCP resource by URI.
-
-    Use for reads exposed as resources, e.g. `wayfinder://wallets`,
-    `wayfinder://balances/main`, `wayfinder://strategies`,
-    `wayfinder://delta-lab/top-apy/7/20`.
-    """
-    try:
-        contents = list(await mcp.read_resource(uri))
-    except (ResourceError, ValueError) as exc:
-        return err("resource_read_failed", str(exc))
-
-    parts: list[dict] = []
-    for c in contents:
-        text = (
-            c.content
-            if isinstance(c.content, str)
-            else c.content.decode("utf-8", errors="replace")
-        )
-        parts.append({"mime_type": c.mime_type, "text": text})
-    return ok({"uri": uri, "contents": parts})
-
-
-if is_opencode_instance():
-    mcp.tool()(read_resource)
+# ─── shared (cross-persona) ────────────────────────────────────────────
+# Generic plumbing every persona uses, plus adapter/strategy discovery
+# (any persona may need to know what's available).
+mcp.tool()(list_adapters)
+mcp.tool()(list_strategies)
+mcp.tool()(describe_adapter)
+mcp.tool()(describe_strategy)
+mcp.tool()(wallets)
+mcp.tool()(execute)
+mcp.tool()(run_script)
+mcp.tool()(runner)
 
 
 def main() -> None:
