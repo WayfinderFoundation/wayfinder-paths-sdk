@@ -4,12 +4,12 @@ import json
 
 import pytest
 
-from wayfinder_paths.mcp.tools.discovery import get_adapters_and_strategies
+from wayfinder_paths.mcp.tools.discovery import core_get_adapters_and_strategies
 
 
 @pytest.mark.asyncio
 async def test_full_catalog_includes_known_entries():
-    out = await get_adapters_and_strategies()
+    out = await core_get_adapters_and_strategies()
     result = json.loads(out)
     adapter_names = {i["name"] for i in result["adapters"]}
     strategy_names = {i["name"] for i in result["strategies"]}
@@ -20,7 +20,7 @@ async def test_full_catalog_includes_known_entries():
 
 @pytest.mark.asyncio
 async def test_entries_carry_manifest():
-    out = await get_adapters_and_strategies()
+    out = await core_get_adapters_and_strategies()
     result = json.loads(out)
     for entry in result["adapters"] + result["strategies"]:
         assert isinstance(entry["manifest"], dict)
@@ -28,13 +28,13 @@ async def test_entries_carry_manifest():
 
 @pytest.mark.asyncio
 async def test_filter_by_name_returns_single_entry():
-    out = await get_adapters_and_strategies(name="boros_hype_strategy")
+    out = await core_get_adapters_and_strategies(name="boros_hype_strategy")
     result = json.loads(out)
     assert result["adapters"] == []
     assert len(result["strategies"]) == 1
     assert result["strategies"][0]["name"] == "boros_hype_strategy"
 
-    out = await get_adapters_and_strategies(name="hyperliquid_adapter")
+    out = await core_get_adapters_and_strategies(name="hyperliquid_adapter")
     result = json.loads(out)
     assert len(result["adapters"]) == 1
     assert result["adapters"][0]["name"] == "hyperliquid_adapter"
@@ -43,6 +43,6 @@ async def test_filter_by_name_returns_single_entry():
 
 @pytest.mark.asyncio
 async def test_unknown_name_returns_error():
-    out = await get_adapters_and_strategies(name="does_not_exist")
+    out = await core_get_adapters_and_strategies(name="does_not_exist")
     result = json.loads(out)
     assert "error" in result

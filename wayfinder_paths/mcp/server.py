@@ -45,13 +45,13 @@ from wayfinder_paths.mcp.tools.delta_lab import (
     research_get_basis_apy_sources,
     research_get_basis_symbols,
     research_get_top_apy,
-    research_screen_borrow_routes,
-    research_screen_lending,
-    research_screen_perp,
-    research_screen_price,
+    research_search_borrow_routes,
     research_search_delta_lab_assets,
+    research_search_lending,
+    research_search_perp,
+    research_search_price,
 )
-from wayfinder_paths.mcp.tools.discovery import get_adapters_and_strategies
+from wayfinder_paths.mcp.tools.discovery import core_get_adapters_and_strategies
 from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_call,
     contracts_execute,
@@ -64,8 +64,6 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_mid_price,
     hyperliquid_get_mid_prices,
     hyperliquid_get_orderbook,
-    hyperliquid_get_outcomes,
-    hyperliquid_get_spot_assets,
     hyperliquid_get_state,
     hyperliquid_wait,
 )
@@ -73,7 +71,6 @@ from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_chart_projection,
     shells_clear_chart_projections,
     shells_get_frontend_context,
-    shells_remove_chart_projection,
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import polymarket_execute, polymarket_read
@@ -89,9 +86,9 @@ from wayfinder_paths.mcp.tools.tokens import (
 from wayfinder_paths.mcp.tools.wallets import (
     core_get_wallet,
     core_get_wallet_balances,
+    core_get_wallets,
     core_wallets,
     onchain_get_wallet_activity,
-    onchain_list_wallets,
 )
 from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
@@ -101,7 +98,6 @@ mcp = FastMCP("wayfinder")
 if is_opencode_instance():
     mcp.tool()(shells_get_frontend_context)
     mcp.tool()(shells_add_chart_projection)
-    mcp.tool()(shells_remove_chart_projection)
     mcp.tool()(shells_clear_chart_projections)
     mcp.tool()(shells_notify)
 
@@ -115,10 +111,10 @@ mcp.tool()(research_get_basis_apy_sources)
 mcp.tool()(research_get_top_apy)
 mcp.tool()(research_get_asset_basis_info)
 mcp.tool()(research_search_delta_lab_assets)
-mcp.tool()(research_screen_price)
-mcp.tool()(research_screen_lending)
-mcp.tool()(research_screen_perp)
-mcp.tool()(research_screen_borrow_routes)
+mcp.tool()(research_search_price)
+mcp.tool()(research_search_lending)
+mcp.tool()(research_search_perp)
+mcp.tool()(research_search_borrow_routes)
 mcp.tool()(research_run_strategy)
 
 # ─── hyperliquid_* ─────────────────────────────────────────────────────
@@ -129,15 +125,12 @@ mcp.tool()(hyperliquid_get_state)
 mcp.tool()(hyperliquid_get_mid_prices)
 mcp.tool()(hyperliquid_get_mid_price)
 mcp.tool()(hyperliquid_get_markets)
-mcp.tool()(hyperliquid_get_spot_assets)
 mcp.tool()(hyperliquid_get_orderbook)
-mcp.tool()(hyperliquid_get_outcomes)
 
 # ─── onchain_* ─────────────────────────────────────────────────────────
 mcp.tool()(onchain_resolve_token)
 mcp.tool()(onchain_get_gas_token)
 mcp.tool()(onchain_fuzzy_search_tokens)
-mcp.tool()(onchain_list_wallets)
 mcp.tool()(onchain_get_wallet_activity)
 mcp.tool()(onchain_quote_swap)
 
@@ -155,7 +148,8 @@ mcp.tool()(contracts_call)
 mcp.tool()(contracts_execute)
 
 # ─── core_* (cross-persona — every subagent should allowlist these) ───
-mcp.tool()(get_adapters_and_strategies)
+mcp.tool()(core_get_adapters_and_strategies)
+mcp.tool()(core_get_wallets)
 mcp.tool()(core_get_wallet)
 mcp.tool()(core_get_wallet_balances)
 mcp.tool()(core_wallets)

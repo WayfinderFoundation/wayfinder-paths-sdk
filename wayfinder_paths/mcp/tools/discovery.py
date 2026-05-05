@@ -32,7 +32,7 @@ def _describe_all(base: Path) -> list[dict[str, Any]]:
     return items
 
 
-async def get_adapters_and_strategies(name: str | None = None) -> str:
+async def core_get_adapters_and_strategies(name: str | None = None) -> str:
     """List adapters and strategies with their manifests and README excerpts.
 
     No args → full catalog of every adapter and strategy with manifest + readme excerpt.
