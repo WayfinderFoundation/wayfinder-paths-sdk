@@ -9,7 +9,7 @@ TITLE_MAX = 200
 MESSAGE_MAX = 20_000
 
 
-async def notify(title: str, message: str) -> dict:
+async def shells_notify(title: str, message: str) -> dict:
     """Email the OpenCode instance owner (verified email only).
 
     The message is rendered from Markdown into a themed HTML email on

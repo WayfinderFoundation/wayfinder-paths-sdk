@@ -7,9 +7,9 @@ import pytest
 from web3 import AsyncWeb3
 
 from wayfinder_paths.mcp.tools.evm_contract import (
-    contract_call,
-    contract_execute,
-    contract_get_abi,
+    contracts_call,
+    contracts_execute,
+    contracts_get_abi,
 )
 
 
@@ -65,7 +65,7 @@ async def test_contract_call_happy_path():
         "wayfinder_paths.mcp.tools.evm_contract.web3_utils.web3_from_chain_id",
         _fake_web3_from_chain_id,
     ):
-        out = await contract_call(
+        out = await contracts_call(
             chain_id=1,
             contract_address=contract_addr,
             function_signature="balanceOf(address)",
@@ -100,7 +100,7 @@ async def test_contract_call_overload_requires_signature():
         },
     ]
 
-    out = await contract_call(
+    out = await contracts_call(
         chain_id=1,
         contract_address="0x" + "12" * 20,
         function_name="foo",
@@ -169,7 +169,7 @@ async def test_contract_call_falls_back_to_etherscan_abi_when_missing():
             _fake_web3_from_chain_id,
         ),
     ):
-        out = await contract_call(
+        out = await contracts_call(
             chain_id=1,
             contract_address=contract_addr,
             function_signature="balanceOf(address)",
@@ -265,7 +265,7 @@ async def test_contract_call_uses_proxy_implementation_abi_when_missing_function
             _fake_web3_from_chain_id,
         ),
     ):
-        out = await contract_call(
+        out = await contracts_call(
             chain_id=1,
             contract_address=proxy_addr,
             function_signature="balanceOf(address)",
@@ -299,7 +299,7 @@ async def test_contract_execute_rejects_view_function():
         "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
         return_value=wallet,
     ):
-        out = await contract_execute(
+        out = await contracts_execute(
             wallet_label="main",
             chain_id=1,
             contract_address="0x" + "12" * 20,
@@ -356,7 +356,7 @@ async def test_contract_execute_encodes_sends_and_annotates():
             return_value="https://example.invalid/tx/0x" + "99" * 32,
         ),
     ):
-        out = await contract_execute(
+        out = await contracts_execute(
             wallet_label="main",
             chain_id=1,
             contract_address=contract_addr,
@@ -402,7 +402,7 @@ async def test_contract_get_abi_fetches_from_etherscan():
         "wayfinder_paths.mcp.tools.evm_contract.fetch_contract_abi",
         new=AsyncMock(return_value=fetched_abi),
     ):
-        out = await contract_get_abi(
+        out = await contracts_get_abi(
             chain_id=1, contract_address=addr, resolve_proxy=False
         )
 
@@ -443,7 +443,7 @@ async def test_contract_get_abi_prefers_proxy_implementation():
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = await contract_get_abi(
+        out = await contracts_get_abi(
             chain_id=1, contract_address=proxy_addr, resolve_proxy=True
         )
 
@@ -488,7 +488,7 @@ async def test_contract_get_abi_falls_back_to_proxy_abi_when_impl_fetch_fails():
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = await contract_get_abi(
+        out = await contracts_get_abi(
             chain_id=1, contract_address=proxy_addr, resolve_proxy=True
         )
 

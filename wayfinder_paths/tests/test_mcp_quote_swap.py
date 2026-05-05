@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.quotes import quote_swap
+from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
         ),
         patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
     ):
-        out = await quote_swap(
+        out = await onchain_quote_swap(
             wallet_label="main",
             from_token="ethereum-arbitrum",
             to_token="usd-coin-arbitrum",
@@ -151,7 +151,7 @@ async def test_quote_swap_can_include_calldata_when_requested():
         ),
         patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
     ):
-        out = await quote_swap(
+        out = await onchain_quote_swap(
             wallet_label="main",
             from_token="ethereum-arbitrum",
             to_token="usd-coin-arbitrum",
@@ -216,7 +216,7 @@ async def test_quote_swap_accepts_top_level_brap_shape():
         ),
         patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
     ):
-        out = await quote_swap(
+        out = await onchain_quote_swap(
             wallet_label="main",
             from_token="usd-coin-arbitrum",
             to_token="tether-arbitrum",

@@ -5,7 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from wayfinder_paths.mcp.tools.runner import runner
+from wayfinder_paths.mcp.tools.runner import shared_runner
 from wayfinder_paths.runner.control import RunnerControlServer
 
 
@@ -47,33 +47,38 @@ class _FakeDaemon:
 
 
 def test_mcp_runner_tool_status_roundtrip() -> None:
-    sock = Path(tempfile.gettempdir()) / f"wayfinder-runner-mcp-{time.time_ns()}.sock"
+    sock = (
+        Path(tempfile.gettempdir())
+        / f"wayfinder-shared_runner-mcp-{time.time_ns()}.sock"
+    )
     daemon = _FakeDaemon()
     server = RunnerControlServer(sock_path=sock, daemon=daemon)
     daemon.control = server
     server.start()
     try:
-        out = _run(runner(action="daemon_status", sock_path=str(sock)))
+        out = _run(shared_runner(action="daemon_status", sock_path=str(sock)))
         assert out["ok"] is True
         assert out["result"]["started"] is True
 
-        out = _run(runner(action="status", sock_path=str(sock)))
+        out = _run(shared_runner(action="status", sock_path=str(sock)))
         assert out["ok"] is True
         assert out["result"]["hello"] == "world"
 
-        out = _run(runner(action="job_runs", sock_path=str(sock), name="job", limit=5))
+        out = _run(
+            shared_runner(action="job_runs", sock_path=str(sock), name="job", limit=5)
+        )
         assert out["ok"] is True
         assert out["result"]["runs"][0]["run_id"] == 1
 
-        out = _run(runner(action="run_report", sock_path=str(sock), run_id=1))
+        out = _run(shared_runner(action="run_report", sock_path=str(sock), run_id=1))
         assert out["ok"] is True
         assert out["result"]["run"]["run_id"] == 1
 
-        out = _run(runner(action="delete_job", sock_path=str(sock), name="job"))
+        out = _run(shared_runner(action="delete_job", sock_path=str(sock), name="job"))
         assert out["ok"] is True
         assert out["result"]["deleted"] is True
 
-        out = _run(runner(action="daemon_stop", sock_path=str(sock)))
+        out = _run(shared_runner(action="daemon_stop", sock_path=str(sock)))
         assert out["ok"] is True
         assert out["result"]["stopped"] is True
     finally:

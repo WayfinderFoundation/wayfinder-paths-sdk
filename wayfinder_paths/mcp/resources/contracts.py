@@ -6,14 +6,14 @@ from typing import Any
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 
 
-async def list_contracts() -> str:
+async def contracts_list() -> str:
     """List all locally-deployed contracts from the artifact store."""
     store = ContractArtifactStore.default()
     entries = store.list_deployments()
     return json.dumps({"contracts": entries, "count": len(entries)}, indent=2)
 
 
-async def get_contract(chain_id: str, address: str) -> str:
+async def contracts_get(chain_id: str, address: str) -> str:
     """Get full metadata and ABI for a deployed contract."""
     store = ContractArtifactStore.default()
     cid = int(chain_id)

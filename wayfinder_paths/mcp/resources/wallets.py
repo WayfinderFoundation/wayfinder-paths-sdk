@@ -13,7 +13,7 @@ from wayfinder_paths.mcp.utils import (
 )
 
 
-async def list_wallets() -> str:
+async def onchain_list_wallets() -> str:
     store = WalletProfileStore.default()
     existing = await load_wallets()
     wallet_list = []
@@ -29,7 +29,7 @@ async def list_wallets() -> str:
     return json.dumps({"wallets": wallet_list}, indent=2)
 
 
-async def get_wallet(label: str) -> str:
+async def onchain_get_wallet(label: str) -> str:
     store = WalletProfileStore.default()
     w = await find_wallet_by_label(label)
     if not w:
@@ -58,7 +58,7 @@ def _balance_usd(entry: dict[str, Any]) -> float:
         return 0.0
 
 
-async def get_wallet_balances(label: str) -> str:
+async def onchain_get_wallet_balances(label: str) -> str:
     w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})
@@ -98,7 +98,7 @@ async def get_wallet_balances(label: str) -> str:
         return json.dumps({"error": str(exc)})
 
 
-async def get_wallet_activity(label: str) -> str:
+async def onchain_get_wallet_activity(label: str) -> str:
     w = await find_wallet_by_label(label)
     if not w:
         return json.dumps({"error": f"Wallet not found: {label}"})

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from wayfinder_paths.mcp.tools.run_script import run_script
+from wayfinder_paths.mcp.tools.run_script import shared_run_script
 
 
 @pytest.mark.asyncio
@@ -17,7 +17,7 @@ async def test_run_script_rejects_outside_runs_dir(tmp_path: Path, monkeypatch):
     outside = tmp_path / "outside.py"
     outside.write_text("print('nope')\n")
 
-    out = await run_script(script_path=str(outside))
+    out = await shared_run_script(script_path=str(outside))
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
 
@@ -32,6 +32,6 @@ async def test_run_script_executes(tmp_path: Path, monkeypatch):
     script = runs_root / "hello.py"
     script.write_text("import os\nprint('PWD=' + os.getcwd())\n")
 
-    out1 = await run_script(script_path=str(script), timeout_s=30)
+    out1 = await shared_run_script(script_path=str(script), timeout_s=30)
     assert out1["ok"] is True
     assert out1["result"]["exit_code"] == 0

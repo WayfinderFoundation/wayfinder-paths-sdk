@@ -5,16 +5,16 @@ import json
 import pytest
 
 from wayfinder_paths.mcp.resources.discovery import (
-    describe_adapter,
-    describe_strategy,
-    list_adapters,
-    list_strategies,
+    shared_describe_adapter,
+    shared_describe_strategy,
+    shared_list_adapters,
+    shared_list_strategies,
 )
 
 
 @pytest.mark.asyncio
 async def test_list_adapters_includes_hyperliquid():
-    out = await list_adapters()
+    out = await shared_list_adapters()
     result = json.loads(out)
     names = {i["name"] for i in result["adapters"]}
     assert "hyperliquid_adapter" in names
@@ -22,7 +22,7 @@ async def test_list_adapters_includes_hyperliquid():
 
 @pytest.mark.asyncio
 async def test_list_strategies_includes_basis_and_boros():
-    out = await list_strategies()
+    out = await shared_list_strategies()
     result = json.loads(out)
     names = {i["name"] for i in result["strategies"]}
     assert "boros_hype_strategy" in names
@@ -31,7 +31,7 @@ async def test_list_strategies_includes_basis_and_boros():
 
 @pytest.mark.asyncio
 async def test_describe_strategy_returns_manifest_and_readme_excerpt():
-    out = await describe_strategy("boros_hype_strategy")
+    out = await shared_describe_strategy("boros_hype_strategy")
     result = json.loads(out)
     assert result["name"] == "boros_hype_strategy"
     assert isinstance(result.get("manifest"), dict)
@@ -39,7 +39,7 @@ async def test_describe_strategy_returns_manifest_and_readme_excerpt():
 
 @pytest.mark.asyncio
 async def test_describe_adapter_returns_manifest():
-    out = await describe_adapter("hyperliquid_adapter")
+    out = await shared_describe_adapter("hyperliquid_adapter")
     result = json.loads(out)
     assert result["name"] == "hyperliquid_adapter"
     assert isinstance(result.get("manifest"), dict)
@@ -47,7 +47,7 @@ async def test_describe_adapter_returns_manifest():
 
 @pytest.mark.asyncio
 async def test_list_strategies_includes_status_field():
-    out = await list_strategies()
+    out = await shared_list_strategies()
     result = json.loads(out)
     strategies = result["strategies"]
     # All strategies should have a status field

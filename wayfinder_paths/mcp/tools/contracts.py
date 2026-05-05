@@ -85,7 +85,7 @@ def _annotate_deploy(
     )
 
 
-async def compile_contract(
+async def contracts_compile(
     *,
     source_path: str,
     contract_name: str | None = None,
@@ -124,7 +124,7 @@ async def compile_contract(
     return ok(result)
 
 
-async def deploy_contract(
+async def contracts_deploy(
     *,
     wallet_label: str,
     source_path: str,

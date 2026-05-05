@@ -46,9 +46,9 @@ async def test_contract_call_uniswap_v3_slot0_on_mainnet(gorlami):
         }
     ]
 
-    from wayfinder_paths.mcp.tools.evm_contract import contract_call
+    from wayfinder_paths.mcp.tools.evm_contract import contracts_call
 
-    out = await contract_call(
+    out = await contracts_call(
         chain_id=1,
         contract_address=pool,
         function_signature="slot0()",
@@ -71,9 +71,9 @@ async def test_contract_call_can_fetch_abi_from_etherscan(gorlami):
     # Uniswap V3 USDC/WETH 0.3% pool on Ethereum mainnet.
     pool = "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8"
 
-    from wayfinder_paths.mcp.tools.evm_contract import contract_call
+    from wayfinder_paths.mcp.tools.evm_contract import contracts_call
 
-    out = await contract_call(
+    out = await contracts_call(
         chain_id=1,
         contract_address=pool,
         function_signature="slot0()",

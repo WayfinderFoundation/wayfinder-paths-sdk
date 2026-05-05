@@ -7,7 +7,7 @@ import pytest
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
-from wayfinder_paths.mcp.tools.execute import execute
+from wayfinder_paths.mcp.tools.execute import shared_execute
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +96,7 @@ async def test_resolve_token_meta_normal_erc20_unchanged():
 @pytest.mark.asyncio
 async def test_execute_validation_error_is_structured():
     # swap requires from_token and to_token
-    out = await execute(kind="swap", wallet_label="main", amount="1.0")
+    out = await shared_execute(kind="swap", wallet_label="main", amount="1.0")
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
     assert isinstance(out["error"]["details"], list)
@@ -173,7 +173,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
     ):
-        out1 = await execute(
+        out1 = await shared_execute(
             kind="swap",
             wallet_label="main",
             from_token="from",

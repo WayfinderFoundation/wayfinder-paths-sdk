@@ -28,7 +28,7 @@ async def _resolve_basis_symbol(symbol: str) -> str:
     return symbol
 
 
-async def get_basis_apy_sources(
+async def research_get_basis_apy_sources(
     basis_symbol: str, lookback_days: str = "7", limit: str = "10"
 ) -> dict[str, Any]:
     """Get top yield opportunities for a given asset across protocols.
@@ -58,7 +58,7 @@ async def get_basis_apy_sources(
         return {"error": str(exc)}
 
 
-async def get_basis_symbols() -> dict[str, Any]:
+async def research_get_basis_symbols() -> dict[str, Any]:
     """Get list of available basis symbols.
 
     Returns all available basis symbols in Delta Lab.
@@ -74,7 +74,7 @@ async def get_basis_symbols() -> dict[str, Any]:
         return {"error": str(exc)}
 
 
-async def get_asset_basis_info(symbol: str) -> dict[str, Any]:
+async def research_get_asset_basis_info(symbol: str) -> dict[str, Any]:
     """Get basis group information for an asset.
 
     Args:
@@ -90,7 +90,7 @@ async def get_asset_basis_info(symbol: str) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
-async def search_delta_lab_assets(
+async def research_search_delta_lab_assets(
     query: str, chain: str = "all", limit: str = "25"
 ) -> dict[str, Any]:
     """Search Delta Lab assets by symbol/name/address/coingecko_id.
@@ -124,7 +124,9 @@ async def search_delta_lab_assets(
         return {"error": str(exc)}
 
 
-async def get_top_apy(lookback_days: str = "7", limit: str = "50") -> dict[str, Any]:
+async def research_get_top_apy(
+    lookback_days: str = "7", limit: str = "50"
+) -> dict[str, Any]:
     """Get top APY opportunities across all basis symbols.
 
     Returns top N LONG opportunities by APY across all protocols: perps,
@@ -152,7 +154,7 @@ async def get_top_apy(lookback_days: str = "7", limit: str = "50") -> dict[str, 
         return {"error": str(exc)}
 
 
-async def screen_price(
+async def research_screen_price(
     sort: str = "price_usd",
     limit: str = "100",
     basis: str = "all",
@@ -186,7 +188,7 @@ async def screen_price(
         return {"error": str(exc)}
 
 
-async def screen_lending(
+async def research_screen_lending(
     sort: str = "net_supply_apr_now",
     limit: str = "100",
     basis: str = "all",
@@ -222,7 +224,7 @@ async def screen_lending(
         return {"error": str(exc)}
 
 
-async def screen_perp(
+async def research_screen_perp(
     sort: str = "funding_now",
     limit: str = "100",
     basis: str = "all",
@@ -257,7 +259,7 @@ async def screen_perp(
         return {"error": str(exc)}
 
 
-async def screen_borrow_routes(
+async def research_screen_borrow_routes(
     sort: str = "ltv_max",
     limit: str = "100",
     basis: str = "all",

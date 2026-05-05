@@ -11,7 +11,7 @@ from wayfinder_paths.mcp.utils import err, ok
 _NOT_OPENCODE_ERR = ("not_opencode_instance", "Not running on an OpenCode instance")
 
 
-async def get_frontend_context() -> dict[str, Any]:
+async def shells_get_frontend_context() -> dict[str, Any]:
     """Read the current frontend UI state.
 
     Returns what the user is currently viewing: active chart (market, type,
@@ -27,7 +27,7 @@ async def get_frontend_context() -> dict[str, Any]:
         return err("state_error", str(exc))
 
 
-async def add_chart_projection(
+async def shells_add_chart_projection(
     chart_id: str,
     type: str,
     config: dict[str, Any],
@@ -62,7 +62,7 @@ async def add_chart_projection(
         return err("projection_error", str(exc))
 
 
-async def remove_chart_projection(
+async def shells_remove_chart_projection(
     chart_id: str,
     projection_id: str,
 ) -> dict[str, Any]:
@@ -83,7 +83,7 @@ async def remove_chart_projection(
         return err("projection_error", str(exc))
 
 
-async def clear_chart_projections(chart_id: str) -> dict[str, Any]:
+async def shells_clear_chart_projections(chart_id: str) -> dict[str, Any]:
     """Remove all projections from a chart.
 
     Args:
