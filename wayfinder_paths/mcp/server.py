@@ -11,13 +11,13 @@ land in the model's tool spec on every turn.
 Registrations are grouped by intended subagent persona so a per-agent
 `tools` allowlist in opencode.json can scope each persona's surface:
 
-  - state                 instance ↔ frontend bridge (chart projections, ui ctx)
-  - research              discovery, alpha-lab, delta-lab
+  - shells                instance ↔ frontend bridge (chart projections, notify, ui ctx)
+  - research              alpha-lab, delta-lab
   - hyperliquid           HL perp/spot/HIP-3/HIP-4 reads + writes
   - onchain-tokens        token/wallet resolution, swaps
   - polymarket            prediction markets reads + writes
   - contract-development  contract compile/deploy/call/abi
-  - shared                used by every persona (run_script, execute, notify, …)
+  - shared                used by every persona (discovery, run_script, execute, …)
 """
 
 from __future__ import annotations
@@ -95,12 +95,14 @@ from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 
 mcp = FastMCP("wayfinder")
 
-# ─── state ─────────────────────────────────────────────────────────────
-# Instance-state bridge between the agent and the frontend chart panels.
+# ─── shells ────────────────────────────────────────────────────────────
+# Instance-state bridge between the agent and the shells frontend chart
+# panels (projections, frontend context) + user-facing notifications.
 mcp.tool()(get_frontend_context)
 mcp.tool()(add_chart_projection)
 mcp.tool()(remove_chart_projection)
 mcp.tool()(clear_chart_projections)
+mcp.tool()(notify)
 
 # ─── research ──────────────────────────────────────────────────────────
 # Alpha-lab insights, delta-lab snapshots.
@@ -171,7 +173,6 @@ mcp.tool()(wallets)
 mcp.tool()(execute)
 mcp.tool()(run_script)
 mcp.tool()(runner)
-mcp.tool()(notify)
 
 
 def main() -> None:
