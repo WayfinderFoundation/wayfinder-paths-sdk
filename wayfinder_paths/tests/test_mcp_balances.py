@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.resources.wallets import get_wallet_balances
+from wayfinder_paths.mcp.resources.wallets import core_get_wallet_balances
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ async def test_get_wallet_balances_filters_solana(mock_wallet):
             return_value=mock_wallet,
         ),
     ):
-        result = await get_wallet_balances("test")
+        result = await core_get_wallet_balances("test")
 
     data = json.loads(result)
     assert "error" not in data
@@ -51,7 +51,7 @@ async def test_get_wallet_balances_wallet_not_found():
         "wayfinder_paths.mcp.resources.wallets.find_wallet_by_label",
         return_value=None,
     ):
-        result = await get_wallet_balances("nonexistent")
+        result = await core_get_wallet_balances("nonexistent")
 
     data = json.loads(result)
     assert "error" in data
