@@ -261,6 +261,35 @@ async def core_execute(
     token: str | None = None,
     chain_id: int | None = None,
 ) -> dict[str, Any]:
+    """Broadcast on-chain transactions: cross-chain swap, token send, or Hyperliquid bridge deposit.
+
+    **Always quote before swapping** — call `onchain_quote_swap` first, confirm route + output
+    with the user, then run this. The tool waits for the receipt and returns `status="confirmed"`
+    only on `status=1`.
+
+    Kinds:
+      - `swap`: BRAP cross-chain/cross-DEX swap. Requires `from_token`, `to_token`, `amount`
+        (human units string). `slippage_bps` (50 = 0.5%, default), `recipient` defaults to sender.
+        Resolves token symbols/IDs via `TokenResolver`, ensures ERC-20 allowance, then broadcasts.
+      - `send`: ERC-20 or native transfer. Requires `token`, `recipient`, `amount`. Pass
+        `chain_id` when `token="native"`.
+      - `hyperliquid_deposit`: hardcoded Arbitrum USDC → HL Bridge2 deposit. Only `amount`
+        (≥ 5 USDC; below is lost) is required; `token`/`recipient`/`chain_id` if provided
+        must match the bridge constants.
+
+    Args:
+        kind: "swap" | "send" | "hyperliquid_deposit".
+        wallet_label: Required — config.json wallet label.
+        amount: Human-units string (e.g. "1000" or "0.5").
+        recipient: Destination address (defaults to sender for swap; required for send).
+        from_token / to_token: Swap inputs (token id, address-id, or symbol query).
+        slippage_bps: Swap slippage cap in basis points.
+        deadline_seconds: Best-effort quote TTL.
+        token / chain_id: Send inputs (chain_id only required for `token="native"`).
+
+    Returns:
+        `{status: "confirmed"|"failed", sender, recipient, effects: {approval?, swap|send_*|deposit}, ...}`
+    """
     request_data = {
         "kind": kind,
         "wallet_label": wallet_label,

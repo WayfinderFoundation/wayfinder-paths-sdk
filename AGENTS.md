@@ -189,6 +189,20 @@ Discover names via the `wayfinder://strategies` resource. Fund-moving actions (`
 
 ## Execution modes (one-off vs recurring)
 
+### MCP vs scripting — pick the right tool
+
+Prefer **MCP tools** for simple, one-shot actions: a single quote, a single swap, reading a
+balance, placing one order, querying a strategy. They're already wired up, validated, and
+return structured results.
+
+Reach for **scripts under `.wayfinder_runs/`** when the work is complex or repetitive: stitching
+multiple adapter calls together, fan-out across many wallets/chains, multi-step flows with
+conditional branches, or anything you'll want to re-run. Scripts can be scheduled via
+`runner(action="add_job", type="script", ...)` once they're stable.
+
+Rough cut: if you can express it as one MCP call, use the MCP call. If you find yourself
+chaining three or more, write a script.
+
 ### Scripting helper for adapters
 
 When writing scripts under `.wayfinder_runs/`, use `get_adapter()` to simplify setup:

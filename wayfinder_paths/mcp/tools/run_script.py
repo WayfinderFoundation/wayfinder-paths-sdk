@@ -142,6 +142,24 @@ async def core_run_script(
     env: dict[str, str] | None = None,
     wallet_label: str | None = None,
 ) -> dict[str, Any]:
+    """Run a Python script from `.wayfinder_runs/` and return its stdout/stderr/exit code.
+
+    The script must already exist on disk inside the runs directory (write the file first).
+    For recurring jobs, use `runner(action="add_job", type="script", ...)` instead so the runner
+    daemon owns scheduling, retries, and timeouts.
+
+    Args:
+        script_path: Path to a `.py` file inside `.wayfinder_runs/` (absolute or repo-relative).
+        args: Argv list passed after the script path.
+        timeout_s: Kill the process if it runs longer than this (default 600s).
+        env: Extra environment variables merged on top of the inherited environment.
+        wallet_label: Optional — annotates the wallet profile when the script name implies a
+            known protocol (moonwell, hyperliquid, hyperlend, pendle, boros, brap, swap).
+
+    Returns:
+        `{status: "completed"|"failed"|"timeout", exit_code, duration_s, stdout, stderr, ...}`.
+        stdout/stderr are truncated to 20k chars each.
+    """
     ok_path, resolved_or_error = _resolve_script_path(script_path)
     if not ok_path:
         payload = resolved_or_error if isinstance(resolved_or_error, dict) else {}

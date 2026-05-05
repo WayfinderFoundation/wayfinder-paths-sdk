@@ -59,6 +59,33 @@ async def research_run_strategy(
     gas_token_amount: float = 0.0,
     amount: float | None = None,
 ) -> dict[str, Any]:
+    """Run a lifecycle action against an installed strategy.
+
+    Strategies are discovered via `wayfinder://strategies`. Each one implements the same surface;
+    not every action is supported by every strategy (returns `not_supported` if missing).
+
+    Read-only actions:
+      - `status`: current positions, balances, internal state
+      - `analyze`: simulate behavior at a hypothetical `amount_usdc` deposit
+      - `snapshot`: build batch snapshot for scoring (uses `amount_usdc`)
+      - `policy`: declared permission policy (no instance needed)
+      - `quote`: point-in-time expected APY for `amount_usdc`
+
+    Fund-moving actions (trigger safety review):
+      - `deposit`: requires `main_token_amount`; optional `gas_token_amount` (recommend `0.001`
+        on first deposit). `amount` is accepted as a back-compat alias for `main_token_amount`.
+      - `update`: rebalance / execute the strategy's recurring logic
+      - `withdraw`: liquidate all positions to stablecoins (funds stay in strategy wallet);
+        partial withdraw is unsupported — leave `amount` unset.
+      - `exit`: transfer remaining funds from strategy wallet → main wallet. Run after `withdraw`.
+
+    Args:
+        strategy: Strategy name (folder under `wayfinder_paths/strategies/`).
+        action: Lifecycle action above.
+        amount_usdc: Used by `analyze` / `snapshot` / `quote` (default 1000).
+        main_token_amount / gas_token_amount: Deposit sizing.
+        amount: Back-compat alias for `main_token_amount` on deposit.
+    """
     if not strategy.strip():
         return err("invalid_request", "strategy is required")
 
