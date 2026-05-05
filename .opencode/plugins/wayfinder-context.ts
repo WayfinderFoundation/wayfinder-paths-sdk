@@ -9,7 +9,7 @@ function getClient(): Promise<Client> {
       const transport = new StreamableHTTPClientTransport(
         new URL("http://127.0.0.1:8000/mcp"),
       )
-      const c = new Client({ name: "wayfinder-wallet-context", version: "0.1.0" })
+      const c = new Client({ name: "wayfinder-context", version: "0.1.0" })
       await c.connect(transport)
       return c
     })()
@@ -37,7 +37,7 @@ const COMPACTION_RULES = [
   "Do summarize: high-level reasoning, search results that were rejected, intermediate quote comparisons that didn't lead to action.",
 ].join("\n")
 
-export const WalletContext: Plugin = async () => ({
+export const WayfinderContext: Plugin = async () => ({
   "experimental.chat.system.transform": async (_input, output) => {
     const wallets = await fetchWallets()
     output.system.push(
