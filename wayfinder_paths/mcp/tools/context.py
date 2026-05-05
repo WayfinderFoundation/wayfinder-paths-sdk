@@ -25,8 +25,6 @@ _TOP_N = 25
 
 
 def _try_build(builder: Any, wallet: dict[str, Any]) -> Any:
-    """Build a sign callback from an already-resolved wallet dict, or None
-    if the wallet has no signing material (e.g. remote wallet without policy)."""
     try:
         cb, _ = builder(wallet, wallet["label"])
     except ValueError:
@@ -45,69 +43,6 @@ async def _wallet_coins(addr: str) -> list[dict[str, Any]]:
         {"symbol": b["symbol"], "balance": b["amount_decimal"], "chain": b["chain"]}
         for b in data["balances"]
         if b["chain"].lower() != "solana"
-    ]
-
-
-def _hl_universe(meta_and_ctxs: list[Any]) -> tuple[list[str], list[str]]:
-    """Return (top_25_perps, all_hip3_perps) sorted by 24h notional volume."""
-    meta, ctxs = meta_and_ctxs[0], meta_and_ctxs[1]
-    # _post_across_dexes returns [{}, []] when all dex calls fail; .get guards.
-    paired = [
-        (u["name"], float(c.get("dayNtlVlm") or 0))
-        for u, c in zip(meta.get("universe", []), ctxs, strict=False)
-    ]
-    paired.sort(key=lambda x: x[1], reverse=True)
-    standard = [n for n, _ in paired if ":" not in n][:_TOP_N]
-    hip3 = [n for n, _ in paired if ":" in n]
-    return standard, hip3
-
-
-def _hl_outcomes(outcomes: list[dict[str, Any]]) -> list[str]:
-    return [m["name"] for m in outcomes if m.get("name")][:_TOP_N]
-
-
-def _hl_positions(perp_state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {"coin": entry["position"]["coin"], "size": entry["position"]["szi"]}
-        for entry in perp_state.get("assetPositions", [])
-    ]
-
-
-def _hl_open_orders(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "coin": o["coin"],
-            "side": o["side"],
-            "size": o["sz"],
-            "px": o["limitPx"],
-            "oid": o["oid"],
-        }
-        for o in orders
-    ]
-
-
-def _pm_positions(pm_state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {
-            "market_slug": p.get("slug"),
-            "outcome": p.get("outcome"),
-            "shares": p.get("size"),
-        }
-        for p in pm_state.get("positions") or []
-    ]
-
-
-def _pm_open_orders(pm_state: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        {
-            "market_slug": o.get("slug"),
-            "outcome": o.get("outcome"),
-            "side": o.get("side"),
-            "shares": o.get("size"),
-            "price": o.get("price"),
-            "oid": o.get("orderID"),
-        }
-        for o in pm_state.get("openOrders") or []
     ]
 
 
@@ -173,34 +108,77 @@ async def core_get_context(wallet_label: str = "main") -> str:
         orders_ok, hl_orders = False, []
         pm_ok, pm_state = False, {}
 
-    wallets_with_addrs = [w for w in wallets if w.get("address")]
-    wallets_thin = [
-        {
-            "label": w["label"],
-            "address": normalize_address(w["address"]),
-            "coins": coins,
-        }
-        for w, coins in zip(wallets_with_addrs, coins_per_wallet, strict=True)
-    ]
-
-    top_25_perps, all_hip3_perps = _hl_universe(hl_meta) if meta_ok else ([], [])
+    # Universe sort by 24h notional volume; HIP-3 names contain ":".
+    # _post_across_dexes returns [{}, []] when all dex calls fail; .get guards.
+    paired: list[tuple[str, float]] = []
+    if meta_ok:
+        meta, ctxs = hl_meta[0], hl_meta[1]
+        paired = [
+            (u["name"], float(c.get("dayNtlVlm") or 0))
+            for u, c in zip(meta.get("universe", []), ctxs, strict=False)
+        ]
+        paired.sort(key=lambda x: x[1], reverse=True)
 
     return json.dumps(
         {
-            "wallets": wallets_thin,
+            "wallets": [
+                {
+                    "label": w["label"],
+                    "address": normalize_address(w["address"]),
+                    "coins": coins,
+                }
+                for w, coins in zip(
+                    [w for w in wallets if w.get("address")],
+                    coins_per_wallet,
+                    strict=True,
+                )
+            ],
             "hyperliquid": {
-                "positions": _hl_positions(hl_perp) if perp_ok else [],
-                "open_orders": _hl_open_orders(hl_orders) if orders_ok else [],
+                "positions": [
+                    {"coin": e["position"]["coin"], "size": e["position"]["szi"]}
+                    for e in (hl_perp.get("assetPositions", []) if perp_ok else [])
+                ],
+                "open_orders": [
+                    {
+                        "coin": o["coin"],
+                        "side": o["side"],
+                        "size": o["sz"],
+                        "px": o["limitPx"],
+                        "oid": o["oid"],
+                    }
+                    for o in (hl_orders if orders_ok else [])
+                ],
                 "universe": {
-                    "top_25_perps": top_25_perps,
+                    "top_25_perps": [n for n, _ in paired if ":" not in n][:_TOP_N],
                     "top_25_spot": list(hl_spots.keys())[:_TOP_N] if spots_ok else [],
-                    "all_hip3_perps": all_hip3_perps,
-                    "top_25_hip4": _hl_outcomes(hl_outcomes) if outcomes_ok else [],
+                    "all_hip3_perps": [n for n, _ in paired if ":" in n],
+                    "top_25_hip4": [
+                        m["name"]
+                        for m in (hl_outcomes if outcomes_ok else [])
+                        if m.get("name")
+                    ][:_TOP_N],
                 },
             },
             "polymarket": {
-                "positions": _pm_positions(pm_state) if pm_ok else [],
-                "open_orders": _pm_open_orders(pm_state) if pm_ok else [],
+                "positions": [
+                    {
+                        "market_slug": p.get("slug"),
+                        "outcome": p.get("outcome"),
+                        "shares": p.get("size"),
+                    }
+                    for p in (pm_state.get("positions") or [] if pm_ok else [])
+                ],
+                "open_orders": [
+                    {
+                        "market_slug": o.get("slug"),
+                        "outcome": o.get("outcome"),
+                        "side": o.get("side"),
+                        "shares": o.get("size"),
+                        "price": o.get("price"),
+                        "oid": o.get("orderID"),
+                    }
+                    for o in (pm_state.get("openOrders") or [] if pm_ok else [])
+                ],
             },
         }
     )
