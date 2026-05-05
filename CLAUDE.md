@@ -148,11 +148,22 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 
 ## Delta Lab (yield discovery)
 
-**Load `/using-delta-lab` for the full surface** — MCP URIs, v2 Python client (entity / catalog / graph / search / TS / latest / bulk / `explore` / `fetch_backtest_bundle`), typed records, and composition recipes.
+**ALWAYS load `/using-delta-lab` before any yield, basis, APY, delta-neutral, lending-rate, perp-funding, or opportunity-screening work — and before writing any script that touches `DELTA_LAB_CLIENT`.** It is a load-bearing library; the skill documents the full Python client surface (entity / catalog / graph / search / TS / latest / bulk / `explore` / `fetch_backtest_bundle`), typed records, and composition recipes. Don't guess at method names.
 
 - **APY format:** decimal floats (`0.98 = 98%`, NOT 0.98%). Multiply by 100 to display.
-- **MCP philosophy:** quick snapshots only. Anything plot / filter / multi-day / bulk → Python client. Only TS methods return `pd.DataFrame`; `*_latest` returns typed dataclasses (or `None` for sparse data); search / screening / opportunity methods return dicts.
-- **Most-used MCP URIs:** `wayfinder://delta-lab/top-apy/{LB}/{N}`, `wayfinder://delta-lab/{SYM}/apy-sources/{LB}/{N}`, `wayfinder://delta-lab/{SYM}/timeseries/{SERIES}/{LB}/{N}`, `wayfinder://delta-lab/screen/{lending|perp|price|borrow-routes}/{sort}/{N}/{basis}`. Full URI list + valid sort columns are in the skill.
+- **MCP philosophy:** quick snapshots only. Anything time-series, plot, filter, by-asset-id, multi-day, or bulk → Python client. Search / screening / opportunity MCP methods return dicts.
+- **MCP URIs (full list — narrow on purpose):**
+  - `wayfinder://delta-lab/symbols`
+  - `wayfinder://delta-lab/top-apy/{LB}/{N}`
+  - `wayfinder://delta-lab/{basis_symbol}/apy-sources/{LB}/{N}`
+  - `wayfinder://delta-lab/{symbol}/basis`
+  - `wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}`
+  - `wayfinder://delta-lab/screen/price/{sort}/{N}/{basis}`
+  - `wayfinder://delta-lab/screen/lending/{sort}/{N}/{basis}`
+  - `wayfinder://delta-lab/screen/perp/{sort}/{N}/{basis}`
+  - `wayfinder://delta-lab/screen/borrow-routes/{sort}/{N}/{basis}/{borrow_basis}/{chain_id}`
+
+  Anything beyond this (time series, asset-id lookups, by-asset-id screening, plotting, bulk data) — go straight to the Python client.
 
 ## Pack applets
 
