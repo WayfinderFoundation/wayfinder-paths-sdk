@@ -19,24 +19,13 @@ from wayfinder_paths.mcp.resources.contracts import (
 )
 from wayfinder_paths.mcp.resources.delta_lab import (
     get_asset_basis_info,
-    get_asset_timeseries_data,
-    get_asset_timeseries_with_venue,
-    get_assets_by_address,
     get_basis_apy_sources,
     get_basis_symbols,
-    get_basis_timeseries_data,
-    get_basis_timeseries_with_venue,
-    get_best_delta_neutral_pairs,
-    get_delta_lab_asset,
     get_top_apy,
     screen_borrow_routes,
-    screen_borrow_routes_by_asset_ids,
     screen_lending,
-    screen_lending_by_asset_ids,
     screen_perp,
-    screen_perp_by_asset_ids,
     screen_price,
-    screen_price_by_asset_ids,
     search_delta_lab_assets,
 )
 from wayfinder_paths.mcp.resources.discovery import (
@@ -120,54 +109,26 @@ mcp.resource("wayfinder://alpha-lab/types")(get_alpha_types)
 mcp.resource(
     "wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}"
 )(search_alpha)
+# Delta Lab MCP surface is intentionally narrow: quick snapshots only.
+# For time-series, single-asset lookups, by-asset-id screening, plotting, or
+# anything bulk, use DELTA_LAB_CLIENT in Python (see /using-delta-lab skill).
 mcp.resource("wayfinder://delta-lab/symbols")(get_basis_symbols)
 mcp.resource("wayfinder://delta-lab/top-apy/{lookback_days}/{limit}")(get_top_apy)
 mcp.resource(
     "wayfinder://delta-lab/{basis_symbol}/apy-sources/{lookback_days}/{limit}"
 )(get_basis_apy_sources)
-mcp.resource(
-    "wayfinder://delta-lab/{basis_symbol}/delta-neutral/{lookback_days}/{limit}"
-)(get_best_delta_neutral_pairs)
-mcp.resource("wayfinder://delta-lab/assets/{asset_id}")(get_delta_lab_asset)
-mcp.resource("wayfinder://delta-lab/assets/by-address/{address}/{chain_id}")(
-    get_assets_by_address
-)
 mcp.resource("wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}")(
     search_delta_lab_assets
 )
 mcp.resource("wayfinder://delta-lab/{symbol}/basis")(get_asset_basis_info)
-mcp.resource(
-    "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
-)(get_asset_timeseries_data)
-mcp.resource(
-    "wayfinder://delta-lab/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}"
-)(get_asset_timeseries_with_venue)
-mcp.resource(
-    "wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}"
-)(get_basis_timeseries_data)
-mcp.resource(
-    "wayfinder://delta-lab/basis/{symbol}/timeseries/{series}/{lookback_days}/{limit}/{venue}"
-)(get_basis_timeseries_with_venue)
 mcp.resource("wayfinder://delta-lab/screen/price/{sort}/{limit}/{basis}")(screen_price)
-mcp.resource(
-    "wayfinder://delta-lab/screen/price/by-asset-ids/{sort}/{limit}/{asset_ids}"
-)(screen_price_by_asset_ids)
 mcp.resource("wayfinder://delta-lab/screen/lending/{sort}/{limit}/{basis}")(
     screen_lending
 )
-mcp.resource(
-    "wayfinder://delta-lab/screen/lending/by-asset-ids/{sort}/{limit}/{asset_ids}"
-)(screen_lending_by_asset_ids)
 mcp.resource("wayfinder://delta-lab/screen/perp/{sort}/{limit}/{basis}")(screen_perp)
-mcp.resource(
-    "wayfinder://delta-lab/screen/perp/by-asset-ids/{sort}/{limit}/{asset_ids}"
-)(screen_perp_by_asset_ids)
 mcp.resource(
     "wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}"
 )(screen_borrow_routes)
-mcp.resource(
-    "wayfinder://delta-lab/screen/borrow-routes/by-asset-ids/{sort}/{limit}/{asset_ids}/{borrow_asset_ids}/{chain_id}"
-)(screen_borrow_routes_by_asset_ids)
 
 # Tools (actions/mutations)
 mcp.tool()(quote_swap)
