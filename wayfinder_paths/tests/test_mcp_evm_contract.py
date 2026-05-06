@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -411,10 +410,12 @@ async def test_contracts_get_fetches_from_etherscan():
             new=AsyncMock(return_value=fetched_abi),
         ),
     ):
-        out = json.loads(await contracts_get(1, addr, resolve_proxy=False))
+        out = await contracts_get(1, addr, resolve_proxy=False)
 
-    assert out["source"] == "etherscan_v2"
-    assert out["abi"] == fetched_abi
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["source"] == "etherscan_v2"
+    assert result["abi"] == fetched_abi
 
 
 @pytest.mark.asyncio
@@ -454,11 +455,13 @@ async def test_contracts_get_prefers_proxy_implementation():
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = json.loads(await contracts_get(1, proxy_addr, resolve_proxy=True))
+        out = await contracts_get(1, proxy_addr, resolve_proxy=True)
 
-    assert out["source"] == "etherscan_v2_proxy"
-    assert out["implementation_address"] == AsyncWeb3.to_checksum_address(impl_addr)
-    assert out["abi"] == impl_abi
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["source"] == "etherscan_v2_proxy"
+    assert result["implementation_address"] == AsyncWeb3.to_checksum_address(impl_addr)
+    assert result["abi"] == impl_abi
 
 
 @pytest.mark.asyncio
@@ -501,7 +504,9 @@ async def test_contracts_get_falls_back_to_proxy_abi_when_impl_fetch_fails():
             new=AsyncMock(side_effect=_fake_fetch),
         ),
     ):
-        out = json.loads(await contracts_get(1, proxy_addr, resolve_proxy=True))
+        out = await contracts_get(1, proxy_addr, resolve_proxy=True)
 
-    assert out["source"] == "etherscan_v2"
-    assert out["abi"] == proxy_abi
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["source"] == "etherscan_v2"
+    assert result["abi"] == proxy_abi
