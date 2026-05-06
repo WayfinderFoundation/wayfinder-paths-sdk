@@ -1512,6 +1512,50 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def get_builder_trades(
+        self,
+        *,
+        builder_code: str | None = None,
+        trade_id: str | None = None,
+        maker_address: str | None = None,
+        market: str | None = None,
+        asset_id: str | None = None,
+        before: str | None = None,
+        after: str | None = None,
+        next_cursor: str | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        effective_builder_code = builder_code or self._builder_code()
+        if not effective_builder_code:
+            return False, "builder_code is required"
+
+        try:
+            params: dict[str, str] = {"builder_code": effective_builder_code}
+            if trade_id:
+                params["id"] = trade_id
+            if maker_address:
+                params["maker_address"] = maker_address
+            if market:
+                params["market"] = market
+            if asset_id:
+                params["asset_id"] = asset_id
+            if before:
+                params["before"] = before
+            if after:
+                params["after"] = after
+            if next_cursor:
+                params["next_cursor"] = next_cursor
+            res = await self._clob_http.get("/builder/trades", params=params)
+            res.raise_for_status()
+            data = res.json()
+            return True, {
+                "trades": list(data.get("data", [])),
+                "next_cursor": data.get("next_cursor"),
+                "limit": data.get("limit"),
+                "count": data.get("count"),
+            }
+        except Exception as exc:
+            return False, str(exc)
+
     async def get_full_user_state(
         self,
         *,

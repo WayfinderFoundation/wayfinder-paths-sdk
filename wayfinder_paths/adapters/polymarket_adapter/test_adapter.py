@@ -209,6 +209,92 @@ class TestPolymarketAdapter:
         assert fake_clob_client.params.asset_id == "tok-123"
 
     @pytest.mark.asyncio
+    async def test_get_builder_trades_uses_configured_builder_code(
+        self, adapter, monkeypatch
+    ):
+        builder_code = "0x" + "56" * 32
+        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
+
+        captured = {}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "data": [{"id": "trade-1"}],
+            "next_cursor": "abc",
+            "limit": 100,
+            "count": 1,
+        }
+
+        async def mock_get(path, params=None, **_kwargs):
+            captured["path"] = path
+            captured["params"] = params
+            return mock_resp
+
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
+
+        ok, response = await adapter.get_builder_trades()
+
+        assert ok is True
+        assert response == {
+            "trades": [{"id": "trade-1"}],
+            "next_cursor": "abc",
+            "limit": 100,
+            "count": 1,
+        }
+        assert captured["path"] == "/builder/trades"
+        assert captured["params"]["builder_code"] == builder_code
+
+    @pytest.mark.asyncio
+    async def test_get_builder_trades_forwards_filters_and_cursor(
+        self, adapter, monkeypatch
+    ):
+        captured = {}
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "data": [],
+            "next_cursor": "next-2",
+            "limit": 100,
+            "count": 0,
+        }
+
+        async def mock_get(path, params=None, **_kwargs):
+            captured["path"] = path
+            captured["params"] = params
+            return mock_resp
+
+        monkeypatch.setattr(adapter._clob_http, "get", mock_get)
+
+        ok, response = await adapter.get_builder_trades(
+            builder_code="0x" + "78" * 32,
+            trade_id="trade-123",
+            maker_address="0x000000000000000000000000000000000000dEaD",
+            market="market-1",
+            asset_id="asset-1",
+            before="2026-05-01T00:00:00Z",
+            after="2026-04-01T00:00:00Z",
+            next_cursor="cursor-1",
+        )
+
+        assert ok is True
+        assert response == {
+            "trades": [],
+            "next_cursor": "next-2",
+            "limit": 100,
+            "count": 0,
+        }
+        assert captured["path"] == "/builder/trades"
+        p = captured["params"]
+        assert p["builder_code"] == "0x" + "78" * 32
+        assert p["id"] == "trade-123"
+        assert p["maker_address"] == "0x000000000000000000000000000000000000dEaD"
+        assert p["market"] == "market-1"
+        assert p["asset_id"] == "asset-1"
+        assert p["before"] == "2026-05-01T00:00:00Z"
+        assert p["after"] == "2026-04-01T00:00:00Z"
+        assert p["next_cursor"] == "cursor-1"
+
+    @pytest.mark.asyncio
     async def test_list_markets(self, adapter, monkeypatch):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
