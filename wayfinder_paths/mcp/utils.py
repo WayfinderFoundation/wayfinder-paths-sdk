@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,29 @@ def err(code: str, message: str, details: Any | None = None) -> dict[str, Any]:
         "ok": False,
         "error": {"code": str(code), "message": str(message), "details": details},
     }
+
+
+def not_none(v: Any) -> bool:
+    return v is not None
+
+
+def nonempty_str(v: Any) -> bool:
+    return isinstance(v, str) and bool(v.strip())
+
+
+def positive_number(v: Any) -> bool:
+    # exclude bool — True is technically int, but a positive *number* should reject it
+    return not isinstance(v, bool) and isinstance(v, (int, float)) and v > 0
+
+
+def require(
+    checks: list[tuple[str, Any, Callable[[Any], bool]]],
+) -> dict[str, Any] | None:
+    failed = [name for name, value, predicate in checks if not predicate(value)]
+    if not failed:
+        return None
+    verb = "is" if len(failed) == 1 else "are"
+    return err("invalid_request", f"{', '.join(failed)} {verb} required")
 
 
 def repo_root() -> Path:

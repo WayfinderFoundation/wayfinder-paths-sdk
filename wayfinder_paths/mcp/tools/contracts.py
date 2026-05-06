@@ -19,7 +19,9 @@ from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
+    nonempty_str,
     ok,
+    require,
     resolve_path_inside_repo,
     summarize_abi,
 )
@@ -252,8 +254,8 @@ async def contracts_get(
     cid = int(chain_id)
     addr = str(address).strip()
     addr_lc = addr.lower()
-    if not addr:
-        return err("invalid_request", "address is required")
+    if error := require([("address", addr, nonempty_str)]):
+        return error
 
     metadata = store.get_metadata(cid, addr_lc)
     if metadata:

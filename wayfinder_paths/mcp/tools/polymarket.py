@@ -17,8 +17,11 @@ from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
+    nonempty_str,
     normalize_address,
+    not_none,
     ok,
+    require,
     resolve_wallet_address,
 )
 
@@ -361,8 +364,8 @@ async def polymarket_read(
 
             case "get_market":
                 slug = str(market_slug or "").strip()
-                if not slug:
-                    return err("invalid_request", "market_slug is required")
+                if error := require([("market_slug", slug, nonempty_str)]):
+                    return error
                 ok_m, m = await adapter.get_market_by_slug(slug)
                 if not ok_m:
                     return err("error", str(m))
@@ -370,8 +373,8 @@ async def polymarket_read(
 
             case "get_event":
                 slug = str(event_slug or "").strip()
-                if not slug:
-                    return err("invalid_request", "event_slug is required")
+                if error := require([("event_slug", slug, nonempty_str)]):
+                    return error
                 ok_e, e = await adapter.get_event_by_slug(slug)
                 if not ok_e:
                     return err("error", str(e))
@@ -437,8 +440,8 @@ async def polymarket_read(
 
             case "price":
                 tid = str(token_id or "").strip()
-                if not tid:
-                    return err("invalid_request", "token_id is required")
+                if error := require([("token_id", tid, nonempty_str)]):
+                    return error
                 ok_p, p = await adapter.get_price(token_id=tid, side=side)
                 if not ok_p:
                     return err("error", str(p))
@@ -446,8 +449,8 @@ async def polymarket_read(
 
             case "order_book":
                 tid = str(token_id or "").strip()
-                if not tid:
-                    return err("invalid_request", "token_id is required")
+                if error := require([("token_id", tid, nonempty_str)]):
+                    return error
                 ok_b, b = await adapter.get_order_book(token_id=tid)
                 if not ok_b:
                     return err("error", str(b))
@@ -455,8 +458,8 @@ async def polymarket_read(
 
             case "price_history":
                 tid = str(token_id or "").strip()
-                if not tid:
-                    return err("invalid_request", "token_id is required")
+                if error := require([("token_id", tid, nonempty_str)]):
+                    return error
                 ok_h, h = await adapter.get_prices_history(
                     token_id=tid,
                     interval=interval,
@@ -630,10 +633,8 @@ async def polymarket_execute(
 
         match action:
             case "bridge_deposit":
-                if amount is None:
-                    return err(
-                        "invalid_request", "amount is required for bridge_deposit"
-                    )
+                if error := require([("amount", amount, not_none)]):
+                    return error
                 rcpt = normalize_address(recipient_address) or sender
                 ok_dep, res = await adapter.bridge_deposit(
                     from_chain_id=int(from_chain_id),
@@ -666,10 +667,8 @@ async def polymarket_execute(
                 return _done(status)
 
             case "bridge_withdraw":
-                if amount_pusd is None:
-                    return err(
-                        "invalid_request", "amount_pusd is required for bridge_withdraw"
-                    )
+                if error := require([("amount_pusd", amount_pusd, not_none)]):
+                    return error
                 rcpt = normalize_address(recipient_addr) or sender
                 ok_wd, res = await adapter.bridge_withdraw(
                     amount_pusd=float(amount_pusd),
@@ -705,19 +704,18 @@ async def polymarket_execute(
             case "buy" | "sell":
                 if market_slug:
                     if action == "buy":
-                        if amount_collateral is None:
-                            return err(
-                                "invalid_request",
-                                "amount_collateral is required for buy",
-                            )
+                        if error := require(
+                            [("amount_collateral", amount_collateral, not_none)]
+                        ):
+                            return error
                         ok_trade, res = await adapter.place_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             amount_collateral=float(amount_collateral),
                         )
                     else:
-                        if shares is None:
-                            return err("invalid_request", "shares is required for sell")
+                        if error := require([("shares", shares, not_none)]):
+                            return error
                         ok_trade, res = await adapter.cash_out_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
@@ -730,19 +728,18 @@ async def polymarket_execute(
                             "invalid_request", "token_id or market_slug is required"
                         )
                     if action == "buy":
-                        if amount_collateral is None:
-                            return err(
-                                "invalid_request",
-                                "amount_collateral is required for buy",
-                            )
+                        if error := require(
+                            [("amount_collateral", amount_collateral, not_none)]
+                        ):
+                            return error
                         ok_trade, res = await adapter.place_market_order(
                             token_id=tid,
                             side="BUY",
                             amount=float(amount_collateral),
                         )
                     else:
-                        if shares is None:
-                            return err("invalid_request", "shares is required for sell")
+                        if error := require([("shares", shares, not_none)]):
+                            return error
                         ok_trade, res = await adapter.place_market_order(
                             token_id=tid,
                             side="SELL",
@@ -870,11 +867,10 @@ async def polymarket_execute(
                     return err(
                         "invalid_request", "token_id is required for place_limit_order"
                     )
-                if price is None or size is None:
-                    return err(
-                        "invalid_request",
-                        "price and size are required for place_limit_order",
-                    )
+                if error := require(
+                    [("price", price, not_none), ("size", size, not_none)]
+                ):
+                    return error
                 ok_lo, res = await adapter.place_limit_order(
                     token_id=tid,
                     side=side,

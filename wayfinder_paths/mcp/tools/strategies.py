@@ -9,7 +9,7 @@ from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
-from wayfinder_paths.mcp.utils import err, ok, repo_root
+from wayfinder_paths.mcp.utils import err, nonempty_str, ok, repo_root, require
 
 
 def _strategy_dir(name: str) -> Path:
@@ -86,8 +86,8 @@ async def core_run_strategy(
         main_token_amount / gas_token_amount: Deposit sizing.
         amount: Back-compat alias for `main_token_amount` on deposit.
     """
-    if not strategy.strip():
-        return err("invalid_request", "strategy is required")
+    if error := require([("strategy", strategy, nonempty_str)]):
+        return error
 
     try:
         strategy_class, strategy_status = _load_strategy_class(strategy)

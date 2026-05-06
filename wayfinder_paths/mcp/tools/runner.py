@@ -5,7 +5,14 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from wayfinder_paths.mcp.utils import err, ok, read_text_excerpt, repo_root
+from wayfinder_paths.mcp.utils import (
+    err,
+    not_none,
+    ok,
+    read_text_excerpt,
+    repo_root,
+    require,
+)
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
@@ -296,8 +303,8 @@ async def core_runner(
                 )
 
             case "run_report":
-                if run_id is None:
-                    return err("invalid_request", "run_id is required for run_report")
+                if error := require([("run_id", run_id, not_none)]):
+                    return error
                 tb = int(tail_bytes) if isinstance(tail_bytes, int) else 4000
                 resp = client.call(
                     "run_report", {"run_id": int(run_id), "tail_bytes": tb}
@@ -312,10 +319,8 @@ async def core_runner(
                 if not name:
                     return err("invalid_request", "name is required for add_job")
                 interval = interval_seconds
-                if interval is None:
-                    return err(
-                        "invalid_request", "interval_seconds is required for add_job"
-                    )
+                if error := require([("interval_seconds", interval, not_none)]):
+                    return error
                 if not isinstance(interval, int) or interval <= 0:
                     return err(
                         "invalid_request", "interval_seconds must be a positive integer"

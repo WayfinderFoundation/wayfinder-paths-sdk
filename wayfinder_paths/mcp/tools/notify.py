@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 
 from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
-from wayfinder_paths.mcp.utils import err, ok
+from wayfinder_paths.mcp.utils import err, nonempty_str, ok, require
 
 TITLE_MAX = 200
 MESSAGE_MAX = 20_000
@@ -20,12 +20,12 @@ async def shells_notify(title: str, message: str) -> dict:
         message: Markdown body (<= 20 000 chars).
     """
     title_s = (title or "").strip()
-    if not title_s:
-        return err("invalid_request", "title is required")
+    if error := require([("title", title_s, nonempty_str)]):
+        return error
     if len(title_s) > TITLE_MAX:
         return err("invalid_request", f"title exceeds {TITLE_MAX} chars")
-    if not message:
-        return err("invalid_request", "message is required")
+    if error := require([("message", message, nonempty_str)]):
+        return error
     if len(message) > MESSAGE_MAX:
         return err("invalid_request", f"message exceeds {MESSAGE_MAX} chars")
 

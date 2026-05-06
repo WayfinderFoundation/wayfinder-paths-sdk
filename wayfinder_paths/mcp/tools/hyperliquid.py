@@ -21,9 +21,12 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
+    nonempty_str,
     normalize_address,
+    not_none,
     ok,
     parse_amount_to_raw,
+    require,
     resolve_wallet_address,
 )
 
@@ -249,8 +252,8 @@ async def hyperliquid_execute(
       - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
     """
     want = str(wallet_label or "").strip()
-    if not want:
-        return err("invalid_request", "wallet_label is required")
+    if error := require([("wallet_label", want, nonempty_str)]):
+        return error
 
     key_input = {
         "action": action,
@@ -293,8 +296,8 @@ async def hyperliquid_execute(
 
     match action:
         case "deposit":
-            if amount_usdc is None:
-                return err("invalid_request", "amount_usdc is required for deposit")
+            if error := require([("amount_usdc", amount_usdc, not_none)]):
+                return error
             try:
                 amt = float(amount_usdc)
             except (TypeError, ValueError):
@@ -377,11 +380,8 @@ async def hyperliquid_execute(
             return response
 
         case "withdraw":
-            if amount_usdc is None:
-                response = err(
-                    "invalid_request", "amount_usdc is required for withdraw"
-                )
-                return response
+            if error := require([("amount_usdc", amount_usdc, not_none)]):
+                return error
             try:
                 amt = float(amount_usdc)
             except (TypeError, ValueError):
@@ -430,8 +430,8 @@ async def hyperliquid_execute(
             return response
 
         case "spot_to_perp_transfer" | "perp_to_spot_transfer":
-            if usd_amount is None:
-                return err("invalid_request", f"usd_amount is required for {action}")
+            if error := require([("usd_amount", usd_amount, not_none)]):
+                return error
             try:
                 amt = float(usd_amount)
             except (TypeError, ValueError):
@@ -545,11 +545,8 @@ async def hyperliquid_execute(
             )
 
         case "update_leverage":
-            if leverage is None:
-                response = err(
-                    "invalid_request", "leverage is required for update_leverage"
-                )
-                return response
+            if error := require([("leverage", leverage, not_none)]):
+                return error
             try:
                 lev = int(leverage)
             except (TypeError, ValueError):
@@ -655,11 +652,8 @@ async def hyperliquid_execute(
                     "invalid_request",
                     "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)",
                 )
-            if trigger_price is None:
-                return err(
-                    "invalid_request",
-                    "trigger_price is required for place_trigger_order",
-                )
+            if error := require([("trigger_price", trigger_price, not_none)]):
+                return error
             try:
                 tpx = float(trigger_price)
             except (TypeError, ValueError):
@@ -785,9 +779,8 @@ async def hyperliquid_execute(
                 )
                 return response
 
-            if is_buy is None:
-                response = err("invalid_request", "is_buy is required for place_order")
-                return response
+            if error := require([("is_buy", is_buy, not_none)]):
+                return error
 
             if order_type == "limit":
                 if price is None:
