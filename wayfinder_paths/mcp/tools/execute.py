@@ -300,22 +300,20 @@ async def core_execute(
             from_meta = await TokenResolver.resolve_token_meta(str(req.from_token))
             to_meta = await TokenResolver.resolve_token_meta(str(req.to_token))
         except Exception as exc:  # noqa: BLE001
-            response = err("token_error", str(exc))
-            return response
+            return err("token_error", str(exc))
 
         from_chain_id = from_meta.get("chain_id")
         to_chain_id = to_meta.get("chain_id")
         from_token_addr = str(from_meta.get("address") or "").strip() or None
         to_token_addr = str(to_meta.get("address") or "").strip() or None
         if from_chain_id is None or to_chain_id is None:
-            response = err(
+            return err(
                 "invalid_token",
                 "Could not resolve chain_id for one or more tokens",
                 {"from_chain_id": from_chain_id, "to_chain_id": to_chain_id},
             )
-            return response
         if not from_token_addr or not to_token_addr:
-            response = err(
+            return err(
                 "invalid_token",
                 "Could not resolve token address for one or more tokens",
                 {
@@ -323,14 +321,12 @@ async def core_execute(
                     "to_token_address": to_token_addr,
                 },
             )
-            return response
 
         decimals = int(from_meta.get("decimals") or 18)
         try:
             amount_raw = parse_amount_to_raw(req.amount, decimals)
         except ValueError as exc:
-            response = err("invalid_amount", str(exc))
-            return response
+            return err("invalid_amount", str(exc))
 
         slippage = max(0.0, float(int(req.slippage_bps)) / 10_000.0)
         try:
@@ -344,8 +340,7 @@ async def core_execute(
                 slippage=slippage,
             )
         except Exception as exc:  # noqa: BLE001
-            response = err("quote_error", str(exc))
-            return response
+            return err("quote_error", str(exc))
 
         # BRAP quote responses have historically appeared in two shapes:
         # 1) {"quotes": [...], "best_quote": {...}}
@@ -362,17 +357,13 @@ async def core_execute(
                     best_quote = quotes_block.get("best_quote")
 
         if not isinstance(best_quote, dict):
-            response = err(
-                "quote_error", "No best_quote returned", {"quote": quote_data}
-            )
-            return response
+            return err("quote_error", "No best_quote returned", {"quote": quote_data})
 
         calldata = best_quote.get("calldata") or {}
         if not isinstance(calldata, dict) or not calldata:
-            response = err(
+            return err(
                 "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
             )
-            return response
 
         swap_tx = dict(calldata)
         swap_tx["chainId"] = int(from_chain_id)
@@ -459,26 +450,23 @@ async def core_execute(
                 token_q, chain_id=req.chain_id
             )
         except Exception as exc:  # noqa: BLE001
-            response = err("token_error", str(exc))
-            return response
+            return err("token_error", str(exc))
 
         token_address = str(token_meta.get("address") or "").strip()
         chain_id = token_meta.get("chain_id")
         if not token_address or chain_id is None:
-            response = err(
+            return err(
                 "invalid_token",
                 "Token missing address/chain_id",
                 {"token": token_meta},
             )
-            return response
         decimals = int(token_meta.get("decimals") or 18)
         is_native = token_address.lower() == ZERO_ADDRESS.lower()
 
         try:
             amount_raw = parse_amount_to_raw(req.amount, decimals)
         except ValueError as exc:
-            response = err("invalid_amount", str(exc))
-            return response
+            return err("invalid_amount", str(exc))
 
         transaction = await build_send_transaction(
             from_address=sender,

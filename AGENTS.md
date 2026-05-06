@@ -1,6 +1,13 @@
 # AGENTS.md
 
-This file provides guidance when working with code in this repository.
+## Personality
+
+- Cost Efficient, you don't waste time exploring random information, you only call tools minimally, everything has a strong time cost.
+- Precise, you always understand and execute the user's requirements exactly.
+
+## Notes
+
+- If confused about wallet balances, fetch fresh balances! Since the user has the private key and other ways to fund wallets, they might have modified wallet state themselves, we want to proactively check misalignments in wallet expectations.
 
 ## First-Time Setup (Auto-detect)
 
@@ -37,6 +44,7 @@ Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env va
 If you detected a Wayfinder Shells instance in "First-Time Setup" (health probe at `http://localhost:4096/global/health` returned `healthy: true`), you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. The backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly. The `message` field is rendered as Markdown (headings, lists, code blocks, tables, links) into a themed HTML email, so format it nicely.
 
 **MCP tool:**
+
 ```
 notify(
   title="Rebalance complete",
@@ -45,6 +53,7 @@ notify(
 ```
 
 **Python client:**
+
 ```python
 from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
 
@@ -62,14 +71,15 @@ If you detected a Wayfinder Shells instance, you can read what the user is viewi
 
 **MCP tools:**
 
-| Tool | Args | Description |
-|------|------|-------------|
-| `get_frontend_context` | (none) | Read current chart context + all projections |
-| `add_chart_projection` | `chart_id`, `type`, `config` | Add overlay to a chart |
-| `remove_chart_projection` | `chart_id`, `projection_id` | Remove a specific overlay |
-| `clear_chart_projections` | `chart_id` | Remove all overlays from a chart |
+| Tool                      | Args                         | Description                                  |
+| ------------------------- | ---------------------------- | -------------------------------------------- |
+| `get_frontend_context`    | (none)                       | Read current chart context + all projections |
+| `add_chart_projection`    | `chart_id`, `type`, `config` | Add overlay to a chart                       |
+| `remove_chart_projection` | `chart_id`, `projection_id`  | Remove a specific overlay                    |
+| `clear_chart_projections` | `chart_id`                   | Remove all overlays from a chart             |
 
 **Typical flow:**
+
 1. Call `get_frontend_context` → returns `{frontend_context: {chart: {id: "hl-perp-BTC", market_id: "BTC", market_type: "hl-perp", interval: "1m"}}, sdk_projection: {...}}`
 2. Read `chart_id` from `frontend_context.chart.id` → `"hl-perp-BTC"`
 3. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support"}`
@@ -77,13 +87,14 @@ If you detected a Wayfinder Shells instance, you can read what the user is viewi
 
 **Projection types:**
 
-| type | config |
-|------|--------|
-| `horizontal_line` | `price`, `color?`, `label?` |
-| `marker` | `time` (unix sec), `position` (aboveBar/belowBar), `shape` (circle/arrowUp/arrowDown), `color?`, `label?` |
-| `line_series` | `data: [{time, value}]`, `color?`, `label?`, `line_width?` |
+| type              | config                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `horizontal_line` | `price`, `color?`, `label?`                                                                               |
+| `marker`          | `time` (unix sec), `position` (aboveBar/belowBar), `shape` (circle/arrowUp/arrowDown), `color?`, `label?` |
+| `line_series`     | `data: [{time, value}]`, `color?`, `label?`, `line_width?`                                                |
 
 **Python client:**
+
 ```python
 from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 
@@ -97,10 +108,6 @@ await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
 ```
 
 Projections are scoped per chart — switching markets shows only that chart's projections. The backend is type-agnostic; new projection types only need a frontend renderer.
-
-## Memories
-
-Eagerly use the memory tools. Persist user preferences, recurring strategies, wallet labels, project context, and anything else the user is likely to reference again — read on session start, write whenever you learn something durable. Don't ration them: a memory the user has to repeat is a memory you should have written.
 
 ## Scheduled Jobs (backend sync)
 
@@ -582,12 +589,12 @@ wallets(action="create", label="my_strategy", remote=True, wallet_type="strategy
 
 **Always read wallets through the MCP resources below. Never grep `config.json` for `wallets[]` or read wallet files directly.** They are the only source of truth — on Wayfinder Shells the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
-| Resource | What you get |
-|---|---|
-| `wayfinder://wallets` | List all wallets (remote on Shells, merged local + remote elsewhere) |
-| `wayfinder://wallets/{label}` | Single wallet by label (includes profile / tracked protocols) |
-| `wayfinder://balances/{label}` | USD-aggregated balances, per-chain breakdown, spam-filtered |
-| `wayfinder://activity/{label}` | Recent on-chain activity |
+| Resource                       | What you get                                                         |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `wayfinder://wallets`          | List all wallets (remote on Shells, merged local + remote elsewhere) |
+| `wayfinder://wallets/{label}`  | Single wallet by label (includes profile / tracked protocols)        |
+| `wayfinder://balances/{label}` | USD-aggregated balances, per-chain breakdown, spam-filtered          |
+| `wayfinder://activity/{label}` | Recent on-chain activity                                             |
 
 On a Wayfinder Shells Instance, always pass `remote=True` when creating wallets — local wallets are rejected.
 
