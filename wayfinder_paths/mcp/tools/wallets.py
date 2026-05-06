@@ -287,7 +287,9 @@ async def core_wallets(
             if not protocol:
                 return err("invalid_request", "protocol is required for annotate")
             if not annotate_action:
-                return err("invalid_request", "annotate_action is required for annotate")
+                return err(
+                    "invalid_request", "annotate_action is required for annotate"
+                )
             if not tool:
                 return err("invalid_request", "tool is required for annotate")
             if not status:
@@ -330,7 +332,9 @@ async def core_wallets(
             else:
                 target_protocols = profile_protocols
 
-            supported_protocols = [p for p in target_protocols if p in PROTOCOL_ADAPTERS]
+            supported_protocols = [
+                p for p in target_protocols if p in PROTOCOL_ADAPTERS
+            ]
             unsupported = [p for p in target_protocols if p not in PROTOCOL_ADAPTERS]
 
             if not supported_protocols:

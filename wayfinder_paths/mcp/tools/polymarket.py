@@ -316,7 +316,11 @@ async def polymarket_read(
                 q = str(query or "").strip()
                 if not q:
                     return err("invalid_request", "query is required for search")
-                if events_status and events_status not in {"active", "closed", "archived"}:
+                if events_status and events_status not in {
+                    "active",
+                    "closed",
+                    "archived",
+                }:
                     return err(
                         "invalid_request",
                         f"events_status must be one of: active, closed, archived (got {events_status!r})",
@@ -351,7 +355,9 @@ async def polymarket_read(
                 )
                 if not ok_rows:
                     return err("error", str(rows))
-                return ok({"action": action, "markets": [_trim_market(m) for m in rows]})
+                return ok(
+                    {"action": action, "markets": [_trim_market(m) for m in rows]}
+                )
 
             case "get_market":
                 slug = str(market_slug or "").strip()
@@ -381,10 +387,14 @@ async def polymarket_read(
                     try:
                         quote_amount = float(amount_collateral)
                     except (TypeError, ValueError):
-                        return err("invalid_request", "amount_collateral must be a number")
+                        return err(
+                            "invalid_request", "amount_collateral must be a number"
+                        )
                 else:
                     if shares is None:
-                        return err("invalid_request", "shares is required for SELL quote")
+                        return err(
+                            "invalid_request", "shares is required for SELL quote"
+                        )
                     try:
                         quote_amount = float(shares)
                     except (TypeError, ValueError):
@@ -621,7 +631,9 @@ async def polymarket_execute(
         match action:
             case "bridge_deposit":
                 if amount is None:
-                    return err("invalid_request", "amount is required for bridge_deposit")
+                    return err(
+                        "invalid_request", "amount is required for bridge_deposit"
+                    )
                 rcpt = normalize_address(recipient_address) or sender
                 ok_dep, res = await adapter.bridge_deposit(
                     from_chain_id=int(from_chain_id),
@@ -714,7 +726,9 @@ async def polymarket_execute(
                 else:
                     tid = str(token_id or "").strip()
                     if not tid:
-                        return err("invalid_request", "token_id or market_slug is required")
+                        return err(
+                            "invalid_request", "token_id or market_slug is required"
+                        )
                     if action == "buy":
                         if amount_collateral is None:
                             return err(
@@ -736,7 +750,12 @@ async def polymarket_execute(
                         )
 
                 effects.append(
-                    {"type": "polymarket", "label": action, "ok": ok_trade, "result": res}
+                    {
+                        "type": "polymarket",
+                        "label": action,
+                        "ok": ok_trade,
+                        "result": res,
+                    }
                 )
                 status = "confirmed" if ok_trade else "failed"
                 _annotate(
@@ -891,7 +910,9 @@ async def polymarket_execute(
             case "cancel_order":
                 oid = str(order_id or "").strip()
                 if not oid:
-                    return err("invalid_request", "order_id is required for cancel_order")
+                    return err(
+                        "invalid_request", "order_id is required for cancel_order"
+                    )
                 ok_c, res = await adapter.cancel_order(order_id=oid)
                 effects.append(
                     {
@@ -916,9 +937,12 @@ async def polymarket_execute(
                 cid = str(condition_id or "").strip()
                 if not cid:
                     return err(
-                        "invalid_request", "condition_id is required for redeem_positions"
+                        "invalid_request",
+                        "condition_id is required for redeem_positions",
                     )
-                ok_r, res = await adapter.redeem_positions(condition_id=cid, holder=sender)
+                ok_r, res = await adapter.redeem_positions(
+                    condition_id=cid, holder=sender
+                )
                 effects.append(
                     {
                         "type": "polymarket",
@@ -939,6 +963,8 @@ async def polymarket_execute(
                 return _done(status)
 
             case _:
-                return err("invalid_request", f"Unknown polymarket_execute action: {action}")
+                return err(
+                    "invalid_request", f"Unknown polymarket_execute action: {action}"
+                )
     finally:
         await adapter.close()

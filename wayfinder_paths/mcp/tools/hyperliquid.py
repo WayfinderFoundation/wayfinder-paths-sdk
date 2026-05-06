@@ -311,7 +311,8 @@ async def hyperliquid_execute(
                 return err("invalid_wallet", str(exc))
 
             recipient = (
-                normalize_address(HYPERLIQUID_BRIDGE_ADDRESS) or HYPERLIQUID_BRIDGE_ADDRESS
+                normalize_address(HYPERLIQUID_BRIDGE_ADDRESS)
+                or HYPERLIQUID_BRIDGE_ADDRESS
             )
             chain_id = 42161
             amount_raw = parse_amount_to_raw(str(amt), 6)
@@ -327,7 +328,10 @@ async def hyperliquid_execute(
                     transaction, sign_callback, wait_for_receipt=True
                 )
                 sent_ok = True
-                sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": chain_id}
+                sent_result: dict[str, Any] = {
+                    "txn_hash": tx_hash,
+                    "chain_id": chain_id,
+                }
             except Exception as exc:  # noqa: BLE001
                 sent_ok = False
                 sent_result = {"error": str(exc), "chain_id": chain_id}
@@ -374,7 +378,9 @@ async def hyperliquid_execute(
 
         case "withdraw":
             if amount_usdc is None:
-                response = err("invalid_request", "amount_usdc is required for withdraw")
+                response = err(
+                    "invalid_request", "amount_usdc is required for withdraw"
+                )
                 return response
             try:
                 amt = float(amount_usdc)
@@ -386,7 +392,9 @@ async def hyperliquid_execute(
                 return response
 
             ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
-            effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
+            effects.append(
+                {"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res}
+            )
 
             if ok_wd:
                 ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
@@ -604,7 +612,12 @@ async def hyperliquid_execute(
                     resolved_asset_id, int(order_id), sender
                 )
                 effects.append(
-                    {"type": "hl", "label": "cancel_order", "ok": ok_cancel, "result": res}
+                    {
+                        "type": "hl",
+                        "label": "cancel_order",
+                        "ok": ok_cancel,
+                        "result": res,
+                    }
                 )
 
             ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
@@ -639,11 +652,13 @@ async def hyperliquid_execute(
         case "place_trigger_order":
             if tpsl not in ("tp", "sl"):
                 return err(
-                    "invalid_request", "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)"
+                    "invalid_request",
+                    "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)",
                 )
             if trigger_price is None:
                 return err(
-                    "invalid_request", "trigger_price is required for place_trigger_order"
+                    "invalid_request",
+                    "trigger_price is required for place_trigger_order",
                 )
             try:
                 tpx = float(trigger_price)
@@ -692,7 +707,9 @@ async def hyperliquid_execute(
 
             sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
             if sz_valid <= 0:
-                return err("invalid_request", "size is too small after lot-size rounding")
+                return err(
+                    "invalid_request", "size is too small after lot-size rounding"
+                )
 
             ok_order, res = await adapter.place_trigger_order(
                 resolved_asset_id,
@@ -774,7 +791,9 @@ async def hyperliquid_execute(
 
             if order_type == "limit":
                 if price is None:
-                    response = err("invalid_request", "price is required for limit orders")
+                    response = err(
+                        "invalid_request", "price is required for limit orders"
+                    )
                     return response
                 try:
                     px_for_sizing = float(price)
@@ -897,7 +916,9 @@ async def hyperliquid_execute(
 
             sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
             if sz_valid <= 0:
-                response = err("invalid_request", "size is too small after lot-size rounding")
+                response = err(
+                    "invalid_request", "size is too small after lot-size rounding"
+                )
                 return response
 
             try:
@@ -922,7 +943,12 @@ async def hyperliquid_execute(
                     resolved_asset_id, lev, bool(is_cross), sender
                 )
                 effects.append(
-                    {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
+                    {
+                        "type": "hl",
+                        "label": "update_leverage",
+                        "ok": ok_lev,
+                        "result": res,
+                    }
                 )
                 if not ok_lev:
                     response = ok(
@@ -950,7 +976,10 @@ async def hyperliquid_execute(
                     "type": "hl",
                     "label": "get_max_builder_fee",
                     "ok": ok_fee,
-                    "result": {"current_tenths_bp": int(current), "desired_tenths_bp": desired},
+                    "result": {
+                        "current_tenths_bp": int(current),
+                        "desired_tenths_bp": desired,
+                    },
                 }
             )
             if not ok_fee or int(current) < desired:
@@ -994,7 +1023,12 @@ async def hyperliquid_execute(
                     builder=builder,
                 )
                 effects.append(
-                    {"type": "hl", "label": "place_limit_order", "ok": ok_order, "result": res}
+                    {
+                        "type": "hl",
+                        "label": "place_limit_order",
+                        "ok": ok_order,
+                        "result": res,
+                    }
                 )
             else:
                 ok_order, res = await adapter.place_market_order(
@@ -1008,7 +1042,12 @@ async def hyperliquid_execute(
                     builder=builder,
                 )
                 effects.append(
-                    {"type": "hl", "label": "place_market_order", "ok": ok_order, "result": res}
+                    {
+                        "type": "hl",
+                        "label": "place_market_order",
+                        "ok": ok_order,
+                        "result": res,
+                    }
                 )
 
             ok_all = all(bool(e.get("ok")) for e in effects) if effects else False

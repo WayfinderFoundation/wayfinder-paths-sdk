@@ -143,7 +143,9 @@ async def core_runner(
 
                 ok_started, info = ensure_daemon_started(
                     paths=paths,
-                    tick_seconds=float(tick_seconds) if tick_seconds is not None else 1.0,
+                    tick_seconds=float(tick_seconds)
+                    if tick_seconds is not None
+                    else 1.0,
                     max_workers=int(max_workers) if max_workers is not None else 4,
                     max_failures=int(max_failures) if max_failures is not None else 5,
                     default_timeout_seconds=int(default_timeout_seconds)
@@ -198,7 +200,9 @@ async def core_runner(
                 resp = client.call("shutdown")
                 if not resp.get("ok"):
                     return err(
-                        "runner_error", str(resp.get("error") or "unknown"), details=resp
+                        "runner_error",
+                        str(resp.get("error") or "unknown"),
+                        details=resp,
                     )
 
                 deadline = time.time() + 10.0
@@ -282,7 +286,9 @@ async def core_runner(
                 if not name:
                     return err("invalid_request", "name is required for job_runs")
                 lim = int(limit) if isinstance(limit, int) else 50
-                resp = client.call("job_runs", {"name": str(name).strip(), "limit": lim})
+                resp = client.call(
+                    "job_runs", {"name": str(name).strip(), "limit": lim}
+                )
                 if resp.get("ok"):
                     return ok(resp.get("result"))
                 return err(
@@ -293,7 +299,9 @@ async def core_runner(
                 if run_id is None:
                     return err("invalid_request", "run_id is required for run_report")
                 tb = int(tail_bytes) if isinstance(tail_bytes, int) else 4000
-                resp = client.call("run_report", {"run_id": int(run_id), "tail_bytes": tb})
+                resp = client.call(
+                    "run_report", {"run_id": int(run_id), "tail_bytes": tb}
+                )
                 if resp.get("ok"):
                     return ok(resp.get("result"))
                 return err(
@@ -330,7 +338,9 @@ async def core_runner(
                 if job_type == JOB_TYPE_STRATEGY:
                     strat = (strategy or "").strip()
                     if not strat:
-                        return err("invalid_request", "strategy is required for add_job")
+                        return err(
+                            "invalid_request", "strategy is required for add_job"
+                        )
                     job_payload.update(
                         {
                             "strategy": strat,
