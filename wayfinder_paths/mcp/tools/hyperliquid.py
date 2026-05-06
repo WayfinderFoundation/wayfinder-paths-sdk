@@ -505,17 +505,41 @@ async def hyperliquid_execute(
         case "place_order" if market_type == "outcome":
             outcome_id_v = resolved["outcome_id"]
             side_v = resolved["side"]
-            if is_buy is None or size is None:
-                return err(
-                    "invalid_request", "is_buy and size are required for outcome orders"
-                )
+            if is_buy is None:
+                return err("invalid_request", "is_buy is required for outcome orders")
             if order_type == "limit" and price is None:
                 return err("invalid_request", "price is required for limit orders")
+
+            # Outcomes are integer contracts (szDecimals=0) with no $10 floor;
+            # accept either explicit `size` or `usd_amount` for market orders.
+            size_i: int | None = None if size is None else int(size)
+            if size_i is None:
+                if usd_amount is None:
+                    return err(
+                        "invalid_request",
+                        "size or usd_amount is required for outcome orders",
+                    )
+                if order_type != "market":
+                    return err(
+                        "invalid_request",
+                        "usd_amount sizing is only supported for market outcome orders",
+                    )
+                ok_mids, mids = await adapter.get_all_mid_prices()
+                if not ok_mids or not isinstance(mids, dict):
+                    return err("price_error", "Failed to fetch mid prices")
+                mid = mids.get(coin_clean)  # outcomes keyed `#<encoding>`
+                if mid is None or float(mid) <= 0:
+                    return err(
+                        "price_error",
+                        f"Could not resolve mid price for {coin_clean}",
+                    )
+                size_i = max(1, round(float(usd_amount) / float(mid)))
+
             ok_order, res = await adapter.place_outcome_order(
                 outcome_id=outcome_id_v,
                 side=side_v,
                 is_buy=bool(is_buy),
-                size=int(size),
+                size=size_i,
                 price=None if price is None else float(price),
                 slippage=float(slippage),
                 tif="Ioc" if order_type == "market" else "Gtc",
@@ -537,7 +561,7 @@ async def hyperliquid_execute(
                     "outcome_id": outcome_id_v,
                     "side": side_v,
                     "is_buy": bool(is_buy),
-                    "size": int(size),
+                    "size": size_i,
                 },
             )
             return ok(
@@ -552,7 +576,7 @@ async def hyperliquid_execute(
                     "order": {
                         "order_type": order_type,
                         "is_buy": bool(is_buy),
-                        "size": int(size),
+                        "size": size_i,
                         "price": float(price) if price is not None else None,
                         "slippage": float(slippage),
                         "reduce_only": bool(reduce_only),
@@ -1169,13 +1193,18 @@ async def hyperliquid_get_mid_prices() -> dict[str, Any]:
     return ok({"success": success, "prices": data})
 
 
-async def hyperliquid_get_markets() -> dict[str, Any]:
-    """Return the HL universe as flat lists of canonical coin paths.
+MIN_MATCH_SCORE = 0.9
 
-    Output keys:
-      * `perps`: core perps as `<base>-USDC` and HIP-3 builder perps as `<dex>:<base>`
-      * `spots`: spot pairs as `<base>/<quote>` (e.g. `BTC/USDC`, `USDC/USDH`)
-      * `outcomes`: HIP-4 outcome book coins as `#<encoding>` (`encoding = outcome_id*10 + side`)
+
+async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
+    """
+    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
+    query returns the first `limit` items from each bucket unfiltered.
+
+    query: A simple string containing asset names, for example: btc, eth, oil
+    limit: Max number of results to return per category
+
+    Returns a list of asset names to be used when executing Hyperliquid orders.
     """
     adapter = HyperliquidAdapter()
     (
@@ -1187,17 +1216,72 @@ async def hyperliquid_get_markets() -> dict[str, Any]:
         adapter.get_spot_assets(),
         adapter.get_outcome_markets(),
     )
+    if not perp_ok:
+        perp_data = {"universe": []}
+    if not spot_ok:
+        spot_data = []
+    if not outcome_ok:
+        outcome_data = []
 
-    perps = (
-        [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
-        if perp_ok
-        else []
-    )
-    spots = list(spot_data) if spot_ok else []
-    outcomes = (
-        [s["book_coin"] for market in outcome_data for s in market["sides"]]
-        if outcome_ok
-        else []
-    )
+    perps = [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
+    spots = list(spot_data)
+    outcome_sides = [
+        (s["book_coin"], market["description"])
+        for market in outcome_data
+        for s in market["sides"]
+    ]
 
-    return ok({"perps": perps, "spots": spots, "outcomes": outcomes})
+    if not query.strip():
+        perp_hits = [{"name": p} for p in perps[:limit]]
+        spot_hits = [{"name": s} for s in spots[:limit]]
+        outcome_hits = [
+            {"name": coin, "description": desc} for coin, desc in outcome_sides[:limit]
+        ]
+    else:
+        terms = {
+            a
+            for token in query.lower().split()
+            for a in MARKET_SEARCH_ALIASES.get(token, {token})
+        }
+
+        def score(text: str) -> float:
+            # matches / min(len_a, len_b) — rewards covering the shorter string
+            # fully. HL token symbols are short and often vowel-stripped (KNTQ
+            # for kinetiq, kBONK for bonk), so subsequence-style matching is the
+            # natural fit. We prefer false positives over false negatives:
+            # missed matches are invisible to the LLM consumer, while noise
+            # candidates can be ranked-out downstream.
+            candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
+            best = 0.0
+            for term in terms:
+                for ct in candidate_tokens:
+                    sm = difflib.SequenceMatcher(None, term, ct)
+                    matches = sum(b.size for b in sm.get_matching_blocks())
+                    denom = min(len(term), len(ct))
+                    if denom:
+                        best = max(best, matches / denom)
+            return best
+
+        def top(items, text_of):
+            scored = ((item, score(text_of(item))) for item in items)
+            kept = sorted(
+                ((it, s) for it, s in scored if s >= MIN_MATCH_SCORE),
+                key=lambda r: r[1],
+                reverse=True,
+            )
+            return [it for it, _ in kept[:limit]]
+
+        perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
+        spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
+        outcome_hits = [
+            {"name": coin, "description": desc}
+            for coin, desc in top(outcome_sides, lambda row: row[1])
+        ]
+
+    return ok(
+        {
+            "perps": perp_hits,
+            "spots": spot_hits,
+            "outcomes": outcome_hits,
+        }
+    )
