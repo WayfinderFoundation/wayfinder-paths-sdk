@@ -124,9 +124,87 @@ def _annotate(
     )
 
 
+async def polymarket_get_state(
+    *,
+    wallet_label: str | None = None,
+    wallet_address: str | None = None,
+    account: str | None = None,
+    include_orders: bool = True,
+    include_activity: bool = False,
+    activity_limit: int = 50,
+    include_trades: bool = False,
+    trades_limit: int = 50,
+    positions_limit: int = 500,
+    max_positions_pages: int = 10,
+) -> dict[str, Any]:
+    """Full Polymarket account state — positions, optional orders / activity / trades.
+
+    Account precedence: `account` > `wallet_address` > `wallet_label`-resolved address.
+    `include_orders` defaults to true; `include_activity` / `include_trades` default false
+    to keep payloads tight. Each `*_limit` caps its respective list.
+    """
+    waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
+    acct = normalize_address(account) or normalize_address(wallet_address) or waddr
+
+    if want and not waddr:
+        return err("not_found", f"Unknown wallet_label: {want}")
+    if not acct:
+        return err(
+            "invalid_request",
+            "account (or wallet_label/wallet_address) is required",
+            {
+                "wallet_label": wallet_label,
+                "wallet_address": wallet_address,
+                "account": account,
+            },
+        )
+
+    sign_cb = None
+    sign_hash_cb = None
+    config: dict[str, Any] | None = None
+    if want and waddr:
+        try:
+            sign_cb, _ = await get_wallet_signing_callback(want)
+        except ValueError:
+            pass
+        try:
+            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        except ValueError:
+            pass
+        config = dict(CONFIG)
+        config["strategy_wallet"] = {"address": waddr}
+
+    adapter = PolymarketAdapter(
+        config=config,
+        sign_callback=sign_cb,
+        sign_hash_callback=sign_hash_cb,
+        wallet_address=waddr,
+    )
+    try:
+        ok_state, state = await adapter.get_full_user_state(
+            account=str(acct),
+            include_orders=bool(include_orders),
+            include_activity=bool(include_activity),
+            activity_limit=int(activity_limit),
+            include_trades=bool(include_trades),
+            trades_limit=int(trades_limit),
+            positions_limit=int(positions_limit),
+            max_positions_pages=int(max_positions_pages),
+        )
+        return ok(
+            {
+                "wallet_label": want,
+                "account": acct,
+                "ok": bool(ok_state),
+                "state": state,
+            }
+        )
+    finally:
+        await adapter.close()
+
+
 async def polymarket_read(
     action: Literal[
-        "status",
         "search",
         "trending",
         "get_market",
@@ -142,13 +220,6 @@ async def polymarket_read(
     wallet_label: str | None = None,
     wallet_address: str | None = None,
     account: str | None = None,
-    include_orders: bool = True,
-    include_activity: bool = False,
-    activity_limit: int = 50,
-    include_trades: bool = False,
-    trades_limit: int = 50,
-    positions_limit: int = 500,
-    max_positions_pages: int = 10,
     # search/trending
     query: str | None = None,
     limit: int = 10,
@@ -172,11 +243,11 @@ async def polymarket_read(
     end_ts: int | None = None,
     fidelity: int | None = None,
 ) -> dict[str, Any]:
-    """Read-only Polymarket queries: account state, market discovery, prices, books, history.
+    """Read-only Polymarket queries: market discovery, prices, books, history.
+
+    For account state (positions / orders / activity / trades) call `polymarket_get_state`.
 
     Actions:
-      - `status`: full user state — positions, optional `include_orders` / `include_activity`
-        / `include_trades` with their respective `*_limit`s. Requires a wallet/account.
       - `search`: fuzzy market search by `query`. `events_status` filters active/closed/archived;
         `end_date_min` (YYYY-MM-DD) filters out resolved markets; `rerank` re-scores results.
       - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
@@ -204,7 +275,7 @@ async def polymarket_read(
     if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
 
-    if action in {"status", "bridge_status"} and not acct:
+    if action == "bridge_status" and not acct:
         return err(
             "invalid_request",
             "account (or wallet_label/wallet_address) is required",
@@ -240,27 +311,6 @@ async def polymarket_read(
         wallet_address=waddr,
     )
     try:
-        if action == "status":
-            ok_state, state = await adapter.get_full_user_state(
-                account=str(acct),
-                include_orders=bool(include_orders),
-                include_activity=bool(include_activity),
-                activity_limit=int(activity_limit),
-                include_trades=bool(include_trades),
-                trades_limit=int(trades_limit),
-                positions_limit=int(positions_limit),
-                max_positions_pages=int(max_positions_pages),
-            )
-            return ok(
-                {
-                    "action": action,
-                    "wallet_label": want,
-                    "account": acct,
-                    "ok": bool(ok_state),
-                    "state": state,
-                }
-            )
-
         if action == "search":
             q = str(query or "").strip()
             if not q:

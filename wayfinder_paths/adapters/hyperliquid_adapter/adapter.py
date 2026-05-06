@@ -144,7 +144,7 @@ class HyperliquidAdapter(BaseAdapter):
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return get_info().post("/info", body)
+                    return await asyncio.to_thread(get_info().post, "/info", body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
@@ -279,13 +279,12 @@ class HyperliquidAdapter(BaseAdapter):
         if cached:
             return True, cached
 
-        try:
-            # Handle both callable and property access patterns
+        def _fetch() -> Any:
             spot_meta = get_info().spot_meta
-            if callable(spot_meta):
-                data = spot_meta()
-            else:
-                data = spot_meta
+            return spot_meta() if callable(spot_meta) else spot_meta
+
+        try:
+            data = await asyncio.to_thread(_fetch)
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
         except Exception as exc:
@@ -378,7 +377,7 @@ class HyperliquidAdapter(BaseAdapter):
         n_levels: int = 20,
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = get_info().l2_snapshot(coin)
+            data = await asyncio.to_thread(get_info().l2_snapshot, coin)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch L2 book for {coin}: {exc}")
@@ -648,7 +647,7 @@ class HyperliquidAdapter(BaseAdapter):
         """List HIP-4 outcome markets with parsed settlement spec and
         per-side asset ids / book + token coin names."""
         try:
-            meta = get_info().outcome_meta()
+            meta = await asyncio.to_thread(get_info().outcome_meta)
         except Exception as exc:  # noqa: BLE001
             self.logger.error(f"Failed to fetch outcome_meta: {exc}")
             return False, []

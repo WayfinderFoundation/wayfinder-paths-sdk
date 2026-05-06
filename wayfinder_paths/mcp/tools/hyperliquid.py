@@ -5,18 +5,25 @@ import json
 import re
 from typing import Any, Literal
 
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
+    ARBITRUM_USDC_ADDRESS,
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
+    HYPERLIQUID_BRIDGE_ADDRESS,
 )
+from wayfinder_paths.core.utils.tokens import build_send_transaction
+from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
+    normalize_address,
     ok,
+    parse_amount_to_raw,
     resolve_wallet_address,
 )
 
@@ -122,101 +129,6 @@ async def _resolve_spot_asset_id(
     return True, spot_aid
 
 
-async def hyperliquid_wait(
-    action: Literal["wait_for_deposit", "wait_for_withdrawal"],
-    *,
-    wallet_label: str | None = None,
-    wallet_address: str | None = None,
-    expected_increase: float | None = None,
-    timeout_s: int = 120,
-    poll_interval_s: int = 5,
-    lookback_s: int = 5,
-    max_poll_time_s: int = 15 * 60,
-) -> dict[str, Any]:
-    """Block until a Hyperliquid deposit credits or a withdrawal lands on Arbitrum.
-
-    Use after `core_execute(kind="hyperliquid_deposit", ...)` or `hyperliquid_execute(action="withdraw")`
-    to confirm before chaining dependent steps.
-
-    Actions:
-      - `wait_for_deposit`: poll perp clearinghouse balance until it grows by `expected_increase` USDC.
-      - `wait_for_withdrawal`: poll until a recent withdrawal record appears within `lookback_s` window.
-
-    Args:
-        action: Which event to wait on.
-        wallet_label / wallet_address: Resolve target account; one is required.
-        expected_increase: USDC delta to confirm deposit (required for `wait_for_deposit`).
-        timeout_s: Hard ceiling for `wait_for_deposit` polling.
-        poll_interval_s: Seconds between polls.
-        lookback_s: For withdrawals, how far back to scan recent records.
-        max_poll_time_s: Hard ceiling for `wait_for_withdrawal` polling (default 15 min).
-    """
-    adapter = HyperliquidAdapter()
-
-    addr, _ = await resolve_wallet_address(
-        wallet_label=wallet_label, wallet_address=wallet_address
-    )
-    if not addr:
-        return err(
-            "invalid_request",
-            "wallet_label or wallet_address is required",
-            {"wallet_label": wallet_label, "wallet_address": wallet_address},
-        )
-
-    if action == "wait_for_deposit":
-        if expected_increase is None:
-            return err(
-                "invalid_request",
-                "expected_increase is required for wait_for_deposit",
-                {"expected_increase": expected_increase},
-            )
-        try:
-            inc = float(expected_increase)
-        except (TypeError, ValueError):
-            return err("invalid_request", "expected_increase must be a number")
-        if inc <= 0:
-            return err("invalid_request", "expected_increase must be positive")
-
-        ok_dep, final_bal = await adapter.wait_for_deposit(
-            addr,
-            inc,
-            timeout_s=int(timeout_s),
-            poll_interval_s=int(poll_interval_s),
-        )
-        return ok(
-            {
-                "wallet_address": addr,
-                "action": action,
-                "expected_increase": inc,
-                "confirmed": bool(ok_dep),
-                "final_balance_usd": float(final_bal),
-                "timeout_s": int(timeout_s),
-                "poll_interval_s": int(poll_interval_s),
-            }
-        )
-
-    if action == "wait_for_withdrawal":
-        ok_wd, withdrawals = await adapter.wait_for_withdrawal(
-            addr,
-            lookback_s=int(lookback_s),
-            max_poll_time_s=int(max_poll_time_s),
-            poll_interval_s=int(poll_interval_s),
-        )
-        return ok(
-            {
-                "wallet_address": addr,
-                "action": action,
-                "confirmed": bool(ok_wd),
-                "withdrawals": withdrawals,
-                "lookback_s": int(lookback_s),
-                "max_poll_time_s": int(max_poll_time_s),
-                "poll_interval_s": int(poll_interval_s),
-            }
-        )
-
-    return err("invalid_request", f"Unknown hyperliquid action: {action}")
-
-
 def _annotate_hl_profile(
     *,
     address: str,
@@ -245,6 +157,7 @@ async def hyperliquid_execute(
         "place_trigger_order",
         "cancel_order",
         "update_leverage",
+        "deposit",
         "withdraw",
         "spot_to_perp_transfer",
         "perp_to_spot_transfer",
@@ -290,6 +203,8 @@ async def hyperliquid_execute(
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
       - `update_leverage`: set `leverage` and `is_cross` for an asset.
+      - `deposit`: bridge `amount_usdc` from Arbitrum USDC into the HL perp account
+        (≥ 5 USDC; below is lost). Auto-waits for the perp clearinghouse credit before returning.
       - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
       - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
 
@@ -354,6 +269,86 @@ async def hyperliquid_execute(
         return err("invalid_wallet", str(e))
     sender = adapter.wallet_address
 
+    if action == "deposit":
+        if amount_usdc is None:
+            return err("invalid_request", "amount_usdc is required for deposit")
+        try:
+            amt = float(amount_usdc)
+        except (TypeError, ValueError):
+            return err("invalid_request", "amount_usdc must be a number")
+        if amt < 5:
+            return err(
+                "invalid_request",
+                "amount_usdc must be >= 5 USDC (HL deposits below are lost)",
+            )
+
+        try:
+            sign_callback, deposit_sender = await get_wallet_signing_callback(want)
+        except ValueError as exc:
+            return err("invalid_wallet", str(exc))
+
+        recipient = (
+            normalize_address(HYPERLIQUID_BRIDGE_ADDRESS) or HYPERLIQUID_BRIDGE_ADDRESS
+        )
+        chain_id = 42161
+        amount_raw = parse_amount_to_raw(str(amt), 6)
+        transaction = await build_send_transaction(
+            from_address=deposit_sender,
+            to_address=recipient,
+            token_address=ARBITRUM_USDC_ADDRESS,
+            chain_id=chain_id,
+            amount=int(amount_raw),
+        )
+        try:
+            tx_hash = await send_transaction(
+                transaction, sign_callback, wait_for_receipt=True
+            )
+            sent_ok = True
+            sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": chain_id}
+        except Exception as exc:  # noqa: BLE001
+            sent_ok = False
+            sent_result = {"error": str(exc), "chain_id": chain_id}
+        effects.append(
+            {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
+        )
+
+        if sent_ok:
+            ok_landed, final_balance = await adapter.wait_for_deposit(
+                deposit_sender, amt
+            )
+            effects.append(
+                {
+                    "type": "hl",
+                    "label": "wait_for_credit",
+                    "ok": ok_landed,
+                    "result": {
+                        "confirmed": bool(ok_landed),
+                        "final_balance_usd": float(final_balance),
+                    },
+                }
+            )
+
+        status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": deposit_sender,
+                "amount_usdc": amt,
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
+        _annotate_hl_profile(
+            address=deposit_sender,
+            label=want,
+            action="deposit",
+            status=status,
+            details={"amount_usdc": amt, "chain_id": chain_id},
+        )
+        return response
+
     if action == "withdraw":
         if amount_usdc is None:
             response = err("invalid_request", "amount_usdc is required for withdraw")
@@ -369,7 +364,19 @@ async def hyperliquid_execute(
 
         ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
         effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
-        status = "confirmed" if ok_wd else "failed"
+
+        if ok_wd:
+            ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
+            effects.append(
+                {
+                    "type": "hl",
+                    "label": "wait_for_withdrawal",
+                    "ok": ok_landed,
+                    "result": withdrawals,
+                }
+            )
+
+        status = "confirmed" if all(e["ok"] for e in effects) else "failed"
         response = ok(
             {
                 "status": status,
