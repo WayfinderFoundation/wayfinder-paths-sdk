@@ -116,6 +116,7 @@ def _compact_quote(
     if isinstance(best_quote, dict):
         result["best"] = {
             "provider": best_quote.get("provider"),
+            "bridge_tracking": best_quote.get("bridge_tracking"),
             "input_amount": best_quote.get("input_amount"),
             "output_amount": best_quote.get("output_amount"),
             "input_usd": best_quote.get("input_amount_usd"),

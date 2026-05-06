@@ -167,6 +167,7 @@ async def onchain_quote_swap(
 
         best_out = {
             "provider": best_quote.get("provider"),
+            "bridge_tracking": best_quote.get("bridge_tracking"),
             "input_amount": best_quote.get("input_amount"),
             "output_amount": best_quote.get("output_amount"),
             "input_amount_usd": best_quote.get("input_amount_usd"),

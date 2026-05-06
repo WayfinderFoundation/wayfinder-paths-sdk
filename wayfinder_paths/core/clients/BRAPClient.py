@@ -47,9 +47,20 @@ class Calldata(TypedDict, total=False):
     chainId: int
 
 
+class BRAPBridgeTracking(TypedDict, total=False):
+    provider: Required[str]
+    requires_source_tx_hash: Required[bool]
+    from_chain: int | None
+    to_chain: int | None
+    bridge: str | None
+    protocol: str | None
+    order_id: str | None
+
+
 class BRAPQuoteEntry(TypedDict):
     provider: Required[str]
     quote: Required[QuoteData]
+    bridge_tracking: NotRequired[BRAPBridgeTracking | None]
     calldata: Required[Calldata]
     output_amount: Required[int]
     input_amount: Required[int]
