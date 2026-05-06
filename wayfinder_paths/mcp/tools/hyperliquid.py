@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from typing import Any, Literal, TypedDict
 
 from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
