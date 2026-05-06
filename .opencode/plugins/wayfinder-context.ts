@@ -21,7 +21,7 @@ async function fetchContext(): Promise<string> {
   try {
     const client = await getClient();
     const res = await client.callTool({
-      name: "wayfinder_core_get_context",
+      name: "core_get_context",
       arguments: {},
     });
     return (res.content as Array<{ text: string }>)[0].text;
