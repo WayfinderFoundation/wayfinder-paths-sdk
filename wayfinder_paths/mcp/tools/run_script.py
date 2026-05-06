@@ -235,7 +235,16 @@ async def core_run_script(
     exit_code = int(proc.returncode or 0)
     status = "timeout" if timed_out else ("completed" if exit_code == 0 else "failed")
 
-    response = ok(
+    inferred_protocol = _infer_protocol_from_script(script)
+    if inferred_protocol and wallet_label:
+        await _annotate_script_run(
+            script_path=display_path,
+            status=status,
+            wallet_label=wallet_label,
+            protocol=inferred_protocol,
+        )
+
+    return ok(
         {
             "status": status,
             "script_path": display_path,
@@ -249,14 +258,3 @@ async def core_run_script(
             "preview": preview_text,
         }
     )
-
-    inferred_protocol = _infer_protocol_from_script(script)
-    if inferred_protocol and wallet_label:
-        await _annotate_script_run(
-            script_path=display_path,
-            status=status,
-            wallet_label=wallet_label,
-            protocol=inferred_protocol,
-        )
-
-    return response
