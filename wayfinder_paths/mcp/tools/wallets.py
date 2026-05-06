@@ -213,205 +213,207 @@ async def core_wallets(
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
 
-    if action == "create":
-        load_config(config_path)
-        if not remote and OPENCODE_CLIENT.healthy():
-            return err(
-                "invalid_request",
-                "Local wallets are discouraged for OpenCode instances",
-            )
-        existing = await load_wallets()
-        want = (label or wallet_label or "").strip()
-        if not want:
-            return err(
-                "invalid_request", "label is required for wallets(action=create)"
-            )
+    match action:
+        case "create":
+            load_config(config_path)
+            if not remote and OPENCODE_CLIENT.healthy():
+                return err(
+                    "invalid_request",
+                    "Local wallets are discouraged for OpenCode instances",
+                )
+            existing = await load_wallets()
+            want = (label or wallet_label or "").strip()
+            if not want:
+                return err(
+                    "invalid_request", "label is required for wallets(action=create)"
+                )
 
-        for w in existing:
-            if str(w.get("label", "")).strip() == want:
+            for w in existing:
+                if str(w.get("label", "")).strip() == want:
+                    return ok(
+                        {
+                            "wallets": [public_wallet_view(x) for x in existing],
+                            "created": public_wallet_view(w),
+                            "note": "Wallet label already existed; returning existing wallet.",
+                        }
+                    )
+
+            if remote:
+                if not wallet_type:
+                    return err(
+                        "invalid_request",
+                        "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                    )
+                result = await create_remote_wallet(
+                    label=want, wallet_type=wallet_type, policies=policies
+                )
+                refreshed = await load_wallets()
                 return ok(
                     {
-                        "wallets": [public_wallet_view(x) for x in existing],
+                        "wallets": [public_wallet_view(x) for x in refreshed],
+                        "created": {
+                            "label": result.get("label", want),
+                            "address": result["wallet_address"],
+                        },
+                    }
+                )
+            else:
+                mnemonic = load_wallet_mnemonic()
+                w = make_local_wallet(
+                    label=want, existing_wallets=existing, mnemonic=mnemonic
+                )
+                write_wallet_to_json(
+                    w, out_dir=config_path.parent, filename=config_path.name
+                )
+                load_config(config_path)
+
+                refreshed = await load_wallets()
+                return ok(
+                    {
+                        "wallets": [public_wallet_view(x) for x in refreshed],
                         "created": public_wallet_view(w),
-                        "note": "Wallet label already existed; returning existing wallet.",
                     }
                 )
 
-        if remote:
-            if not wallet_type:
+        case "annotate":
+            address, lbl = await resolve_wallet_address(
+                wallet_label=wallet_label or label, wallet_address=wallet_address
+            )
+            if not address:
                 return err(
                     "invalid_request",
-                    "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                    "wallet_label or wallet_address is required",
                 )
-            result = await create_remote_wallet(
-                label=want, wallet_type=wallet_type, policies=policies
+            if not protocol:
+                return err("invalid_request", "protocol is required for annotate")
+            if not annotate_action:
+                return err("invalid_request", "annotate_action is required for annotate")
+            if not tool:
+                return err("invalid_request", "tool is required for annotate")
+            if not status:
+                return err("invalid_request", "status is required for annotate")
+
+            store.annotate(
+                address=address,
+                label=lbl,
+                protocol=protocol,
+                action=annotate_action,
+                tool=tool,
+                status=status,
+                chain_id=chain_id,
+                details=details,
             )
-            refreshed = await load_wallets()
+
             return ok(
                 {
-                    "wallets": [public_wallet_view(x) for x in refreshed],
-                    "created": {
-                        "label": result.get("label", want),
-                        "address": result["wallet_address"],
-                    },
-                }
-            )
-        else:
-            mnemonic = load_wallet_mnemonic()
-            w = make_local_wallet(
-                label=want, existing_wallets=existing, mnemonic=mnemonic
-            )
-            write_wallet_to_json(
-                w, out_dir=config_path.parent, filename=config_path.name
-            )
-            load_config(config_path)
-
-            refreshed = await load_wallets()
-            return ok(
-                {
-                    "wallets": [public_wallet_view(x) for x in refreshed],
-                    "created": public_wallet_view(w),
+                    "action": "annotate",
+                    "address": address,
+                    "protocol": protocol,
+                    "annotated": True,
                 }
             )
 
-    if action == "annotate":
-        address, lbl = await resolve_wallet_address(
-            wallet_label=wallet_label or label, wallet_address=wallet_address
-        )
-        if not address:
-            return err(
-                "invalid_request",
-                "wallet_label or wallet_address is required",
+        case "discover_portfolio":
+            address, lbl = await resolve_wallet_address(
+                wallet_label=wallet_label or label, wallet_address=wallet_address
             )
-        if not protocol:
-            return err("invalid_request", "protocol is required for annotate")
-        if not annotate_action:
-            return err("invalid_request", "annotate_action is required for annotate")
-        if not tool:
-            return err("invalid_request", "tool is required for annotate")
-        if not status:
-            return err("invalid_request", "status is required for annotate")
+            if not address:
+                return err(
+                    "invalid_request",
+                    "wallet_label or wallet_address is required for discover_portfolio",
+                )
 
-        store.annotate(
-            address=address,
-            label=lbl,
-            protocol=protocol,
-            action=annotate_action,
-            tool=tool,
-            status=status,
-            chain_id=chain_id,
-            details=details,
-        )
+            profile_protocols = store.get_protocols_for_wallet(address)
 
-        return ok(
-            {
-                "action": "annotate",
-                "address": address,
-                "protocol": protocol,
-                "annotated": True,
-            }
-        )
+            if protocols:
+                target_protocols = list(dict.fromkeys(protocols))
+            else:
+                target_protocols = profile_protocols
 
-    if action == "discover_portfolio":
-        address, lbl = await resolve_wallet_address(
-            wallet_label=wallet_label or label, wallet_address=wallet_address
-        )
-        if not address:
-            return err(
-                "invalid_request",
-                "wallet_label or wallet_address is required for discover_portfolio",
-            )
+            supported_protocols = [p for p in target_protocols if p in PROTOCOL_ADAPTERS]
+            unsupported = [p for p in target_protocols if p not in PROTOCOL_ADAPTERS]
 
-        profile_protocols = store.get_protocols_for_wallet(address)
+            if not supported_protocols:
+                return ok(
+                    {
+                        "action": "discover_portfolio",
+                        "address": address,
+                        "label": lbl,
+                        "profile_protocols": profile_protocols,
+                        "positions": [],
+                        "warning": "No supported protocols to query",
+                        "unsupported_protocols": unsupported,
+                    }
+                )
 
-        if protocols:
-            target_protocols = list(dict.fromkeys(protocols))
-        else:
-            target_protocols = profile_protocols
+            if len(supported_protocols) >= 3 and not parallel:
+                return ok(
+                    {
+                        "action": "discover_portfolio",
+                        "address": address,
+                        "label": lbl,
+                        "profile_protocols": profile_protocols,
+                        "supported_protocols": supported_protocols,
+                        "requires_confirmation": True,
+                        "warning": f"Found {len(supported_protocols)} protocols to query. "
+                        f"Set parallel=true for concurrent queries, or filter with protocols=[...] "
+                        f"to query specific protocols.",
+                        "protocols_to_query": supported_protocols,
+                    }
+                )
 
-        supported_protocols = [p for p in target_protocols if p in PROTOCOL_ADAPTERS]
-        unsupported = [p for p in target_protocols if p not in PROTOCOL_ADAPTERS]
+            start = time.time()
+            results: list[dict[str, Any]] = []
 
-        if not supported_protocols:
+            if parallel:
+                tasks = [
+                    _query_adapter(
+                        proto, address, include_zero_positions, chain_id=chain_id
+                    )
+                    for proto in supported_protocols
+                ]
+                results = await asyncio.gather(*tasks)
+            else:
+                for proto in supported_protocols:
+                    result = await _query_adapter(
+                        proto,
+                        address,
+                        include_zero_positions,
+                        chain_id=chain_id,
+                    )
+                    results.append(result)
+
+            total_duration = time.time() - start
+            all_positions: list[dict[str, Any]] = []
+            for r in results:
+                if r.get("ok") and r.get("data"):
+                    data = r["data"]
+                    positions = data.get("positions", [])
+                    if positions:
+                        for pos in positions:
+                            all_positions.append(
+                                {"protocol": r["protocol"], "position": pos}
+                            )
+                    r["data"] = data
+
             return ok(
                 {
                     "action": "discover_portfolio",
                     "address": address,
                     "label": lbl,
                     "profile_protocols": profile_protocols,
-                    "positions": [],
-                    "warning": "No supported protocols to query",
-                    "unsupported_protocols": unsupported,
+                    "queried_protocols": supported_protocols,
+                    "results": results,
+                    "positions_count": len(all_positions),
+                    "positions_summary": all_positions[:10],
+                    "total_duration_s": round(total_duration, 3),
+                    "parallel": parallel,
+                    "unsupported_protocols": unsupported if unsupported else None,
                 }
             )
 
-        if len(supported_protocols) >= 3 and not parallel:
-            return ok(
-                {
-                    "action": "discover_portfolio",
-                    "address": address,
-                    "label": lbl,
-                    "profile_protocols": profile_protocols,
-                    "supported_protocols": supported_protocols,
-                    "requires_confirmation": True,
-                    "warning": f"Found {len(supported_protocols)} protocols to query. "
-                    f"Set parallel=true for concurrent queries, or filter with protocols=[...] "
-                    f"to query specific protocols.",
-                    "protocols_to_query": supported_protocols,
-                }
-            )
-
-        start = time.time()
-        results: list[dict[str, Any]] = []
-
-        if parallel:
-            tasks = [
-                _query_adapter(
-                    proto, address, include_zero_positions, chain_id=chain_id
-                )
-                for proto in supported_protocols
-            ]
-            results = await asyncio.gather(*tasks)
-        else:
-            for proto in supported_protocols:
-                result = await _query_adapter(
-                    proto,
-                    address,
-                    include_zero_positions,
-                    chain_id=chain_id,
-                )
-                results.append(result)
-
-        total_duration = time.time() - start
-        all_positions: list[dict[str, Any]] = []
-        for r in results:
-            if r.get("ok") and r.get("data"):
-                data = r["data"]
-                positions = data.get("positions", [])
-                if positions:
-                    for pos in positions:
-                        all_positions.append(
-                            {"protocol": r["protocol"], "position": pos}
-                        )
-                r["data"] = data
-
-        return ok(
-            {
-                "action": "discover_portfolio",
-                "address": address,
-                "label": lbl,
-                "profile_protocols": profile_protocols,
-                "queried_protocols": supported_protocols,
-                "results": results,
-                "positions_count": len(all_positions),
-                "positions_summary": all_positions[:10],
-                "total_duration_s": round(total_duration, 3),
-                "parallel": parallel,
-                "unsupported_protocols": unsupported if unsupported else None,
-            }
-        )
-
-    return err("invalid_request", f"Unknown action: {action}")
+        case _:
+            return err("invalid_request", f"Unknown action: {action}")
 
 
 def _balance_usd(entry: dict[str, Any]) -> float:

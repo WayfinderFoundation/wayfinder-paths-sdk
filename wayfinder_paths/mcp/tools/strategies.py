@@ -147,93 +147,55 @@ async def core_run_strategy(
         if hasattr(strategy_obj, "setup"):
             await strategy_obj.setup()
 
-        if action == "status":
-            out = await strategy_obj.status()
-            return ok_with_warning(
-                {"strategy": strategy, "action": action, "output": out}
-            )
-
-        if action == "analyze":
-            if hasattr(strategy_obj, "analyze"):
-                out = await strategy_obj.analyze(deposit_usdc=amount_usdc)
+        match action:
+            case "status":
+                out = await strategy_obj.status()
                 return ok_with_warning(
                     {"strategy": strategy, "action": action, "output": out}
                 )
-            return err("not_supported", "Strategy does not support analyze()")
 
-        if action == "snapshot":
-            if hasattr(strategy_obj, "build_batch_snapshot"):
-                out = await strategy_obj.build_batch_snapshot(
-                    score_deposit_usdc=amount_usdc
-                )
-                return ok_with_warning(
-                    {"strategy": strategy, "action": action, "output": out}
-                )
-            return err(
-                "not_supported", "Strategy does not support build_batch_snapshot()"
-            )
+            case "analyze":
+                if hasattr(strategy_obj, "analyze"):
+                    out = await strategy_obj.analyze(deposit_usdc=amount_usdc)
+                    return ok_with_warning(
+                        {"strategy": strategy, "action": action, "output": out}
+                    )
+                return err("not_supported", "Strategy does not support analyze()")
 
-        if action == "quote":
-            if hasattr(strategy_obj, "quote"):
-                out = await strategy_obj.quote(deposit_amount=amount_usdc)
-                return ok_with_warning(
-                    {"strategy": strategy, "action": action, "output": out}
-                )
-            return err("not_supported", "Strategy does not support quote()")
-
-        if action == "deposit":
-            # Prefer the canonical strategy kwargs (main_token_amount + gas_token_amount).
-            # Back-compat: allow callers to pass `amount` as the main token amount.
-            if main_token_amount is None:
-                main_token_amount = amount
-            if main_token_amount is None:
+            case "snapshot":
+                if hasattr(strategy_obj, "build_batch_snapshot"):
+                    out = await strategy_obj.build_batch_snapshot(
+                        score_deposit_usdc=amount_usdc
+                    )
+                    return ok_with_warning(
+                        {"strategy": strategy, "action": action, "output": out}
+                    )
                 return err(
-                    "invalid_request",
-                    "main_token_amount required for deposit (optionally gas_token_amount)",
+                    "not_supported", "Strategy does not support build_batch_snapshot()"
                 )
-            success, msg = await strategy_obj.deposit(
-                main_token_amount=float(main_token_amount),
-                gas_token_amount=float(gas_token_amount),
-            )
-            return ok_with_warning(
-                {
-                    "strategy": strategy,
-                    "action": action,
-                    "success": success,
-                    "message": msg,
-                }
-            )
 
-        if action == "update":
-            success, msg = await strategy_obj.update()
-            return ok_with_warning(
-                {
-                    "strategy": strategy,
-                    "action": action,
-                    "success": success,
-                    "message": msg,
-                }
-            )
+            case "quote":
+                if hasattr(strategy_obj, "quote"):
+                    out = await strategy_obj.quote(deposit_amount=amount_usdc)
+                    return ok_with_warning(
+                        {"strategy": strategy, "action": action, "output": out}
+                    )
+                return err("not_supported", "Strategy does not support quote()")
 
-        if action == "withdraw":
-            if amount is not None:
-                return err(
-                    "not_supported",
-                    "partial withdraw is not supported; omit amount",
+            case "deposit":
+                # Prefer the canonical strategy kwargs (main_token_amount + gas_token_amount).
+                # Back-compat: allow callers to pass `amount` as the main token amount.
+                if main_token_amount is None:
+                    main_token_amount = amount
+                if main_token_amount is None:
+                    return err(
+                        "invalid_request",
+                        "main_token_amount required for deposit (optionally gas_token_amount)",
+                    )
+                success, msg = await strategy_obj.deposit(
+                    main_token_amount=float(main_token_amount),
+                    gas_token_amount=float(gas_token_amount),
                 )
-            success, msg = await strategy_obj.withdraw()
-            return ok_with_warning(
-                {
-                    "strategy": strategy,
-                    "action": action,
-                    "success": success,
-                    "message": msg,
-                }
-            )
-
-        if action == "exit":
-            if hasattr(strategy_obj, "exit"):
-                success, msg = await strategy_obj.exit()
                 return ok_with_warning(
                     {
                         "strategy": strategy,
@@ -242,8 +204,48 @@ async def core_run_strategy(
                         "message": msg,
                     }
                 )
-            return err("not_supported", "Strategy does not support exit()")
 
-        return err("invalid_request", f"Unknown action: {action}")
+            case "update":
+                success, msg = await strategy_obj.update()
+                return ok_with_warning(
+                    {
+                        "strategy": strategy,
+                        "action": action,
+                        "success": success,
+                        "message": msg,
+                    }
+                )
+
+            case "withdraw":
+                if amount is not None:
+                    return err(
+                        "not_supported",
+                        "partial withdraw is not supported; omit amount",
+                    )
+                success, msg = await strategy_obj.withdraw()
+                return ok_with_warning(
+                    {
+                        "strategy": strategy,
+                        "action": action,
+                        "success": success,
+                        "message": msg,
+                    }
+                )
+
+            case "exit":
+                if hasattr(strategy_obj, "exit"):
+                    success, msg = await strategy_obj.exit()
+                    return ok_with_warning(
+                        {
+                            "strategy": strategy,
+                            "action": action,
+                            "success": success,
+                            "message": msg,
+                        }
+                    )
+                return err("not_supported", "Strategy does not support exit()")
+
+            case _:
+                return err("invalid_request", f"Unknown action: {action}")
     except Exception as exc:  # noqa: BLE001
         return err("strategy_error", str(exc))
