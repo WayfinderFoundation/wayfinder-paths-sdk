@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from wayfinder_paths.core.clients.BRAPClient import BRAPQuoteResponse
+from wayfinder_paths.core.clients.BRAPClient import (
+    BRAPBridgeExecutionStatus,
+    BRAPBridgeTracking,
+    BRAPQuoteResponse,
+)
 from wayfinder_paths.core.clients.HyperlendClient import (
     AssetsView,
     LendRateHistory,
@@ -153,6 +157,20 @@ class BRAPClientProtocol(Protocol):
         from_wallet: str,
         from_amount: str,
     ) -> BRAPQuoteResponse: ...
+
+    async def get_bridge_execution_status(
+        self,
+        *,
+        bridge_tracking: BRAPBridgeTracking | dict[str, Any] | None = None,
+        provider: str | None = None,
+        tx_hash: str | None = None,
+        from_chain: int | None = None,
+        to_chain: int | None = None,
+        bridge: str | None = None,
+        protocol: str | None = None,
+        quote: dict[str, Any] | None = None,
+        order_id: str | None = None,
+    ) -> BRAPBridgeExecutionStatus: ...
 
 
 class HyperliquidExecutorProtocol(Protocol):

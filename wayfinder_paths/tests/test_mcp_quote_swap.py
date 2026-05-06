@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
+from wayfinder_paths.mcp.tools.quotes import onchain_bridge_status, onchain_quote_swap
 
 
 @pytest.mark.asyncio
@@ -94,6 +94,49 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     assert "calldata" not in best
     assert res["quote"]["quote_count"] == 3
     assert res["quote"]["providers"] == ["brap_best", "brap_alt"]
+
+
+@pytest.mark.asyncio
+async def test_onchain_bridge_status_returns_normalized_status():
+    fake_brap = AsyncMock()
+    fake_brap.get_bridge_execution_status = AsyncMock(
+        return_value={
+            "provider": "lifi",
+            "state": "destination_pending",
+            "is_finished": False,
+            "is_success": False,
+            "next_poll_seconds": 5,
+            "status": {"status": "PENDING"},
+        }
+    )
+
+    bridge_tracking = {
+        "provider": "lifi",
+        "requires_source_tx_hash": True,
+        "from_chain": 1,
+        "to_chain": 8453,
+        "bridge": "across",
+    }
+
+    with patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap):
+        out = await onchain_bridge_status(
+            bridge_tracking=bridge_tracking,
+            tx_hash="0xtx",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["next_action"] == "poll_again"
+    assert out["result"]["bridge_status"]["state"] == "destination_pending"
+    fake_brap.get_bridge_execution_status.assert_awaited_once_with(
+        bridge_tracking=bridge_tracking,
+        tx_hash="0xtx",
+        provider=None,
+        from_chain=None,
+        to_chain=None,
+        bridge=None,
+        protocol=None,
+        order_id=None,
+    )
 
 
 @pytest.mark.asyncio

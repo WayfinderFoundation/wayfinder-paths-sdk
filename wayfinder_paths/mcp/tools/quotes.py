@@ -229,3 +229,49 @@ async def onchain_quote_swap(
     }
 
     return ok(result)
+
+
+async def onchain_bridge_status(
+    *,
+    bridge_tracking: dict[str, Any] | None = None,
+    tx_hash: str | None = None,
+    provider: str | None = None,
+    from_chain: int | None = None,
+    to_chain: int | None = None,
+    bridge: str | None = None,
+    protocol: str | None = None,
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch normalized BRAP bridge execution status for a submitted swap.
+
+    Pass the `bridge_tracking` object returned by `onchain_quote_swap` plus the
+    source transaction hash when `requires_source_tx_hash=true`.
+    """
+    if bridge_tracking is not None and not isinstance(bridge_tracking, dict):
+        return err("invalid_request", "bridge_tracking must be an object")
+
+    try:
+        status = await BRAP_CLIENT.get_bridge_execution_status(
+            bridge_tracking=bridge_tracking,
+            tx_hash=tx_hash,
+            provider=provider,
+            from_chain=from_chain,
+            to_chain=to_chain,
+            bridge=bridge,
+            protocol=protocol,
+            order_id=order_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err("bridge_status_error", str(exc))
+
+    next_action = "poll_again"
+    if status.get("is_finished"):
+        next_action = "done" if status.get("is_success") else "review_failure"
+
+    return ok(
+        {
+            "bridge_status": status,
+            "next_action": next_action,
+            "next_poll_seconds": status.get("next_poll_seconds"),
+        }
+    )

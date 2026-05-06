@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, NotRequired, Required, TypedDict
 
@@ -80,6 +81,31 @@ class BRAPQuoteResponse(TypedDict):
     best_quote: Required[BRAPQuoteEntry]
 
 
+class BRAPBridgeExecutionStatus(TypedDict, total=False):
+    provider: str | None
+    state: str
+    provider_status: str | None
+    provider_substatus: str | None
+    message: str | None
+    error: str | None
+    source_tx_hash: str | None
+    source_tx_url: str | None
+    source_chain_id: int | None
+    destination_tx_hash: str | None
+    destination_tx_url: str | None
+    destination_chain_id: int | None
+    bridge_tool: str | None
+    bridge_protocol: str | None
+    provider_tracking_id: str | None
+    provider_explorer_url: str | None
+    estimated_seconds_remaining: int | float | None
+    next_poll_seconds: int | float | None
+    is_finished: bool
+    is_success: bool
+    raw_status: dict[str, Any]
+    status: dict[str, Any]
+
+
 class BRAPClient(WayfinderClient):
     async def get_quote(
         self,
@@ -124,6 +150,79 @@ class BRAPClient(WayfinderClient):
             elapsed = time.time() - start_time
             logger.error(f"BRAP quote request failed after {elapsed:.2f}s: {e}")
             raise
+
+    async def get_bridge_execution_status(
+        self,
+        *,
+        bridge_tracking: BRAPBridgeTracking | dict[str, Any] | None = None,
+        provider: str | None = None,
+        tx_hash: str | None = None,
+        from_chain: int | None = None,
+        to_chain: int | None = None,
+        bridge: str | None = None,
+        protocol: str | None = None,
+        quote: dict[str, Any] | None = None,
+        order_id: str | None = None,
+    ) -> BRAPBridgeExecutionStatus:
+        """Fetch the latest normalized bridge execution status without polling."""
+        tracking = bridge_tracking or {}
+        url = f"{get_api_base_url()}/blockchain/braps/bridge-execution-status/"
+        payload = {
+            "bridge_tracking": tracking,
+            "provider": provider or tracking.get("provider"),
+            "tx_hash": tx_hash,
+            "from_chain": from_chain or tracking.get("from_chain"),
+            "to_chain": to_chain or tracking.get("to_chain"),
+            "bridge": bridge or tracking.get("bridge"),
+            "protocol": protocol or tracking.get("protocol"),
+            "quote": quote,
+            "order_id": order_id or tracking.get("order_id"),
+        }
+
+        response = await self._authed_request("POST", url, json=payload, headers={})
+        data = response.json()
+        return data.get("data", data)
+
+    async def wait_for_bridge_execution(
+        self,
+        *,
+        bridge_tracking: BRAPBridgeTracking | dict[str, Any] | None = None,
+        provider: str | None = None,
+        tx_hash: str | None = None,
+        from_chain: int | None = None,
+        to_chain: int | None = None,
+        bridge: str | None = None,
+        protocol: str | None = None,
+        quote: dict[str, Any] | None = None,
+        order_id: str | None = None,
+        timeout_seconds: float = 600.0,
+    ) -> BRAPBridgeExecutionStatus:
+        """Poll normalized bridge status until a terminal state or timeout."""
+        start_time = time.time()
+        while True:
+            status = await self.get_bridge_execution_status(
+                bridge_tracking=bridge_tracking,
+                provider=provider,
+                tx_hash=tx_hash,
+                from_chain=from_chain,
+                to_chain=to_chain,
+                bridge=bridge,
+                protocol=protocol,
+                quote=quote,
+                order_id=order_id,
+            )
+            if status.get("is_finished"):
+                return status
+            if time.time() - start_time > timeout_seconds:
+                raise TimeoutError(
+                    f"Bridge execution did not finish within {timeout_seconds:.0f}s"
+                )
+            next_poll = status.get("next_poll_seconds")
+            try:
+                sleep_seconds = float(next_poll)
+            except (TypeError, ValueError):
+                sleep_seconds = 5.0
+            await asyncio.sleep(max(1.0, min(sleep_seconds, 30.0)))
 
 
 BRAP_CLIENT = BRAPClient()
