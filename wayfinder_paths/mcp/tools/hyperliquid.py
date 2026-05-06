@@ -54,6 +54,22 @@ def _format_perp_market(name: str) -> str:
     return name if ":" in name else f"{name}{_PERP_QUOTE_SUFFIX}"
 
 
+def _mid_feed_keys(market_type: str, coin_clean: str, asset_id: int) -> list[str]:
+    """Candidate keys for `get_all_mid_prices()`, in lookup order.
+
+    HL's mid feed uses different key grammars per market type:
+      - core perp / HIP-3 perp -> bare symbol (e.g. "BTC", "xyz:NVDA")
+      - spot                   -> "@<spot_index>" (= asset_id - 10000)
+                                  EXCEPT PURR/USDC, grandfathered under its
+                                  canonical name. Try the @-form first, fall
+                                  back to canonical for the PURR case.
+      - HIP-4 outcome          -> "#<encoding>" (already in coin_clean)
+    """
+    if market_type == "spot":
+        return [f"@{asset_id - 10000}", coin_clean]
+    return [coin_clean]
+
+
 def _resolve_builder_fee(
     *,
     config: dict[str, Any],
@@ -330,10 +346,10 @@ async def hyperliquid_execute(
                 transaction, sign_callback, wait_for_receipt=True
             )
             sent_ok = True
-            sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": chain_id}
+            sent_result: dict[str, Any] = {"txn_hash": tx_hash}
         except Exception as exc:  # noqa: BLE001
             sent_ok = False
-            sent_result = {"error": str(exc), "chain_id": chain_id}
+            sent_result = {"error": str(exc)}
         effects.append(
             {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
         )
@@ -552,7 +568,11 @@ async def hyperliquid_execute(
             label=want,
             action="update_leverage",
             status=status,
-            details={"asset_id": resolved_asset_id, "asset_name": asset_name, "leverage": lev},
+            details={
+                "asset_id": resolved_asset_id,
+                "asset_name": asset_name,
+                "leverage": lev,
+            },
         )
         return ok(
             {
@@ -831,13 +851,15 @@ async def hyperliquid_execute(
             if not ok_mids or not isinstance(mids, dict):
                 return err("price_error", "Failed to fetch mid prices")
             mid = None
-            for k, v in mids.items():
-                if str(k).lower() == coin_clean.lower():
-                    try:
-                        mid = float(v)
-                    except (TypeError, ValueError):
-                        mid = None
+            for key in _mid_feed_keys(market_type, coin_clean, resolved_asset_id):
+                v = mids.get(key)
+                if v is None:
+                    continue
+                try:
+                    mid = float(v)
                     break
+                except (TypeError, ValueError):
+                    continue
             if mid is None or mid <= 0:
                 return err(
                     "price_error",
