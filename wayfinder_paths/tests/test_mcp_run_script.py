@@ -35,3 +35,19 @@ async def test_run_script_executes(tmp_path: Path, monkeypatch):
     out1 = await core_run_script(script_path=str(script), timeout_s=30)
     assert out1["ok"] is True
     assert out1["result"]["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_script_missing_file_tells_agent_to_write_first(
+    tmp_path: Path, monkeypatch
+):
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(runs_root))
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+
+    out = await core_run_script(script_path=str(runs_root / "missing.py"))
+    assert out["ok"] is False
+    assert out["error"]["code"] == "not_found"
+    assert "Write the script file first" in out["error"]["message"]
+    assert "before calling run_script" in out["error"]["details"]["guidance"]

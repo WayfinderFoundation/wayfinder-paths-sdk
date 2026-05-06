@@ -62,6 +62,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_markets,
     hyperliquid_get_mid_prices,
     hyperliquid_get_state,
+    hyperliquid_search_markets,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_chart_projection,
@@ -119,6 +120,7 @@ mcp.tool()(research_search_borrow_routes)
 mcp.tool()(hyperliquid_execute)
 mcp.tool()(hyperliquid_get_state)
 mcp.tool()(hyperliquid_get_mid_prices)
+mcp.tool()(hyperliquid_search_markets)
 mcp.tool()(hyperliquid_get_markets)
 
 # ─── onchain_* ─────────────────────────────────────────────────────────

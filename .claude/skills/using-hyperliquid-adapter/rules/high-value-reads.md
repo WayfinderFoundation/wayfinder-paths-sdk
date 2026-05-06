@@ -13,6 +13,16 @@ This adapter wraps the `hyperliquid` SDK `Info` client for read paths.
 
 ## High-value reads
 
+### Market search / discovery (preferred)
+
+- Call: `hyperliquid_search_markets(query, market_type="both", limit=50)`
+- Use this first for broad questions like “oil futures”, “BTC markets”, “HYPE spot”, or “energy perps”.
+- It fetches the current HL universe and fuzzily scores every perp/spot market name.
+- It is intentionally high-recall: treat low-confidence rows as candidates to inspect, not as confirmed user intent.
+- It handles common HL wrappers/aliases such as `bonk → kBONK`, `sol/solana → uSOL`, `btc → UBTC`, and `eth → UETH`.
+- Use `market_type="perp"`, `"spot"`, or `"both"` to bound the result set.
+- Only call `hyperliquid_get_markets()` when the user explicitly asks for the full universe or search results are insufficient.
+
 ### Perp market metadata + contexts
 
 - Call: `HyperliquidAdapter.get_meta_and_asset_ctxs()`
