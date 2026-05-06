@@ -298,30 +298,45 @@ async def hyperliquid_execute(
             tx_hash = await send_transaction(
                 transaction, sign_callback, wait_for_receipt=True
             )
-            sent_ok = True
-            sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": chain_id}
         except Exception as exc:  # noqa: BLE001
-            sent_ok = False
-            sent_result = {"error": str(exc), "chain_id": chain_id}
-        effects.append(
-            {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
-        )
-
-        if sent_ok:
-            ok_landed, final_balance = await adapter.wait_for_deposit(
-                deposit_sender, amt
-            )
             effects.append(
                 {
                     "type": "hl",
-                    "label": "wait_for_credit",
-                    "ok": ok_landed,
-                    "result": {
-                        "confirmed": bool(ok_landed),
-                        "final_balance_usd": float(final_balance),
-                    },
+                    "label": "deposit",
+                    "ok": False,
+                    "result": {"error": str(exc), "chain_id": chain_id},
                 }
             )
+            _annotate_hl_profile(
+                address=deposit_sender,
+                label=want,
+                action="deposit",
+                status="failed",
+                details={"amount_usdc": amt, "chain_id": chain_id},
+            )
+            return err("deposit_failed", str(exc), {"effects": effects})
+
+        effects.append(
+            {
+                "type": "hl",
+                "label": "deposit",
+                "ok": True,
+                "result": {"txn_hash": tx_hash, "chain_id": chain_id},
+            }
+        )
+
+        ok_landed, final_balance = await adapter.wait_for_deposit(deposit_sender, amt)
+        effects.append(
+            {
+                "type": "hl",
+                "label": "wait_for_credit",
+                "ok": ok_landed,
+                "result": {
+                    "confirmed": bool(ok_landed),
+                    "final_balance_usd": float(final_balance),
+                },
+            }
+        )
 
         status = "confirmed" if all(e["ok"] for e in effects) else "failed"
         _annotate_hl_profile(
@@ -356,16 +371,25 @@ async def hyperliquid_execute(
         ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
         effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
 
-        if ok_wd:
-            ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
-            effects.append(
-                {
-                    "type": "hl",
-                    "label": "wait_for_withdrawal",
-                    "ok": ok_landed,
-                    "result": withdrawals,
-                }
+        if not ok_wd:
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="withdraw",
+                status="failed",
+                details={"amount_usdc": amt},
             )
+            return err("withdraw_failed", str(res), {"effects": effects})
+
+        ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
+        effects.append(
+            {
+                "type": "hl",
+                "label": "wait_for_withdrawal",
+                "ok": ok_landed,
+                "result": withdrawals,
+            }
+        )
 
         status = "confirmed" if all(e["ok"] for e in effects) else "failed"
         _annotate_hl_profile(
@@ -886,17 +910,17 @@ async def hyperliquid_execute(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
         )
         if not ok_lev:
-            return ok(
+            return err(
+                "update_leverage_failed",
+                str(res),
                 {
-                    "status": "failed",
                     "action": action,
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
                     "coin": coin,
-                    "preview": preview_text,
                     "effects": effects,
-                }
+                },
             )
 
     # Builder attribution is mandatory; ensure approval before placing orders.
@@ -929,17 +953,17 @@ async def hyperliquid_execute(
             }
         )
         if not ok_appr:
-            return ok(
+            return err(
+                "approve_builder_fee_failed",
+                str(appr),
                 {
-                    "status": "failed",
                     "action": action,
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
                     "coin": coin,
-                    "preview": preview_text,
                     "effects": effects,
-                }
+                },
             )
 
     if order_type == "limit":
