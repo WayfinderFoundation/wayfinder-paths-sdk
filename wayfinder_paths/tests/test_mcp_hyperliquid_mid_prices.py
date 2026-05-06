@@ -4,6 +4,7 @@
 per market type. These tests verify our `_mid_feed_keys()` helper produces
 keys that actually resolve in the live feed.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -17,8 +18,10 @@ async def _resolved_mid(asset_name: str) -> float | None:
     asset_id = await adapter.get_asset_id(asset_name)
     assert asset_id is not None, f"failed to resolve {asset_name!r}"
     market_type = (
-        "outcome" if asset_name.startswith("#")
-        else "spot" if "/" in asset_name
+        "outcome"
+        if asset_name.startswith("#")
+        else "spot"
+        if "/" in asset_name
         else "perp"
     )
     coin_clean = asset_name.removesuffix("-USDC")

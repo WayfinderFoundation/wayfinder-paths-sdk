@@ -22,11 +22,11 @@ from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     err,
-    normalize_address,
     ok,
     parse_amount_to_raw,
     resolve_wallet_address,
 )
+
 
 def _mid_feed_keys(market_type: str, coin_clean: str, asset_id: int) -> list[str]:
     """Candidate keys for `get_all_mid_prices()`, in lookup order.
@@ -171,7 +171,9 @@ async def hyperliquid_execute(
     effects: list[dict[str, Any]] = []
 
     try:
-        adapter = await get_adapter(HyperliquidAdapter, wallet_label, config_overrides=config)
+        adapter = await get_adapter(
+            HyperliquidAdapter, wallet_label, config_overrides=config
+        )
     except ValueError as e:
         return err("invalid_wallet", str(e))
     sender = adapter.wallet_address
@@ -191,22 +193,18 @@ async def hyperliquid_execute(
                 )
 
             try:
-                sign_callback, deposit_sender = await get_wallet_signing_callback(wallet_label)
+                sign_callback, deposit_sender = await get_wallet_signing_callback(
+                    wallet_label
+                )
             except ValueError as exc:
                 return err("invalid_wallet", str(exc))
 
-            recipient = (
-                normalize_address(HYPERLIQUID_BRIDGE_ADDRESS)
-                or HYPERLIQUID_BRIDGE_ADDRESS
-            )
-            chain_id = 42161
-            amount_raw = parse_amount_to_raw(str(amt), 6)
             transaction = await build_send_transaction(
                 from_address=deposit_sender,
-                to_address=recipient,
+                to_address=HYPERLIQUID_BRIDGE_ADDRESS,
                 token_address=ARBITRUM_USDC_ADDRESS,
-                chain_id=chain_id,
-                amount=int(amount_raw),
+                chain_id=42161,
+                amount=int(parse_amount_to_raw(str(amt), 6)),
             )
             try:
                 tx_hash = await send_transaction(
@@ -215,11 +213,11 @@ async def hyperliquid_execute(
                 sent_ok = True
                 sent_result: dict[str, Any] = {
                     "txn_hash": tx_hash,
-                    "chain_id": chain_id,
+                    "chain_id": 42161,
                 }
             except Exception as exc:  # noqa: BLE001
                 sent_ok = False
-                sent_result = {"error": str(exc), "chain_id": chain_id}
+                sent_result = {"error": str(exc), "chain_id": 42161}
             effects.append(
                 {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
             )
@@ -256,7 +254,7 @@ async def hyperliquid_execute(
                 label=wallet_label,
                 action="deposit",
                 status=status,
-                details={"amount_usdc": amt, "chain_id": chain_id},
+                details={"amount_usdc": amt, "chain_id": 42161},
             )
             return response
 
@@ -499,7 +497,11 @@ async def hyperliquid_execute(
                 label=wallet_label,
                 action="update_leverage",
                 status=status,
-                details={"asset_id": resolved_asset_id, "asset_name": asset_name, "leverage": lev},
+                details={
+                    "asset_id": resolved_asset_id,
+                    "asset_name": asset_name,
+                    "leverage": lev,
+                },
             )
 
             return response
