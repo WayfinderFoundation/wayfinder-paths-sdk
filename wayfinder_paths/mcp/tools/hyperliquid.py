@@ -496,17 +496,38 @@ async def hyperliquid_execute(
     if action == "place_order" and market_type == "outcome":
         outcome_id_v = resolved["outcome_id"]
         side_v = resolved["side"]
-        if is_buy is None or size is None:
-            return err(
-                "invalid_request", "is_buy and size are required for outcome orders"
-            )
+        if is_buy is None:
+            return err("invalid_request", "is_buy is required for outcome orders")
         if order_type == "limit" and price is None:
             return err("invalid_request", "price is required for limit orders")
+
+        # Outcomes are integer contracts (szDecimals=0) and have no $10 floor;
+        # accept either explicit `size` or `usd_amount` for market orders.
+        size_i: int | None = None if size is None else int(size)
+        if size_i is None:
+            if usd_amount is None:
+                return err(
+                    "invalid_request",
+                    "size or usd_amount is required for outcome orders",
+                )
+            if order_type != "market":
+                return err(
+                    "invalid_request",
+                    "usd_amount sizing is only supported for market outcome orders",
+                )
+            ok_mids, mids = await adapter.get_all_mid_prices()
+            if not ok_mids or not isinstance(mids, dict):
+                return err("price_error", "Failed to fetch mid prices")
+            mid = mids.get(coin_clean)  # outcomes are keyed `#<encoding>`
+            if mid is None or float(mid) <= 0:
+                return err("price_error", f"Could not resolve mid price for {coin_clean}")
+            size_i = max(1, round(float(usd_amount) / float(mid)))
+
         ok_order, res = await adapter.place_outcome_order(
             outcome_id=outcome_id_v,
             side=side_v,
             is_buy=bool(is_buy),
-            size=int(size),
+            size=size_i,
             price=None if price is None else float(price),
             slippage=float(slippage),
             tif="Ioc" if order_type == "market" else "Gtc",
@@ -528,7 +549,7 @@ async def hyperliquid_execute(
                 "outcome_id": outcome_id_v,
                 "side": side_v,
                 "is_buy": bool(is_buy),
-                "size": int(size),
+                "size": size_i,
             },
         )
         return ok(
@@ -543,7 +564,7 @@ async def hyperliquid_execute(
                 "order": {
                     "order_type": order_type,
                     "is_buy": bool(is_buy),
-                    "size": int(size),
+                    "size": size_i,
                     "price": float(price) if price is not None else None,
                     "slippage": float(slippage),
                     "reduce_only": bool(reduce_only),
