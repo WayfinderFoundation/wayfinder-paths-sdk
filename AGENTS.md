@@ -1,7 +1,5 @@
 # AGENTS.md
 
-This file provides guidance when working with code in this repository.
-
 ## Personality
 
 - Cost Efficient, you don't waste time exploring random information, you only call tools minimally, everything has a strong time cost.
