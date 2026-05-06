@@ -208,7 +208,7 @@ async def hyperliquid_execute(
     ],
     *,
     wallet_label: str,
-    coin: str | None = None,
+    asset_name: str | None = None,
     order_type: Literal["market", "limit"] = "market",
     is_buy: bool | None = None,
     size: float | None = None,
@@ -231,7 +231,7 @@ async def hyperliquid_execute(
 ) -> dict[str, Any]:
     """Place orders, transfer collateral, or adjust leverage on Hyperliquid.
 
-    `coin` is the canonical market path returned by `hyperliquid_search_market`:
+    `asset_name` is the canonical market path returned by `hyperliquid_search_market`:
       * Core perp:   `"BTC-USDC"`, `"ETH-USDC"`
       * HIP-3 perp:  `"xyz:SP500"`
       * Spot pair:   `"BTC/USDC"`, `"USDC/USDH"`
@@ -242,7 +242,7 @@ async def hyperliquid_execute(
 
     Actions:
       - `place_order`: spot / perp / HIP-4 outcome market or limit.
-        Size via `size` (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
+        Size via `size` (asset units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
       - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
@@ -259,7 +259,7 @@ async def hyperliquid_execute(
     key_input = {
         "action": action,
         "wallet_label": want,
-        "coin": coin,
+        "asset_name": asset_name,
         "order_type": order_type,
         "is_buy": is_buy,
         "size": size,
@@ -461,7 +461,7 @@ async def hyperliquid_execute(
             }
         )
 
-    ok_resolve, resolved = await _resolve_coin(adapter, coin=coin)
+    ok_resolve, resolved = await _resolve_coin(adapter, coin=asset_name)
     if not ok_resolve:
         return err(resolved["code"], resolved["message"])
     market_type = resolved["market_type"]
@@ -500,7 +500,7 @@ async def hyperliquid_execute(
             action="place_order",
             status=status,
             details={
-                "coin": coin,
+                "asset_name": asset_name,
                 "outcome_id": outcome_id_v,
                 "side": side_v,
                 "is_buy": bool(is_buy),
@@ -513,7 +513,7 @@ async def hyperliquid_execute(
                 "action": action,
                 "wallet_label": want,
                 "address": sender,
-                "coin": coin,
+                "asset_name": asset_name,
                 "outcome_id": outcome_id_v,
                 "side": side_v,
                 "order": {
@@ -552,7 +552,7 @@ async def hyperliquid_execute(
             label=want,
             action="update_leverage",
             status=status,
-            details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
+            details={"asset_id": resolved_asset_id, "asset_name": asset_name, "leverage": lev},
         )
         return ok(
             {
@@ -561,7 +561,7 @@ async def hyperliquid_execute(
                 "wallet_label": want,
                 "address": sender,
                 "asset_id": resolved_asset_id,
-                "coin": coin,
+                "asset_name": asset_name,
                 "preview": preview_text,
                 "effects": effects,
             }
@@ -602,7 +602,7 @@ async def hyperliquid_execute(
             status=status,
             details={
                 "asset_id": resolved_asset_id,
-                "coin": coin,
+                "asset_name": asset_name,
                 "order_id": order_id,
                 "cancel_cloid": cancel_cloid,
             },
@@ -614,7 +614,7 @@ async def hyperliquid_execute(
                 "wallet_label": want,
                 "address": sender,
                 "asset_id": resolved_asset_id,
-                "coin": coin,
+                "asset_name": asset_name,
                 "preview": preview_text,
                 "effects": effects,
             }
@@ -644,7 +644,7 @@ async def hyperliquid_execute(
         if size is None:
             return err(
                 "invalid_request",
-                "size is required for place_trigger_order (coin units)",
+                "size is required for place_trigger_order (asset units)",
             )
         try:
             sz = float(size)
@@ -707,7 +707,7 @@ async def hyperliquid_execute(
             status=status,
             details={
                 "asset_id": resolved_asset_id,
-                "coin": coin,
+                "asset_name": asset_name,
                 "tpsl": tpsl,
                 "is_buy": bool(is_buy),
                 "trigger_price": tpx,
@@ -721,7 +721,7 @@ async def hyperliquid_execute(
                 "wallet_label": want,
                 "address": sender,
                 "asset_id": resolved_asset_id,
-                "coin": coin,
+                "asset_name": asset_name,
                 "trigger_order": {
                     "tpsl": tpsl,
                     "is_buy": bool(is_buy),
@@ -740,7 +740,7 @@ async def hyperliquid_execute(
     if size is not None and usd_amount is not None:
         return err(
             "invalid_request",
-            "Provide either size (coin units) or usd_amount (USD notional/margin), not both",
+            "Provide either size (asset units) or usd_amount (USD notional/margin), not both",
         )
     if usd_amount_kind is not None and usd_amount is None:
         return err(
@@ -783,7 +783,7 @@ async def hyperliquid_execute(
         if usd_amount is None:
             return err(
                 "invalid_request",
-                "Provide either size (coin units) or usd_amount for place_order",
+                "Provide either size (asset units) or usd_amount for place_order",
             )
         try:
             usd_amt = float(usd_amount)
@@ -890,7 +890,7 @@ async def hyperliquid_execute(
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "preview": preview_text,
                     "effects": effects,
                 }
@@ -933,7 +933,7 @@ async def hyperliquid_execute(
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "preview": preview_text,
                     "effects": effects,
                 }
@@ -976,7 +976,7 @@ async def hyperliquid_execute(
         status=status,
         details={
             "asset_id": resolved_asset_id,
-            "coin": coin,
+            "asset_name": asset_name,
             "order_type": order_type,
             "is_buy": bool(is_buy),
             "size": float(sz_valid),
@@ -989,7 +989,7 @@ async def hyperliquid_execute(
             "wallet_label": want,
             "address": sender,
             "asset_id": resolved_asset_id,
-            "coin": coin,
+            "asset_name": asset_name,
             "order": {
                 "order_type": order_type,
                 "is_buy": bool(is_buy),
@@ -1045,9 +1045,9 @@ async def hyperliquid_get_state(label: str) -> str:
         {
             "label": label,
             "address": addr,
-            "perp": {"success": perp_ok, "state": perp},
-            "spot": {"success": spot_ok, "state": spot},
-            "outcomes": {"success": spot_ok, "positions": outcome_positions},
+            "perp": {"state": perp},
+            "spot": {"state": spot},
+            "outcomes": {"positions": outcome_positions},
         },
         indent=2,
     )
@@ -1111,15 +1111,22 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         }
 
         def score(text: str) -> float:
+            # matches / min(len_a, len_b) — rewards covering the shorter string
+            # fully. HL token symbols are short and often vowel-stripped (KNTQ
+            # for kinetiq, kBONK for bonk), so subsequence-style matching is the
+            # natural fit. We prefer false positives over false negatives:
+            # missed matches are invisible to the LLM consumer, while noise
+            # candidates can be ranked-out downstream.
             candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
-            return max(
-                (
-                    difflib.SequenceMatcher(None, term, ct).ratio()
-                    for term in terms
-                    for ct in candidate_tokens
-                ),
-                default=0.0,
-            )
+            best = 0.0
+            for term in terms:
+                for ct in candidate_tokens:
+                    sm = difflib.SequenceMatcher(None, term, ct)
+                    matches = sum(b.size for b in sm.get_matching_blocks())
+                    denom = min(len(term), len(ct))
+                    if denom:
+                        best = max(best, matches / denom)
+            return best
 
         def top(items, text_of):
             scored = ((item, score(text_of(item))) for item in items)
