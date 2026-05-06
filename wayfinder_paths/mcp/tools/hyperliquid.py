@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import difflib
-import json
-import re
 from typing import Any, Literal, TypedDict
 
 from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
@@ -15,7 +12,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
     HYPERLIQUID_BRIDGE_ADDRESS,
-    MARKET_SEARCH_ALIASES,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -31,7 +27,7 @@ from wayfinder_paths.mcp.utils import (
     resolve_wallet_address,
 )
 
-# Coin name grammar accepted by hyperliquid_execute and surfaced by hyperliquid_search_market.
+# Coin name grammar accepted by hyperliquid_execute and surfaced by hyperliquid_get_markets.
 # Match is exact — no case folding, no whitespace tolerance, no aliasing.
 #   "BTC-USDC"   core perp           -> coin_to_asset["BTC"]
 #   "xyz:SP500"  HIP-3 builder perp  -> coin_to_asset["xyz:SP500"]
@@ -41,7 +37,7 @@ _PERP_QUOTE_SUFFIX = "-USDC"
 _BAD_COIN_HINT = (
     "Expected one of 'BTC-USDC' (core perp), 'xyz:SP500' (HIP-3 perp), "
     "'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
-    "Call hyperliquid_search_market to look up the canonical name."
+    "Call hyperliquid_get_markets to look up the canonical name."
 )
 
 
@@ -52,22 +48,6 @@ def _format_perp_market(name: str) -> str:
     have a quote suffix, so we tack on `-USDC`.
     """
     return name if ":" in name else f"{name}{_PERP_QUOTE_SUFFIX}"
-
-
-def _mid_feed_keys(market_type: str, coin_clean: str, asset_id: int) -> list[str]:
-    """Candidate keys for `get_all_mid_prices()`, in lookup order.
-
-    HL's mid feed uses different key grammars per market type:
-      - core perp / HIP-3 perp -> bare symbol (e.g. "BTC", "xyz:NVDA")
-      - spot                   -> "@<spot_index>" (= asset_id - 10000)
-                                  EXCEPT PURR/USDC, grandfathered under its
-                                  canonical name. Try the @-form first, fall
-                                  back to canonical for the PURR case.
-      - HIP-4 outcome          -> "#<encoding>" (already in coin_clean)
-    """
-    if market_type == "spot":
-        return [f"@{asset_id - 10000}", coin_clean]
-    return [coin_clean]
 
 
 def _resolve_builder_fee(
@@ -224,7 +204,7 @@ async def hyperliquid_execute(
     ],
     *,
     wallet_label: str,
-    asset_name: str | None = None,
+    coin: str | None = None,
     order_type: Literal["market", "limit"] = "market",
     is_buy: bool | None = None,
     size: float | None = None,
@@ -247,7 +227,7 @@ async def hyperliquid_execute(
 ) -> dict[str, Any]:
     """Place orders, transfer collateral, or adjust leverage on Hyperliquid.
 
-    `asset_name` is the canonical market path returned by `hyperliquid_search_market`:
+    `coin` is the canonical market path returned by `hyperliquid_get_markets`:
       * Core perp:   `"BTC-USDC"`, `"ETH-USDC"`
       * HIP-3 perp:  `"xyz:SP500"`
       * Spot pair:   `"BTC/USDC"`, `"USDC/USDH"`
@@ -258,7 +238,7 @@ async def hyperliquid_execute(
 
     Actions:
       - `place_order`: spot / perp / HIP-4 outcome market or limit.
-        Size via `size` (asset units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
+        Size via `size` (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
       - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
@@ -275,7 +255,7 @@ async def hyperliquid_execute(
     key_input = {
         "action": action,
         "wallet_label": want,
-        "asset_name": asset_name,
+        "coin": coin,
         "order_type": order_type,
         "is_buy": is_buy,
         "size": size,
@@ -311,181 +291,190 @@ async def hyperliquid_execute(
         return err("invalid_wallet", str(e))
     sender = adapter.wallet_address
 
-    if action == "deposit":
-        if amount_usdc is None:
-            return err("invalid_request", "amount_usdc is required for deposit")
-        try:
-            amt = float(amount_usdc)
-        except (TypeError, ValueError):
-            return err("invalid_request", "amount_usdc must be a number")
-        if amt < 5:
-            return err(
-                "invalid_request",
-                "amount_usdc must be >= 5 USDC (HL deposits below are lost)",
-            )
+    match action:
+        case "deposit":
+            if amount_usdc is None:
+                return err("invalid_request", "amount_usdc is required for deposit")
+            try:
+                amt = float(amount_usdc)
+            except (TypeError, ValueError):
+                return err("invalid_request", "amount_usdc must be a number")
+            if amt < 5:
+                return err(
+                    "invalid_request",
+                    "amount_usdc must be >= 5 USDC (HL deposits below are lost)",
+                )
 
-        try:
-            sign_callback, deposit_sender = await get_wallet_signing_callback(want)
-        except ValueError as exc:
-            return err("invalid_wallet", str(exc))
+            try:
+                sign_callback, deposit_sender = await get_wallet_signing_callback(want)
+            except ValueError as exc:
+                return err("invalid_wallet", str(exc))
 
-        recipient = (
-            normalize_address(HYPERLIQUID_BRIDGE_ADDRESS) or HYPERLIQUID_BRIDGE_ADDRESS
-        )
-        chain_id = 42161
-        amount_raw = parse_amount_to_raw(str(amt), 6)
-        transaction = await build_send_transaction(
-            from_address=deposit_sender,
-            to_address=recipient,
-            token_address=ARBITRUM_USDC_ADDRESS,
-            chain_id=chain_id,
-            amount=int(amount_raw),
-        )
-        try:
-            tx_hash = await send_transaction(
-                transaction, sign_callback, wait_for_receipt=True
+            recipient = (
+                normalize_address(HYPERLIQUID_BRIDGE_ADDRESS)
+                or HYPERLIQUID_BRIDGE_ADDRESS
             )
-            sent_ok = True
-            sent_result: dict[str, Any] = {"txn_hash": tx_hash}
-        except Exception as exc:  # noqa: BLE001
-            sent_ok = False
-            sent_result = {"error": str(exc)}
-        effects.append(
-            {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
-        )
-
-        if sent_ok:
-            ok_landed, final_balance = await adapter.wait_for_deposit(
-                deposit_sender, amt
+            chain_id = 42161
+            amount_raw = parse_amount_to_raw(str(amt), 6)
+            transaction = await build_send_transaction(
+                from_address=deposit_sender,
+                to_address=recipient,
+                token_address=ARBITRUM_USDC_ADDRESS,
+                chain_id=chain_id,
+                amount=int(amount_raw),
             )
+            try:
+                tx_hash = await send_transaction(
+                    transaction, sign_callback, wait_for_receipt=True
+                )
+                sent_ok = True
+                sent_result: dict[str, Any] = {
+                    "txn_hash": tx_hash,
+                    "chain_id": chain_id,
+                }
+            except Exception as exc:  # noqa: BLE001
+                sent_ok = False
+                sent_result = {"error": str(exc), "chain_id": chain_id}
             effects.append(
+                {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
+            )
+
+            if sent_ok:
+                ok_landed, final_balance = await adapter.wait_for_deposit(
+                    deposit_sender, amt
+                )
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "wait_for_credit",
+                        "ok": ok_landed,
+                        "result": {
+                            "confirmed": bool(ok_landed),
+                            "final_balance_usd": float(final_balance),
+                        },
+                    }
+                )
+
+            status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+            response = ok(
                 {
-                    "type": "hl",
-                    "label": "wait_for_credit",
-                    "ok": ok_landed,
-                    "result": {
-                        "confirmed": bool(ok_landed),
-                        "final_balance_usd": float(final_balance),
-                    },
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": deposit_sender,
+                    "amount_usdc": amt,
+                    "preview": preview_text,
+                    "effects": effects,
                 }
             )
-
-        status = "confirmed" if all(e["ok"] for e in effects) else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": deposit_sender,
-                "amount_usdc": amt,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=deposit_sender,
-            label=want,
-            action="deposit",
-            status=status,
-            details={"amount_usdc": amt, "chain_id": chain_id},
-        )
-        return response
-
-    if action == "withdraw":
-        if amount_usdc is None:
-            response = err("invalid_request", "amount_usdc is required for withdraw")
-            return response
-        try:
-            amt = float(amount_usdc)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "amount_usdc must be a number")
-            return response
-        if amt <= 0:
-            response = err("invalid_request", "amount_usdc must be positive")
+            _annotate_hl_profile(
+                address=deposit_sender,
+                label=want,
+                action="deposit",
+                status=status,
+                details={"amount_usdc": amt, "chain_id": chain_id},
+            )
             return response
 
-        ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
-        effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
+        case "withdraw":
+            if amount_usdc is None:
+                response = err(
+                    "invalid_request", "amount_usdc is required for withdraw"
+                )
+                return response
+            try:
+                amt = float(amount_usdc)
+            except (TypeError, ValueError):
+                response = err("invalid_request", "amount_usdc must be a number")
+                return response
+            if amt <= 0:
+                response = err("invalid_request", "amount_usdc must be positive")
+                return response
 
-        if ok_wd:
-            ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
+            ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
             effects.append(
+                {"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res}
+            )
+
+            if ok_wd:
+                ok_landed, withdrawals = await adapter.wait_for_withdrawal(sender)
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "wait_for_withdrawal",
+                        "ok": ok_landed,
+                        "result": withdrawals,
+                    }
+                )
+
+            status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+            response = ok(
                 {
-                    "type": "hl",
-                    "label": "wait_for_withdrawal",
-                    "ok": ok_landed,
-                    "result": withdrawals,
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": sender,
+                    "amount_usdc": amt,
+                    "preview": preview_text,
+                    "effects": effects,
                 }
             )
-
-        status = "confirmed" if all(e["ok"] for e in effects) else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "amount_usdc": amt,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="withdraw",
-            status=status,
-            details={"amount_usdc": amt},
-        )
-
-        return response
-
-    if action in ("spot_to_perp_transfer", "perp_to_spot_transfer"):
-        if usd_amount is None:
-            return err("invalid_request", f"usd_amount is required for {action}")
-        try:
-            amt = float(usd_amount)
-        except (TypeError, ValueError):
-            return err("invalid_request", "usd_amount must be a number")
-        if amt <= 0:
-            return err("invalid_request", "usd_amount must be positive")
-
-        to_perp = action == "spot_to_perp_transfer"
-        if to_perp:
-            ok_transfer, res = await adapter.transfer_spot_to_perp(
-                amount=amt, address=sender
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="withdraw",
+                status=status,
+                details={"amount_usdc": amt},
             )
-        else:
-            ok_transfer, res = await adapter.transfer_perp_to_spot(
-                amount=amt, address=sender
+
+            return response
+
+        case "spot_to_perp_transfer" | "perp_to_spot_transfer":
+            if usd_amount is None:
+                return err("invalid_request", f"usd_amount is required for {action}")
+            try:
+                amt = float(usd_amount)
+            except (TypeError, ValueError):
+                return err("invalid_request", "usd_amount must be a number")
+            if amt <= 0:
+                return err("invalid_request", "usd_amount must be positive")
+
+            to_perp = action == "spot_to_perp_transfer"
+            if to_perp:
+                ok_transfer, res = await adapter.transfer_spot_to_perp(
+                    amount=amt, address=sender
+                )
+            else:
+                ok_transfer, res = await adapter.transfer_perp_to_spot(
+                    amount=amt, address=sender
+                )
+            effects.append(
+                {"type": "hl", "label": action, "ok": ok_transfer, "result": res}
             )
-        effects.append(
-            {"type": "hl", "label": action, "ok": ok_transfer, "result": res}
-        )
-        status = "confirmed" if ok_transfer else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "usd_amount": amt,
-                "to_perp": to_perp,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action=action,
-            status=status,
-            details={"usd_amount": amt, "to_perp": to_perp},
-        )
+            status = "confirmed" if ok_transfer else "failed"
+            response = ok(
+                {
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": sender,
+                    "usd_amount": amt,
+                    "to_perp": to_perp,
+                    "preview": preview_text,
+                    "effects": effects,
+                }
+            )
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action=action,
+                status=status,
+                details={"usd_amount": amt, "to_perp": to_perp},
+            )
 
-        return response
+            return response
 
-    ok_resolve, resolved = await _resolve_coin(adapter, coin=asset_name)
+    ok_resolve, resolved = await _resolve_coin(adapter, coin=coin)
     if not ok_resolve:
         return err(resolved["code"], resolved["message"])
     market_type = resolved["market_type"]
@@ -493,394 +482,72 @@ async def hyperliquid_execute(
     coin_clean = resolved["coin_clean"]
 
     # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
-    if action == "place_order" and market_type == "outcome":
-        outcome_id_v = resolved["outcome_id"]
-        side_v = resolved["side"]
-        if is_buy is None:
-            return err("invalid_request", "is_buy is required for outcome orders")
-        if order_type == "limit" and price is None:
-            return err("invalid_request", "price is required for limit orders")
-
-        # Outcomes are integer contracts (szDecimals=0) and have no $10 floor;
-        # accept either explicit `size` or `usd_amount` for market orders.
-        size_i: int | None = None if size is None else int(size)
-        if size_i is None:
-            if usd_amount is None:
+    match action:
+        case "place_order" if market_type == "outcome":
+            outcome_id_v = resolved["outcome_id"]
+            side_v = resolved["side"]
+            if is_buy is None or size is None:
                 return err(
-                    "invalid_request",
-                    "size or usd_amount is required for outcome orders",
+                    "invalid_request", "is_buy and size are required for outcome orders"
                 )
-            if order_type != "market":
-                return err(
-                    "invalid_request",
-                    "usd_amount sizing is only supported for market outcome orders",
-                )
-            ok_mids, mids = await adapter.get_all_mid_prices()
-            if not ok_mids or not isinstance(mids, dict):
-                return err("price_error", "Failed to fetch mid prices")
-            mid = mids.get(coin_clean)  # outcomes are keyed `#<encoding>`
-            if mid is None or float(mid) <= 0:
-                return err("price_error", f"Could not resolve mid price for {coin_clean}")
-            size_i = max(1, round(float(usd_amount) / float(mid)))
-
-        ok_order, res = await adapter.place_outcome_order(
-            outcome_id=outcome_id_v,
-            side=side_v,
-            is_buy=bool(is_buy),
-            size=size_i,
-            price=None if price is None else float(price),
-            slippage=float(slippage),
-            tif="Ioc" if order_type == "market" else "Gtc",
-            reduce_only=bool(reduce_only),
-            cloid=cloid,
-            address=sender,
-        )
-        effects.append(
-            {"type": "hl", "label": "place_order", "ok": ok_order, "result": res}
-        )
-        status = "confirmed" if ok_order else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="place_order",
-            status=status,
-            details={
-                "asset_name": asset_name,
-                "outcome_id": outcome_id_v,
-                "side": side_v,
-                "is_buy": bool(is_buy),
-                "size": size_i,
-            },
-        )
-        return ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "asset_name": asset_name,
-                "outcome_id": outcome_id_v,
-                "side": side_v,
-                "order": {
-                    "order_type": order_type,
-                    "is_buy": bool(is_buy),
-                    "size": size_i,
-                    "price": float(price) if price is not None else None,
-                    "slippage": float(slippage),
-                    "reduce_only": bool(reduce_only),
-                    "cloid": cloid,
-                },
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-
-    if action == "update_leverage":
-        if leverage is None:
-            response = err(
-                "invalid_request", "leverage is required for update_leverage"
-            )
-            return response
-        try:
-            lev = int(leverage)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "leverage must be an int")
-            return response
-        if lev <= 0:
-            response = err("invalid_request", "leverage must be positive")
-            return response
-
-        ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
-        )
-        effects.append(
-            {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
-        )
-        status = "confirmed" if ok_lev else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="update_leverage",
-            status=status,
-            details={
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "leverage": lev,
-            },
-        )
-
-        return response
-
-    if action == "cancel_order":
-        if cancel_cloid:
-            ok_cancel, res = await adapter.cancel_order_by_cloid(
-                resolved_asset_id, str(cancel_cloid), sender
+            if order_type == "limit" and price is None:
+                return err("invalid_request", "price is required for limit orders")
+            ok_order, res = await adapter.place_outcome_order(
+                outcome_id=outcome_id_v,
+                side=side_v,
+                is_buy=bool(is_buy),
+                size=int(size),
+                price=None if price is None else float(price),
+                slippage=float(slippage),
+                tif="Ioc" if order_type == "market" else "Gtc",
+                reduce_only=bool(reduce_only),
+                cloid=cloid,
+                address=sender,
             )
             effects.append(
+                {"type": "hl", "label": "place_order", "ok": ok_order, "result": res}
+            )
+            status = "confirmed" if ok_order else "failed"
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="place_order",
+                status=status,
+                details={
+                    "coin": coin,
+                    "outcome_id": outcome_id_v,
+                    "side": side_v,
+                    "is_buy": bool(is_buy),
+                    "size": int(size),
+                },
+            )
+            return ok(
                 {
-                    "type": "hl",
-                    "label": "cancel_order_by_cloid",
-                    "ok": ok_cancel,
-                    "result": res,
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": sender,
+                    "coin": coin,
+                    "outcome_id": outcome_id_v,
+                    "side": side_v,
+                    "order": {
+                        "order_type": order_type,
+                        "is_buy": bool(is_buy),
+                        "size": int(size),
+                        "price": float(price) if price is not None else None,
+                        "slippage": float(slippage),
+                        "reduce_only": bool(reduce_only),
+                        "cloid": cloid,
+                    },
+                    "preview": preview_text,
+                    "effects": effects,
                 }
             )
-        else:
-            if order_id is None:
-                response = err(
-                    "invalid_request",
-                    "order_id or cancel_cloid is required for cancel_order",
-                )
-                return response
-            ok_cancel, res = await adapter.cancel_order(
-                resolved_asset_id, int(order_id), sender
-            )
-            effects.append(
-                {"type": "hl", "label": "cancel_order", "ok": ok_cancel, "result": res}
-            )
 
-        ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
-        status = "confirmed" if ok_all else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="cancel_order",
-            status=status,
-            details={
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "order_id": order_id,
-                "cancel_cloid": cancel_cloid,
-            },
-        )
-
-        return response
-
-    if action == "place_trigger_order":
-        if tpsl not in ("tp", "sl"):
-            return err(
-                "invalid_request", "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)"
-            )
-        if trigger_price is None:
-            return err(
-                "invalid_request", "trigger_price is required for place_trigger_order"
-            )
-        try:
-            tpx = float(trigger_price)
-        except (TypeError, ValueError):
-            return err("invalid_request", "trigger_price must be a number")
-        if tpx <= 0:
-            return err("invalid_request", "trigger_price must be positive")
-        if is_buy is None:
-            return err(
-                "invalid_request",
-                "is_buy is required for place_trigger_order — set to opposite of your position "
-                "(long position → is_buy=False to sell; short position → is_buy=True to buy back)",
-            )
-        if size is None:
-            return err(
-                "invalid_request",
-                "size is required for place_trigger_order (asset units)",
-            )
-        try:
-            sz = float(size)
-        except (TypeError, ValueError):
-            return err("invalid_request", "size must be a number")
-        if sz <= 0:
-            return err("invalid_request", "size must be positive")
-
-        limit_px: float | None = None
-        if not is_market_trigger:
-            if price is None:
-                return err(
-                    "invalid_request",
-                    "price is required for limit trigger orders (is_market_trigger=False)",
-                )
-            try:
-                limit_px = float(price)
-            except (TypeError, ValueError):
-                return err("invalid_request", "price must be a number")
-            if limit_px <= 0:
-                return err("invalid_request", "price must be positive")
-
-        try:
-            builder = _resolve_builder_fee(
-                config=config, builder_fee_tenths_bp=builder_fee_tenths_bp
-            )
-        except ValueError as exc:
-            return err("invalid_request", str(exc))
-
-        sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
-        if sz_valid <= 0:
-            return err("invalid_request", "size is too small after lot-size rounding")
-
-        ok_order, res = await adapter.place_trigger_order(
-            resolved_asset_id,
-            bool(is_buy),
-            tpx,
-            float(sz_valid),
-            sender,
-            tpsl=tpsl,
-            is_market=bool(is_market_trigger),
-            limit_price=limit_px,
-            builder=builder,
-        )
-        effects.append(
-            {
-                "type": "hl",
-                "label": "place_trigger_order",
-                "ok": ok_order,
-                "result": res,
-            }
-        )
-
-        ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
-        status = "confirmed" if ok_all else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "trigger_order": {
-                    "tpsl": tpsl,
-                    "is_buy": bool(is_buy),
-                    "trigger_price": tpx,
-                    "is_market_trigger": bool(is_market_trigger),
-                    "limit_price": limit_px,
-                    "size_requested": float(sz),
-                    "size_valid": float(sz_valid),
-                    "builder": builder,
-                },
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="place_trigger_order",
-            status=status,
-            details={
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "tpsl": tpsl,
-                "is_buy": bool(is_buy),
-                "trigger_price": tpx,
-                "size": float(sz_valid),
-            },
-        )
-        return response
-
-    if size is not None and usd_amount is not None:
-        response = err(
-            "invalid_request",
-            "Provide either size (asset units) or usd_amount (USD notional/margin), not both",
-        )
-        return response
-    if usd_amount_kind is not None and usd_amount is None:
-        response = err(
-            "invalid_request",
-            "usd_amount_kind is only valid when usd_amount is provided",
-        )
-        return response
-
-    if is_buy is None:
-        response = err("invalid_request", "is_buy is required for place_order")
-        return response
-
-    if order_type == "limit":
-        if price is None:
-            response = err("invalid_request", "price is required for limit orders")
-            return response
-        try:
-            px_for_sizing = float(price)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "price must be a number")
-            return response
-        if px_for_sizing <= 0:
-            response = err("invalid_request", "price must be positive")
-            return response
-    else:
-        try:
-            slip = float(slippage)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "slippage must be a number")
-            return response
-        if slip < 0:
-            response = err("invalid_request", "slippage must be >= 0")
-            return response
-        if slip > 0.25:
-            response = err("invalid_request", "slippage > 0.25 is too risky")
-            return response
-        px_for_sizing = None
-
-    sizing: dict[str, Any] = {"source": "size"}
-    if size is not None:
-        try:
-            sz = float(size)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "size must be a number")
-            return response
-        if sz <= 0:
-            response = err("invalid_request", "size must be positive")
-            return response
-    else:
-        if usd_amount is None:
-            response = err(
-                "invalid_request",
-                "Provide either size (asset units) or usd_amount for place_order",
-            )
-            return response
-        try:
-            usd_amt = float(usd_amount)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "usd_amount must be a number")
-            return response
-        if usd_amt <= 0:
-            response = err("invalid_request", "usd_amount must be positive")
-            return response
-
-        # Spot: usd_amount is always notional (no leverage)
-        if market_type == "spot":
-            notional_usd = usd_amt
-            margin_usd = None
-        elif usd_amount_kind is None:
-            response = err(
-                "invalid_request",
-                "usd_amount_kind is required for perp: 'notional' or 'margin'",
-            )
-            return response
-        elif usd_amount_kind == "margin":
+        case "update_leverage":
             if leverage is None:
                 response = err(
-                    "invalid_request",
-                    "leverage is required when usd_amount_kind='margin'",
+                    "invalid_request", "leverage is required for update_leverage"
                 )
                 return response
             try:
@@ -891,211 +558,542 @@ async def hyperliquid_execute(
             if lev <= 0:
                 response = err("invalid_request", "leverage must be positive")
                 return response
-            notional_usd = usd_amt * float(lev)
-            margin_usd = usd_amt
-        else:
-            notional_usd = usd_amt
-            margin_usd = None
+
+            ok_lev, res = await adapter.update_leverage(
+                resolved_asset_id, lev, bool(is_cross), sender
+            )
+            effects.append(
+                {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
+            )
+            status = "confirmed" if ok_lev else "failed"
+            response = ok(
+                {
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": sender,
+                    "asset_id": resolved_asset_id,
+                    "coin": coin,
+                    "preview": preview_text,
+                    "effects": effects,
+                }
+            )
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="update_leverage",
+                status=status,
+                details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
+            )
+
+            return response
+
+        case "cancel_order":
+            if cancel_cloid:
+                ok_cancel, res = await adapter.cancel_order_by_cloid(
+                    resolved_asset_id, str(cancel_cloid), sender
+                )
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "cancel_order_by_cloid",
+                        "ok": ok_cancel,
+                        "result": res,
+                    }
+                )
+            else:
+                if order_id is None:
+                    response = err(
+                        "invalid_request",
+                        "order_id or cancel_cloid is required for cancel_order",
+                    )
+                    return response
+                ok_cancel, res = await adapter.cancel_order(
+                    resolved_asset_id, int(order_id), sender
+                )
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "cancel_order",
+                        "ok": ok_cancel,
+                        "result": res,
+                    }
+                )
+
+            ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
+            status = "confirmed" if ok_all else "failed"
+            response = ok(
+                {
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": sender,
+                    "asset_id": resolved_asset_id,
+                    "coin": coin,
+                    "preview": preview_text,
+                    "effects": effects,
+                }
+            )
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="cancel_order",
+                status=status,
+                details={
+                    "asset_id": resolved_asset_id,
+                    "coin": coin,
+                    "order_id": order_id,
+                    "cancel_cloid": cancel_cloid,
+                },
+            )
+
+            return response
+
+        case "place_trigger_order":
+            if tpsl not in ("tp", "sl"):
+                return err(
+                    "invalid_request",
+                    "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)",
+                )
+            if trigger_price is None:
+                return err(
+                    "invalid_request",
+                    "trigger_price is required for place_trigger_order",
+                )
+            try:
+                tpx = float(trigger_price)
+            except (TypeError, ValueError):
+                return err("invalid_request", "trigger_price must be a number")
+            if tpx <= 0:
+                return err("invalid_request", "trigger_price must be positive")
+            if is_buy is None:
+                return err(
+                    "invalid_request",
+                    "is_buy is required for place_trigger_order — set to opposite of your position "
+                    "(long position → is_buy=False to sell; short position → is_buy=True to buy back)",
+                )
+            if size is None:
+                return err(
+                    "invalid_request",
+                    "size is required for place_trigger_order (coin units)",
+                )
+            try:
+                sz = float(size)
+            except (TypeError, ValueError):
+                return err("invalid_request", "size must be a number")
+            if sz <= 0:
+                return err("invalid_request", "size must be positive")
+
+            limit_px: float | None = None
+            if not is_market_trigger:
+                if price is None:
+                    return err(
+                        "invalid_request",
+                        "price is required for limit trigger orders (is_market_trigger=False)",
+                    )
+                try:
+                    limit_px = float(price)
+                except (TypeError, ValueError):
+                    return err("invalid_request", "price must be a number")
+                if limit_px <= 0:
+                    return err("invalid_request", "price must be positive")
+
+            try:
+                builder = _resolve_builder_fee(
+                    config=config, builder_fee_tenths_bp=builder_fee_tenths_bp
+                )
+            except ValueError as exc:
+                return err("invalid_request", str(exc))
+
+            sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
+            if sz_valid <= 0:
+                return err(
+                    "invalid_request", "size is too small after lot-size rounding"
+                )
+
+            ok_order, res = await adapter.place_trigger_order(
+                resolved_asset_id,
+                bool(is_buy),
+                tpx,
+                float(sz_valid),
+                sender,
+                tpsl=tpsl,
+                is_market=bool(is_market_trigger),
+                limit_price=limit_px,
+                builder=builder,
+            )
+            effects.append(
+                {
+                    "type": "hl",
+                    "label": "place_trigger_order",
+                    "ok": ok_order,
+                    "result": res,
+                }
+            )
+
+            ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
+            status = "confirmed" if ok_all else "failed"
+            response = ok(
+                {
+                    "status": status,
+                    "action": action,
+                    "wallet_label": want,
+                    "address": sender,
+                    "asset_id": resolved_asset_id,
+                    "coin": coin,
+                    "trigger_order": {
+                        "tpsl": tpsl,
+                        "is_buy": bool(is_buy),
+                        "trigger_price": tpx,
+                        "is_market_trigger": bool(is_market_trigger),
+                        "limit_price": limit_px,
+                        "size_requested": float(sz),
+                        "size_valid": float(sz_valid),
+                        "builder": builder,
+                    },
+                    "preview": preview_text,
+                    "effects": effects,
+                }
+            )
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="place_trigger_order",
+                status=status,
+                details={
+                    "asset_id": resolved_asset_id,
+                    "coin": coin,
+                    "tpsl": tpsl,
+                    "is_buy": bool(is_buy),
+                    "trigger_price": tpx,
+                    "size": float(sz_valid),
+                },
+            )
+            return response
+
+        case "place_order":
+            if size is not None and usd_amount is not None:
+                response = err(
+                    "invalid_request",
+                    "Provide either size (coin units) or usd_amount (USD notional/margin), not both",
+                )
+                return response
+            if usd_amount_kind is not None and usd_amount is None:
+                response = err(
+                    "invalid_request",
+                    "usd_amount_kind is only valid when usd_amount is provided",
+                )
+                return response
+
+            if is_buy is None:
+                response = err("invalid_request", "is_buy is required for place_order")
+                return response
+
+            if order_type == "limit":
+                if price is None:
+                    response = err(
+                        "invalid_request", "price is required for limit orders"
+                    )
+                    return response
+                try:
+                    px_for_sizing = float(price)
+                except (TypeError, ValueError):
+                    response = err("invalid_request", "price must be a number")
+                    return response
+                if px_for_sizing <= 0:
+                    response = err("invalid_request", "price must be positive")
+                    return response
+            else:
+                try:
+                    slip = float(slippage)
+                except (TypeError, ValueError):
+                    response = err("invalid_request", "slippage must be a number")
+                    return response
+                if slip < 0:
+                    response = err("invalid_request", "slippage must be >= 0")
+                    return response
+                if slip > 0.25:
+                    response = err("invalid_request", "slippage > 0.25 is too risky")
+                    return response
+                px_for_sizing = None
+
+            sizing: dict[str, Any] = {"source": "size"}
+            if size is not None:
+                try:
+                    sz = float(size)
+                except (TypeError, ValueError):
+                    response = err("invalid_request", "size must be a number")
+                    return response
+                if sz <= 0:
+                    response = err("invalid_request", "size must be positive")
+                    return response
+            else:
+                if usd_amount is None:
+                    response = err(
+                        "invalid_request",
+                        "Provide either size (coin units) or usd_amount for place_order",
+                    )
+                    return response
+                try:
+                    usd_amt = float(usd_amount)
+                except (TypeError, ValueError):
+                    response = err("invalid_request", "usd_amount must be a number")
+                    return response
+                if usd_amt <= 0:
+                    response = err("invalid_request", "usd_amount must be positive")
+                    return response
+
+                # Spot: usd_amount is always notional (no leverage)
+                if market_type == "spot":
+                    notional_usd = usd_amt
+                    margin_usd = None
+                elif usd_amount_kind is None:
+                    response = err(
+                        "invalid_request",
+                        "usd_amount_kind is required for perp: 'notional' or 'margin'",
+                    )
+                    return response
+                elif usd_amount_kind == "margin":
+                    if leverage is None:
+                        response = err(
+                            "invalid_request",
+                            "leverage is required when usd_amount_kind='margin'",
+                        )
+                        return response
+                    try:
+                        lev = int(leverage)
+                    except (TypeError, ValueError):
+                        response = err("invalid_request", "leverage must be an int")
+                        return response
+                    if lev <= 0:
+                        response = err("invalid_request", "leverage must be positive")
+                        return response
+                    notional_usd = usd_amt * float(lev)
+                    margin_usd = usd_amt
+                else:
+                    notional_usd = usd_amt
+                    margin_usd = None
+                    if leverage is not None:
+                        try:
+                            lev = int(leverage)
+                            if lev > 0:
+                                margin_usd = notional_usd / float(lev)
+                        except Exception:
+                            margin_usd = None
+
+                if px_for_sizing is None:
+                    ok_mids, mids = await adapter.get_all_mid_prices()
+                    if not ok_mids or not isinstance(mids, dict):
+                        response = err("price_error", "Failed to fetch mid prices")
+                        return response
+                    mid = None
+                    for k, v in mids.items():
+                        if str(k).lower() == coin_clean.lower():
+                            try:
+                                mid = float(v)
+                            except (TypeError, ValueError):
+                                mid = None
+                            break
+                    if mid is None or mid <= 0:
+                        response = err(
+                            "price_error",
+                            f"Could not resolve mid price for {coin_clean}",
+                        )
+                        return response
+                    px_for_sizing = mid
+
+                sz = notional_usd / float(px_for_sizing)
+                sizing = {
+                    "source": "usd_amount",
+                    "usd_amount": float(usd_amt),
+                    "usd_amount_kind": usd_amount_kind,
+                    "notional_usd": float(notional_usd),
+                    "margin_usd_estimate": float(margin_usd)
+                    if margin_usd is not None
+                    else None,
+                    "price_used": float(px_for_sizing),
+                }
+
+            sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
+            if sz_valid <= 0:
+                response = err(
+                    "invalid_request", "size is too small after lot-size rounding"
+                )
+                return response
+
+            try:
+                builder = _resolve_builder_fee(
+                    config=config,
+                    builder_fee_tenths_bp=builder_fee_tenths_bp,
+                )
+            except ValueError as exc:
+                response = err("invalid_request", str(exc))
+                return response
+
             if leverage is not None:
                 try:
                     lev = int(leverage)
-                    if lev > 0:
-                        margin_usd = notional_usd / float(lev)
-                except Exception:
-                    margin_usd = None
-
-        if px_for_sizing is None:
-            ok_mids, mids = await adapter.get_all_mid_prices()
-            if not ok_mids or not isinstance(mids, dict):
-                response = err("price_error", "Failed to fetch mid prices")
-                return response
-            mid = None
-            for key in _mid_feed_keys(market_type, coin_clean, resolved_asset_id):
-                v = mids.get(key)
-                if v is None:
-                    continue
-                try:
-                    mid = float(v)
-                    break
                 except (TypeError, ValueError):
-                    continue
-            if mid is None or mid <= 0:
-                response = err(
-                    "price_error",
-                    f"Could not resolve mid price for {coin_clean}",
+                    response = err("invalid_request", "leverage must be an int")
+                    return response
+                if lev <= 0:
+                    response = err("invalid_request", "leverage must be positive")
+                    return response
+                ok_lev, res = await adapter.update_leverage(
+                    resolved_asset_id, lev, bool(is_cross), sender
                 )
-                return response
-            px_for_sizing = mid
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "update_leverage",
+                        "ok": ok_lev,
+                        "result": res,
+                    }
+                )
+                if not ok_lev:
+                    response = ok(
+                        {
+                            "status": "failed",
+                            "action": action,
+                            "wallet_label": want,
+                            "address": sender,
+                            "asset_id": resolved_asset_id,
+                            "coin": coin,
+                            "preview": preview_text,
+                            "effects": effects,
+                        }
+                    )
+                    return response
 
-        sz = notional_usd / float(px_for_sizing)
-        sizing = {
-            "source": "usd_amount",
-            "usd_amount": float(usd_amt),
-            "usd_amount_kind": usd_amount_kind,
-            "notional_usd": float(notional_usd),
-            "margin_usd_estimate": float(margin_usd)
-            if margin_usd is not None
-            else None,
-            "price_used": float(px_for_sizing),
-        }
+            # Builder attribution is mandatory; ensure approval before placing orders.
+            desired = int(builder.get("f") or 0)
+            builder_addr = str(builder.get("b") or "").strip()
+            ok_fee, current = await adapter.get_max_builder_fee(
+                user=sender, builder=builder_addr
+            )
+            effects.append(
+                {
+                    "type": "hl",
+                    "label": "get_max_builder_fee",
+                    "ok": ok_fee,
+                    "result": {
+                        "current_tenths_bp": int(current),
+                        "desired_tenths_bp": desired,
+                    },
+                }
+            )
+            if not ok_fee or int(current) < desired:
+                max_fee_rate = f"{desired / 1000:.3f}%"
+                ok_appr, appr = await adapter.approve_builder_fee(
+                    builder=builder_addr,
+                    max_fee_rate=max_fee_rate,
+                    address=sender,
+                )
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "approve_builder_fee",
+                        "ok": ok_appr,
+                        "result": appr,
+                    }
+                )
+                if not ok_appr:
+                    response = ok(
+                        {
+                            "status": "failed",
+                            "action": action,
+                            "wallet_label": want,
+                            "address": sender,
+                            "asset_id": resolved_asset_id,
+                            "coin": coin,
+                            "preview": preview_text,
+                            "effects": effects,
+                        }
+                    )
+                    return response
 
-    sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
-    if sz_valid <= 0:
-        response = err("invalid_request", "size is too small after lot-size rounding")
-        return response
+            if order_type == "limit":
+                ok_order, res = await adapter.place_limit_order(
+                    resolved_asset_id,
+                    bool(is_buy),
+                    float(price),
+                    float(sz_valid),
+                    sender,
+                    reduce_only=bool(reduce_only),
+                    builder=builder,
+                )
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "place_limit_order",
+                        "ok": ok_order,
+                        "result": res,
+                    }
+                )
+            else:
+                ok_order, res = await adapter.place_market_order(
+                    resolved_asset_id,
+                    bool(is_buy),
+                    float(slippage),
+                    float(sz_valid),
+                    sender,
+                    reduce_only=bool(reduce_only),
+                    cloid=cloid,
+                    builder=builder,
+                )
+                effects.append(
+                    {
+                        "type": "hl",
+                        "label": "place_market_order",
+                        "ok": ok_order,
+                        "result": res,
+                    }
+                )
 
-    try:
-        builder = _resolve_builder_fee(
-            config=config,
-            builder_fee_tenths_bp=builder_fee_tenths_bp,
-        )
-    except ValueError as exc:
-        response = err("invalid_request", str(exc))
-        return response
-
-    if leverage is not None:
-        try:
-            lev = int(leverage)
-        except (TypeError, ValueError):
-            response = err("invalid_request", "leverage must be an int")
-            return response
-        if lev <= 0:
-            response = err("invalid_request", "leverage must be positive")
-            return response
-        ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
-        )
-        effects.append(
-            {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
-        )
-        if not ok_lev:
+            ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
+            status = "confirmed" if ok_all else "failed"
             response = ok(
                 {
-                    "status": "failed",
+                    "status": status,
                     "action": action,
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "asset_name": asset_name,
+                    "coin": coin,
+                    "order": {
+                        "order_type": order_type,
+                        "is_buy": bool(is_buy),
+                        "size_requested": float(sz),
+                        "size_valid": float(sz_valid),
+                        "price": float(price) if price is not None else None,
+                        "slippage": float(slippage),
+                        "reduce_only": bool(reduce_only),
+                        "cloid": cloid,
+                        "builder": builder,
+                        "sizing": sizing,
+                    },
                     "preview": preview_text,
                     "effects": effects,
                 }
             )
-            return response
-
-    # Builder attribution is mandatory; ensure approval before placing orders.
-    desired = int(builder.get("f") or 0)
-    builder_addr = str(builder.get("b") or "").strip()
-    ok_fee, current = await adapter.get_max_builder_fee(
-        user=sender, builder=builder_addr
-    )
-    effects.append(
-        {
-            "type": "hl",
-            "label": "get_max_builder_fee",
-            "ok": ok_fee,
-            "result": {"current_tenths_bp": int(current), "desired_tenths_bp": desired},
-        }
-    )
-    if not ok_fee or int(current) < desired:
-        max_fee_rate = f"{desired / 1000:.3f}%"
-        ok_appr, appr = await adapter.approve_builder_fee(
-            builder=builder_addr,
-            max_fee_rate=max_fee_rate,
-            address=sender,
-        )
-        effects.append(
-            {
-                "type": "hl",
-                "label": "approve_builder_fee",
-                "ok": ok_appr,
-                "result": appr,
-            }
-        )
-        if not ok_appr:
-            response = ok(
-                {
-                    "status": "failed",
-                    "action": action,
-                    "wallet_label": want,
-                    "address": sender,
+            _annotate_hl_profile(
+                address=sender,
+                label=want,
+                action="place_order",
+                status=status,
+                details={
                     "asset_id": resolved_asset_id,
-                    "asset_name": asset_name,
-                    "preview": preview_text,
-                    "effects": effects,
-                }
+                    "coin": coin,
+                    "order_type": order_type,
+                    "is_buy": bool(is_buy),
+                    "size": float(sz_valid),
+                },
             )
+
             return response
 
-    if order_type == "limit":
-        ok_order, res = await adapter.place_limit_order(
-            resolved_asset_id,
-            bool(is_buy),
-            float(price),
-            float(sz_valid),
-            sender,
-            reduce_only=bool(reduce_only),
-            builder=builder,
-        )
-        effects.append(
-            {"type": "hl", "label": "place_limit_order", "ok": ok_order, "result": res}
-        )
-    else:
-        ok_order, res = await adapter.place_market_order(
-            resolved_asset_id,
-            bool(is_buy),
-            float(slippage),
-            float(sz_valid),
-            sender,
-            reduce_only=bool(reduce_only),
-            cloid=cloid,
-            builder=builder,
-        )
-        effects.append(
-            {"type": "hl", "label": "place_market_order", "ok": ok_order, "result": res}
-        )
-
-    ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
-    status = "confirmed" if ok_all else "failed"
-    response = ok(
-        {
-            "status": status,
-            "action": action,
-            "wallet_label": want,
-            "address": sender,
-            "asset_id": resolved_asset_id,
-            "asset_name": asset_name,
-            "order": {
-                "order_type": order_type,
-                "is_buy": bool(is_buy),
-                "size_requested": float(sz),
-                "size_valid": float(sz_valid),
-                "price": float(price) if price is not None else None,
-                "slippage": float(slippage),
-                "reduce_only": bool(reduce_only),
-                "cloid": cloid,
-                "builder": builder,
-                "sizing": sizing,
-            },
-            "preview": preview_text,
-            "effects": effects,
-        }
-    )
-    _annotate_hl_profile(
-        address=sender,
-        label=want,
-        action="place_order",
-        status=status,
-        details={
-            "asset_id": resolved_asset_id,
-            "asset_name": asset_name,
-            "order_type": order_type,
-            "is_buy": bool(is_buy),
-            "size": float(sz_valid),
-        },
-    )
-
-    return response
+        case _:
+            return err("invalid_request", f"Unknown action: {action}")
 
 
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
@@ -1148,18 +1146,13 @@ async def hyperliquid_get_mid_prices() -> dict[str, Any]:
     return ok({"success": success, "prices": data})
 
 
-MIN_MATCH_SCORE = 0.9
+async def hyperliquid_get_markets() -> dict[str, Any]:
+    """Return the HL universe as flat lists of canonical coin paths.
 
-
-async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
-    """
-    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
-    query returns the first `limit` items from each bucket unfiltered.
-
-    query: A simple string containing asset names, for example: btc, eth, oil
-    limit: Max number of results to return per category
-
-    Returns a list of asset names to be used when executing Hyperliquid orders.
+    Output keys:
+      * `perps`: core perps as `<base>-USDC` and HIP-3 builder perps as `<dex>:<base>`
+      * `spots`: spot pairs as `<base>/<quote>` (e.g. `BTC/USDC`, `USDC/USDH`)
+      * `outcomes`: HIP-4 outcome book coins as `#<encoding>` (`encoding = outcome_id*10 + side`)
     """
     adapter = HyperliquidAdapter()
     (
@@ -1171,72 +1164,17 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         adapter.get_spot_assets(),
         adapter.get_outcome_markets(),
     )
-    if not perp_ok:
-        perp_data = {"universe": []}
-    if not spot_ok:
-        spot_data = []
-    if not outcome_ok:
-        outcome_data = []
 
-    perps = [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
-    spots = list(spot_data)
-    outcome_sides = [
-        (s["book_coin"], market["description"])
-        for market in outcome_data
-        for s in market["sides"]
-    ]
-
-    if not query.strip():
-        perp_hits = [{"name": p} for p in perps[:limit]]
-        spot_hits = [{"name": s} for s in spots[:limit]]
-        outcome_hits = [
-            {"name": coin, "description": desc} for coin, desc in outcome_sides[:limit]
-        ]
-    else:
-        terms = {
-            a
-            for token in query.lower().split()
-            for a in MARKET_SEARCH_ALIASES.get(token, {token})
-        }
-
-        def score(text: str) -> float:
-            # matches / min(len_a, len_b) — rewards covering the shorter string
-            # fully. HL token symbols are short and often vowel-stripped (KNTQ
-            # for kinetiq, kBONK for bonk), so subsequence-style matching is the
-            # natural fit. We prefer false positives over false negatives:
-            # missed matches are invisible to the LLM consumer, while noise
-            # candidates can be ranked-out downstream.
-            candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
-            best = 0.0
-            for term in terms:
-                for ct in candidate_tokens:
-                    sm = difflib.SequenceMatcher(None, term, ct)
-                    matches = sum(b.size for b in sm.get_matching_blocks())
-                    denom = min(len(term), len(ct))
-                    if denom:
-                        best = max(best, matches / denom)
-            return best
-
-        def top(items, text_of):
-            scored = ((item, score(text_of(item))) for item in items)
-            kept = sorted(
-                ((it, s) for it, s in scored if s >= MIN_MATCH_SCORE),
-                key=lambda r: r[1],
-                reverse=True,
-            )
-            return [it for it, _ in kept[:limit]]
-
-        perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
-        spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
-        outcome_hits = [
-            {"name": coin, "description": desc}
-            for coin, desc in top(outcome_sides, lambda row: row[1])
-        ]
-
-    return ok(
-        {
-            "perps": perp_hits,
-            "spots": spot_hits,
-            "outcomes": outcome_hits,
-        }
+    perps = (
+        [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
+        if perp_ok
+        else []
     )
+    spots = list(spot_data) if spot_ok else []
+    outcomes = (
+        [s["book_coin"] for market in outcome_data for s in market["sides"]]
+        if outcome_ok
+        else []
+    )
+
+    return ok({"perps": perps, "spots": spots, "outcomes": outcomes})
