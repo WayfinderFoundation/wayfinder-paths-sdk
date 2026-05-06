@@ -227,11 +227,11 @@ async def contracts_deploy(
     return ok(result)
 
 
-async def contracts_list() -> str:
+async def contracts_list() -> dict[str, Any]:
     """List all locally-deployed contracts from the artifact store."""
     store = ContractArtifactStore.default()
     entries = store.list_deployments()
-    return json.dumps({"contracts": entries, "count": len(entries)}, indent=2)
+    return ok({"contracts": entries, "count": len(entries)})
 
 
 async def contracts_get(
@@ -239,7 +239,7 @@ async def contracts_get(
     address: str,
     *,
     resolve_proxy: bool = True,
-) -> str:
+) -> dict[str, Any]:
     """Get ABI + metadata for a deployed contract.
 
     Resolution order:
@@ -253,7 +253,7 @@ async def contracts_get(
     addr = str(address).strip()
     addr_lc = addr.lower()
     if not addr:
-        return json.dumps({"error": "address is required"})
+        return err("invalid_request", "address is required")
 
     metadata = store.get_metadata(cid, addr_lc)
     if metadata:
@@ -264,7 +264,7 @@ async def contracts_get(
         abi_path = store.get_abi_path(cid, addr_lc)
         if abi_path is not None:
             result["abi_path"] = str(abi_path)
-        return json.dumps(result, indent=2)
+        return ok(result)
 
     impl: str | None = None
     flavour: str | None = None
@@ -277,7 +277,7 @@ async def contracts_get(
         if impl:
             try:
                 impl_abi = await fetch_contract_abi(cid, impl)
-                return json.dumps(
+                return ok(
                     {
                         "source": "etherscan_v2_proxy",
                         "chain_id": cid,
@@ -287,8 +287,7 @@ async def contracts_get(
                         "proxy_flavour": flavour,
                         "abi": impl_abi,
                         "abi_summary": summarize_abi(impl_abi),
-                    },
-                    indent=2,
+                    }
                 )
             except Exception:
                 pass
@@ -296,15 +295,14 @@ async def contracts_get(
     try:
         abi_list = await fetch_contract_abi(cid, addr)
     except Exception as exc:
-        return json.dumps({"error": f"ABI not found locally or on Etherscan: {exc}"})
+        return err("abi_not_found", f"ABI not found locally or on Etherscan: {exc}")
 
-    return json.dumps(
+    return ok(
         {
             "source": "etherscan_v2",
             "chain_id": cid,
             "contract_address": addr,
             "abi": abi_list,
             "abi_summary": summarize_abi(abi_list),
-        },
-        indent=2,
+        }
     )

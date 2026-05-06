@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any, Literal, TypedDict
 
 from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
@@ -1052,11 +1051,11 @@ async def hyperliquid_execute(
     return response
 
 
-async def hyperliquid_get_state(label: str) -> str:
+async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+        return err("not_found", f"Wallet not found: {label}")
 
     adapter = HyperliquidAdapter()
     perp_ok, perp = await adapter.get_user_state(addr)
@@ -1085,25 +1084,24 @@ async def hyperliquid_get_state(label: str) -> str:
                 spot_balances.append(bal)
         spot["balances"] = spot_balances
 
-    return json.dumps(
+    return ok(
         {
             "label": label,
             "address": addr,
             "perp": {"success": perp_ok, "state": perp},
             "spot": {"success": spot_ok, "state": spot},
             "outcomes": {"success": spot_ok, "positions": outcome_positions},
-        },
-        indent=2,
+        }
     )
 
 
-async def hyperliquid_get_mid_prices() -> str:
+async def hyperliquid_get_mid_prices() -> dict[str, Any]:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_all_mid_prices()
-    return json.dumps({"success": success, "prices": data}, indent=2)
+    return ok({"success": success, "prices": data})
 
 
-async def hyperliquid_get_markets() -> str:
+async def hyperliquid_get_markets() -> dict[str, Any]:
     """Return the HL universe as flat lists of canonical coin paths.
 
     Output keys:
@@ -1134,7 +1132,4 @@ async def hyperliquid_get_markets() -> str:
         else []
     )
 
-    return json.dumps(
-        {"perps": perps, "spots": spots, "outcomes": outcomes},
-        indent=2,
-    )
+    return ok({"perps": perps, "spots": spots, "outcomes": outcomes})
