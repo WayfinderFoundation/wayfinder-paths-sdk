@@ -20,6 +20,7 @@ __all__ = [
     "HYPERLIQUID_BRIDGE_ADDRESS",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE",
+    "MARKET_SEARCH_ALIASES",
 ]
 
 ARBITRUM_USDC_TOKEN_ID: str = "usd-coin-arbitrum"
@@ -30,4 +31,46 @@ DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP: int = 30
 DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
     "b": HYPE_FEE_WALLET,
     "f": DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
+}
+
+# HL wraps several majors with `k`/`u`/`U` prefixes (kBONK, uSOL, UBTC, UETH) and
+# lists themed perps under HIP-3 builder dexes (xyz:BRENTOIL, vntl:ENERGY, etc.).
+# Aliases let market search resolve common user phrasing to the on-book symbol.
+MARKET_SEARCH_ALIASES: dict[str, frozenset[str]] = {
+    "oil": frozenset(
+        {
+            "oil",
+            "wti",
+            "brent",
+            "crude",
+            "usoil",
+            "brentoil",
+            "energy",
+            "gas",
+            "natgas",
+            "naturalgas",
+        }
+    ),
+    "wti": frozenset({"oil", "wti", "crude", "usoil"}),
+    "brent": frozenset({"oil", "brent", "crude", "brentoil"}),
+    "crude": frozenset({"oil", "wti", "brent", "crude", "usoil", "brentoil"}),
+    "gas": frozenset({"gas", "natgas", "naturalgas", "energy"}),
+    "natgas": frozenset({"gas", "natgas", "naturalgas", "energy"}),
+    "naturalgas": frozenset({"gas", "natgas", "naturalgas", "energy"}),
+    "energy": frozenset({"energy", "oil", "gas", "natgas", "naturalgas"}),
+    "btc": frozenset({"btc", "bitcoin", "ubtc"}),
+    "bitcoin": frozenset({"btc", "bitcoin", "ubtc"}),
+    "ubtc": frozenset({"btc", "bitcoin", "ubtc"}),
+    "eth": frozenset({"eth", "ethereum", "ueth"}),
+    "ethereum": frozenset({"eth", "ethereum", "ueth"}),
+    "ueth": frozenset({"eth", "ethereum", "ueth"}),
+    "sol": frozenset({"sol", "solana", "usol"}),
+    "solana": frozenset({"sol", "solana", "usol"}),
+    "usol": frozenset({"sol", "solana", "usol"}),
+    "bonk": frozenset({"bonk", "kbonk"}),
+    "kbonk": frozenset({"bonk", "kbonk"}),
+    "nvidia": frozenset({"nvidia", "nvda"}),
+    "nvda": frozenset({"nvidia", "nvda"}),
+    "monad": frozenset({"monad", "mon"}),
+    "mon": frozenset({"monad", "mon"}),
 }

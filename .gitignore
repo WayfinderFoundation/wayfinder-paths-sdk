@@ -63,6 +63,9 @@ abis/
 # Claude Code local overrides
 .claude/settings.local.json
 
+opencode.json
+
+
 # Local runtime artifacts
 .build/
 *.sqlite3

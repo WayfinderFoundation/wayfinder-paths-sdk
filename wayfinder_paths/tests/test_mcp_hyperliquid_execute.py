@@ -94,7 +94,7 @@ async def test_resolve_coin_rejects_bad_input(coin):
     ok, res = await _resolve_coin(adapter, coin=coin)
     assert ok is False
     assert res["code"] == "invalid_coin"
-    assert "hyperliquid_get_markets" in res["message"]
+    assert "hyperliquid_search_market" in res["message"]
 
 
 @pytest.mark.asyncio
@@ -115,6 +115,10 @@ async def test_hyperliquid_execute_withdraw(tmp_path: Path, monkeypatch):
         patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.withdraw",
+            new=AsyncMock(return_value=(True, {"status": "ok"})),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.wait_for_withdrawal",
             new=AsyncMock(return_value=(True, {"status": "ok"})),
         ),
     ):

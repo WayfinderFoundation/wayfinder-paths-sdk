@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
+import re
 from typing import Any, Literal, TypedDict
 
 from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
@@ -13,6 +15,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
     HYPERLIQUID_BRIDGE_ADDRESS,
+    MARKET_SEARCH_ALIASES,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -1103,14 +1106,22 @@ async def hyperliquid_get_mid_prices() -> str:
     return json.dumps({"success": success, "prices": data}, indent=2)
 
 
-async def hyperliquid_get_markets() -> str:
-    """Return the HL universe as flat lists of canonical coin paths.
+MIN_MATCH_SCORE = 0.9
 
-    Output keys:
-      * `perps`: core perps as `<base>-USDC` and HIP-3 builder perps as `<dex>:<base>`
-      * `spots`: spot pairs as `<base>/<quote>` (e.g. `BTC/USDC`, `USDC/USDH`)
-      * `outcomes`: HIP-4 outcome book coins as `#<encoding>` (`encoding = outcome_id*10 + side`)
+
+async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
     """
+    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string.
+
+    query: A simple string containing asset names, for example: btc, eth, oil
+    limit: Max number of results to return per category
+
+    Returns a list of asset names to be used when executing Hyperliquid orders.
+    Only matches scoring at or above MIN_MATCH_SCORE are returned.
+    """
+    if not query.strip():
+        return err("invalid_request", "query is required")
+
     adapter = HyperliquidAdapter()
     (
         (perp_ok, perp_data),
@@ -1121,20 +1132,58 @@ async def hyperliquid_get_markets() -> str:
         adapter.get_spot_assets(),
         adapter.get_outcome_markets(),
     )
+    if not perp_ok:
+        perp_data = {"universe": []}
+    if not spot_ok:
+        spot_data = []
+    if not outcome_ok:
+        outcome_data = []
 
-    perps = (
-        [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
-        if perp_ok
-        else []
-    )
-    spots = list(spot_data) if spot_ok else []
-    outcomes = (
-        [s["book_coin"] for market in outcome_data for s in market["sides"]]
-        if outcome_ok
-        else []
-    )
+    perps = [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
+    spots = list(spot_data)
+    outcome_sides = [
+        (s["book_coin"], market["description"])
+        for market in outcome_data
+        for s in market["sides"]
+    ]
 
-    return json.dumps(
-        {"perps": perps, "spots": spots, "outcomes": outcomes},
-        indent=2,
+    terms = {
+        a
+        for token in query.lower().split()
+        for a in MARKET_SEARCH_ALIASES.get(token, {token})
+    }
+
+    def score(text: str) -> float:
+        candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
+        return max(
+            (
+                difflib.SequenceMatcher(None, term, ct).ratio()
+                for term in terms
+                for ct in candidate_tokens
+            ),
+            default=0.0,
+        )
+
+    def top(items, text_of):
+        scored = ((item, score(text_of(item))) for item in items)
+        kept = sorted(
+            ((it, s) for it, s in scored if s >= MIN_MATCH_SCORE),
+            key=lambda r: r[1],
+            reverse=True,
+        )
+        return [it for it, _ in kept[:limit]]
+
+    perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
+    spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
+    outcome_hits = [
+        {"name": coin, "description": desc}
+        for coin, desc in top(outcome_sides, lambda row: row[1])
+    ]
+
+    return ok(
+        {
+            "perps": perp_hits,
+            "spots": spot_hits,
+            "outcomes": outcome_hits,
+        }
     )
