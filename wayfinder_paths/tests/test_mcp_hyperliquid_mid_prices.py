@@ -9,18 +9,22 @@ from __future__ import annotations
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
-from wayfinder_paths.mcp.tools.hyperliquid import _mid_feed_keys, _resolve_coin
+from wayfinder_paths.mcp.tools.hyperliquid import _mid_feed_keys
 
 
-async def _resolved_mid(coin: str) -> float | None:
+async def _resolved_mid(asset_name: str) -> float | None:
     adapter = HyperliquidAdapter()
-    ok_resolve, resolved = await _resolve_coin(adapter, coin=coin)
-    assert ok_resolve, f"failed to resolve {coin}: {resolved}"
+    asset_id = await adapter.get_asset_id(asset_name)
+    assert asset_id is not None, f"failed to resolve {asset_name!r}"
+    market_type = (
+        "outcome" if asset_name.startswith("#")
+        else "spot" if "/" in asset_name
+        else "perp"
+    )
+    coin_clean = asset_name.removesuffix("-USDC")
     ok_mids, mids = await adapter.get_all_mid_prices()
     assert ok_mids and isinstance(mids, dict)
-    for key in _mid_feed_keys(
-        resolved["market_type"], resolved["coin_clean"], resolved["asset_id"]
-    ):
+    for key in _mid_feed_keys(market_type, coin_clean, asset_id):
         v = mids.get(key)
         if v is not None:
             return float(v)

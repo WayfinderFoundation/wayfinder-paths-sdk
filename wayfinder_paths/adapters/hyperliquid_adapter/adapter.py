@@ -520,6 +520,25 @@ class HyperliquidAdapter(BaseAdapter):
     def coin_to_asset(self) -> dict[str, int]:
         return get_info().coin_to_asset
 
+    async def get_asset_id(self, asset_name: str) -> int | None:
+        """Resolve a canonical market path to its HL asset id, or None if no match.
+
+        Accepts: 'BTC-USDC' (core perp), 'xyz:SP500' (HIP-3 perp),
+        'BTC/USDC' (spot pair), '#40' (HIP-4 outcome). Match is exact.
+        Callers derive market type and outcome encoding from the input shape
+        / asset id range.
+        """
+        if asset_name.startswith("#") and asset_name[1:].isdigit():
+            return OUTCOME_ASSET_OFFSET + int(asset_name[1:])
+        if "/" in asset_name:
+            _, assets = await self.get_spot_assets()
+            return assets.get(asset_name)
+        if ":" in asset_name:  # HIP-3 builder perp
+            return self.coin_to_asset.get(asset_name)
+        if (bare := asset_name.removesuffix("-USDC")) != asset_name:
+            return self.coin_to_asset.get(bare)
+        return None
+
     def get_sz_decimals(self, asset_id: int) -> int:
         try:
             return self.asset_to_sz_decimals[asset_id]

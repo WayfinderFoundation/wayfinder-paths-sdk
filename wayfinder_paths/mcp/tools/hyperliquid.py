@@ -3,9 +3,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import re
-from typing import Any, Literal, TypedDict
-
-from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
+from typing import Any, Literal
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.core.config import CONFIG
@@ -20,7 +18,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
-from wayfinder_paths.mcp.preview import build_hyperliquid_execute_preview
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -30,29 +27,6 @@ from wayfinder_paths.mcp.utils import (
     parse_amount_to_raw,
     resolve_wallet_address,
 )
-
-# Coin name grammar accepted by hyperliquid_execute and surfaced by hyperliquid_search_market.
-# Match is exact — no case folding, no whitespace tolerance, no aliasing.
-#   "BTC-USDC"   core perp           -> coin_to_asset["BTC"]
-#   "xyz:SP500"  HIP-3 builder perp  -> coin_to_asset["xyz:SP500"]
-#   "BTC/USDC"   spot pair           -> get_spot_assets["BTC/USDC"]
-#   "#40"        HIP-4 outcome       -> encoding=40, outcome_id=4, side=0
-_PERP_QUOTE_SUFFIX = "-USDC"
-_BAD_COIN_HINT = (
-    "Expected one of 'BTC-USDC' (core perp), 'xyz:SP500' (HIP-3 perp), "
-    "'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
-    "Call hyperliquid_search_market to look up the canonical name."
-)
-
-
-def _format_perp_market(name: str) -> str:
-    """Render a perp universe entry in the canonical coin-path form.
-
-    HIP-3 builder dexes already carry a `<dex>:<base>` prefix; core perps don't
-    have a quote suffix, so we tack on `-USDC`.
-    """
-    return name if ":" in name else f"{name}{_PERP_QUOTE_SUFFIX}"
-
 
 def _mid_feed_keys(market_type: str, coin_clean: str, asset_id: int) -> list[str]:
     """Candidate keys for `get_all_mid_prices()`, in lookup order.
@@ -107,87 +81,6 @@ def _resolve_builder_fee(
         raise ValueError("builder_fee_tenths_bp must be > 0")
 
     return {"b": expected_builder, "f": fee_i}
-
-
-class ResolvedCoin(TypedDict):
-    market_type: Literal["perp", "spot", "outcome"]
-    asset_id: int
-    coin_clean: str
-    outcome_id: int
-    side: int
-
-
-class ResolveError(TypedDict):
-    code: str
-    message: str
-
-
-def _bad_coin(coin: str | None) -> ResolveError:
-    return {
-        "code": "invalid_coin",
-        "message": f"Invalid coin {coin!r}. {_BAD_COIN_HINT}",
-    }
-
-
-async def _resolve_coin(
-    adapter: HyperliquidAdapter, *, coin: str | None
-) -> tuple[Literal[True], ResolvedCoin] | tuple[Literal[False], ResolveError]:
-    """Resolve a canonical coin path. Match is exact; bad input is rejected."""
-    if not coin:
-        return False, _bad_coin(coin)
-
-    if coin.startswith("#"):
-        rest = coin[1:]
-        if not rest.isdigit():
-            return False, _bad_coin(coin)
-        encoding = int(rest)
-        return True, {
-            "market_type": "outcome",
-            "asset_id": OUTCOME_ASSET_OFFSET + encoding,
-            "coin_clean": coin,
-            "outcome_id": encoding // 10,
-            "side": encoding % 10,
-        }
-
-    if "/" in coin:
-        ok_assets, assets = await adapter.get_spot_assets()
-        if not ok_assets:
-            return False, {"code": "error", "message": "Failed to fetch spot assets"}
-        if coin not in assets:
-            return False, _bad_coin(coin)
-        return True, {
-            "market_type": "spot",
-            "asset_id": assets[coin],
-            "coin_clean": coin,
-            "outcome_id": 0,
-            "side": 0,
-        }
-
-    mapping = adapter.coin_to_asset
-
-    if ":" in coin:  # HIP-3 builder-deployed perp
-        if coin not in mapping:
-            return False, _bad_coin(coin)
-        return True, {
-            "market_type": "perp",
-            "asset_id": mapping[coin],
-            "coin_clean": coin,
-            "outcome_id": 0,
-            "side": 0,
-        }
-
-    if coin.endswith(_PERP_QUOTE_SUFFIX):
-        bare = coin[: -len(_PERP_QUOTE_SUFFIX)]
-        if bare and bare in mapping:
-            return True, {
-                "market_type": "perp",
-                "asset_id": mapping[bare],
-                "coin_clean": bare,
-                "outcome_id": 0,
-                "side": 0,
-            }
-
-    return False, _bad_coin(coin)
 
 
 def _annotate_hl_profile(
@@ -268,36 +161,8 @@ async def hyperliquid_execute(
       - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
       - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
     """
-    want = str(wallet_label or "").strip()
-    if not want:
+    if not wallet_label:
         return err("invalid_request", "wallet_label is required")
-
-    key_input = {
-        "action": action,
-        "wallet_label": want,
-        "asset_name": asset_name,
-        "order_type": order_type,
-        "is_buy": is_buy,
-        "size": size,
-        "usd_amount": usd_amount,
-        "usd_amount_kind": usd_amount_kind,
-        "price": price,
-        "slippage": slippage,
-        "reduce_only": reduce_only,
-        "cloid": cloid,
-        "order_id": order_id,
-        "cancel_cloid": cancel_cloid,
-        "leverage": leverage,
-        "is_cross": is_cross,
-        "amount_usdc": amount_usdc,
-        "builder_fee_tenths_bp": builder_fee_tenths_bp,
-        "trigger_price": trigger_price,
-        "tpsl": tpsl,
-        "is_market_trigger": is_market_trigger,
-    }
-    tool_input = {"request": key_input}
-    preview_obj = await build_hyperliquid_execute_preview(tool_input)
-    preview_text = str(preview_obj.get("summary") or "").strip()
 
     strategy_raw = CONFIG.get("strategy")
     strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
@@ -306,7 +171,7 @@ async def hyperliquid_execute(
     effects: list[dict[str, Any]] = []
 
     try:
-        adapter = await get_adapter(HyperliquidAdapter, want, config_overrides=config)
+        adapter = await get_adapter(HyperliquidAdapter, wallet_label, config_overrides=config)
     except ValueError as e:
         return err("invalid_wallet", str(e))
     sender = adapter.wallet_address
@@ -326,7 +191,7 @@ async def hyperliquid_execute(
                 )
 
             try:
-                sign_callback, deposit_sender = await get_wallet_signing_callback(want)
+                sign_callback, deposit_sender = await get_wallet_signing_callback(wallet_label)
             except ValueError as exc:
                 return err("invalid_wallet", str(exc))
 
@@ -380,16 +245,15 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": deposit_sender,
                     "amount_usdc": amt,
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=deposit_sender,
-                label=want,
+                label=wallet_label,
                 action="deposit",
                 status=status,
                 details={"amount_usdc": amt, "chain_id": chain_id},
@@ -432,16 +296,15 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "amount_usdc": amt,
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action="withdraw",
                 status=status,
                 details={"amount_usdc": amt},
@@ -476,17 +339,16 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "usd_amount": amt,
                     "to_perp": to_perp,
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action=action,
                 status=status,
                 details={"usd_amount": amt, "to_perp": to_perp},
@@ -494,18 +356,30 @@ async def hyperliquid_execute(
 
             return response
 
-    ok_resolve, resolved = await _resolve_coin(adapter, coin=asset_name)
-    if not ok_resolve:
-        return err(resolved["code"], resolved["message"])
-    market_type = resolved["market_type"]
-    resolved_asset_id = resolved["asset_id"]
-    coin_clean = resolved["coin_clean"]
+    name = asset_name or ""
+    resolved_asset_id = await adapter.get_asset_id(name)
+    if resolved_asset_id is None:
+        return err(
+            "invalid_coin",
+            f"Invalid asset_name {name!r}. Expected 'BTC-USDC' (core perp), "
+            "'xyz:SP500' (HIP-3 perp), 'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
+            "Call hyperliquid_search_market to look up the canonical name.",
+        )
+    # Derive market type + clean form from the input shape (cheaper than
+    # re-fetching adapter metadata, and the input grammar is already strict).
+    if name.startswith("#"):
+        market_type: Literal["perp", "spot", "outcome"] = "outcome"
+    elif "/" in name:
+        market_type = "spot"
+    else:
+        market_type = "perp"
+    coin_clean = name.removesuffix("-USDC")  # only mutates core perps
 
     # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
     match action:
         case "place_order" if market_type == "outcome":
-            outcome_id_v = resolved["outcome_id"]
-            side_v = resolved["side"]
+            encoding = int(name[1:])  # `#<encoding>` validated by resolve_coin
+            outcome_id_v, side_v = encoding // 10, encoding % 10
             if is_buy is None:
                 return err("invalid_request", "is_buy is required for outcome orders")
             if order_type == "limit" and price is None:
@@ -554,7 +428,7 @@ async def hyperliquid_execute(
             status = "confirmed" if ok_order else "failed"
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action="place_order",
                 status=status,
                 details={
@@ -569,7 +443,7 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "asset_name": asset_name,
                     "outcome_id": outcome_id_v,
@@ -583,7 +457,6 @@ async def hyperliquid_execute(
                         "reduce_only": bool(reduce_only),
                         "cloid": cloid,
                     },
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
@@ -614,17 +487,16 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "asset_id": resolved_asset_id,
                     "asset_name": asset_name,
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action="update_leverage",
                 status=status,
                 details={"asset_id": resolved_asset_id, "asset_name": asset_name, "leverage": lev},
@@ -670,17 +542,16 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "asset_id": resolved_asset_id,
                     "asset_name": asset_name,
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action="cancel_order",
                 status=status,
                 details={
@@ -781,7 +652,7 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "asset_id": resolved_asset_id,
                     "asset_name": asset_name,
@@ -795,13 +666,12 @@ async def hyperliquid_execute(
                         "size_valid": float(sz_valid),
                         "builder": builder,
                     },
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action="place_trigger_order",
                 status=status,
                 details={
@@ -1017,11 +887,10 @@ async def hyperliquid_execute(
                         {
                             "status": "failed",
                             "action": action,
-                            "wallet_label": want,
+                            "wallet_label": wallet_label,
                             "address": sender,
                             "asset_id": resolved_asset_id,
                             "asset_name": asset_name,
-                            "preview": preview_text,
                             "effects": effects,
                         }
                     )
@@ -1064,11 +933,10 @@ async def hyperliquid_execute(
                         {
                             "status": "failed",
                             "action": action,
-                            "wallet_label": want,
+                            "wallet_label": wallet_label,
                             "address": sender,
                             "asset_id": resolved_asset_id,
                             "asset_name": asset_name,
-                            "preview": preview_text,
                             "effects": effects,
                         }
                     )
@@ -1118,7 +986,7 @@ async def hyperliquid_execute(
                 {
                     "status": status,
                     "action": action,
-                    "wallet_label": want,
+                    "wallet_label": wallet_label,
                     "address": sender,
                     "asset_id": resolved_asset_id,
                     "asset_name": asset_name,
@@ -1134,13 +1002,12 @@ async def hyperliquid_execute(
                         "builder": builder,
                         "sizing": sizing,
                     },
-                    "preview": preview_text,
                     "effects": effects,
                 }
             )
             _annotate_hl_profile(
                 address=sender,
-                label=want,
+                label=wallet_label,
                 action="place_order",
                 status=status,
                 details={
@@ -1238,7 +1105,12 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
     if not outcome_ok:
         outcome_data = []
 
-    perps = [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
+    # HIP-3 builder dexes carry a `<dex>:<base>` prefix; core perps don't have
+    # a quote suffix, so tack on `-USDC` to render the canonical coin path.
+    perps = [
+        name if ":" in (name := entry["name"]) else f"{name}-USDC"
+        for entry in perp_data[0]["universe"]
+    ]
     spots = list(spot_data)
     outcome_sides = [
         (s["book_coin"], market["description"])
