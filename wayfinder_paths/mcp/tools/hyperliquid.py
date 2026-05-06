@@ -1111,17 +1111,14 @@ MIN_MATCH_SCORE = 0.9
 
 async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
     """
-    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string.
+    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
+    query returns the first `limit` items from each bucket unfiltered.
 
     query: A simple string containing asset names, for example: btc, eth, oil
     limit: Max number of results to return per category
 
     Returns a list of asset names to be used when executing Hyperliquid orders.
-    Only matches scoring at or above MIN_MATCH_SCORE are returned.
     """
-    if not query.strip():
-        return err("invalid_request", "query is required")
-
     adapter = HyperliquidAdapter()
     (
         (perp_ok, perp_data),
@@ -1147,38 +1144,45 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         for s in market["sides"]
     ]
 
-    terms = {
-        a
-        for token in query.lower().split()
-        for a in MARKET_SEARCH_ALIASES.get(token, {token})
-    }
+    if not query.strip():
+        perp_hits = [{"name": p} for p in perps[:limit]]
+        spot_hits = [{"name": s} for s in spots[:limit]]
+        outcome_hits = [
+            {"name": coin, "description": desc} for coin, desc in outcome_sides[:limit]
+        ]
+    else:
+        terms = {
+            a
+            for token in query.lower().split()
+            for a in MARKET_SEARCH_ALIASES.get(token, {token})
+        }
 
-    def score(text: str) -> float:
-        candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
-        return max(
-            (
-                difflib.SequenceMatcher(None, term, ct).ratio()
-                for term in terms
-                for ct in candidate_tokens
-            ),
-            default=0.0,
-        )
+        def score(text: str) -> float:
+            candidate_tokens = [c for c in re.split(r"[^a-z0-9]+", text.lower()) if c]
+            return max(
+                (
+                    difflib.SequenceMatcher(None, term, ct).ratio()
+                    for term in terms
+                    for ct in candidate_tokens
+                ),
+                default=0.0,
+            )
 
-    def top(items, text_of):
-        scored = ((item, score(text_of(item))) for item in items)
-        kept = sorted(
-            ((it, s) for it, s in scored if s >= MIN_MATCH_SCORE),
-            key=lambda r: r[1],
-            reverse=True,
-        )
-        return [it for it, _ in kept[:limit]]
+        def top(items, text_of):
+            scored = ((item, score(text_of(item))) for item in items)
+            kept = sorted(
+                ((it, s) for it, s in scored if s >= MIN_MATCH_SCORE),
+                key=lambda r: r[1],
+                reverse=True,
+            )
+            return [it for it, _ in kept[:limit]]
 
-    perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
-    spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
-    outcome_hits = [
-        {"name": coin, "description": desc}
-        for coin, desc in top(outcome_sides, lambda row: row[1])
-    ]
+        perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
+        spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
+        outcome_hits = [
+            {"name": coin, "description": desc}
+            for coin, desc in top(outcome_sides, lambda row: row[1])
+        ]
 
     return ok(
         {
