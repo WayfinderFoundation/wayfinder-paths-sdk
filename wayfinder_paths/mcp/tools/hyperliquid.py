@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
+import re
 from typing import Any, Literal, TypedDict
 
 from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
@@ -12,6 +14,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
     HYPERLIQUID_BRIDGE_ADDRESS,
+    MARKET_SEARCH_ALIASES,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -27,7 +30,7 @@ from wayfinder_paths.mcp.utils import (
     resolve_wallet_address,
 )
 
-# Coin name grammar accepted by hyperliquid_execute and surfaced by hyperliquid_get_markets.
+# Coin name grammar accepted by hyperliquid_execute and surfaced by hyperliquid_search_market.
 # Match is exact — no case folding, no whitespace tolerance, no aliasing.
 #   "BTC-USDC"   core perp           -> coin_to_asset["BTC"]
 #   "xyz:SP500"  HIP-3 builder perp  -> coin_to_asset["xyz:SP500"]
@@ -37,7 +40,7 @@ _PERP_QUOTE_SUFFIX = "-USDC"
 _BAD_COIN_HINT = (
     "Expected one of 'BTC-USDC' (core perp), 'xyz:SP500' (HIP-3 perp), "
     "'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
-    "Call hyperliquid_get_markets to look up the canonical name."
+    "Call hyperliquid_search_market to look up the canonical name."
 )
 
 
@@ -48,6 +51,22 @@ def _format_perp_market(name: str) -> str:
     have a quote suffix, so we tack on `-USDC`.
     """
     return name if ":" in name else f"{name}{_PERP_QUOTE_SUFFIX}"
+
+
+def _mid_feed_keys(market_type: str, coin_clean: str, asset_id: int) -> list[str]:
+    """Candidate keys for `get_all_mid_prices()`, in lookup order.
+
+    HL's mid feed uses different key grammars per market type:
+      - core perp / HIP-3 perp -> bare symbol (e.g. "BTC", "xyz:NVDA")
+      - spot                   -> "@<spot_index>" (= asset_id - 10000)
+                                  EXCEPT PURR/USDC, grandfathered under its
+                                  canonical name. Try the @-form first, fall
+                                  back to canonical for the PURR case.
+      - HIP-4 outcome          -> "#<encoding>" (already in coin_clean)
+    """
+    if market_type == "spot":
+        return [f"@{asset_id - 10000}", coin_clean]
+    return [coin_clean]
 
 
 def _resolve_builder_fee(
@@ -204,7 +223,7 @@ async def hyperliquid_execute(
     ],
     *,
     wallet_label: str,
-    coin: str | None = None,
+    asset_name: str | None = None,
     order_type: Literal["market", "limit"] = "market",
     is_buy: bool | None = None,
     size: float | None = None,
@@ -227,7 +246,7 @@ async def hyperliquid_execute(
 ) -> dict[str, Any]:
     """Place orders, transfer collateral, or adjust leverage on Hyperliquid.
 
-    `coin` is the canonical market path returned by `hyperliquid_get_markets`:
+    `asset_name` is the canonical market path returned by `hyperliquid_search_market`:
       * Core perp:   `"BTC-USDC"`, `"ETH-USDC"`
       * HIP-3 perp:  `"xyz:SP500"`
       * Spot pair:   `"BTC/USDC"`, `"USDC/USDH"`
@@ -238,7 +257,7 @@ async def hyperliquid_execute(
 
     Actions:
       - `place_order`: spot / perp / HIP-4 outcome market or limit.
-        Size via `size` (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
+        Size via `size` (asset units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
       - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
@@ -255,7 +274,7 @@ async def hyperliquid_execute(
     key_input = {
         "action": action,
         "wallet_label": want,
-        "coin": coin,
+        "asset_name": asset_name,
         "order_type": order_type,
         "is_buy": is_buy,
         "size": size,
@@ -474,7 +493,7 @@ async def hyperliquid_execute(
 
             return response
 
-    ok_resolve, resolved = await _resolve_coin(adapter, coin=coin)
+    ok_resolve, resolved = await _resolve_coin(adapter, coin=asset_name)
     if not ok_resolve:
         return err(resolved["code"], resolved["message"])
     market_type = resolved["market_type"]
@@ -514,7 +533,7 @@ async def hyperliquid_execute(
                 action="place_order",
                 status=status,
                 details={
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "outcome_id": outcome_id_v,
                     "side": side_v,
                     "is_buy": bool(is_buy),
@@ -527,7 +546,7 @@ async def hyperliquid_execute(
                     "action": action,
                     "wallet_label": want,
                     "address": sender,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "outcome_id": outcome_id_v,
                     "side": side_v,
                     "order": {
@@ -573,7 +592,7 @@ async def hyperliquid_execute(
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "preview": preview_text,
                     "effects": effects,
                 }
@@ -583,7 +602,7 @@ async def hyperliquid_execute(
                 label=want,
                 action="update_leverage",
                 status=status,
-                details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
+                details={"asset_id": resolved_asset_id, "asset_name": asset_name, "leverage": lev},
             )
 
             return response
@@ -629,7 +648,7 @@ async def hyperliquid_execute(
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "preview": preview_text,
                     "effects": effects,
                 }
@@ -641,7 +660,7 @@ async def hyperliquid_execute(
                 status=status,
                 details={
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "order_id": order_id,
                     "cancel_cloid": cancel_cloid,
                 },
@@ -675,7 +694,7 @@ async def hyperliquid_execute(
             if size is None:
                 return err(
                     "invalid_request",
-                    "size is required for place_trigger_order (coin units)",
+                    "size is required for place_trigger_order (asset units)",
                 )
             try:
                 sz = float(size)
@@ -740,7 +759,7 @@ async def hyperliquid_execute(
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "trigger_order": {
                         "tpsl": tpsl,
                         "is_buy": bool(is_buy),
@@ -762,7 +781,7 @@ async def hyperliquid_execute(
                 status=status,
                 details={
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "tpsl": tpsl,
                     "is_buy": bool(is_buy),
                     "trigger_price": tpx,
@@ -775,7 +794,7 @@ async def hyperliquid_execute(
             if size is not None and usd_amount is not None:
                 response = err(
                     "invalid_request",
-                    "Provide either size (coin units) or usd_amount (USD notional/margin), not both",
+                    "Provide either size (asset units) or usd_amount (USD notional/margin), not both",
                 )
                 return response
             if usd_amount_kind is not None and usd_amount is None:
@@ -831,7 +850,7 @@ async def hyperliquid_execute(
                 if usd_amount is None:
                     response = err(
                         "invalid_request",
-                        "Provide either size (coin units) or usd_amount for place_order",
+                        "Provide either size (asset units) or usd_amount for place_order",
                     )
                     return response
                 try:
@@ -887,13 +906,17 @@ async def hyperliquid_execute(
                         response = err("price_error", "Failed to fetch mid prices")
                         return response
                     mid = None
-                    for k, v in mids.items():
-                        if str(k).lower() == coin_clean.lower():
-                            try:
-                                mid = float(v)
-                            except (TypeError, ValueError):
-                                mid = None
+                    for key in _mid_feed_keys(
+                        market_type, coin_clean, resolved_asset_id
+                    ):
+                        v = mids.get(key)
+                        if v is None:
+                            continue
+                        try:
+                            mid = float(v)
                             break
+                        except (TypeError, ValueError):
+                            continue
                     if mid is None or mid <= 0:
                         response = err(
                             "price_error",
@@ -958,7 +981,7 @@ async def hyperliquid_execute(
                             "wallet_label": want,
                             "address": sender,
                             "asset_id": resolved_asset_id,
-                            "coin": coin,
+                            "asset_name": asset_name,
                             "preview": preview_text,
                             "effects": effects,
                         }
@@ -1005,7 +1028,7 @@ async def hyperliquid_execute(
                             "wallet_label": want,
                             "address": sender,
                             "asset_id": resolved_asset_id,
-                            "coin": coin,
+                            "asset_name": asset_name,
                             "preview": preview_text,
                             "effects": effects,
                         }
@@ -1059,7 +1082,7 @@ async def hyperliquid_execute(
                     "wallet_label": want,
                     "address": sender,
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "order": {
                         "order_type": order_type,
                         "is_buy": bool(is_buy),
@@ -1083,7 +1106,7 @@ async def hyperliquid_execute(
                 status=status,
                 details={
                     "asset_id": resolved_asset_id,
-                    "coin": coin,
+                    "asset_name": asset_name,
                     "order_type": order_type,
                     "is_buy": bool(is_buy),
                     "size": float(sz_valid),
