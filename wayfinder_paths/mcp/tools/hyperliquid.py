@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import re
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
+
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.core.config import CONFIG
@@ -27,7 +27,27 @@ from wayfinder_paths.mcp.utils import (
     resolve_wallet_address,
 )
 
-_PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
+# Coin name grammar accepted by hyperliquid_execute and surfaced by hyperliquid_get_markets.
+# Match is exact — no case folding, no whitespace tolerance, no aliasing.
+#   "BTC-USDC"   core perp           -> coin_to_asset["BTC"]
+#   "xyz:SP500"  HIP-3 builder perp  -> coin_to_asset["xyz:SP500"]
+#   "BTC/USDC"   spot pair           -> get_spot_assets["BTC/USDC"]
+#   "#40"        HIP-4 outcome       -> encoding=40, outcome_id=4, side=0
+_PERP_QUOTE_SUFFIX = "-USDC"
+_BAD_COIN_HINT = (
+    "Expected one of 'BTC-USDC' (core perp), 'xyz:SP500' (HIP-3 perp), "
+    "'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
+    "Call hyperliquid_get_markets to look up the canonical name."
+)
+
+
+def _format_perp_market(name: str) -> str:
+    """Render a perp universe entry in the canonical coin-path form.
+
+    HIP-3 builder dexes already carry a `<dex>:<base>` prefix; core perps don't
+    have a quote suffix, so we tack on `-USDC`.
+    """
+    return name if ":" in name else f"{name}{_PERP_QUOTE_SUFFIX}"
 
 
 def _resolve_builder_fee(
@@ -69,64 +89,85 @@ def _resolve_builder_fee(
     return {"b": expected_builder, "f": fee_i}
 
 
-def _resolve_perp_asset_id(
-    adapter: HyperliquidAdapter, *, coin: str | None, asset_id: int | None
-) -> tuple[bool, int | dict[str, Any]]:
-    if asset_id is not None:
-        try:
-            return True, int(asset_id)
-        except (TypeError, ValueError):
-            return False, {"code": "invalid_request", "message": "asset_id must be int"}
-
-    c = (coin or "").strip()
-    if not c:
-        return False, {
-            "code": "invalid_request",
-            "message": "coin or asset_id is required",
-        }
-
-    c = _PERP_SUFFIX_RE.sub("", c).strip()
-    if not c:
-        return False, {"code": "invalid_request", "message": "coin is required"}
-
-    mapping = adapter.coin_to_asset or {}
-    lower = {str(k).lower(): int(v) for k, v in mapping.items()}
-    aid = lower.get(c.lower())
-    if aid is None:
-        return (
-            False,
-            {
-                "code": "not_found",
-                "message": f"Unknown perp coin: {c}",
-                "details": {"coin": c},
-            },
-        )
-    return True, aid
+class ResolvedCoin(TypedDict):
+    market_type: Literal["perp", "spot", "outcome"]
+    asset_id: int
+    coin_clean: str
+    outcome_id: int
+    side: int
 
 
-async def _resolve_spot_asset_id(
+class ResolveError(TypedDict):
+    code: str
+    message: str
+
+
+def _bad_coin(coin: str | None) -> ResolveError:
+    return {
+        "code": "invalid_coin",
+        "message": f"Invalid coin {coin!r}. {_BAD_COIN_HINT}",
+    }
+
+
+async def _resolve_coin(
     adapter: HyperliquidAdapter, *, coin: str | None
-) -> tuple[bool, int | dict[str, Any]]:
-    c = _PERP_SUFFIX_RE.sub("", (coin or "").strip()).strip().upper()
-    if not c:
-        return False, {
-            "code": "invalid_request",
-            "message": "coin is required for spot orders",
+) -> tuple[Literal[True], ResolvedCoin] | tuple[Literal[False], ResolveError]:
+    """Resolve a canonical coin path. Match is exact; bad input is rejected."""
+    if not coin:
+        return False, _bad_coin(coin)
+
+    if coin.startswith("#"):
+        rest = coin[1:]
+        if not rest.isdigit():
+            return False, _bad_coin(coin)
+        encoding = int(rest)
+        return True, {
+            "market_type": "outcome",
+            "asset_id": OUTCOME_ASSET_OFFSET + encoding,
+            "coin_clean": coin,
+            "outcome_id": encoding // 10,
+            "side": encoding % 10,
         }
 
-    # get_spot_assets populates cache, then we look up
-    ok, assets = await adapter.get_spot_assets()
-    if not ok:
-        return False, {"code": "error", "message": "Failed to fetch spot assets"}
-
-    pair_name = f"{c}/USDC"
-    spot_aid = assets.get(pair_name)
-    if spot_aid is None:
-        return False, {
-            "code": "not_found",
-            "message": f"Unknown spot pair: {pair_name}",
+    if "/" in coin:
+        ok_assets, assets = await adapter.get_spot_assets()
+        if not ok_assets:
+            return False, {"code": "error", "message": "Failed to fetch spot assets"}
+        if coin not in assets:
+            return False, _bad_coin(coin)
+        return True, {
+            "market_type": "spot",
+            "asset_id": assets[coin],
+            "coin_clean": coin,
+            "outcome_id": 0,
+            "side": 0,
         }
-    return True, spot_aid
+
+    mapping = adapter.coin_to_asset
+
+    if ":" in coin:  # HIP-3 builder-deployed perp
+        if coin not in mapping:
+            return False, _bad_coin(coin)
+        return True, {
+            "market_type": "perp",
+            "asset_id": mapping[coin],
+            "coin_clean": coin,
+            "outcome_id": 0,
+            "side": 0,
+        }
+
+    if coin.endswith(_PERP_QUOTE_SUFFIX):
+        bare = coin[: -len(_PERP_QUOTE_SUFFIX)]
+        if bare and bare in mapping:
+            return True, {
+                "market_type": "perp",
+                "asset_id": mapping[bare],
+                "coin_clean": bare,
+                "outcome_id": 0,
+                "side": 0,
+            }
+
+    return False, _bad_coin(coin)
 
 
 def _annotate_hl_profile(
@@ -164,8 +205,6 @@ async def hyperliquid_execute(
     *,
     wallet_label: str,
     coin: str | None = None,
-    asset_id: int | None = None,
-    is_spot: bool | None = None,
     order_type: Literal["market", "limit"] = "market",
     is_buy: bool | None = None,
     size: float | None = None,
@@ -188,15 +227,18 @@ async def hyperliquid_execute(
 ) -> dict[str, Any]:
     """Place orders, transfer collateral, or adjust leverage on Hyperliquid.
 
+    `coin` is the canonical market path returned by `hyperliquid_get_markets`:
+      * Core perp:   `"BTC-USDC"`, `"ETH-USDC"`
+      * HIP-3 perp:  `"xyz:SP500"`
+      * Spot pair:   `"BTC/USDC"`, `"USDC/USDH"`
+      * HIP-4 outcome: `"#0"`, `"#1"`, `"#40"` (encoding = `outcome_id*10 + side`)
+
     Builder attribution is mandatory — every order routes through the Wayfinder builder wallet
     and the tool auto-approves the builder fee on first use.
 
     Actions:
-      - `place_order`: spot, perp, or HIP-4 outcome market/limit.
-          * Perp: `coin="BTC"` (or `"xyz:SP500"` HIP-3), `is_spot=False`.
-          * Spot: `coin="@107"`, `is_spot=True`.
-          * HIP-4 outcome: `coin="#<encoding>"` (e.g. `"#0"` NO / `"#1"` YES); integer `size`.
-        Size by either `size` (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
+      - `place_order`: spot / perp / HIP-4 outcome market or limit.
+        Size via `size` (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
       - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
@@ -205,19 +247,6 @@ async def hyperliquid_execute(
         (≥ 5 USDC; below is lost). Auto-waits for the perp clearinghouse credit before returning.
       - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
       - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
-
-    Args:
-        wallet_label: Required — config.json wallet label.
-        coin / asset_id: Symbol (e.g. "BTC", "@107" spot, "xyz:SP500" HIP-3, "#1" outcome) or numeric asset id.
-        is_spot: Required for `place_order`; routes coin to the spot vs perp asset-id space.
-        order_type: "market" or "limit"; `price` required for limit.
-        size / usd_amount: Pick one. `usd_amount_kind` disambiguates perp notional vs margin.
-        slippage: Market-order slippage cap (0.01 = 1%, max 0.25).
-        reduce_only / cloid / order_id / cancel_cloid: Standard HL order flags / IDs.
-        leverage / is_cross: Used by `update_leverage` and (optionally) pre-order leverage adjust.
-        amount_usdc: USDC amount for `withdraw`.
-        builder_fee_tenths_bp: Override builder fee (default from config or hardcoded constant).
-        trigger_price / tpsl / is_market_trigger / price: Trigger-order parameters.
     """
     want = str(wallet_label or "").strip()
     if not want:
@@ -227,8 +256,6 @@ async def hyperliquid_execute(
         "action": action,
         "wallet_label": want,
         "coin": coin,
-        "asset_id": asset_id,
-        "is_spot": is_spot,
         "order_type": order_type,
         "is_buy": is_buy,
         "size": size,
@@ -324,14 +351,7 @@ async def hyperliquid_execute(
             )
 
         status = "confirmed" if all(e["ok"] for e in effects) else "failed"
-        _annotate_hl_profile(
-            address=deposit_sender,
-            label=want,
-            action="deposit",
-            status=status,
-            details={"amount_usdc": amt, "chain_id": chain_id},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -342,16 +362,27 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=deposit_sender,
+            label=want,
+            action="deposit",
+            status=status,
+            details={"amount_usdc": amt, "chain_id": chain_id},
+        )
+        return response
 
     if action == "withdraw":
         if amount_usdc is None:
-            return err("invalid_request", "amount_usdc is required for withdraw")
+            response = err("invalid_request", "amount_usdc is required for withdraw")
+            return response
         try:
             amt = float(amount_usdc)
         except (TypeError, ValueError):
-            return err("invalid_request", "amount_usdc must be a number")
+            response = err("invalid_request", "amount_usdc must be a number")
+            return response
         if amt <= 0:
-            return err("invalid_request", "amount_usdc must be positive")
+            response = err("invalid_request", "amount_usdc must be positive")
+            return response
 
         ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
         effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
@@ -368,14 +399,7 @@ async def hyperliquid_execute(
             )
 
         status = "confirmed" if all(e["ok"] for e in effects) else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="withdraw",
-            status=status,
-            details={"amount_usdc": amt},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -386,6 +410,15 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="withdraw",
+            status=status,
+            details={"amount_usdc": amt},
+        )
+
+        return response
 
     if action in ("spot_to_perp_transfer", "perp_to_spot_transfer"):
         if usd_amount is None:
@@ -410,14 +443,7 @@ async def hyperliquid_execute(
             {"type": "hl", "label": action, "ok": ok_transfer, "result": res}
         )
         status = "confirmed" if ok_transfer else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action=action,
-            status=status,
-            details={"usd_amount": amt, "to_perp": to_perp},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -429,22 +455,27 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action=action,
+            status=status,
+            details={"usd_amount": amt, "to_perp": to_perp},
+        )
 
-    def _coin_from_asset_id(aid: int) -> str | None:
-        for k, v in (adapter.coin_to_asset or {}).items():
-            try:
-                if v == aid:
-                    return str(k)
-            except Exception:
-                continue
-        return None
+        return response
 
-    # HIP-4 outcome orders: coin="#<encoding>" routes to the outcome asset-id
-    # space (separate from spot/perp). Encoding = outcome_id * 10 + side.
-    outcome_match = re.match(r"^#(\d+)$", (coin or "").strip())
-    if action == "place_order" and outcome_match:
-        encoding = int(outcome_match.group(1))
-        outcome_id_v, side_v = encoding // 10, encoding % 10
+    ok_resolve, resolved = await _resolve_coin(adapter, coin=coin)
+    if not ok_resolve:
+        return err(resolved["code"], resolved["message"])
+    market_type = resolved["market_type"]
+    resolved_asset_id = resolved["asset_id"]
+    coin_clean = resolved["coin_clean"]
+
+    # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
+    if action == "place_order" and market_type == "outcome":
+        outcome_id_v = resolved["outcome_id"]
+        side_v = resolved["side"]
         if is_buy is None or size is None:
             return err(
                 "invalid_request", "is_buy and size are required for outcome orders"
@@ -503,30 +534,20 @@ async def hyperliquid_execute(
             }
         )
 
-    if is_spot:
-        ok_aid, aid_or_err = await _resolve_spot_asset_id(adapter, coin=coin)
-    else:
-        ok_aid, aid_or_err = _resolve_perp_asset_id(
-            adapter, coin=coin, asset_id=asset_id
-        )
-    if not ok_aid:
-        payload = aid_or_err if isinstance(aid_or_err, dict) else {}
-        return err(
-            payload.get("code") or "invalid_request",
-            payload.get("message") or "Invalid asset",
-            payload.get("details"),
-        )
-    resolved_asset_id = int(aid_or_err)
-
     if action == "update_leverage":
         if leverage is None:
-            return err("invalid_request", "leverage is required for update_leverage")
+            response = err(
+                "invalid_request", "leverage is required for update_leverage"
+            )
+            return response
         try:
             lev = int(leverage)
         except (TypeError, ValueError):
-            return err("invalid_request", "leverage must be an int")
+            response = err("invalid_request", "leverage must be an int")
+            return response
         if lev <= 0:
-            return err("invalid_request", "leverage must be positive")
+            response = err("invalid_request", "leverage must be positive")
+            return response
 
         ok_lev, res = await adapter.update_leverage(
             resolved_asset_id, lev, bool(is_cross), sender
@@ -535,14 +556,7 @@ async def hyperliquid_execute(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
         )
         status = "confirmed" if ok_lev else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="update_leverage",
-            status=status,
-            details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -554,6 +568,15 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="update_leverage",
+            status=status,
+            details={"asset_id": resolved_asset_id, "coin": coin, "leverage": lev},
+        )
+
+        return response
 
     if action == "cancel_order":
         if cancel_cloid:
@@ -570,10 +593,11 @@ async def hyperliquid_execute(
             )
         else:
             if order_id is None:
-                return err(
+                response = err(
                     "invalid_request",
                     "order_id or cancel_cloid is required for cancel_order",
                 )
+                return response
             ok_cancel, res = await adapter.cancel_order(
                 resolved_asset_id, int(order_id), sender
             )
@@ -583,6 +607,18 @@ async def hyperliquid_execute(
 
         ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
         status = "confirmed" if ok_all else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": sender,
+                "asset_id": resolved_asset_id,
+                "coin": coin,
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
         _annotate_hl_profile(
             address=sender,
             label=want,
@@ -595,18 +631,8 @@ async def hyperliquid_execute(
                 "cancel_cloid": cancel_cloid,
             },
         )
-        return ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "asset_id": resolved_asset_id,
-                "coin": coin,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
+
+        return response
 
     if action == "place_trigger_order":
         if tpsl not in ("tp", "sl"):
@@ -688,21 +714,7 @@ async def hyperliquid_execute(
 
         ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
         status = "confirmed" if ok_all else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="place_trigger_order",
-            status=status,
-            details={
-                "asset_id": resolved_asset_id,
-                "coin": coin,
-                "tpsl": tpsl,
-                "is_buy": bool(is_buy),
-                "trigger_price": tpx,
-                "size": float(sz_valid),
-            },
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -724,46 +736,63 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
-
-    # spot/perp orders require explicit is_spot
-    if is_spot is None:
-        return err(
-            "invalid_request",
-            "is_spot must be explicitly set for place_order (True for spot, False for perp)",
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="place_trigger_order",
+            status=status,
+            details={
+                "asset_id": resolved_asset_id,
+                "coin": coin,
+                "tpsl": tpsl,
+                "is_buy": bool(is_buy),
+                "trigger_price": tpx,
+                "size": float(sz_valid),
+            },
         )
+        return response
 
     if size is not None and usd_amount is not None:
-        return err(
+        response = err(
             "invalid_request",
             "Provide either size (coin units) or usd_amount (USD notional/margin), not both",
         )
+        return response
     if usd_amount_kind is not None and usd_amount is None:
-        return err(
+        response = err(
             "invalid_request",
             "usd_amount_kind is only valid when usd_amount is provided",
         )
+        return response
 
     if is_buy is None:
-        return err("invalid_request", "is_buy is required for place_order")
+        response = err("invalid_request", "is_buy is required for place_order")
+        return response
 
     if order_type == "limit":
         if price is None:
-            return err("invalid_request", "price is required for limit orders")
+            response = err("invalid_request", "price is required for limit orders")
+            return response
         try:
             px_for_sizing = float(price)
         except (TypeError, ValueError):
-            return err("invalid_request", "price must be a number")
+            response = err("invalid_request", "price must be a number")
+            return response
         if px_for_sizing <= 0:
-            return err("invalid_request", "price must be positive")
+            response = err("invalid_request", "price must be positive")
+            return response
     else:
         try:
             slip = float(slippage)
         except (TypeError, ValueError):
-            return err("invalid_request", "slippage must be a number")
+            response = err("invalid_request", "slippage must be a number")
+            return response
         if slip < 0:
-            return err("invalid_request", "slippage must be >= 0")
+            response = err("invalid_request", "slippage must be >= 0")
+            return response
         if slip > 0.25:
-            return err("invalid_request", "slippage > 0.25 is too risky")
+            response = err("invalid_request", "slippage > 0.25 is too risky")
+            return response
         px_for_sizing = None
 
     sizing: dict[str, Any] = {"source": "size"}
@@ -771,43 +800,52 @@ async def hyperliquid_execute(
         try:
             sz = float(size)
         except (TypeError, ValueError):
-            return err("invalid_request", "size must be a number")
+            response = err("invalid_request", "size must be a number")
+            return response
         if sz <= 0:
-            return err("invalid_request", "size must be positive")
+            response = err("invalid_request", "size must be positive")
+            return response
     else:
         if usd_amount is None:
-            return err(
+            response = err(
                 "invalid_request",
                 "Provide either size (coin units) or usd_amount for place_order",
             )
+            return response
         try:
             usd_amt = float(usd_amount)
         except (TypeError, ValueError):
-            return err("invalid_request", "usd_amount must be a number")
+            response = err("invalid_request", "usd_amount must be a number")
+            return response
         if usd_amt <= 0:
-            return err("invalid_request", "usd_amount must be positive")
+            response = err("invalid_request", "usd_amount must be positive")
+            return response
 
         # Spot: usd_amount is always notional (no leverage)
-        if is_spot:
+        if market_type == "spot":
             notional_usd = usd_amt
             margin_usd = None
         elif usd_amount_kind is None:
-            return err(
+            response = err(
                 "invalid_request",
                 "usd_amount_kind is required for perp: 'notional' or 'margin'",
             )
+            return response
         elif usd_amount_kind == "margin":
             if leverage is None:
-                return err(
+                response = err(
                     "invalid_request",
                     "leverage is required when usd_amount_kind='margin'",
                 )
+                return response
             try:
                 lev = int(leverage)
             except (TypeError, ValueError):
-                return err("invalid_request", "leverage must be an int")
+                response = err("invalid_request", "leverage must be an int")
+                return response
             if lev <= 0:
-                return err("invalid_request", "leverage must be positive")
+                response = err("invalid_request", "leverage must be positive")
+                return response
             notional_usd = usd_amt * float(lev)
             margin_usd = usd_amt
         else:
@@ -822,30 +860,24 @@ async def hyperliquid_execute(
                     margin_usd = None
 
         if px_for_sizing is None:
-            coin_name = _PERP_SUFFIX_RE.sub("", str(coin or "").strip()).strip()
-            if not coin_name:
-                coin_name = _coin_from_asset_id(resolved_asset_id) or ""
-            if not coin_name:
-                return err(
-                    "invalid_request",
-                    "coin is required when computing size from usd_amount for market orders",
-                )
             ok_mids, mids = await adapter.get_all_mid_prices()
             if not ok_mids or not isinstance(mids, dict):
-                return err("price_error", "Failed to fetch mid prices")
+                response = err("price_error", "Failed to fetch mid prices")
+                return response
             mid = None
             for k, v in mids.items():
-                if str(k).lower() == coin_name.lower():
+                if str(k).lower() == coin_clean.lower():
                     try:
                         mid = float(v)
                     except (TypeError, ValueError):
                         mid = None
                     break
             if mid is None or mid <= 0:
-                return err(
+                response = err(
                     "price_error",
-                    f"Could not resolve mid price for {coin_name}",
+                    f"Could not resolve mid price for {coin_clean}",
                 )
+                return response
             px_for_sizing = mid
 
         sz = notional_usd / float(px_for_sizing)
@@ -862,7 +894,8 @@ async def hyperliquid_execute(
 
     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
     if sz_valid <= 0:
-        return err("invalid_request", "size is too small after lot-size rounding")
+        response = err("invalid_request", "size is too small after lot-size rounding")
+        return response
 
     try:
         builder = _resolve_builder_fee(
@@ -870,15 +903,18 @@ async def hyperliquid_execute(
             builder_fee_tenths_bp=builder_fee_tenths_bp,
         )
     except ValueError as exc:
-        return err("invalid_request", str(exc))
+        response = err("invalid_request", str(exc))
+        return response
 
     if leverage is not None:
         try:
             lev = int(leverage)
         except (TypeError, ValueError):
-            return err("invalid_request", "leverage must be an int")
+            response = err("invalid_request", "leverage must be an int")
+            return response
         if lev <= 0:
-            return err("invalid_request", "leverage must be positive")
+            response = err("invalid_request", "leverage must be positive")
+            return response
         ok_lev, res = await adapter.update_leverage(
             resolved_asset_id, lev, bool(is_cross), sender
         )
@@ -886,7 +922,7 @@ async def hyperliquid_execute(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
         )
         if not ok_lev:
-            return ok(
+            response = ok(
                 {
                     "status": "failed",
                     "action": action,
@@ -898,6 +934,7 @@ async def hyperliquid_execute(
                     "effects": effects,
                 }
             )
+            return response
 
     # Builder attribution is mandatory; ensure approval before placing orders.
     desired = int(builder.get("f") or 0)
@@ -929,7 +966,7 @@ async def hyperliquid_execute(
             }
         )
         if not ok_appr:
-            return ok(
+            response = ok(
                 {
                     "status": "failed",
                     "action": action,
@@ -941,6 +978,7 @@ async def hyperliquid_execute(
                     "effects": effects,
                 }
             )
+            return response
 
     if order_type == "limit":
         ok_order, res = await adapter.place_limit_order(
@@ -972,20 +1010,7 @@ async def hyperliquid_execute(
 
     ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
     status = "confirmed" if ok_all else "failed"
-    _annotate_hl_profile(
-        address=sender,
-        label=want,
-        action="place_order",
-        status=status,
-        details={
-            "asset_id": resolved_asset_id,
-            "coin": coin,
-            "order_type": order_type,
-            "is_buy": bool(is_buy),
-            "size": float(sz_valid),
-        },
-    )
-    return ok(
+    response = ok(
         {
             "status": status,
             "action": action,
@@ -1009,13 +1034,28 @@ async def hyperliquid_execute(
             "effects": effects,
         }
     )
+    _annotate_hl_profile(
+        address=sender,
+        label=want,
+        action="place_order",
+        status=status,
+        details={
+            "asset_id": resolved_asset_id,
+            "coin": coin,
+            "order_type": order_type,
+            "is_buy": bool(is_buy),
+            "size": float(sz_valid),
+        },
+    )
+
+    return response
 
 
-async def hyperliquid_get_state(label: str) -> str:
+async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+        return err("not_found", f"Wallet not found: {label}")
 
     adapter = HyperliquidAdapter()
     perp_ok, perp = await adapter.get_user_state(addr)
@@ -1044,30 +1084,30 @@ async def hyperliquid_get_state(label: str) -> str:
                 spot_balances.append(bal)
         spot["balances"] = spot_balances
 
-    return json.dumps(
+    return ok(
         {
             "label": label,
             "address": addr,
             "perp": {"success": perp_ok, "state": perp},
             "spot": {"success": spot_ok, "state": spot},
             "outcomes": {"success": spot_ok, "positions": outcome_positions},
-        },
-        indent=2,
+        }
     )
 
 
-async def hyperliquid_get_mid_prices() -> str:
+async def hyperliquid_get_mid_prices() -> dict[str, Any]:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_all_mid_prices()
-    return json.dumps({"success": success, "prices": data}, indent=2)
+    return ok({"success": success, "prices": data})
 
 
-async def hyperliquid_get_markets() -> str:
-    """Return the full HL universe in one shot: perps (incl. HIP-3 builder dexes), spot, HIP-4 outcomes.
+async def hyperliquid_get_markets() -> dict[str, Any]:
+    """Return the HL universe as flat lists of canonical coin paths.
 
-    `perp` already merges across every builder-deployed dex via `_post_across_dexes`, so HIP-3
-    listings (e.g. `xyz:SP500`) appear alongside core perps. `outcomes` covers HIP-4 binary /
-    multi-outcome markets.
+    Output keys:
+      * `perps`: core perps as `<base>-USDC` and HIP-3 builder perps as `<dex>:<base>`
+      * `spots`: spot pairs as `<base>/<quote>` (e.g. `BTC/USDC`, `USDC/USDH`)
+      * `outcomes`: HIP-4 outcome book coins as `#<encoding>` (`encoding = outcome_id*10 + side`)
     """
     adapter = HyperliquidAdapter()
     (
@@ -1079,11 +1119,17 @@ async def hyperliquid_get_markets() -> str:
         adapter.get_spot_assets(),
         adapter.get_outcome_markets(),
     )
-    return json.dumps(
-        {
-            "perp": {"success": perp_ok, "markets": perp_data},
-            "spot": {"success": spot_ok, "assets": spot_data},
-            "outcomes": {"success": outcome_ok, "markets": outcome_data},
-        },
-        indent=2,
+
+    perps = (
+        [_format_perp_market(entry["name"]) for entry in perp_data[0]["universe"]]
+        if perp_ok
+        else []
     )
+    spots = list(spot_data) if spot_ok else []
+    outcomes = (
+        [s["book_coin"] for market in outcome_data for s in market["sides"]]
+        if outcome_ok
+        else []
+    )
+
+    return ok({"perps": perps, "spots": spots, "outcomes": outcomes})

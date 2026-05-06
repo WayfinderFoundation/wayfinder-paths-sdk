@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import time
 from typing import Any, Literal
 
@@ -455,17 +454,17 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
-async def core_get_wallets(label: str | None = None) -> str:
+async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
     No args → every wallet. Pass `label` to filter to a single wallet (returns the same
-    shape, list with one entry, or `{"error": ...}` if not found).
+    shape, list with one entry, or an `err(...)` response if not found).
     """
     store = WalletProfileStore.default()
     if label is not None:
         w = await find_wallet_by_label(label)
         if not w:
-            return json.dumps({"error": f"Wallet not found: {label}"})
+            return err("not_found", f"Wallet not found: {label}")
         existing = [w]
     else:
         existing = await load_wallets()
@@ -489,30 +488,30 @@ async def core_get_wallets(label: str | None = None) -> str:
     for view, bal in zip(views, balances, strict=True):
         view["balances"] = bal
 
-    return json.dumps({"wallets": views}, indent=2)
+    return ok({"wallets": views})
 
 
-async def onchain_get_wallet_activity(label: str) -> str:
+async def onchain_get_wallet_activity(label: str) -> dict[str, Any]:
     w = await find_wallet_by_label(label)
     if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+        return err("not_found", f"Wallet not found: {label}")
 
     address = normalize_address(w.get("address"))
     if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
+        return err("invalid_wallet", f"Invalid address for wallet: {label}")
 
     try:
         data = await BALANCE_CLIENT.get_wallet_activity(
             wallet_address=address, limit=20
         )
-        return json.dumps(
-            {
-                "label": label,
-                "address": address,
-                "activity": data.get("activity", []),
-                "next_offset": data.get("next_offset"),
-            },
-            indent=2,
-        )
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": str(exc)})
+        return err("activity_failed", str(exc))
+
+    return ok(
+        {
+            "label": label,
+            "address": address,
+            "activity": data.get("activity", []),
+            "next_offset": data.get("next_offset"),
+        }
+    )
