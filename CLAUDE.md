@@ -522,51 +522,6 @@ Token identifiers (important for quoting/execution/lookups):
 
 - Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
 
-## Common Commands
-
-```bash
-# Install dependencies
-poetry install
-
-# Generate test wallets (required before running tests/strategies)
-just create-wallets                    # or: poetry run python scripts/make_wallets.py -n 1
-
-# Run all smoke tests
-just test-smoke                        # or: poetry run pytest -k smoke -v
-
-# Test specific strategy or adapter
-just test-strategy stablecoin_yield_strategy
-just test-adapter pool_adapter
-
-# Run all tests with coverage
-just test-cov                          # or: poetry run pytest --cov=wayfinder-paths --cov-report=html -v
-
-# Lint and format
-just lint                              # or: poetry run ruff check --fix
-just format                            # or: poetry run ruff format
-
-# Validate all manifests
-just validate-manifests
-
-# Create new strategy with dedicated wallet
-just create-strategy "My Strategy Name"
-
-# Create new adapter
-just create-adapter "my_protocol"
-
-# Update one installed path to the live bonded version
-poetry run wayfinder path update my-path
-
-# Override the target version for one installed path
-poetry run wayfinder path update my-path --version 1.2.3
-
-# Run a strategy locally
-poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
-
-# Publish to PyPI (main branch only)
-just publish
-```
-
 ### Path updates
 
 - `poetry run wayfinder path update <slug>` compares the locally installed version in `.wayfinder/paths.lock.json` to the API's `active_bonded_version`.
@@ -651,27 +606,11 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 - **Required**: Basic functionality tests with mocked dependencies
 - **Optional**: `examples.json` file
 
-### Test Markers
-
-- `@pytest.mark.smoke` - Basic functionality validation
-- `@pytest.mark.requires_wallets` - Tests needing local wallets configured
-- `@pytest.mark.requires_config` - Tests needing config.json
-
 ## Configuration
 
 Config priority: Constructor parameter > config.json > Environment variable (`WAYFINDER_API_KEY`)
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
-
-## CI/CD Pipeline
-
-PRs are tested with:
-
-1. Lint & format checks (Ruff)
-2. Smoke tests
-3. Adapter tests (mocked dependencies)
-4. Integration tests (PRs only)
-5. Security scans (Bandit, Safety)
 
 ## Key Patterns
 
@@ -680,15 +619,6 @@ PRs are tested with:
 - Return types are `StatusTuple` (success bool, message str) or `StatusDict` (portfolio data)
 - Wallet generation updates `config.json` in repo root
 - Per-strategy wallets are created automatically via `just create-strategy`
-
-## Publishing
-
-Publishing to PyPI is restricted to `main` branch. Order of operations:
-
-1. Merge changes to main
-2. Bump version in `pyproject.toml`
-3. Run `just publish`
-4. Then dependent apps can update their dependencies
 
 ## Wallet management and portfolio discovery
 
