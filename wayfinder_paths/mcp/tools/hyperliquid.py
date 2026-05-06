@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
@@ -28,6 +29,159 @@ from wayfinder_paths.mcp.utils import (
 )
 
 _PERP_SUFFIX_RE = re.compile(r"[-_ ]?perp$", re.IGNORECASE)
+_MARKET_SEARCH_STOPWORDS = {
+    "future",
+    "futures",
+    "market",
+    "markets",
+    "option",
+    "options",
+    "perp",
+    "perps",
+    "spot",
+    "trade",
+    "trading",
+}
+_MARKET_SEARCH_ALIASES = {
+    "oil": {
+        "oil",
+        "wti",
+        "brent",
+        "crude",
+        "usoil",
+        "brentoil",
+        "energy",
+        "gas",
+        "natgas",
+        "naturalgas",
+    },
+    "wti": {"oil", "wti", "crude", "usoil"},
+    "brent": {"oil", "brent", "crude", "brentoil"},
+    "crude": {"oil", "wti", "brent", "crude", "usoil", "brentoil"},
+    "gas": {"gas", "natgas", "naturalgas", "energy"},
+    "natgas": {"gas", "natgas", "naturalgas", "energy"},
+    "naturalgas": {"gas", "natgas", "naturalgas", "energy"},
+    "energy": {"energy", "oil", "gas", "natgas", "naturalgas"},
+    "btc": {"btc", "bitcoin", "ubtc"},
+    "bitcoin": {"btc", "bitcoin", "ubtc"},
+    "ubtc": {"btc", "bitcoin", "ubtc"},
+    "eth": {"eth", "ethereum", "ueth"},
+    "ethereum": {"eth", "ethereum", "ueth"},
+    "ueth": {"eth", "ethereum", "ueth"},
+    "sol": {"sol", "solana", "usol"},
+    "solana": {"sol", "solana", "usol"},
+    "usol": {"sol", "solana", "usol"},
+    "bonk": {"bonk", "kbonk"},
+    "kbonk": {"bonk", "kbonk"},
+    "nvidia": {"nvidia", "nvda"},
+    "nvda": {"nvidia", "nvda"},
+    "monad": {"monad", "mon"},
+    "mon": {"monad", "mon"},
+}
+
+
+def _market_search_parts(value: str) -> tuple[str, list[str]]:
+    """Return compact and tokenized forms for deliberately broad market matching."""
+    lower = str(value).lower()
+    tokens = [t for t in re.split(r"[^a-z0-9]+", lower) if t]
+    compact = "".join(tokens)
+    extras: list[str] = []
+    for alias_terms in _MARKET_SEARCH_ALIASES.values():
+        for alias in alias_terms:
+            if alias and alias in compact and alias not in tokens:
+                extras.append(alias)
+    for token in [compact, *tokens]:
+        if len(token) > 2 and token[0] in {"k", "u"}:
+            extras.append(token[1:])
+    return compact, tokens + extras
+
+
+def _expanded_market_query(query: str) -> tuple[str, list[str], set[str]]:
+    compact, raw_terms = _market_search_parts(query)
+    terms = {t for t in raw_terms if t not in _MARKET_SEARCH_STOPWORDS}
+    if compact == "naturalgas":
+        terms.add("naturalgas")
+    expanded = set(terms)
+    for term in list(terms):
+        expanded.update(_MARKET_SEARCH_ALIASES.get(term, set()))
+        if len(term) > 1:
+            expanded.add(f"k{term}")
+            expanded.add(f"u{term}")
+        if len(term) > 2 and term[0] in {"k", "u"}:
+            expanded.add(term[1:])
+    return compact, sorted(terms), expanded
+
+
+def _score_market_candidate(
+    *,
+    query_compact: str,
+    query_terms: list[str],
+    expanded_terms: set[str],
+    candidate_name: str,
+) -> tuple[float, list[str]]:
+    candidate_compact, candidate_terms = _market_search_parts(candidate_name)
+    candidate_term_set = set(candidate_terms)
+    reasons: list[str] = []
+    score = 0.0
+
+    if query_compact and query_compact == candidate_compact:
+        score = max(score, 1.0)
+        reasons.append("exact")
+
+    direct_hits = {
+        term
+        for term in query_terms
+        if term and (term in candidate_term_set or term in candidate_compact)
+    }
+    if direct_hits:
+        coverage = len(direct_hits) / max(len(query_terms), 1)
+        score = max(score, 0.68 + 0.22 * coverage)
+        reasons.append("direct:" + ",".join(sorted(direct_hits)))
+
+    alias_hits = {
+        term
+        for term in expanded_terms
+        if term and (term in candidate_term_set or term in candidate_compact)
+    } - direct_hits
+    if alias_hits:
+        score = max(score, 0.74 + min(len(alias_hits), 3) * 0.04)
+        reasons.append("alias:" + ",".join(sorted(alias_hits)[:5]))
+
+    prefix_hits = {
+        term
+        for term in expanded_terms
+        for candidate_term in candidate_term_set
+        if len(term) >= 3
+        and len(candidate_term) >= 3
+        and (candidate_term.startswith(term) or term.startswith(candidate_term))
+    }
+    if prefix_hits:
+        score = max(score, 0.52)
+        reasons.append("prefix:" + ",".join(sorted(prefix_hits)[:5]))
+
+    fuzzy_inputs = [query_compact, *query_terms, *sorted(expanded_terms)]
+    fuzzy_score = max(
+        (
+            SequenceMatcher(None, term, candidate_compact).ratio()
+            for term in fuzzy_inputs
+            if term and candidate_compact
+        ),
+        default=0.0,
+    )
+    if fuzzy_score:
+        score = max(score, fuzzy_score * 0.62)
+        if fuzzy_score >= 0.35:
+            reasons.append(f"fuzzy:{fuzzy_score:.2f}")
+
+    return min(score, 1.0), reasons or ["weak_fuzzy"]
+
+
+def _market_search_confidence(score: float) -> str:
+    if score >= 0.74:
+        return "high"
+    if score >= 0.44:
+        return "medium"
+    return "low"
 
 
 def _resolve_builder_fee(
@@ -1109,6 +1263,144 @@ async def hyperliquid_get_mid_prices() -> str:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_all_mid_prices()
     return json.dumps({"success": success, "prices": data}, indent=2)
+
+
+async def hyperliquid_search_markets(
+    query: str,
+    market_type: Literal["perp", "spot", "both"] = "both",
+    limit: int = 50,
+    min_score: float = 0.0,
+) -> str:
+    """High-recall fuzzy search for Hyperliquid perp and spot markets.
+
+    This is the preferred discovery tool when the user asks for market candidates. It returns
+    compact candidate rows instead of the full HL universe, and it intentionally favors recall
+    over precision: low-confidence rows are still useful candidates for follow-up filtering.
+
+    Args:
+        query: Market intent, symbol, or theme (e.g. "oil", "wti", "hype spot").
+        market_type: "perp", "spot", or "both".
+        limit: Maximum rows to return (default 50, hard-capped at 100).
+        min_score: Optional score floor. Keep at 0.0 for maximum recall.
+    """
+    q = str(query or "").strip()
+    if not q:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "query is required",
+                "query": q,
+                "market_type": market_type,
+            },
+            indent=2,
+        )
+    if market_type not in {"perp", "spot", "both"}:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "market_type must be one of: perp, spot, both",
+                "query": q,
+                "market_type": market_type,
+            },
+            indent=2,
+        )
+
+    try:
+        limit_i = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        limit_i = 50
+    try:
+        min_score_f = max(0.0, min(float(min_score), 1.0))
+    except (TypeError, ValueError):
+        min_score_f = 0.0
+
+    query_compact, query_terms, expanded_terms = _expanded_market_query(q)
+    adapter = HyperliquidAdapter()
+
+    perp_ok = spot_ok = True
+    perp_data: Any = [{}, []]
+    spot_assets: dict[str, int] = {}
+    if market_type in {"perp", "both"}:
+        perp_ok, perp_data = await adapter.get_meta_and_asset_ctxs()
+    if market_type in {"spot", "both"}:
+        spot_ok, spot_assets = await adapter.get_spot_assets()
+
+    matches: list[dict[str, Any]] = []
+    searched_counts = {"perp": 0, "spot": 0}
+
+    if perp_ok and isinstance(perp_data, list) and perp_data:
+        meta = perp_data[0] if isinstance(perp_data[0], dict) else {}
+        universe = meta.get("universe", []) if isinstance(meta, dict) else []
+        if isinstance(universe, list):
+            searched_counts["perp"] = len(universe)
+            for market in universe:
+                if not isinstance(market, dict):
+                    continue
+                name = str(market.get("name") or "").strip()
+                if not name:
+                    continue
+                score, reasons = _score_market_candidate(
+                    query_compact=query_compact,
+                    query_terms=query_terms,
+                    expanded_terms=expanded_terms,
+                    candidate_name=name,
+                )
+                if score < min_score_f:
+                    continue
+                matches.append(
+                    {
+                        "type": "perp",
+                        "name": name,
+                        "score": round(score, 4),
+                        "confidence": _market_search_confidence(score),
+                        "match_reasons": reasons,
+                        "max_leverage": market.get("maxLeverage"),
+                        "sz_decimals": market.get("szDecimals"),
+                    }
+                )
+
+    if spot_ok and isinstance(spot_assets, dict):
+        searched_counts["spot"] = len(spot_assets)
+        for name, asset_id in spot_assets.items():
+            score, reasons = _score_market_candidate(
+                query_compact=query_compact,
+                query_terms=query_terms,
+                expanded_terms=expanded_terms,
+                candidate_name=str(name),
+            )
+            if score < min_score_f:
+                continue
+            matches.append(
+                {
+                    "type": "spot",
+                    "name": str(name),
+                    "score": round(score, 4),
+                    "confidence": _market_search_confidence(score),
+                    "match_reasons": reasons,
+                    "asset_id": asset_id,
+                }
+            )
+
+    matches.sort(
+        key=lambda row: (-float(row["score"]), str(row["type"]), str(row["name"]))
+    )
+    limited = matches[:limit_i]
+    return json.dumps(
+        {
+            "success": bool(perp_ok and spot_ok),
+            "query": q,
+            "market_type": market_type,
+            "count": len(limited),
+            "total_candidates": len(matches),
+            "searched_counts": searched_counts,
+            "matches": limited,
+            "errors": {
+                "perp": None if perp_ok else str(perp_data),
+                "spot": None if spot_ok else str(spot_assets),
+            },
+        },
+        indent=2,
+    )
 
 
 async def hyperliquid_get_markets() -> str:

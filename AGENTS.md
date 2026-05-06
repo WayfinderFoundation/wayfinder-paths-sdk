@@ -215,19 +215,26 @@ chaining three or more, write a script.
 When writing scripts under `.wayfinder_runs/`, use `get_adapter()` to simplify setup:
 
 ```python
+import asyncio
+
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
+from wayfinder_paths.adapters.pendle_adapter.adapter import PendleAdapter
 
-# Single-wallet adapter (sign_callback + wallet_address)
-adapter = await get_adapter(MoonwellAdapter, "main")
-await adapter.set_collateral(mtoken=USDC_MTOKEN)
+async def main():
+    # Single-wallet adapter (sign_callback + wallet_address)
+    adapter = await get_adapter(MoonwellAdapter, "main")
+    await adapter.set_collateral(mtoken=USDC_MTOKEN)
 
-# Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
-from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
-adapter = await get_adapter(BalanceAdapter, "main", "my_strategy")
+    # Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
+    from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
+    adapter = await get_adapter(BalanceAdapter, "main", "my_strategy")
 
-# Read-only (no wallet needed)
-adapter = await get_adapter(PendleAdapter)
+    # Read-only (no wallet needed)
+    adapter = await get_adapter(PendleAdapter)
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 `get_adapter()` auto-loads `config.json`, looks up wallets by label (local or remote), creates signing callbacks, and wires them into the adapter constructor. It introspects the adapter's `__init__` signature to determine the wiring:
