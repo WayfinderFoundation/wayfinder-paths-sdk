@@ -16,10 +16,14 @@ from wayfinder_paths.core.utils.wallets import (
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     normalize_address,
     ok,
     resolve_wallet_address,
+    throw_if_empty_str,
+    throw_if_none,
+    throw_if_not_number,
 )
 
 _TRIM_MARKET_FIELDS: set[str] = {
@@ -203,6 +207,7 @@ async def polymarket_get_state(
         await adapter.close()
 
 
+@catch_errors
 async def polymarket_read(
     action: Literal[
         "search",
@@ -286,8 +291,8 @@ async def polymarket_read(
             },
         )
 
-    if action == "open_orders" and not want:
-        return err("invalid_request", "wallet_label is required for open_orders")
+    if action == "open_orders":
+        throw_if_empty_str("wallet_label is required for open_orders", want)
 
     config: dict[str, Any] | None = None
     sign_cb = None
@@ -313,17 +318,14 @@ async def polymarket_read(
     try:
         match action:
             case "search":
-                q = str(query or "").strip()
-                if not q:
-                    return err("invalid_request", "query is required for search")
+                q = throw_if_empty_str("query is required for search", query)
                 if events_status and events_status not in {
                     "active",
                     "closed",
                     "archived",
                 }:
-                    return err(
-                        "invalid_request",
-                        f"events_status must be one of: active, closed, archived (got {events_status!r})",
+                    raise ValueError(
+                        f"events_status must be one of: active, closed, archived (got {events_status!r})"
                     )
 
                 ok_rows, rows = await adapter.search_markets_fuzzy(
@@ -360,18 +362,14 @@ async def polymarket_read(
                 )
 
             case "get_market":
-                slug = str(market_slug or "").strip()
-                if not slug:
-                    return err("invalid_request", "market_slug is required")
+                slug = throw_if_empty_str("market_slug is required", market_slug)
                 ok_m, m = await adapter.get_market_by_slug(slug)
                 if not ok_m:
                     return err("error", str(m))
                 return ok({"action": action, "market": m})
 
             case "get_event":
-                slug = str(event_slug or "").strip()
-                if not slug:
-                    return err("invalid_request", "event_slug is required")
+                slug = throw_if_empty_str("event_slug is required", event_slug)
                 ok_e, e = await adapter.get_event_by_slug(slug)
                 if not ok_e:
                     return err("error", str(e))
@@ -380,28 +378,19 @@ async def polymarket_read(
             case "quote":
                 if side == "BUY":
                     if amount_collateral is None:
-                        return err(
-                            "invalid_request",
-                            "amount_collateral is required for BUY quote",
-                        )
-                    try:
-                        quote_amount = float(amount_collateral)
-                    except (TypeError, ValueError):
-                        return err(
-                            "invalid_request", "amount_collateral must be a number"
-                        )
+                        raise ValueError("amount_collateral is required for BUY quote")
+                    quote_amount = throw_if_not_number(
+                        "amount_collateral must be a number", amount_collateral
+                    )
                 else:
                     if shares is None:
-                        return err(
-                            "invalid_request", "shares is required for SELL quote"
-                        )
-                    try:
-                        quote_amount = float(shares)
-                    except (TypeError, ValueError):
-                        return err("invalid_request", "shares must be a number")
+                        raise ValueError("shares is required for SELL quote")
+                    quote_amount = throw_if_not_number(
+                        "shares must be a number", shares
+                    )
 
                 if quote_amount <= 0:
-                    return err("invalid_request", "quote amount must be positive")
+                    raise ValueError("quote amount must be positive")
 
                 slug = str(market_slug or "").strip()
                 if slug:
@@ -414,10 +403,7 @@ async def polymarket_read(
                 else:
                     tid = str(token_id or "").strip()
                     if not tid:
-                        return err(
-                            "invalid_request",
-                            "token_id or market_slug is required for quote",
-                        )
+                        raise ValueError("token_id or market_slug is required")
                     ok_q, q = await adapter.quote_market_order(
                         token_id=tid,
                         side=side,
@@ -436,27 +422,21 @@ async def polymarket_read(
                 )
 
             case "price":
-                tid = str(token_id or "").strip()
-                if not tid:
-                    return err("invalid_request", "token_id is required")
+                tid = throw_if_empty_str("token_id is required", token_id)
                 ok_p, p = await adapter.get_price(token_id=tid, side=side)
                 if not ok_p:
                     return err("error", str(p))
                 return ok({"action": action, "token_id": tid, "side": side, "price": p})
 
             case "order_book":
-                tid = str(token_id or "").strip()
-                if not tid:
-                    return err("invalid_request", "token_id is required")
+                tid = throw_if_empty_str("token_id is required", token_id)
                 ok_b, b = await adapter.get_order_book(token_id=tid)
                 if not ok_b:
                     return err("error", str(b))
                 return ok({"action": action, "token_id": tid, "book": b})
 
             case "price_history":
-                tid = str(token_id or "").strip()
-                if not tid:
-                    return err("invalid_request", "token_id is required")
+                tid = throw_if_empty_str("token_id is required", token_id)
                 ok_h, h = await adapter.get_prices_history(
                     token_id=tid,
                     interval=interval,
@@ -502,6 +482,7 @@ async def polymarket_read(
         await adapter.close()
 
 
+@catch_errors
 async def polymarket_execute(
     action: Literal[
         "bridge_deposit",
@@ -630,10 +611,7 @@ async def polymarket_execute(
 
         match action:
             case "bridge_deposit":
-                if amount is None:
-                    return err(
-                        "invalid_request", "amount is required for bridge_deposit"
-                    )
+                throw_if_none("amount is required for bridge_deposit", amount)
                 rcpt = normalize_address(recipient_address) or sender
                 ok_dep, res = await adapter.bridge_deposit(
                     from_chain_id=int(from_chain_id),
@@ -666,10 +644,9 @@ async def polymarket_execute(
                 return _done(status)
 
             case "bridge_withdraw":
-                if amount_pusd is None:
-                    return err(
-                        "invalid_request", "amount_pusd is required for bridge_withdraw"
-                    )
+                throw_if_none(
+                    "amount_pusd is required for bridge_withdraw", amount_pusd
+                )
                 rcpt = normalize_address(recipient_addr) or sender
                 ok_wd, res = await adapter.bridge_withdraw(
                     amount_pusd=float(amount_pusd),
@@ -706,10 +683,7 @@ async def polymarket_execute(
                 if market_slug:
                     if action == "buy":
                         if amount_collateral is None:
-                            return err(
-                                "invalid_request",
-                                "amount_collateral is required for buy",
-                            )
+                            raise ValueError("amount_collateral is required for buy")
                         ok_trade, res = await adapter.place_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
@@ -717,7 +691,7 @@ async def polymarket_execute(
                         )
                     else:
                         if shares is None:
-                            return err("invalid_request", "shares is required for sell")
+                            raise ValueError("shares is required for sell")
                         ok_trade, res = await adapter.cash_out_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
@@ -726,15 +700,10 @@ async def polymarket_execute(
                 else:
                     tid = str(token_id or "").strip()
                     if not tid:
-                        return err(
-                            "invalid_request", "token_id or market_slug is required"
-                        )
+                        raise ValueError("token_id or market_slug is required")
                     if action == "buy":
                         if amount_collateral is None:
-                            return err(
-                                "invalid_request",
-                                "amount_collateral is required for buy",
-                            )
+                            raise ValueError("amount_collateral is required for buy")
                         ok_trade, res = await adapter.place_market_order(
                             token_id=tid,
                             side="BUY",
@@ -742,7 +711,7 @@ async def polymarket_execute(
                         )
                     else:
                         if shares is None:
-                            return err("invalid_request", "shares is required for sell")
+                            raise ValueError("shares is required for sell")
                         ok_trade, res = await adapter.place_market_order(
                             token_id=tid,
                             side="SELL",
@@ -808,9 +777,8 @@ async def polymarket_execute(
                                     break
 
                 if not tid:
-                    return err(
-                        "invalid_request",
-                        "Provide token_id, or market_slug+outcome, or condition_id for close_position",
+                    raise ValueError(
+                        "Provide token_id, or market_slug+outcome, or condition_id for close_position"
                     )
 
                 sell_shares = shares
@@ -838,7 +806,7 @@ async def polymarket_execute(
                     except (TypeError, ValueError):
                         sell_shares = 0.0
                 if not sell_shares or float(sell_shares) <= 0:
-                    return err("invalid_request", "No shares available to close")
+                    raise ValueError("No shares available to close")
 
                 ok_sell, res = await adapter.place_market_order(
                     token_id=str(tid),
@@ -865,15 +833,12 @@ async def polymarket_execute(
                 return _done(status)
 
             case "place_limit_order":
-                tid = str(token_id or "").strip()
-                if not tid:
-                    return err(
-                        "invalid_request", "token_id is required for place_limit_order"
-                    )
+                tid = throw_if_empty_str(
+                    "token_id is required for place_limit_order", token_id
+                )
                 if price is None or size is None:
-                    return err(
-                        "invalid_request",
-                        "price and size are required for place_limit_order",
+                    raise ValueError(
+                        "price and size are required for place_limit_order"
                     )
                 ok_lo, res = await adapter.place_limit_order(
                     token_id=tid,
@@ -908,11 +873,9 @@ async def polymarket_execute(
                 return _done(status)
 
             case "cancel_order":
-                oid = str(order_id or "").strip()
-                if not oid:
-                    return err(
-                        "invalid_request", "order_id is required for cancel_order"
-                    )
+                oid = throw_if_empty_str(
+                    "order_id is required for cancel_order", order_id
+                )
                 ok_c, res = await adapter.cancel_order(order_id=oid)
                 effects.append(
                     {
@@ -934,12 +897,9 @@ async def polymarket_execute(
                 return _done(status)
 
             case "redeem_positions":
-                cid = str(condition_id or "").strip()
-                if not cid:
-                    return err(
-                        "invalid_request",
-                        "condition_id is required for redeem_positions",
-                    )
+                cid = throw_if_empty_str(
+                    "condition_id is required for redeem_positions", condition_id
+                )
                 ok_r, res = await adapter.redeem_positions(
                     condition_id=cid, holder=sender
                 )
