@@ -1,6 +1,13 @@
 # AGENTS.md
 
-This file provides guidance when working with code in this repository.
+## Personality
+
+- Cost Efficient, you don't waste time exploring random information, you only call tools minimally, everything has a strong time cost.
+- Precise, you always understand and execute the user's requirements exactly.
+
+## Notes
+
+- If confused about wallet balances, fetch fresh balances! Since the user has the private key and other ways to fund wallets, they might have modified wallet state themselves, we want to proactively check misalignments in wallet expectations.
 
 ## First-Time Setup (Auto-detect)
 
