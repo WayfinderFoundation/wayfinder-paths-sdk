@@ -153,7 +153,6 @@ def _annotate_hl_profile(
 async def hyperliquid_execute(
     action: Literal[
         "place_order",
-        "place_outcome_order",
         "place_trigger_order",
         "cancel_order",
         "update_leverage",
@@ -167,8 +166,6 @@ async def hyperliquid_execute(
     coin: str | None = None,
     asset_id: int | None = None,
     is_spot: bool | None = None,
-    outcome_id: int | None = None,
-    side: int | None = None,
     order_type: Literal["market", "limit"] = "market",
     is_buy: bool | None = None,
     size: float | None = None,
@@ -195,10 +192,11 @@ async def hyperliquid_execute(
     and the tool auto-approves the builder fee on first use.
 
     Actions:
-      - `place_order`: spot or perp market/limit. Set `is_spot` explicitly. Size by either `size`
-        (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
-      - `place_outcome_order`: HIP-4 prediction outcome (settles in USDH). Requires `outcome_id`,
-        `side`, `is_buy`, integer `size`.
+      - `place_order`: spot, perp, or HIP-4 outcome market/limit.
+          * Perp: `coin="BTC"` (or `"xyz:SP500"` HIP-3), `is_spot=False`.
+          * Spot: `coin="@107"`, `is_spot=True`.
+          * HIP-4 outcome: `coin="#<encoding>"` (e.g. `"#0"` NO / `"#1"` YES); integer `size`.
+        Size by either `size` (coin units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
       - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
         the side that closes the position (long → False, short → True).
       - `cancel_order`: by `order_id` or `cancel_cloid`.
@@ -210,9 +208,8 @@ async def hyperliquid_execute(
 
     Args:
         wallet_label: Required — config.json wallet label.
-        coin / asset_id: Symbol (e.g. "BTC", "@107" spot, "xyz:SP500" HIP-3) or numeric asset id.
+        coin / asset_id: Symbol (e.g. "BTC", "@107" spot, "xyz:SP500" HIP-3, "#1" outcome) or numeric asset id.
         is_spot: Required for `place_order`; routes coin to the spot vs perp asset-id space.
-        side: HIP-4 outcome side (0 or 1).
         order_type: "market" or "limit"; `price` required for limit.
         size / usd_amount: Pick one. `usd_amount_kind` disambiguates perp notional vs margin.
         slippage: Market-order slippage cap (0.01 = 1%, max 0.25).
@@ -250,8 +247,6 @@ async def hyperliquid_execute(
         "trigger_price": trigger_price,
         "tpsl": tpsl,
         "is_market_trigger": is_market_trigger,
-        "outcome_id": outcome_id,
-        "side": side,
     }
     tool_input = {"request": key_input}
     preview_obj = await build_hyperliquid_execute_preview(tool_input)
@@ -439,77 +434,6 @@ async def hyperliquid_execute(
             action=action,
             status=status,
             details={"usd_amount": amt, "to_perp": to_perp},
-        )
-
-        return response
-
-    if action == "place_outcome_order":
-        if outcome_id is None or side is None:
-            return err(
-                "invalid_request",
-                "outcome_id and side are required for place_outcome_order",
-            )
-        if is_buy is None or size is None:
-            return err(
-                "invalid_request",
-                "is_buy and size are required for place_outcome_order",
-            )
-        if order_type == "limit" and price is None:
-            return err("invalid_request", "price is required for limit orders")
-
-        ok_order, res = await adapter.place_outcome_order(
-            outcome_id=int(outcome_id),
-            side=int(side),
-            is_buy=bool(is_buy),
-            size=int(size),
-            price=None if price is None else float(price),
-            slippage=float(slippage),
-            tif="Ioc" if order_type == "market" else "Gtc",
-            reduce_only=bool(reduce_only),
-            cloid=cloid,
-            address=sender,
-        )
-        effects.append(
-            {
-                "type": "hl",
-                "label": "place_outcome_order",
-                "ok": ok_order,
-                "result": res,
-            }
-        )
-        status = "confirmed" if ok_order else "failed"
-        response = ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "outcome_id": int(outcome_id),
-                "side": int(side),
-                "order": {
-                    "order_type": order_type,
-                    "is_buy": bool(is_buy),
-                    "size": int(size),
-                    "price": float(price) if price is not None else None,
-                    "slippage": float(slippage),
-                    "reduce_only": bool(reduce_only),
-                    "cloid": cloid,
-                },
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="place_outcome_order",
-            status=status,
-            details={
-                "outcome_id": int(outcome_id),
-                "side": int(side),
-                "is_buy": bool(is_buy),
-                "size": int(size),
-            },
         )
 
         return response
@@ -757,7 +681,70 @@ async def hyperliquid_execute(
         )
         return response
 
-    # place_order requires explicit is_spot
+    # HIP-4 outcome orders: coin="#<encoding>" routes to the outcome asset-id space.
+    outcome_match = re.match(r"^#(\d+)$", (coin or "").strip())
+    if outcome_match:
+        encoding = int(outcome_match.group(1))
+        outcome_id_v, side_v = encoding // 10, encoding % 10
+        if is_buy is None or size is None:
+            return err(
+                "invalid_request", "is_buy and size are required for outcome orders"
+            )
+        if order_type == "limit" and price is None:
+            return err("invalid_request", "price is required for limit orders")
+        ok_order, res = await adapter.place_outcome_order(
+            outcome_id=outcome_id_v,
+            side=side_v,
+            is_buy=bool(is_buy),
+            size=int(size),
+            price=None if price is None else float(price),
+            slippage=float(slippage),
+            tif="Ioc" if order_type == "market" else "Gtc",
+            reduce_only=bool(reduce_only),
+            cloid=cloid,
+            address=sender,
+        )
+        effects.append(
+            {"type": "hl", "label": "place_order", "ok": ok_order, "result": res}
+        )
+        status = "confirmed" if ok_order else "failed"
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="place_order",
+            status=status,
+            details={
+                "coin": coin,
+                "outcome_id": outcome_id_v,
+                "side": side_v,
+                "is_buy": bool(is_buy),
+                "size": int(size),
+            },
+        )
+        return ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": sender,
+                "coin": coin,
+                "outcome_id": outcome_id_v,
+                "side": side_v,
+                "order": {
+                    "order_type": order_type,
+                    "is_buy": bool(is_buy),
+                    "size": int(size),
+                    "price": float(price) if price is not None else None,
+                    "slippage": float(slippage),
+                    "reduce_only": bool(reduce_only),
+                    "cloid": cloid,
+                },
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
+
+    # spot/perp orders require explicit is_spot
     if is_spot is None:
         return err(
             "invalid_request",
