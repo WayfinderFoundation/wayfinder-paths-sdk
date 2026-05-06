@@ -34,7 +34,6 @@ from wayfinder_paths.mcp.tools.alpha_lab import (
     research_get_alpha_types,
     research_search_alpha,
 )
-from wayfinder_paths.mcp.tools.context import core_get_context
 from wayfinder_paths.mcp.tools.contracts import (
     contracts_compile,
     contracts_deploy,
@@ -144,7 +143,6 @@ mcp.tool()(contracts_execute)
 
 # ─── core_* (cross-persona — every subagent should allowlist these) ───
 mcp.tool()(core_get_adapters_and_strategies)
-mcp.tool()(core_get_context)
 mcp.tool()(core_get_wallets)
 mcp.tool()(core_wallets)
 mcp.tool()(core_execute)
