@@ -70,7 +70,7 @@ If you detected a Wayfinder Shells instance, you can project overlays onto chart
 
 **Typical flow:**
 1. Pick an explicit chart ID such as `"hl-perp-BTC"`.
-2. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support", "opacity": 0.85, "thickness": 2}`.
+2. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support", "opacity": 0.85, "thickness": 1}`.
 3. The projection appears when the frontend is viewing that chart.
 
 **Projection types:**
@@ -84,7 +84,7 @@ If you detected a Wayfinder Shells instance, you can project overlays onto chart
 | `text_label` | `time` (unix sec), `price`, `text`, `color?`, `opacity?` |
 | `trend` | `from: {time, price}`, `to: {time, price}`, `color?`, `label?`, `opacity?`, `thickness?` |
 
-`opacity` accepts `0..1` or `0..100`. `line_width` is accepted as an alias for `thickness`.
+`opacity` accepts `0..1` or `0..100`. `line_width` is accepted as an alias for `thickness`. Lines default to thickness `1`; use thicker values only for intentional emphasis.
 
 **Python client:**
 ```python
@@ -94,7 +94,7 @@ chart_id = "hl-perp-BTC"
 
 await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
     "type": "horizontal_line",
-    "config": {"price": 73500, "color": "#ef4444", "label": "Support", "thickness": 2},
+    "config": {"price": 73500, "color": "#ef4444", "label": "Support", "thickness": 1},
 })
 ```
 

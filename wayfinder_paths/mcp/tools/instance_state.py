@@ -56,6 +56,8 @@ async def shells_add_chart_projection(
         text. Use `text_label` for an annotated point.
       - `opacity` accepts 0..1 or 0..100. `line_width` is accepted as an alias
         for `thickness`.
+      - Lines default to thickness 1. Use thicker values only for intentional
+        emphasis.
       - All `time` values are unix seconds.
       - Adding a chart projection emits a state-changed notification; the FE
         renders within one poll cycle (~5s) or sooner if the SSE stream is
