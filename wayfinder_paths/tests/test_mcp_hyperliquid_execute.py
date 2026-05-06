@@ -7,8 +7,9 @@ import pytest
 
 from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
 from wayfinder_paths.mcp.tools.hyperliquid import (
+    _format_perp_market,
     _resolve_builder_fee,
-    _resolve_perp_asset_id,
+    _resolve_coin,
     hyperliquid_execute,
 )
 
@@ -26,13 +27,74 @@ def test_resolve_builder_fee_prefers_explicit_fee():
     assert fee == {"b": HYPE_FEE_WALLET.lower(), "f": 7}
 
 
-def test_resolve_perp_asset_id_accepts_coin_and_strips_perp_suffix():
-    class StubAdapter:
-        coin_to_asset = {"HYPE": 7}
+def test_format_perp_market_appends_usdc_for_core_perp():
+    assert _format_perp_market("BTC") == "BTC-USDC"
+    assert _format_perp_market("xyz:SP500") == "xyz:SP500"
 
-    ok, res = _resolve_perp_asset_id(StubAdapter(), coin="HYPE-perp", asset_id=None)
-    assert ok is True
-    assert res == 7
+
+class _StubAdapter:
+    def __init__(self, coin_to_asset, spot_assets):
+        self.coin_to_asset = coin_to_asset
+        self._spot_assets = spot_assets
+
+    async def get_spot_assets(self):
+        return True, self._spot_assets
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_perp():
+    adapter = _StubAdapter({"BTC": 0, "ETH": 1}, {})
+    ok, res = await _resolve_coin(adapter, coin="BTC-USDC")
+    assert ok and res["market_type"] == "perp" and res["asset_id"] == 0
+    assert res["coin_clean"] == "BTC"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_hip3_perp():
+    adapter = _StubAdapter({"xyz:SP500": 110000}, {})
+    ok, res = await _resolve_coin(adapter, coin="xyz:SP500")
+    assert ok and res["market_type"] == "perp" and res["asset_id"] == 110000
+    assert res["coin_clean"] == "xyz:SP500"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_spot_pair():
+    adapter = _StubAdapter({}, {"BTC/USDC": 10107, "USDC/USDH": 10211})
+    ok, res = await _resolve_coin(adapter, coin="USDC/USDH")
+    assert ok and res["market_type"] == "spot" and res["asset_id"] == 10211
+    assert res["coin_clean"] == "USDC/USDH"
+
+
+@pytest.mark.asyncio
+async def test_resolve_coin_outcome():
+    adapter = _StubAdapter({}, {})
+    ok, res = await _resolve_coin(adapter, coin="#41")
+    assert ok and res["market_type"] == "outcome"
+    assert res["outcome_id"] == 4 and res["side"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "coin",
+    [
+        "BTC",  # bare ticker
+        "btc-usdc",  # case mismatch
+        "BTC-usdc",  # partial case mismatch
+        "BTC/usdc",  # spot case mismatch
+        "BTC-USDT",  # wrong quote
+        " BTC-USDC ",  # whitespace not tolerated
+        "#",  # missing encoding
+        "#abc",  # non-numeric encoding
+        "",  # empty
+        None,  # missing
+    ],
+)
+async def test_resolve_coin_rejects_bad_input(coin):
+    adapter = _StubAdapter({"BTC": 0}, {"BTC/USDC": 10107})
+    ok, res = await _resolve_coin(adapter, coin=coin)
+    assert ok is False
+    assert res["code"] == "invalid_coin"
+    assert "hyperliquid_get_markets" in res["message"]
 
 
 @pytest.mark.asyncio
