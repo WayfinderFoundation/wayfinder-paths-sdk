@@ -55,6 +55,10 @@ async def test_hyperliquid_execute_withdraw(tmp_path: Path, monkeypatch):
             "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.withdraw",
             new=AsyncMock(return_value=(True, {"status": "ok"})),
         ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.wait_for_withdrawal",
+            new=AsyncMock(return_value=(True, {"status": "ok"})),
+        ),
     ):
         out1 = await hyperliquid_execute(
             "withdraw", wallet_label="main", amount_usdc=10
