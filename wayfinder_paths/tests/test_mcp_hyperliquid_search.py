@@ -51,6 +51,16 @@ async def test_search_nvidia():
 
 
 @pytest.mark.asyncio
+async def test_search_empty_query_returns_first_n_per_bucket():
+    res = await hyperliquid_search_market("", limit=3)
+    assert res["ok"]
+    result = res["result"]
+
+    for bucket in ("perps", "spots", "outcomes"):
+        assert 0 < len(result[bucket]) <= 3, bucket
+
+
+@pytest.mark.asyncio
 async def test_search_oil_futures():
     res = await hyperliquid_search_market("oil futures", limit=10)
     assert res["ok"]
