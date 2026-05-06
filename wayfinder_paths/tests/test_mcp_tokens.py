@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,8 +19,8 @@ async def test_resolve_token_happy_path():
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
         out = await onchain_resolve_token("usd-coin-arbitrum")
 
-    result = json.loads(out)
-    assert result["token"]["symbol"] == "USDC"
+    assert out["ok"] is True
+    assert out["result"]["token"]["symbol"] == "USDC"
 
 
 @pytest.mark.asyncio
@@ -32,8 +31,8 @@ async def test_get_gas_token_happy_path():
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
         out = await onchain_get_gas_token("arbitrum")
 
-    result = json.loads(out)
-    assert result["token"]["symbol"] == "ETH"
+    assert out["ok"] is True
+    assert out["result"]["token"]["symbol"] == "ETH"
 
 
 @pytest.mark.asyncio
@@ -44,5 +43,5 @@ async def test_fuzzy_search_tokens_happy_path():
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
         out = await onchain_fuzzy_search_tokens(chain_code="arbitrum", query="usd")
 
-    result = json.loads(out)
-    assert result["results"][0]["id"] == "foo"
+    assert out["ok"] is True
+    assert out["result"]["results"][0]["id"] == "foo"

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -34,10 +33,10 @@ async def test_get_wallets_filters_solana(mock_wallet):
             new=AsyncMock(return_value=mock_wallet),
         ),
     ):
-        result = await core_get_wallets(label="test")
+        out = await core_get_wallets(label="test")
 
-    data = json.loads(result)
-    assert "error" not in data
+    assert out["ok"] is True
+    data = out["result"]
     assert len(data["wallets"]) == 1
     balances_data = data["wallets"][0]["balances"]
     assert balances_data["total_balance_usd"] == pytest.approx(3.5)
@@ -52,8 +51,8 @@ async def test_get_wallets_label_not_found():
         "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
         new=AsyncMock(return_value=None),
     ):
-        result = await core_get_wallets(label="nonexistent")
+        out = await core_get_wallets(label="nonexistent")
 
-    data = json.loads(result)
-    assert "error" in data
-    assert "not found" in data["error"].lower()
+    assert out["ok"] is False
+    assert out["error"]["code"] == "not_found"
+    assert "not found" in out["error"]["message"].lower()

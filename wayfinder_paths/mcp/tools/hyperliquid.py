@@ -371,14 +371,7 @@ async def hyperliquid_execute(
             )
 
         status = "confirmed" if all(e["ok"] for e in effects) else "failed"
-        _annotate_hl_profile(
-            address=deposit_sender,
-            label=want,
-            action="deposit",
-            status=status,
-            details={"amount_usdc": amt, "chain_id": chain_id},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -389,16 +382,27 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=deposit_sender,
+            label=want,
+            action="deposit",
+            status=status,
+            details={"amount_usdc": amt, "chain_id": chain_id},
+        )
+        return response
 
     if action == "withdraw":
         if amount_usdc is None:
-            return err("invalid_request", "amount_usdc is required for withdraw")
+            response = err("invalid_request", "amount_usdc is required for withdraw")
+            return response
         try:
             amt = float(amount_usdc)
         except (TypeError, ValueError):
-            return err("invalid_request", "amount_usdc must be a number")
+            response = err("invalid_request", "amount_usdc must be a number")
+            return response
         if amt <= 0:
-            return err("invalid_request", "amount_usdc must be positive")
+            response = err("invalid_request", "amount_usdc must be positive")
+            return response
 
         ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
         effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
@@ -415,14 +419,7 @@ async def hyperliquid_execute(
             )
 
         status = "confirmed" if all(e["ok"] for e in effects) else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="withdraw",
-            status=status,
-            details={"amount_usdc": amt},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -433,6 +430,15 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="withdraw",
+            status=status,
+            details={"amount_usdc": amt},
+        )
+
+        return response
 
     if action in ("spot_to_perp_transfer", "perp_to_spot_transfer"):
         if usd_amount is None:
@@ -457,14 +463,7 @@ async def hyperliquid_execute(
             {"type": "hl", "label": action, "ok": ok_transfer, "result": res}
         )
         status = "confirmed" if ok_transfer else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action=action,
-            status=status,
-            details={"usd_amount": amt, "to_perp": to_perp},
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -476,6 +475,15 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action=action,
+            status=status,
+            details={"usd_amount": amt, "to_perp": to_perp},
+        )
+
+        return response
 
     ok_resolve, resolved = await _resolve_coin(adapter, coin=asset_name)
     if not ok_resolve:
@@ -548,13 +556,18 @@ async def hyperliquid_execute(
 
     if action == "update_leverage":
         if leverage is None:
-            return err("invalid_request", "leverage is required for update_leverage")
+            response = err(
+                "invalid_request", "leverage is required for update_leverage"
+            )
+            return response
         try:
             lev = int(leverage)
         except (TypeError, ValueError):
-            return err("invalid_request", "leverage must be an int")
+            response = err("invalid_request", "leverage must be an int")
+            return response
         if lev <= 0:
-            return err("invalid_request", "leverage must be positive")
+            response = err("invalid_request", "leverage must be positive")
+            return response
 
         ok_lev, res = await adapter.update_leverage(
             resolved_asset_id, lev, bool(is_cross), sender
@@ -563,18 +576,7 @@ async def hyperliquid_execute(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
         )
         status = "confirmed" if ok_lev else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="update_leverage",
-            status=status,
-            details={
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "leverage": lev,
-            },
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -586,6 +588,19 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="update_leverage",
+            status=status,
+            details={
+                "asset_id": resolved_asset_id,
+                "asset_name": asset_name,
+                "leverage": lev,
+            },
+        )
+
+        return response
 
     if action == "cancel_order":
         if cancel_cloid:
@@ -602,10 +617,11 @@ async def hyperliquid_execute(
             )
         else:
             if order_id is None:
-                return err(
+                response = err(
                     "invalid_request",
                     "order_id or cancel_cloid is required for cancel_order",
                 )
+                return response
             ok_cancel, res = await adapter.cancel_order(
                 resolved_asset_id, int(order_id), sender
             )
@@ -615,6 +631,18 @@ async def hyperliquid_execute(
 
         ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
         status = "confirmed" if ok_all else "failed"
+        response = ok(
+            {
+                "status": status,
+                "action": action,
+                "wallet_label": want,
+                "address": sender,
+                "asset_id": resolved_asset_id,
+                "asset_name": asset_name,
+                "preview": preview_text,
+                "effects": effects,
+            }
+        )
         _annotate_hl_profile(
             address=sender,
             label=want,
@@ -627,18 +655,8 @@ async def hyperliquid_execute(
                 "cancel_cloid": cancel_cloid,
             },
         )
-        return ok(
-            {
-                "status": status,
-                "action": action,
-                "wallet_label": want,
-                "address": sender,
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "preview": preview_text,
-                "effects": effects,
-            }
-        )
+
+        return response
 
     if action == "place_trigger_order":
         if tpsl not in ("tp", "sl"):
@@ -720,21 +738,7 @@ async def hyperliquid_execute(
 
         ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
         status = "confirmed" if ok_all else "failed"
-        _annotate_hl_profile(
-            address=sender,
-            label=want,
-            action="place_trigger_order",
-            status=status,
-            details={
-                "asset_id": resolved_asset_id,
-                "asset_name": asset_name,
-                "tpsl": tpsl,
-                "is_buy": bool(is_buy),
-                "trigger_price": tpx,
-                "size": float(sz_valid),
-            },
-        )
-        return ok(
+        response = ok(
             {
                 "status": status,
                 "action": action,
@@ -756,39 +760,63 @@ async def hyperliquid_execute(
                 "effects": effects,
             }
         )
+        _annotate_hl_profile(
+            address=sender,
+            label=want,
+            action="place_trigger_order",
+            status=status,
+            details={
+                "asset_id": resolved_asset_id,
+                "asset_name": asset_name,
+                "tpsl": tpsl,
+                "is_buy": bool(is_buy),
+                "trigger_price": tpx,
+                "size": float(sz_valid),
+            },
+        )
+        return response
 
     if size is not None and usd_amount is not None:
-        return err(
+        response = err(
             "invalid_request",
             "Provide either size (asset units) or usd_amount (USD notional/margin), not both",
         )
+        return response
     if usd_amount_kind is not None and usd_amount is None:
-        return err(
+        response = err(
             "invalid_request",
             "usd_amount_kind is only valid when usd_amount is provided",
         )
+        return response
 
     if is_buy is None:
-        return err("invalid_request", "is_buy is required for place_order")
+        response = err("invalid_request", "is_buy is required for place_order")
+        return response
 
     if order_type == "limit":
         if price is None:
-            return err("invalid_request", "price is required for limit orders")
+            response = err("invalid_request", "price is required for limit orders")
+            return response
         try:
             px_for_sizing = float(price)
         except (TypeError, ValueError):
-            return err("invalid_request", "price must be a number")
+            response = err("invalid_request", "price must be a number")
+            return response
         if px_for_sizing <= 0:
-            return err("invalid_request", "price must be positive")
+            response = err("invalid_request", "price must be positive")
+            return response
     else:
         try:
             slip = float(slippage)
         except (TypeError, ValueError):
-            return err("invalid_request", "slippage must be a number")
+            response = err("invalid_request", "slippage must be a number")
+            return response
         if slip < 0:
-            return err("invalid_request", "slippage must be >= 0")
+            response = err("invalid_request", "slippage must be >= 0")
+            return response
         if slip > 0.25:
-            return err("invalid_request", "slippage > 0.25 is too risky")
+            response = err("invalid_request", "slippage > 0.25 is too risky")
+            return response
         px_for_sizing = None
 
     sizing: dict[str, Any] = {"source": "size"}
@@ -796,43 +824,52 @@ async def hyperliquid_execute(
         try:
             sz = float(size)
         except (TypeError, ValueError):
-            return err("invalid_request", "size must be a number")
+            response = err("invalid_request", "size must be a number")
+            return response
         if sz <= 0:
-            return err("invalid_request", "size must be positive")
+            response = err("invalid_request", "size must be positive")
+            return response
     else:
         if usd_amount is None:
-            return err(
+            response = err(
                 "invalid_request",
                 "Provide either size (asset units) or usd_amount for place_order",
             )
+            return response
         try:
             usd_amt = float(usd_amount)
         except (TypeError, ValueError):
-            return err("invalid_request", "usd_amount must be a number")
+            response = err("invalid_request", "usd_amount must be a number")
+            return response
         if usd_amt <= 0:
-            return err("invalid_request", "usd_amount must be positive")
+            response = err("invalid_request", "usd_amount must be positive")
+            return response
 
         # Spot: usd_amount is always notional (no leverage)
         if market_type == "spot":
             notional_usd = usd_amt
             margin_usd = None
         elif usd_amount_kind is None:
-            return err(
+            response = err(
                 "invalid_request",
                 "usd_amount_kind is required for perp: 'notional' or 'margin'",
             )
+            return response
         elif usd_amount_kind == "margin":
             if leverage is None:
-                return err(
+                response = err(
                     "invalid_request",
                     "leverage is required when usd_amount_kind='margin'",
                 )
+                return response
             try:
                 lev = int(leverage)
             except (TypeError, ValueError):
-                return err("invalid_request", "leverage must be an int")
+                response = err("invalid_request", "leverage must be an int")
+                return response
             if lev <= 0:
-                return err("invalid_request", "leverage must be positive")
+                response = err("invalid_request", "leverage must be positive")
+                return response
             notional_usd = usd_amt * float(lev)
             margin_usd = usd_amt
         else:
@@ -849,7 +886,8 @@ async def hyperliquid_execute(
         if px_for_sizing is None:
             ok_mids, mids = await adapter.get_all_mid_prices()
             if not ok_mids or not isinstance(mids, dict):
-                return err("price_error", "Failed to fetch mid prices")
+                response = err("price_error", "Failed to fetch mid prices")
+                return response
             mid = None
             for key in _mid_feed_keys(market_type, coin_clean, resolved_asset_id):
                 v = mids.get(key)
@@ -861,10 +899,11 @@ async def hyperliquid_execute(
                 except (TypeError, ValueError):
                     continue
             if mid is None or mid <= 0:
-                return err(
+                response = err(
                     "price_error",
                     f"Could not resolve mid price for {coin_clean}",
                 )
+                return response
             px_for_sizing = mid
 
         sz = notional_usd / float(px_for_sizing)
@@ -881,7 +920,8 @@ async def hyperliquid_execute(
 
     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
     if sz_valid <= 0:
-        return err("invalid_request", "size is too small after lot-size rounding")
+        response = err("invalid_request", "size is too small after lot-size rounding")
+        return response
 
     try:
         builder = _resolve_builder_fee(
@@ -889,15 +929,18 @@ async def hyperliquid_execute(
             builder_fee_tenths_bp=builder_fee_tenths_bp,
         )
     except ValueError as exc:
-        return err("invalid_request", str(exc))
+        response = err("invalid_request", str(exc))
+        return response
 
     if leverage is not None:
         try:
             lev = int(leverage)
         except (TypeError, ValueError):
-            return err("invalid_request", "leverage must be an int")
+            response = err("invalid_request", "leverage must be an int")
+            return response
         if lev <= 0:
-            return err("invalid_request", "leverage must be positive")
+            response = err("invalid_request", "leverage must be positive")
+            return response
         ok_lev, res = await adapter.update_leverage(
             resolved_asset_id, lev, bool(is_cross), sender
         )
@@ -905,7 +948,7 @@ async def hyperliquid_execute(
             {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
         )
         if not ok_lev:
-            return ok(
+            response = ok(
                 {
                     "status": "failed",
                     "action": action,
@@ -917,6 +960,7 @@ async def hyperliquid_execute(
                     "effects": effects,
                 }
             )
+            return response
 
     # Builder attribution is mandatory; ensure approval before placing orders.
     desired = int(builder.get("f") or 0)
@@ -948,7 +992,7 @@ async def hyperliquid_execute(
             }
         )
         if not ok_appr:
-            return ok(
+            response = ok(
                 {
                     "status": "failed",
                     "action": action,
@@ -960,6 +1004,7 @@ async def hyperliquid_execute(
                     "effects": effects,
                 }
             )
+            return response
 
     if order_type == "limit":
         ok_order, res = await adapter.place_limit_order(
@@ -991,20 +1036,7 @@ async def hyperliquid_execute(
 
     ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
     status = "confirmed" if ok_all else "failed"
-    _annotate_hl_profile(
-        address=sender,
-        label=want,
-        action="place_order",
-        status=status,
-        details={
-            "asset_id": resolved_asset_id,
-            "asset_name": asset_name,
-            "order_type": order_type,
-            "is_buy": bool(is_buy),
-            "size": float(sz_valid),
-        },
-    )
-    return ok(
+    response = ok(
         {
             "status": status,
             "action": action,
@@ -1028,13 +1060,28 @@ async def hyperliquid_execute(
             "effects": effects,
         }
     )
+    _annotate_hl_profile(
+        address=sender,
+        label=want,
+        action="place_order",
+        status=status,
+        details={
+            "asset_id": resolved_asset_id,
+            "asset_name": asset_name,
+            "order_type": order_type,
+            "is_buy": bool(is_buy),
+            "size": float(sz_valid),
+        },
+    )
+
+    return response
 
 
-async def hyperliquid_get_state(label: str) -> str:
+async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+        return err("not_found", f"Wallet not found: {label}")
 
     adapter = HyperliquidAdapter()
     perp_ok, perp = await adapter.get_user_state(addr)
@@ -1063,22 +1110,21 @@ async def hyperliquid_get_state(label: str) -> str:
                 spot_balances.append(bal)
         spot["balances"] = spot_balances
 
-    return json.dumps(
+    return ok(
         {
             "label": label,
             "address": addr,
-            "perp": {"state": perp},
-            "spot": {"state": spot},
-            "outcomes": {"positions": outcome_positions},
-        },
-        indent=2,
+            "perp": {"success": perp_ok, "state": perp},
+            "spot": {"success": spot_ok, "state": spot},
+            "outcomes": {"success": spot_ok, "positions": outcome_positions},
+        }
     )
 
 
-async def hyperliquid_get_mid_prices() -> str:
+async def hyperliquid_get_mid_prices() -> dict[str, Any]:
     adapter = HyperliquidAdapter()
     success, data = await adapter.get_all_mid_prices()
-    return json.dumps({"success": success, "prices": data}, indent=2)
+    return ok({"success": success, "prices": data})
 
 
 MIN_MATCH_SCORE = 0.9
