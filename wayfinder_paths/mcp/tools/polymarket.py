@@ -311,181 +311,193 @@ async def polymarket_read(
         wallet_address=waddr,
     )
     try:
-        if action == "search":
-            q = str(query or "").strip()
-            if not q:
-                return err("invalid_request", "query is required for search")
-            if events_status and events_status not in {"active", "closed", "archived"}:
-                return err(
-                    "invalid_request",
-                    f"events_status must be one of: active, closed, archived (got {events_status!r})",
-                )
-
-            ok_rows, rows = await adapter.search_markets_fuzzy(
-                query=q,
-                limit=int(limit),
-                page=int(page),
-                keep_closed_markets=bool(keep_closed_markets),
-                events_status=events_status,
-                end_date_min=end_date_min,
-                rerank=bool(rerank),
-            )
-            if not ok_rows:
-                return err("error", str(rows))
-            return ok(
-                {
-                    "action": action,
-                    "query": q,
-                    "markets": [_trim_market(m) for m in rows],
-                }
-            )
-
-        if action == "trending":
-            ok_rows, rows = await adapter.list_markets(
-                closed=False,
-                limit=int(limit),
-                offset=int(offset),
-                order="volume24hr",
-                ascending=False,
-            )
-            if not ok_rows:
-                return err("error", str(rows))
-            return ok({"action": action, "markets": [_trim_market(m) for m in rows]})
-
-        if action == "get_market":
-            slug = str(market_slug or "").strip()
-            if not slug:
-                return err("invalid_request", "market_slug is required")
-            ok_m, m = await adapter.get_market_by_slug(slug)
-            if not ok_m:
-                return err("error", str(m))
-            return ok({"action": action, "market": m})
-
-        if action == "get_event":
-            slug = str(event_slug or "").strip()
-            if not slug:
-                return err("invalid_request", "event_slug is required")
-            ok_e, e = await adapter.get_event_by_slug(slug)
-            if not ok_e:
-                return err("error", str(e))
-            return ok({"action": action, "event": e})
-
-        if action == "quote":
-            if side == "BUY":
-                if amount_collateral is None:
+        match action:
+            case "search":
+                q = str(query or "").strip()
+                if not q:
+                    return err("invalid_request", "query is required for search")
+                if events_status and events_status not in {
+                    "active",
+                    "closed",
+                    "archived",
+                }:
                     return err(
                         "invalid_request",
-                        "amount_collateral is required for BUY quote",
+                        f"events_status must be one of: active, closed, archived (got {events_status!r})",
                     )
-                try:
-                    quote_amount = float(amount_collateral)
-                except (TypeError, ValueError):
-                    return err("invalid_request", "amount_collateral must be a number")
-            else:
-                if shares is None:
-                    return err("invalid_request", "shares is required for SELL quote")
-                try:
-                    quote_amount = float(shares)
-                except (TypeError, ValueError):
-                    return err("invalid_request", "shares must be a number")
 
-            if quote_amount <= 0:
-                return err("invalid_request", "quote amount must be positive")
-
-            slug = str(market_slug or "").strip()
-            if slug:
-                ok_q, q = await adapter.quote_prediction(
-                    market_slug=slug,
-                    outcome=outcome,
-                    side=side,
-                    amount=quote_amount,
+                ok_rows, rows = await adapter.search_markets_fuzzy(
+                    query=q,
+                    limit=int(limit),
+                    page=int(page),
+                    keep_closed_markets=bool(keep_closed_markets),
+                    events_status=events_status,
+                    end_date_min=end_date_min,
+                    rerank=bool(rerank),
                 )
-            else:
+                if not ok_rows:
+                    return err("error", str(rows))
+                return ok(
+                    {
+                        "action": action,
+                        "query": q,
+                        "markets": [_trim_market(m) for m in rows],
+                    }
+                )
+
+            case "trending":
+                ok_rows, rows = await adapter.list_markets(
+                    closed=False,
+                    limit=int(limit),
+                    offset=int(offset),
+                    order="volume24hr",
+                    ascending=False,
+                )
+                if not ok_rows:
+                    return err("error", str(rows))
+                return ok(
+                    {"action": action, "markets": [_trim_market(m) for m in rows]}
+                )
+
+            case "get_market":
+                slug = str(market_slug or "").strip()
+                if not slug:
+                    return err("invalid_request", "market_slug is required")
+                ok_m, m = await adapter.get_market_by_slug(slug)
+                if not ok_m:
+                    return err("error", str(m))
+                return ok({"action": action, "market": m})
+
+            case "get_event":
+                slug = str(event_slug or "").strip()
+                if not slug:
+                    return err("invalid_request", "event_slug is required")
+                ok_e, e = await adapter.get_event_by_slug(slug)
+                if not ok_e:
+                    return err("error", str(e))
+                return ok({"action": action, "event": e})
+
+            case "quote":
+                if side == "BUY":
+                    if amount_collateral is None:
+                        return err(
+                            "invalid_request",
+                            "amount_collateral is required for BUY quote",
+                        )
+                    try:
+                        quote_amount = float(amount_collateral)
+                    except (TypeError, ValueError):
+                        return err(
+                            "invalid_request", "amount_collateral must be a number"
+                        )
+                else:
+                    if shares is None:
+                        return err(
+                            "invalid_request", "shares is required for SELL quote"
+                        )
+                    try:
+                        quote_amount = float(shares)
+                    except (TypeError, ValueError):
+                        return err("invalid_request", "shares must be a number")
+
+                if quote_amount <= 0:
+                    return err("invalid_request", "quote amount must be positive")
+
+                slug = str(market_slug or "").strip()
+                if slug:
+                    ok_q, q = await adapter.quote_prediction(
+                        market_slug=slug,
+                        outcome=outcome,
+                        side=side,
+                        amount=quote_amount,
+                    )
+                else:
+                    tid = str(token_id or "").strip()
+                    if not tid:
+                        return err(
+                            "invalid_request",
+                            "token_id or market_slug is required for quote",
+                        )
+                    ok_q, q = await adapter.quote_market_order(
+                        token_id=tid,
+                        side=side,
+                        amount=quote_amount,
+                    )
+
+                if not ok_q:
+                    return err("error", str(q))
+                return ok(
+                    {
+                        "action": action,
+                        "token_id": q["token_id"],
+                        "side": side,
+                        "quote": q,
+                    }
+                )
+
+            case "price":
                 tid = str(token_id or "").strip()
                 if not tid:
-                    return err(
-                        "invalid_request",
-                        "token_id or market_slug is required for quote",
-                    )
-                ok_q, q = await adapter.quote_market_order(
+                    return err("invalid_request", "token_id is required")
+                ok_p, p = await adapter.get_price(token_id=tid, side=side)
+                if not ok_p:
+                    return err("error", str(p))
+                return ok({"action": action, "token_id": tid, "side": side, "price": p})
+
+            case "order_book":
+                tid = str(token_id or "").strip()
+                if not tid:
+                    return err("invalid_request", "token_id is required")
+                ok_b, b = await adapter.get_order_book(token_id=tid)
+                if not ok_b:
+                    return err("error", str(b))
+                return ok({"action": action, "token_id": tid, "book": b})
+
+            case "price_history":
+                tid = str(token_id or "").strip()
+                if not tid:
+                    return err("invalid_request", "token_id is required")
+                ok_h, h = await adapter.get_prices_history(
                     token_id=tid,
-                    side=side,
-                    amount=quote_amount,
+                    interval=interval,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                    fidelity=fidelity,
+                )
+                if not ok_h:
+                    return err("error", str(h))
+                return ok({"action": action, "token_id": tid, "history": h})
+
+            case "bridge_status":
+                ok_s, s = await adapter.bridge_status(address=str(acct))
+                if not ok_s:
+                    return err("error", str(s))
+                return ok({"action": action, "account": acct, "status": s})
+
+            case "open_orders":
+                if not want or not waddr:
+                    return err("not_found", f"Unknown wallet_label: {wallet_label}")
+                if not sign_cb:
+                    return err(
+                        "invalid_wallet",
+                        "Wallet must include private_key_hex in config.json to fetch open orders",
+                        {"wallet_label": want},
+                    )
+                # Open orders require Level-2 auth and the signing wallet in config.
+                ok_o, orders = await adapter.list_open_orders(token_id=token_id)
+                if not ok_o:
+                    return err("error", str(orders))
+                return ok(
+                    {
+                        "action": action,
+                        "wallet_label": want,
+                        "account": waddr,
+                        "openOrders": orders,
+                    }
                 )
 
-            if not ok_q:
-                return err("error", str(q))
-            return ok(
-                {
-                    "action": action,
-                    "token_id": q["token_id"],
-                    "side": side,
-                    "quote": q,
-                }
-            )
-
-        if action == "price":
-            tid = str(token_id or "").strip()
-            if not tid:
-                return err("invalid_request", "token_id is required")
-            ok_p, p = await adapter.get_price(token_id=tid, side=side)
-            if not ok_p:
-                return err("error", str(p))
-            return ok({"action": action, "token_id": tid, "side": side, "price": p})
-
-        if action == "order_book":
-            tid = str(token_id or "").strip()
-            if not tid:
-                return err("invalid_request", "token_id is required")
-            ok_b, b = await adapter.get_order_book(token_id=tid)
-            if not ok_b:
-                return err("error", str(b))
-            return ok({"action": action, "token_id": tid, "book": b})
-
-        if action == "price_history":
-            tid = str(token_id or "").strip()
-            if not tid:
-                return err("invalid_request", "token_id is required")
-            ok_h, h = await adapter.get_prices_history(
-                token_id=tid,
-                interval=interval,
-                start_ts=start_ts,
-                end_ts=end_ts,
-                fidelity=fidelity,
-            )
-            if not ok_h:
-                return err("error", str(h))
-            return ok({"action": action, "token_id": tid, "history": h})
-
-        if action == "bridge_status":
-            ok_s, s = await adapter.bridge_status(address=str(acct))
-            if not ok_s:
-                return err("error", str(s))
-            return ok({"action": action, "account": acct, "status": s})
-
-        if action == "open_orders":
-            if not want or not waddr:
-                return err("not_found", f"Unknown wallet_label: {wallet_label}")
-            if not sign_cb:
-                return err(
-                    "invalid_wallet",
-                    "Wallet must include private_key_hex in config.json to fetch open orders",
-                    {"wallet_label": want},
-                )
-            # Open orders require Level-2 auth and the signing wallet in config.
-            ok_o, orders = await adapter.list_open_orders(token_id=token_id)
-            if not ok_o:
-                return err("error", str(orders))
-            return ok(
-                {
-                    "action": action,
-                    "wallet_label": want,
-                    "account": waddr,
-                    "openOrders": orders,
-                }
-            )
-
-        return err("invalid_request", f"Unknown polymarket action: {action}")
+            case _:
+                return err("invalid_request", f"Unknown polymarket action: {action}")
     finally:
         await adapter.close()
 
@@ -616,325 +628,343 @@ async def polymarket_execute(
                 }
             )
 
-        if action == "bridge_deposit":
-            if amount is None:
-                return err("invalid_request", "amount is required for bridge_deposit")
-            rcpt = normalize_address(recipient_address) or sender
-            ok_dep, res = await adapter.bridge_deposit(
-                from_chain_id=int(from_chain_id),
-                from_token_address=str(from_token_address),
-                amount=float(amount),
-                recipient_address=str(rcpt),
-                token_decimals=int(token_decimals),
-            )
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "bridge_deposit",
-                    "ok": ok_dep,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_dep else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="bridge_deposit",
-                status=status,
-                chain_id=int(from_chain_id),
-                details={
-                    "amount": float(amount),
-                    "from_token_address": str(from_token_address),
-                    "recipient_address": str(rcpt),
-                },
-            )
-            return _done(status)
-
-        if action == "bridge_withdraw":
-            if amount_pusd is None:
-                return err(
-                    "invalid_request", "amount_pusd is required for bridge_withdraw"
+        match action:
+            case "bridge_deposit":
+                if amount is None:
+                    return err(
+                        "invalid_request", "amount is required for bridge_deposit"
+                    )
+                rcpt = normalize_address(recipient_address) or sender
+                ok_dep, res = await adapter.bridge_deposit(
+                    from_chain_id=int(from_chain_id),
+                    from_token_address=str(from_token_address),
+                    amount=float(amount),
+                    recipient_address=str(rcpt),
+                    token_decimals=int(token_decimals),
                 )
-            rcpt = normalize_address(recipient_addr) or sender
-            ok_wd, res = await adapter.bridge_withdraw(
-                amount_pusd=float(amount_pusd),
-                to_chain_id=int(to_chain_id),
-                to_token_address=str(to_token_address),
-                recipient_addr=str(rcpt),
-                token_decimals=int(token_decimals),
-            )
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "bridge_withdraw",
-                    "ok": ok_wd,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_wd else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="bridge_withdraw",
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-                details={
-                    "amount_pusd": float(amount_pusd),
-                    "to_chain_id": int(to_chain_id),
-                    "to_token_address": str(to_token_address),
-                    "recipient_addr": str(rcpt),
-                },
-            )
-            return _done(status)
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "bridge_deposit",
+                        "ok": ok_dep,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_dep else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="bridge_deposit",
+                    status=status,
+                    chain_id=int(from_chain_id),
+                    details={
+                        "amount": float(amount),
+                        "from_token_address": str(from_token_address),
+                        "recipient_address": str(rcpt),
+                    },
+                )
+                return _done(status)
 
-        if action in {"buy", "sell"}:
-            if market_slug:
-                if action == "buy":
-                    if amount_collateral is None:
-                        return err(
-                            "invalid_request",
-                            "amount_collateral is required for buy",
+            case "bridge_withdraw":
+                if amount_pusd is None:
+                    return err(
+                        "invalid_request", "amount_pusd is required for bridge_withdraw"
+                    )
+                rcpt = normalize_address(recipient_addr) or sender
+                ok_wd, res = await adapter.bridge_withdraw(
+                    amount_pusd=float(amount_pusd),
+                    to_chain_id=int(to_chain_id),
+                    to_token_address=str(to_token_address),
+                    recipient_addr=str(rcpt),
+                    token_decimals=int(token_decimals),
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "bridge_withdraw",
+                        "ok": ok_wd,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_wd else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="bridge_withdraw",
+                    status=status,
+                    chain_id=int(POLYGON_CHAIN_ID),
+                    details={
+                        "amount_pusd": float(amount_pusd),
+                        "to_chain_id": int(to_chain_id),
+                        "to_token_address": str(to_token_address),
+                        "recipient_addr": str(rcpt),
+                    },
+                )
+                return _done(status)
+
+            case "buy" | "sell":
+                if market_slug:
+                    if action == "buy":
+                        if amount_collateral is None:
+                            return err(
+                                "invalid_request",
+                                "amount_collateral is required for buy",
+                            )
+                        ok_trade, res = await adapter.place_prediction(
+                            market_slug=str(market_slug),
+                            outcome=outcome,
+                            amount_collateral=float(amount_collateral),
                         )
-                    ok_trade, res = await adapter.place_prediction(
-                        market_slug=str(market_slug),
-                        outcome=outcome,
-                        amount_collateral=float(amount_collateral),
-                    )
+                    else:
+                        if shares is None:
+                            return err("invalid_request", "shares is required for sell")
+                        ok_trade, res = await adapter.cash_out_prediction(
+                            market_slug=str(market_slug),
+                            outcome=outcome,
+                            shares=float(shares),
+                        )
                 else:
-                    if shares is None:
-                        return err("invalid_request", "shares is required for sell")
-                    ok_trade, res = await adapter.cash_out_prediction(
-                        market_slug=str(market_slug),
-                        outcome=outcome,
-                        shares=float(shares),
+                    tid = str(token_id or "").strip()
+                    if not tid:
+                        return err(
+                            "invalid_request", "token_id or market_slug is required"
+                        )
+                    if action == "buy":
+                        if amount_collateral is None:
+                            return err(
+                                "invalid_request",
+                                "amount_collateral is required for buy",
+                            )
+                        ok_trade, res = await adapter.place_market_order(
+                            token_id=tid,
+                            side="BUY",
+                            amount=float(amount_collateral),
+                        )
+                    else:
+                        if shares is None:
+                            return err("invalid_request", "shares is required for sell")
+                        ok_trade, res = await adapter.place_market_order(
+                            token_id=tid,
+                            side="SELL",
+                            amount=float(shares),
+                        )
+
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": action,
+                        "ok": ok_trade,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_trade else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action=action,
+                    status=status,
+                    chain_id=int(POLYGON_CHAIN_ID),
+                    details={
+                        "market_slug": str(market_slug) if market_slug else None,
+                        "token_id": str(token_id) if token_id else None,
+                        "outcome": str(outcome),
+                        "amount_collateral": float(amount_collateral)
+                        if amount_collateral is not None
+                        else None,
+                        "shares": float(shares) if shares is not None else None,
+                    },
+                )
+                return _done(status)
+
+            case "close_position":
+                # Convenience: sell the full size from Data API positions.
+                tid = str(token_id or "").strip()
+
+                if not tid and market_slug:
+                    ok_m, market = await adapter.get_market_by_slug(str(market_slug))
+                    if not ok_m or not isinstance(market, dict):
+                        return err("not_found", f"Market not found: {market_slug}")
+                    ok_tid, tid_or_err = adapter.resolve_clob_token_id(
+                        market=market, outcome=outcome
                     )
-            else:
+                    if not ok_tid:
+                        return err("invalid_request", str(tid_or_err))
+                    tid = str(tid_or_err)
+
+                if not tid and condition_id:
+                    ok_pos, pos = await adapter.get_positions(
+                        user=sender, limit=500, offset=0
+                    )
+                    if ok_pos and isinstance(pos, list):
+                        for p in pos:
+                            if not isinstance(p, dict):
+                                continue
+                            if (
+                                str(p.get("conditionId") or "").lower()
+                                == str(condition_id).lower()
+                            ):
+                                tid = str(p.get("asset") or "").strip()
+                                if tid:
+                                    break
+
+                if not tid:
+                    return err(
+                        "invalid_request",
+                        "Provide token_id, or market_slug+outcome, or condition_id for close_position",
+                    )
+
+                sell_shares = shares
+                if sell_shares is None:
+                    ok_pos, pos = await adapter.get_positions(
+                        user=sender, limit=500, offset=0
+                    )
+                    if not ok_pos:
+                        return err("error", f"Failed to fetch positions: {pos}")
+                    if not isinstance(pos, list):
+                        return err("error", "Unexpected positions response")
+                    match = next(
+                        (
+                            p
+                            for p in pos
+                            if isinstance(p, dict)
+                            and str(p.get("asset") or "").strip() == tid
+                        ),
+                        None,
+                    )
+                    if not match:
+                        return err("not_found", "No matching position found to close")
+                    try:
+                        sell_shares = float(match.get("size") or 0)
+                    except (TypeError, ValueError):
+                        sell_shares = 0.0
+                if not sell_shares or float(sell_shares) <= 0:
+                    return err("invalid_request", "No shares available to close")
+
+                ok_sell, res = await adapter.place_market_order(
+                    token_id=str(tid),
+                    side="SELL",
+                    amount=float(sell_shares),
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "close_position",
+                        "ok": ok_sell,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_sell else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="close_position",
+                    status=status,
+                    chain_id=int(POLYGON_CHAIN_ID),
+                    details={"token_id": str(tid), "shares": float(sell_shares)},
+                )
+                return _done(status)
+
+            case "place_limit_order":
                 tid = str(token_id or "").strip()
                 if not tid:
-                    return err("invalid_request", "token_id or market_slug is required")
-                if action == "buy":
-                    if amount_collateral is None:
-                        return err(
-                            "invalid_request",
-                            "amount_collateral is required for buy",
-                        )
-                    ok_trade, res = await adapter.place_market_order(
-                        token_id=tid,
-                        side="BUY",
-                        amount=float(amount_collateral),
+                    return err(
+                        "invalid_request", "token_id is required for place_limit_order"
                     )
-                else:
-                    if shares is None:
-                        return err("invalid_request", "shares is required for sell")
-                    ok_trade, res = await adapter.place_market_order(
-                        token_id=tid,
-                        side="SELL",
-                        amount=float(shares),
+                if price is None or size is None:
+                    return err(
+                        "invalid_request",
+                        "price and size are required for place_limit_order",
                     )
-
-            effects.append(
-                {"type": "polymarket", "label": action, "ok": ok_trade, "result": res}
-            )
-            status = "confirmed" if ok_trade else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action=action,
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-                details={
-                    "market_slug": str(market_slug) if market_slug else None,
-                    "token_id": str(token_id) if token_id else None,
-                    "outcome": str(outcome),
-                    "amount_collateral": float(amount_collateral)
-                    if amount_collateral is not None
-                    else None,
-                    "shares": float(shares) if shares is not None else None,
-                },
-            )
-            return _done(status)
-
-        if action == "close_position":
-            # Convenience: sell the full size from Data API positions.
-            tid = str(token_id or "").strip()
-
-            if not tid and market_slug:
-                ok_m, market = await adapter.get_market_by_slug(str(market_slug))
-                if not ok_m or not isinstance(market, dict):
-                    return err("not_found", f"Market not found: {market_slug}")
-                ok_tid, tid_or_err = adapter.resolve_clob_token_id(
-                    market=market, outcome=outcome
+                ok_lo, res = await adapter.place_limit_order(
+                    token_id=tid,
+                    side=side,
+                    price=float(price),
+                    size=float(size),
+                    post_only=bool(post_only),
                 )
-                if not ok_tid:
-                    return err("invalid_request", str(tid_or_err))
-                tid = str(tid_or_err)
-
-            if not tid and condition_id:
-                ok_pos, pos = await adapter.get_positions(
-                    user=sender, limit=500, offset=0
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "place_limit_order",
+                        "ok": ok_lo,
+                        "result": res,
+                    }
                 )
-                if ok_pos and isinstance(pos, list):
-                    for p in pos:
-                        if not isinstance(p, dict):
-                            continue
-                        if (
-                            str(p.get("conditionId") or "").lower()
-                            == str(condition_id).lower()
-                        ):
-                            tid = str(p.get("asset") or "").strip()
-                            if tid:
-                                break
+                status = "confirmed" if ok_lo else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="place_limit_order",
+                    status=status,
+                    chain_id=int(POLYGON_CHAIN_ID),
+                    details={
+                        "token_id": tid,
+                        "side": side,
+                        "price": float(price),
+                        "size": float(size),
+                        "post_only": bool(post_only),
+                    },
+                )
+                return _done(status)
 
-            if not tid:
+            case "cancel_order":
+                oid = str(order_id or "").strip()
+                if not oid:
+                    return err(
+                        "invalid_request", "order_id is required for cancel_order"
+                    )
+                ok_c, res = await adapter.cancel_order(order_id=oid)
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "cancel_order",
+                        "ok": ok_c,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_c else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="cancel_order",
+                    status=status,
+                    chain_id=int(POLYGON_CHAIN_ID),
+                    details={"order_id": oid},
+                )
+                return _done(status)
+
+            case "redeem_positions":
+                cid = str(condition_id or "").strip()
+                if not cid:
+                    return err(
+                        "invalid_request",
+                        "condition_id is required for redeem_positions",
+                    )
+                ok_r, res = await adapter.redeem_positions(
+                    condition_id=cid, holder=sender
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "redeem_positions",
+                        "ok": ok_r,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_r else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="redeem_positions",
+                    status=status,
+                    chain_id=int(POLYGON_CHAIN_ID),
+                    details={"condition_id": cid},
+                )
+                return _done(status)
+
+            case _:
                 return err(
-                    "invalid_request",
-                    "Provide token_id, or market_slug+outcome, or condition_id for close_position",
+                    "invalid_request", f"Unknown polymarket_execute action: {action}"
                 )
-
-            sell_shares = shares
-            if sell_shares is None:
-                ok_pos, pos = await adapter.get_positions(
-                    user=sender, limit=500, offset=0
-                )
-                if not ok_pos:
-                    return err("error", f"Failed to fetch positions: {pos}")
-                if not isinstance(pos, list):
-                    return err("error", "Unexpected positions response")
-                match = next(
-                    (
-                        p
-                        for p in pos
-                        if isinstance(p, dict)
-                        and str(p.get("asset") or "").strip() == tid
-                    ),
-                    None,
-                )
-                if not match:
-                    return err("not_found", "No matching position found to close")
-                try:
-                    sell_shares = float(match.get("size") or 0)
-                except (TypeError, ValueError):
-                    sell_shares = 0.0
-            if not sell_shares or float(sell_shares) <= 0:
-                return err("invalid_request", "No shares available to close")
-
-            ok_sell, res = await adapter.place_market_order(
-                token_id=str(tid),
-                side="SELL",
-                amount=float(sell_shares),
-            )
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "close_position",
-                    "ok": ok_sell,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_sell else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="close_position",
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-                details={"token_id": str(tid), "shares": float(sell_shares)},
-            )
-            return _done(status)
-
-        if action == "place_limit_order":
-            tid = str(token_id or "").strip()
-            if not tid:
-                return err(
-                    "invalid_request", "token_id is required for place_limit_order"
-                )
-            if price is None or size is None:
-                return err(
-                    "invalid_request",
-                    "price and size are required for place_limit_order",
-                )
-            ok_lo, res = await adapter.place_limit_order(
-                token_id=tid,
-                side=side,
-                price=float(price),
-                size=float(size),
-                post_only=bool(post_only),
-            )
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "place_limit_order",
-                    "ok": ok_lo,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_lo else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="place_limit_order",
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-                details={
-                    "token_id": tid,
-                    "side": side,
-                    "price": float(price),
-                    "size": float(size),
-                    "post_only": bool(post_only),
-                },
-            )
-            return _done(status)
-
-        if action == "cancel_order":
-            oid = str(order_id or "").strip()
-            if not oid:
-                return err("invalid_request", "order_id is required for cancel_order")
-            ok_c, res = await adapter.cancel_order(order_id=oid)
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "cancel_order",
-                    "ok": ok_c,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_c else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="cancel_order",
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-                details={"order_id": oid},
-            )
-            return _done(status)
-
-        if action == "redeem_positions":
-            cid = str(condition_id or "").strip()
-            if not cid:
-                return err(
-                    "invalid_request", "condition_id is required for redeem_positions"
-                )
-            ok_r, res = await adapter.redeem_positions(condition_id=cid, holder=sender)
-            effects.append(
-                {
-                    "type": "polymarket",
-                    "label": "redeem_positions",
-                    "ok": ok_r,
-                    "result": res,
-                }
-            )
-            status = "confirmed" if ok_r else "failed"
-            _annotate(
-                address=sender,
-                label=want,
-                action="redeem_positions",
-                status=status,
-                chain_id=int(POLYGON_CHAIN_ID),
-                details={"condition_id": cid},
-            )
-            return _done(status)
-
-        return err("invalid_request", f"Unknown polymarket_execute action: {action}")
     finally:
         await adapter.close()
