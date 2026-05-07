@@ -1,51 +1,59 @@
 ---
 name: using-shells-projections
-description: How to read the Wayfinder Shells frontend UI state (active chart) and draw projections (overlays like price lines, markers, ranges, trends) onto the user's chart in real-time.
+description: How to read the Wayfinder Shells frontend UI state and draw annotations like price lines, markers, ranges, trends, and labels onto default or agent-created chart panes.
 metadata:
-  tags: wayfinder, shells, opencode, frontend, projections, charts, overlays
+  tags: wayfinder, shells, opencode, frontend, charts, annotations, overlays
 ---
 
 ## TL;DR
 
-Read what the user is viewing in Wayfinder Shells, then draw on top of their chart.
+Read the current Shells chart id, then add annotations through the chart workspace API. The same tool works for the default live chart and for agent-created workspace charts.
 
-**Typical flow (MCP):**
+**Typical flow (default chart):**
 
 ```
 1. shells_get_frontend_context()
-   → {"ok": true, "data": {"frontend_context": {"chart": {"id": "hl-perp-BTC", "market_id": "BTC", "market_type": "hl-perp", "interval": "1m"}}, "sdk_projection": {...}}}
-2. chart_id = data["frontend_context"]["chart"]["id"]   # "hl-perp-BTC"
-3. shells_add_chart_projection(chart_id="hl-perp-BTC", type="horizontal_line", config={"price": 73500, "color": "#ef4444", "label": "Support"})
-4. Line appears on the user's chart (within ~5s, faster on SSE).
+   → {"ok": true, "data": {"frontend_context": {"chart": {"id": "hl-perp-BTC", "market_id": "hl-perp-BTC", "market_type": "hl-perp"}}}}
+2. chart_id = data["frontend_context"]["chart"]["id"]
+3. shells_add_workspace_chart_annotation(
+     chart_id=chart_id,
+     type="horizontal_line",
+     config={"price": 73500, "color": "#ef4444", "label": "Support"}
+   )
+4. The annotation appears on the user's default chart.
 ```
 
-**Python (from scripts):**
+**Typical flow (agent-created visual pane):**
 
-```python
-from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
-
-state = await INSTANCE_STATE_CLIENT.get_state()
-chart_id = state["frontend_context"]["chart"]["id"]
-
-await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
-    "type": "horizontal_line",
-    "config": {"price": 73500, "color": "#ef4444", "label": "Support"},
-})
+```
+1. shells_create_chart(
+     chart_id="btc-eth-relative",
+     title="BTC vs ETH",
+     kind="line",
+     series=[...],
+     transforms=[{"type": "rebase", "base": 100}]
+   )
+2. shells_add_workspace_chart_annotation(
+     chart_id="btc-eth-relative",
+     type="text_label",
+     config={"time": 1760000000, "price": 120, "text": "Relative breakout"}
+   )
 ```
 
 ## MCP tools
 
 | Tool | Args | Use |
 |------|------|-----|
-| `shells_get_frontend_context` | (none) | Read current chart context + all projections |
-| `shells_add_chart_projection` | `chart_id`, `type`, `config` | Add one overlay |
-| `shells_clear_chart_projections` | `chart_id` | Wipe all overlays on a chart |
+| `shells_get_frontend_context` | none | Read current default chart context and workspace |
+| `shells_create_chart` | `chart_id`, `title`, `kind`, `series`, `transforms?`, `overlays?`, `layout?` | Create or replace a visual pane |
+| `shells_add_workspace_chart_annotation` | `chart_id`, `type`, `config`, `annotation_id?` | Add one TradingView annotation to a default or workspace chart |
+| `shells_add_workspace_chart_overlay` | `chart_id`, `overlay` | Add a raw overlay, usually bulk `event_markers` |
+| `shells_add_workspace_chart_series` | `chart_id`, `series` | Add a data series to an existing workspace chart |
+| `shells_clear_chart_workspace` | none | Clear agent-created charts and default-chart annotations |
 
 All gate on `is_opencode_instance()` and return `{"ok": false, "error": {"code": "not_opencode_instance"}}` when run outside Shells.
 
-## Projection types
-
-The backend is type-agnostic — these are the renderers the frontend currently maps to TradingView shapes.
+## Annotation types
 
 | `type` | `config` |
 |--------|----------|
@@ -58,29 +66,8 @@ The backend is type-agnostic — these are the renderers the frontend currently 
 
 ## Gotchas
 
-- **`marker` does not accept `label`** — TradingView's marker shapes auto-generate text. Use `text_label` for an annotated point.
-- **All `time` values are unix seconds** (not ms).
-- **Per-chart scope:** Projections are stored per `chart_id`; switching markets shows only that chart's overlays.
-- **Latency:** Adding a projection emits a state-changed notification; FE renders within one poll cycle (~5s) or sooner on SSE.
-- **Client returns data directly** — `INSTANCE_STATE_CLIENT` is a `WayfinderClient`, not an adapter, so no `(ok, data)` tuple.
-- **Shells-only:** Detection via `OPENCODE_INSTANCE_ID` env var or `http://localhost:4096/global/health`.
-
-## Use the helpers
-
-`InstanceStateClient` exposes shortcuts so scripts don't have to walk the state dict:
-
-```python
-chart_id = await INSTANCE_STATE_CLIENT.get_chart_id()              # "hl-perp-BTC"
-fc = await INSTANCE_STATE_CLIENT.get_frontend_context()             # just the frontend_context subtree
-await INSTANCE_STATE_CLIENT.clear_projections(chart_id)             # wipe all
-await INSTANCE_STATE_CLIENT.patch_projection(chart_id, [...])       # replace full list
-```
-
-## When to use
-
-- "Highlight the liquidation price on my chart"
-- "Mark where my entry / exit was"
-- "Draw a target range I'm laddering into"
-- "Show the funding flip points I'm watching"
-
-Don't use for unrelated reporting — that's `shells_notify` (see `/using-shells-notify`).
+- `marker` does not accept `label`. Use `text_label` for annotated points.
+- All `time` values are unix seconds.
+- For default chart annotations, use the exact `frontend_context.chart.id`.
+- For workspace charts, use the `chart_id` passed to `shells_create_chart`.
+- Default chart annotations are stored in `chart_workspace.defaultAnnotations`; workspace chart annotations are stored in the chart's `overlays`.

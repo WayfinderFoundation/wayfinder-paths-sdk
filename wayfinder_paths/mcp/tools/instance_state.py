@@ -15,8 +15,8 @@ _NOT_OPENCODE_ERR = ("not_opencode_instance", "Not running on an OpenCode instan
 async def shells_get_frontend_context() -> dict[str, Any]:
     """Read the current frontend UI state.
 
-    Returns what the user is currently viewing: active chart (market, type,
-    interval) and any existing SDK projections per chart.
+    Returns what the user is currently viewing plus any chart workspace
+    created by agent tools.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -24,71 +24,6 @@ async def shells_get_frontend_context() -> dict[str, Any]:
         return ok(await INSTANCE_STATE_CLIENT.get_state())
     except httpx.HTTPStatusError as exc:
         return err("state_http_error", f"HTTP {exc.response.status_code}")
-
-
-@catch_errors
-async def shells_add_chart_projection(
-    chart_id: str,
-    type: str,
-    config: dict[str, Any],
-) -> dict[str, Any]:
-    """Add a projection (overlay) to a specific chart.
-
-    The chart_id is available at frontend_context.chart.id (e.g. "hl-perp-btc")
-    — treat it as an opaque string the FE owns, not a format you construct.
-    Call get_frontend_context() first to read it.
-
-    Supported types (engine-agnostic; the FE renderer maps to TradingView shapes):
-      - horizontal_line: config = {price, color?, label?}
-      - vertical_line:   config = {time (unix sec), color?, label?}
-      - marker:          config = {time, price?, shape? (arrow_up /
-                                   arrow_down / flag / icon / emoji), color?}
-      - range:           config = {from_time?, to_time?, from_price, to_price,
-                                   color?}
-      - text_label:      config = {time, price, text, color?}
-      - trend:           config = {from: {time, price}, to: {time, price},
-                                   color?, label?}
-
-    Notes:
-      - `marker` does not accept a `label` — TV's marker shapes auto-generate
-        text. Use `text_label` for an annotated point.
-      - All `time` values are unix seconds.
-      - Adding a chart projection emits a state-changed notification; the FE
-        renders within one poll cycle (~5s) or sooner if the SSE stream is
-        connected.
-
-    Args:
-        chart_id: Chart key like "hl-perp-btc" or "hl-perp-eth".
-        type: Projection type (see list above).
-        config: Type-specific configuration dict.
-    """
-    if not is_opencode_instance():
-        return err(*_NOT_OPENCODE_ERR)
-    try:
-        projection = await INSTANCE_STATE_CLIENT.add_projection(
-            chart_id, {"type": type, "config": config}
-        )
-        return ok(projection)
-    except httpx.HTTPStatusError as exc:
-        return err("projection_http_error", f"HTTP {exc.response.status_code}")
-
-
-@catch_errors
-async def shells_clear_chart_projections(chart_id: str) -> dict[str, Any]:
-    """Remove all projections from a chart.
-
-    Args:
-        chart_id: Chart key like "hl-perp-btc".
-    """
-    if not is_opencode_instance():
-        return err(*_NOT_OPENCODE_ERR)
-    try:
-        state = await INSTANCE_STATE_CLIENT.clear_projections(chart_id)
-        return ok(state)
-    except httpx.HTTPStatusError as exc:
-        return err("projection_http_error", f"HTTP {exc.response.status_code}")
-    except Exception as exc:  # noqa: BLE001
-        return err("projection_error", str(exc))
 
 
 async def shells_create_chart(
@@ -159,7 +94,7 @@ async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
         return err("chart_workspace_error", str(exc))
 
 
-async def shells_add_chart_series(
+async def shells_add_workspace_chart_series(
     chart_id: str,
     series: dict[str, Any],
 ) -> dict[str, Any]:
@@ -167,34 +102,64 @@ async def shells_add_chart_series(
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
     try:
-        workspace = (await INSTANCE_STATE_CLIENT.get_state()).get(
-            "chart_workspace"
-        ) or {}
-        chart = _find_chart(workspace, chart_id)
-        chart.setdefault("series", []).append(series)
-        workspace["version"] = int(workspace.get("version") or 1) + 1
-        return ok(await INSTANCE_STATE_CLIENT.patch_chart_workspace(workspace))
+        return ok(
+            await INSTANCE_STATE_CLIENT.add_workspace_chart_series(chart_id, series)
+        )
     except httpx.HTTPStatusError as exc:
         return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
     except Exception as exc:  # noqa: BLE001
         return err("chart_workspace_error", str(exc))
 
 
-async def shells_add_chart_overlay(
+async def shells_add_workspace_chart_annotation(
     chart_id: str,
-    overlay: dict[str, Any],
+    type: str,
+    config: dict[str, Any],
+    annotation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Append an overlay or event marker set to an existing workspace chart."""
+    """Add a TradingView annotation to a workspace or default Shells chart.
+
+    Use `shells_get_frontend_context()` to read the current default chart id,
+    then pass that chart_id here. If chart_id matches an agent-created
+    workspace chart, the annotation attaches there. Otherwise it attaches to
+    the default live chart for that id.
+
+    Supported annotation types:
+      - horizontal_line: config = {price, color?, label?}
+      - vertical_line: config = {time, color?, label?}
+      - marker: config = {time, price?, shape?, color?}
+      - range: config = {from_time?, to_time?, from_price, to_price, color?}
+      - text_label: config = {time, price, text, color?}
+      - trend: config = {from: {time, price}, to: {time, price}, color?, label?}
+    """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
     try:
-        workspace = (await INSTANCE_STATE_CLIENT.get_state()).get(
-            "chart_workspace"
-        ) or {}
-        chart = _find_chart(workspace, chart_id)
-        chart.setdefault("overlays", []).append(overlay)
-        workspace["version"] = int(workspace.get("version") or 1) + 1
-        return ok(await INSTANCE_STATE_CLIENT.patch_chart_workspace(workspace))
+        return ok(
+            await INSTANCE_STATE_CLIENT.add_workspace_chart_annotation(
+                chart_id=chart_id,
+                type=type,
+                config=config,
+                annotation_id=annotation_id,
+            )
+        )
+    except httpx.HTTPStatusError as exc:
+        return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
+    except Exception as exc:  # noqa: BLE001
+        return err("chart_workspace_error", str(exc))
+
+
+async def shells_add_workspace_chart_overlay(
+    chart_id: str,
+    overlay: dict[str, Any],
+) -> dict[str, Any]:
+    """Append a raw overlay or event marker set to a workspace or default chart."""
+    if not is_opencode_instance():
+        return err(*_NOT_OPENCODE_ERR)
+    try:
+        return ok(
+            await INSTANCE_STATE_CLIENT.add_workspace_chart_overlay(chart_id, overlay)
+        )
     except httpx.HTTPStatusError as exc:
         return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
     except Exception as exc:  # noqa: BLE001
@@ -211,10 +176,3 @@ async def shells_clear_chart_workspace() -> dict[str, Any]:
         return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
     except Exception as exc:  # noqa: BLE001
         return err("chart_workspace_error", str(exc))
-
-
-def _find_chart(workspace: dict[str, Any], chart_id: str) -> dict[str, Any]:
-    for chart in workspace.get("charts") or []:
-        if chart.get("id") == chart_id:
-            return chart
-    raise ValueError(f"chart not found: {chart_id}")
