@@ -5,7 +5,7 @@
 All write operations use ad-hoc scripts under `.wayfinder_runs/`:
 
 1. Write script with `get_adapter(UniswapAdapter, "wallet_label")`
-2. Run via `mcp__wayfinder__run_script(script_path, wallet_label)`
+2. Run via `mcp__wayfinder__core_run_script(script_path, wallet_label)`
 
 ## Add liquidity (new position)
 

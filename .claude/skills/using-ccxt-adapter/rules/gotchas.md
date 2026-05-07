@@ -107,7 +107,7 @@ await adapter.fetch_ticker("binance", "BTC/USDT")
 
 ## Bulk `fetch_funding_rate_history` times out if sequential
 
-Fetching funding history for 100+ symbols one-by-one easily exceeds `run_script` timeouts. Use `asyncio.gather` with a semaphore to parallelize:
+Fetching funding history for 100+ symbols one-by-one easily exceeds `core_run_script` timeouts. Use `asyncio.gather` with a semaphore to parallelize:
 
 ```python
 sem = asyncio.Semaphore(10)
@@ -151,7 +151,7 @@ Raw rate numbers are not comparable without normalization.
 Run scripts via MCP with wallet tracking:
 
 ```
-mcp__wayfinder__run_script(
+mcp__wayfinder__core_run_script(
     script_path=".wayfinder_runs/ccxt_arb.py",
     wallet_label="main"
 )

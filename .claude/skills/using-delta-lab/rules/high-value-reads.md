@@ -39,27 +39,25 @@ To display as percentage: **multiply by 100** (e.g., `apy * 100` = `98%`)
 
 When comparing or reporting APYs, always interpret them as decimals. A value of `0.98` is a very high yield (98%), not a negligible one.
 
-## MCP Resources (Default Approach)
+## MCP Tools (Default Approach)
 
-**Use MCP resources for all queries** - instant, no script needed. See CLAUDE.md for full documentation.
+**Use MCP tools for all queries** - instant, no script needed. See `MCP_INTEGRATION.md` for full documentation.
 
-Quick URIs:
-- `wayfinder://delta-lab/top-apy/7/20` - **Top 20 APYs across ALL symbols** (7-day lookback)
-- `wayfinder://delta-lab/WSTETH/apy-sources/7/10` - Top 10 yield opportunities for WSTETH (7-day lookback)
-- `wayfinder://delta-lab/WSTETH/apy-sources/30/50` - Top 50 opportunities for WSTETH (30-day lookback)
-- `wayfinder://delta-lab/ETH/delta-neutral/7/5` - Top 5 delta-neutral pairs for ETH (7-day lookback)
-- `wayfinder://delta-lab/ETH/delta-neutral/14/20` - Top 20 pairs for ETH (14-day lookback)
+Quick tools:
+- `research_get_top_apy(lookback_days="7", limit="20")` - **Top 20 APYs across ALL symbols** (7-day lookback)
+- `research_get_basis_apy_sources(basis_symbol="WSTETH", lookback_days="7", limit="10")` - Top 10 yield opportunities for WSTETH (7-day lookback)
+- `research_get_basis_apy_sources(basis_symbol="WSTETH", lookback_days="30", limit="50")` - Top 50 opportunities for WSTETH (30-day lookback)
 
-**Only use Python client below for:** Complex filtering (venue, min_tvl), DataFrame formatting, or multi-venue lending data.
+**Only use Python client below for:** Complex filtering (venue, min_tvl), DataFrame formatting, multi-venue lending data, or **delta-neutral pair discovery** (no MCP equivalent).
 
-**Screening URIs (cross-venue snapshots):**
-- `wayfinder://delta-lab/screen/price/ret_1d/10/all` - Top 10 daily movers
-- `wayfinder://delta-lab/screen/lending/net_supply_apr_now/20/ETH` - Top 20 ETH lending rates
-- `wayfinder://delta-lab/screen/perp/funding_now/20/all` - Top 20 perp funding rates
-- `wayfinder://delta-lab/screen/perp/funding_mean_30d/20/BTC` - BTC perps by 30d mean funding
-- `wayfinder://delta-lab/screen/borrow-routes/ltv_max/50/ETH/USD` - ETH collateral → USD borrow routes
+**Screening tools (cross-venue snapshots):**
+- `research_search_price(sort="ret_1d", limit="10")` - Top 10 daily movers
+- `research_search_lending(sort="net_supply_apr_now", limit="20", basis="ETH")` - Top 20 ETH lending rates
+- `research_search_perp(sort="funding_now", limit="20")` - Top 20 perp funding rates
+- `research_search_perp(sort="funding_mean_30d", limit="20", basis="BTC")` - BTC perps by 30d mean funding
+- `research_search_borrow_routes(sort="ltv_max", limit="50", basis="ETH", borrow_basis="USD")` - ETH collateral → USD borrow routes
 
-Use `all` as the basis param to screen across all assets, or a symbol like `ETH` to filter.
+Use `"all"` as the basis param to screen across all assets, or a symbol like `"ETH"` to filter.
 
 ## 0. Get Basis Symbols (Discovery)
 
@@ -437,29 +435,7 @@ if eth_basis["basis"] and weth_basis["basis"]:
 
 **Purpose:** Get historical timeseries data for price, rates, and market metrics.
 
-**MCP Resource (Quick Snapshots Only):**
-
-MCP timeseries defaults prioritize SHORT, interpretable results. For serious analysis, use the client.
-
-```python
-# Quick snapshot: price, 7 days, 100 points
-ReadMcpResourceTool(
-    server="wayfinder",
-    uri="wayfinder://delta-lab/ETH/timeseries/price/7/100"
-)
-
-# ✅ Moonwell USDC lending (exact asset + venue filter)
-ReadMcpResourceTool(
-    server="wayfinder",
-    uri="wayfinder://delta-lab/USDC/timeseries/lending/30/800/moonwell"
-)
-
-# ✅ All USD-basis lending (USDC + sUSDC + aUSDC etc.)
-ReadMcpResourceTool(
-    server="wayfinder",
-    uri="wayfinder://delta-lab/basis/USDC/timeseries/lending/7/500"
-)
-```
+**Timeseries is client-only** — there is no MCP tool for asset timeseries. Use `DELTA_LAB_CLIENT.get_asset_timeseries(...)` from a script.
 
 **Client (Serious Analysis - DataFrames):**
 
@@ -525,7 +501,7 @@ Returns `dict[str, pd.DataFrame]` with each series as a separate DataFrame:
 ### Filtering Parameters
 
 - **`venue`** (str | None): Venue name prefix to filter on (e.g. "moonwell", "hyperliquid"). Applied to series with venue data (funding, lending, pendle, boros). Solves the old limit-vs-lookback conflict — previously a 30-day lookback with 1000-point limit across 50 venues would cut off data; now you can isolate a single venue and get full coverage.
-- **`basis`** (bool, default **False**): Whether to expand the query symbol to all basis group members for lending series. `False` (default) = exact symbol only ("USDC" returns only USDC pools). `True` = expand to basis group ("USDC" also includes sUSDC, aUSDC etc.). In MCP, use the `basis/{symbol}/timeseries/...` URI for basis mode.
+- **`basis`** (bool, default **False**): Whether to expand the query symbol to all basis group members for lending series. `False` (default) = exact symbol only ("USDC" returns only USDC pools). `True` = expand to basis group ("USDC" also includes sUSDC, aUSDC etc.).
 
 ### Use Cases
 

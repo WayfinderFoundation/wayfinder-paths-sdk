@@ -4,7 +4,7 @@
 
 - Prefer running the existing fork simulations first:
   - `poetry run pytest wayfinder_paths/adapters/aave_v3_adapter/test_gorlami_simulation.py -v`
-- For real transactions, use MCP `execute(...)` so the safety review hook can show a preview.
+- For real transactions, use MCP `core_execute(...)` so the safety review hook can show a preview.
 
 ## Common flows (adapter methods)
 

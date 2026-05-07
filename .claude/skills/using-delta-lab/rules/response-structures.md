@@ -651,8 +651,7 @@ All screening endpoints return `ScreenResponse`:
 ### ScreenBorrowRouteRow
 
 From `DELTA_LAB_CLIENT.screen_borrow_routes(...)` or MCP:
-- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}`
-- `wayfinder://delta-lab/screen/borrow-routes/{sort}/{limit}/{basis}/{borrow_basis}/{chain_id}`
+- `research_search_borrow_routes(sort, limit, basis, borrow_basis, chain_id)`
 
 ```python
 {
@@ -687,8 +686,7 @@ Notes:
 
 ## AssetResponse
 
-From `DELTA_LAB_CLIENT.get_asset(...)` or MCP:
-- `wayfinder://delta-lab/assets/{asset_id}`
+From `DELTA_LAB_CLIENT.get_asset(...)` (no MCP equivalent — Python client only):
 
 ```python
 {
@@ -705,10 +703,9 @@ From `DELTA_LAB_CLIENT.get_asset(...)` or MCP:
 ## AssetSearchResponse
 
 From MCP:
-- `wayfinder://delta-lab/assets/search/{query}`
-- `wayfinder://delta-lab/assets/search/{chain}/{query}`
-- `wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}`
-- `wayfinder://delta-lab/assets/by-address/{address}/{chain_id}`
+- `research_search_delta_lab_assets(query, chain, limit)`
+
+(`get_assets_by_address(...)` is Python-client only — no MCP equivalent.)
 
 ```python
 {

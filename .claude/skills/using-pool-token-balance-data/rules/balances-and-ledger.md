@@ -4,9 +4,8 @@
 
 - Adapter: `wayfinder_paths/adapters/balance_adapter/adapter.py`
 - API client: `wayfinder_paths/core/clients/BalanceClient.py` (`BALANCE_CLIENT`)
-- **MCP resource (preferred for quick checks):** `wayfinder://balances/{label}` - returns enriched token balances (USD totals + chain breakdown) for a wallet label.
-  - Use via `ReadMcpResourceTool(server="wayfinder", uri="wayfinder://balances/main")`.
-- **MCP resource:** `wayfinder://activity/{label}` - returns recent wallet activity (best-effort).
+- **MCP tool (preferred for quick checks):** `mcp__wayfinder__core_get_wallets(label="main")` - returns the wallet profile inline, including enriched token balances (USD totals + chain breakdown).
+- **MCP tool:** `mcp__wayfinder__onchain_get_wallet_activity(...)` - returns recent wallet activity (best-effort).
 
 High-value reads:
 - `BALANCE_CLIENT.get_enriched_wallet_balances(wallet_address=..., exclude_spam_tokens=True)`

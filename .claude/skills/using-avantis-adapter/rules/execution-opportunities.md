@@ -5,7 +5,7 @@
 - Prefer running the existing fork simulation first:
   - `poetry run pytest wayfinder_paths/adapters/avantis_adapter/test_gorlami_simulation.py -v`
   - Note: this test requires the gorlami fork proxy to be configured and reachable (see `TESTING.md`).
-- For real transactions, use MCP `run_script(...)` so the safety review hook can show a preview (adapter-based contract interactions run inside a Python script; `execute(...)` doesn’t cover them).
+- For real transactions, use MCP `core_run_script(...)` so the safety review hook can show a preview (adapter-based contract interactions run inside a Python script; `core_execute(...)` doesn’t cover them).
 
 ## Execution pattern (wallet required)
 
