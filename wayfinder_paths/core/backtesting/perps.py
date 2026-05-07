@@ -168,7 +168,6 @@ async def backtest_perps_trigger(
     # Make the cost knobs visible to opt-in sizing helpers via params.
     params.setdefault("fee_bps", fee_bps)
     params.setdefault("slippage_bps", slippage_bps)
-    prev_total_value: dict[str, float] = {h.venue: 0.0 for h in [perp, *hip3.values()]}
     positions_history: list[dict[str, float]] = []
     trades: list[dict[str, Any]] = []
 
