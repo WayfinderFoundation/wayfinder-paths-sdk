@@ -1,11 +1,11 @@
 # Deployment
 
-## MCP tool: `deploy_contract`
+## MCP tool: `contracts_deploy`
 
 The quickest path — compile + deploy + verify in one call:
 
 ```
-mcp__wayfinder__deploy_contract(
+mcp__wayfinder__contracts_deploy(
     wallet_label="main",
     source_path="$WAYFINDER_SCRATCH_DIR/MyToken.sol",
     contract_name="MyToken",
@@ -20,7 +20,7 @@ mcp__wayfinder__deploy_contract(
 - `constructor_args` can be a JSON array (preferred) or a JSON-encoded array string; args are auto-cast to ABI types
 - `verify=true` (default) submits to Etherscan V2 after deploy (API key only needed for verification; deploy works without it — set `verify=false` to skip)
 - The SDK compiles and deploys your Solidity source **as-is** (no automatic source mutation).
-- Deployments are tracked in wallet profiles under protocol `contracts` (query `wayfinder://wallets/{label}`)
+- Deployments are tracked in wallet profiles under protocol `contracts` (query `core_get_wallets(label="...")`)
 - Returns: `{tx_hash, contract_address, abi, bytecode, verified, explorer_url}`
 
 ## Artifact persistence
@@ -37,16 +37,16 @@ Every deployment automatically saves source code, ABI, metadata, and compiler in
 
 An index of all deployments is maintained at `.wayfinder_runs/contracts/index.json`.
 
-**Browse deployed contracts via MCP resources:**
+**Browse deployed contracts via MCP tools:**
 
-- `wayfinder://contracts` -- list all locally-deployed contracts
-- `wayfinder://contracts/{chain_id}/{address}` -- get full metadata + ABI for a specific contract
+- `contracts_list()` -- list all locally-deployed contracts
+- `contracts_get(chain_id, address)` -- get full metadata + ABI for a specific contract
 
 This means source code survives scratch directory cleanup -- even if the session scratch dir is deleted, the artifact store retains the deployment artifacts permanently.
 
 **Using stored ABIs for interactions:**
 
-When calling `contract_call` or `contract_execute` on a previously deployed contract, the tools will check the local artifact store for the ABI before falling back to Etherscan. No need to pass `abi` or `abi_path` for your own contracts.
+When calling `contracts_call` or `contracts_execute` on a previously deployed contract, the tools will check the local artifact store for the ABI before falling back to Etherscan. No need to pass `abi` or `abi_path` for your own contracts.
 
 ## Script-based deployment
 

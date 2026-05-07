@@ -131,18 +131,11 @@ async def hyperliquid_execute(
     tpsl: Literal["tp", "sl"] | None = None,
     is_market_trigger: bool = True,
 ) -> dict[str, Any]:
-    """Place orders, transfer collateral, or adjust leverage on Hyperliquid.
+    """
+    Execute write operations against Hyperliquid, includes: order placement, order cancellation, leverage updates, and fund transfers.
 
-    `asset_name` is the canonical market path returned by `hyperliquid_search_market`:
-      * Core perp:   `"BTC-USDC"`, `"ETH-USDC"`
-      * HIP-3 perp:  `"xyz:SP500"`
-      * Spot pair:   `"BTC/USDC"`, `"USDC/USDH"`
-      * HIP-4 outcome: `"#0"`, `"#1"`, `"#40"` (encoding = `outcome_id*10 + side`)
-
-    Builder attribution is mandatory — every order routes through the Wayfinder builder wallet
-    and the tool auto-approves the builder fee on first use.
-
-    Actions:
+    asset_name: Canonical market identifier from hyperliquid_search_market(), e.g. BTC-USD, xyz:SP500, BTC/USDC, #40
+    action:
       - `place_order`: spot / perp / HIP-4 outcome market or limit.
         Size via `size` (asset units) or `usd_amount` (with `usd_amount_kind="notional"|"margin"` for perps).
       - `place_trigger_order`: TP/SL trigger. `tpsl="tp"|"sl"`, `trigger_price`, `is_buy` set to
