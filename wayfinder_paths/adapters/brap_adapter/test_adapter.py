@@ -52,6 +52,46 @@ class TestBRAPAdapter:
             assert data["output_amount"] == 995000000000000000
 
     @pytest.mark.asyncio
+    async def test_best_quote_accepts_legacy_nested_quote_shape(
+        self, adapter, mock_brap_client
+    ):
+        mock_response = {
+            "quotes": {
+                "quote_count": 2,
+                "all_quotes": [{"provider": "lifi"}, {"provider": "enso"}],
+                "best_quote": {
+                    "provider": "enso",
+                    "input_amount": 1000000000000000000,
+                    "output_amount": 995000000000000000,
+                    "calldata": {
+                        "data": "0x",
+                        "to": "0x",
+                        "value": "0",
+                        "chainId": 8453,
+                    },
+                },
+            }
+        }
+        mock_brap_client.get_quote = AsyncMock(return_value=mock_response)
+
+        with patch(
+            "wayfinder_paths.adapters.brap_adapter.adapter.BRAP_CLIENT",
+            mock_brap_client,
+        ):
+            success, data = await adapter.best_quote(
+                from_token_address="0x" + "a" * 40,
+                to_token_address="0x" + "b" * 40,
+                from_chain_id=8453,
+                to_chain_id=1,
+                from_address="0x1234567890123456789012345678901234567890",
+                amount="1000000000000000000",
+            )
+
+        assert success
+        assert data["provider"] == "enso"
+        assert data["output_amount"] == 995000000000000000
+
+    @pytest.mark.asyncio
     async def test_best_quote_no_quotes(self, adapter, mock_brap_client):
         mock_response = {"quotes": [], "best_quote": None}
         mock_brap_client.get_quote = AsyncMock(return_value=mock_response)

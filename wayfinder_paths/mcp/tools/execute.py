@@ -5,7 +5,10 @@ from typing import Any, Literal
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.clients.BRAPClient import (
+    BRAP_CLIENT,
+    normalize_brap_quote_response,
+)
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
@@ -77,25 +80,8 @@ def _compact_quote(
     quote_data: dict[str, Any], best_quote: dict[str, Any] | None
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
-
-    # Extract provider list from quotes. BRAP quotes may appear as either:
-    # 1) {"quotes": [...], "best_quote": {...}}
-    # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
-    all_quotes: list[dict[str, Any]] = []
-    raw_quotes = quote_data.get("quotes", [])
-    quote_count = None
-
-    if isinstance(raw_quotes, list):
-        all_quotes = [q for q in raw_quotes if isinstance(q, dict)]
-    elif isinstance(raw_quotes, dict):
-        nested = raw_quotes.get("all_quotes") or raw_quotes.get("quotes") or []
-        if isinstance(nested, list):
-            all_quotes = [q for q in nested if isinstance(q, dict)]
-        qc = raw_quotes.get("quote_count")
-        try:
-            quote_count = int(qc) if qc is not None else None
-        except (TypeError, ValueError):
-            quote_count = None
+    normalized_quote_data = normalize_brap_quote_response(quote_data)
+    all_quotes = normalized_quote_data["quotes"]
 
     providers: list[str] = []
     seen: set[str] = set()
@@ -111,7 +97,7 @@ def _compact_quote(
 
     if providers:
         result["providers"] = providers
-    result["quote_count"] = quote_count if quote_count is not None else len(all_quotes)
+    result["quote_count"] = normalized_quote_data.get("quote_count", len(all_quotes))
 
     if isinstance(best_quote, dict):
         result["best"] = {
@@ -343,19 +329,8 @@ async def core_execute(
         except Exception as exc:  # noqa: BLE001
             return err("quote_error", str(exc))
 
-        # BRAP quote responses have historically appeared in two shapes:
-        # 1) {"quotes": [...], "best_quote": {...}}
-        # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
-        best_quote = None
-        if isinstance(quote_data, dict):
-            if isinstance(quote_data.get("best_quote"), dict):
-                best_quote = quote_data.get("best_quote")
-            else:
-                quotes_block = quote_data.get("quotes")
-                if isinstance(quotes_block, dict) and isinstance(
-                    quotes_block.get("best_quote"), dict
-                ):
-                    best_quote = quotes_block.get("best_quote")
+        quote_data = normalize_brap_quote_response(quote_data)
+        best_quote = quote_data.get("best_quote")
 
         if not isinstance(best_quote, dict):
             return err("quote_error", "No best_quote returned", {"quote": quote_data})

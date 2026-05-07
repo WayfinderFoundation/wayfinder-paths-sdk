@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.clients.BRAPClient import (
+    BRAP_CLIENT,
+    normalize_brap_quote_response,
+)
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     err,
@@ -29,34 +32,12 @@ def _unwrap_brap_quote_response(
 
     This helper normalizes both to (all_quotes, best_quote, quote_count).
     """
-    if not isinstance(data, dict):
-        return [], None, 0
-
-    raw_quotes = data.get("quotes")
-    best_quote = data.get("best_quote")
-
-    if isinstance(raw_quotes, list) or isinstance(best_quote, dict):
-        all_quotes = raw_quotes if isinstance(raw_quotes, list) else []
-        best = best_quote if isinstance(best_quote, dict) else None
-        return all_quotes, best, len(all_quotes)
-
-    # Legacy/nested payload under `quotes`
-    if isinstance(raw_quotes, dict):
-        all_quotes = raw_quotes.get("all_quotes") or raw_quotes.get("quotes") or []
-        if not isinstance(all_quotes, list):
-            all_quotes = []
-        best = raw_quotes.get("best_quote")
-        best_out = best if isinstance(best, dict) else None
-
-        quote_count = raw_quotes.get("quote_count")
-        try:
-            quote_count_i = int(quote_count)
-        except (TypeError, ValueError):
-            quote_count_i = len(all_quotes)
-
-        return all_quotes, best_out, quote_count_i
-
-    return [], None, 0
+    normalized = normalize_brap_quote_response(data)
+    return (
+        normalized["quotes"],
+        normalized["best_quote"],
+        normalized.get("quote_count", len(normalized["quotes"])),
+    )
 
 
 async def onchain_quote_swap(

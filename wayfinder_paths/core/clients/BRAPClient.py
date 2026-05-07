@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, NotRequired, Required, TypedDict
+from typing import Any, NotRequired, Required, TypedDict, cast
 
 from loguru import logger
 
@@ -76,9 +76,11 @@ class BRAPQuoteEntry(TypedDict):
     native_output: Required[bool]
 
 
-class BRAPQuoteResponse(TypedDict):
+class BRAPQuoteResponse(TypedDict, total=False):
     quotes: Required[list[BRAPQuoteEntry]]
-    best_quote: Required[BRAPQuoteEntry]
+    best_quote: Required[BRAPQuoteEntry | None]
+    quote_count: NotRequired[int]
+    errors: NotRequired[list[dict[str, Any]]]
 
 
 class BRAPBridgeExecutionStatus(TypedDict, total=False):
@@ -104,6 +106,54 @@ class BRAPBridgeExecutionStatus(TypedDict, total=False):
     is_success: bool
     raw_status: dict[str, Any]
     status: dict[str, Any]
+
+
+def normalize_brap_quote_response(data: Any) -> BRAPQuoteResponse:
+    """Normalize legacy and current BRAP quote response shapes.
+
+    Historical SDK/API callers have seen both:
+    - {"quotes": [...], "best_quote": {...}}
+    - {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
+    """
+    payload = data.get("data", data) if isinstance(data, dict) else {}
+    if not isinstance(payload, dict):
+        return {"quotes": [], "best_quote": None, "quote_count": 0}
+
+    raw_quotes = payload.get("quotes")
+    raw_best_quote = payload.get("best_quote")
+    raw_quote_count = payload.get("quote_count")
+    raw_errors = payload.get("errors")
+
+    if isinstance(raw_quotes, dict):
+        nested_quotes = raw_quotes.get("all_quotes") or raw_quotes.get("quotes")
+        if raw_best_quote is None:
+            raw_best_quote = raw_quotes.get("best_quote")
+        if raw_quote_count is None:
+            raw_quote_count = raw_quotes.get("quote_count")
+        if raw_errors is None:
+            raw_errors = raw_quotes.get("errors")
+        raw_quotes = nested_quotes
+
+    quotes = (
+        [q for q in raw_quotes if isinstance(q, dict)]
+        if isinstance(raw_quotes, list)
+        else []
+    )
+    best_quote = raw_best_quote if isinstance(raw_best_quote, dict) else None
+
+    try:
+        quote_count = int(raw_quote_count)
+    except (TypeError, ValueError):
+        quote_count = len(quotes)
+
+    response: BRAPQuoteResponse = {
+        "quotes": cast(list[BRAPQuoteEntry], quotes),
+        "best_quote": cast(BRAPQuoteEntry | None, best_quote),
+        "quote_count": quote_count,
+    }
+    if isinstance(raw_errors, list):
+        response["errors"] = [e for e in raw_errors if isinstance(e, dict)]
+    return response
 
 
 class BRAPClient(WayfinderClient):
@@ -140,8 +190,7 @@ class BRAPClient(WayfinderClient):
         try:
             response = await self._authed_request("GET", url, params=params, headers={})
             response.raise_for_status()
-            data = response.json()
-            result = data.get("data", data)
+            result = normalize_brap_quote_response(response.json())
 
             elapsed = time.time() - start_time
             logger.info(f"BRAP quote request completed successfully in {elapsed:.2f}s")
