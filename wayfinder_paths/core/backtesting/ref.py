@@ -111,15 +111,13 @@ def _from_dict(d: dict[str, Any]) -> BacktestRef:
     code_in = d.get("code")
     if code_in is None and "source_hashes" in d:
         sh = d["source_hashes"] or {}
-        sig_sha = next(
-            (v for k, v in sh.items() if "signal" in k.lower()), ""
-        )
-        dec_sha = next(
-            (v for k, v in sh.items() if "decide" in k.lower()), ""
-        )
+        sig_sha = next((v for k, v in sh.items() if "signal" in k.lower()), "")
+        dec_sha = next((v for k, v in sh.items() if "decide" in k.lower()), "")
         sig_entry = CodeEntry(module="", entrypoint="", source_sha256=sig_sha or "")
         dec_entry = (
-            CodeEntry(module="", entrypoint="", source_sha256=dec_sha) if dec_sha else None
+            CodeEntry(module="", entrypoint="", source_sha256=dec_sha)
+            if dec_sha
+            else None
         )
         code = CodeRefs(signal=sig_entry, decide=dec_entry)
     elif code_in is None:

@@ -161,7 +161,9 @@ class ActivePerpsStrategy(Strategy):
 
         prices, funding = await self._fetch_recent_data(raw_perp)
         raw_signal = self._signal_fn(prices, funding, dict(self._ref.params))
-        signal_frame = normalize_signal(raw_signal, fallback_columns=self._ref.data.symbols)
+        signal_frame = normalize_signal(
+            raw_signal, fallback_columns=self._ref.data.symbols
+        )
 
         trigger_t = perp.now()
         ctx = TriggerContext(
@@ -201,18 +203,19 @@ class ActivePerpsStrategy(Strategy):
         # a silently-empty signal_row in monitoring is worse than a hard fail.
         signal_row = signal_frame.at(trigger_t)
         signal_row_serialised = {
-            str(k): (float(v) if pd.notna(v) else None)
-            for k, v in signal_row.items()
+            str(k): (float(v) if pd.notna(v) else None) for k, v in signal_row.items()
         }
 
-        self._state.update({
-            "positions": positions_snapshot,
-            "orders": intents_snapshot,
-            "mids": mids_snapshot,
-            "signal_row": signal_row_serialised,
-            "trigger_ts": trigger_t.isoformat(),
-            "nav": self._state.get("nav"),
-        })
+        self._state.update(
+            {
+                "positions": positions_snapshot,
+                "orders": intents_snapshot,
+                "mids": mids_snapshot,
+                "signal_row": signal_row_serialised,
+                "trigger_ts": trigger_t.isoformat(),
+                "nav": self._state.get("nav"),
+            }
+        )
         self._state.write_snapshot(trigger_t)
         warn = self._oldest_snapshot_warning()
         msg = f"trigger ran ({sum(len(v) for v in intents_snapshot.values())} intents)"
@@ -227,7 +230,7 @@ class ActivePerpsStrategy(Strategy):
 
     DEFAULT_USDC_TOKEN_ID: ClassVar[str] = "usd-coin-arbitrum"
     DEFAULT_GAS_TOKEN_ID: ClassVar[str] = "ethereum-arbitrum"
-    DEFAULT_MIN_DEPOSIT_USDC: ClassVar[float] = 5.0   # HL minimum is $5
+    DEFAULT_MIN_DEPOSIT_USDC: ClassVar[float] = 5.0  # HL minimum is $5
     DEFAULT_MAX_GAS_ETH: ClassVar[float] = 0.05
     DEFAULT_HL_DEPOSIT_TIMEOUT_S: ClassVar[int] = 180
 
@@ -237,6 +240,7 @@ class ActivePerpsStrategy(Strategy):
             BalanceAdapter,  # noqa: PLC0415
         )
         from wayfinder_paths.mcp.scripting import get_adapter  # noqa: PLC0415
+
         return await get_adapter(BalanceAdapter, "main", self._strategy_name())
 
     async def _build_hl_adapter(self) -> Any:
@@ -244,6 +248,7 @@ class ActivePerpsStrategy(Strategy):
             HyperliquidAdapter,  # noqa: PLC0415
         )
         from wayfinder_paths.mcp.scripting import get_adapter  # noqa: PLC0415
+
         return await get_adapter(HyperliquidAdapter, self._strategy_name())
 
     async def deposit(self, **kwargs: Any) -> StatusTuple:
@@ -290,8 +295,9 @@ class ActivePerpsStrategy(Strategy):
         from wayfinder_paths.core.constants.contracts import (
             HYPERLIQUID_BRIDGE,  # noqa: PLC0415
         )
+
         usdc_decimals = 6
-        usdc_raw = int(main_amt * (10 ** usdc_decimals))
+        usdc_raw = int(main_amt * (10**usdc_decimals))
         strategy_wallet = self.config.get("strategy_wallet")
         ok, tx = await balance.send_to_address(
             token_id=self.DEFAULT_USDC_TOKEN_ID,
@@ -342,7 +348,11 @@ class ActivePerpsStrategy(Strategy):
                     continue
                 side = "sell" if pos.size > 0 else "buy"
                 result = await handler.place_order(
-                    sym, side, abs(pos.size), "market", reduce_only=True,
+                    sym,
+                    side,
+                    abs(pos.size),
+                    "market",
+                    reduce_only=True,
                 )
                 if result.ok:
                     closed += 1
@@ -372,7 +382,10 @@ class ActivePerpsStrategy(Strategy):
         strat_addr = self._get_strategy_wallet_address()
         main_addr = self._get_main_wallet_address()
         if main_addr.lower() == strat_addr.lower():
-            return True, "Main and strategy wallets are the same address — nothing to transfer"
+            return (
+                True,
+                "Main and strategy wallets are the same address — nothing to transfer",
+            )
 
         ok, raw = await balance.get_balance(
             wallet_address=strat_addr,
@@ -381,7 +394,7 @@ class ActivePerpsStrategy(Strategy):
         if not ok:
             return False, f"Failed to read strategy USDC balance: {raw}"
         usdc_decimals = 6
-        amount = float(raw) / (10 ** usdc_decimals)
+        amount = float(raw) / (10**usdc_decimals)
         if amount <= 0:
             return True, "No USDC on strategy wallet to transfer"
 
@@ -422,8 +435,10 @@ class ActivePerpsStrategy(Strategy):
         return await reconcile_strategy(
             strategy_dir=Path(self.REF).parent,
             strategy_name=self._strategy_name(),
-            start=start, end=end,
-            no_fills=no_fills, write_report=write_report,
+            start=start,
+            end=end,
+            no_fills=no_fills,
+            write_report=write_report,
         )
 
     async def _status(self) -> StatusDict:

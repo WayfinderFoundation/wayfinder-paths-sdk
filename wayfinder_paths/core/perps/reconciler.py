@@ -95,7 +95,11 @@ def _diff_axes(
         by_bar_fills.setdefault(key, []).append(f)
 
     decision_misses, unexpected_fills, size_drifts, price_drifts, fill_completion = (
-        [], [], [], [], []
+        [],
+        [],
+        [],
+        [],
+        [],
     )
     seen_intent = set(by_bar_intents.keys())
     seen_fills = set(by_bar_fills.keys())
@@ -105,42 +109,69 @@ def _diff_axes(
         intended = sum(float(i["size"]) for i in ints)
         filled = sum(abs(float(f.get("sz", 0.0))) for f in fls)
         if abs(filled - intended) / max(intended, 1e-9) > 0.01:
-            size_drifts.append({
-                "bar": str(key[0]), "symbol": key[1], "side": key[2],
-                "intended": intended, "filled": filled,
-                "drift_pct": (filled - intended) / max(intended, 1e-9),
-            })
+            size_drifts.append(
+                {
+                    "bar": str(key[0]),
+                    "symbol": key[1],
+                    "side": key[2],
+                    "intended": intended,
+                    "filled": filled,
+                    "drift_pct": (filled - intended) / max(intended, 1e-9),
+                }
+            )
         for f in fls:
             try:
-                price_drifts.append({
-                    "bar": str(key[0]), "symbol": key[1], "side": key[2],
-                    "fill_price": float(f.get("px", 0.0)),
-                })
+                price_drifts.append(
+                    {
+                        "bar": str(key[0]),
+                        "symbol": key[1],
+                        "side": key[2],
+                        "fill_price": float(f.get("px", 0.0)),
+                    }
+                )
             except (TypeError, ValueError):
                 continue
-        fill_completion.append({
-            "bar": str(key[0]), "symbol": key[1], "side": key[2],
-            "intents": len(ints), "fills": len(fls),
-            "intended_size": intended, "filled_size": filled,
-        })
+        fill_completion.append(
+            {
+                "bar": str(key[0]),
+                "symbol": key[1],
+                "side": key[2],
+                "intents": len(ints),
+                "fills": len(fls),
+                "intended_size": intended,
+                "filled_size": filled,
+            }
+        )
     for key in seen_intent - seen_fills:
-        decision_misses.append({
-            "bar": str(key[0]), "symbol": key[1], "side": key[2],
-            "intents": len(by_bar_intents[key]),
-        })
+        decision_misses.append(
+            {
+                "bar": str(key[0]),
+                "symbol": key[1],
+                "side": key[2],
+                "intents": len(by_bar_intents[key]),
+            }
+        )
     for key in seen_fills - seen_intent:
-        unexpected_fills.append({
-            "bar": str(key[0]), "symbol": key[1], "side": key[2],
-            "fills": len(by_bar_fills[key]),
-        })
+        unexpected_fills.append(
+            {
+                "bar": str(key[0]),
+                "symbol": key[1],
+                "side": key[2],
+                "fills": len(by_bar_fills[key]),
+            }
+        )
     bars_with_intents = {k[0] for k in seen_intent}
     expected_bars = set(bars)
     return {
         "trigger_timing": {
             "expected_bars": len(expected_bars),
             "bars_with_intents": len(bars_with_intents),
-            "missing_trigger_bars": [str(b) for b in sorted(expected_bars - bars_with_intents)[:50]],
-            "unexpected_trigger_bars": [str(b) for b in sorted(bars_with_intents - expected_bars)[:50]],
+            "missing_trigger_bars": [
+                str(b) for b in sorted(expected_bars - bars_with_intents)[:50]
+            ],
+            "unexpected_trigger_bars": [
+                str(b) for b in sorted(bars_with_intents - expected_bars)[:50]
+            ],
         },
         "decision_parity": {
             "missed_intents": decision_misses,
@@ -157,6 +188,7 @@ def _strict_intent_diff(
     live: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Replay-intents (this run) vs recorded live-intents (from snapshots)."""
+
     def key(d: dict[str, Any]) -> tuple:
         bar = d.get("bar_t") or d.get("placed_at_t")
         return (
@@ -179,18 +211,37 @@ def _strict_intent_diff(
         l_sz = sum(float(x.get("size", 0.0)) for x in by_live[k])
         rel = abs(r_sz - l_sz) / max(abs(l_sz), 1e-9)
         bucket = {
-            "bar": str(k[0]), "venue": k[1], "symbol": k[2], "side": k[3],
-            "replay_size": r_sz, "live_size": l_sz, "rel_drift": rel,
+            "bar": str(k[0]),
+            "venue": k[1],
+            "symbol": k[2],
+            "side": k[3],
+            "replay_size": r_sz,
+            "live_size": l_sz,
+            "rel_drift": rel,
         }
         matched.append(bucket)
         if rel > 0.01:
             size_drifts.append(bucket)
     for k in by_replay.keys() - by_live.keys():
-        replay_only.append({"bar": str(k[0]), "venue": k[1], "symbol": k[2], "side": k[3],
-                            "intents": len(by_replay[k])})
+        replay_only.append(
+            {
+                "bar": str(k[0]),
+                "venue": k[1],
+                "symbol": k[2],
+                "side": k[3],
+                "intents": len(by_replay[k]),
+            }
+        )
     for k in by_live.keys() - by_replay.keys():
-        live_only.append({"bar": str(k[0]), "venue": k[1], "symbol": k[2], "side": k[3],
-                          "intents": len(by_live[k])})
+        live_only.append(
+            {
+                "bar": str(k[0]),
+                "venue": k[1],
+                "symbol": k[2],
+                "side": k[3],
+                "intents": len(by_live[k]),
+            }
+        )
     return {
         "matched_buckets": matched,
         "replay_only": replay_only,
@@ -199,7 +250,9 @@ def _strict_intent_diff(
     }
 
 
-async def _pull_live_fills(strategy_name: str, start: str, end: str) -> list[dict[str, Any]]:
+async def _pull_live_fills(
+    strategy_name: str, start: str, end: str
+) -> list[dict[str, Any]]:
     from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
     from wayfinder_paths.mcp.scripting import get_adapter
 
@@ -236,11 +289,15 @@ async def reconcile_strategy(
 
     warnings = _warn_hash_mismatch(ref)
 
-    signal_fn = _import_dotted(f"{ref.code.signal.module}:{ref.code.signal.entrypoint}") \
-        if ref.code.signal.module and ref.code.signal.entrypoint else None
+    signal_fn = (
+        _import_dotted(f"{ref.code.signal.module}:{ref.code.signal.entrypoint}")
+        if ref.code.signal.module and ref.code.signal.entrypoint
+        else None
+    )
     decide_fn = (
         _import_dotted(f"{ref.code.decide.module}:{ref.code.decide.entrypoint}")
-        if ref.code.decide and ref.code.decide.module else None
+        if ref.code.decide and ref.code.decide.module
+        else None
     )
     if signal_fn is None:
         return {
@@ -251,10 +308,17 @@ async def reconcile_strategy(
         }
     if decide_fn is None:
         from wayfinder_paths.core.backtesting.perps import default_decide
+
         decide_fn = default_decide
 
-    prices, funding = await _fetch_window(ref.data.symbols, start, end, ref.data.interval)
-    cur_fp = fingerprint_frames(prices) if funding is None else fingerprint_frames(prices, funding)
+    prices, funding = await _fetch_window(
+        ref.data.symbols, start, end, ref.data.interval
+    )
+    cur_fp = (
+        fingerprint_frames(prices)
+        if funding is None
+        else fingerprint_frames(prices, funding)
+    )
     if ref.data.fingerprint and cur_fp != ref.data.fingerprint:
         warnings.append(
             f"data fingerprint drift: {cur_fp[:12]} vs ref {ref.data.fingerprint[:12]}"
@@ -263,7 +327,9 @@ async def reconcile_strategy(
     venues_keys = ["perp"] + [f"hip3:{d}" for d in ref.venues.hip3]
     handlers = {
         k: ReconcileHandler(
-            venue=k, prices=prices, funding=funding,
+            venue=k,
+            prices=prices,
+            funding=funding,
             strategy_name=strategy_name,
             slippage_bps=ref.execution_assumptions.slippage_bps,
             fee_bps=ref.execution_assumptions.fee_bps,
@@ -292,8 +358,12 @@ async def reconcile_strategy(
                 rec.setdefault("venue", h.venue)
                 recorded_live.append(rec)
         ctx = TriggerContext(
-            perp=perp, hip3=hip3, params=dict(ref.params), state=state,
-            signal=signal_frame, t=t.to_pydatetime(),
+            perp=perp,
+            hip3=hip3,
+            params=dict(ref.params),
+            state=state,
+            signal=signal_frame,
+            t=t.to_pydatetime(),
         )
         await decide_fn(ctx)
         for h in handlers.values():

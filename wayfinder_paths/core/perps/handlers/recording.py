@@ -48,20 +48,31 @@ class RecordingHandler:
         reduce_only: bool = False,
     ) -> OrderResult:
         result = await self._inner.place_order(
-            symbol, side, size, order_type, limit_price=limit_price, reduce_only=reduce_only,
+            symbol,
+            side,
+            size,
+            order_type,
+            limit_price=limit_price,
+            reduce_only=reduce_only,
         )
         # Log every attempted order — successful or rejected — so the reconciler
         # can tell "live tried but rejected" from "live didn't try at all".
-        self.intents.append({
-            "symbol": symbol, "side": side, "size": size,
-            "order_type": order_type, "limit_price": limit_price,
-            "reduce_only": reduce_only, "venue": self.venue,
-            "ok": result.ok,
-            "fill_price": result.fill_price,
-            "fill_size": result.fill_size,
-            "order_id": result.order_id,
-            "error": result.error,
-        })
+        self.intents.append(
+            {
+                "symbol": symbol,
+                "side": side,
+                "size": size,
+                "order_type": order_type,
+                "limit_price": limit_price,
+                "reduce_only": reduce_only,
+                "venue": self.venue,
+                "ok": result.ok,
+                "fill_price": result.fill_price,
+                "fill_size": result.fill_size,
+                "order_id": result.order_id,
+                "error": result.error,
+            }
+        )
         return result
 
     async def cancel(self, order_id: str) -> bool:
@@ -83,25 +94,41 @@ class RecordingHandler:
     async def orderbook(self, symbol: str, depth: int = 10) -> OrderBook:
         return await self._inner.orderbook(symbol, depth)
 
-    async def quantity_at_price(self, symbol: str, side: Side, target_price: float) -> float:
+    async def quantity_at_price(
+        self, symbol: str, side: Side, target_price: float
+    ) -> float:
         return await self._inner.quantity_at_price(symbol, side, target_price)
 
     async def price_for_quantity(self, symbol: str, side: Side, qty: float) -> float:
         return await self._inner.price_for_quantity(symbol, side, qty)
 
     async def reservable_size(
-        self, symbol: str, side: Side, requested_size: float, *,
-        free_margin: float, leverage: float = 1.0, cost_bps: float = 0.0,
+        self,
+        symbol: str,
+        side: Side,
+        requested_size: float,
+        *,
+        free_margin: float,
+        leverage: float = 1.0,
+        cost_bps: float = 0.0,
     ) -> float:
         return await self._inner.reservable_size(
-            symbol, side, requested_size,
-            free_margin=free_margin, leverage=leverage, cost_bps=cost_bps,
+            symbol,
+            side,
+            requested_size,
+            free_margin=free_margin,
+            leverage=leverage,
+            cost_bps=cost_bps,
         )
 
-    async def recent_prices(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def recent_prices(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         return await self._inner.recent_prices(symbols, lookback_bars)
 
-    async def recent_funding(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def recent_funding(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         return await self._inner.recent_funding(symbols, lookback_bars)
 
     async def get_margin_balance(self) -> float:

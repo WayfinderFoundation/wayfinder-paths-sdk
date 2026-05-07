@@ -17,7 +17,6 @@ from loguru import logger
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
 
-
 _DELTA_LAB_RETRIES = 3
 _DELTA_LAB_BACKOFF_S = 2.0
 
@@ -37,8 +36,10 @@ async def _delta_lab_timeseries_with_retry(**kwargs: Any) -> dict:
             if attempt < _DELTA_LAB_RETRIES - 1:
                 logger.warning(
                     "Delta Lab fetch failed (attempt {}/{}) for {}: {}",
-                    attempt + 1, _DELTA_LAB_RETRIES,
-                    kwargs.get("symbol"), exc,
+                    attempt + 1,
+                    _DELTA_LAB_RETRIES,
+                    kwargs.get("symbol"),
+                    exc,
                 )
                 await asyncio.sleep(_DELTA_LAB_BACKOFF_S * (attempt + 1))
     raise last_exc  # type: ignore[misc]

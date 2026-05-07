@@ -50,8 +50,11 @@ class SignalFrame:
         return self.targets.iloc[pos]
 
 
-def normalize_signal(out: Any, fallback_index: pd.DatetimeIndex | None = None,
-                     fallback_columns: list[str] | None = None) -> SignalFrame:
+def normalize_signal(
+    out: Any,
+    fallback_index: pd.DatetimeIndex | None = None,
+    fallback_columns: list[str] | None = None,
+) -> SignalFrame:
     """Wrap a `compute_signal` return value into a `SignalFrame`.
 
     Accepts `SignalFrame` (returned as-is), `pd.DataFrame`, or `pd.Series`.
@@ -69,7 +72,9 @@ def normalize_signal(out: Any, fallback_index: pd.DatetimeIndex | None = None,
         return SignalFrame(targets=df.fillna(0.0))
     if isinstance(out, pd.Series):
         return SignalFrame(targets=out.to_frame().T)
-    raise TypeError(f"signal_fn must return SignalFrame, DataFrame, or Series — got {type(out).__name__}")
+    raise TypeError(
+        f"signal_fn must return SignalFrame, DataFrame, or Series — got {type(out).__name__}"
+    )
 
 
 @dataclass

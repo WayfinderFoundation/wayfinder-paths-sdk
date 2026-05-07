@@ -17,10 +17,9 @@ import pandas as pd
 import pytest
 
 from wayfinder_paths.core.perps.handlers.backtest import BacktestHandler
-from wayfinder_paths.core.perps.handlers.recording import RecordingHandler
 from wayfinder_paths.core.perps.handlers.reconcile import ReconcileHandler
+from wayfinder_paths.core.perps.handlers.recording import RecordingHandler
 from wayfinder_paths.core.perps.state import StateStore
-
 
 STRATEGY_NAME = "__recording_capture_test__"
 
@@ -35,7 +34,9 @@ def test_record_then_reconcile_round_trip(cleanup):
     """Place orders → snapshot → load → recorded_live_intents matches."""
     idx = pd.date_range("2026-05-07 10:00:00+00:00", periods=3, freq="1h")
     prices = pd.DataFrame({"BTC": [100.0, 101.0, 102.0]}, index=idx)
-    inner = BacktestHandler("perp", prices, None, slippage_bps=0, fee_bps=0, min_order_usd=0.01)
+    inner = BacktestHandler(
+        "perp", prices, None, slippage_bps=0, fee_bps=0, min_order_usd=0.01
+    )
     inner.set_bar(1)
     rec = RecordingHandler(inner)
 
@@ -45,23 +46,25 @@ def test_record_then_reconcile_round_trip(cleanup):
         await rec.place_order("BTC", "buy", 0.5, "market")
         await rec.place_order("BTC", "sell", 0.2, "market")
         pos = await rec.get_positions()
-        state.update({
-            "positions": {
-                "perp": {
-                    sym: {
-                        "size": p.size,
-                        "entry_price": p.entry_price,
-                        "mark_price": p.mark_price,
+        state.update(
+            {
+                "positions": {
+                    "perp": {
+                        sym: {
+                            "size": p.size,
+                            "entry_price": p.entry_price,
+                            "mark_price": p.mark_price,
+                        }
+                        for sym, p in pos.items()
                     }
-                    for sym, p in pos.items()
-                }
-            },
-            "orders": {"perp": list(rec.intents)},
-            "mids": {"perp": {sym: rec.mid(sym) for sym in ["BTC"]}},
-            "signal_row": {"BTC": 0.7},
-            "trigger_ts": idx[1].isoformat(),
-            "nav": 1000.0,
-        })
+                },
+                "orders": {"perp": list(rec.intents)},
+                "mids": {"perp": {sym: rec.mid(sym) for sym in ["BTC"]}},
+                "signal_row": {"BTC": 0.7},
+                "trigger_ts": idx[1].isoformat(),
+                "nav": 1000.0,
+            }
+        )
         state.write_snapshot(idx[1].to_pydatetime())
 
     asyncio.run(fake_run_trigger())
@@ -71,7 +74,10 @@ def test_record_then_reconcile_round_trip(cleanup):
 
     # ReconcileHandler reconstructs them from the persisted snapshot.
     recon = ReconcileHandler(
-        venue="perp", prices=prices, funding=None, strategy_name=STRATEGY_NAME,
+        venue="perp",
+        prices=prices,
+        funding=None,
+        strategy_name=STRATEGY_NAME,
     )
     recon.set_bar(1)
     snap = recon.load_snapshot_at(idx[1].to_pydatetime())

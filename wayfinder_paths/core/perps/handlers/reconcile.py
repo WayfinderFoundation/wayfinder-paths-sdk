@@ -75,7 +75,8 @@ class ReconcileHandler(BacktestHandler):
             sym: float(p.get("entry_price", 0.0)) for sym, p in venue_positions.items()
         }
         self._snapshot_mids = {
-            sym: float(v) for sym, v in ((snap.get("mids") or {}).get(self.venue) or {}).items()
+            sym: float(v)
+            for sym, v in ((snap.get("mids") or {}).get(self.venue) or {}).items()
         }
         self._snapshot_intents = list((snap.get("orders") or {}).get(self.venue) or [])
         return snap

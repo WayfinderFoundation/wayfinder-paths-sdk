@@ -67,7 +67,9 @@ async def default_decide(ctx: TriggerContext) -> None:
         await ctx.perp.place_order(sym, side, abs(diff), "market", reduce_only=reduce)
 
 
-from wayfinder_paths.core.perps.context import normalize_signal as _normalize_signal  # noqa: E402,F401
+from wayfinder_paths.core.perps.context import (
+    normalize_signal as _normalize_signal,  # noqa: E402,F401
+)
 
 
 async def backtest_perps_trigger(
@@ -125,7 +127,9 @@ async def backtest_perps_trigger(
 
     # Precompute signal frame.
     raw_signal = signal_fn(prices, funding, params)
-    signal_frame = _normalize_signal(raw_signal, fallback_index=prices.index, fallback_columns=symbols)
+    signal_frame = _normalize_signal(
+        raw_signal, fallback_index=prices.index, fallback_columns=symbols
+    )
 
     # Build handlers — primary perp + one per hip3 dex (data shared for now; per-dex
     # data wiring is a Phase 7+ concern).
