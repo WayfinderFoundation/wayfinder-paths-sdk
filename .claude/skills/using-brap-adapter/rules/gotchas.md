@@ -4,7 +4,7 @@
 
 - A tx hash / “broadcasted” log does **not** mean a swap succeeded.
 - The SDK waits for the receipt and raises `TransactionRevertedError` when `status=0` (often includes `gasUsed`/`gasLimit` and may indicate out-of-gas).
-- In Claude Code, `mcp__wayfinder__execute(kind="swap", ...)` will surface this as `status="failed"` with an `error` string; stop and fix before continuing a multi-step flow.
+- In Claude Code, `mcp__wayfinder__core_execute(kind="swap", ...)` will surface this as `status="failed"` with an `error` string; stop and fix before continuing a multi-step flow.
 
 ## Units
 

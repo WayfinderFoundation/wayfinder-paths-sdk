@@ -36,7 +36,7 @@ BRAP route diagnostics are easiest by inspecting the raw quote response:
 ## Claude Code MCP helper
 
 If you’re exploring interactively, prefer:
-- `mcp__wayfinder__quote_swap` (does token lookup + human→raw conversion + returns a preview + compact best-quote summary)
+- `mcp__wayfinder__onchain_quote_swap` (does token lookup + human→raw conversion + returns a preview + compact best-quote summary)
   - Use `include_calldata=true` only if you explicitly need calldata in the response (it can be large).
 
 ### Token identifiers (avoid ambiguous lookups)
@@ -60,6 +60,6 @@ Notes:
 
 ### Recommended loop
 
-1) Call `mcp__wayfinder__quote_swap(...)`
+1) Call `mcp__wayfinder__onchain_quote_swap(...)`
 2) Inspect `from_token` / `to_token` in the response to ensure the right asset + chain.
-3) Pass `suggested_execute_request` directly into `mcp__wayfinder__execute` (the only fund-moving tool).
+3) Pass `suggested_execute_request` directly into `mcp__wayfinder__core_execute` (the only fund-moving tool).

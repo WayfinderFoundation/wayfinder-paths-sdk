@@ -29,5 +29,5 @@
 ## Claude Code MCP “single write gateway”
 
 For interactive use in Claude Code:
-- Use `mcp__wayfinder__execute` with `kind="swap"` so the review hook can prompt before execution.
+- Use `mcp__wayfinder__core_execute` with `kind="swap"` so the review hook can prompt before execution.
 
