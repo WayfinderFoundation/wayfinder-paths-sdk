@@ -527,13 +527,18 @@ class HyperliquidAdapter(BaseAdapter):
         return get_info().coin_to_asset
 
     @staticmethod
-    def get_market_type(asset_name: str) -> Literal["perp", "spot", "outcome"]:
+    def get_market_type(
+        asset_name: str,
+    ) -> Literal["perp", "hip3", "spot", "outcome"]:
         """Classify a canonical market path by its grammar:
-        '#<n>' → outcome, '<a>/<b>' → spot, anything else → perp."""
+        '#<n>' → outcome, '<a>/<b>' → spot, '<dex>:<base>' → hip3, else → perp.
+        """
         if asset_name.startswith("#"):
             return "outcome"
         if "/" in asset_name:
             return "spot"
+        if ":" in asset_name:
+            return "hip3"
         return "perp"
 
     async def get_asset_id(self, asset_name: str) -> int | None:
@@ -548,27 +553,31 @@ class HyperliquidAdapter(BaseAdapter):
             case "spot":
                 _, assets = await self.get_spot_assets()
                 return assets.get(asset_name)
-            case "perp" if ":" in asset_name:  # HIP-3 builder perp
+            case "hip3":
                 return self.coin_to_asset.get(asset_name)
             case "perp" if (bare := asset_name.removesuffix("-USDC")) != asset_name:
                 return self.coin_to_asset.get(bare)
         return None
 
-    @staticmethod
-    def mid_feed_keys(asset_name: str, asset_id: int) -> list[str]:
+    @classmethod
+    def mid_feed_keys(cls, asset_name: str, asset_id: int) -> list[str]:
         """Candidate keys for `get_all_mid_prices()`, in lookup order.
 
         HL's mid feed uses different key grammars per market type:
-          - core perp / HIP-3 perp -> bare symbol (e.g. "BTC", "xyz:NVDA")
-          - spot                   -> "@<spot_index>" (= asset_id - 10000),
-                                      EXCEPT PURR/USDC which is grandfathered
-                                      under its canonical name. Try @-form
-                                      first, fall back to canonical.
-          - HIP-4 outcome          -> "#<encoding>" (already in asset_name)
+          - perp (core)   -> bare symbol with `-USDC` stripped (e.g. "BTC")
+          - hip3          -> already-canonical `<dex>:<base>` (e.g. "xyz:NVDA")
+          - spot          -> "@<spot_index>" (= asset_id - 10000), EXCEPT
+                             PURR/USDC which is grandfathered under its
+                             canonical name. Try @-form first, fall back.
+          - outcome       -> "#<encoding>" (already in asset_name)
         """
-        if "/" in asset_name:
-            return [f"@{spot_index_from_asset_id(asset_id)}", asset_name]
-        return [asset_name.removesuffix("-USDC")]
+        match cls.get_market_type(asset_name):
+            case "spot":
+                return [f"@{spot_index_from_asset_id(asset_id)}", asset_name]
+            case "perp":
+                return [asset_name.removesuffix("-USDC")]
+            case _:  # hip3, outcome — already canonical
+                return [asset_name]
 
     def get_sz_decimals(self, asset_id: int) -> int:
         try:

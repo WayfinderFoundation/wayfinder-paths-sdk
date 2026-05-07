@@ -36,7 +36,6 @@ DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
     "f": DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
 }
 
-# HL hard floors (HIP-4 outcomes are exempt — integer contract counts only).
 MIN_DEPOSIT_USD: float = 5.0
 MIN_ORDER_USD_NOTIONAL: float = 10.0
 
