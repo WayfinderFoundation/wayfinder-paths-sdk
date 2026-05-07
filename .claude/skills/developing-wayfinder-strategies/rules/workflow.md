@@ -28,10 +28,10 @@ For complex fund-moving flows (multi-step swaps, lending loops), run at least on
 ## One-off execution (Claude Code)
 
 If the user wants **immediate execution** (not a reusable strategy):
-- For simple on-chain sends/swaps: use `mcp__wayfinder__execute`.
+- For simple on-chain sends/swaps: use `mcp__wayfinder__core_execute`.
 - For Hyperliquid perp orders/leverage: use `mcp__wayfinder__hyperliquid_execute`.
 - Write a short script under `.wayfinder_runs/` (gitignored).
-- Prefer running it via `mcp__wayfinder__run_script` so Claude Code shows a review prompt.
+- Prefer running it via `mcp__wayfinder__core_run_script` so Claude Code shows a review prompt.
 
 ## “Explore first” approach
 
