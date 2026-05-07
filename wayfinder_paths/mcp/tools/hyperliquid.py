@@ -29,6 +29,7 @@ from wayfinder_paths.mcp.utils import (
     resolve_wallet_address,
     throw_if_empty_str,
     throw_if_none,
+    throw_if_not_int,
     throw_if_not_number,
 )
 
@@ -52,6 +53,48 @@ def _annotate_hl_profile(
         chain_id=999,  # Hyperliquid chain ID
         details=details,
     )
+
+
+async def _ensure_builder_fee_approval(
+    adapter: HyperliquidAdapter,
+    *,
+    sender: str,
+    effects: list[dict[str, Any]],
+) -> None:
+    builder_addr = DEFAULT_HYPERLIQUID_BUILDER_FEE["b"]
+    desired = DEFAULT_HYPERLIQUID_BUILDER_FEE["f"]
+    ok_fee, current = await adapter.get_max_builder_fee(
+        user=sender, builder=builder_addr
+    )
+    effects.append(
+        {
+            "type": "hl",
+            "label": "get_max_builder_fee",
+            "ok": ok_fee,
+            "result": {
+                "current_tenths_bp": int(current),
+                "desired_tenths_bp": desired,
+            },
+        }
+    )
+    if ok_fee and int(current) >= desired:
+        return
+
+    ok_appr, appr = await adapter.approve_builder_fee(
+        builder=builder_addr,
+        max_fee_rate=f"{desired / 1000:.3f}%",
+        address=sender,
+    )
+    effects.append(
+        {
+            "type": "hl",
+            "label": "approve_builder_fee",
+            "ok": ok_appr,
+            "result": appr,
+        }
+    )
+    if not ok_appr:
+        raise ValueError(f"Failed to approve Wayfinder builder fee: {appr}")
 
 
 @catch_errors
@@ -290,90 +333,12 @@ async def hyperliquid_execute(
         )
     market_type = adapter.get_market_type(asset_name)
 
-    # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
+    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
+
     match action:
-        case "place_order" if market_type == "hip4":
-            outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
-            throw_if_none("is_buy is required for outcome orders", is_buy)
-            if order_type == "limit":
-                throw_if_none("price is required for limit orders", price)
-
-            # Outcomes are integer contracts (szDecimals=0) with no $10 floor;
-            # accept either explicit `size` or `usd_amount` for market orders.
-            size_i: int | None = None if size is None else int(size)
-            if size_i is None:
-                throw_if_none(
-                    "size or usd_amount is required for outcome orders", usd_amount
-                )
-                if order_type != "market":
-                    raise ValueError(
-                        "usd_amount sizing is only supported for market outcome orders"
-                    )
-                ok_mids, mids = await adapter.get_all_mid_prices()
-                if not ok_mids or not isinstance(mids, dict):
-                    return err("price_error", "Failed to fetch mid prices")
-                mid = mids.get(asset_name)
-                if mid is None or float(mid) <= 0:
-                    return err(
-                        "price_error",
-                        f"Could not resolve mid price for {asset_name}",
-                    )
-                size_i = max(1, round(float(usd_amount) / float(mid)))
-
-            ok_order, res = await adapter.place_outcome_order(
-                outcome_id=outcome_id_v,
-                side=side_v,
-                is_buy=bool(is_buy),
-                size=size_i,
-                price=None if price is None else float(price),
-                slippage=float(slippage),
-                tif="Ioc" if order_type == "market" else "Gtc",
-                reduce_only=bool(reduce_only),
-                cloid=cloid,
-                address=sender,
-            )
-            effects.append(
-                {"type": "hl", "label": "place_order", "ok": ok_order, "result": res}
-            )
-            status = "confirmed" if ok_order else "failed"
-            _annotate_hl_profile(
-                address=sender,
-                label=wallet_label,
-                action="place_order",
-                status=status,
-                details={
-                    "asset_name": asset_name,
-                    "outcome_id": outcome_id_v,
-                    "side": side_v,
-                    "is_buy": bool(is_buy),
-                    "size": size_i,
-                },
-            )
-            return ok(
-                {
-                    "status": status,
-                    "action": action,
-                    "wallet_label": wallet_label,
-                    "address": sender,
-                    "asset_name": asset_name,
-                    "outcome_id": outcome_id_v,
-                    "side": side_v,
-                    "order": {
-                        "order_type": order_type,
-                        "is_buy": bool(is_buy),
-                        "size": size_i,
-                        "price": float(price) if price is not None else None,
-                        "slippage": float(slippage),
-                        "reduce_only": bool(reduce_only),
-                        "cloid": cloid,
-                    },
-                    "effects": effects,
-                }
-            )
-
         case "update_leverage":
             throw_if_none("leverage is required for update_leverage", leverage)
-            lev = int(throw_if_not_number("leverage must be an int", leverage))
+            lev = throw_if_not_int("leverage must be an int", leverage)
             if lev <= 0:
                 raise ValueError("leverage must be positive")
 
@@ -561,276 +526,330 @@ async def hyperliquid_execute(
             return response
 
         case "place_order":
-            if size is not None and usd_amount is not None:
-                raise ValueError(
-                    "Provide either size (asset units) or usd_amount (USD notional/margin), not both"
-                )
-            if usd_amount_kind is not None and usd_amount is None:
-                raise ValueError(
-                    "usd_amount_kind is only valid when usd_amount is provided"
-                )
+            match market_type:
+                case "hip4":
+                    outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
+                    throw_if_none("is_buy is required for outcome orders", is_buy)
+                    if order_type == "limit":
+                        throw_if_none("price is required for limit orders", price)
 
-            throw_if_none("is_buy is required for place_order", is_buy)
-
-            if order_type == "limit":
-                throw_if_none("price is required for limit orders", price)
-                px_for_sizing = throw_if_not_number("price must be a number", price)
-                if px_for_sizing <= 0:
-                    raise ValueError("price must be positive")
-            else:
-                slip = throw_if_not_number("slippage must be a number", slippage)
-                if slip < 0:
-                    raise ValueError("slippage must be >= 0")
-                if slip > 0.25:
-                    raise ValueError("slippage > 0.25 is too risky")
-                px_for_sizing = None
-
-            sizing: dict[str, Any] = {"source": "size"}
-            if size is not None:
-                sz = throw_if_not_number("size must be a number", size)
-                if sz <= 0:
-                    raise ValueError("size must be positive")
-            else:
-                throw_if_none(
-                    "Provide either size (asset units) or usd_amount for place_order",
-                    usd_amount,
-                )
-                usd_amt = throw_if_not_number("usd_amount must be a number", usd_amount)
-                if usd_amt <= 0:
-                    raise ValueError("usd_amount must be positive")
-
-                # Spot: usd_amount is always notional (no leverage)
-                if market_type == "spot":
-                    notional_usd = usd_amt
-                    margin_usd = None
-                elif usd_amount_kind is None:
-                    raise ValueError(
-                        "usd_amount_kind is required for perp: 'notional' or 'margin'"
-                    )
-                elif usd_amount_kind == "margin":
-                    throw_if_none(
-                        "leverage is required when usd_amount_kind='margin'", leverage
-                    )
-                    lev = int(throw_if_not_number("leverage must be an int", leverage))
-                    if lev <= 0:
-                        raise ValueError("leverage must be positive")
-                    notional_usd = usd_amt * float(lev)
-                    margin_usd = usd_amt
-                else:
-                    notional_usd = usd_amt
-                    margin_usd = None
-                    if leverage is not None:
-                        try:
-                            lev = int(leverage)
-                            if lev > 0:
-                                margin_usd = notional_usd / float(lev)
-                        except Exception:
-                            margin_usd = None
-
-                if px_for_sizing is None:
-                    ok_mids, mids = await adapter.get_all_mid_prices()
-                    if not ok_mids or not isinstance(mids, dict):
-                        response = err("price_error", "Failed to fetch mid prices")
-                        return response
-                    mid = None
-                    for key in adapter.get_mid_price_key(asset_name, resolved_asset_id):
-                        v = mids.get(key)
-                        if v is None:
-                            continue
-                        try:
-                            mid = float(v)
-                            break
-                        except (TypeError, ValueError):
-                            continue
-                    if mid is None or mid <= 0:
-                        response = err(
-                            "price_error",
-                            f"Could not resolve mid price for {asset_name}",
+                    # Outcomes are integer contracts (szDecimals=0) with no $10 floor;
+                    # accept either explicit `size` or `usd_amount` for market orders.
+                    size_i: int | None = None if size is None else int(size)
+                    if size_i is None:
+                        throw_if_none(
+                            "size or usd_amount is required for outcome orders",
+                            usd_amount,
                         )
-                        return response
-                    px_for_sizing = mid
+                        if order_type != "market":
+                            raise ValueError(
+                                "usd_amount sizing is only supported for market outcome orders"
+                            )
+                        ok_mids, mids = await adapter.get_all_mid_prices()
+                        if not ok_mids or not isinstance(mids, dict):
+                            return err("price_error", "Failed to fetch mid prices")
+                        mid = mids.get(asset_name)
+                        if mid is None or float(mid) <= 0:
+                            return err(
+                                "price_error",
+                                f"Could not resolve mid price for {asset_name}",
+                            )
+                        size_i = max(1, round(float(usd_amount) / float(mid)))
 
-                sz = notional_usd / float(px_for_sizing)
-                sizing = {
-                    "source": "usd_amount",
-                    "usd_amount": float(usd_amt),
-                    "usd_amount_kind": usd_amount_kind,
-                    "notional_usd": float(notional_usd),
-                    "margin_usd_estimate": float(margin_usd)
-                    if margin_usd is not None
-                    else None,
-                    "price_used": float(px_for_sizing),
-                }
-
-            sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
-            if sz_valid <= 0:
-                raise ValueError("size is too small after lot-size rounding")
-
-            # HL rejects spot/perp orders below $10 notional. Lot-size rounding
-            # of `usd_amount`-derived sizes can dip just under that floor (e.g.
-            # usd_amount=10.20 / price=0.18 → sz=56.66 → 56.66 × 0.18 = 10.1988).
-            # Surface the actual notional so the caller can bump usd_amount.
-            if sizing["source"] == "usd_amount" and px_for_sizing is not None:
-                final_notional = float(sz_valid) * float(px_for_sizing)
-                if final_notional < MIN_ORDER_USD_NOTIONAL:
-                    raise ValueError(
-                        f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
-                        f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Bump usd_amount or pass size directly."
+                    ok_order, res = await adapter.place_outcome_order(
+                        outcome_id=outcome_id_v,
+                        side=side_v,
+                        is_buy=bool(is_buy),
+                        size=size_i,
+                        price=None if price is None else float(price),
+                        slippage=float(slippage),
+                        tif="Ioc" if order_type == "market" else "Gtc",
+                        reduce_only=bool(reduce_only),
+                        cloid=cloid,
+                        address=sender,
+                    )
+                    effects.append(
+                        {
+                            "type": "hl",
+                            "label": "place_order",
+                            "ok": ok_order,
+                            "result": res,
+                        }
+                    )
+                    status = "confirmed" if ok_order else "failed"
+                    _annotate_hl_profile(
+                        address=sender,
+                        label=wallet_label,
+                        action="place_order",
+                        status=status,
+                        details={
+                            "asset_name": asset_name,
+                            "outcome_id": outcome_id_v,
+                            "side": side_v,
+                            "is_buy": bool(is_buy),
+                            "size": size_i,
+                        },
+                    )
+                    return ok(
+                        {
+                            "status": status,
+                            "action": action,
+                            "wallet_label": wallet_label,
+                            "address": sender,
+                            "asset_name": asset_name,
+                            "outcome_id": outcome_id_v,
+                            "side": side_v,
+                            "order": {
+                                "order_type": order_type,
+                                "is_buy": bool(is_buy),
+                                "size": size_i,
+                                "price": float(price) if price is not None else None,
+                                "slippage": float(slippage),
+                                "reduce_only": bool(reduce_only),
+                                "cloid": cloid,
+                            },
+                            "effects": effects,
+                        }
                     )
 
-            if leverage is not None:
-                lev = int(throw_if_not_number("leverage must be an int", leverage))
-                if lev <= 0:
-                    raise ValueError("leverage must be positive")
-                ok_lev, res = await adapter.update_leverage(
-                    resolved_asset_id, lev, bool(is_cross), sender
-                )
-                effects.append(
-                    {
-                        "type": "hl",
-                        "label": "update_leverage",
-                        "ok": ok_lev,
-                        "result": res,
-                    }
-                )
-                if not ok_lev:
+                case _:
+                    if size is not None and usd_amount is not None:
+                        raise ValueError(
+                            "Provide either size (asset units) or usd_amount (USD notional/margin), not both"
+                        )
+                    if usd_amount_kind is not None and usd_amount is None:
+                        raise ValueError(
+                            "usd_amount_kind is only valid when usd_amount is provided"
+                        )
+
+                    throw_if_none("is_buy is required for place_order", is_buy)
+
+                    if order_type == "limit":
+                        throw_if_none("price is required for limit orders", price)
+                        px_for_sizing = throw_if_not_number(
+                            "price must be a number", price
+                        )
+                        if px_for_sizing <= 0:
+                            raise ValueError("price must be positive")
+                    else:
+                        slip = throw_if_not_number(
+                            "slippage must be a number", slippage
+                        )
+                        if slip < 0:
+                            raise ValueError("slippage must be >= 0")
+                        if slip > 0.25:
+                            raise ValueError("slippage > 0.25 is too risky")
+                        px_for_sizing = None
+
+                    sizing: dict[str, Any] = {"source": "size"}
+                    if size is not None:
+                        sz = throw_if_not_number("size must be a number", size)
+                        if sz <= 0:
+                            raise ValueError("size must be positive")
+                    else:
+                        throw_if_none(
+                            "Provide either size (asset units) or usd_amount for place_order",
+                            usd_amount,
+                        )
+                        usd_amt = throw_if_not_number(
+                            "usd_amount must be a number", usd_amount
+                        )
+                        if usd_amt <= 0:
+                            raise ValueError("usd_amount must be positive")
+
+                        # Spot: usd_amount is always notional (no leverage)
+                        if market_type == "spot":
+                            notional_usd = usd_amt
+                            margin_usd = None
+                        elif usd_amount_kind is None:
+                            raise ValueError(
+                                "usd_amount_kind is required for perp: 'notional' or 'margin'"
+                            )
+                        elif usd_amount_kind == "margin":
+                            throw_if_none(
+                                "leverage is required when usd_amount_kind='margin'",
+                                leverage,
+                            )
+                            lev = throw_if_not_int("leverage must be an int", leverage)
+                            if lev <= 0:
+                                raise ValueError("leverage must be positive")
+                            notional_usd = usd_amt * float(lev)
+                            margin_usd = usd_amt
+                        else:
+                            notional_usd = usd_amt
+                            margin_usd = None
+                            if leverage is not None:
+                                try:
+                                    lev = int(leverage)
+                                    if lev > 0:
+                                        margin_usd = notional_usd / float(lev)
+                                except Exception:
+                                    margin_usd = None
+
+                        if px_for_sizing is None:
+                            ok_mids, mids = await adapter.get_all_mid_prices()
+                            if not ok_mids or not isinstance(mids, dict):
+                                response = err(
+                                    "price_error", "Failed to fetch mid prices"
+                                )
+                                return response
+                            mid = None
+                            for key in adapter.get_mid_price_key(
+                                asset_name, resolved_asset_id
+                            ):
+                                v = mids.get(key)
+                                if v is None:
+                                    continue
+                                try:
+                                    mid = float(v)
+                                    break
+                                except (TypeError, ValueError):
+                                    continue
+                            if mid is None or mid <= 0:
+                                response = err(
+                                    "price_error",
+                                    f"Could not resolve mid price for {asset_name}",
+                                )
+                                return response
+                            px_for_sizing = mid
+
+                        sz = notional_usd / float(px_for_sizing)
+                        sizing = {
+                            "source": "usd_amount",
+                            "usd_amount": float(usd_amt),
+                            "usd_amount_kind": usd_amount_kind,
+                            "notional_usd": float(notional_usd),
+                            "margin_usd_estimate": float(margin_usd)
+                            if margin_usd is not None
+                            else None,
+                            "price_used": float(px_for_sizing),
+                        }
+
+                    sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
+                    if sz_valid <= 0:
+                        raise ValueError("size is too small after lot-size rounding")
+
+                    # HL rejects spot/perp orders below $10 notional. Lot-size rounding
+                    # of `usd_amount`-derived sizes can dip just under that floor (e.g.
+                    # usd_amount=10.20 / price=0.18 → sz=56.66 → 56.66 × 0.18 = 10.1988).
+                    # Surface the actual notional so the caller can bump usd_amount.
+                    if sizing["source"] == "usd_amount" and px_for_sizing is not None:
+                        final_notional = float(sz_valid) * float(px_for_sizing)
+                        if final_notional < MIN_ORDER_USD_NOTIONAL:
+                            raise ValueError(
+                                f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
+                                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Bump usd_amount or pass size directly."
+                            )
+
+                    if leverage is not None:
+                        lev = throw_if_not_int("leverage must be an int", leverage)
+                        if lev <= 0:
+                            raise ValueError("leverage must be positive")
+                        ok_lev, res = await adapter.update_leverage(
+                            resolved_asset_id, lev, bool(is_cross), sender
+                        )
+                        effects.append(
+                            {
+                                "type": "hl",
+                                "label": "update_leverage",
+                                "ok": ok_lev,
+                                "result": res,
+                            }
+                        )
+                        if not ok_lev:
+                            response = ok(
+                                {
+                                    "status": "failed",
+                                    "action": action,
+                                    "wallet_label": wallet_label,
+                                    "address": sender,
+                                    "asset_id": resolved_asset_id,
+                                    "asset_name": asset_name,
+                                    "effects": effects,
+                                }
+                            )
+                            return response
+
+                    if order_type == "limit":
+                        ok_order, res = await adapter.place_limit_order(
+                            resolved_asset_id,
+                            bool(is_buy),
+                            float(price),
+                            float(sz_valid),
+                            sender,
+                            reduce_only=bool(reduce_only),
+                            builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                        )
+                        effects.append(
+                            {
+                                "type": "hl",
+                                "label": "place_limit_order",
+                                "ok": ok_order,
+                                "result": res,
+                            }
+                        )
+                    else:
+                        ok_order, res = await adapter.place_market_order(
+                            resolved_asset_id,
+                            bool(is_buy),
+                            float(slippage),
+                            float(sz_valid),
+                            sender,
+                            reduce_only=bool(reduce_only),
+                            cloid=cloid,
+                            builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                        )
+                        effects.append(
+                            {
+                                "type": "hl",
+                                "label": "place_market_order",
+                                "ok": ok_order,
+                                "result": res,
+                            }
+                        )
+
+                    ok_all = (
+                        all(bool(e.get("ok")) for e in effects) if effects else False
+                    )
+                    status = "confirmed" if ok_all else "failed"
                     response = ok(
                         {
-                            "status": "failed",
+                            "status": status,
                             "action": action,
                             "wallet_label": wallet_label,
                             "address": sender,
                             "asset_id": resolved_asset_id,
                             "asset_name": asset_name,
+                            "order": {
+                                "order_type": order_type,
+                                "is_buy": bool(is_buy),
+                                "size_requested": float(sz),
+                                "size_valid": float(sz_valid),
+                                "price": float(price) if price is not None else None,
+                                "slippage": float(slippage),
+                                "reduce_only": bool(reduce_only),
+                                "cloid": cloid,
+                                "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                                "sizing": sizing,
+                            },
                             "effects": effects,
                         }
                     )
-                    return response
-
-            # Builder attribution is mandatory; ensure approval before placing orders.
-            builder_addr = DEFAULT_HYPERLIQUID_BUILDER_FEE["b"]
-            desired = DEFAULT_HYPERLIQUID_BUILDER_FEE["f"]
-            ok_fee, current = await adapter.get_max_builder_fee(
-                user=sender, builder=builder_addr
-            )
-            effects.append(
-                {
-                    "type": "hl",
-                    "label": "get_max_builder_fee",
-                    "ok": ok_fee,
-                    "result": {
-                        "current_tenths_bp": int(current),
-                        "desired_tenths_bp": desired,
-                    },
-                }
-            )
-            if not ok_fee or int(current) < desired:
-                max_fee_rate = f"{desired / 1000:.3f}%"
-                ok_appr, appr = await adapter.approve_builder_fee(
-                    builder=builder_addr,
-                    max_fee_rate=max_fee_rate,
-                    address=sender,
-                )
-                effects.append(
-                    {
-                        "type": "hl",
-                        "label": "approve_builder_fee",
-                        "ok": ok_appr,
-                        "result": appr,
-                    }
-                )
-                if not ok_appr:
-                    response = ok(
-                        {
-                            "status": "failed",
-                            "action": action,
-                            "wallet_label": wallet_label,
-                            "address": sender,
+                    _annotate_hl_profile(
+                        address=sender,
+                        label=wallet_label,
+                        action="place_order",
+                        status=status,
+                        details={
                             "asset_id": resolved_asset_id,
                             "asset_name": asset_name,
-                            "effects": effects,
-                        }
+                            "order_type": order_type,
+                            "is_buy": bool(is_buy),
+                            "size": float(sz_valid),
+                        },
                     )
+
                     return response
-
-            if order_type == "limit":
-                ok_order, res = await adapter.place_limit_order(
-                    resolved_asset_id,
-                    bool(is_buy),
-                    float(price),
-                    float(sz_valid),
-                    sender,
-                    reduce_only=bool(reduce_only),
-                    builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
-                )
-                effects.append(
-                    {
-                        "type": "hl",
-                        "label": "place_limit_order",
-                        "ok": ok_order,
-                        "result": res,
-                    }
-                )
-            else:
-                ok_order, res = await adapter.place_market_order(
-                    resolved_asset_id,
-                    bool(is_buy),
-                    float(slippage),
-                    float(sz_valid),
-                    sender,
-                    reduce_only=bool(reduce_only),
-                    cloid=cloid,
-                    builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
-                )
-                effects.append(
-                    {
-                        "type": "hl",
-                        "label": "place_market_order",
-                        "ok": ok_order,
-                        "result": res,
-                    }
-                )
-
-            ok_all = all(bool(e.get("ok")) for e in effects) if effects else False
-            status = "confirmed" if ok_all else "failed"
-            response = ok(
-                {
-                    "status": status,
-                    "action": action,
-                    "wallet_label": wallet_label,
-                    "address": sender,
-                    "asset_id": resolved_asset_id,
-                    "asset_name": asset_name,
-                    "order": {
-                        "order_type": order_type,
-                        "is_buy": bool(is_buy),
-                        "size_requested": float(sz),
-                        "size_valid": float(sz_valid),
-                        "price": float(price) if price is not None else None,
-                        "slippage": float(slippage),
-                        "reduce_only": bool(reduce_only),
-                        "cloid": cloid,
-                        "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
-                        "sizing": sizing,
-                    },
-                    "effects": effects,
-                }
-            )
-            _annotate_hl_profile(
-                address=sender,
-                label=wallet_label,
-                action="place_order",
-                status=status,
-                details={
-                    "asset_id": resolved_asset_id,
-                    "asset_name": asset_name,
-                    "order_type": order_type,
-                    "is_buy": bool(is_buy),
-                    "size": float(sz_valid),
-                },
-            )
-
-            return response
 
         case _:
             return err("invalid_request", f"Unknown action: {action}")
