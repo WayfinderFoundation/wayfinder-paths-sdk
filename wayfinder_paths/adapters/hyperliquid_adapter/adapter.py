@@ -28,6 +28,7 @@ from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
+from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import (
@@ -59,6 +60,11 @@ MAINNET = "Mainnet"
 
 def outcome_encoding(outcome_id: int, side: int) -> int:
     return 10 * outcome_id + side
+
+
+def decode_outcome_encoding(encoding: int) -> tuple[int, int]:
+    """Inverse of `outcome_encoding`: split into (outcome_id, side)."""
+    return encoding // 10, encoding % 10
 
 
 def outcome_asset_id(outcome_id: int, side: int) -> int:
@@ -547,6 +553,22 @@ class HyperliquidAdapter(BaseAdapter):
             case "perp" if (bare := asset_name.removesuffix("-USDC")) != asset_name:
                 return self.coin_to_asset.get(bare)
         return None
+
+    @staticmethod
+    def mid_feed_keys(asset_name: str, asset_id: int) -> list[str]:
+        """Candidate keys for `get_all_mid_prices()`, in lookup order.
+
+        HL's mid feed uses different key grammars per market type:
+          - core perp / HIP-3 perp -> bare symbol (e.g. "BTC", "xyz:NVDA")
+          - spot                   -> "@<spot_index>" (= asset_id - 10000),
+                                      EXCEPT PURR/USDC which is grandfathered
+                                      under its canonical name. Try @-form
+                                      first, fall back to canonical.
+          - HIP-4 outcome          -> "#<encoding>" (already in asset_name)
+        """
+        if "/" in asset_name:
+            return [f"@{spot_index_from_asset_id(asset_id)}", asset_name]
+        return [asset_name.removesuffix("-USDC")]
 
     def get_sz_decimals(self, asset_id: int) -> int:
         try:

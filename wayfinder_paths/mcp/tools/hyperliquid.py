@@ -6,6 +6,7 @@ import re
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import decode_outcome_encoding
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -27,22 +28,6 @@ from wayfinder_paths.mcp.utils import (
     parse_amount_to_raw,
     resolve_wallet_address,
 )
-
-
-def _mid_feed_keys(market_type: str, coin_clean: str, asset_id: int) -> list[str]:
-    """Candidate keys for `get_all_mid_prices()`, in lookup order.
-
-    HL's mid feed uses different key grammars per market type:
-      - core perp / HIP-3 perp -> bare symbol (e.g. "BTC", "xyz:NVDA")
-      - spot                   -> "@<spot_index>" (= asset_id - 10000)
-                                  EXCEPT PURR/USDC, grandfathered under its
-                                  canonical name. Try the @-form first, fall
-                                  back to canonical for the PURR case.
-      - HIP-4 outcome          -> "#<encoding>" (already in coin_clean)
-    """
-    if market_type == "spot":
-        return [f"@{asset_id - 10000}", coin_clean]
-    return [coin_clean]
 
 
 def _resolve_builder_fee(
@@ -366,13 +351,11 @@ async def hyperliquid_execute(
             "Call hyperliquid_search_market to look up the canonical name.",
         )
     market_type = adapter.get_market_type(asset_name)
-    coin_clean = asset_name.removesuffix("-USDC")  # only mutates core perps
 
     # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
     match action:
         case "place_order" if market_type == "outcome":
-            encoding = int(asset_name[1:])  # `#<encoding>` validated by get_asset_id
-            outcome_id_v, side_v = encoding // 10, encoding % 10
+            outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
             if is_buy is None:
                 return err("invalid_request", "is_buy is required for outcome orders")
             if order_type == "limit" and price is None:
@@ -395,11 +378,11 @@ async def hyperliquid_execute(
                 ok_mids, mids = await adapter.get_all_mid_prices()
                 if not ok_mids or not isinstance(mids, dict):
                     return err("price_error", "Failed to fetch mid prices")
-                mid = mids.get(coin_clean)  # outcomes keyed `#<encoding>`
+                mid = mids.get(asset_name)
                 if mid is None or float(mid) <= 0:
                     return err(
                         "price_error",
-                        f"Could not resolve mid price for {coin_clean}",
+                        f"Could not resolve mid price for {asset_name}",
                     )
                 size_i = max(1, round(float(usd_amount) / float(mid)))
 
@@ -798,9 +781,7 @@ async def hyperliquid_execute(
                         response = err("price_error", "Failed to fetch mid prices")
                         return response
                     mid = None
-                    for key in _mid_feed_keys(
-                        market_type, coin_clean, resolved_asset_id
-                    ):
+                    for key in adapter.mid_feed_keys(asset_name, resolved_asset_id):
                         v = mids.get(key)
                         if v is None:
                             continue
@@ -812,7 +793,7 @@ async def hyperliquid_execute(
                     if mid is None or mid <= 0:
                         response = err(
                             "price_error",
-                            f"Could not resolve mid price for {coin_clean}",
+                            f"Could not resolve mid price for {asset_name}",
                         )
                         return response
                     px_for_sizing = mid

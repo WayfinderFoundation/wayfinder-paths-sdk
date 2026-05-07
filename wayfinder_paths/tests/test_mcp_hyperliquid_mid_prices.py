@@ -1,8 +1,8 @@
 """Live tests for the per-market-type mid-price feed grammar.
 
 `HyperliquidAdapter.get_all_mid_prices()` returns a dict keyed differently
-per market type. These tests verify our `_mid_feed_keys()` helper produces
-keys that actually resolve in the live feed.
+per market type. These tests verify `HyperliquidAdapter.mid_feed_keys`
+produces keys that actually resolve in the live feed.
 """
 
 from __future__ import annotations
@@ -10,24 +10,15 @@ from __future__ import annotations
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
-from wayfinder_paths.mcp.tools.hyperliquid import _mid_feed_keys
 
 
 async def _resolved_mid(asset_name: str) -> float | None:
     adapter = HyperliquidAdapter()
     asset_id = await adapter.get_asset_id(asset_name)
     assert asset_id is not None, f"failed to resolve {asset_name!r}"
-    market_type = (
-        "outcome"
-        if asset_name.startswith("#")
-        else "spot"
-        if "/" in asset_name
-        else "perp"
-    )
-    coin_clean = asset_name.removesuffix("-USDC")
     ok_mids, mids = await adapter.get_all_mid_prices()
     assert ok_mids and isinstance(mids, dict)
-    for key in _mid_feed_keys(market_type, coin_clean, asset_id):
+    for key in adapter.mid_feed_keys(asset_name, asset_id):
         v = mids.get(key)
         if v is not None:
             return float(v)
