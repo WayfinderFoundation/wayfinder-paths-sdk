@@ -47,6 +47,13 @@ def throw_if_not_number(message: str, value: Any) -> float:
         raise ValueError(message) from exc
 
 
+def throw_if_not_int(message: str, value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+
+
 def throw_if_empty_str(message: str, value: Any) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(message)
