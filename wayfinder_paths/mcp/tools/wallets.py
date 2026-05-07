@@ -496,6 +496,11 @@ async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
 
 @catch_errors
 async def onchain_get_wallet_activity(label: str) -> dict[str, Any]:
+    """Return the last 20 on-chain transactions for a wallet across supported chains.
+
+    Args:
+        label: Wallet label as configured in config.json, e.g. main.
+    """
     w = await find_wallet_by_label(label)
     if not w:
         return err("not_found", f"Wallet not found: {label}")
