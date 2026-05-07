@@ -18,21 +18,19 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar, Final, final
 
 from wayfinder_paths.core.backtesting.ref import BacktestRef, load_ref
 from wayfinder_paths.core.perps.context import SignalFrame, TriggerContext
 from wayfinder_paths.core.perps.handlers.protocol import MarketHandler
-from wayfinder_paths.core.perps.state import StateStore, SNAPSHOT_AGE_WARN_DAYS
+from wayfinder_paths.core.perps.state import SNAPSHOT_AGE_WARN_DAYS, StateStore
 from wayfinder_paths.core.strategies.risk_limits import RiskLimits
 from wayfinder_paths.core.strategies.Strategy import (
     StatusDict,
     StatusTuple,
     Strategy,
 )
-
 
 KNOWN_HIP3_DEXES: Final[set[str]] = {"xyz", "flx", "vntl", "hyna", "km"}
 
@@ -55,8 +53,8 @@ class ActivePerpsStrategy(Strategy):
 
     # ---------- subclass-declared (required) ----------
     REF: ClassVar[Path | str]
-    SIGNAL: ClassVar[str]                 # "module:fn" or "module.fn"
-    DECIDE: ClassVar[str | None] = None   # None ⇒ default_decide
+    SIGNAL: ClassVar[str]  # "module:fn" or "module.fn"
+    DECIDE: ClassVar[str | None] = None  # None ⇒ default_decide
     HIP3_DEXES: ClassVar[list[str]] = []
 
     # ---------- subclass shouldn't touch ----------
@@ -75,7 +73,9 @@ class ActivePerpsStrategy(Strategy):
         # Validate ref is loadable.
         ref_path = Path(cls.REF) if isinstance(cls.REF, (str, Path)) else None
         if ref_path is None or not ref_path.exists():
-            raise RuntimeError(f"{cls.__name__}.REF must point to an existing file: {cls.REF!r}")
+            raise RuntimeError(
+                f"{cls.__name__}.REF must point to an existing file: {cls.REF!r}"
+            )
 
         # Validate SIGNAL importable, DECIDE if set.
         if not getattr(cls, "SIGNAL", None):
@@ -83,12 +83,16 @@ class ActivePerpsStrategy(Strategy):
         try:
             _import_dotted(cls.SIGNAL)
         except (ImportError, AttributeError) as e:
-            raise RuntimeError(f"{cls.__name__}.SIGNAL = {cls.SIGNAL!r} not importable: {e}") from e
+            raise RuntimeError(
+                f"{cls.__name__}.SIGNAL = {cls.SIGNAL!r} not importable: {e}"
+            ) from e
         if cls.DECIDE:
             try:
                 _import_dotted(cls.DECIDE)
             except (ImportError, AttributeError) as e:
-                raise RuntimeError(f"{cls.__name__}.DECIDE = {cls.DECIDE!r} not importable: {e}") from e
+                raise RuntimeError(
+                    f"{cls.__name__}.DECIDE = {cls.DECIDE!r} not importable: {e}"
+                ) from e
 
         # Forbid override of @final methods.
         for name in LOCKED_METHODS:
@@ -116,6 +120,7 @@ class ActivePerpsStrategy(Strategy):
             self._decide_fn = _import_dotted(self.DECIDE)
         else:
             from wayfinder_paths.core.backtesting.perps import default_decide
+
             self._decide_fn = default_decide
         self._state = StateStore(self._strategy_name(), "live")
         self._risk_limits = RiskLimits.load_optional(Path(self.REF).parent)
@@ -140,7 +145,8 @@ class ActivePerpsStrategy(Strategy):
         prices, funding = await self._fetch_recent_data(perp)
         signal_frame = self._signal_fn(prices, funding, dict(self._ref.params))
         ctx = TriggerContext(
-            perp=perp, hip3=hip3,
+            perp=perp,
+            hip3=hip3,
             params=dict(self._ref.params),
             state=self._state,
             signal=signal_frame,
@@ -150,10 +156,17 @@ class ActivePerpsStrategy(Strategy):
         # Capture per-venue positions into state so the reconciler can replay
         # decide() with the same positions live had at this bar.
         positions_snapshot: dict[str, dict[str, dict[str, float]]] = {}
-        for venue_key, handler in [("perp", perp), *((f"hip3:{k}", h) for k, h in hip3.items())]:
+        for venue_key, handler in [
+            ("perp", perp),
+            *((f"hip3:{k}", h) for k, h in hip3.items()),
+        ]:
             pos = await handler.get_positions()
             positions_snapshot[venue_key] = {
-                sym: {"size": p.size, "entry_price": p.entry_price, "mark_price": p.mark_price}
+                sym: {
+                    "size": p.size,
+                    "entry_price": p.entry_price,
+                    "mark_price": p.mark_price,
+                }
                 for sym, p in pos.items()
             }
         self._state.set("positions", positions_snapshot)
@@ -190,7 +203,10 @@ class ActivePerpsStrategy(Strategy):
             "net_deposit": 0.0,
             "strategy_status": {
                 "ref_hash": self._ref.produced.ref_hash,
-                "venues": {"perp": self._ref.venues.perp, "hip3": self._ref.venues.hip3},
+                "venues": {
+                    "perp": self._ref.venues.perp,
+                    "hip3": self._ref.venues.hip3,
+                },
                 "last_state": self._state.snapshot(),
                 "snapshot_warning": self._oldest_snapshot_warning() or "",
             },
@@ -232,21 +248,32 @@ class ActivePerpsStrategy(Strategy):
           - a non-Hyperliquid venue (the protocol is generic — only the default
             assumes HL)
         """
-        from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter  # noqa: PLC0415
-        from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT  # noqa: PLC0415
-        from wayfinder_paths.core.perps.handlers.live import LiveHandler  # noqa: PLC0415
+        from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
+            HyperliquidAdapter,  # noqa: PLC0415
+        )
+        from wayfinder_paths.core.clients.DeltaLabClient import (
+            DELTA_LAB_CLIENT,  # noqa: PLC0415
+        )
+        from wayfinder_paths.core.perps.handlers.live import (
+            LiveHandler,  # noqa: PLC0415
+        )
         from wayfinder_paths.mcp.scripting import get_adapter  # noqa: PLC0415
 
         adapter = await get_adapter(HyperliquidAdapter, self._strategy_name())
         addr = adapter.wallet_address
 
         perp = LiveHandler(
-            adapter=adapter, wallet_address=addr, venue="perp",
+            adapter=adapter,
+            wallet_address=addr,
+            venue="perp",
             delta_lab_client=DELTA_LAB_CLIENT,
         )
         hip3 = {
             dex: LiveHandler(
-                adapter=adapter, wallet_address=addr, venue=f"hip3:{dex}", dex=dex,
+                adapter=adapter,
+                wallet_address=addr,
+                venue=f"hip3:{dex}",
+                dex=dex,
                 delta_lab_client=DELTA_LAB_CLIENT,
             )
             for dex in self.HIP3_DEXES
@@ -257,9 +284,7 @@ class ActivePerpsStrategy(Strategy):
             await h.refresh_mids()
         return perp, hip3
 
-    async def _fetch_recent_data(
-        self, perp: MarketHandler
-    ) -> tuple[Any, Any]:
+    async def _fetch_recent_data(self, perp: MarketHandler) -> tuple[Any, Any]:
         """Pull recent prices + funding for the signal window."""
         lookback = int(self._ref.params.get("signal_lookback_bars", 256))
         symbols = self._ref.data.symbols

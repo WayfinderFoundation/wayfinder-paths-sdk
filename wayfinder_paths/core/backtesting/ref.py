@@ -13,7 +13,7 @@ import json
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -115,7 +115,9 @@ def _from_dict(d: dict[str, Any]) -> BacktestRef:
             signal=CodeEntry(**sig),
             decide=CodeEntry(**dec) if dec else None,
         ),
-        venues=VenueRefs(perp=venues.get("perp", True), hip3=list(venues.get("hip3") or [])),
+        venues=VenueRefs(
+            perp=venues.get("perp", True), hip3=list(venues.get("hip3") or [])
+        ),
         data=DataRefs(
             symbols=list(data["symbols"]),
             interval=data["interval"],
@@ -220,7 +222,7 @@ def emit_backtest_ref(
     ref = BacktestRef(
         schema_version=SCHEMA_VERSION,
         produced=ProducedBy(
-            at=datetime.now(timezone.utc).isoformat(),
+            at=datetime.now(UTC).isoformat(),
             skill=skill,
             git_sha=_git_sha(),
         ),
@@ -272,7 +274,7 @@ def promote_candidate(strategy_dir: str | Path) -> Path:
         with target.open() as f:
             prev = json.load(f)
         prev_hash = prev.get("produced", {}).get("ref_hash", "nohash")
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         archived = archive_dir / f"{ts}_{prev_hash[:12]}.json"
         target.rename(archived)
 

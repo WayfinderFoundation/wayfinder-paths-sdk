@@ -34,10 +34,10 @@ class OrderResult:
 @dataclass
 class Position:
     symbol: str
-    size: float                 # signed: + long, - short
+    size: float  # signed: + long, - short
     entry_price: float
     mark_price: float
-    notional: float             # |size| * mark_price
+    notional: float  # |size| * mark_price
     unrealized_pnl: float = 0.0
     leverage: float | None = None
     raw: dict[str, Any] = field(default_factory=dict)
@@ -95,8 +95,12 @@ class MarketHandler(Protocol):
     async def orderbook(self, symbol: str, depth: int = 10) -> OrderBook: ...
 
     # ---------- market reads — disciplined slippage helpers ----------
-    async def quantity_at_price(self, symbol: str, side: Side, target_price: float) -> float: ...
-    async def price_for_quantity(self, symbol: str, side: Side, qty: float) -> float: ...
+    async def quantity_at_price(
+        self, symbol: str, side: Side, target_price: float
+    ) -> float: ...
+    async def price_for_quantity(
+        self, symbol: str, side: Side, qty: float
+    ) -> float: ...
 
     # ---------- pre-trade sizing ----------
     async def reservable_size(
@@ -120,8 +124,12 @@ class MarketHandler(Protocol):
         ...
 
     # ---------- market reads — history ----------
-    async def recent_prices(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame: ...
-    async def recent_funding(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame: ...
+    async def recent_prices(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame: ...
+    async def recent_funding(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame: ...
 
     # ---------- collateral ----------
     async def get_margin_balance(self) -> float: ...

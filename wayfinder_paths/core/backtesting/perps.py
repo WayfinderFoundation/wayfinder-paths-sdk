@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from datetime import datetime
 from typing import Any
 
 import numpy as np
@@ -39,7 +38,9 @@ INTERVAL_PERIODS = {
 }
 
 
-SignalFn = Callable[[pd.DataFrame, pd.DataFrame | None, dict[str, Any]], "SignalFrame | pd.DataFrame"]
+SignalFn = Callable[
+    [pd.DataFrame, pd.DataFrame | None, dict[str, Any]], "SignalFrame | pd.DataFrame"
+]
 DecideFn = Callable[[TriggerContext], Awaitable[None]]
 
 
@@ -58,17 +59,25 @@ async def default_decide(ctx: TriggerContext) -> None:
             continue
         side = "buy" if diff > 0 else "sell"
         # reduce-only when crossing toward flat in the opposite direction
-        reduce = (cur_size != 0) and (np.sign(cur_size) != np.sign(diff)) and (abs(diff) <= abs(cur_size))
+        reduce = (
+            (cur_size != 0)
+            and (np.sign(cur_size) != np.sign(diff))
+            and (abs(diff) <= abs(cur_size))
+        )
         await ctx.perp.place_order(sym, side, abs(diff), "market", reduce_only=reduce)
 
 
-def _normalize_signal(out: Any, index: pd.DatetimeIndex, symbols: list[str]) -> SignalFrame:
+def _normalize_signal(
+    out: Any, index: pd.DatetimeIndex, symbols: list[str]
+) -> SignalFrame:
     if isinstance(out, SignalFrame):
         return out
     if isinstance(out, pd.DataFrame):
         df = out.reindex(index=index, columns=symbols).fillna(0.0)
         return SignalFrame(targets=df)
-    raise TypeError(f"signal_fn must return SignalFrame or pd.DataFrame, got {type(out).__name__}")
+    raise TypeError(
+        f"signal_fn must return SignalFrame or pd.DataFrame, got {type(out).__name__}"
+    )
 
 
 async def backtest_perps_trigger(
@@ -120,7 +129,9 @@ async def backtest_perps_trigger(
 
     prices = prices[symbols].copy()
     if funding is not None:
-        funding = funding.reindex(index=prices.index, columns=symbols).ffill().fillna(0.0)
+        funding = (
+            funding.reindex(index=prices.index, columns=symbols).ffill().fillna(0.0)
+        )
 
     # Precompute signal frame.
     raw_signal = signal_fn(prices, funding, params)
@@ -128,9 +139,13 @@ async def backtest_perps_trigger(
 
     # Build handlers — primary perp + one per hip3 dex (data shared for now; per-dex
     # data wiring is a Phase 7+ concern).
-    perp = BacktestHandler("perp", prices, funding, slippage_bps, fee_bps, min_order_usd)
+    perp = BacktestHandler(
+        "perp", prices, funding, slippage_bps, fee_bps, min_order_usd
+    )
     hip3 = {
-        dex: BacktestHandler(f"hip3:{dex}", prices, funding, slippage_bps, fee_bps, min_order_usd)
+        dex: BacktestHandler(
+            f"hip3:{dex}", prices, funding, slippage_bps, fee_bps, min_order_usd
+        )
         for dex in hip3_dexes
     }
 
@@ -160,17 +175,19 @@ async def backtest_perps_trigger(
     def _record_fills(fills, t):
         for f in fills:
             if f.ok:
-                trades.append({
-                    "timestamp": t,
-                    "venue": f.venue,
-                    "symbol": f.symbol,
-                    "side": f.side,
-                    "size": f.fill_size,
-                    "price": f.fill_price,
-                    "fee": f.fee_paid,
-                    "order_type": f.order_type,
-                    "reduce_only": f.reduce_only,
-                })
+                trades.append(
+                    {
+                        "timestamp": t,
+                        "venue": f.venue,
+                        "symbol": f.symbol,
+                        "side": f.side,
+                        "size": f.fill_size,
+                        "price": f.fill_price,
+                        "fee": f.fee_paid,
+                        "order_type": f.order_type,
+                        "reduce_only": f.reduce_only,
+                    }
+                )
 
     for i, t in enumerate(prices.index):
         # 1) advance handlers; apply pending fills (next-bar-open mode only — at the new bar's price).
@@ -182,15 +199,21 @@ async def backtest_perps_trigger(
         # 2) expose pre-trade NAV to decide. Match legacy: NAV is measured BEFORE
         #    this bar's funding accrual (funding is debited after the trade loop).
         unrealized_pre = sum(h.mark_to_market_value() for h in [perp, *hip3.values()])
-        bar_costs_pre = sum(h._bar_fees - h._bar_realized_pnl  # noqa: SLF001
-                            for h in [perp, *hip3.values()])
+        bar_costs_pre = sum(
+            h._bar_fees - h._bar_realized_pnl  # noqa: SLF001
+            for h in [perp, *hip3.values()]
+        )
         nav_pre = float(cash) + float(unrealized_pre) - bar_costs_pre
         state.set("nav", nav_pre)
 
         # 4) build context and run decide.
         ctx = TriggerContext(
-            perp=perp, hip3=hip3, params=params, state=state,
-            signal=signal_frame, t=t.to_pydatetime(),
+            perp=perp,
+            hip3=hip3,
+            params=params,
+            state=state,
+            signal=signal_frame,
+            t=t.to_pydatetime(),
         )
         with purity_sandbox():
             await decide(ctx)
@@ -225,7 +248,11 @@ async def backtest_perps_trigger(
         equity[i] = nav
 
         fee_series[i] = bar_fees
-        funding_series[i] = -bar_funding  # convention: negative = income (matches quick_backtest's total_funding)
+        funding_series[
+            i
+        ] = (
+            -bar_funding
+        )  # convention: negative = income (matches quick_backtest's total_funding)
         cost_series[i] = bar_fees
         turnover[i] = bar_turnover / max(initial_capital, 1.0)
         realized_series[i] = bar_realized
@@ -245,17 +272,22 @@ async def backtest_perps_trigger(
     returns = equity_series.pct_change().fillna(0.0)
     pnl_series = equity_series.diff().fillna(0.0).to_numpy()
 
-    positions_over_time = pd.DataFrame(positions_history, index=prices.index).fillna(0.0)
+    positions_over_time = pd.DataFrame(positions_history, index=prices.index).fillna(
+        0.0
+    )
 
-    metrics_by_period = pd.DataFrame({
-        "equity": equity_series.values,
-        "turnover": turnover,
-        "cost": cost_series,
-        "fees": fee_series,
-        "funding": funding_series,
-        "realized_pnl": realized_series,
-        "pnl": pnl_series,
-    }, index=prices.index)
+    metrics_by_period = pd.DataFrame(
+        {
+            "equity": equity_series.values,
+            "turnover": turnover,
+            "cost": cost_series,
+            "fees": fee_series,
+            "funding": funding_series,
+            "realized_pnl": realized_series,
+            "pnl": pnl_series,
+        },
+        index=prices.index,
+    )
 
     periods_per_year = INTERVAL_PERIODS.get(interval, 365 * 24)
     stats: BacktestStats = calculate_stats(

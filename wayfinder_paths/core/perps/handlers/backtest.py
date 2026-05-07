@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 import random
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import numpy as np
@@ -36,6 +36,7 @@ def _violation(name: str):
             f"decide() called {name} during backtest — signal/decide must be deterministic. "
             "Use ctx.t for time and seed your own RNG via params."
         )
+
     return _raise
 
 
@@ -50,15 +51,15 @@ def purity_sandbox():
     real_time = time.time
     real_mono = time.monotonic
     real_rand = random.random
-    time.time = _violation("time.time")                # type: ignore[assignment]
-    time.monotonic = _violation("time.monotonic")      # type: ignore[assignment]
-    random.random = _violation("random.random")        # type: ignore[assignment]
+    time.time = _violation("time.time")  # type: ignore[assignment]
+    time.monotonic = _violation("time.monotonic")  # type: ignore[assignment]
+    random.random = _violation("random.random")  # type: ignore[assignment]
     try:
         yield
     finally:
-        time.time = real_time                          # type: ignore[assignment]
-        time.monotonic = real_mono                     # type: ignore[assignment]
-        random.random = real_rand                      # type: ignore[assignment]
+        time.time = real_time  # type: ignore[assignment]
+        time.monotonic = real_mono  # type: ignore[assignment]
+        random.random = real_rand  # type: ignore[assignment]
 
 
 class BacktestHandler:
@@ -85,8 +86,14 @@ class BacktestHandler:
         self._sym_to_col = {s: i for i, s in enumerate(self._symbols)}
         self._prices_arr: np.ndarray = prices.to_numpy(dtype=float, copy=False)
         if funding is not None:
-            funding = funding.reindex(index=self._index, columns=self._symbols).ffill().fillna(0.0)
-            self._funding_arr: np.ndarray | None = funding.to_numpy(dtype=float, copy=False)
+            funding = (
+                funding.reindex(index=self._index, columns=self._symbols)
+                .ffill()
+                .fillna(0.0)
+            )
+            self._funding_arr: np.ndarray | None = funding.to_numpy(
+                dtype=float, copy=False
+            )
         else:
             self._funding_arr = None
 
@@ -95,8 +102,8 @@ class BacktestHandler:
         self.min_order_usd = float(min_order_usd)
 
         # Position state — signed sizes in base units.
-        self._positions: dict[str, float] = {s: 0.0 for s in self._symbols}
-        self._entry_price: dict[str, float] = {s: 0.0 for s in self._symbols}
+        self._positions: dict[str, float] = dict.fromkeys(self._symbols, 0.0)
+        self._entry_price: dict[str, float] = dict.fromkeys(self._symbols, 0.0)
 
         # Pending = orders placed during decide() at bar i, fill at bar i+1.
         self._pending: list[dict[str, Any]] = []
@@ -134,20 +141,38 @@ class BacktestHandler:
 
             if order_type in ("limit", "ioc_limit") and limit is not None:
                 if side == "buy" and fill_price > limit:
-                    results.append(OrderResult(
-                        ok=False, venue=self.venue, symbol=sym, side=side, size=size,
-                        order_type=order_type, limit_price=limit, fill_price=None, fill_size=0.0,
-                        error="limit not crossed",
-                        timestamp=self._index[i].to_pydatetime(),
-                    ))
+                    results.append(
+                        OrderResult(
+                            ok=False,
+                            venue=self.venue,
+                            symbol=sym,
+                            side=side,
+                            size=size,
+                            order_type=order_type,
+                            limit_price=limit,
+                            fill_price=None,
+                            fill_size=0.0,
+                            error="limit not crossed",
+                            timestamp=self._index[i].to_pydatetime(),
+                        )
+                    )
                     continue
                 if side == "sell" and fill_price < limit:
-                    results.append(OrderResult(
-                        ok=False, venue=self.venue, symbol=sym, side=side, size=size,
-                        order_type=order_type, limit_price=limit, fill_price=None, fill_size=0.0,
-                        error="limit not crossed",
-                        timestamp=self._index[i].to_pydatetime(),
-                    ))
+                    results.append(
+                        OrderResult(
+                            ok=False,
+                            venue=self.venue,
+                            symbol=sym,
+                            side=side,
+                            size=size,
+                            order_type=order_type,
+                            limit_price=limit,
+                            fill_price=None,
+                            fill_size=0.0,
+                            error="limit not crossed",
+                            timestamp=self._index[i].to_pydatetime(),
+                        )
+                    )
                     continue
 
             signed = size if side == "buy" else -size
@@ -155,12 +180,22 @@ class BacktestHandler:
                 cur = self._positions[sym]
                 if cur * signed >= 0:
                     # Reduce-only and not reducing → reject.
-                    results.append(OrderResult(
-                        ok=False, venue=self.venue, symbol=sym, side=side, size=size,
-                        order_type=order_type, limit_price=limit, fill_price=None, fill_size=0.0,
-                        error="reduce-only would not reduce",
-                        timestamp=self._index[i].to_pydatetime(), reduce_only=True,
-                    ))
+                    results.append(
+                        OrderResult(
+                            ok=False,
+                            venue=self.venue,
+                            symbol=sym,
+                            side=side,
+                            size=size,
+                            order_type=order_type,
+                            limit_price=limit,
+                            fill_price=None,
+                            fill_size=0.0,
+                            error="reduce-only would not reduce",
+                            timestamp=self._index[i].to_pydatetime(),
+                            reduce_only=True,
+                        )
+                    )
                     continue
                 if abs(signed) > abs(cur):
                     signed = -cur
@@ -193,13 +228,23 @@ class BacktestHandler:
 
             self._positions[sym] = new
 
-            results.append(OrderResult(
-                ok=True, venue=self.venue, symbol=sym, side=side, size=size,
-                order_type=order_type, limit_price=limit, fill_price=fill_price,
-                fill_size=size, fee_paid=fee, reduce_only=reduce_only,
-                timestamp=self._index[i].to_pydatetime(),
-                order_id=order["id"],
-            ))
+            results.append(
+                OrderResult(
+                    ok=True,
+                    venue=self.venue,
+                    symbol=sym,
+                    side=side,
+                    size=size,
+                    order_type=order_type,
+                    limit_price=limit,
+                    fill_price=fill_price,
+                    fill_size=size,
+                    fee_paid=fee,
+                    reduce_only=reduce_only,
+                    timestamp=self._index[i].to_pydatetime(),
+                    order_id=order["id"],
+                )
+            )
 
         self._pending.clear()
         return results
@@ -240,7 +285,8 @@ class BacktestHandler:
         i = self._bar_index
         return sum(
             abs(sz) * float(self._prices_arr[i, self._sym_to_col[s]])
-            for s, sz in self._positions.items() if sz != 0
+            for s, sz in self._positions.items()
+            if sz != 0
         )
 
     def consume_bar_costs(self) -> tuple[float, float, float]:
@@ -264,17 +310,19 @@ class BacktestHandler:
             mid = float(self._prices_arr[i, self._sym_to_col[sym]])
             cur = self._positions[sym]
             signed = o["size"] if o["side"] == "buy" else -o["size"]
-            out.append({
-                "venue": self.venue,
-                "id": o["id"],
-                "sym": sym,
-                "side": o["side"],
-                "size": o["size"],
-                "mid": mid,
-                "current_size": cur,
-                "signed_delta": signed,
-                "new_size": cur + signed,
-            })
+            out.append(
+                {
+                    "venue": self.venue,
+                    "id": o["id"],
+                    "sym": sym,
+                    "side": o["side"],
+                    "size": o["size"],
+                    "mid": mid,
+                    "current_size": cur,
+                    "signed_delta": signed,
+                    "new_size": cur + signed,
+                }
+            )
         return out
 
     def scale_pending(self, scale: float) -> int:
@@ -314,30 +362,52 @@ class BacktestHandler:
     ) -> OrderResult:
         if symbol not in self._sym_to_col:
             return OrderResult(
-                ok=False, venue=self.venue, symbol=symbol, side=side, size=size,
-                order_type=order_type, error=f"unknown symbol on venue {self.venue}",
+                ok=False,
+                venue=self.venue,
+                symbol=symbol,
+                side=side,
+                size=size,
+                order_type=order_type,
+                error=f"unknown symbol on venue {self.venue}",
             )
         mid = float(self._prices_arr[self._bar_index, self._sym_to_col[symbol]])
         notional = abs(size) * mid
         if notional < self.min_order_usd:
             return OrderResult(
-                ok=False, venue=self.venue, symbol=symbol, side=side, size=size,
-                order_type=order_type, limit_price=limit_price,
+                ok=False,
+                venue=self.venue,
+                symbol=symbol,
+                side=side,
+                size=size,
+                order_type=order_type,
+                limit_price=limit_price,
                 error=f"below min_order_usd ({notional:.2f} < {self.min_order_usd})",
             )
         oid = f"bt-{self.venue}-{self._bar_index}-{len(self._intents)}"
         intent = {
-            "id": oid, "symbol": symbol, "side": side, "size": size,
-            "order_type": order_type, "limit_price": limit_price,
-            "reduce_only": reduce_only, "placed_at_bar": self._bar_index,
+            "id": oid,
+            "symbol": symbol,
+            "side": side,
+            "size": size,
+            "order_type": order_type,
+            "limit_price": limit_price,
+            "reduce_only": reduce_only,
+            "placed_at_bar": self._bar_index,
             "placed_at_t": self._index[self._bar_index],
         }
         self._intents.append(intent)
         self._pending.append(intent)
         return OrderResult(
-            ok=True, venue=self.venue, symbol=symbol, side=side, size=size,
-            order_type=order_type, limit_price=limit_price, reduce_only=reduce_only,
-            order_id=oid, fill_size=0.0,  # fills at next bar
+            ok=True,
+            venue=self.venue,
+            symbol=symbol,
+            side=side,
+            size=size,
+            order_type=order_type,
+            limit_price=limit_price,
+            reduce_only=reduce_only,
+            order_id=oid,
+            fill_size=0.0,  # fills at next bar
             timestamp=self._index[self._bar_index].to_pydatetime(),
         )
 
@@ -355,20 +425,31 @@ class BacktestHandler:
             mid = float(self._prices_arr[i, self._sym_to_col[sym]])
             entry = self._entry_price[sym]
             out[sym] = Position(
-                symbol=sym, size=sz, entry_price=entry, mark_price=mid,
-                notional=abs(sz) * mid, unrealized_pnl=sz * (mid - entry),
+                symbol=sym,
+                size=sz,
+                entry_price=entry,
+                mark_price=mid,
+                notional=abs(sz) * mid,
+                unrealized_pnl=sz * (mid - entry),
             )
         return out
 
     async def get_open_orders(self) -> list[Order]:
         out = []
         for o in self._pending:
-            out.append(Order(
-                order_id=o["id"], symbol=o["symbol"], side=o["side"], size=o["size"],
-                order_type=o["order_type"], limit_price=o["limit_price"],
-                placed_at=o["placed_at_t"].to_pydatetime(), venue=self.venue,
-                reduce_only=o["reduce_only"],
-            ))
+            out.append(
+                Order(
+                    order_id=o["id"],
+                    symbol=o["symbol"],
+                    side=o["side"],
+                    size=o["size"],
+                    order_type=o["order_type"],
+                    limit_price=o["limit_price"],
+                    placed_at=o["placed_at_t"].to_pydatetime(),
+                    venue=self.venue,
+                    reduce_only=o["reduce_only"],
+                )
+            )
         return out
 
     def mid(self, symbol: str) -> float:
@@ -433,12 +514,16 @@ class BacktestHandler:
                 hi = mid_size
         return lo
 
-    async def quantity_at_price(self, symbol: str, side: Side, target_price: float) -> float:
+    async def quantity_at_price(
+        self, symbol: str, side: Side, target_price: float
+    ) -> float:
         m = self.mid(symbol)
         slip = self.slippage_bps / 1e4
         edge = m * (1 + slip) if side == "buy" else m * (1 - slip)
-        if (side == "buy" and target_price >= edge) or (side == "sell" and target_price <= edge):
-            return 1e9   # idealized
+        if (side == "buy" and target_price >= edge) or (
+            side == "sell" and target_price <= edge
+        ):
+            return 1e9  # idealized
         return 0.0
 
     async def price_for_quantity(self, symbol: str, side: Side, qty: float) -> float:
@@ -446,7 +531,9 @@ class BacktestHandler:
         slip = self.slippage_bps / 1e4
         return m * (1 + slip) if side == "buy" else m * (1 - slip)
 
-    async def recent_prices(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def recent_prices(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         i = self._bar_index
         lo = max(0, i - lookback_bars + 1)
         cols = [self._sym_to_col[s] for s in symbols]
@@ -456,7 +543,9 @@ class BacktestHandler:
             columns=symbols,
         )
 
-    async def recent_funding(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def recent_funding(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         if self._funding_arr is None:
             return pd.DataFrame(columns=symbols)
         i = self._bar_index
@@ -474,16 +563,26 @@ class BacktestHandler:
 
     async def transfer_in(self, amount: float) -> OrderResult:
         return OrderResult(
-            ok=True, venue=self.venue, symbol="USDC", side="buy", size=amount,
-            order_type="market", fill_size=amount,
+            ok=True,
+            venue=self.venue,
+            symbol="USDC",
+            side="buy",
+            size=amount,
+            order_type="market",
+            fill_size=amount,
             timestamp=self._index[self._bar_index].to_pydatetime(),
             raw={"action": "transfer_in"},
         )
 
     async def transfer_out(self, amount: float) -> OrderResult:
         return OrderResult(
-            ok=True, venue=self.venue, symbol="USDC", side="sell", size=amount,
-            order_type="market", fill_size=amount,
+            ok=True,
+            venue=self.venue,
+            symbol="USDC",
+            side="sell",
+            size=amount,
+            order_type="market",
+            fill_size=amount,
             timestamp=self._index[self._bar_index].to_pydatetime(),
             raw={"action": "transfer_out"},
         )
@@ -491,7 +590,7 @@ class BacktestHandler:
     def now(self) -> datetime:
         ts = self._index[self._bar_index]
         py = ts.to_pydatetime()
-        return py if py.tzinfo else py.replace(tzinfo=timezone.utc)
+        return py if py.tzinfo else py.replace(tzinfo=UTC)
 
     @property
     def index(self) -> pd.DatetimeIndex:

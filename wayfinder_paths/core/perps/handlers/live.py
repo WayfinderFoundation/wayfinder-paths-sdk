@@ -12,7 +12,7 @@ which the HL adapter exposes via `_post_across_dexes` — wired below where the
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -26,7 +26,6 @@ from wayfinder_paths.core.perps.handlers.protocol import (
     Side,
 )
 
-
 # Default slippage bound passed to HL `place_market_order` (it converts to a marketable
 # limit). Strategies can override via params; this is just the per-call cap.
 _DEFAULT_SLIPPAGE = 0.005  # 50 bps
@@ -38,11 +37,11 @@ class LiveHandler:
     def __init__(
         self,
         *,
-        adapter: Any,                          # HyperliquidAdapter (typed loosely to avoid hard import)
+        adapter: Any,  # HyperliquidAdapter (typed loosely to avoid hard import)
         wallet_address: str,
         venue: str = "perp",
-        dex: str | None = None,                # None = primary perp; "xyz"/"flx"/... for HIP-3
-        delta_lab_client: Any | None = None,   # for recent_prices/funding fallback chain
+        dex: str | None = None,  # None = primary perp; "xyz"/"flx"/... for HIP-3
+        delta_lab_client: Any | None = None,  # for recent_prices/funding fallback chain
         default_slippage: float = _DEFAULT_SLIPPAGE,
     ):
         self.adapter = adapter
@@ -65,35 +64,61 @@ class LiveHandler:
         asset_id = self.adapter.coin_to_asset.get(symbol)
         if asset_id is None:
             return OrderResult(
-                ok=False, venue=self.venue, symbol=symbol, side=side, size=size,
-                order_type=order_type, error=f"unknown symbol {symbol!r}",
+                ok=False,
+                venue=self.venue,
+                symbol=symbol,
+                side=side,
+                size=size,
+                order_type=order_type,
+                error=f"unknown symbol {symbol!r}",
                 timestamp=self.now(),
             )
         is_buy = side == "buy"
         if order_type == "market":
             ok, raw = await self.adapter.place_market_order(
-                asset_id=asset_id, is_buy=is_buy, slippage=self.default_slippage,
-                size=size, address=self.wallet_address, reduce_only=reduce_only,
+                asset_id=asset_id,
+                is_buy=is_buy,
+                slippage=self.default_slippage,
+                size=size,
+                address=self.wallet_address,
+                reduce_only=reduce_only,
             )
         elif order_type in ("limit", "ioc_limit") and limit_price is not None:
             ok, raw = await self.adapter.place_limit_order(
-                asset_id=asset_id, is_buy=is_buy, price=limit_price, size=size,
-                address=self.wallet_address, reduce_only=reduce_only,
+                asset_id=asset_id,
+                is_buy=is_buy,
+                price=limit_price,
+                size=size,
+                address=self.wallet_address,
+                reduce_only=reduce_only,
                 ioc=(order_type == "ioc_limit"),
             )
         else:
             return OrderResult(
-                ok=False, venue=self.venue, symbol=symbol, side=side, size=size,
-                order_type=order_type, error="limit order requires limit_price",
+                ok=False,
+                venue=self.venue,
+                symbol=symbol,
+                side=side,
+                size=size,
+                order_type=order_type,
+                error="limit order requires limit_price",
                 timestamp=self.now(),
             )
 
         return OrderResult(
-            ok=bool(ok), venue=self.venue, symbol=symbol, side=side, size=size,
-            order_type=order_type, limit_price=limit_price, reduce_only=reduce_only,
+            ok=bool(ok),
+            venue=self.venue,
+            symbol=symbol,
+            side=side,
+            size=size,
+            order_type=order_type,
+            limit_price=limit_price,
+            reduce_only=reduce_only,
             timestamp=self.now(),
             raw=raw if isinstance(raw, dict) else {"raw": raw},
-            error=None if ok else (raw.get("error") if isinstance(raw, dict) else str(raw)),
+            error=None
+            if ok
+            else (raw.get("error") if isinstance(raw, dict) else str(raw)),
         )
 
     async def cancel(self, order_id: str) -> bool:
@@ -103,7 +128,9 @@ class LiveHandler:
         try:
             asset_id, oid = order_id.split(":", 1)
             ok, _ = await self.adapter.cancel_order(
-                asset_id=int(asset_id), oid=int(oid), address=self.wallet_address,
+                asset_id=int(asset_id),
+                oid=int(oid),
+                address=self.wallet_address,
             )
             return bool(ok)
         except (ValueError, AttributeError):
@@ -130,8 +157,12 @@ class LiveHandler:
             lev_block = p.get("leverage") or {}
             lev_val = lev_block.get("value") if isinstance(lev_block, dict) else None
             out[sym] = Position(
-                symbol=sym, size=sz, entry_price=entry, mark_price=mark,
-                notional=notional, unrealized_pnl=unreal,
+                symbol=sym,
+                size=sz,
+                entry_price=entry,
+                mark_price=mark,
+                notional=notional,
+                unrealized_pnl=unreal,
                 leverage=float(lev_val) if lev_val is not None else None,
                 raw=ap,
             )
@@ -144,20 +175,25 @@ class LiveHandler:
         out = []
         for o in raw:
             try:
-                placed = datetime.fromtimestamp(int(o.get("timestamp", 0)) / 1000, tz=timezone.utc)
+                placed = datetime.fromtimestamp(
+                    int(o.get("timestamp", 0)) / 1000, tz=UTC
+                )
             except (TypeError, ValueError):
                 placed = self.now()
-            out.append(Order(
-                order_id=f"{o.get('asset', '?')}:{o.get('oid', '?')}",
-                symbol=str(o.get("coin", "?")),
-                side="buy" if o.get("side") == "B" else "sell",
-                size=float(o.get("sz", 0.0)),
-                order_type="limit",
-                limit_price=float(o.get("limitPx", 0.0)) or None,
-                placed_at=placed, venue=self.venue,
-                reduce_only=bool(o.get("reduceOnly", False)),
-                raw=o,
-            ))
+            out.append(
+                Order(
+                    order_id=f"{o.get('asset', '?')}:{o.get('oid', '?')}",
+                    symbol=str(o.get("coin", "?")),
+                    side="buy" if o.get("side") == "B" else "sell",
+                    size=float(o.get("sz", 0.0)),
+                    order_type="limit",
+                    limit_price=float(o.get("limitPx", 0.0)) or None,
+                    placed_at=placed,
+                    venue=self.venue,
+                    reduce_only=bool(o.get("reduceOnly", False)),
+                    raw=o,
+                )
+            )
         return out
 
     # ---------- market reads — pointwise ----------
@@ -181,14 +217,20 @@ class LiveHandler:
     async def orderbook(self, symbol: str, depth: int = 10) -> OrderBook:
         ok, raw = await self.adapter.get_l2_book(symbol)
         if not ok or not isinstance(raw, dict):
-            return OrderBook(symbol=symbol, bids=[], asks=[], timestamp=self.now(), venue=self.venue)
+            return OrderBook(
+                symbol=symbol, bids=[], asks=[], timestamp=self.now(), venue=self.venue
+            )
         levels = raw.get("levels") or [[], []]
         bids = [(float(l["px"]), float(l["sz"])) for l in (levels[0] or [])[:depth]]
         asks = [(float(l["px"]), float(l["sz"])) for l in (levels[1] or [])[:depth]]
-        return OrderBook(symbol=symbol, bids=bids, asks=asks, timestamp=self.now(), venue=self.venue)
+        return OrderBook(
+            symbol=symbol, bids=bids, asks=asks, timestamp=self.now(), venue=self.venue
+        )
 
     # ---------- market reads — disciplined slippage helpers ----------
-    async def quantity_at_price(self, symbol: str, side: Side, target_price: float) -> float:
+    async def quantity_at_price(
+        self, symbol: str, side: Side, target_price: float
+    ) -> float:
         ob = await self.orderbook(symbol, depth=20)
         if side == "buy":
             return sum(sz for px, sz in ob.asks if px <= target_price)
@@ -225,7 +267,9 @@ class LiveHandler:
         return requested_size
 
     # ---------- market reads — history ----------
-    async def recent_prices(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def recent_prices(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         # Delta Lab primary, HL candles fallback (D7).
         if self.delta_lab_client is not None:
             try:
@@ -234,7 +278,9 @@ class LiveHandler:
                 pass
         return await self._fetch_prices_hl(symbols, lookback_bars)
 
-    async def recent_funding(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def recent_funding(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         if self.delta_lab_client is not None:
             try:
                 return await self._fetch_funding_delta_lab(symbols, lookback_bars)
@@ -242,24 +288,40 @@ class LiveHandler:
                 pass
         return pd.DataFrame()
 
-    async def _fetch_prices_delta_lab(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+    async def _fetch_prices_delta_lab(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         # Each symbol → asset timeseries (price). Hourly only for now.
         from wayfinder_paths.core.backtesting.data import fetch_prices  # noqa: PLC0415
+
         days = max(1, lookback_bars // 24 + 1)
         from datetime import timedelta
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
-        return await fetch_prices(symbols, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), "1h")
 
-    async def _fetch_funding_delta_lab(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
-        from wayfinder_paths.core.backtesting.data import fetch_funding_rates  # noqa: PLC0415
+        end = datetime.now(UTC)
+        start = end - timedelta(days=days)
+        return await fetch_prices(
+            symbols, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"), "1h"
+        )
+
+    async def _fetch_funding_delta_lab(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         from datetime import timedelta
-        days = max(1, lookback_bars // 24 + 1)
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=days)
-        return await fetch_funding_rates(symbols, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
 
-    async def _fetch_prices_hl(self, symbols: list[str], lookback_bars: int) -> pd.DataFrame:
+        from wayfinder_paths.core.backtesting.data import (
+            fetch_funding_rates,  # noqa: PLC0415
+        )
+
+        days = max(1, lookback_bars // 24 + 1)
+        end = datetime.now(UTC)
+        start = end - timedelta(days=days)
+        return await fetch_funding_rates(
+            symbols, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+        )
+
+    async def _fetch_prices_hl(
+        self, symbols: list[str], lookback_bars: int
+    ) -> pd.DataFrame:
         # Fallback path. The HL candles surface lives on the adapter; left as a TODO
         # on this scaffold — Phase 7 polish wires `get_candles` per symbol and stitches.
         return pd.DataFrame(columns=symbols)
@@ -278,7 +340,11 @@ class LiveHandler:
     async def transfer_in(self, amount: float) -> OrderResult:
         # USDC bridge to HL — strategies typically do this once at deposit time, not per bar.
         return OrderResult(
-            ok=False, venue=self.venue, symbol="USDC", side="buy", size=amount,
+            ok=False,
+            venue=self.venue,
+            symbol="USDC",
+            side="buy",
+            size=amount,
             order_type="market",
             error="transfer_in not wired on LiveHandler — call HyperliquidAdapter directly via deposit() flow",
             timestamp=self.now(),
@@ -286,20 +352,33 @@ class LiveHandler:
 
     async def transfer_out(self, amount: float) -> OrderResult:
         try:
-            ok, raw = await self.adapter.withdraw(amount=amount, address=self.wallet_address)
+            ok, raw = await self.adapter.withdraw(
+                amount=amount, address=self.wallet_address
+            )
             return OrderResult(
-                ok=bool(ok), venue=self.venue, symbol="USDC", side="sell", size=amount,
-                order_type="market", fill_size=amount if ok else 0.0,
+                ok=bool(ok),
+                venue=self.venue,
+                symbol="USDC",
+                side="sell",
+                size=amount,
+                order_type="market",
+                fill_size=amount if ok else 0.0,
                 timestamp=self.now(),
                 raw=raw if isinstance(raw, dict) else {"raw": raw},
                 error=None if ok else str(raw),
             )
         except Exception as e:  # noqa: BLE001
             return OrderResult(
-                ok=False, venue=self.venue, symbol="USDC", side="sell", size=amount,
-                order_type="market", error=str(e), timestamp=self.now(),
+                ok=False,
+                venue=self.venue,
+                symbol="USDC",
+                side="sell",
+                size=amount,
+                order_type="market",
+                error=str(e),
+                timestamp=self.now(),
             )
 
     # ---------- time ----------
     def now(self) -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)

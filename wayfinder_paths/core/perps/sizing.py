@@ -49,11 +49,17 @@ async def reservable_size_for(
     """
     lev = float(leverage if leverage is not None else ctx.params.get("leverage", 1.0))
     if cost_bps is None:
-        cost_bps = float(ctx.params.get("fee_bps", 0.0)) + float(ctx.params.get("slippage_bps", 0.0))
+        cost_bps = float(ctx.params.get("fee_bps", 0.0)) + float(
+            ctx.params.get("slippage_bps", 0.0)
+        )
     free_margin = _free_margin_from_ctx(ctx, lev)
     return await handler.reservable_size(
-        symbol, side, requested_size,
-        free_margin=free_margin, leverage=lev, cost_bps=cost_bps,
+        symbol,
+        side,
+        requested_size,
+        free_margin=free_margin,
+        leverage=lev,
+        cost_bps=cost_bps,
     )
 
 

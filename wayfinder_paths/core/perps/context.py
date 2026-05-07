@@ -20,7 +20,7 @@ class SignalFrame:
     (the default `decide` interprets values as target sizes in base units).
     """
 
-    targets: pd.DataFrame              # index=timestamps, columns=symbols
+    targets: pd.DataFrame  # index=timestamps, columns=symbols
     extras: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     def at(self, t: datetime) -> pd.Series:

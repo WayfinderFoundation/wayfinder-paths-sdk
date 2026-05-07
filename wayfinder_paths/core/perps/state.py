@@ -10,7 +10,7 @@ Modes:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -34,14 +34,14 @@ def _state_file(strategy_name: str) -> Path:
 
 def _ts_to_filename(t: datetime) -> str:
     if t.tzinfo is None:
-        t = t.replace(tzinfo=timezone.utc)
+        t = t.replace(tzinfo=UTC)
     # filesystem-safe iso (no colons)
-    return t.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".json"
+    return t.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ") + ".json"
 
 
 def _filename_to_ts(name: str) -> datetime:
     stem = name.removesuffix(".json")
-    return datetime.strptime(stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+    return datetime.strptime(stem, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
 
 
 class StateStore:
@@ -109,7 +109,7 @@ class StateStore:
         snaps = cls.list_snapshots(strategy_name)
         if not snaps:
             return None
-        return (datetime.now(timezone.utc) - snaps[0]).total_seconds() / 86400
+        return (datetime.now(UTC) - snaps[0]).total_seconds() / 86400
 
     def prune_snapshots_before(self, cutoff: datetime) -> int:
         if self.mode != "live":
@@ -125,7 +125,7 @@ class StateStore:
         if not d.exists():
             return 0
         if cutoff.tzinfo is None:
-            cutoff = cutoff.replace(tzinfo=timezone.utc)
+            cutoff = cutoff.replace(tzinfo=UTC)
         deleted = 0
         for p in list(d.iterdir()):
             if p.suffix != ".json":

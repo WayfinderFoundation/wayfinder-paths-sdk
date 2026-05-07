@@ -8,7 +8,7 @@ backtest implementation against historical frames.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -44,8 +44,12 @@ class ReconcileHandler(BacktestHandler):
         min_order_usd: float = 10.0,
     ):
         super().__init__(
-            venue=venue, prices=prices, funding=funding,
-            slippage_bps=slippage_bps, fee_bps=fee_bps, min_order_usd=min_order_usd,
+            venue=venue,
+            prices=prices,
+            funding=funding,
+            slippage_bps=slippage_bps,
+            fee_bps=fee_bps,
+            min_order_usd=min_order_usd,
         )
         self.strategy_name = strategy_name
         self._snapshot_positions: dict[str, float] = {}
@@ -79,22 +83,39 @@ class ReconcileHandler(BacktestHandler):
         """Record the intent without mutating positions or queueing fills."""
         if symbol not in self._sym_to_col:
             return OrderResult(
-                ok=False, venue=self.venue, symbol=symbol, side=side, size=size,
-                order_type=order_type, error=f"unknown symbol on venue {self.venue}",
+                ok=False,
+                venue=self.venue,
+                symbol=symbol,
+                side=side,
+                size=size,
+                order_type=order_type,
+                error=f"unknown symbol on venue {self.venue}",
             )
         oid = f"recon-{self.venue}-{self._bar_index}-{len(self._intents)}"
         intent = {
-            "id": oid, "symbol": symbol, "side": side, "size": size,
-            "order_type": order_type, "limit_price": limit_price,
-            "reduce_only": reduce_only, "placed_at_bar": self._bar_index,
+            "id": oid,
+            "symbol": symbol,
+            "side": side,
+            "size": size,
+            "order_type": order_type,
+            "limit_price": limit_price,
+            "reduce_only": reduce_only,
+            "placed_at_bar": self._bar_index,
             "placed_at_t": self._index[self._bar_index],
         }
         self._intents.append(intent)
         # Note: NOT added to self._pending — recon never simulates fills.
         return OrderResult(
-            ok=True, venue=self.venue, symbol=symbol, side=side, size=size,
-            order_type=order_type, limit_price=limit_price, reduce_only=reduce_only,
-            order_id=oid, fill_size=0.0,
+            ok=True,
+            venue=self.venue,
+            symbol=symbol,
+            side=side,
+            size=size,
+            order_type=order_type,
+            limit_price=limit_price,
+            reduce_only=reduce_only,
+            order_id=oid,
+            fill_size=0.0,
             timestamp=self._index[self._bar_index].to_pydatetime(),
         )
 
@@ -107,8 +128,12 @@ class ReconcileHandler(BacktestHandler):
             mid = float(self._prices_arr[i, self._sym_to_col[sym]])
             entry = self._snapshot_entry.get(sym, mid)
             out[sym] = Position(
-                symbol=sym, size=sz, entry_price=entry, mark_price=mid,
-                notional=abs(sz) * mid, unrealized_pnl=sz * (mid - entry),
+                symbol=sym,
+                size=sz,
+                entry_price=entry,
+                mark_price=mid,
+                notional=abs(sz) * mid,
+                unrealized_pnl=sz * (mid - entry),
             )
         return out
 
@@ -118,4 +143,4 @@ class ReconcileHandler(BacktestHandler):
     def now(self) -> datetime:
         ts = self._index[self._bar_index]
         py = ts.to_pydatetime()
-        return py if py.tzinfo else py.replace(tzinfo=timezone.utc)
+        return py if py.tzinfo else py.replace(tzinfo=UTC)

@@ -14,7 +14,7 @@ from pathlib import Path
 
 @dataclass
 class RiskLimits:
-    max_drawdown: float | None = None                 # negative decimal, e.g. -0.15
+    max_drawdown: float | None = None  # negative decimal, e.g. -0.15
     max_gross_exposure_usd: float | None = None
     max_position_per_symbol_usd: float | None = None
     max_daily_loss_usd: float | None = None
