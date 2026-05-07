@@ -206,9 +206,7 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
             return await strategy.quote()
         if action == "reconcile":
             if not hasattr(strategy, "reconcile"):
-                raise ValueError(
-                    f"Strategy {strategy_name} does not support reconcile"
-                )
+                raise ValueError(f"Strategy {strategy_name} does not support reconcile")
             return await strategy.reconcile(
                 start=kw.get("start"),
                 end=kw.get("end"),

@@ -25,6 +25,9 @@ from wayfinder_paths.core.backtesting.data import (
 from wayfinder_paths.core.backtesting.stats import calculate_stats
 from wayfinder_paths.core.backtesting.types import BacktestResult, BacktestStats
 from wayfinder_paths.core.perps.context import SignalFrame, TriggerContext
+from wayfinder_paths.core.perps.context import (
+    normalize_signal as _normalize_signal,  # noqa: E402,F401
+)
 from wayfinder_paths.core.perps.handlers.backtest import BacktestHandler, purity_sandbox
 from wayfinder_paths.core.perps.state import StateStore
 
@@ -65,11 +68,6 @@ async def default_decide(ctx: TriggerContext) -> None:
             and (abs(diff) <= abs(cur_size))
         )
         await ctx.perp.place_order(sym, side, abs(diff), "market", reduce_only=reduce)
-
-
-from wayfinder_paths.core.perps.context import (
-    normalize_signal as _normalize_signal,  # noqa: E402,F401
-)
 
 
 async def backtest_perps_trigger(

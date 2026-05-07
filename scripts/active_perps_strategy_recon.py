@@ -101,6 +101,7 @@ def _strict_intent_diff(
     (sum of replay sizes vs sum of live sizes). Buckets present in only one side
     are reported as `replay_only` / `live_only`.
     """
+
     def key(d: dict[str, Any]) -> tuple:
         bar = d.get("bar_t") or d.get("placed_at_t")
         return (
@@ -123,18 +124,37 @@ def _strict_intent_diff(
         l_sz = sum(float(x.get("size", 0.0)) for x in by_live[k])
         rel = abs(r_sz - l_sz) / max(abs(l_sz), 1e-9)
         bucket = {
-            "bar": str(k[0]), "venue": k[1], "symbol": k[2], "side": k[3],
-            "replay_size": r_sz, "live_size": l_sz, "rel_drift": rel,
+            "bar": str(k[0]),
+            "venue": k[1],
+            "symbol": k[2],
+            "side": k[3],
+            "replay_size": r_sz,
+            "live_size": l_sz,
+            "rel_drift": rel,
         }
         matched.append(bucket)
         if rel > 0.01:
             size_drifts.append(bucket)
     for k in by_replay.keys() - by_live.keys():
-        replay_only.append({"bar": str(k[0]), "venue": k[1], "symbol": k[2], "side": k[3],
-                            "intents": len(by_replay[k])})
+        replay_only.append(
+            {
+                "bar": str(k[0]),
+                "venue": k[1],
+                "symbol": k[2],
+                "side": k[3],
+                "intents": len(by_replay[k]),
+            }
+        )
     for k in by_live.keys() - by_replay.keys():
-        live_only.append({"bar": str(k[0]), "venue": k[1], "symbol": k[2], "side": k[3],
-                          "intents": len(by_live[k])})
+        live_only.append(
+            {
+                "bar": str(k[0]),
+                "venue": k[1],
+                "symbol": k[2],
+                "side": k[3],
+                "intents": len(by_live[k]),
+            }
+        )
 
     return {
         "matched_buckets": matched,
