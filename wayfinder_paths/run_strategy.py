@@ -55,10 +55,29 @@ def get_strategy_config(
 
 
 def find_strategy_class(module) -> type[Strategy]:
+    # Reject framework parent classes — only return concrete subclasses defined
+    # *in this module* so we don't pick up imported `ActivePerpsStrategy`,
+    # `Strategy`, or any other intermediate base class via alphabetical scan.
+    from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy
+
+    framework_bases = {Strategy, ActivePerpsStrategy}
+    candidates: list[type[Strategy]] = []
     for _, obj in inspect.getmembers(module, inspect.isclass):
-        if issubclass(obj, Strategy) and obj is not Strategy:
-            return obj
-    raise ValueError(f"No Strategy subclass found in {module.__name__}")
+        if not issubclass(obj, Strategy) or obj in framework_bases:
+            continue
+        if getattr(obj, "__module__", None) != module.__name__:
+            continue
+        candidates.append(obj)
+    if not candidates:
+        raise ValueError(f"No Strategy subclass found in {module.__name__}")
+    if len(candidates) == 1:
+        return candidates[0]
+    # Multiple subclasses defined in the module — prefer the deepest leaf.
+    leaf = candidates[0]
+    for c in candidates[1:]:
+        if issubclass(c, leaf):
+            leaf = c
+    return leaf
 
 
 def _parse_native_funds(specs: list[str]) -> dict[str, int]:
@@ -179,7 +198,21 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
             if not hasattr(strategy, "quote"):
                 raise ValueError(f"Strategy {strategy_name} does not support quote")
             deposit_amount = kw.get("amount") or kw.get("main_token_amount")
-            return await strategy.quote(deposit_amount=deposit_amount)
+            # Some strategies (e.g. ActivePerpsStrategy) take no kwargs;
+            # introspect to keep the CLI compatible across both.
+            sig = inspect.signature(strategy.quote)
+            if "deposit_amount" in sig.parameters:
+                return await strategy.quote(deposit_amount=deposit_amount)
+            return await strategy.quote()
+        if action == "reconcile":
+            if not hasattr(strategy, "reconcile"):
+                raise ValueError(f"Strategy {strategy_name} does not support reconcile")
+            return await strategy.reconcile(
+                start=kw.get("start"),
+                end=kw.get("end"),
+                no_fills=bool(kw.get("no_fills", False)),
+                write_report=bool(kw.get("write_report", True)),
+            )
         if action == "run":
             while True:
                 try:
@@ -240,11 +273,15 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
     else:
         result = await _run()
 
-    logger.info(
-        json.dumps(result, indent=2)
-        if isinstance(result, dict)
-        else f"{action}: {result}"
-    )
+    # Logger writes to stderr; also emit machine-readable JSON to stdout so
+    # the result can be consumed by shell pipelines / runner job parsers.
+    if isinstance(result, dict):
+        out = json.dumps(result, indent=2, default=str)
+        logger.info(out)
+        print(out)
+    else:
+        logger.info(f"{action}: {result}")
+        print(f"{action}: {result}")
 
 
 def main():
@@ -273,6 +310,7 @@ def main():
             "policy",
             "analyze",
             "quote",
+            "reconcile",
         ],
     )
     p.add_argument(

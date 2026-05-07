@@ -61,11 +61,15 @@ async def core_run_strategy(
         "update",
         "withdraw",
         "exit",
+        "reconcile",
     ],
     amount_usdc: float = 1000.0,
     main_token_amount: float | None = None,
     gas_token_amount: float = 0.0,
     amount: float | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    no_fills: bool = False,
 ) -> dict[str, Any]:
     """Run a lifecycle action against an installed strategy.
 
@@ -86,6 +90,12 @@ async def core_run_strategy(
       - `withdraw`: liquidate all positions to stablecoins (funds stay in strategy wallet);
         partial withdraw is unsupported — leave `amount` unset.
       - `exit`: transfer remaining funds from strategy wallet → main wallet. Run after `withdraw`.
+
+    Read-only diagnostics (ActivePerpsStrategy only):
+      - `reconcile`: replay decide() over recorded live state snapshots and diff against
+        captured live intents + HL fills. Writes a JSON report under
+        `<strategy_dir>/reconciliation/<ts>.json`. Optional `start`/`end` (ISO dates,
+        default last 30 days), `no_fills` to skip the HL fills fetch.
 
     Args:
         strategy: Strategy name (folder under `wayfinder_paths/strategies/`).
@@ -244,6 +254,21 @@ async def core_run_strategy(
                     }
                 )
             return err("not_supported", "Strategy does not support exit()")
+
+        case "reconcile":
+            if not hasattr(strategy_obj, "reconcile"):
+                return err(
+                    "not_supported",
+                    "Strategy does not support reconcile() — only ActivePerpsStrategy subclasses do",
+                )
+            report = await strategy_obj.reconcile(
+                start=start,
+                end=end,
+                no_fills=no_fills,
+            )
+            return ok_with_warning(
+                {"strategy": strategy, "action": action, "output": report}
+            )
 
         case _:
             return err("invalid_request", f"Unknown action: {action}")
