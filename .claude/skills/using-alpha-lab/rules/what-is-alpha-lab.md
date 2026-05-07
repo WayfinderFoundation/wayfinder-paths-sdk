@@ -13,7 +13,7 @@ Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signa
 | `delta_lab_top_apy` | Standout APY opportunities from Delta Lab |
 | `delta_lab_best_delta_neutral` | Top delta-neutral pair opportunities |
 
-Use `await ALPHA_LAB_CLIENT.get_types()` or `wayfinder://alpha-lab/types` to discover available types at runtime.
+Use `await ALPHA_LAB_CLIENT.get_types()` or `research_get_alpha_types()` to discover available types at runtime.
 
 ## Key Concepts
 

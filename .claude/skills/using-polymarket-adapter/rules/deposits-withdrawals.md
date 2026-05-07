@@ -13,7 +13,7 @@
 
 - Prepare collateral for trading: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)`
 - Unwind collateral back to Polygon native USDC: `mcp__wayfinder__polymarket_execute(action="bridge_withdraw", wallet_label="main", amount_usdce=10)`
-- Monitor bridge status: `mcp__wayfinder__polymarket(action="bridge_status", wallet_label="main")`
+- Monitor bridge status: `mcp__wayfinder__polymarket_read(action="bridge_status", wallet_label="main")`
 
 ## Adapter behavior
 

@@ -55,7 +55,7 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 ## Claude Code MCP tools (minimal surface)
 
 For interactive use in Claude Code, this repo exposes a small MCP surface:
-- Read-only: `mcp__wayfinder__hyperliquid` (user state, mids, meta, `wait_for_deposit`, `wait_for_withdrawal`)
+- Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
 - Writes: `mcp__wayfinder__hyperliquid_execute`:
   - `place_order` (perp and spot, with `is_spot` flag)
   - `place_outcome_order` (HIP-4 outcome markets — see [outcomes.md](outcomes.md))
@@ -182,13 +182,13 @@ For spot `action="place_order"`:
 
 If the user wants **immediate execution** (not a reusable strategy), prefer using the MCP tools:
 - `mcp__wayfinder__hyperliquid_execute` for orders, leverage, and withdrawals
-- `mcp__wayfinder__execute` for on-chain transfers (send/swap/deposit)
+- `mcp__wayfinder__core_execute` for on-chain transfers (send/swap/deposit)
 
-### `mcp__wayfinder__execute` examples
+### `mcp__wayfinder__core_execute` examples
 
 **Send tokens to another address:**
 ```
-mcp__wayfinder__execute(
+mcp__wayfinder__core_execute(
     kind="send",
     wallet_label="main",
     amount="25",
@@ -199,7 +199,7 @@ mcp__wayfinder__execute(
 
 **Swap tokens:**
 ```
-mcp__wayfinder__execute(
+mcp__wayfinder__core_execute(
     kind="swap",
     wallet_label="main",
     amount="100",
@@ -211,7 +211,7 @@ mcp__wayfinder__execute(
 
 **Hyperliquid deposit (Bridge2):**
 ```
-mcp__wayfinder__execute(
+mcp__wayfinder__core_execute(
     kind="hyperliquid_deposit",
     wallet_label="main",
     amount="8"

@@ -4,7 +4,7 @@
 
 - Prefer running the existing fork simulation first:
   - `poetry run pytest wayfinder_paths/adapters/ethena_vault_adapter/test_gorlami_simulation.py -v`
-- For real transactions, use MCP `run_script(...)` so the safety review hook can show a preview (these flows execute inside a Python script; `execute(...)` doesn’t cover them).
+- For real transactions, use MCP `core_run_script(...)` so the safety review hook can show a preview (these flows execute inside a Python script; `core_execute(...)` doesn’t cover them).
 
 ## Common flows (adapter methods)
 

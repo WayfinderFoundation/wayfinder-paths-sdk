@@ -5,7 +5,7 @@
 - Prefer running the existing fork simulation first:
   - `poetry run pytest wayfinder_paths/adapters/euler_v2_adapter/test_gorlami_simulation.py -v`
   - Note: this test requires the gorlami fork proxy to be configured and reachable (see `TESTING.md`).
-- For real transactions, use MCP `run_script(...)` so the safety review hook can show a preview (Euler adapter flows run inside a Python script; `execute(...)` doesn’t cover them).
+- For real transactions, use MCP `core_run_script(...)` so the safety review hook can show a preview (Euler adapter flows run inside a Python script; `core_execute(...)` doesn’t cover them).
 
 ## Execution wiring (strategy wallet + signing callback)
 

@@ -1,6 +1,6 @@
 ---
 name: using-delta-lab
-description: How to use the Delta Lab client (DELTA_LAB_CLIENT) for basis APY discovery, delta-neutral pair finding, lending/perp/price screening, time-series, and opportunity analysis across protocols. TRIGGER when the user asks about yields, APYs, basis, funding, delta-neutral, top-apy, lending rates, perp funding, borrow routes, or opportunity screening; OR when writing/editing a script that imports `DELTA_LAB_CLIENT` or uses `wayfinder://delta-lab/...` MCP URIs; OR before any yield/basis/funding research. The MCP surface is intentionally narrow (snapshots only) — anything time-series, by-asset-id, plotting, or bulk requires the Python client documented here.
+description: How to use the Delta Lab client (DELTA_LAB_CLIENT) for basis APY discovery, delta-neutral pair finding, lending/perp/price screening, time-series, and opportunity analysis across protocols. TRIGGER when the user asks about yields, APYs, basis, funding, delta-neutral, top-apy, lending rates, perp funding, borrow routes, or opportunity screening; OR when writing/editing a script that imports `DELTA_LAB_CLIENT` or uses `research_*` MCP tools; OR before any yield/basis/funding research. The MCP surface is intentionally narrow (snapshots only) — anything time-series, by-asset-id, plotting, or bulk requires the Python client documented here.
 metadata:
   tags: wayfinder, delta-lab, basis, delta-neutral, apy, opportunities, yield, funding, lending, perp, screening, timeseries
 ---
