@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_search_mid_prices
 
 
 async def _resolved_mid(asset_name: str) -> float | None:
@@ -61,3 +62,27 @@ async def test_mid_price_hip4_outcome():
 
     mid = await _resolved_mid(book_coin)
     assert mid is not None and mid > 0
+
+
+@pytest.mark.asyncio
+async def test_search_mid_prices_unfiltered():
+    res = await hyperliquid_search_mid_prices()
+    assert res["ok"] and res["result"]["success"]
+    assert len(res["result"]["prices"]) > 100
+
+
+@pytest.mark.asyncio
+async def test_search_mid_prices_filter_mixed_markets():
+    # Pick a HIP-4 outcome that's currently on book.
+    adapter = HyperliquidAdapter()
+    ok_outs, outcomes = await adapter.get_outcome_markets()
+    assert ok_outs and outcomes
+    hip4 = outcomes[0]["sides"][0]["book_coin"]
+
+    res = await hyperliquid_search_mid_prices(
+        ["BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4, "BOGUS"],
+    )
+    assert res["ok"]
+    prices = res["result"]["prices"]
+    assert {"BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4} == prices.keys()
+    assert all(float(prices[k]) > 0 for k in prices)
