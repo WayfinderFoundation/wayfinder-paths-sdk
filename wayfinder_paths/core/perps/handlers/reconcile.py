@@ -54,12 +54,18 @@ class ReconcileHandler(BacktestHandler):
         self.strategy_name = strategy_name
         self._snapshot_positions: dict[str, float] = {}
         self._snapshot_entry: dict[str, float] = {}
+        self._snapshot_mids: dict[str, float] = {}
+        self._snapshot_intents: list[dict[str, Any]] = []
 
     def load_snapshot_at(self, t: datetime) -> dict[str, Any]:
         """Pull the live-state snapshot recorded at bar `t` and project venue
-        positions out of it. The live runtime stores positions under
-        `state["positions"][venue][symbol] = {size, entry_price}` (see
-        `ActivePerpsStrategy._run_trigger` snapshot path)."""
+        positions, mids, and live intents out of it.
+
+        The live runtime stores under `state` (see `ActivePerpsStrategy._run_trigger`):
+          - `positions[venue][sym] = {size, entry_price, mark_price}`
+          - `orders[venue]         = [intent dicts captured by RecordingHandler]`
+          - `mids[venue][sym]      = float`
+        """
         snap = StateStore.snapshot_at(self.strategy_name, t)
         venue_positions = (snap.get("positions") or {}).get(self.venue) or {}
         self._snapshot_positions = {
@@ -68,7 +74,16 @@ class ReconcileHandler(BacktestHandler):
         self._snapshot_entry = {
             sym: float(p.get("entry_price", 0.0)) for sym, p in venue_positions.items()
         }
+        self._snapshot_mids = {
+            sym: float(v) for sym, v in ((snap.get("mids") or {}).get(self.venue) or {}).items()
+        }
+        self._snapshot_intents = list((snap.get("orders") or {}).get(self.venue) or [])
         return snap
+
+    @property
+    def recorded_live_intents(self) -> list[dict[str, Any]]:
+        """The intents live actually placed at this bar (from the snapshot)."""
+        return list(self._snapshot_intents)
 
     # ---------- protocol surface — overrides ----------
     async def place_order(
@@ -136,6 +151,13 @@ class ReconcileHandler(BacktestHandler):
                 unrealized_pnl=sz * (mid - entry),
             )
         return out
+
+    def mid(self, symbol: str) -> float:
+        # Prefer snapshotted mid (what live decide() saw) for deterministic replay.
+        # Fall back to the historical bar price if no snapshot mid is recorded.
+        if symbol in self._snapshot_mids:
+            return self._snapshot_mids[symbol]
+        return super().mid(symbol)
 
     async def get_open_orders(self) -> list[Order]:
         return []  # recon doesn't track resting orders

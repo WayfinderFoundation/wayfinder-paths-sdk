@@ -67,17 +67,7 @@ async def default_decide(ctx: TriggerContext) -> None:
         await ctx.perp.place_order(sym, side, abs(diff), "market", reduce_only=reduce)
 
 
-def _normalize_signal(
-    out: Any, index: pd.DatetimeIndex, symbols: list[str]
-) -> SignalFrame:
-    if isinstance(out, SignalFrame):
-        return out
-    if isinstance(out, pd.DataFrame):
-        df = out.reindex(index=index, columns=symbols).fillna(0.0)
-        return SignalFrame(targets=df)
-    raise TypeError(
-        f"signal_fn must return SignalFrame or pd.DataFrame, got {type(out).__name__}"
-    )
+from wayfinder_paths.core.perps.context import normalize_signal as _normalize_signal  # noqa: E402,F401
 
 
 async def backtest_perps_trigger(
@@ -135,7 +125,7 @@ async def backtest_perps_trigger(
 
     # Precompute signal frame.
     raw_signal = signal_fn(prices, funding, params)
-    signal_frame = _normalize_signal(raw_signal, prices.index, symbols)
+    signal_frame = _normalize_signal(raw_signal, fallback_index=prices.index, fallback_columns=symbols)
 
     # Build handlers — primary perp + one per hip3 dex (data shared for now; per-dex
     # data wiring is a Phase 7+ concern).

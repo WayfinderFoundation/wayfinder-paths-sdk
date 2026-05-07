@@ -101,29 +101,79 @@ def _to_jsonable(obj: Any) -> Any:
 
 
 def _from_dict(d: dict[str, Any]) -> BacktestRef:
-    code = d["code"]
-    sig = code["signal"]
-    dec = code.get("decide")
-    venues = d.get("venues") or {}
-    data = d["data"]
-    win = data["window"]
+    """Permissive parser. Accepts both the canonical shape (`emit_backtest_ref`)
+    and looser hand-authored variants:
+      - `source_hashes: {<file>: sha}` as an alias for `code: {signal/decide: {...}}`
+      - `data.start_date`/`end_date` instead of `data.window: {start, end}`
+      - missing `produced` / `venues` / `data.fingerprint` (sensible defaults)
+    """
+    # ---- code / source_hashes ----
+    code_in = d.get("code")
+    if code_in is None and "source_hashes" in d:
+        sh = d["source_hashes"] or {}
+        sig_sha = next(
+            (v for k, v in sh.items() if "signal" in k.lower()), ""
+        )
+        dec_sha = next(
+            (v for k, v in sh.items() if "decide" in k.lower()), ""
+        )
+        sig_entry = CodeEntry(module="", entrypoint="", source_sha256=sig_sha or "")
+        dec_entry = (
+            CodeEntry(module="", entrypoint="", source_sha256=dec_sha) if dec_sha else None
+        )
+        code = CodeRefs(signal=sig_entry, decide=dec_entry)
+    elif code_in is None:
+        raise KeyError(
+            "backtest_ref.json missing 'code' (and 'source_hashes' fallback). "
+            "Use `emit_backtest_ref(...)` to produce a canonical ref."
+        )
+    else:
+        code = CodeRefs(
+            signal=CodeEntry(**code_in["signal"]),
+            decide=CodeEntry(**code_in["decide"]) if code_in.get("decide") else None,
+        )
+
+    # ---- produced ----
+    if "produced" in d:
+        produced = ProducedBy(**d["produced"])
+    else:
+        produced = ProducedBy(at="", skill="", git_sha="unknown", ref_hash="")
+
+    # ---- venues ----
+    venues_in = d.get("venues") or {}
+    venues = VenueRefs(
+        perp=venues_in.get("perp", True),
+        hip3=list(venues_in.get("hip3") or []),
+    )
+
+    # ---- data ----
+    data_in = d["data"]
+    if "window" in data_in:
+        window = DataWindow(**data_in["window"])
+    else:
+        window = DataWindow(
+            start=str(data_in.get("start_date") or data_in.get("start") or ""),
+            end=str(data_in.get("end_date") or data_in.get("end") or ""),
+            bars=data_in.get("bars"),
+        )
+    data = DataRefs(
+        symbols=list(data_in["symbols"]),
+        interval=data_in.get("interval", "1h"),
+        window=window,
+        fingerprint=str(data_in.get("fingerprint") or ""),
+    )
+
     exe = d.get("execution_assumptions") or {}
+    # Drop unknown keys so older/newer variants survive each other.
+    exe_keys = {f.name for f in ExecutionAssumptions.__dataclass_fields__.values()}  # type: ignore[attr-defined]
+    exe = {k: v for k, v in exe.items() if k in exe_keys}
+
     return BacktestRef(
         schema_version=d.get("schema_version", SCHEMA_VERSION),
-        produced=ProducedBy(**d["produced"]),
-        code=CodeRefs(
-            signal=CodeEntry(**sig),
-            decide=CodeEntry(**dec) if dec else None,
-        ),
-        venues=VenueRefs(
-            perp=venues.get("perp", True), hip3=list(venues.get("hip3") or [])
-        ),
-        data=DataRefs(
-            symbols=list(data["symbols"]),
-            interval=data["interval"],
-            window=DataWindow(**win),
-            fingerprint=data["fingerprint"],
-        ),
+        produced=produced,
+        code=code,
+        venues=venues,
+        data=data,
         params=dict(d.get("params") or {}),
         execution_assumptions=ExecutionAssumptions(**exe),
         performance=dict(d.get("performance") or {}),

@@ -55,10 +55,29 @@ def get_strategy_config(
 
 
 def find_strategy_class(module) -> type[Strategy]:
+    # Reject framework parent classes — only return concrete subclasses defined
+    # *in this module* so we don't pick up imported `ActivePerpsStrategy`,
+    # `Strategy`, or any other intermediate base class via alphabetical scan.
+    from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy
+
+    framework_bases = {Strategy, ActivePerpsStrategy}
+    candidates: list[type[Strategy]] = []
     for _, obj in inspect.getmembers(module, inspect.isclass):
-        if issubclass(obj, Strategy) and obj is not Strategy:
-            return obj
-    raise ValueError(f"No Strategy subclass found in {module.__name__}")
+        if not issubclass(obj, Strategy) or obj in framework_bases:
+            continue
+        if getattr(obj, "__module__", None) != module.__name__:
+            continue
+        candidates.append(obj)
+    if not candidates:
+        raise ValueError(f"No Strategy subclass found in {module.__name__}")
+    if len(candidates) == 1:
+        return candidates[0]
+    # Multiple subclasses defined in the module — prefer the deepest leaf.
+    leaf = candidates[0]
+    for c in candidates[1:]:
+        if issubclass(c, leaf):
+            leaf = c
+    return leaf
 
 
 def _parse_native_funds(specs: list[str]) -> dict[str, int]:

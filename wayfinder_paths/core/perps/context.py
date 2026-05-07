@@ -24,8 +24,49 @@ class SignalFrame:
     extras: dict[str, pd.DataFrame] = field(default_factory=dict)
 
     def at(self, t: datetime) -> pd.Series:
-        # Use loc with .iloc fallback for label exactness.
-        return self.targets.loc[t]
+        """Lookup the target row at-or-before `t`.
+
+        Backtest: `t` aligns to a bar in `targets.index` exactly — fast path.
+        Live: `t` is `handler.now()` (wall-clock); we floor to the latest bar
+        whose timestamp is ≤ t (`get_indexer(method="ffill")`). If `t` is
+        before any bar, falls back to the first row.
+        """
+        idx = self.targets.index
+        ts = pd.Timestamp(t)
+        if ts.tzinfo is not None and idx.tz is None:
+            ts = ts.tz_localize(None)
+        elif ts.tzinfo is None and idx.tz is not None:
+            ts = ts.tz_localize(idx.tz)
+        try:
+            return self.targets.loc[ts]
+        except KeyError:
+            pass
+        pos = idx.get_indexer([ts], method="ffill")[0]
+        if pos < 0:
+            return self.targets.iloc[0]
+        return self.targets.iloc[pos]
+
+
+def normalize_signal(out: Any, fallback_index: pd.DatetimeIndex | None = None,
+                     fallback_columns: list[str] | None = None) -> SignalFrame:
+    """Wrap a `compute_signal` return value into a `SignalFrame`.
+
+    Accepts `SignalFrame` (returned as-is), `pd.DataFrame`, or `pd.Series`.
+    Used in both backtest driver and live `_run_trigger` so strategies can return
+    a plain DataFrame without worrying about wrapping.
+    """
+    if isinstance(out, SignalFrame):
+        return out
+    if isinstance(out, pd.DataFrame):
+        df = out
+        if fallback_index is not None:
+            df = df.reindex(index=fallback_index)
+        if fallback_columns is not None:
+            df = df.reindex(columns=fallback_columns)
+        return SignalFrame(targets=df.fillna(0.0))
+    if isinstance(out, pd.Series):
+        return SignalFrame(targets=out.to_frame().T)
+    raise TypeError(f"signal_fn must return SignalFrame, DataFrame, or Series — got {type(out).__name__}")
 
 
 @dataclass

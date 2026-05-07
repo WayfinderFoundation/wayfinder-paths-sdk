@@ -73,6 +73,16 @@ class LiveHandler:
                 error=f"unknown symbol {symbol!r}",
                 timestamp=self.now(),
             )
+        # Round size to the asset's sz_decimals — Hyperliquid's wire encoding
+        # rejects floats with too many fractional digits (`float_to_wire`).
+        from wayfinder_paths.adapters.hyperliquid_adapter.utils import round_size_for_asset  # noqa: PLC0415
+        size = round_size_for_asset(self.adapter.asset_to_sz_decimals, asset_id, size)
+        if size <= 0:
+            return OrderResult(
+                ok=False, venue=self.venue, symbol=symbol, side=side, size=size,
+                order_type=order_type, error="size rounded to zero",
+                timestamp=self.now(),
+            )
         is_buy = side == "buy"
         if order_type == "market":
             ok, raw = await self.adapter.place_market_order(

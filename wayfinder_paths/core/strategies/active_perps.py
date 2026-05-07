@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Final, final
 
 from wayfinder_paths.core.backtesting.ref import BacktestRef, load_ref
-from wayfinder_paths.core.perps.context import SignalFrame, TriggerContext
+from wayfinder_paths.core.perps.context import SignalFrame, TriggerContext, normalize_signal
 from wayfinder_paths.core.perps.handlers.protocol import MarketHandler
 from wayfinder_paths.core.perps.state import SNAPSHOT_AGE_WARN_DAYS, StateStore
 from wayfinder_paths.core.strategies.risk_limits import RiskLimits
@@ -141,21 +141,36 @@ class ActivePerpsStrategy(Strategy):
 
     @final
     async def _run_trigger(self) -> StatusTuple:
-        perp, hip3 = await self._build_handlers()
-        prices, funding = await self._fetch_recent_data(perp)
-        signal_frame = self._signal_fn(prices, funding, dict(self._ref.params))
+        from wayfinder_paths.core.perps.handlers.recording import RecordingHandler  # noqa: PLC0415
+
+        raw_perp, raw_hip3 = await self._build_handlers()
+        # Wrap each handler so every place_order is teed into an intents log.
+        # The reconciler replays decide() against snapshotted positions and then
+        # diffs replay-intents vs these recorded live-intents (strict axis) — and
+        # also vs HL fills (execution-path axis).
+        perp = RecordingHandler(raw_perp)
+        hip3 = {k: RecordingHandler(h) for k, h in raw_hip3.items()}
+
+        prices, funding = await self._fetch_recent_data(raw_perp)
+        raw_signal = self._signal_fn(prices, funding, dict(self._ref.params))
+        signal_frame = normalize_signal(raw_signal, fallback_columns=self._ref.data.symbols)
+
+        trigger_t = perp.now()
         ctx = TriggerContext(
             perp=perp,
             hip3=hip3,
             params=dict(self._ref.params),
             state=self._state,
             signal=signal_frame,
-            t=perp.now(),
+            t=trigger_t,
         )
         await self._decide_fn(ctx)
-        # Capture per-venue positions into state so the reconciler can replay
-        # decide() with the same positions live had at this bar.
+
+        # Capture per-venue positions and intents into state so the reconciler
+        # has the full input + output of this trigger.
         positions_snapshot: dict[str, dict[str, dict[str, float]]] = {}
+        intents_snapshot: dict[str, list[dict[str, Any]]] = {}
+        mids_snapshot: dict[str, dict[str, float]] = {}
         for venue_key, handler in [
             ("perp", perp),
             *((f"hip3:{k}", h) for k, h in hip3.items()),
@@ -169,10 +184,28 @@ class ActivePerpsStrategy(Strategy):
                 }
                 for sym, p in pos.items()
             }
-        self._state.set("positions", positions_snapshot)
-        self._state.write_snapshot(ctx.t)
+            intents_snapshot[venue_key] = list(handler.intents)
+            mids_snapshot[venue_key] = {
+                sym: handler.mid(sym) for sym in self._ref.data.symbols
+            }
+
+        try:
+            signal_row = signal_frame.at(trigger_t)
+            signal_row_serialised = {str(k): float(v) for k, v in signal_row.items()}
+        except Exception:  # noqa: BLE001 — signal lookup is best-effort for snapshot
+            signal_row_serialised = {}
+
+        self._state.update({
+            "positions": positions_snapshot,
+            "orders": intents_snapshot,
+            "mids": mids_snapshot,
+            "signal_row": signal_row_serialised,
+            "trigger_ts": trigger_t.isoformat(),
+            "nav": self._state.get("nav"),
+        })
+        self._state.write_snapshot(trigger_t)
         warn = self._oldest_snapshot_warning()
-        msg = "trigger ran"
+        msg = f"trigger ran ({sum(len(v) for v in intents_snapshot.values())} intents)"
         if warn:
             msg += f" — {warn}"
         return True, msg
