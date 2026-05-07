@@ -1053,8 +1053,8 @@ async def hyperliquid_search_mid_prices(
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets for current mid prices.
 
-    asset_names: Canonical market paths to filter for (e.g. "BTC-USDC", "xyz:NVDA",
-        "KNTQ/USDH", "#40"). If omitted, returns every market's mid price.
+    asset_names: Canonical market paths to filter mid prices (e.g. "BTC-USDC", "xyz:NVDA",
+        "KNTQ/USDH", "#40"), get these from hyperliquid_search_market(). If omitted, returns every market's mid price. Prefer non empty asset_names for efficiency.
     """
     adapter = HyperliquidAdapter()
     success, prices = await adapter.get_all_mid_prices()
@@ -1062,19 +1062,15 @@ async def hyperliquid_search_mid_prices(
         return ok({"success": success, "prices": prices})
 
     filtered: dict[str, str] = {}
-    unresolved: list[str] = []
     for name in asset_names:
         asset_id = await adapter.get_asset_id(name)
         if asset_id is None:
-            unresolved.append(name)
             continue
         for key in adapter.get_mid_price_key(name, asset_id):
             if (mid := prices.get(key)) is not None:
                 filtered[name] = mid
                 break
-        else:
-            unresolved.append(name)
-    return ok({"success": success, "prices": filtered, "unresolved": unresolved})
+    return ok({"prices": filtered})
 
 
 async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
@@ -1082,7 +1078,7 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
     query returns the first `limit` items from each bucket unfiltered.
 
-    query: A simple string containing asset names, for example: btc, eth, oil
+    query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
     limit: Max number of results to return per category
 
     Returns a list of asset names to be used when executing Hyperliquid orders.

@@ -69,7 +69,6 @@ async def test_search_mid_prices_unfiltered():
     res = await hyperliquid_search_mid_prices()
     assert res["ok"] and res["result"]["success"]
     assert len(res["result"]["prices"]) > 100
-    assert "unresolved" not in res["result"]
 
 
 @pytest.mark.asyncio
@@ -83,8 +82,7 @@ async def test_search_mid_prices_filter_mixed_markets():
     res = await hyperliquid_search_mid_prices(
         ["BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4, "BOGUS"],
     )
-    assert res["ok"] and res["result"]["success"]
+    assert res["ok"]
     prices = res["result"]["prices"]
-    assert {"BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4} <= prices.keys()
+    assert {"BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4} == prices.keys()
     assert all(float(prices[k]) > 0 for k in prices)
-    assert res["result"]["unresolved"] == ["BOGUS"]
