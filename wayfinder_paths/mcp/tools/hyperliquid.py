@@ -13,6 +13,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     HYPE_FEE_WALLET,
     HYPERLIQUID_BRIDGE_ADDRESS,
     MARKET_SEARCH_ALIASES,
+    MARKET_SEARCH_MIN_MATCH_SCORE,
     MIN_ORDER_USD_NOTIONAL,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
@@ -354,29 +355,23 @@ async def hyperliquid_execute(
 
             return response
 
-    name = asset_name or ""
-    resolved_asset_id = await adapter.get_asset_id(name)
+    if not asset_name:
+        return err("invalid_request", "asset_name is required")
+    resolved_asset_id = await adapter.get_asset_id(asset_name)
     if resolved_asset_id is None:
         return err(
             "invalid_coin",
-            f"Invalid asset_name {name!r}. Expected 'BTC-USDC' (core perp), "
+            f"Invalid asset_name {asset_name!r}. Expected 'BTC-USDC' (core perp), "
             "'xyz:SP500' (HIP-3 perp), 'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
             "Call hyperliquid_search_market to look up the canonical name.",
         )
-    # Derive market type + clean form from the input shape (cheaper than
-    # re-fetching adapter metadata, and the input grammar is already strict).
-    if name.startswith("#"):
-        market_type: Literal["perp", "spot", "outcome"] = "outcome"
-    elif "/" in name:
-        market_type = "spot"
-    else:
-        market_type = "perp"
-    coin_clean = name.removesuffix("-USDC")  # only mutates core perps
+    market_type = adapter.get_market_type(asset_name)
+    coin_clean = asset_name.removesuffix("-USDC")  # only mutates core perps
 
     # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
     match action:
         case "place_order" if market_type == "outcome":
-            encoding = int(name[1:])  # `#<encoding>` validated by resolve_coin
+            encoding = int(asset_name[1:])  # `#<encoding>` validated by get_asset_id
             outcome_id_v, side_v = encoding // 10, encoding % 10
             if is_buy is None:
                 return err("invalid_request", "is_buy is required for outcome orders")
@@ -1077,9 +1072,6 @@ async def hyperliquid_get_mid_prices() -> dict[str, Any]:
     return ok({"success": success, "prices": data})
 
 
-MIN_MATCH_SCORE = 0.9
-
-
 async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
@@ -1154,7 +1146,7 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         def top(items, text_of):
             scored = ((item, score(text_of(item))) for item in items)
             kept = sorted(
-                ((it, s) for it, s in scored if s >= MIN_MATCH_SCORE),
+                ((it, s) for it, s in scored if s >= MARKET_SEARCH_MIN_MATCH_SCORE),
                 key=lambda r: r[1],
                 reverse=True,
             )

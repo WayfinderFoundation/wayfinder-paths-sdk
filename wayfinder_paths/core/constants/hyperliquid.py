@@ -21,6 +21,7 @@ __all__ = [
     "DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE",
     "MARKET_SEARCH_ALIASES",
+    "MARKET_SEARCH_MIN_MATCH_SCORE",
     "MIN_DEPOSIT_USD",
     "MIN_ORDER_USD_NOTIONAL",
 ]
@@ -38,6 +39,9 @@ DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
 # HL hard floors (HIP-4 outcomes are exempt — integer contract counts only).
 MIN_DEPOSIT_USD: float = 5.0
 MIN_ORDER_USD_NOTIONAL: float = 10.0
+
+# Min `matches/min(len)` score for hyperliquid_search_market to keep a candidate.
+MARKET_SEARCH_MIN_MATCH_SCORE: float = 0.9
 
 # HL wraps several majors with `k`/`u`/`U` prefixes (kBONK, uSOL, UBTC, UETH) and
 # lists themed perps under HIP-3 builder dexes (xyz:BRENTOIL, vntl:ENERGY, etc.).
