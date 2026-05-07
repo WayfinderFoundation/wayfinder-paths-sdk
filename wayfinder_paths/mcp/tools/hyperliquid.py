@@ -1047,10 +1047,34 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     )
 
 
-async def hyperliquid_get_mid_prices() -> dict[str, Any]:
+async def hyperliquid_search_mid_prices(
+    asset_names: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets for current mid prices.
+
+    asset_names: Canonical market paths to filter for (e.g. "BTC-USDC", "xyz:NVDA",
+        "KNTQ/USDH", "#40"). If omitted, returns every market's mid price.
+    """
     adapter = HyperliquidAdapter()
-    success, data = await adapter.get_all_mid_prices()
-    return ok({"success": success, "prices": data})
+    success, prices = await adapter.get_all_mid_prices()
+    if not asset_names:
+        return ok({"success": success, "prices": prices})
+
+    filtered: dict[str, str] = {}
+    unresolved: list[str] = []
+    for name in asset_names:
+        asset_id = await adapter.get_asset_id(name)
+        if asset_id is None:
+            unresolved.append(name)
+            continue
+        for key in adapter.get_mid_price_key(name, asset_id):
+            if (mid := prices.get(key)) is not None:
+                filtered[name] = mid
+                break
+        else:
+            unresolved.append(name)
+    return ok({"success": success, "prices": filtered, "unresolved": unresolved})
 
 
 async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
