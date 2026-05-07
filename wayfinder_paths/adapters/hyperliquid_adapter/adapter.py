@@ -529,12 +529,12 @@ class HyperliquidAdapter(BaseAdapter):
     @staticmethod
     def get_market_type(
         asset_name: str,
-    ) -> Literal["perp", "hip3", "spot", "outcome"]:
+    ) -> Literal["perp", "hip3", "spot", "hip4"]:
         """Classify a canonical market path by its grammar:
-        '#<n>' → outcome, '<a>/<b>' → spot, '<dex>:<base>' → hip3, else → perp.
+        '#<n>' → hip4, '<a>/<b>' → spot, '<dex>:<base>' → hip3, else → perp.
         """
         if asset_name.startswith("#"):
-            return "outcome"
+            return "hip4"
         if "/" in asset_name:
             return "spot"
         if ":" in asset_name:
@@ -548,7 +548,7 @@ class HyperliquidAdapter(BaseAdapter):
         'BTC/USDC' (spot pair), '#40' (HIP-4 outcome). Match is exact.
         """
         match self.get_market_type(asset_name):
-            case "outcome" if asset_name[1:].isdigit():
+            case "hip4" if asset_name[1:].isdigit():
                 return OUTCOME_ASSET_OFFSET + int(asset_name[1:])
             case "spot":
                 _, assets = await self.get_spot_assets()
@@ -569,14 +569,14 @@ class HyperliquidAdapter(BaseAdapter):
           - spot          -> "@<spot_index>" (= asset_id - 10000), EXCEPT
                              PURR/USDC which is grandfathered under its
                              canonical name. Try @-form first, fall back.
-          - outcome       -> "#<encoding>" (already in asset_name)
+          - hip4          -> "#<encoding>" (already in asset_name)
         """
         match cls.get_market_type(asset_name):
             case "spot":
                 return [f"@{spot_index_from_asset_id(asset_id)}", asset_name]
             case "perp":
                 return [asset_name.removesuffix("-USDC")]
-            case _:  # hip3, outcome — already canonical
+            case _:  # hip3, hip4 — already canonical
                 return [asset_name]
 
     def get_sz_decimals(self, asset_id: int) -> int:

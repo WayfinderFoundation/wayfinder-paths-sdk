@@ -354,7 +354,7 @@ async def hyperliquid_execute(
 
     # HIP-4 outcome orders use a dedicated execution path (not perp/spot wire).
     match action:
-        case "place_order" if market_type == "outcome":
+        case "place_order" if market_type == "hip4":
             outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
             if is_buy is None:
                 return err("invalid_request", "is_buy is required for outcome orders")
