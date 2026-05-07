@@ -88,3 +88,55 @@ def test_catch_errors_sync_generic_error():
         "ok": False,
         "error": {"code": "error", "message": "boom", "details": None},
     }
+
+
+@pytest.mark.asyncio
+async def test_catch_errors_with_prefix_async():
+    @catch_errors("Hyperliquid execute failed:")
+    async def fn():
+        raise ValueError("boom")
+
+    assert await fn() == {
+        "ok": False,
+        "error": {
+            "code": "error",
+            "message": "Hyperliquid execute failed: boom",
+            "details": None,
+        },
+    }
+
+
+def test_catch_errors_with_prefix_sync():
+    @catch_errors("Sync prefix:")
+    def fn():
+        raise Exception("boom")
+
+    assert fn() == {
+        "ok": False,
+        "error": {
+            "code": "error",
+            "message": "Sync prefix: boom",
+            "details": None,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_catch_errors_with_prefix_passes_success_through():
+    @catch_errors("Foo:")
+    async def fn():
+        return {"ok": True, "result": 42}
+
+    assert await fn() == {"ok": True, "result": 42}
+
+
+@pytest.mark.asyncio
+async def test_catch_errors_with_empty_prefix_strips_leading_space():
+    @catch_errors("")
+    async def fn():
+        raise ValueError("boom")
+
+    assert await fn() == {
+        "ok": False,
+        "error": {"code": "error", "message": "boom", "details": None},
+    }
