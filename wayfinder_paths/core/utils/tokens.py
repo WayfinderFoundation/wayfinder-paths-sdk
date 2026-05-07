@@ -317,7 +317,9 @@ async def ensure_allowance(
             spender_address=spender,
             amount=0,
         )
-        await send_transaction(clear_transaction, signing_callback)
+        await send_transaction(
+            clear_transaction, signing_callback, wait_for_receipt=True
+        )
 
     approve_tx = await build_approve_transaction(
         from_address=owner,
@@ -326,5 +328,9 @@ async def ensure_allowance(
         spender_address=spender,
         amount=approval_amount if approval_amount is not None else amount,
     )
-    txn_hash = await send_transaction(approve_tx, signing_callback)
+    txn_hash = await send_transaction(
+        approve_tx,
+        signing_callback,
+        wait_for_receipt=True,
+    )
     return True, txn_hash

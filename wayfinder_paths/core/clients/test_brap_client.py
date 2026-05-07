@@ -44,3 +44,21 @@ def test_normalize_brap_quote_response_accepts_data_envelope():
 
     assert normalized["quotes"] == [{"provider": "lifi"}]
     assert normalized["best_quote"] == {"provider": "lifi"}
+
+
+def test_normalize_brap_quote_response_accepts_legacy_alias():
+    payload = {
+        "legacy_quote_response": {
+            "quotes": {
+                "quote_count": 1,
+                "all_quotes": [{"provider": "debridge"}],
+                "best_quote": {"provider": "debridge"},
+            }
+        }
+    }
+
+    normalized = normalize_brap_quote_response(payload)
+
+    assert normalized["quotes"] == [{"provider": "debridge"}]
+    assert normalized["best_quote"] == {"provider": "debridge"}
+    assert normalized["quote_count"] == 1

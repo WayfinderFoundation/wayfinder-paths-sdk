@@ -123,6 +123,13 @@ def normalize_brap_quote_response(data: Any) -> BRAPQuoteResponse:
     raw_best_quote = payload.get("best_quote")
     raw_quote_count = payload.get("quote_count")
     raw_errors = payload.get("errors")
+    legacy_response = payload.get("legacy_quote_response")
+    legacy_quotes = (
+        legacy_response.get("quotes")
+        if isinstance(legacy_response, dict)
+        and isinstance(legacy_response.get("quotes"), dict)
+        else None
+    )
 
     if isinstance(raw_quotes, dict):
         nested_quotes = raw_quotes.get("all_quotes") or raw_quotes.get("quotes")
@@ -133,6 +140,14 @@ def normalize_brap_quote_response(data: Any) -> BRAPQuoteResponse:
         if raw_errors is None:
             raw_errors = raw_quotes.get("errors")
         raw_quotes = nested_quotes
+    elif legacy_quotes is not None:
+        raw_quotes = legacy_quotes.get("all_quotes") or legacy_quotes.get("quotes")
+        if raw_best_quote is None:
+            raw_best_quote = legacy_quotes.get("best_quote")
+        if raw_quote_count is None:
+            raw_quote_count = legacy_quotes.get("quote_count")
+        if raw_errors is None:
+            raw_errors = legacy_quotes.get("errors")
 
     quotes = (
         [q for q in raw_quotes if isinstance(q, dict)]
