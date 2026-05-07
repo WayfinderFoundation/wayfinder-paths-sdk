@@ -6,24 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
-from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
-from wayfinder_paths.mcp.tools.hyperliquid import (
-    _resolve_builder_fee,
-    hyperliquid_execute,
-)
-
-
-def test_resolve_builder_fee_rejects_wrong_builder_wallet():
-    with pytest.raises(ValueError, match="config builder_fee\\.b must be"):
-        _resolve_builder_fee(
-            config={"builder_fee": {"b": "0x" + "00" * 20, "f": 10}},
-            builder_fee_tenths_bp=None,
-        )
-
-
-def test_resolve_builder_fee_prefers_explicit_fee():
-    fee = _resolve_builder_fee(config={}, builder_fee_tenths_bp=7)
-    assert fee == {"b": HYPE_FEE_WALLET.lower(), "f": 7}
+from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_execute
 
 
 class _StubAdapter(HyperliquidAdapter):

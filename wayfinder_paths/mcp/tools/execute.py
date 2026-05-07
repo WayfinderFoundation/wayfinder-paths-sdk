@@ -18,6 +18,7 @@ from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     normalize_address,
     ok,
@@ -210,6 +211,7 @@ def _annotate_profile(
     )
 
 
+@catch_errors
 async def core_execute(
     *,
     kind: Literal["swap", "send"],
@@ -282,10 +284,7 @@ async def core_execute(
     preview_obj = await build_execution_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
 
-    try:
-        sign_callback, sender = await get_wallet_signing_callback(req.wallet_label)
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
+    sign_callback, sender = await get_wallet_signing_callback(req.wallet_label)
 
     if req.kind == "swap":
         rcpt = normalize_address(req.recipient) or sender

@@ -1,25 +1,25 @@
 # Contract interactions
 
-Use MCP tools to read from (eth_call) and write to (broadcast a tx) any deployed EVM contract without using `run_script`.
+Use MCP tools to read from (eth_call) and write to (broadcast a tx) any deployed EVM contract without using `core_run_script`.
 
-## Fetch ABI: `contract_get_abi`
+## Fetch ABI: `contracts_get`
 
-If you need the ABI (e.g. for a verified contract), fetch it directly:
+If you need the ABI (e.g. for a verified contract), fetch it directly (ABI is included in the response):
 
 ```
-mcp__wayfinder__contract_get_abi(
+mcp__wayfinder__contracts_get(
   chain_id=8453,
   contract_address="0xa75cEf1de8D2FC22847837B525830824C2364453",
   resolve_proxy=True
 )
 ```
 
-## Read-only: `contract_call`
+## Read-only: `contracts_call`
 
 Example: read a staking contract’s `getStaked(user)`:
 
 ```
-mcp__wayfinder__contract_call(
+mcp__wayfinder__contracts_call(
   chain_id=8453,
   contract_address="0xa75cEf1de8D2FC22847837B525830824C2364453",
   abi=[
@@ -44,7 +44,7 @@ Notes:
   **implementation** ABI automatically.
 - If a function is overloaded, pass `function_signature` like `deposit(uint256)` instead of `function_name`.
 
-## Write: `contract_execute`
+## Write: `contracts_execute`
 
 Example: approve USDC, then deposit into a staking contract:
 
@@ -53,7 +53,7 @@ Example: approve USDC, then deposit into a staking contract:
 amount_raw = 100_000
 
 # Approve
-mcp__wayfinder__contract_execute(
+mcp__wayfinder__contracts_execute(
   wallet_label="main",
   chain_id=8453,
   contract_address="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
@@ -74,7 +74,7 @@ mcp__wayfinder__contract_execute(
 )
 
 # Deposit
-mcp__wayfinder__contract_execute(
+mcp__wayfinder__contracts_execute(
   wallet_label="main",
   chain_id=8453,
   contract_address="0xa75cEf1de8D2FC22847837B525830824C2364453",
@@ -93,5 +93,5 @@ mcp__wayfinder__contract_execute(
 ```
 
 Notes:
-- `contract_execute` is for **state-changing** writes. It rejects `view`/`pure` functions (use `contract_call` instead).
+- `contracts_execute` is for **state-changing** writes. It rejects `view`/`pure` functions (use `contracts_call` instead).
 - Use `value_wei` for payable functions (defaults to `0`).

@@ -5,6 +5,7 @@ from typing import Any
 
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+from wayfinder_paths.mcp.utils import catch_errors, ok
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,7 @@ async def _resolve_basis_symbol(symbol: str) -> str:
     return symbol
 
 
+@catch_errors
 async def research_get_basis_apy_sources(
     basis_symbol: str, lookback_days: str = "7", limit: str = "10"
 ) -> dict[str, Any]:
@@ -41,23 +43,19 @@ async def research_get_basis_apy_sources(
     Returns:
         Dict with basis info, opportunities grouped by LONG/SHORT, summary stats
     """
-    try:
-        lookback_int = int(lookback_days)
-        lookback_int = max(1, lookback_int)  # Enforce min 1 day
-        limit_int = int(limit)
-        limit_int = min(1000, max(1, limit_int))  # Enforce 1-1000 range
-
-        resolved = await _resolve_basis_symbol(basis_symbol.upper())
-        result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
+    lookback_int = max(1, int(lookback_days))
+    limit_int = min(1000, max(1, int(limit)))
+    resolved = await _resolve_basis_symbol(basis_symbol.upper())
+    return ok(
+        await DELTA_LAB_CLIENT.get_basis_apy_sources(
             basis_symbol=resolved,
             lookback_days=lookback_int,
             limit=limit_int,
         )
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    )
 
 
+@catch_errors
 async def research_get_basis_symbols() -> dict[str, Any]:
     """Get list of available basis symbols.
 
@@ -66,14 +64,10 @@ async def research_get_basis_symbols() -> dict[str, Any]:
     Returns:
         Dict with symbols list and total count
     """
-    try:
-        # Get all symbols (no limit) for MCP access
-        result = await DELTA_LAB_CLIENT.get_basis_symbols(get_all=True)
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    return ok(await DELTA_LAB_CLIENT.get_basis_symbols(get_all=True))
 
 
+@catch_errors
 async def research_get_asset_basis_info(symbol: str) -> dict[str, Any]:
     """Get basis group information for an asset.
 
@@ -83,13 +77,10 @@ async def research_get_asset_basis_info(symbol: str) -> dict[str, Any]:
     Returns:
         Dict with asset_id, symbol, and basis group information
     """
-    try:
-        result = await DELTA_LAB_CLIENT.get_asset_basis(symbol=symbol.upper())
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    return ok(await DELTA_LAB_CLIENT.get_asset_basis(symbol=symbol.upper()))
 
 
+@catch_errors
 async def research_search_delta_lab_assets(
     query: str, chain: str = "all", limit: str = "25"
 ) -> dict[str, Any]:
@@ -104,26 +95,25 @@ async def research_search_delta_lab_assets(
     Returns:
         Dict with "assets" list and "total_count"
     """
-    try:
-        chain_id_param = None
-        chain_value = chain.strip().lower()
-        if chain_value not in ("all", "_"):
-            if chain_value.isdigit():
-                chain_id_param = int(chain_value)
-            else:
-                chain_id_param = CHAIN_CODE_TO_ID.get(chain_value)
-                if chain_id_param is None:
-                    return {"error": f"unknown chain filter: {chain!r}"}
-        limit_int = int(limit)
-        return await DELTA_LAB_CLIENT.search_assets(
+    chain_id_param: int | None = None
+    chain_value = chain.strip().lower()
+    if chain_value not in ("all", "_"):
+        if chain_value.isdigit():
+            chain_id_param = int(chain_value)
+        else:
+            chain_id_param = CHAIN_CODE_TO_ID.get(chain_value)
+            if chain_id_param is None:
+                raise ValueError(f"unknown chain filter: {chain!r}")
+    return ok(
+        await DELTA_LAB_CLIENT.search_assets(
             query=query.strip(),
             chain_id=chain_id_param,
-            limit=limit_int,
+            limit=int(limit),
         )
-    except Exception as exc:
-        return {"error": str(exc)}
+    )
 
 
+@catch_errors
 async def research_get_top_apy(
     lookback_days: str = "7", limit: str = "50"
 ) -> dict[str, Any]:
@@ -139,21 +129,17 @@ async def research_get_top_apy(
     Returns:
         Dict with top opportunities sorted by APY
     """
-    try:
-        lookback_int = int(lookback_days)
-        lookback_int = max(1, lookback_int)  # Enforce min 1 day
-        limit_int = int(limit)
-        limit_int = min(500, max(1, limit_int))  # Enforce 1-500 range
-
-        result = await DELTA_LAB_CLIENT.get_top_apy(
+    lookback_int = max(1, int(lookback_days))
+    limit_int = min(500, max(1, int(limit)))
+    return ok(
+        await DELTA_LAB_CLIENT.get_top_apy(
             lookback_days=lookback_int,
             limit=limit_int,
         )
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    )
 
 
+@catch_errors
 async def research_search_price(
     sort: str = "price_usd",
     limit: str = "100",
@@ -173,21 +159,20 @@ async def research_search_price(
     Returns:
         Dict with data (list of price feature rows) and count
     """
-    try:
-        limit_int = min(1000, max(1, int(limit)))
-        basis_param = None
-        if basis.strip().lower() != "all":
-            basis_param = await _resolve_basis_symbol(basis.strip().upper())
-        result = await DELTA_LAB_CLIENT.screen_price(
+    limit_int = min(1000, max(1, int(limit)))
+    basis_param = None
+    if basis.strip().lower() != "all":
+        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+    return ok(
+        await DELTA_LAB_CLIENT.screen_price(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
         )
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    )
 
 
+@catch_errors
 async def research_search_lending(
     sort: str = "net_supply_apr_now",
     limit: str = "100",
@@ -208,22 +193,21 @@ async def research_search_lending(
     Returns:
         Dict with data (list of lending surface feature rows) and count
     """
-    try:
-        limit_int = min(1000, max(1, int(limit)))
-        basis_param = None
-        if basis.strip().lower() != "all":
-            basis_param = await _resolve_basis_symbol(basis.strip().upper())
-        result = await DELTA_LAB_CLIENT.screen_lending(
+    limit_int = min(1000, max(1, int(limit)))
+    basis_param = None
+    if basis.strip().lower() != "all":
+        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+    return ok(
+        await DELTA_LAB_CLIENT.screen_lending(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
             exclude_frozen=True,
         )
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    )
 
 
+@catch_errors
 async def research_search_perp(
     sort: str = "funding_now",
     limit: str = "100",
@@ -244,21 +228,20 @@ async def research_search_perp(
     Returns:
         Dict with data (list of perp surface feature rows) and count
     """
-    try:
-        limit_int = min(1000, max(1, int(limit)))
-        basis_param = None
-        if basis.strip().lower() != "all":
-            basis_param = await _resolve_basis_symbol(basis.strip().upper())
-        result = await DELTA_LAB_CLIENT.screen_perp(
+    limit_int = min(1000, max(1, int(limit)))
+    basis_param = None
+    if basis.strip().lower() != "all":
+        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+    return ok(
+        await DELTA_LAB_CLIENT.screen_perp(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
         )
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    )
 
 
+@catch_errors
 async def research_search_borrow_routes(
     sort: str = "ltv_max",
     limit: str = "100",
@@ -281,32 +264,28 @@ async def research_search_borrow_routes(
     Returns:
         Dict with data (list of borrow route rows) and count
     """
-    try:
-        limit_int = min(1000, max(1, int(limit)))
-        basis_param = None
-        if basis.strip().lower() != "all":
-            basis_param = await _resolve_basis_symbol(basis.strip().upper())
-        borrow_basis_param = None
-        if borrow_basis.strip().lower() != "all":
-            borrow_basis_param = await _resolve_basis_symbol(
-                borrow_basis.strip().upper()
-            )
-        chain_id_param = None
-        chain_value = chain_id.strip().lower()
-        if chain_value not in ("all", "_"):
-            if chain_value.isdigit():
-                chain_id_param = int(chain_value)
-            else:
-                chain_id_param = CHAIN_CODE_TO_ID.get(chain_value)
-                if chain_id_param is None:
-                    return {"error": f"unknown chain filter: {chain_id!r}"}
-        result = await DELTA_LAB_CLIENT.screen_borrow_routes(
+    limit_int = min(1000, max(1, int(limit)))
+    basis_param = None
+    if basis.strip().lower() != "all":
+        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+    borrow_basis_param = None
+    if borrow_basis.strip().lower() != "all":
+        borrow_basis_param = await _resolve_basis_symbol(borrow_basis.strip().upper())
+    chain_id_param: int | None = None
+    chain_value = chain_id.strip().lower()
+    if chain_value not in ("all", "_"):
+        if chain_value.isdigit():
+            chain_id_param = int(chain_value)
+        else:
+            chain_id_param = CHAIN_CODE_TO_ID.get(chain_value)
+            if chain_id_param is None:
+                raise ValueError(f"unknown chain filter: {chain_id!r}")
+    return ok(
+        await DELTA_LAB_CLIENT.screen_borrow_routes(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
             borrow_basis=borrow_basis_param,
             chain_id=chain_id_param,
         )
-        return result
-    except Exception as exc:
-        return {"error": str(exc)}
+    )

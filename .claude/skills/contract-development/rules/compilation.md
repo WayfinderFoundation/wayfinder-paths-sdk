@@ -9,10 +9,10 @@ Solidity compilation uses `py-solc-x` with **standard JSON input** — no manual
 - OpenZeppelin imports: resolved by loading the required OZ sources into the compiler input
 - OZ is auto-installed into an ignored cache dir via `npm install --prefix .cache/solidity/openzeppelin-5.4.0 @openzeppelin/contracts@5.4.0` if missing
 
-## MCP tool: `compile_contract`
+## MCP tool: `contracts_compile`
 
 ```
-mcp__wayfinder__compile_contract(
+mcp__wayfinder__contracts_compile(
     source_path="$WAYFINDER_SCRATCH_DIR/MyToken.sol",
     contract_name="MyToken"
 )

@@ -4,7 +4,7 @@
 
 - Prefer running fork simulations first:
   - `poetry run pytest wayfinder_paths/adapters/etherfi_adapter/test_gorlami_simulation.py -v`
-- For real transactions, write a script under `.wayfinder_runs/` and run it via `mcp__wayfinder__run_script` (which triggers the safety review hook).
+- For real transactions, write a script under `.wayfinder_runs/` and run it via `mcp__wayfinder__core_run_script` (which triggers the safety review hook).
 
 ## Common flows (adapter methods)
 

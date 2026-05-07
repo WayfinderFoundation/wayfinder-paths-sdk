@@ -14,7 +14,7 @@ class TestSearchDeltaLabAssets:
         with patch.object(delta_lab.DELTA_LAB_CLIENT, "search_assets", mock):
             result = await delta_lab.research_search_delta_lab_assets("sUSDai")
         mock.assert_awaited_once_with(query="sUSDai", chain_id=None, limit=25)
-        assert result == {"assets": [], "total_count": 0}
+        assert result == {"ok": True, "result": {"assets": [], "total_count": 0}}
 
     @pytest.mark.asyncio
     async def test_chain_code_is_mapped_to_chain_id(self):
@@ -24,7 +24,7 @@ class TestSearchDeltaLabAssets:
                 "usdc", chain="base"
             )
         mock.assert_awaited_once_with(query="usdc", chain_id=8453, limit=25)
-        assert result["total_count"] == 0
+        assert result["result"]["total_count"] == 0
 
     @pytest.mark.asyncio
     async def test_limit_is_parsed(self):
@@ -34,14 +34,15 @@ class TestSearchDeltaLabAssets:
                 "usdc", chain="all", limit="10"
             )
         mock.assert_awaited_once_with(query="usdc", chain_id=None, limit=10)
-        assert result["total_count"] == 0
+        assert result["result"]["total_count"] == 0
 
     @pytest.mark.asyncio
     async def test_unknown_chain_returns_error(self):
         result = await delta_lab.research_search_delta_lab_assets(
             "usdc", chain="unknown"
         )
-        assert result["error"] == "unknown chain filter: 'unknown'"
+        assert result["ok"] is False
+        assert result["error"]["message"] == "unknown chain filter: 'unknown'"
 
 
 class TestScreenBorrowRoutes:
@@ -52,9 +53,10 @@ class TestScreenBorrowRoutes:
             result = await delta_lab.research_search_borrow_routes(chain_id="base")
         mock.assert_awaited_once()
         assert mock.call_args.kwargs["chain_id"] == 8453
-        assert result == {"data": [], "count": 0}
+        assert result == {"ok": True, "result": {"data": [], "count": 0}}
 
     @pytest.mark.asyncio
     async def test_unknown_chain_returns_error(self):
         result = await delta_lab.research_search_borrow_routes(chain_id="unknown")
-        assert result["error"] == "unknown chain filter: 'unknown'"
+        assert result["ok"] is False
+        assert result["error"]["message"] == "unknown chain filter: 'unknown'"

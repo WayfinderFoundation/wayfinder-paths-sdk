@@ -13,13 +13,13 @@ All templates assume:
 Compile:
 
 ```
-mcp__wayfinder__compile_contract(source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol", contract_name="Counter")
+mcp__wayfinder__contracts_compile(source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol", contract_name="Counter")
 ```
 
 Deploy:
 
 ```
-mcp__wayfinder__deploy_contract(wallet_label="main", source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol", contract_name="Counter", chain_id=8453, constructor_args=[], verify=false)
+mcp__wayfinder__contracts_deploy(wallet_label="main", source_path="$WAYFINDER_SCRATCH_DIR/Counter.sol", contract_name="Counter", chain_id=8453, constructor_args=[], verify=false)
 ```
 
 ## Minimal Ownable counter

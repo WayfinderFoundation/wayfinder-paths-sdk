@@ -82,7 +82,7 @@ When manually converting between mTokens and underlying:
 Always run scripts via MCP tool with wallet tracking:
 
 ```
-mcp__wayfinder__run_script(
+mcp__wayfinder__core_run_script(
     script_path=".wayfinder_runs/moonwell_lend.py",
     wallet_label="main"
 )

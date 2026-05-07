@@ -205,7 +205,7 @@ for pos in state.get("positions", []):
 
 ### Important notes on PT redemption
 
-- **Expired PTs redeem to the SY underlying** (e.g. sUSDai, thBILL), not directly to USDC. You'll likely need a follow-up swap (via BRAP/`mcp__wayfinder__execute`) to convert to stables.
+- **Expired PTs redeem to the SY underlying** (e.g. sUSDai, thBILL), not directly to USDC. You'll likely need a follow-up swap (via BRAP/`mcp__wayfinder__core_execute`) to convert to stables.
 - **`execute_swap` won't work** for expired markets — use `execute_convert` instead.
 - **`list_active_pt_yt_markets` excludes expired markets** by default. Use `get_full_user_state_per_chain` to find positions in expired markets.
 - The convert endpoint is the universal Pendle SDK entrypoint — it handles swaps, mints, redeems, LP add/remove, and rolls.

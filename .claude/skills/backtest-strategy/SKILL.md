@@ -49,6 +49,9 @@ Load these rules in order (most to least specific for your strategy type):
 | Delta-neutral basis carry | `backtest_delta_neutral(symbols, start, end)` |
 | Yield rotation (lending) | `backtest_yield_rotation(symbol, venues, start, end)` |
 | Carry trade (borrow/supply spread) | `backtest_carry_trade(symbol, start, end)` |
+| Active perps / HIP-3 (deployable) | `backtest_perps_trigger(signal_fn, decide_fn, symbols, ...)` |
 | Full control | `run_backtest(prices, target_positions, config)` |
 
 All helpers are in `wayfinder_paths.core.backtesting`.
+
+> **For actively-traded Hyperliquid strategies (perp or HIP-3), use `backtest_perps_trigger` and the trigger pattern.** The same `signal.py` and `decide.py` modules run in backtest, live, and reconcile — drift is architecturally impossible. See [rules/perps-trigger.md](rules/perps-trigger.md).

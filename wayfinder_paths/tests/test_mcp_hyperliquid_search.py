@@ -22,7 +22,8 @@ async def test_search_bitcoin():
 
     assert {"BTC-USDC", "flx:BTC", "hyna:BTC", "cash:BTC"} <= _names(result["perps"])
     assert {"UBTC/USDC", "UBTC/USDH"} <= _names(result["spots"])
-    assert {"#40", "#41"} <= _names(result["outcomes"])
+    # HIP-4 outcome IDs rotate daily; presence + description format is enough.
+    assert result["outcomes"]
     assert all(
         r["description"].startswith(_BTC_OUTCOME_PREFIX)
         and r["description"].endswith(_BTC_OUTCOME_SUFFIX)

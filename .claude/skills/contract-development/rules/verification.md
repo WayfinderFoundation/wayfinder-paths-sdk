@@ -21,7 +21,7 @@ Get a free key at [etherscan.io/apis](https://etherscan.io/apis). The same key w
 
 ## Automatic verification
 
-When using `deploy_contract()` (MCP tool or Python), set `verify=True` (the default). Verification:
+When using `contracts_deploy()` (MCP tool) or `deploy_contract()` (Python), set `verify=True` (the default). Verification:
 
 1. Compiles the source using `compile_solidity_standard_json()` and reuses the exact compiler input JSON
 2. Encodes constructor args if present

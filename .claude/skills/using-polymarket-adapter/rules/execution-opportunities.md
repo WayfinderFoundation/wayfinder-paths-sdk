@@ -2,7 +2,7 @@
 
 ## MCP tools (Claude Code)
 
-- Read-only: `mcp__wayfinder__polymarket` (search, market metadata, prices/books/history, status)
+- Read-only: `mcp__wayfinder__polymarket_read` (search, market metadata, prices/books/history) and `mcp__wayfinder__polymarket_get_state` (account state)
 - Writes: `mcp__wayfinder__polymarket_execute` (prepare / unwind collateral, buy/sell, limit/cancel, close, redeem)
 
 ## Preconditions (for write paths)
@@ -73,7 +73,7 @@ MCP shortcuts:
 
 - Place limit: `mcp__wayfinder__polymarket_execute(action="place_limit_order", wallet_label="main", token_id="...", side="BUY", price=0.42, size=10)`
 - Cancel order: `mcp__wayfinder__polymarket_execute(action="cancel_order", wallet_label="main", order_id="...")`
-- List open orders: `mcp__wayfinder__polymarket(action="open_orders", wallet_label="main")`
+- List open orders: `mcp__wayfinder__polymarket_read(action="open_orders", wallet_label="main")`
 
 ## Redemption (resolved markets)
 

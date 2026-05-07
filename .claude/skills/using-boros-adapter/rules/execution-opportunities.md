@@ -114,7 +114,7 @@ HYPE collateral requires **Arbitrum OFT HYPE** (LayerZero token). The path is:
 
 ```
 1. Get native HYPE on HyperEVM (chain 999)
-   → BRAP swap: mcp__wayfinder__execute(kind="swap", to_token="hyperliquid-hyperevm", ...)
+   → BRAP swap: mcp__wayfinder__core_execute(kind="swap", to_token="hyperliquid-hyperevm", ...)
 
 2. OFT bridge HyperEVM → Arbitrum
    → adapter.bridge_hype_oft_hyperevm_to_arbitrum(amount_wei=...)
@@ -131,7 +131,7 @@ Simpler - just swap to USDT on Arbitrum:
 
 ```python
 # Swap to USDT on Arbitrum via BRAP
-mcp__wayfinder__execute(
+mcp__wayfinder__core_execute(
     kind="swap",
     wallet_label="main",
     from_token="usd-coin-base",  # or whatever you have
