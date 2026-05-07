@@ -18,6 +18,7 @@ from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     ok,
     resolve_path_inside_repo,
@@ -87,6 +88,7 @@ def _annotate_deploy(
     )
 
 
+@catch_errors
 async def contracts_compile(
     *,
     source_path: str,
@@ -126,6 +128,7 @@ async def contracts_compile(
     return ok(result)
 
 
+@catch_errors
 async def contracts_deploy(
     *,
     wallet_label: str,
@@ -139,10 +142,7 @@ async def contracts_deploy(
 
     ``constructor_args`` is a JSON-encoded list (e.g. ``'["0xabc...", 1000]'``).
     """
-    try:
-        sign_callback, sender = await get_wallet_signing_callback(wallet_label)
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
+    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
 
     loaded = _load_solidity_source(source_path)
     if isinstance(loaded, dict):
@@ -227,6 +227,7 @@ async def contracts_deploy(
     return ok(result)
 
 
+@catch_errors
 async def contracts_list() -> dict[str, Any]:
     """List all locally-deployed contracts from the artifact store."""
     store = ContractArtifactStore.default()
@@ -234,6 +235,7 @@ async def contracts_list() -> dict[str, Any]:
     return ok({"contracts": entries, "count": len(entries)})
 
 
+@catch_errors
 async def contracts_get(
     chain_id: str | int,
     address: str,

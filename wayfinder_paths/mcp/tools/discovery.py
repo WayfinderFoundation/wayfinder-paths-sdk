@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.mcp.utils import err, ok, read_text_excerpt, read_yaml, repo_root
+from wayfinder_paths.mcp.utils import (
+    catch_errors,
+    err,
+    ok,
+    read_text_excerpt,
+    read_yaml,
+    repo_root,
+)
 
 
 def _describe_dir(base: Path, name: str) -> dict[str, Any] | None:
@@ -31,6 +38,7 @@ def _describe_all(base: Path) -> list[dict[str, Any]]:
     return items
 
 
+@catch_errors
 async def core_get_adapters_and_strategies(name: str | None = None) -> dict[str, Any]:
     """List adapters and strategies with their manifests and README excerpts.
 

@@ -240,10 +240,10 @@ async def core_wallets(
                     )
 
             if remote:
-                if not wallet_type:
-                    raise ValueError(
-                        "wallet_type is required for remote wallets (one of: session, policy, strategy)"
-                    )
+                wallet_type = throw_if_empty_str(
+                    "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                    wallet_type,
+                )
                 result = await create_remote_wallet(
                     label=want, wallet_type=wallet_type, policies=policies
                 )
@@ -456,6 +456,7 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
+@catch_errors
 async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 

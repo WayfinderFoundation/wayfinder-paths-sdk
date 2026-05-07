@@ -20,6 +20,7 @@ from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     abi_function_signature,
+    catch_errors,
     err,
     normalize_address,
     ok,
@@ -381,6 +382,7 @@ def _annotate(
     )
 
 
+@catch_errors
 async def contracts_call(
     *,
     chain_id: int,
@@ -489,6 +491,7 @@ async def contracts_call(
     return ok(result)
 
 
+@catch_errors
 async def contracts_execute(
     *,
     wallet_label: str,
@@ -506,10 +509,7 @@ async def contracts_execute(
 
     Use this for state-changing writes. For view/pure reads, use `contract_call`.
     """
-    try:
-        sign_callback, sender = await get_wallet_signing_callback(wallet_label)
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
+    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
 
     loaded_abi = await _resolve_abi(
         chain_id=int(chain_id),

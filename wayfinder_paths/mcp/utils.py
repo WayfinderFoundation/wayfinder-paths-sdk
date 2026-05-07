@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import functools
 import hashlib
+import inspect
 import json
 from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
@@ -54,7 +54,7 @@ def throw_if_empty_str(message: str, value: Any) -> str:
 
 
 def catch_errors(fn: Callable) -> Callable:
-    if asyncio.iscoroutinefunction(fn):
+    if inspect.iscoroutinefunction(fn):
 
         @functools.wraps(fn)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
