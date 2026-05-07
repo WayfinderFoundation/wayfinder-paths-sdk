@@ -560,7 +560,7 @@ class HyperliquidAdapter(BaseAdapter):
         return None
 
     @classmethod
-    def mid_feed_keys(cls, asset_name: str, asset_id: int) -> list[str]:
+    def get_mid_price_key(cls, asset_name: str, asset_id: int) -> list[str]:
         """Candidate keys for `get_all_mid_prices()`, in lookup order.
 
         HL's mid feed uses different key grammars per market type:

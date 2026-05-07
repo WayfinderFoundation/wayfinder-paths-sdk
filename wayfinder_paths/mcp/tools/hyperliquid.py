@@ -781,7 +781,7 @@ async def hyperliquid_execute(
                         response = err("price_error", "Failed to fetch mid prices")
                         return response
                     mid = None
-                    for key in adapter.mid_feed_keys(asset_name, resolved_asset_id):
+                    for key in adapter.get_mid_price_key(asset_name, resolved_asset_id):
                         v = mids.get(key)
                         if v is None:
                             continue

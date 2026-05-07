@@ -1,7 +1,7 @@
 """Live tests for the per-market-type mid-price feed grammar.
 
 `HyperliquidAdapter.get_all_mid_prices()` returns a dict keyed differently
-per market type. These tests verify `HyperliquidAdapter.mid_feed_keys`
+per market type. These tests verify `HyperliquidAdapter.get_mid_price_key`
 produces keys that actually resolve in the live feed.
 """
 
@@ -18,7 +18,7 @@ async def _resolved_mid(asset_name: str) -> float | None:
     assert asset_id is not None, f"failed to resolve {asset_name!r}"
     ok_mids, mids = await adapter.get_all_mid_prices()
     assert ok_mids and isinstance(mids, dict)
-    for key in adapter.mid_feed_keys(asset_name, asset_id):
+    for key in adapter.get_mid_price_key(asset_name, asset_id):
         v = mids.get(key)
         if v is not None:
             return float(v)
