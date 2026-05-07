@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import functools
 import hashlib
+import inspect
 import json
+from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
 from pathlib import Path
 from typing import Any
@@ -30,6 +33,46 @@ def err(code: str, message: str, details: Any | None = None) -> dict[str, Any]:
         "ok": False,
         "error": {"code": str(code), "message": str(message), "details": details},
     }
+
+
+def throw_if_none(message: str, value: Any) -> None:
+    if value is None:
+        raise ValueError(message)
+
+
+def throw_if_not_number(message: str, value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+
+
+def throw_if_empty_str(message: str, value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(message)
+    return value.strip()
+
+
+def catch_errors(fn: Callable) -> Callable:
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:
+                return err("error", str(exc))
+
+        return async_wrapper
+
+    @functools.wraps(fn)
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            return err("error", str(exc))
+
+    return sync_wrapper
 
 
 def repo_root() -> Path:

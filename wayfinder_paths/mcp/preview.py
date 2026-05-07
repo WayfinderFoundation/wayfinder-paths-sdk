@@ -116,7 +116,7 @@ async def build_hyperliquid_execute_preview(
     w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
-    coin = req.get("coin")
+    asset_name = req.get("asset_name")
     asset_id = req.get("asset_id")
 
     header = "HYPERLIQUID_EXECUTE\n"
@@ -124,7 +124,7 @@ async def build_hyperliquid_execute_preview(
         f"action: {action or '(missing)'}\n"
         f"wallet_label: {wallet_label}\n"
         f"address: {sender or '(unknown)'}\n"
-        f"coin: {coin}\n"
+        f"asset_name: {asset_name}\n"
         f"asset_id: {asset_id}"
     )
 
@@ -142,8 +142,7 @@ async def build_hyperliquid_execute_preview(
             f"cloid: {req.get('cloid')}\n"
             f"leverage: {req.get('leverage')}\n"
             f"is_cross: {req.get('is_cross')}\n"
-            f"builder_wallet: {HYPE_FEE_WALLET}\n"
-            f"builder_fee_tenths_bp: {req.get('builder_fee_tenths_bp') or '(from config/default)'}"
+            f"builder_wallet: {HYPE_FEE_WALLET}"
         )
         return {"summary": header + base + details}
 
@@ -160,8 +159,7 @@ async def build_hyperliquid_execute_preview(
             f"size: {req.get('size')}\n"
             f"is_market_trigger: {is_market_trigger}\n"
             f"limit_price: {req.get('price')}\n"
-            f"builder_wallet: {HYPE_FEE_WALLET}\n"
-            f"builder_fee_tenths_bp: {req.get('builder_fee_tenths_bp') or '(from config/default)'}"
+            f"builder_wallet: {HYPE_FEE_WALLET}"
         )
         return {"summary": header + base + details}
 

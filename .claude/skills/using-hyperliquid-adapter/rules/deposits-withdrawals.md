@@ -42,7 +42,7 @@ Adapter: `wayfinder_paths/adapters/hyperliquid_adapter/adapter.py`
 ### Deposit initiation (hard-coded)
 
 Claude Code shortcut:
-- Use `mcp__wayfinder__execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")`
+- Use `mcp__wayfinder__core_execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")`
 
 This hard-codes:
 - token: native Arbitrum USDC (`usd-coin-arbitrum`)
@@ -60,17 +60,12 @@ Claude Code shortcut:
 
 - Call: `HyperliquidAdapter.wait_for_deposit(address, expected_increase, timeout_s=..., poll_interval_s=...)`
 - Mechanism: polls `get_user_state(address)` and checks perp margin increase.
-
-Claude Code shortcut:
-- Use `mcp__wayfinder__hyperliquid(action="wait_for_deposit", wallet_label=..., expected_increase=...)`
+- The `mcp__wayfinder__hyperliquid_execute(action="deposit", ...)` shortcut already waits for the perp clearinghouse credit before returning.
 
 ### Withdrawal monitoring (best-effort)
 
 - Call: `HyperliquidAdapter.wait_for_withdrawal(address, max_poll_time_s=..., poll_interval_s=...)`
 - Mechanism: polls Hyperliquid ledger updates for a `withdraw` record.
-
-Claude Code shortcut:
-- Use `mcp__wayfinder__hyperliquid(action="wait_for_withdrawal", wallet_label=...)`
 
 If you need strict “arrived on Arbitrum” confirmation, add an Arbitrum-side receipt check (RPC/Explorer) for the resulting tx hash.
 

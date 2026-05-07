@@ -50,7 +50,7 @@ Simulation / scenario testing (vnet only):
 
 Safety defaults:
 
-- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__execute(kind="swap")`, always call `mcp__wayfinder__quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
+- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__core_execute(kind="swap")`, always call `mcp__wayfinder__onchain_quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
 - **Route planning for non-trivial swaps:** Before quoting, assess whether a direct route is likely to exist between the two tokens. If the pair is illiquid, cross-chain, or involves a long-tail token, reason through candidate intermediate hops first (e.g. tokenA → USDC → tokenB, or tokenA → native gas token → tokenB). Quote the most promising paths and compare outputs before presenting to the user. Skip this planning step only for well-known liquid pairs on the same chain (e.g. ETH → USDC on Arbitrum).
 - On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
 - Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
@@ -59,8 +59,8 @@ Safety defaults:
 - Hyperliquid perp writes: use MCP `hyperliquid_execute(...)` (orders/leverage). Also gated by a review prompt.
 - Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
 - Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
-  - Deployments (and other contract actions) are recorded in wallet profiles. Read `wayfinder://wallets/{label}` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
-  - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `wayfinder://contracts` (list all) or `wayfinder://contracts/{chain_id}/{address}` (specific contract).
+  - Deployments (and other contract actions) are recorded in wallet profiles. Call `core_get_wallets(label="...")` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
+  - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `contracts_list()` (list all) or `contracts_get(chain_id, address)` (specific contract — includes ABI).
 - One-off local scripts: use MCP `run_script(...)` (gated by a review prompt) and keep scripts under `.wayfinder_runs/`.
 
 Transaction outcome rules (don’t assume a tx hash means success):
@@ -99,17 +99,6 @@ Before writing scripts or using adapters for a specific protocol, **invoke the r
 
 Skills contain rules for correct method usage, common gotchas, and high-value read patterns. **Always load the skill first** — don't guess at adapter APIs.
 
-## Backtesting Framework
-
-Supports: perp/spot momentum, delta-neutral basis carry, lending yield rotation, carry trade. All data (price, funding, lending) is **hourly**. Oldest available: **~August 2025** (211-day retention).
-
-**Always load `/backtest-strategy` skill first** — routing table, examples, config reference, and gotchas are all there. For yield/lending strategies also load `yield-strategies.md`.
-
-All stats are decimals — format with `:.2%`. Key: `sharpe` (>2.0 excellent), `total_return`, `max_drawdown`, `total_funding` (negative = income received), `trade_count`.
-
-Once validated: `just create-strategy "Name"` → implement deposit/update/withdraw/exit → smoke tests → deploy small capital first.
-
-
 ## Contract development
 
 Before writing or deploying Solidity contracts, invoke `/contract-development`.
@@ -123,47 +112,18 @@ When answering questions about **rates/APYs/funding**:
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it (auth/network/tooling), say so explicitly and provide the exact call/script needed to fetch it.
 
-## Alpha Lab MCP resources (alpha discovery)
+## Alpha Lab (alpha discovery)
 
-**Load `/using-alpha-lab` skill for detailed docs.** Quick reference below.
+Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). Read-only — discovery only, no execution.
 
-Alpha Lab is a **scored alpha insight feed** that surfaces actionable DeFi signals (tweets, chain flows, APY highlights, delta-neutral pairs). Results ranked by `insightfulness_score` (0-1). Read-only — discovery only, no execution.
-
-**MCP resources:**
-
-- `wayfinder://alpha-lab/types` - List available scan types
-- `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}` - Search insights
-
-**Search params:** use `_` as placeholder to skip optional params.
-
-| Param            | Values                                                                                                                                            | Default |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
-| `query`          | text search or `_` for none                                                                                                                       | `_`     |
-| `scan_type`      | `all`, `twitter_post`, `defi_llama_chain_flow`, `defi_llama_overview`, `defi_llama_protocol`, `delta_lab_top_apy`, `delta_lab_best_delta_neutral` | `all`   |
-| `created_after`  | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
-| `created_before` | ISO 8601 datetime or `_`                                                                                                                          | `_`     |
-| `limit`          | 1-200                                                                                                                                             | `20`    |
-
-**Examples:** `wayfinder://alpha-lab/search/_/all/_/_/20` (all), `wayfinder://alpha-lab/search/_/twitter_post/_/_/10` (twitter), `wayfinder://alpha-lab/search/ETH/all/_/_/10` (ETH). Client: `await ALPHA_LAB_CLIENT.search(scan_type="twitter_post", min_score=0.7, limit=20)`.
+MCP tools: `research_get_alpha_types()`, `research_search_alpha(query, scan_type, ...)`. Python client: `ALPHA_LAB_CLIENT.search(...)`. Load `/using-alpha-lab` for full method signatures, scan types, and ranking semantics.
 
 ## Delta Lab (yield discovery)
 
-**ALWAYS load `/using-delta-lab` before any yield, basis, APY, delta-neutral, lending-rate, perp-funding, or opportunity-screening work — and before writing any script that touches `DELTA_LAB_CLIENT`.** It is a load-bearing library; the skill documents the full Python client surface (entity / catalog / graph / search / TS / latest / bulk / `explore` / `fetch_backtest_bundle`), typed records, and composition recipes. Don't guess at method names.
+**ALWAYS load `/using-delta-lab` before any yield, basis, APY, delta-neutral, lending-rate, perp-funding, or opportunity-screening work — and before writing any script that touches `DELTA_LAB_CLIENT`.** Don't guess at method names.
 
 - **APY format:** decimal floats (`0.98 = 98%`, NOT 0.98%). Multiply by 100 to display.
-- **MCP philosophy:** quick snapshots only. Anything time-series, plot, filter, by-asset-id, multi-day, or bulk → Python client. Search / screening / opportunity MCP methods return dicts.
-- **MCP URIs (full list — narrow on purpose):**
-  - `wayfinder://delta-lab/symbols`
-  - `wayfinder://delta-lab/top-apy/{LB}/{N}`
-  - `wayfinder://delta-lab/{basis_symbol}/apy-sources/{LB}/{N}`
-  - `wayfinder://delta-lab/{symbol}/basis`
-  - `wayfinder://delta-lab/assets/search/{chain}/{query}/{limit}`
-  - `wayfinder://delta-lab/screen/price/{sort}/{N}/{basis}`
-  - `wayfinder://delta-lab/screen/lending/{sort}/{N}/{basis}`
-  - `wayfinder://delta-lab/screen/perp/{sort}/{N}/{basis}`
-  - `wayfinder://delta-lab/screen/borrow-routes/{sort}/{N}/{basis}/{borrow_basis}/{chain_id}`
-
-  Anything beyond this (time series, asset-id lookups, by-asset-id screening, plotting, bulk data) — go straight to the Python client.
+- **MCP tools** are quick snapshots only — `research_get_basis_symbols`, `research_get_top_apy`, `research_get_basis_apy_sources`, `research_get_asset_basis_info`, `research_search_delta_lab_assets`, `research_search_price`, `research_search_lending`, `research_search_perp`, `research_search_borrow_routes`. Anything time-series, by-asset-id, plotting, multi-day, or bulk → use the `DELTA_LAB_CLIENT` Python client (see the skill).
 
 ## Pack applets
 
@@ -188,9 +148,9 @@ When creating or updating a Wayfinder pack with a browser applet:
 
 When a user asks to run, check, or interact with a strategy:
 
-1. **Always discover first** - Use MCP resource `wayfinder://strategies` to list available strategies before attempting to run one. Strategy names use `snake_case` (e.g., `boros_hype_strategy`, not `hype_boros_strategy`).
+1. **Always discover first** - Use MCP resource `core_get_adapters_and_strategies()` to list available strategies before attempting to run one. Strategy names use `snake_case` (e.g., `boros_hype_strategy`, not `hype_boros_strategy`).
 
-2. **Standard strategy interface** - All strategies implement these actions via `mcp__wayfinder__run_strategy`:
+2. **Standard strategy interface** - All strategies implement these actions via `mcp__wayfinder__core_run_strategy`:
 
    **Read-only actions (no confirmation):**
    - `status` - Current positions, balances, and state
@@ -209,7 +169,7 @@ When a user asks to run, check, or interact with a strategy:
 
    ```
    # User: "check the boros strategy"
-   → ReadMcpResourceTool(server="wayfinder", uri="wayfinder://strategies")  # Find exact name
+   → core_get_adapters_and_strategies()  # Find exact name
    → run_strategy(strategy="boros_hype_strategy", action="status")
 
    # User: "what's the expected APY for the moonwell strategy?"
@@ -223,7 +183,7 @@ When a user asks to run, check, or interact with a strategy:
    → run_strategy(strategy="boros_hype_strategy", action="deposit", main_token_amount=100.0, gas_token_amount=0.01)
    ```
 
-4. **Don't guess strategy names** - If the user's name doesn't match exactly, use `wayfinder://strategies` to find the correct name.
+4. **Don't guess strategy names** - If the user's name doesn't match exactly, use `core_get_adapters_and_strategies()` to find the correct name.
 
 5. **Clarify withdraw vs exit** - These are separate steps:
    - `withdraw` - **Liquidate**: Closes all positions and converts to stablecoins (funds stay in strategy wallet)
@@ -242,10 +202,15 @@ When a user asks to run, check, or interact with a strategy:
 When a user wants **immediate, one-off execution**:
 
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
-- **On-chain:** use `mcp__wayfinder__execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
+- **On-chain:** use `mcp__wayfinder__core_execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
+- **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
+  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
+  - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in USDC.e on Polygon. Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
+
+  Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
 - **Hyperliquid perps/spot/outcomes:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel; HIP-4 outcome markets via `place_outcome_order`). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, outcome `outcome_id`/`side`, etc.). The skill covers both the MCP tool interface and the Python adapter.
-- **Polymarket:** use `mcp__wayfinder__polymarket` (search/status/history) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
-- **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
+- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
+- **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__core_run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 ### Complex transaction flow (multi-step or fund-moving)
 
@@ -253,7 +218,7 @@ For anything beyond a simple single swap, follow this checklist:
 
 1. **Plan** — Break the transaction into ordered steps. Identify which chains, protocols, and tokens are involved. State the plan to the user before writing any code.
 2. **Gather info** — Load the relevant protocol skill(s). Fetch current rates, balances, gas, and any addresses or parameters the script needs. Don't hardcode values you haven't verified.
-3. **Quote all steps** — For every swap/bridge step, call `mcp__wayfinder__quote_swap` and collect the results. Then display a confirmation table to the user before executing anything:
+3. **Quote all steps** — For every swap/bridge step, call `mcp__wayfinder__onchain_quote_swap` and collect the results. Then display a confirmation table to the user before executing anything:
 
    | Step | From | To | Est. Output | Fee (USD) | Route |
    |------|------|----|-------------|-----------|-------|
@@ -274,8 +239,8 @@ HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binar
 
 Polymarket quick flows:
 
-- Search markets/events: `mcp__wayfinder__polymarket(action="search", query="bitcoin february 9", limit=10)`
-- Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket(action="status", wallet_label="main")`
+- Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
+- Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
 - Convert **native Polygon USDC (0x3c499c...) → USDC.e (0x2791..., required collateral)**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` (skip if you already have USDC.e)
 - Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_usdc=2)`
 - Close a position (sell full size): `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES")`
@@ -289,192 +254,15 @@ Polymarket funding (USDC.e collateral):
 
 Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X`is **notional** or **margin** (use`usd_amount_kind="notional"|"margin"`on`mcp**wayfinder**hyperliquid_execute`).
 
-**Scripting helper for adapters:**
+### MCP vs scripting — pick the right tool
 
-**Before writing any adapter script**, invoke the matching protocol skill (e.g. `/using-pendle-adapter`, `/using-hyperliquid-adapter`). Skills document method signatures, return shapes, and field names — guessing wastes iterations. See the protocol skills table above.
+Prefer **MCP tools** for simple, one-shot actions: a single quote, a single swap, reading a balance, placing one order, querying a strategy. They're already wired up, validated, and return structured results.
 
-When writing scripts under `.wayfinder_runs/`, use `get_adapter()` to simplify setup:
+Reach for **scripts under `.wayfinder_runs/`** when the work is complex or repetitive: stitching multiple adapter calls together, fan-out across many wallets/chains, multi-step flows with conditional branches, or anything you'll want to re-run. Scripts can be scheduled via `runner(action="add_job", type="script", ...)` once they're stable.
 
-```python
-from wayfinder_paths.mcp.scripting import get_adapter
-from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
+Rough cut: if you can express it as one MCP call, use the MCP call. If you find yourself chaining three or more, write a script.
 
-# Single-wallet adapter (sign_callback + wallet_address)
-adapter = await get_adapter(MoonwellAdapter, "main")
-await adapter.set_collateral(mtoken=USDC_MTOKEN)
-
-# Dual-wallet adapter (main + strategy, e.g. BalanceAdapter)
-from wayfinder_paths.adapters.balance_adapter import BalanceAdapter
-adapter = await get_adapter(BalanceAdapter, "main", "my_strategy")
-
-# Read-only (no wallet needed)
-adapter = await get_adapter(PendleAdapter)
-```
-
-`get_adapter()` auto-loads `config.json`, looks up wallets by label (local or remote), creates signing callbacks, and wires them into the adapter constructor. Works transparently for both local wallets (`private_key_hex`) and remote wallets (Privy server). It introspects the adapter's `__init__` signature to determine the wiring:
-
-- `sign_callback` + `wallet_address` → single-wallet adapter (most adapters)
-- `sign_hash_callback` → also wired if the adapter accepts it (e.g. PolymarketAdapter for CLOB signing)
-- `main_sign_callback` + `strategy_sign_callback` → dual-wallet adapter (BalanceAdapter); requires two wallet labels
-
-For direct Web3 usage in scripts, **do not hardcode RPC URLs**. Use `web3_from_chain_id(chain_id)` from `wayfinder_paths.core.utils.web3` — it's an **async context manager** (see gotchas below):
-
-```python
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
-
-async with web3_from_chain_id(8453) as w3:
-    balance = await w3.eth.get_balance(addr)
-```
-
-It reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`). For sync access, use `get_web3s_from_chain_id(chain_id)` instead.
-
-Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
-
-### Scripting gotchas (`.wayfinder_runs/` scripts)
-
-Common mistakes when writing run scripts. **Read before writing any script.**
-
-**0. Client vs Adapter return patterns — CRITICAL DIFFERENCE**
-
-**Clients return data directly; Adapters return `(ok, data)` tuples.** This is the #1 source of script errors.
-
-```python
-# CLIENTS (return data directly, raise exceptions on errors)
-from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
-from wayfinder_paths.core.clients.PoolClient import POOL_CLIENT
-from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-
-# WRONG — clients don't return tuples
-ok, data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ❌ ValueError: too many values to unpack
-
-# RIGHT — clients return data directly
-data = await DELTA_LAB_CLIENT.get_basis_apy_sources(...)  # ✅ dict
-pools = await POOL_CLIENT.get_pools(...)  # ✅ LlamaMatchesResponse
-token = await TOKEN_CLIENT.get_token_details(...)  # ✅ TokenDetails
-
-# ADAPTERS (always return tuple[bool, data])
-from wayfinder_paths.mcp.scripting import get_adapter
-from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
-
-adapter = await get_adapter(HyperliquidAdapter)
-
-# WRONG — adapters always return tuples
-data = await adapter.get_meta_and_asset_ctxs()  # ❌ data is actually (True, {...})
-
-# RIGHT — destructure the tuple and check ok
-ok, data = await adapter.get_meta_and_asset_ctxs()  # ✅
-if not ok:
-    raise RuntimeError(f"Adapter call failed: {data}")
-meta, ctxs = data[0], data[1]
-```
-
-**Rule of thumb:** `wayfinder_paths.core.clients` → data directly. `wayfinder_paths.adapters` → `(ok, data)` tuple.
-
-**1. `get_adapter()` already loads config — don't call `load_config()` first.** See `get_adapter()` examples in the scripting helper section above.
-
-**2. `load_config()` returns `None` — it mutates a global**
-
-```python
-# WRONG — config will be None
-config = load_config("config.json")
-api_key = config["system"]["api_key"]  # TypeError!
-
-# RIGHT — use the CONFIG global, or use load_config_json() for a dict
-from wayfinder_paths.core.config import load_config, CONFIG
-load_config("config.json")
-api_key = CONFIG["system"]["api_key"]
-
-# OR — if you need a plain dict:
-from wayfinder_paths.core.config import load_config_json
-config = load_config_json("config.json")
-```
-
-**3. `web3_from_chain_id()` is an async context manager, not a function call**
-
-```python
-# WRONG — returns an async generator object, not a Web3 instance
-w3 = web3_from_chain_id(8453)
-
-# RIGHT
-async with web3_from_chain_id(8453) as w3:
-    ...
-```
-
-**4. All Web3 calls are async — always `await`**
-
-```python
-# WRONG — returns a coroutine, not the result
-balance = w3.eth.get_balance(addr)
-result = contract.functions.balanceOf(addr).call()
-
-# RIGHT
-balance = await w3.eth.get_balance(addr)
-result = await contract.functions.balanceOf(addr).call()
-```
-
-**5. Use existing ERC20 helpers — don't inline ABIs**
-
-```python
-# WRONG — verbose, error-prone
-abi = [{"inputs": [{"name": "account", ...}], ...}]
-contract = w3.eth.contract(address=token, abi=abi)
-balance = await contract.functions.balanceOf(addr).call()
-
-# RIGHT — one-liner
-from wayfinder_paths.core.utils.tokens import get_token_balance
-balance = await get_token_balance(token_address, chain_id=8453, wallet_address=addr)
-
-# OR if you need the contract object:
-from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
-contract = w3.eth.contract(address=token, abi=ERC20_ABI)
-```
-
-**6. Python `quote_swap` amounts are wei strings, not human-readable**
-
-Note: This applies to the Python `quote_swap()` function in scripts. The MCP `execute(...)` tool takes **human-readable** amounts (e.g. `"5"` for 5 USDC).
-
-```python
-# WRONG — "10.0" is not a valid wei amount
-quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", amount="10.0", ...)
-
-# RIGHT — convert to wei first
-from wayfinder_paths.core.utils.units import to_erc20_raw
-amount_wei = str(to_erc20_raw(10.0, decimals=6))  # USDC has 6 decimals
-quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", amount=amount_wei, ...)
-```
-
-**7. Cross-chain simulation IS possible** — fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
-
-**8. Write the script file before calling `run_script`**
-
-`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`.
-
-**9. Funding rate sign (CRITICAL for perp trading)**
-
-**CRITICAL: Negative funding means shorts PAY longs** (not the other way around).
-
-```python
-# WRONG interpretation
-funding_rate = -0.08  # -8% annually
-print("Negative = good for shorts!")  # ❌ BACKWARDS!
-
-# RIGHT interpretation
-funding_rate = -0.08  # -8% annually
-if funding_rate > 0:
-    # Positive funding: Longs pay shorts (good for shorts)
-    print("Shorts receive funding")  # ✅
-else:
-    # Negative funding: Shorts pay longs (bad for shorts)
-    print("Shorts PAY funding")  # ✅
-```
-
-This applies to:
-
-- Hyperliquid perp funding rates
-- Delta Lab perp opportunities
-- Any perp trading strategy analysis
-
-When evaluating perp positions, always verify the sign interpretation - it's backwards from intuition for many traders.
+**Before writing any script, load `/writing-wayfinder-scripts`** — it covers `get_adapter()`, `web3_from_chain_id()`, and the common gotchas (clients vs adapters return shapes, async/await, ERC20 helpers, wei vs human amounts, funding-rate sign).
 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
@@ -491,7 +279,7 @@ poetry run wayfinder runner status | run-once | pause | resume | delete <job> | 
 
 See `RUNNER_ARCHITECTURE.md`.
 
-Runner MCP tool: `mcp__wayfinder__runner(action=...)`.
+Runner MCP tool: `mcp__wayfinder__core_runner(action=...)`.
 
 Safety note:
 
@@ -515,8 +303,8 @@ Supported chains:
 
 Gas requirements (critical — assets get stuck without gas):
 
-- **Before any on-chain operation**, check the wallet has native gas on that chain using `wayfinder://balances/{label}`.
-- If bridging to a new chain for the first time: bridge gas first. If you need the native token ID, look it up via `wayfinder://tokens/search/{chain_code}/{query}`.
+- **Before any on-chain operation**, check the wallet has native gas on that chain via `core_get_wallets(label="...")` and inspect the `balances` field.
+- If bridging to a new chain for the first time: bridge gas first. If you need the native token ID, look it up via `onchain_fuzzy_search_tokens(chain_code, query)`.
 
 Token identifiers (important for quoting/execution/lookups):
 
@@ -622,45 +410,30 @@ Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) 
 
 ## Wallet management and portfolio discovery
 
-Read-only wallet information is exposed via MCP resources, and fund-moving / tracking actions via the `mcp__wayfinder__wallets` tool.
+Wallet info is exposed through MCP tools (resources were removed — opencode doesn't auto-load them).
 
-**Quick balance check:**
+**Quick reads:**
 
-- Use MCP resource `wayfinder://balances/{label}` for enriched token balances (USD totals + chain breakdown).
-- Use MCP resource `wayfinder://wallets/{label}` for tracked protocol history for a wallet label.
-- Use `mcp__wayfinder__wallets(action="discover_portfolio", ...)` for live protocol position discovery (Hyperliquid perp, Moonwell supplies, etc.).
+- `core_get_wallets()` — every wallet with profile, tracked protocols, and USD-aggregated per-chain balances inline.
+- `core_get_wallets(label="main")` — same shape, single wallet.
+- `onchain_get_wallet_activity(...)` — recent on-chain activity (best-effort).
+- `contracts_list()` / `contracts_get(chain_id, address)` — locally-deployed contracts (ABI included on `_get`).
 
-**Read-only resources:**
+**Tool actions (`core_wallets`):**
 
-- `wayfinder://wallets` - list all wallets and tracked protocols
-- `wayfinder://wallets/{label}` - full profile for a wallet (protocol interactions, transactions)
-- `wayfinder://balances/{label}` - enriched token balances
-- `wayfinder://activity/{label}` - recent wallet activity (best-effort)
-- `wayfinder://contracts` - list all locally-deployed contracts (name, address, chain, verification status)
-- `wayfinder://contracts/{chain_id}/{address}` - full metadata + ABI for a deployed contract
+- `create` — new wallet. On Wayfinder Shells, `remote=True` is mandatory.
+- `annotate` — record a protocol interaction (internal use).
+- `discover_portfolio` — query adapters for live positions.
 
-**Tool actions (`mcp__wayfinder__wallets`):**
-
-- `create` - create a new local wallet (writes to `config.json`)
-- `annotate` - record a protocol interaction (internal use)
-- `discover_portfolio` - query adapters for positions
-
-**Automatic tracking:**
-
-- Profiles auto-update when you use `mcp__wayfinder__execute`, `mcp__wayfinder__hyperliquid_execute`, or `mcp__wayfinder__run_script` (with `wallet_label`)
+**Automatic tracking:** Profiles auto-update when you call `core_execute`, `hyperliquid_execute`, or `core_run_script` with `wallet_label=...`.
 
 **Portfolio discovery:**
 
-- Use `mcp__wayfinder__wallets(action="discover_portfolio", wallet_label="main")` to fetch all positions
-- Only queries protocols the wallet has previously interacted with
-- **Warning:** If 3+ protocols are tracked, tool returns a warning and asks for confirmation or use `parallel=true`
-- Use `protocols=["hyperliquid"]` to query specific protocols only
+- `core_wallets(action="discover_portfolio", wallet_label="main")` fetches positions across known protocols.
+- Only queries protocols the wallet has previously interacted with.
+- 3+ tracked protocols → returns a warning unless you pass `parallel=True`.
+- Filter with `protocols=["hyperliquid"]` to query a subset.
 
-**Manual annotation:**
+**Manual annotation:** use `core_wallets(action="annotate", ...)` if a wallet has used a protocol not yet tracked.
 
-- Use `action="annotate"` if you know a wallet has used a protocol not yet tracked
-
-**Best practices:**
-
-- Use `wayfinder://wallets` to see all wallets and their tracked protocols at a glance
-- Annotate manually if a protocol interaction predates this system
+**In Python scripts:** use `load_wallets()` / `find_wallet_by_label(label)` from `wayfinder_paths.core.utils.wallets` — same code path as `core_get_wallets`, returns remote wallets transparently. See `/writing-wayfinder-scripts`.

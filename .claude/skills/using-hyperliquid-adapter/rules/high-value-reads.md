@@ -2,7 +2,7 @@
 
 ## Data accuracy (no guessing)
 
-- Do **not** invent funding rates or prices. Always fetch using the adapter (or MCP `hyperliquid(...)`) and label timestamps.
+- Do **not** invent funding rates or prices. Always fetch using the adapter (or MCP `hyperliquid_get_state(...)` / `hyperliquid_search_mid_prices(...)`) and label timestamps.
 - If Hyperliquid data calls fail, return “unavailable” and include the exact call that failed.
 
 ## Primary data source
@@ -52,11 +52,11 @@ Use one of:
 
 ### Account state
 
-Three MCP resources, one per asset surface (split so the agent doesn't have to disambiguate):
+`mcp__wayfinder__hyperliquid_get_state(label)` returns all three asset surfaces in one shot:
 
-- `wayfinder://hyperliquid/{label}/state` — perp clearinghouse (margin summary, asset positions, withdrawable).
-- `wayfinder://hyperliquid/{label}/spot` — **pure spot only** (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out at the resource layer.
-- `wayfinder://hyperliquid/{label}/outcomes` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
+- `perp.state` — perp clearinghouse (margin summary, asset positions, withdrawable).
+- `spot.state.balances` — pure spot balances (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out into the `outcomes` bucket.
+- `outcomes.positions` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
 
 Adapter calls (raw, no filtering — both still expose outcome `+N` entries on the spot side):
 

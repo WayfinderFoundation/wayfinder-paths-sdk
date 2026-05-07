@@ -9,7 +9,14 @@ from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
-from wayfinder_paths.mcp.utils import err, ok, repo_root
+from wayfinder_paths.mcp.utils import (
+    catch_errors,
+    err,
+    ok,
+    repo_root,
+    throw_if_empty_str,
+    throw_if_none,
+)
 
 
 def _strategy_dir(name: str) -> Path:
@@ -40,6 +47,7 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
     return config
 
 
+@catch_errors
 async def core_run_strategy(
     *,
     strategy: str,
@@ -96,8 +104,7 @@ async def core_run_strategy(
         main_token_amount / gas_token_amount: Deposit sizing.
         amount: Back-compat alias for `main_token_amount` on deposit.
     """
-    if not strategy.strip():
-        return err("invalid_request", "strategy is required")
+    throw_if_empty_str("strategy is required", strategy)
 
     try:
         strategy_class, strategy_status = _load_strategy_class(strategy)
@@ -120,15 +127,10 @@ async def core_run_strategy(
             return ok_with_warning(
                 {"strategy": strategy, "action": action, "output": []}
             )
-        try:
-            res = pol()  # type: ignore[misc]
-            if asyncio.iscoroutine(res):
-                res = await res
-            return ok_with_warning(
-                {"strategy": strategy, "action": action, "output": res}
-            )
-        except Exception as exc:  # noqa: BLE001
-            return err("strategy_error", str(exc))
+        res = pol()  # type: ignore[misc]
+        if asyncio.iscoroutine(res):
+            res = await res
+        return ok_with_warning({"strategy": strategy, "action": action, "output": res})
 
     config = _get_strategy_config(strategy)
 
@@ -153,59 +155,96 @@ async def core_run_strategy(
         except TypeError:
             strategy_obj = strategy_class()
 
-    try:
-        if hasattr(strategy_obj, "setup"):
-            await strategy_obj.setup()
+    if hasattr(strategy_obj, "setup"):
+        await strategy_obj.setup()
 
-        match action:
-            case "status":
-                out = await strategy_obj.status()
+    match action:
+        case "status":
+            out = await strategy_obj.status()
+            return ok_with_warning(
+                {"strategy": strategy, "action": action, "output": out}
+            )
+
+        case "analyze":
+            if hasattr(strategy_obj, "analyze"):
+                out = await strategy_obj.analyze(deposit_usdc=amount_usdc)
                 return ok_with_warning(
                     {"strategy": strategy, "action": action, "output": out}
                 )
+            return err("not_supported", "Strategy does not support analyze()")
 
-            case "analyze":
-                if hasattr(strategy_obj, "analyze"):
-                    out = await strategy_obj.analyze(deposit_usdc=amount_usdc)
-                    return ok_with_warning(
-                        {"strategy": strategy, "action": action, "output": out}
-                    )
-                return err("not_supported", "Strategy does not support analyze()")
+        case "snapshot":
+            if hasattr(strategy_obj, "build_batch_snapshot"):
+                out = await strategy_obj.build_batch_snapshot(
+                    score_deposit_usdc=amount_usdc
+                )
+                return ok_with_warning(
+                    {"strategy": strategy, "action": action, "output": out}
+                )
+            return err(
+                "not_supported", "Strategy does not support build_batch_snapshot()"
+            )
 
-            case "snapshot":
-                if hasattr(strategy_obj, "build_batch_snapshot"):
-                    out = await strategy_obj.build_batch_snapshot(
-                        score_deposit_usdc=amount_usdc
-                    )
-                    return ok_with_warning(
-                        {"strategy": strategy, "action": action, "output": out}
-                    )
+        case "quote":
+            if hasattr(strategy_obj, "quote"):
+                out = await strategy_obj.quote(deposit_amount=amount_usdc)
+                return ok_with_warning(
+                    {"strategy": strategy, "action": action, "output": out}
+                )
+            return err("not_supported", "Strategy does not support quote()")
+
+        case "deposit":
+            # Prefer the canonical strategy kwargs (main_token_amount + gas_token_amount).
+            # Back-compat: allow callers to pass `amount` as the main token amount.
+            if main_token_amount is None:
+                main_token_amount = amount
+            throw_if_none(
+                "main_token_amount required for deposit (optionally gas_token_amount)",
+                main_token_amount,
+            )
+            success, msg = await strategy_obj.deposit(
+                main_token_amount=float(main_token_amount),
+                gas_token_amount=float(gas_token_amount),
+            )
+            return ok_with_warning(
+                {
+                    "strategy": strategy,
+                    "action": action,
+                    "success": success,
+                    "message": msg,
+                }
+            )
+
+        case "update":
+            success, msg = await strategy_obj.update()
+            return ok_with_warning(
+                {
+                    "strategy": strategy,
+                    "action": action,
+                    "success": success,
+                    "message": msg,
+                }
+            )
+
+        case "withdraw":
+            if amount is not None:
                 return err(
-                    "not_supported", "Strategy does not support build_batch_snapshot()"
+                    "not_supported",
+                    "partial withdraw is not supported; omit amount",
                 )
+            success, msg = await strategy_obj.withdraw()
+            return ok_with_warning(
+                {
+                    "strategy": strategy,
+                    "action": action,
+                    "success": success,
+                    "message": msg,
+                }
+            )
 
-            case "quote":
-                if hasattr(strategy_obj, "quote"):
-                    out = await strategy_obj.quote(deposit_amount=amount_usdc)
-                    return ok_with_warning(
-                        {"strategy": strategy, "action": action, "output": out}
-                    )
-                return err("not_supported", "Strategy does not support quote()")
-
-            case "deposit":
-                # Prefer the canonical strategy kwargs (main_token_amount + gas_token_amount).
-                # Back-compat: allow callers to pass `amount` as the main token amount.
-                if main_token_amount is None:
-                    main_token_amount = amount
-                if main_token_amount is None:
-                    return err(
-                        "invalid_request",
-                        "main_token_amount required for deposit (optionally gas_token_amount)",
-                    )
-                success, msg = await strategy_obj.deposit(
-                    main_token_amount=float(main_token_amount),
-                    gas_token_amount=float(gas_token_amount),
-                )
+        case "exit":
+            if hasattr(strategy_obj, "exit"):
+                success, msg = await strategy_obj.exit()
                 return ok_with_warning(
                     {
                         "strategy": strategy,
@@ -214,61 +253,22 @@ async def core_run_strategy(
                         "message": msg,
                     }
                 )
+            return err("not_supported", "Strategy does not support exit()")
 
-            case "update":
-                success, msg = await strategy_obj.update()
-                return ok_with_warning(
-                    {
-                        "strategy": strategy,
-                        "action": action,
-                        "success": success,
-                        "message": msg,
-                    }
+        case "reconcile":
+            if not hasattr(strategy_obj, "reconcile"):
+                return err(
+                    "not_supported",
+                    "Strategy does not support reconcile() — only ActivePerpsStrategy subclasses do",
                 )
+            report = await strategy_obj.reconcile(
+                start=start,
+                end=end,
+                no_fills=no_fills,
+            )
+            return ok_with_warning(
+                {"strategy": strategy, "action": action, "output": report}
+            )
 
-            case "withdraw":
-                if amount is not None:
-                    return err(
-                        "not_supported",
-                        "partial withdraw is not supported; omit amount",
-                    )
-                success, msg = await strategy_obj.withdraw()
-                return ok_with_warning(
-                    {
-                        "strategy": strategy,
-                        "action": action,
-                        "success": success,
-                        "message": msg,
-                    }
-                )
-
-            case "exit":
-                if hasattr(strategy_obj, "exit"):
-                    success, msg = await strategy_obj.exit()
-                    return ok_with_warning(
-                        {
-                            "strategy": strategy,
-                            "action": action,
-                            "success": success,
-                            "message": msg,
-                        }
-                    )
-                return err("not_supported", "Strategy does not support exit()")
-
-            case "reconcile":
-                if not hasattr(strategy_obj, "reconcile"):
-                    return err(
-                        "not_supported",
-                        "Strategy does not support reconcile() — only ActivePerpsStrategy subclasses do",
-                    )
-                report = await strategy_obj.reconcile(
-                    start=start, end=end, no_fills=no_fills,
-                )
-                return ok_with_warning(
-                    {"strategy": strategy, "action": action, "output": report}
-                )
-
-            case _:
-                return err("invalid_request", f"Unknown action: {action}")
-    except Exception as exc:  # noqa: BLE001
-        return err("strategy_error", str(exc))
+        case _:
+            return err("invalid_request", f"Unknown action: {action}")

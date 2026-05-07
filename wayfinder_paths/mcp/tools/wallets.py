@@ -19,6 +19,7 @@ from wayfinder_paths.core.utils.wallets import (
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     find_wallet_by_label,
     load_wallets,
@@ -26,6 +27,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     public_wallet_view,
     resolve_wallet_address,
+    throw_if_empty_str,
 )
 
 PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
@@ -161,6 +163,7 @@ async def _query_adapter(
         }
 
 
+@catch_errors
 async def core_wallets(
     action: Literal["create", "annotate", "discover_portfolio"],
     *,
@@ -222,11 +225,9 @@ async def core_wallets(
                     "Local wallets are discouraged for OpenCode instances",
                 )
             existing = await load_wallets()
-            want = (label or wallet_label or "").strip()
-            if not want:
-                return err(
-                    "invalid_request", "label is required for wallets(action=create)"
-                )
+            want = throw_if_empty_str(
+                "label is required for wallets(action=create)", label or wallet_label
+            )
 
             for w in existing:
                 if str(w.get("label", "")).strip() == want:
@@ -239,11 +240,10 @@ async def core_wallets(
                     )
 
             if remote:
-                if not wallet_type:
-                    return err(
-                        "invalid_request",
-                        "wallet_type is required for remote wallets (one of: session, policy, strategy)",
-                    )
+                wallet_type = throw_if_empty_str(
+                    "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                    wallet_type,
+                )
                 result = await create_remote_wallet(
                     label=want, wallet_type=wallet_type, policies=policies
                 )
@@ -284,16 +284,12 @@ async def core_wallets(
                     "invalid_request",
                     "wallet_label or wallet_address is required",
                 )
-            if not protocol:
-                return err("invalid_request", "protocol is required for annotate")
-            if not annotate_action:
-                return err(
-                    "invalid_request", "annotate_action is required for annotate"
-                )
-            if not tool:
-                return err("invalid_request", "tool is required for annotate")
-            if not status:
-                return err("invalid_request", "status is required for annotate")
+            throw_if_empty_str("protocol is required for annotate", protocol)
+            throw_if_empty_str(
+                "annotate_action is required for annotate", annotate_action
+            )
+            throw_if_empty_str("tool is required for annotate", tool)
+            throw_if_empty_str("status is required for annotate", status)
 
             store.annotate(
                 address=address,
@@ -460,6 +456,7 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
+@catch_errors
 async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
@@ -497,6 +494,7 @@ async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
     return ok({"wallets": views})
 
 
+@catch_errors
 async def onchain_get_wallet_activity(label: str) -> dict[str, Any]:
     w = await find_wallet_by_label(label)
     if not w:
@@ -506,12 +504,7 @@ async def onchain_get_wallet_activity(label: str) -> dict[str, Any]:
     if not address:
         return err("invalid_wallet", f"Invalid address for wallet: {label}")
 
-    try:
-        data = await BALANCE_CLIENT.get_wallet_activity(
-            wallet_address=address, limit=20
-        )
-    except Exception as exc:  # noqa: BLE001
-        return err("activity_failed", str(exc))
+    data = await BALANCE_CLIENT.get_wallet_activity(wallet_address=address, limit=20)
 
     return ok(
         {

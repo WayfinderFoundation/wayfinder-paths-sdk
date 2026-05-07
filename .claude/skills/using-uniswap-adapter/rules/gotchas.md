@@ -95,7 +95,7 @@ Only pass `burn=True` when removing ALL liquidity. The NFT can only be burned wh
 Run scripts via MCP with wallet tracking:
 
 ```
-mcp__wayfinder__run_script(
+mcp__wayfinder__core_run_script(
     script_path=".wayfinder_runs/uniswap_lp.py",
     wallet_label="main"
 )

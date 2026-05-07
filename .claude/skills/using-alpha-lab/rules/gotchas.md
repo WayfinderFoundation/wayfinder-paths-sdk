@@ -13,25 +13,25 @@
 
 `"insightfulness_score"`, `"-insightfulness_score"` (desc), `"created"`, `"-created"` (desc)
 
-MCP resource always sorts by `-insightfulness_score`.
+MCP tool always sorts by `-insightfulness_score`.
 
 ## Valid Scan Types
 
 `"twitter_post"`, `"defi_llama_chain_flow"`, `"defi_llama_overview"`, `"defi_llama_protocol"`, `"delta_lab_top_apy"`, `"delta_lab_best_delta_neutral"`
 
-## MCP URI Placeholders
+## MCP Tool Placeholders
 
 Use `_` for unused string params and `all` for no type filter.
 
 ```
-wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}
+research_search_alpha(query, scan_type, created_after, created_before, limit)
 ```
 
 Examples:
 ```
-wayfinder://alpha-lab/search/_/all/_/_/20                       # Top 20 insights
-wayfinder://alpha-lab/search/_/all/2026-03-06T00:00:00Z/_/20    # Today's insights
-wayfinder://alpha-lab/search/ETH/twitter_post/_/_/10            # ETH tweets
+research_search_alpha(limit="20")                                          # Top 20 insights
+research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")    # Today's insights
+research_search_alpha(query="ETH", scan_type="twitter_post", limit="10")   # ETH tweets
 ```
 
 ## Don't query Delta Lab for "alpha" requests

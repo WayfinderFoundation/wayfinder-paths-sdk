@@ -122,7 +122,7 @@ async def test_polymarket_quote_buy_requires_amount_collateral():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
         out = await polymarket_read("quote", token_id="tok_yes", side="BUY")
         assert out["ok"] is False
-        assert out["error"]["code"] == "invalid_request"
+        assert out["error"]["code"] == "error"
 
 
 @pytest.mark.asyncio
@@ -130,7 +130,7 @@ async def test_polymarket_quote_sell_requires_shares():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
         out = await polymarket_read("quote", token_id="tok_yes", side="SELL")
         assert out["ok"] is False
-        assert out["error"]["code"] == "invalid_request"
+        assert out["error"]["code"] == "error"
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,13 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
-from wayfinder_paths.mcp.utils import err, ok, read_text_excerpt, repo_root
+from wayfinder_paths.mcp.utils import (
+    catch_errors,
+    err,
+    ok,
+    read_text_excerpt,
+    repo_root,
+)
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
@@ -33,6 +39,7 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
     )
 
 
+@catch_errors
 async def core_runner(
     action: Literal[
         "daemon_status",
