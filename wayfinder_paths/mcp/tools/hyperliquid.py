@@ -10,8 +10,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import decode_outcome_
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
-    DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
-    HYPE_FEE_WALLET,
+    DEFAULT_HYPERLIQUID_BUILDER_FEE,
     HYPERLIQUID_BRIDGE_ADDRESS,
     MARKET_SEARCH_ALIASES,
     MARKET_SEARCH_MIN_MATCH_SCORE,
@@ -32,45 +31,6 @@ from wayfinder_paths.mcp.utils import (
     throw_if_none,
     throw_if_not_number,
 )
-
-
-def _resolve_builder_fee(
-    *,
-    config: dict[str, Any],
-    builder_fee_tenths_bp: int | None,
-) -> dict[str, Any]:
-    """
-    Resolve builder fee config for Hyperliquid orders.
-
-    Builder attribution is **mandatory** and always uses the Wayfinder builder wallet.
-    Fee priority:
-      1) explicit builder_fee_tenths_bp
-      2) config["builder_fee"]["f"] (typically config.json["strategy"]["builder_fee"])
-      3) DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP
-    """
-    expected_builder = HYPE_FEE_WALLET.lower()
-    fee = builder_fee_tenths_bp
-    if fee is None:
-        cfg = config.get("builder_fee") if isinstance(config, dict) else None
-        if isinstance(cfg, dict):
-            cfg_builder = str(cfg.get("b") or "").strip()
-            if cfg_builder and cfg_builder.lower() != expected_builder:
-                raise ValueError(
-                    f"config builder_fee.b must be {expected_builder} (got {cfg_builder})"
-                )
-            if cfg.get("f") is not None:
-                fee = cfg.get("f")
-    if fee is None:
-        fee = DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP
-
-    try:
-        fee_i = int(fee)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("builder_fee_tenths_bp must be an int") from exc
-    if fee_i <= 0:
-        raise ValueError("builder_fee_tenths_bp must be > 0")
-
-    return {"b": expected_builder, "f": fee_i}
 
 
 def _annotate_hl_profile(
@@ -123,7 +83,6 @@ async def hyperliquid_execute(
     leverage: int | None = None,
     is_cross: bool = True,
     amount_usdc: float | None = None,
-    builder_fee_tenths_bp: int | None = None,
     # place_trigger_order params
     trigger_price: float | None = None,
     tpsl: Literal["tp", "sl"] | None = None,
@@ -546,10 +505,6 @@ async def hyperliquid_execute(
                 if limit_px <= 0:
                     raise ValueError("price must be positive")
 
-            builder = _resolve_builder_fee(
-                config=config, builder_fee_tenths_bp=builder_fee_tenths_bp
-            )
-
             sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
             if sz_valid <= 0:
                 raise ValueError("size is too small after lot-size rounding")
@@ -563,7 +518,7 @@ async def hyperliquid_execute(
                 tpsl=tpsl,
                 is_market=bool(is_market_trigger),
                 limit_price=limit_px,
-                builder=builder,
+                builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
             )
             effects.append(
                 {
@@ -592,7 +547,7 @@ async def hyperliquid_execute(
                         "limit_price": limit_px,
                         "size_requested": float(sz),
                         "size_valid": float(sz_valid),
-                        "builder": builder,
+                        "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
                     },
                     "effects": effects,
                 }
@@ -732,11 +687,6 @@ async def hyperliquid_execute(
                         f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Bump usd_amount or pass size directly."
                     )
 
-            builder = _resolve_builder_fee(
-                config=config,
-                builder_fee_tenths_bp=builder_fee_tenths_bp,
-            )
-
             if leverage is not None:
                 lev = int(throw_if_not_number("leverage must be an int", leverage))
                 if lev <= 0:
@@ -767,8 +717,8 @@ async def hyperliquid_execute(
                     return response
 
             # Builder attribution is mandatory; ensure approval before placing orders.
-            desired = int(builder.get("f") or 0)
-            builder_addr = str(builder.get("b") or "").strip()
+            builder_addr = DEFAULT_HYPERLIQUID_BUILDER_FEE["b"]
+            desired = DEFAULT_HYPERLIQUID_BUILDER_FEE["f"]
             ok_fee, current = await adapter.get_max_builder_fee(
                 user=sender, builder=builder_addr
             )
@@ -820,7 +770,7 @@ async def hyperliquid_execute(
                     float(sz_valid),
                     sender,
                     reduce_only=bool(reduce_only),
-                    builder=builder,
+                    builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
                 )
                 effects.append(
                     {
@@ -839,7 +789,7 @@ async def hyperliquid_execute(
                     sender,
                     reduce_only=bool(reduce_only),
                     cloid=cloid,
-                    builder=builder,
+                    builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
                 )
                 effects.append(
                     {
@@ -869,7 +819,7 @@ async def hyperliquid_execute(
                         "slippage": float(slippage),
                         "reduce_only": bool(reduce_only),
                         "cloid": cloid,
-                        "builder": builder,
+                        "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
                         "sizing": sizing,
                     },
                     "effects": effects,
