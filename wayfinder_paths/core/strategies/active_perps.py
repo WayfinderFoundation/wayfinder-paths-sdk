@@ -24,7 +24,11 @@ from typing import Any, ClassVar, Final, final
 import pandas as pd
 
 from wayfinder_paths.core.backtesting.ref import BacktestRef, load_ref
-from wayfinder_paths.core.perps.context import SignalFrame, TriggerContext, normalize_signal
+from wayfinder_paths.core.perps.context import (
+    SignalFrame,
+    TriggerContext,
+    normalize_signal,
+)
 from wayfinder_paths.core.perps.handlers.protocol import MarketHandler
 from wayfinder_paths.core.perps.state import SNAPSHOT_AGE_WARN_DAYS, StateStore
 from wayfinder_paths.core.strategies.risk_limits import RiskLimits
@@ -143,7 +147,9 @@ class ActivePerpsStrategy(Strategy):
 
     @final
     async def _run_trigger(self) -> StatusTuple:
-        from wayfinder_paths.core.perps.handlers.recording import RecordingHandler  # noqa: PLC0415
+        from wayfinder_paths.core.perps.handlers.recording import (
+            RecordingHandler,  # noqa: PLC0415
+        )
 
         raw_perp, raw_hip3 = await self._build_handlers()
         # Wrap each handler so every place_order is teed into an intents log.
@@ -215,24 +221,178 @@ class ActivePerpsStrategy(Strategy):
         return True, msg
 
     # ---------- overridable (defaults handle common HL case) ----------
-    async def deposit(self, **kwargs: Any) -> StatusTuple:  # noqa: D401
-        """Default: bridge USDC to HL primary perp (override for per-strategy flow)."""
-        return False, (
-            "Default deposit not implemented. Override `deposit(...)` in your subclass "
-            "to handle main → strategy wallet → HL bridge."
+    # Default lifecycle assumes USDC on Arbitrum bridged to/from Hyperliquid.
+    # Strategies with non-standard funding flows (other chains, multi-asset
+    # collateral, custom margin allocation) should override these.
+
+    DEFAULT_USDC_TOKEN_ID: ClassVar[str] = "usd-coin-arbitrum"
+    DEFAULT_GAS_TOKEN_ID: ClassVar[str] = "ethereum-arbitrum"
+    DEFAULT_MIN_DEPOSIT_USDC: ClassVar[float] = 5.0   # HL minimum is $5
+    DEFAULT_MAX_GAS_ETH: ClassVar[float] = 0.05
+    DEFAULT_HL_DEPOSIT_TIMEOUT_S: ClassVar[int] = 180
+
+    async def _build_balance_adapter(self) -> Any:
+        """Construct a BalanceAdapter wired to (main, strategy) wallets."""
+        from wayfinder_paths.adapters.balance_adapter.adapter import (
+            BalanceAdapter,  # noqa: PLC0415
         )
+        from wayfinder_paths.mcp.scripting import get_adapter  # noqa: PLC0415
+        return await get_adapter(BalanceAdapter, "main", self._strategy_name())
+
+    async def _build_hl_adapter(self) -> Any:
+        from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
+            HyperliquidAdapter,  # noqa: PLC0415
+        )
+        from wayfinder_paths.mcp.scripting import get_adapter  # noqa: PLC0415
+        return await get_adapter(HyperliquidAdapter, self._strategy_name())
+
+    async def deposit(self, **kwargs: Any) -> StatusTuple:
+        """Default: main → strategy wallet (USDC + optional gas) → bridge to HL.
+
+        Args (via kwargs):
+            main_token_amount: USDC to deposit.
+            gas_token_amount: ETH-on-Arbitrum to send to strategy wallet for tx fees
+                (recommend 0.001 on first deposit; 0 on subsequent).
+        """
+        main_amt = float(kwargs.get("main_token_amount") or 0)
+        gas_amt = float(kwargs.get("gas_token_amount") or 0)
+        if main_amt < self.DEFAULT_MIN_DEPOSIT_USDC:
+            return False, f"Minimum deposit is {self.DEFAULT_MIN_DEPOSIT_USDC} USDC"
+        if gas_amt > self.DEFAULT_MAX_GAS_ETH:
+            return False, f"Gas amount exceeds maximum {self.DEFAULT_MAX_GAS_ETH} ETH"
+
+        balance = await self._build_balance_adapter()
+        strat_addr = self._get_strategy_wallet_address()
+        main_addr = self._get_main_wallet_address()
+        same_wallet = main_addr.lower() == strat_addr.lower()
+
+        # 1) Optional gas transfer.
+        if gas_amt > 0 and not same_wallet:
+            ok, msg = await balance.move_from_main_wallet_to_strategy_wallet(
+                token_id=self.DEFAULT_GAS_TOKEN_ID,
+                amount=gas_amt,
+                strategy_name=self._strategy_name(),
+            )
+            if not ok:
+                return False, f"Gas transfer failed: {msg}"
+
+        # 2) USDC transfer (skip if main and strategy share an address).
+        if not same_wallet:
+            ok, msg = await balance.move_from_main_wallet_to_strategy_wallet(
+                token_id=self.DEFAULT_USDC_TOKEN_ID,
+                amount=main_amt,
+                strategy_name=self._strategy_name(),
+            )
+            if not ok:
+                return False, f"USDC transfer failed: {msg}"
+
+        # 3) Bridge to Hyperliquid.
+        from wayfinder_paths.core.constants.contracts import (
+            HYPERLIQUID_BRIDGE,  # noqa: PLC0415
+        )
+        usdc_decimals = 6
+        usdc_raw = int(main_amt * (10 ** usdc_decimals))
+        strategy_wallet = self.config.get("strategy_wallet")
+        ok, tx = await balance.send_to_address(
+            token_id=self.DEFAULT_USDC_TOKEN_ID,
+            amount=usdc_raw,
+            from_wallet=strategy_wallet,
+            to_address=HYPERLIQUID_BRIDGE,
+            signing_callback=self.strategy_wallet_signing_callback,
+        )
+        if not ok:
+            return False, f"HL bridge tx failed: {tx}"
+
+        # 4) Wait for HL to credit the deposit.
+        hl = await self._build_hl_adapter()
+        ok, _ = await hl.wait_for_deposit(
+            address=strat_addr,
+            expected_increase=main_amt,
+            timeout_s=self.DEFAULT_HL_DEPOSIT_TIMEOUT_S,
+            poll_interval_s=10,
+        )
+        if not ok:
+            return True, (
+                f"Deposit tx sent ({tx}); HL credit not yet visible — call status() to verify."
+            )
+        return True, f"Deposited {main_amt} USDC to HL (tx {tx})"
 
     async def withdraw(self, **kwargs: Any) -> StatusTuple:
-        """Default: close all positions across declared venues, withdraw USDC from HL."""
-        return False, (
-            "Default withdraw not implemented. Override `withdraw(...)` in your subclass."
-        )
+        """Default: close all open positions (reduce-only) across declared venues,
+        then withdraw USDC from HL → strategy wallet on Arbitrum.
+
+        Funds are left on the strategy wallet; call `exit()` to move to main wallet.
+        """
+        perp, hip3 = await self._build_handlers()
+
+        # 1) Close all open positions on every venue.
+        closed = 0
+        errors: list[str] = []
+        for venue_key, handler in [
+            ("perp", perp),
+            *((f"hip3:{k}", h) for k, h in hip3.items()),
+        ]:
+            try:
+                positions = await handler.get_positions()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{venue_key} get_positions: {e}")
+                continue
+            for sym, pos in positions.items():
+                if pos.size == 0:
+                    continue
+                side = "sell" if pos.size > 0 else "buy"
+                result = await handler.place_order(
+                    sym, side, abs(pos.size), "market", reduce_only=True,
+                )
+                if result.ok:
+                    closed += 1
+                else:
+                    errors.append(f"{venue_key}/{sym}: {result.error}")
+
+        # 2) Withdraw all USDC margin from HL → strategy wallet on Arbitrum.
+        hl = await self._build_hl_adapter()
+        strat_addr = self._get_strategy_wallet_address()
+        ok, state = await hl.get_user_state(strat_addr)
+        margin = 0.0
+        if ok and isinstance(state, dict):
+            margin = hl.get_perp_margin_amount(state)
+        if margin > 0:
+            ok, raw = await hl.withdraw(amount=margin, address=strat_addr)
+            if not ok:
+                errors.append(f"HL withdraw: {raw}")
+
+        msg = f"Closed {closed} position(s); withdrew {margin:.2f} USDC from HL to strategy wallet"
+        if errors:
+            return False, f"{msg}; errors: {'; '.join(errors[:5])}"
+        return True, msg
 
     async def exit(self, **kwargs: Any) -> StatusTuple:
-        return False, (
-            "Default exit not implemented. Override `exit(...)` to transfer USDC from "
-            "strategy wallet to main wallet."
+        """Default: transfer all USDC from strategy wallet → main wallet on Arbitrum."""
+        balance = await self._build_balance_adapter()
+        strat_addr = self._get_strategy_wallet_address()
+        main_addr = self._get_main_wallet_address()
+        if main_addr.lower() == strat_addr.lower():
+            return True, "Main and strategy wallets are the same address — nothing to transfer"
+
+        ok, raw = await balance.get_balance(
+            wallet_address=strat_addr,
+            token_id=self.DEFAULT_USDC_TOKEN_ID,
         )
+        if not ok:
+            return False, f"Failed to read strategy USDC balance: {raw}"
+        usdc_decimals = 6
+        amount = float(raw) / (10 ** usdc_decimals)
+        if amount <= 0:
+            return True, "No USDC on strategy wallet to transfer"
+
+        ok, msg = await balance.move_from_strategy_wallet_to_main_wallet(
+            token_id=self.DEFAULT_USDC_TOKEN_ID,
+            amount=amount,
+            strategy_name=self._strategy_name(),
+        )
+        if not ok:
+            return False, f"USDC transfer failed: {msg}"
+        return True, f"Transferred {amount:.2f} USDC to main wallet"
 
     async def reconcile(
         self,
@@ -255,7 +415,9 @@ class ActivePerpsStrategy(Strategy):
             no_fills: skip the live HL fills fetch (offline replay only).
             write_report: persist report to disk.
         """
-        from wayfinder_paths.core.perps.reconciler import reconcile_strategy  # noqa: PLC0415
+        from wayfinder_paths.core.perps.reconciler import (
+            reconcile_strategy,  # noqa: PLC0415
+        )
 
         return await reconcile_strategy(
             strategy_dir=Path(self.REF).parent,
@@ -265,6 +427,15 @@ class ActivePerpsStrategy(Strategy):
         )
 
     async def _status(self) -> StatusDict:
+        risk_warning = ""
+        if self._risk_limits is None:
+            risk_warning = (
+                f"No risk_limits.json found in {Path(self.REF).parent} — strategy will run "
+                "without drawdown / exposure / loss caps. Add a risk_limits.json next to "
+                "backtest_ref.json to enable opt-in halts."
+            )
+            self.logger.warning(risk_warning)
+
         return {
             "portfolio_value": 0.0,
             "net_deposit": 0.0,
@@ -276,6 +447,7 @@ class ActivePerpsStrategy(Strategy):
                 },
                 "last_state": self._state.snapshot(),
                 "snapshot_warning": self._oldest_snapshot_warning() or "",
+                "risk_warning": risk_warning,
             },
             "gas_available": 0.0,
             "gassed_up": False,
