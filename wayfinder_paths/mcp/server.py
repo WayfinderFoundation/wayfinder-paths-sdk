@@ -64,9 +64,14 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_search_market,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
+    shells_add_chart_overlay,
     shells_add_chart_projection,
+    shells_add_chart_series,
     shells_clear_chart_projections,
+    shells_clear_chart_workspace,
+    shells_create_chart,
     shells_get_frontend_context,
+    shells_set_active_chart,
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import (
@@ -97,6 +102,11 @@ if is_opencode_instance():
     mcp.tool()(shells_get_frontend_context)
     mcp.tool()(shells_add_chart_projection)
     mcp.tool()(shells_clear_chart_projections)
+    mcp.tool()(shells_create_chart)
+    mcp.tool()(shells_set_active_chart)
+    mcp.tool()(shells_add_chart_series)
+    mcp.tool()(shells_add_chart_overlay)
+    mcp.tool()(shells_clear_chart_workspace)
     mcp.tool()(shells_notify)
 
 # ─── research_* ────────────────────────────────────────────────────────

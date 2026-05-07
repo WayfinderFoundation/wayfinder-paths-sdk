@@ -43,5 +43,27 @@ class InstanceStateClient(WayfinderClient):
     async def clear_projections(self, chart_id: str) -> dict[str, Any]:
         return await self.patch_projection(chart_id, [])
 
+    async def patch_chart_workspace(self, workspace: dict[str, Any]) -> dict[str, Any]:
+        resp = await self._authed_request(
+            "PATCH",
+            f"{self._base_url()}/chart_workspace/",
+            json=workspace,
+        )
+        return resp.json()
+
+    async def upsert_workspace_chart(self, chart: dict[str, Any]) -> dict[str, Any]:
+        resp = await self._authed_request(
+            "POST",
+            f"{self._base_url()}/chart_workspace/",
+            json=chart,
+        )
+        return resp.json()
+
+    async def clear_chart_workspace(self) -> dict[str, Any]:
+        resp = await self._authed_request(
+            "DELETE", f"{self._base_url()}/chart_workspace/"
+        )
+        return resp.json()
+
 
 INSTANCE_STATE_CLIENT = InstanceStateClient()
