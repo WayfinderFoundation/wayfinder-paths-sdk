@@ -20,7 +20,7 @@ async def test_resolve_token_happy_path():
         out = await onchain_resolve_token("usd-coin-arbitrum")
 
     assert out["ok"] is True
-    assert out["result"]["token"]["symbol"] == "USDC"
+    assert out["result"]["symbol"] == "USDC"
 
 
 @pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_get_gas_token_happy_path():
         out = await onchain_get_gas_token("arbitrum")
 
     assert out["ok"] is True
-    assert out["result"]["token"]["symbol"] == "ETH"
+    assert out["result"]["symbol"] == "ETH"
 
 
 @pytest.mark.asyncio
