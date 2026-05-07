@@ -1,0 +1,63 @@
+"""Live tests for the per-market-type mid-price feed grammar.
+
+`HyperliquidAdapter.get_all_mid_prices()` returns a dict keyed differently
+per market type. These tests verify `HyperliquidAdapter.get_mid_price_key`
+produces keys that actually resolve in the live feed.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+
+
+async def _resolved_mid(asset_name: str) -> float | None:
+    adapter = HyperliquidAdapter()
+    asset_id = await adapter.get_asset_id(asset_name)
+    assert asset_id is not None, f"failed to resolve {asset_name!r}"
+    ok_mids, mids = await adapter.get_all_mid_prices()
+    assert ok_mids and isinstance(mids, dict)
+    for key in adapter.get_mid_price_key(asset_name, asset_id):
+        v = mids.get(key)
+        if v is not None:
+            return float(v)
+    return None
+
+
+@pytest.mark.asyncio
+async def test_mid_price_core_perp_btc():
+    mid = await _resolved_mid("BTC-USDC")
+    assert mid is not None and mid > 0
+
+
+@pytest.mark.asyncio
+async def test_mid_price_hip3_perp_xyz_nvda():
+    mid = await _resolved_mid("xyz:NVDA")
+    assert mid is not None and mid > 0
+
+
+@pytest.mark.asyncio
+async def test_mid_price_spot_kntq_usdh():
+    # KNTQ has no canonical-name entry; only "@<spot_index>" works.
+    mid = await _resolved_mid("KNTQ/USDH")
+    assert mid is not None and mid > 0
+
+
+@pytest.mark.asyncio
+async def test_mid_price_spot_purr_usdc_grandfathered():
+    # PURR is grandfathered under its canonical name; "@0" returns None.
+    mid = await _resolved_mid("PURR/USDC")
+    assert mid is not None and mid > 0
+
+
+@pytest.mark.asyncio
+async def test_mid_price_hip4_outcome():
+    # HIP-4 outcomes rotate daily at 06:00 UTC; pick whatever's on book now.
+    adapter = HyperliquidAdapter()
+    ok_outs, outcomes = await adapter.get_outcome_markets()
+    assert ok_outs and outcomes, "no HIP-4 outcomes on book"
+    book_coin = outcomes[0]["sides"][0]["book_coin"]
+
+    mid = await _resolved_mid(book_coin)
+    assert mid is not None and mid > 0

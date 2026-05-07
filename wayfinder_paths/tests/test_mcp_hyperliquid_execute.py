@@ -5,11 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
 from wayfinder_paths.mcp.tools.hyperliquid import (
-    _format_perp_market,
     _resolve_builder_fee,
-    _resolve_coin,
     hyperliquid_execute,
 )
 
@@ -27,55 +26,52 @@ def test_resolve_builder_fee_prefers_explicit_fee():
     assert fee == {"b": HYPE_FEE_WALLET.lower(), "f": 7}
 
 
-def test_format_perp_market_appends_usdc_for_core_perp():
-    assert _format_perp_market("BTC") == "BTC-USDC"
-    assert _format_perp_market("xyz:SP500") == "xyz:SP500"
+class _StubAdapter(HyperliquidAdapter):
+    """Adapter shell with stubbed coin_to_asset / spot_assets — keeps
+    `resolve_coin` reachable without hitting the live HL info endpoint."""
 
-
-class _StubAdapter:
     def __init__(self, coin_to_asset, spot_assets):
-        self.coin_to_asset = coin_to_asset
+        # Skip parent __init__ — resolve_coin only needs the two attrs below.
+        self._coin_to_asset = coin_to_asset
         self._spot_assets = spot_assets
+
+    @property
+    def coin_to_asset(self):
+        return self._coin_to_asset
 
     async def get_spot_assets(self):
         return True, self._spot_assets
 
 
 @pytest.mark.asyncio
-async def test_resolve_coin_perp():
+async def test_get_asset_id_perp():
     adapter = _StubAdapter({"BTC": 0, "ETH": 1}, {})
-    ok, res = await _resolve_coin(adapter, coin="BTC-USDC")
-    assert ok and res["market_type"] == "perp" and res["asset_id"] == 0
-    assert res["coin_clean"] == "BTC"
+    assert await adapter.get_asset_id("BTC-USDC") == 0
 
 
 @pytest.mark.asyncio
-async def test_resolve_coin_hip3_perp():
+async def test_get_asset_id_hip3_perp():
     adapter = _StubAdapter({"xyz:SP500": 110000}, {})
-    ok, res = await _resolve_coin(adapter, coin="xyz:SP500")
-    assert ok and res["market_type"] == "perp" and res["asset_id"] == 110000
-    assert res["coin_clean"] == "xyz:SP500"
+    assert await adapter.get_asset_id("xyz:SP500") == 110000
 
 
 @pytest.mark.asyncio
-async def test_resolve_coin_spot_pair():
+async def test_get_asset_id_spot_pair():
     adapter = _StubAdapter({}, {"BTC/USDC": 10107, "USDC/USDH": 10211})
-    ok, res = await _resolve_coin(adapter, coin="USDC/USDH")
-    assert ok and res["market_type"] == "spot" and res["asset_id"] == 10211
-    assert res["coin_clean"] == "USDC/USDH"
+    assert await adapter.get_asset_id("USDC/USDH") == 10211
 
 
 @pytest.mark.asyncio
-async def test_resolve_coin_outcome():
+async def test_get_asset_id_outcome():
+    from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
+
     adapter = _StubAdapter({}, {})
-    ok, res = await _resolve_coin(adapter, coin="#41")
-    assert ok and res["market_type"] == "outcome"
-    assert res["outcome_id"] == 4 and res["side"] == 1
+    assert await adapter.get_asset_id("#41") == OUTCOME_ASSET_OFFSET + 41
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "coin",
+    "asset_name",
     [
         "BTC",  # bare ticker
         "btc-usdc",  # case mismatch
@@ -86,15 +82,11 @@ async def test_resolve_coin_outcome():
         "#",  # missing encoding
         "#abc",  # non-numeric encoding
         "",  # empty
-        None,  # missing
     ],
 )
-async def test_resolve_coin_rejects_bad_input(coin):
+async def test_get_asset_id_returns_none_on_bad_input(asset_name):
     adapter = _StubAdapter({"BTC": 0}, {"BTC/USDC": 10107})
-    ok, res = await _resolve_coin(adapter, coin=coin)
-    assert ok is False
-    assert res["code"] == "invalid_coin"
-    assert "hyperliquid_get_markets" in res["message"]
+    assert await adapter.get_asset_id(asset_name) is None
 
 
 @pytest.mark.asyncio

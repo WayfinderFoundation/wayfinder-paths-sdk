@@ -116,7 +116,7 @@ async def build_hyperliquid_execute_preview(
     w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
-    coin = req.get("coin")
+    asset_name = req.get("asset_name")
     asset_id = req.get("asset_id")
 
     header = "HYPERLIQUID_EXECUTE\n"
@@ -124,7 +124,7 @@ async def build_hyperliquid_execute_preview(
         f"action: {action or '(missing)'}\n"
         f"wallet_label: {wallet_label}\n"
         f"address: {sender or '(unknown)'}\n"
-        f"coin: {coin}\n"
+        f"asset_name: {asset_name}\n"
         f"asset_id: {asset_id}"
     )
 
