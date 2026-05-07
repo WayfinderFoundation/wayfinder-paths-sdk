@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.mcp.utils import read_text_excerpt, read_yaml, repo_root
+from wayfinder_paths.mcp.utils import (
+    catch_errors,
+    err,
+    ok,
+    read_text_excerpt,
+    read_yaml,
+    repo_root,
+)
 
 
 def _describe_dir(base: Path, name: str) -> dict[str, Any] | None:
@@ -32,7 +38,8 @@ def _describe_all(base: Path) -> list[dict[str, Any]]:
     return items
 
 
-async def core_get_adapters_and_strategies(name: str | None = None) -> str:
+@catch_errors
+async def core_get_adapters_and_strategies(name: str | None = None) -> dict[str, Any]:
     """List adapters and strategies with their manifests and README excerpts.
 
     No args → full catalog of every adapter and strategy with manifest + readme excerpt.
@@ -46,19 +53,17 @@ async def core_get_adapters_and_strategies(name: str | None = None) -> str:
         adapter = _describe_dir(adapters_base, name)
         strategy = _describe_dir(strategies_base, name)
         if not adapter and not strategy:
-            return json.dumps({"error": f"Unknown adapter or strategy: {name}"})
-        return json.dumps(
+            return err("not_found", f"Unknown adapter or strategy: {name}")
+        return ok(
             {
                 "adapters": [adapter] if adapter else [],
                 "strategies": [strategy] if strategy else [],
-            },
-            indent=2,
+            }
         )
 
-    return json.dumps(
+    return ok(
         {
             "adapters": _describe_all(adapters_base),
             "strategies": _describe_all(strategies_base),
-        },
-        indent=2,
+        }
     )

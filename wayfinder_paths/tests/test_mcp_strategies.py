@@ -80,14 +80,14 @@ def _patch_signing():
 async def test_empty_strategy_name():
     out = await core_run_strategy(strategy="", action="status")
     assert out["ok"] is False
-    assert out["error"]["code"] == "invalid_request"
+    assert out["error"]["code"] == "error"
 
 
 @pytest.mark.asyncio
 async def test_whitespace_strategy_name():
     out = await core_run_strategy(strategy="   ", action="status")
     assert out["ok"] is False
-    assert out["error"]["code"] == "invalid_request"
+    assert out["error"]["code"] == "error"
 
 
 @pytest.mark.asyncio
@@ -155,7 +155,7 @@ async def test_policy_raises():
     with _patch_load(strategy_class=cls, status="active"):
         out = await core_run_strategy(strategy="my_strat", action="policy")
     assert out["ok"] is False
-    assert out["error"]["code"] == "strategy_error"
+    assert out["error"]["code"] == "error"
     assert "boom" in out["error"]["message"]
 
 
@@ -258,7 +258,7 @@ async def test_deposit_missing_amount():
     with _patch_load(), _patch_config(), _patch_signing():
         out = await core_run_strategy(strategy="my_strat", action="deposit")
     assert out["ok"] is False
-    assert out["error"]["code"] == "invalid_request"
+    assert out["error"]["code"] == "error"
     assert "main_token_amount" in out["error"]["message"]
 
 
@@ -343,7 +343,7 @@ async def test_action_exception_returns_strategy_error():
     with _patch_load(strategy_class=cls), _patch_config(), _patch_signing():
         out = await core_run_strategy(strategy="my_strat", action="status")
     assert out["ok"] is False
-    assert out["error"]["code"] == "strategy_error"
+    assert out["error"]["code"] == "error"
     assert "kaboom" in out["error"]["message"]
 
 

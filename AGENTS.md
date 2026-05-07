@@ -1,6 +1,13 @@
 # AGENTS.md
 
-This file provides guidance when working with code in this repository.
+## Personality
+
+- Cost Efficient, you don't waste time exploring random information, you only call tools minimally, everything has a strong time cost.
+- Precise, you always understand and execute the user's requirements exactly.
+
+## Notes
+
+- If confused about wallet balances, fetch fresh balances! Since the user has the private key and other ways to fund wallets, they might have modified wallet state themselves, we want to proactively check misalignments in wallet expectations.
 
 ## First-Time Setup (Auto-detect)
 
@@ -34,75 +41,21 @@ Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env va
 
 ## Messaging the user (Shells instances only)
 
-If you detected a Wayfinder Shells instance in "First-Time Setup" (health probe at `http://localhost:4096/global/health` returned `healthy: true`), you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. The backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly. The `message` field is rendered as Markdown (headings, lists, code blocks, tables, links) into a themed HTML email, so format it nicely.
+If you detected a Wayfinder Shells instance in "First-Time Setup", you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. Backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly.
 
-**MCP tool:**
-```
-notify(
-  title="Rebalance complete",
-  message="Moved **50 USDC** from Aave → Morpho.\n\n- tx: 0x…\n- new APY: 7.4%",
-)
-```
+See `/using-shells-notify` for the MCP tool, Python client, limits, and Markdown formatting tips.
 
-**Python client:**
-```python
-from wayfinder_paths.core.clients.NotifyClient import NOTIFY_CLIENT
+## Frontend Context (Shells instances only)
 
-await NOTIFY_CLIENT.notify(
-    title="Rebalance complete",
-    message="Moved **50 USDC** from Aave → Morpho.\n\n- tx: 0x…\n- new APY: 7.4%",
-)
-```
+If you detected a Wayfinder Shells instance, you can read what the user is currently viewing (active chart) and project overlays (price lines, markers, ranges, trends) onto their chart in real-time.
 
-Both POST to `/api/v1/opencode/notify/` on vault-backend with your `WAYFINDER_API_KEY`. Limits: title ≤ 200 chars, message ≤ 20 000 chars.
-
-## Frontend Context (reading UI state + drawing on charts)
-
-If you detected a Wayfinder Shells instance, you can read what the user is viewing and project overlays (price lines, markers, series) onto their chart in real-time.
-
-**MCP tools:**
-
-| Tool | Args | Description |
-|------|------|-------------|
-| `get_frontend_context` | (none) | Read current chart context + all projections |
-| `add_chart_projection` | `chart_id`, `type`, `config` | Add overlay to a chart |
-| `remove_chart_projection` | `chart_id`, `projection_id` | Remove a specific overlay |
-| `clear_chart_projections` | `chart_id` | Remove all overlays from a chart |
-
-**Typical flow:**
-1. Call `get_frontend_context` → returns `{frontend_context: {chart: {id: "hl-perp-BTC", market_id: "BTC", market_type: "hl-perp", interval: "1m"}}, sdk_projection: {...}}`
-2. Read `chart_id` from `frontend_context.chart.id` → `"hl-perp-BTC"`
-3. Call `add_chart_projection` with `chart_id="hl-perp-BTC"`, `type="horizontal_line"`, `config={"price": 73500, "color": "#ef4444", "label": "Support"}`
-4. Line appears on the user's chart in real-time
-
-**Projection types:**
-
-| type | config |
-|------|--------|
-| `horizontal_line` | `price`, `color?`, `label?` |
-| `marker` | `time` (unix sec), `position` (aboveBar/belowBar), `shape` (circle/arrowUp/arrowDown), `color?`, `label?` |
-| `line_series` | `data: [{time, value}]`, `color?`, `label?`, `line_width?` |
-
-**Python client:**
-```python
-from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
-
-state = await INSTANCE_STATE_CLIENT.get_state()
-chart_id = state["frontend_context"]["chart"]["id"]
-
-await INSTANCE_STATE_CLIENT.add_projection(chart_id, {
-    "type": "horizontal_line",
-    "config": {"price": 73500, "color": "#ef4444", "label": "Support"},
-})
-```
-
-Projections are scoped per chart — switching markets shows only that chart's projections. The backend is type-agnostic; new projection types only need a frontend renderer.
+See `/using-shells-projections` for the MCP tools, Python client, projection types, and gotchas.
 
 ## Memories
 
 Eagerly use the memory tools. Persist user preferences, recurring strategies, wallet labels, project context, and anything else the user is likely to reference again — read on session start, write whenever you learn something durable. Don't ration them: a memory the user has to repeat is a memory you should have written.
 
-## Scheduled Jobs (backend sync)
+## Scheduled Jobs (Shells instances only)
 
 On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
 
@@ -367,6 +320,13 @@ Hyperliquid minimums:
 
 Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp dexes (`xyz`/`flx`/`vntl`/`hyna`/`km`...), and HIP-4 outcome markets (binary/multi-outcome prediction contracts). Outcomes use a separate asset-id space (`100_000_000 + 10*outcome_id + side`) and integer contract sizes; **settle in USDH** (token 360), not USDC; settle daily at 06:00 UTC; written via `hyperliquid_execute(action="place_outcome_order", ...)`. See `/using-hyperliquid-adapter` rules for details.
 
+**Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present candidates side-by-side so the user can choose. Two venues:
+
+- **Hyperliquid HIP-4** — daily binary price contracts settled in USDH on the HL L1; rotating daily lineup. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` (read the `outcomes` bucket).
+- **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in USDC.e on Polygon. Search via `mcp__wayfinder__polymarket(action="search", query=..., limit=...)`.
+
+Present results as a table grouped by venue, then ask which market to trade — the same theme can list on both venues with different sizes, expiries, and collateral. Load `/using-hyperliquid-adapter` or `/using-polymarket-adapter` once the user picks.
+
 Supported chains:
 
 | Chain     | ID    | Code        | Symbol | Native token ID                   |
@@ -419,51 +379,6 @@ runner(action="daemon_stop")                          # shut down daemon
 ```
 
 See `RUNNER_ARCHITECTURE.md`.
-
-## Common Commands
-
-```bash
-# Install dependencies
-poetry install
-
-# Generate test wallets (required before running tests/strategies)
-just create-wallets
-
-# Run all smoke tests
-just test-smoke
-
-# Test specific strategy or adapter
-just test-strategy stablecoin_yield_strategy
-just test-adapter pool_adapter
-
-# Run all tests with coverage
-just test-cov
-
-# Lint and format
-just lint
-just format
-
-# Validate all manifests
-just validate-manifests
-
-# Create new strategy with dedicated wallet
-just create-strategy "My Strategy Name"
-
-# Create new adapter
-just create-adapter "my_protocol"
-
-# Update one installed path to the live bonded version
-poetry run wayfinder path update my-path
-
-# Override the target version for one installed path
-poetry run wayfinder path update my-path --version 1.2.3
-
-# Run a strategy via MCP
-# run_strategy(strategy="stablecoin_yield_strategy", action="status")
-
-# Publish to PyPI (main branch only)
-just publish
-```
 
 ## Path updates
 
@@ -548,12 +463,6 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 - **Required**: Basic functionality tests with mocked dependencies
 - **Optional**: `examples.json` file
 
-### Test Markers
-
-- `@pytest.mark.smoke` - Basic functionality validation
-- `@pytest.mark.requires_wallets` - Tests needing local wallets configured
-- `@pytest.mark.requires_config` - Tests needing config.json
-
 ## Wallets
 
 **On Wayfinder Shells Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Shells.
@@ -575,12 +484,12 @@ wallets(action="create", label="my_strategy", remote=True, wallet_type="strategy
 
 **Always read wallets through the MCP resources below. Never grep `config.json` for `wallets[]` or read wallet files directly.** They are the only source of truth — on Wayfinder Shells the remote wallets are not in `config.json`, so reading the file misses them entirely.
 
-| Resource | What you get |
-|---|---|
-| `wayfinder://wallets` | List all wallets (remote on Shells, merged local + remote elsewhere) |
-| `wayfinder://wallets/{label}` | Single wallet by label (includes profile / tracked protocols) |
-| `wayfinder://balances/{label}` | USD-aggregated balances, per-chain breakdown, spam-filtered |
-| `wayfinder://activity/{label}` | Recent on-chain activity |
+| Resource                       | What you get                                                         |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `wayfinder://wallets`          | List all wallets (remote on Shells, merged local + remote elsewhere) |
+| `wayfinder://wallets/{label}`  | Single wallet by label (includes profile / tracked protocols)        |
+| `wayfinder://balances/{label}` | USD-aggregated balances, per-chain breakdown, spam-filtered          |
+| `wayfinder://activity/{label}` | Recent on-chain activity                                             |
 
 On a Wayfinder Shells Instance, always pass `remote=True` when creating wallets — local wallets are rejected.
 
@@ -594,16 +503,6 @@ Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) 
 
 On a Wayfinder Shells Instance, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Shells environment variables](#wayfinder-shells-instance-environment-variables).
 
-## CI/CD Pipeline
-
-PRs are tested with:
-
-1. Lint & format checks (Ruff)
-2. Smoke tests
-3. Adapter tests (mocked dependencies)
-4. Integration tests (PRs only)
-5. Security scans (Bandit, Safety)
-
 ## Key Patterns
 
 - Adapters compose one or more clients and raise `NotImplementedError` for unsupported ops
@@ -611,12 +510,3 @@ PRs are tested with:
 - Return types are `StatusTuple` (success bool, message str) or `StatusDict` (portfolio data)
 - Wallet generation updates `config.json` in repo root
 - Per-strategy wallets are created automatically via `just create-strategy`
-
-## Publishing
-
-Publishing to PyPI is restricted to `main` branch. Order of operations:
-
-1. Merge changes to main
-2. Bump version in `pyproject.toml`
-3. Run `just publish`
-4. Then dependent apps can update their dependencies

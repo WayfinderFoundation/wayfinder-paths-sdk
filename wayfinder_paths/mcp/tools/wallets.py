@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 import time
 from typing import Any, Literal
 
@@ -20,6 +19,7 @@ from wayfinder_paths.core.utils.wallets import (
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     find_wallet_by_label,
     load_wallets,
@@ -27,6 +27,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     public_wallet_view,
     resolve_wallet_address,
+    throw_if_empty_str,
 )
 
 PROTOCOL_ADAPTERS: dict[str, dict[str, Any]] = {
@@ -162,6 +163,7 @@ async def _query_adapter(
         }
 
 
+@catch_errors
 async def core_wallets(
     action: Literal["create", "annotate", "discover_portfolio"],
     *,
@@ -214,205 +216,204 @@ async def core_wallets(
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
 
-    if action == "create":
-        load_config(config_path)
-        if not remote and OPENCODE_CLIENT.healthy():
-            return err(
-                "invalid_request",
-                "Local wallets are discouraged for OpenCode instances",
-            )
-        existing = await load_wallets()
-        want = (label or wallet_label or "").strip()
-        if not want:
-            return err(
-                "invalid_request", "label is required for wallets(action=create)"
+    match action:
+        case "create":
+            load_config(config_path)
+            if not remote and OPENCODE_CLIENT.healthy():
+                return err(
+                    "invalid_request",
+                    "Local wallets are discouraged for OpenCode instances",
+                )
+            existing = await load_wallets()
+            want = throw_if_empty_str(
+                "label is required for wallets(action=create)", label or wallet_label
             )
 
-        for w in existing:
-            if str(w.get("label", "")).strip() == want:
+            for w in existing:
+                if str(w.get("label", "")).strip() == want:
+                    return ok(
+                        {
+                            "wallets": [public_wallet_view(x) for x in existing],
+                            "created": public_wallet_view(w),
+                            "note": "Wallet label already existed; returning existing wallet.",
+                        }
+                    )
+
+            if remote:
+                wallet_type = throw_if_empty_str(
+                    "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                    wallet_type,
+                )
+                result = await create_remote_wallet(
+                    label=want, wallet_type=wallet_type, policies=policies
+                )
+                refreshed = await load_wallets()
                 return ok(
                     {
-                        "wallets": [public_wallet_view(x) for x in existing],
+                        "wallets": [public_wallet_view(x) for x in refreshed],
+                        "created": {
+                            "label": result.get("label", want),
+                            "address": result["wallet_address"],
+                        },
+                    }
+                )
+            else:
+                mnemonic = load_wallet_mnemonic()
+                w = make_local_wallet(
+                    label=want, existing_wallets=existing, mnemonic=mnemonic
+                )
+                write_wallet_to_json(
+                    w, out_dir=config_path.parent, filename=config_path.name
+                )
+                load_config(config_path)
+
+                refreshed = await load_wallets()
+                return ok(
+                    {
+                        "wallets": [public_wallet_view(x) for x in refreshed],
                         "created": public_wallet_view(w),
-                        "note": "Wallet label already existed; returning existing wallet.",
                     }
                 )
 
-        if remote:
-            if not wallet_type:
+        case "annotate":
+            address, lbl = await resolve_wallet_address(
+                wallet_label=wallet_label or label, wallet_address=wallet_address
+            )
+            if not address:
                 return err(
                     "invalid_request",
-                    "wallet_type is required for remote wallets (one of: session, policy, strategy)",
+                    "wallet_label or wallet_address is required",
                 )
-            result = await create_remote_wallet(
-                label=want, wallet_type=wallet_type, policies=policies
+            throw_if_empty_str("protocol is required for annotate", protocol)
+            throw_if_empty_str(
+                "annotate_action is required for annotate", annotate_action
             )
-            refreshed = await load_wallets()
+            throw_if_empty_str("tool is required for annotate", tool)
+            throw_if_empty_str("status is required for annotate", status)
+
+            store.annotate(
+                address=address,
+                label=lbl,
+                protocol=protocol,
+                action=annotate_action,
+                tool=tool,
+                status=status,
+                chain_id=chain_id,
+                details=details,
+            )
+
             return ok(
                 {
-                    "wallets": [public_wallet_view(x) for x in refreshed],
-                    "created": {
-                        "label": result.get("label", want),
-                        "address": result["wallet_address"],
-                    },
-                }
-            )
-        else:
-            mnemonic = load_wallet_mnemonic()
-            w = make_local_wallet(
-                label=want, existing_wallets=existing, mnemonic=mnemonic
-            )
-            write_wallet_to_json(
-                w, out_dir=config_path.parent, filename=config_path.name
-            )
-            load_config(config_path)
-
-            refreshed = await load_wallets()
-            return ok(
-                {
-                    "wallets": [public_wallet_view(x) for x in refreshed],
-                    "created": public_wallet_view(w),
-                }
-            )
-
-    if action == "annotate":
-        address, lbl = await resolve_wallet_address(
-            wallet_label=wallet_label or label, wallet_address=wallet_address
-        )
-        if not address:
-            return err(
-                "invalid_request",
-                "wallet_label or wallet_address is required",
-            )
-        if not protocol:
-            return err("invalid_request", "protocol is required for annotate")
-        if not annotate_action:
-            return err("invalid_request", "annotate_action is required for annotate")
-        if not tool:
-            return err("invalid_request", "tool is required for annotate")
-        if not status:
-            return err("invalid_request", "status is required for annotate")
-
-        store.annotate(
-            address=address,
-            label=lbl,
-            protocol=protocol,
-            action=annotate_action,
-            tool=tool,
-            status=status,
-            chain_id=chain_id,
-            details=details,
-        )
-
-        return ok(
-            {
-                "action": "annotate",
-                "address": address,
-                "protocol": protocol,
-                "annotated": True,
-            }
-        )
-
-    if action == "discover_portfolio":
-        address, lbl = await resolve_wallet_address(
-            wallet_label=wallet_label or label, wallet_address=wallet_address
-        )
-        if not address:
-            return err(
-                "invalid_request",
-                "wallet_label or wallet_address is required for discover_portfolio",
-            )
-
-        profile_protocols = store.get_protocols_for_wallet(address)
-
-        if protocols:
-            target_protocols = list(dict.fromkeys(protocols))
-        else:
-            target_protocols = profile_protocols
-
-        supported_protocols = [p for p in target_protocols if p in PROTOCOL_ADAPTERS]
-        unsupported = [p for p in target_protocols if p not in PROTOCOL_ADAPTERS]
-
-        if not supported_protocols:
-            return ok(
-                {
-                    "action": "discover_portfolio",
+                    "action": "annotate",
                     "address": address,
-                    "label": lbl,
-                    "profile_protocols": profile_protocols,
-                    "positions": [],
-                    "warning": "No supported protocols to query",
-                    "unsupported_protocols": unsupported,
+                    "protocol": protocol,
+                    "annotated": True,
                 }
             )
 
-        if len(supported_protocols) >= 3 and not parallel:
-            return ok(
-                {
-                    "action": "discover_portfolio",
-                    "address": address,
-                    "label": lbl,
-                    "profile_protocols": profile_protocols,
-                    "supported_protocols": supported_protocols,
-                    "requires_confirmation": True,
-                    "warning": f"Found {len(supported_protocols)} protocols to query. "
-                    f"Set parallel=true for concurrent queries, or filter with protocols=[...] "
-                    f"to query specific protocols.",
-                    "protocols_to_query": supported_protocols,
-                }
+        case "discover_portfolio":
+            address, lbl = await resolve_wallet_address(
+                wallet_label=wallet_label or label, wallet_address=wallet_address
             )
-
-        start = time.time()
-        results: list[dict[str, Any]] = []
-
-        if parallel:
-            tasks = [
-                _query_adapter(
-                    proto, address, include_zero_positions, chain_id=chain_id
+            if not address:
+                return err(
+                    "invalid_request",
+                    "wallet_label or wallet_address is required for discover_portfolio",
                 )
-                for proto in supported_protocols
+
+            profile_protocols = store.get_protocols_for_wallet(address)
+
+            if protocols:
+                target_protocols = list(dict.fromkeys(protocols))
+            else:
+                target_protocols = profile_protocols
+
+            supported_protocols = [
+                p for p in target_protocols if p in PROTOCOL_ADAPTERS
             ]
-            results = await asyncio.gather(*tasks)
-        else:
-            for proto in supported_protocols:
-                result = await _query_adapter(
-                    proto,
-                    address,
-                    include_zero_positions,
-                    chain_id=chain_id,
+            unsupported = [p for p in target_protocols if p not in PROTOCOL_ADAPTERS]
+
+            if not supported_protocols:
+                return ok(
+                    {
+                        "action": "discover_portfolio",
+                        "address": address,
+                        "label": lbl,
+                        "profile_protocols": profile_protocols,
+                        "positions": [],
+                        "warning": "No supported protocols to query",
+                        "unsupported_protocols": unsupported,
+                    }
                 )
-                results.append(result)
 
-        total_duration = time.time() - start
-        all_positions: list[dict[str, Any]] = []
-        for r in results:
-            if r.get("ok") and r.get("data"):
-                data = r["data"]
-                positions = data.get("positions", [])
-                if positions:
-                    for pos in positions:
-                        all_positions.append(
-                            {"protocol": r["protocol"], "position": pos}
-                        )
-                r["data"] = data
+            if len(supported_protocols) >= 3 and not parallel:
+                return ok(
+                    {
+                        "action": "discover_portfolio",
+                        "address": address,
+                        "label": lbl,
+                        "profile_protocols": profile_protocols,
+                        "supported_protocols": supported_protocols,
+                        "requires_confirmation": True,
+                        "warning": f"Found {len(supported_protocols)} protocols to query. "
+                        f"Set parallel=true for concurrent queries, or filter with protocols=[...] "
+                        f"to query specific protocols.",
+                        "protocols_to_query": supported_protocols,
+                    }
+                )
 
-        return ok(
-            {
-                "action": "discover_portfolio",
-                "address": address,
-                "label": lbl,
-                "profile_protocols": profile_protocols,
-                "queried_protocols": supported_protocols,
-                "results": results,
-                "positions_count": len(all_positions),
-                "positions_summary": all_positions[:10],
-                "total_duration_s": round(total_duration, 3),
-                "parallel": parallel,
-                "unsupported_protocols": unsupported if unsupported else None,
-            }
-        )
+            start = time.time()
+            results: list[dict[str, Any]] = []
 
-    return err("invalid_request", f"Unknown action: {action}")
+            if parallel:
+                tasks = [
+                    _query_adapter(
+                        proto, address, include_zero_positions, chain_id=chain_id
+                    )
+                    for proto in supported_protocols
+                ]
+                results = await asyncio.gather(*tasks)
+            else:
+                for proto in supported_protocols:
+                    result = await _query_adapter(
+                        proto,
+                        address,
+                        include_zero_positions,
+                        chain_id=chain_id,
+                    )
+                    results.append(result)
+
+            total_duration = time.time() - start
+            all_positions: list[dict[str, Any]] = []
+            for r in results:
+                if r.get("ok") and r.get("data"):
+                    data = r["data"]
+                    positions = data.get("positions", [])
+                    if positions:
+                        for pos in positions:
+                            all_positions.append(
+                                {"protocol": r["protocol"], "position": pos}
+                            )
+                    r["data"] = data
+
+            return ok(
+                {
+                    "action": "discover_portfolio",
+                    "address": address,
+                    "label": lbl,
+                    "profile_protocols": profile_protocols,
+                    "queried_protocols": supported_protocols,
+                    "results": results,
+                    "positions_count": len(all_positions),
+                    "positions_summary": all_positions[:10],
+                    "total_duration_s": round(total_duration, 3),
+                    "parallel": parallel,
+                    "unsupported_protocols": unsupported if unsupported else None,
+                }
+            )
+
+        case _:
+            return err("invalid_request", f"Unknown action: {action}")
 
 
 def _balance_usd(entry: dict[str, Any]) -> float:
@@ -455,17 +456,18 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
         return {"error": str(exc)}
 
 
-async def core_get_wallets(label: str | None = None) -> str:
+@catch_errors
+async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
     No args → every wallet. Pass `label` to filter to a single wallet (returns the same
-    shape, list with one entry, or `{"error": ...}` if not found).
+    shape, list with one entry, or an `err(...)` response if not found).
     """
     store = WalletProfileStore.default()
     if label is not None:
         w = await find_wallet_by_label(label)
         if not w:
-            return json.dumps({"error": f"Wallet not found: {label}"})
+            return err("not_found", f"Wallet not found: {label}")
         existing = [w]
     else:
         existing = await load_wallets()
@@ -489,30 +491,26 @@ async def core_get_wallets(label: str | None = None) -> str:
     for view, bal in zip(views, balances, strict=True):
         view["balances"] = bal
 
-    return json.dumps({"wallets": views}, indent=2)
+    return ok({"wallets": views})
 
 
-async def onchain_get_wallet_activity(label: str) -> str:
+@catch_errors
+async def onchain_get_wallet_activity(label: str) -> dict[str, Any]:
     w = await find_wallet_by_label(label)
     if not w:
-        return json.dumps({"error": f"Wallet not found: {label}"})
+        return err("not_found", f"Wallet not found: {label}")
 
     address = normalize_address(w.get("address"))
     if not address:
-        return json.dumps({"error": f"Invalid address for wallet: {label}"})
+        return err("invalid_wallet", f"Invalid address for wallet: {label}")
 
-    try:
-        data = await BALANCE_CLIENT.get_wallet_activity(
-            wallet_address=address, limit=20
-        )
-        return json.dumps(
-            {
-                "label": label,
-                "address": address,
-                "activity": data.get("activity", []),
-                "next_offset": data.get("next_offset"),
-            },
-            indent=2,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return json.dumps({"error": str(exc)})
+    data = await BALANCE_CLIENT.get_wallet_activity(wallet_address=address, limit=20)
+
+    return ok(
+        {
+            "label": label,
+            "address": address,
+            "activity": data.get("activity", []),
+            "next_offset": data.get("next_offset"),
+        }
+    )

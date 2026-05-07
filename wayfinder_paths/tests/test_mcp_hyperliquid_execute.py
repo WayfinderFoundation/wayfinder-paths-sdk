@@ -5,34 +5,71 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
-from wayfinder_paths.mcp.tools.hyperliquid import (
-    _resolve_builder_fee,
-    _resolve_perp_asset_id,
-    hyperliquid_execute,
+from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
+from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_execute
+
+
+class _StubAdapter(HyperliquidAdapter):
+    """Adapter shell with stubbed coin_to_asset / spot_assets — keeps
+    `resolve_coin` reachable without hitting the live HL info endpoint."""
+
+    def __init__(self, coin_to_asset, spot_assets):
+        # Skip parent __init__ — resolve_coin only needs the two attrs below.
+        self._coin_to_asset = coin_to_asset
+        self._spot_assets = spot_assets
+
+    @property
+    def coin_to_asset(self):
+        return self._coin_to_asset
+
+    async def get_spot_assets(self):
+        return True, self._spot_assets
+
+
+@pytest.mark.asyncio
+async def test_get_asset_id_perp():
+    adapter = _StubAdapter({"BTC": 0, "ETH": 1}, {})
+    assert await adapter.get_asset_id("BTC-USDC") == 0
+
+
+@pytest.mark.asyncio
+async def test_get_asset_id_hip3_perp():
+    adapter = _StubAdapter({"xyz:SP500": 110000}, {})
+    assert await adapter.get_asset_id("xyz:SP500") == 110000
+
+
+@pytest.mark.asyncio
+async def test_get_asset_id_spot_pair():
+    adapter = _StubAdapter({}, {"BTC/USDC": 10107, "USDC/USDH": 10211})
+    assert await adapter.get_asset_id("USDC/USDH") == 10211
+
+
+@pytest.mark.asyncio
+async def test_get_asset_id_outcome():
+    from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
+
+    adapter = _StubAdapter({}, {})
+    assert await adapter.get_asset_id("#41") == OUTCOME_ASSET_OFFSET + 41
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "asset_name",
+    [
+        "BTC",  # bare ticker
+        "btc-usdc",  # case mismatch
+        "BTC-usdc",  # partial case mismatch
+        "BTC/usdc",  # spot case mismatch
+        "BTC-USDT",  # wrong quote
+        " BTC-USDC ",  # whitespace not tolerated
+        "#",  # missing encoding
+        "#abc",  # non-numeric encoding
+        "",  # empty
+    ],
 )
-
-
-def test_resolve_builder_fee_rejects_wrong_builder_wallet():
-    with pytest.raises(ValueError, match="config builder_fee\\.b must be"):
-        _resolve_builder_fee(
-            config={"builder_fee": {"b": "0x" + "00" * 20, "f": 10}},
-            builder_fee_tenths_bp=None,
-        )
-
-
-def test_resolve_builder_fee_prefers_explicit_fee():
-    fee = _resolve_builder_fee(config={}, builder_fee_tenths_bp=7)
-    assert fee == {"b": HYPE_FEE_WALLET.lower(), "f": 7}
-
-
-def test_resolve_perp_asset_id_accepts_coin_and_strips_perp_suffix():
-    class StubAdapter:
-        coin_to_asset = {"HYPE": 7}
-
-    ok, res = _resolve_perp_asset_id(StubAdapter(), coin="HYPE-perp", asset_id=None)
-    assert ok is True
-    assert res == 7
+async def test_get_asset_id_returns_none_on_bad_input(asset_name):
+    adapter = _StubAdapter({"BTC": 0}, {"BTC/USDC": 10107})
+    assert await adapter.get_asset_id(asset_name) is None
 
 
 @pytest.mark.asyncio
@@ -53,6 +90,10 @@ async def test_hyperliquid_execute_withdraw(tmp_path: Path, monkeypatch):
         patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.withdraw",
+            new=AsyncMock(return_value=(True, {"status": "ok"})),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.wait_for_withdrawal",
             new=AsyncMock(return_value=(True, {"status": "ok"})),
         ),
     ):

@@ -243,6 +243,11 @@ When a user wants **immediate, one-off execution**:
 
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
 - **On-chain:** use `mcp__wayfinder__execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
+- **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
+  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
+  - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in USDC.e on Polygon. Search via `mcp__wayfinder__polymarket(action="search", query=..., limit=...)`.
+
+  Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
 - **Hyperliquid perps/spot/outcomes:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel; HIP-4 outcome markets via `place_outcome_order`). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, outcome `outcome_id`/`side`, etc.). The skill covers both the MCP tool interface and the Python adapter.
 - **Polymarket:** use `mcp__wayfinder__polymarket` (search/status/history) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
@@ -522,51 +527,6 @@ Token identifiers (important for quoting/execution/lookups):
 
 - Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
 
-## Common Commands
-
-```bash
-# Install dependencies
-poetry install
-
-# Generate test wallets (required before running tests/strategies)
-just create-wallets                    # or: poetry run python scripts/make_wallets.py -n 1
-
-# Run all smoke tests
-just test-smoke                        # or: poetry run pytest -k smoke -v
-
-# Test specific strategy or adapter
-just test-strategy stablecoin_yield_strategy
-just test-adapter pool_adapter
-
-# Run all tests with coverage
-just test-cov                          # or: poetry run pytest --cov=wayfinder-paths --cov-report=html -v
-
-# Lint and format
-just lint                              # or: poetry run ruff check --fix
-just format                            # or: poetry run ruff format
-
-# Validate all manifests
-just validate-manifests
-
-# Create new strategy with dedicated wallet
-just create-strategy "My Strategy Name"
-
-# Create new adapter
-just create-adapter "my_protocol"
-
-# Update one installed path to the live bonded version
-poetry run wayfinder path update my-path
-
-# Override the target version for one installed path
-poetry run wayfinder path update my-path --version 1.2.3
-
-# Run a strategy locally
-poetry run python -m wayfinder_paths.run_strategy stablecoin_yield_strategy --action status --config config.json
-
-# Publish to PyPI (main branch only)
-just publish
-```
-
 ### Path updates
 
 - `poetry run wayfinder path update <slug>` compares the locally installed version in `.wayfinder/paths.lock.json` to the API's `active_bonded_version`.
@@ -651,27 +611,11 @@ Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
 - **Required**: Basic functionality tests with mocked dependencies
 - **Optional**: `examples.json` file
 
-### Test Markers
-
-- `@pytest.mark.smoke` - Basic functionality validation
-- `@pytest.mark.requires_wallets` - Tests needing local wallets configured
-- `@pytest.mark.requires_config` - Tests needing config.json
-
 ## Configuration
 
 Config priority: Constructor parameter > config.json > Environment variable (`WAYFINDER_API_KEY`)
 
 Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
-
-## CI/CD Pipeline
-
-PRs are tested with:
-
-1. Lint & format checks (Ruff)
-2. Smoke tests
-3. Adapter tests (mocked dependencies)
-4. Integration tests (PRs only)
-5. Security scans (Bandit, Safety)
 
 ## Key Patterns
 
@@ -680,15 +624,6 @@ PRs are tested with:
 - Return types are `StatusTuple` (success bool, message str) or `StatusDict` (portfolio data)
 - Wallet generation updates `config.json` in repo root
 - Per-strategy wallets are created automatically via `just create-strategy`
-
-## Publishing
-
-Publishing to PyPI is restricted to `main` branch. Order of operations:
-
-1. Merge changes to main
-2. Bump version in `pyproject.toml`
-3. Run `just publish`
-4. Then dependent apps can update their dependencies
 
 ## Wallet management and portfolio discovery
 

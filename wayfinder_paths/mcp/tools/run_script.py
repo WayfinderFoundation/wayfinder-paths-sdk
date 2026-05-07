@@ -11,6 +11,7 @@ from wayfinder_paths.mcp.preview import build_run_script_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.state.runs import runs_root
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     find_wallet_by_label,
     ok,
@@ -134,6 +135,7 @@ async def _annotate_script_run(
     )
 
 
+@catch_errors
 async def core_run_script(
     *,
     script_path: str,
@@ -235,7 +237,16 @@ async def core_run_script(
     exit_code = int(proc.returncode or 0)
     status = "timeout" if timed_out else ("completed" if exit_code == 0 else "failed")
 
-    response = ok(
+    inferred_protocol = _infer_protocol_from_script(script)
+    if inferred_protocol and wallet_label:
+        await _annotate_script_run(
+            script_path=display_path,
+            status=status,
+            wallet_label=wallet_label,
+            protocol=inferred_protocol,
+        )
+
+    return ok(
         {
             "status": status,
             "script_path": display_path,
@@ -249,14 +260,3 @@ async def core_run_script(
             "preview": preview_text,
         }
     )
-
-    inferred_protocol = _infer_protocol_from_script(script)
-    if inferred_protocol and wallet_label:
-        await _annotate_script_run(
-            script_path=display_path,
-            status=status,
-            wallet_label=wallet_label,
-            protocol=inferred_protocol,
-        )
-
-    return response
