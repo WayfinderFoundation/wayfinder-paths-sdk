@@ -146,6 +146,7 @@ async def hyperliquid_execute(
         (≥ 5 USDC; below is lost). Auto-waits for the perp clearinghouse credit before returning.
       - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
       - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
+        USDC only — no other spot tokens (HYPE, USDH, etc.) move via this action.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
 
