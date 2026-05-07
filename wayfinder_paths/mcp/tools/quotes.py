@@ -18,47 +18,6 @@ def _slippage_float(slippage_bps: int) -> float:
     return max(0.0, float(int(slippage_bps)) / 10_000.0)
 
 
-def _unwrap_brap_quote_response(
-    data: Any,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None, int]:
-    """
-    BRAP quote responses have historically appeared in two shapes:
-
-    1) {"quotes": [...], "best_quote": {...}}
-    2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
-
-    This helper normalizes both to (all_quotes, best_quote, quote_count).
-    """
-    if not isinstance(data, dict):
-        return [], None, 0
-
-    raw_quotes = data.get("quotes")
-    best_quote = data.get("best_quote")
-
-    if isinstance(raw_quotes, list) or isinstance(best_quote, dict):
-        all_quotes = raw_quotes if isinstance(raw_quotes, list) else []
-        best = best_quote if isinstance(best_quote, dict) else None
-        return all_quotes, best, len(all_quotes)
-
-    # Legacy/nested payload under `quotes`
-    if isinstance(raw_quotes, dict):
-        all_quotes = raw_quotes.get("all_quotes") or raw_quotes.get("quotes") or []
-        if not isinstance(all_quotes, list):
-            all_quotes = []
-        best = raw_quotes.get("best_quote")
-        best_out = best if isinstance(best, dict) else None
-
-        quote_count = raw_quotes.get("quote_count")
-        try:
-            quote_count_i = int(quote_count)
-        except (TypeError, ValueError):
-            quote_count_i = len(all_quotes)
-
-        return all_quotes, best_out, quote_count_i
-
-    return [], None, 0
-
-
 async def onchain_quote_swap(
     *,
     wallet_label: str,
@@ -144,13 +103,13 @@ async def onchain_quote_swap(
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
-    all_quotes, best_quote, quote_count = _unwrap_brap_quote_response(data)
+    all_quotes = [dict(q) for q in data["quotes"]]
+    best_quote = data["best_quote"]
+    quote_count = data.get("quote_count", len(all_quotes))
 
     providers: list[str] = []
     seen: set[str] = set()
     for q in all_quotes:
-        if not isinstance(q, dict):
-            continue
         p = q.get("provider")
         if not p:
             continue
@@ -167,6 +126,7 @@ async def onchain_quote_swap(
 
         best_out = {
             "provider": best_quote.get("provider"),
+            "bridge_tracking": best_quote.get("bridge_tracking"),
             "input_amount": best_quote.get("input_amount"),
             "output_amount": best_quote.get("output_amount"),
             "input_amount_usd": best_quote.get("input_amount_usd"),
@@ -228,3 +188,49 @@ async def onchain_quote_swap(
     }
 
     return ok(result)
+
+
+async def onchain_bridge_status(
+    *,
+    bridge_tracking: dict[str, Any] | None = None,
+    tx_hash: str | None = None,
+    provider: str | None = None,
+    from_chain: int | None = None,
+    to_chain: int | None = None,
+    bridge: str | None = None,
+    protocol: str | None = None,
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch normalized BRAP bridge execution status for a submitted swap.
+
+    Pass the `bridge_tracking` object returned by `onchain_quote_swap` plus the
+    source transaction hash when `requires_source_tx_hash=true`.
+    """
+    if bridge_tracking is not None and not isinstance(bridge_tracking, dict):
+        return err("invalid_request", "bridge_tracking must be an object")
+
+    try:
+        status = await BRAP_CLIENT.get_bridge_execution_status(
+            bridge_tracking=bridge_tracking,
+            tx_hash=tx_hash,
+            provider=provider,
+            from_chain=from_chain,
+            to_chain=to_chain,
+            bridge=bridge,
+            protocol=protocol,
+            order_id=order_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err("bridge_status_error", str(exc))
+
+    next_action = "poll_again"
+    if status.get("is_finished"):
+        next_action = "done" if status.get("is_success") else "review_failure"
+
+    return ok(
+        {
+            "bridge_status": status,
+            "next_action": next_action,
+            "next_poll_seconds": status.get("next_poll_seconds"),
+        }
+    )

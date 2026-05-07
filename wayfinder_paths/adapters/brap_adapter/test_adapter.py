@@ -94,3 +94,130 @@ class TestBRAPAdapter:
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "BRAP"
+
+    @pytest.mark.asyncio
+    async def test_swap_from_quote_skips_approval_for_native_input(self, adapter):
+        quote = {
+            "provider": "lifi",
+            "input_amount": "1000000000000000000",
+            "output_amount": "990000000000000000",
+            "calldata": {
+                "chainId": 8453,
+                "data": "0xswap",
+                "from": "0x1234567890123456789012345678901234567890",
+                "to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "value": "1000000000000000000",
+            },
+        }
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.brap_adapter.adapter.ensure_allowance",
+                new_callable=AsyncMock,
+            ) as mock_ensure_allowance,
+            patch(
+                "wayfinder_paths.adapters.brap_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send_transaction,
+            patch.object(
+                adapter,
+                "_record_swap_operation",
+                new_callable=AsyncMock,
+                return_value={"id": "record"},
+            ),
+        ):
+            mock_send_transaction.return_value = "0xswap"
+
+            success, result = await adapter.swap_from_quote(
+                from_token={
+                    "id": "native-base",
+                    "address": "native",
+                    "chain": {"id": 8453},
+                    "decimals": 18,
+                },
+                to_token={
+                    "id": "prompt-base",
+                    "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "chain": {"id": 8453},
+                    "decimals": 18,
+                },
+                from_address="0x1234567890123456789012345678901234567890",
+                quote=quote,
+            )
+
+        assert success
+        assert result["tx_hash"] == "0xswap"
+        mock_ensure_allowance.assert_not_awaited()
+        mock_send_transaction.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_swap_from_quote_waits_for_non_native_approval_before_swap(
+        self, adapter
+    ):
+        events: list[str] = []
+        quote = {
+            "provider": "lifi",
+            "input_amount": "1000000",
+            "output_amount": "990000000000000000",
+            "calldata": {
+                "chainId": 8453,
+                "data": "0xswap",
+                "from": "0x1234567890123456789012345678901234567890",
+                "to": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "value": "0",
+            },
+        }
+
+        async def approve_then_continue(**_kwargs):
+            events.append("approval")
+            return True, "0xapproval"
+
+        async def send_swap(*_args, **_kwargs):
+            events.append("swap")
+            return "0xswap"
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.brap_adapter.adapter.ensure_allowance",
+                new=AsyncMock(side_effect=approve_then_continue),
+            ) as mock_ensure_allowance,
+            patch(
+                "wayfinder_paths.adapters.brap_adapter.adapter.send_transaction",
+                new=AsyncMock(side_effect=send_swap),
+            ) as mock_send_transaction,
+            patch.object(
+                adapter,
+                "_record_swap_operation",
+                new_callable=AsyncMock,
+                return_value={"id": "record"},
+            ),
+        ):
+            success, result = await adapter.swap_from_quote(
+                from_token={
+                    "id": "usdc-base",
+                    "address": "0xcccccccccccccccccccccccccccccccccccccccc",
+                    "chain": {"id": 8453},
+                    "decimals": 6,
+                },
+                to_token={
+                    "id": "prompt-base",
+                    "address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "chain": {"id": 8453},
+                    "decimals": 18,
+                },
+                from_address="0x1234567890123456789012345678901234567890",
+                quote=quote,
+            )
+
+        assert success
+        assert result["tx_hash"] == "0xswap"
+        assert events == ["approval", "swap"]
+        mock_ensure_allowance.assert_awaited_once_with(
+            token_address="0xcccccccccccccccccccccccccccccccccccccccc",
+            owner="0x1234567890123456789012345678901234567890",
+            spender="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            amount=1000000,
+            chain_id=8453,
+            signing_callback=adapter.sign_callback,
+        )
+        mock_send_transaction.assert_awaited_once()

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import time
-from typing import Any, NotRequired, Required, TypedDict
+from typing import Any, NotRequired, Required, TypedDict, cast
 
 from loguru import logger
 
@@ -47,9 +48,20 @@ class Calldata(TypedDict, total=False):
     chainId: int
 
 
+class BRAPBridgeTracking(TypedDict, total=False):
+    provider: Required[str]
+    requires_source_tx_hash: Required[bool]
+    from_chain: int | None
+    to_chain: int | None
+    bridge: str | None
+    protocol: str | None
+    order_id: str | None
+
+
 class BRAPQuoteEntry(TypedDict):
     provider: Required[str]
     quote: Required[QuoteData]
+    bridge_tracking: NotRequired[BRAPBridgeTracking | None]
     calldata: Required[Calldata]
     output_amount: Required[int]
     input_amount: Required[int]
@@ -64,9 +76,74 @@ class BRAPQuoteEntry(TypedDict):
     native_output: Required[bool]
 
 
-class BRAPQuoteResponse(TypedDict):
+class BRAPQuoteResponse(TypedDict, total=False):
     quotes: Required[list[BRAPQuoteEntry]]
-    best_quote: Required[BRAPQuoteEntry]
+    best_quote: Required[BRAPQuoteEntry | None]
+    quote_count: NotRequired[int]
+    errors: NotRequired[list[dict[str, Any]]]
+
+
+class BRAPBridgeExecutionStatus(TypedDict, total=False):
+    provider: str | None
+    state: str
+    provider_status: str | None
+    provider_substatus: str | None
+    message: str | None
+    error: str | None
+    source_tx_hash: str | None
+    source_tx_url: str | None
+    source_chain_id: int | None
+    destination_tx_hash: str | None
+    destination_tx_url: str | None
+    destination_chain_id: int | None
+    bridge_tool: str | None
+    bridge_protocol: str | None
+    provider_tracking_id: str | None
+    provider_explorer_url: str | None
+    estimated_seconds_remaining: int | float | None
+    next_poll_seconds: int | float | None
+    is_finished: bool
+    is_success: bool
+    raw_status: dict[str, Any]
+    status: dict[str, Any]
+
+
+def normalize_brap_quote_response(data: Any) -> BRAPQuoteResponse:
+    """Parse the normalized BRAP quote response returned by vault-backend.
+
+    Backward compatibility for legacy provider payloads is handled by the API. The
+    SDK consumes the normalized shape so adapter and MCP code can stay simple.
+    """
+    payload = data.get("data", data) if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        raise ValueError("BRAP quote response must be a JSON object")
+
+    raw_quotes = payload.get("quotes")
+    raw_best_quote = payload.get("best_quote")
+    raw_quote_count = payload.get("quote_count")
+    raw_errors = payload.get("errors")
+
+    if not isinstance(raw_quotes, list):
+        raise ValueError("BRAP quote response must include quotes as a list")
+    if not all(isinstance(q, dict) for q in raw_quotes):
+        raise ValueError("BRAP quote entries must be JSON objects")
+    if raw_best_quote is not None and not isinstance(raw_best_quote, dict):
+        raise ValueError("BRAP best_quote must be a JSON object or null")
+
+    response: BRAPQuoteResponse = {
+        "quotes": cast(list[BRAPQuoteEntry], raw_quotes),
+        "best_quote": cast(BRAPQuoteEntry | None, raw_best_quote),
+        "quote_count": len(raw_quotes)
+        if raw_quote_count is None
+        else int(raw_quote_count),
+    }
+    if raw_errors is not None:
+        if not isinstance(raw_errors, list):
+            raise ValueError("BRAP errors must be a list")
+        if not all(isinstance(e, dict) for e in raw_errors):
+            raise ValueError("BRAP error entries must be JSON objects")
+        response["errors"] = raw_errors
+    return response
 
 
 class BRAPClient(WayfinderClient):
@@ -103,8 +180,7 @@ class BRAPClient(WayfinderClient):
         try:
             response = await self._authed_request("GET", url, params=params, headers={})
             response.raise_for_status()
-            data = response.json()
-            result = data.get("data", data)
+            result = normalize_brap_quote_response(response.json())
 
             elapsed = time.time() - start_time
             logger.info(f"BRAP quote request completed successfully in {elapsed:.2f}s")
@@ -113,6 +189,79 @@ class BRAPClient(WayfinderClient):
             elapsed = time.time() - start_time
             logger.error(f"BRAP quote request failed after {elapsed:.2f}s: {e}")
             raise
+
+    async def get_bridge_execution_status(
+        self,
+        *,
+        bridge_tracking: BRAPBridgeTracking | dict[str, Any] | None = None,
+        provider: str | None = None,
+        tx_hash: str | None = None,
+        from_chain: int | None = None,
+        to_chain: int | None = None,
+        bridge: str | None = None,
+        protocol: str | None = None,
+        quote: dict[str, Any] | None = None,
+        order_id: str | None = None,
+    ) -> BRAPBridgeExecutionStatus:
+        """Fetch the latest normalized bridge execution status without polling."""
+        tracking = bridge_tracking or {}
+        url = f"{get_api_base_url()}/blockchain/braps/bridge-execution-status/"
+        payload = {
+            "bridge_tracking": tracking,
+            "provider": provider or tracking.get("provider"),
+            "tx_hash": tx_hash,
+            "from_chain": from_chain or tracking.get("from_chain"),
+            "to_chain": to_chain or tracking.get("to_chain"),
+            "bridge": bridge or tracking.get("bridge"),
+            "protocol": protocol or tracking.get("protocol"),
+            "quote": quote,
+            "order_id": order_id or tracking.get("order_id"),
+        }
+
+        response = await self._authed_request("POST", url, json=payload, headers={})
+        data = response.json()
+        return data.get("data", data)
+
+    async def wait_for_bridge_execution(
+        self,
+        *,
+        bridge_tracking: BRAPBridgeTracking | dict[str, Any] | None = None,
+        provider: str | None = None,
+        tx_hash: str | None = None,
+        from_chain: int | None = None,
+        to_chain: int | None = None,
+        bridge: str | None = None,
+        protocol: str | None = None,
+        quote: dict[str, Any] | None = None,
+        order_id: str | None = None,
+        timeout_seconds: float = 600.0,
+    ) -> BRAPBridgeExecutionStatus:
+        """Poll normalized bridge status until a terminal state or timeout."""
+        start_time = time.time()
+        while True:
+            status = await self.get_bridge_execution_status(
+                bridge_tracking=bridge_tracking,
+                provider=provider,
+                tx_hash=tx_hash,
+                from_chain=from_chain,
+                to_chain=to_chain,
+                bridge=bridge,
+                protocol=protocol,
+                quote=quote,
+                order_id=order_id,
+            )
+            if status.get("is_finished"):
+                return status
+            if time.time() - start_time > timeout_seconds:
+                raise TimeoutError(
+                    f"Bridge execution did not finish within {timeout_seconds:.0f}s"
+                )
+            next_poll = status.get("next_poll_seconds")
+            try:
+                sleep_seconds = float(next_poll)
+            except (TypeError, ValueError):
+                sleep_seconds = 5.0
+            await asyncio.sleep(max(1.0, min(sleep_seconds, 30.0)))
 
 
 BRAP_CLIENT = BRAPClient()

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
+from wayfinder_paths.mcp.tools.quotes import onchain_bridge_status, onchain_quote_swap
 
 
 @pytest.mark.asyncio
@@ -38,28 +38,26 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     calldata = {"data": "0x" + ("ab" * 4096)}
     fake_brap.get_quote = AsyncMock(
         return_value={
-            "quotes": {
-                "quote_count": 3,
-                "best_quote": {
-                    "provider": "brap_best",
-                    "input_amount": "1700000000000000",
-                    "output_amount": "1234567",
-                    "input_amount_usd": 5.0,
-                    "output_amount_usd": 4.99,
-                    "gas_estimate": 210000,
-                    "fee_estimate": {"total_usd": 0.01},
-                    "native_input": True,
-                    "native_output": False,
-                    "calldata": calldata,
-                    "wrap_transaction": None,
-                    "unwrap_transaction": None,
-                },
-                "all_quotes": [
-                    {"provider": "brap_best"},
-                    {"provider": "brap_alt"},
-                    {"provider": "brap_alt"},
-                ],
-            }
+            "quotes": [
+                {"provider": "brap_best"},
+                {"provider": "brap_alt"},
+                {"provider": "brap_alt"},
+            ],
+            "quote_count": 3,
+            "best_quote": {
+                "provider": "brap_best",
+                "input_amount": "1700000000000000",
+                "output_amount": "1234567",
+                "input_amount_usd": 5.0,
+                "output_amount_usd": 4.99,
+                "gas_estimate": 210000,
+                "fee_estimate": {"total_usd": 0.01},
+                "native_input": True,
+                "native_output": False,
+                "calldata": calldata,
+                "wrap_transaction": None,
+                "unwrap_transaction": None,
+            },
         }
     )
 
@@ -97,6 +95,49 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
 
 
 @pytest.mark.asyncio
+async def test_onchain_bridge_status_returns_normalized_status():
+    fake_brap = AsyncMock()
+    fake_brap.get_bridge_execution_status = AsyncMock(
+        return_value={
+            "provider": "lifi",
+            "state": "destination_pending",
+            "is_finished": False,
+            "is_success": False,
+            "next_poll_seconds": 5,
+            "status": {"status": "PENDING"},
+        }
+    )
+
+    bridge_tracking = {
+        "provider": "lifi",
+        "requires_source_tx_hash": True,
+        "from_chain": 1,
+        "to_chain": 8453,
+        "bridge": "across",
+    }
+
+    with patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap):
+        out = await onchain_bridge_status(
+            bridge_tracking=bridge_tracking,
+            tx_hash="0xtx",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["next_action"] == "poll_again"
+    assert out["result"]["bridge_status"]["state"] == "destination_pending"
+    fake_brap.get_bridge_execution_status.assert_awaited_once_with(
+        bridge_tracking=bridge_tracking,
+        tx_hash="0xtx",
+        provider=None,
+        from_chain=None,
+        to_chain=None,
+        bridge=None,
+        protocol=None,
+        order_id=None,
+    )
+
+
+@pytest.mark.asyncio
 async def test_quote_swap_can_include_calldata_when_requested():
     fake_wallet = {"address": "0x000000000000000000000000000000000000dEaD"}
 
@@ -127,15 +168,13 @@ async def test_quote_swap_can_include_calldata_when_requested():
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
         return_value={
-            "quotes": {
-                "quote_count": 1,
-                "best_quote": {
-                    "provider": "brap_best",
-                    "output_amount": "1",
-                    "calldata": calldata,
-                },
-                "all_quotes": [{"provider": "brap_best"}],
-            }
+            "quotes": [{"provider": "brap_best"}],
+            "quote_count": 1,
+            "best_quote": {
+                "provider": "brap_best",
+                "output_amount": "1",
+                "calldata": calldata,
+            },
         }
     )
 
@@ -166,7 +205,7 @@ async def test_quote_swap_can_include_calldata_when_requested():
 
 
 @pytest.mark.asyncio
-async def test_quote_swap_accepts_top_level_brap_shape():
+async def test_quote_swap_uses_normalized_brap_shape():
     fake_wallet = {"address": "0x000000000000000000000000000000000000dEaD"}
 
     from_meta = {

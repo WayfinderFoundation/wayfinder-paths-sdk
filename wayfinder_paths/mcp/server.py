@@ -74,7 +74,7 @@ from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_get_state,
     polymarket_read,
 )
-from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
+from wayfinder_paths.mcp.tools.quotes import onchain_bridge_status, onchain_quote_swap
 from wayfinder_paths.mcp.tools.run_script import core_run_script
 from wayfinder_paths.mcp.tools.runner import core_runner
 from wayfinder_paths.mcp.tools.strategies import core_run_strategy
@@ -127,6 +127,7 @@ mcp.tool()(onchain_get_gas_token)
 mcp.tool()(onchain_fuzzy_search_tokens)
 mcp.tool()(onchain_get_wallet_activity)
 mcp.tool()(onchain_quote_swap)
+mcp.tool()(onchain_bridge_status)
 
 # ─── polymarket_* ──────────────────────────────────────────────────────
 mcp.tool()(polymarket_read)

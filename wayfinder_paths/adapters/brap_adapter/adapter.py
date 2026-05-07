@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from web3 import Web3
 
@@ -127,7 +127,8 @@ class BRAPAdapter(BaseAdapter):
                     slippage=slippage,
                 )
 
-                all_quotes, quote = data.get("quotes", []), data.get("best_quote")
+                all_quotes = [dict(q) for q in data["quotes"]]
+                quote = data["best_quote"]
 
                 if preferred_providers and all_quotes:
                     selected = self._select_quote_by_provider(
@@ -137,7 +138,7 @@ class BRAPAdapter(BaseAdapter):
                         return (True, selected)
 
                 if quote:
-                    return (True, cast(dict[str, Any], quote))
+                    return (True, dict(quote))
 
                 last_error = "No quotes available"
             except Exception as e:
