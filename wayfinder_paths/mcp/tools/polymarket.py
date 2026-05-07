@@ -128,6 +128,7 @@ def _annotate(
     )
 
 
+@catch_errors
 async def polymarket_get_state(
     *,
     wallet_label: str | None = None,
@@ -377,14 +378,14 @@ async def polymarket_read(
 
             case "quote":
                 if side == "BUY":
-                    if amount_collateral is None:
-                        raise ValueError("amount_collateral is required for BUY quote")
+                    throw_if_none(
+                        "amount_collateral is required for BUY quote", amount_collateral
+                    )
                     quote_amount = throw_if_not_number(
                         "amount_collateral must be a number", amount_collateral
                     )
                 else:
-                    if shares is None:
-                        raise ValueError("shares is required for SELL quote")
+                    throw_if_none("shares is required for SELL quote", shares)
                     quote_amount = throw_if_not_number(
                         "shares must be a number", shares
                     )
@@ -545,10 +546,7 @@ async def polymarket_execute(
         side: "BUY" or "SELL" for limit orders.
         Other args: see action-specific descriptions above.
     """
-    try:
-        sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
+    sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
     try:
         sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
     except ValueError:
@@ -682,36 +680,36 @@ async def polymarket_execute(
             case "buy" | "sell":
                 if market_slug:
                     if action == "buy":
-                        if amount_collateral is None:
-                            raise ValueError("amount_collateral is required for buy")
+                        throw_if_none(
+                            "amount_collateral is required for buy", amount_collateral
+                        )
                         ok_trade, res = await adapter.place_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             amount_collateral=float(amount_collateral),
                         )
                     else:
-                        if shares is None:
-                            raise ValueError("shares is required for sell")
+                        throw_if_none("shares is required for sell", shares)
                         ok_trade, res = await adapter.cash_out_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             shares=float(shares),
                         )
                 else:
-                    tid = str(token_id or "").strip()
-                    if not tid:
-                        raise ValueError("token_id or market_slug is required")
+                    tid = throw_if_empty_str(
+                        "token_id or market_slug is required", token_id
+                    )
                     if action == "buy":
-                        if amount_collateral is None:
-                            raise ValueError("amount_collateral is required for buy")
+                        throw_if_none(
+                            "amount_collateral is required for buy", amount_collateral
+                        )
                         ok_trade, res = await adapter.place_market_order(
                             token_id=tid,
                             side="BUY",
                             amount=float(amount_collateral),
                         )
                     else:
-                        if shares is None:
-                            raise ValueError("shares is required for sell")
+                        throw_if_none("shares is required for sell", shares)
                         ok_trade, res = await adapter.place_market_order(
                             token_id=tid,
                             side="SELL",
@@ -836,10 +834,8 @@ async def polymarket_execute(
                 tid = throw_if_empty_str(
                     "token_id is required for place_limit_order", token_id
                 )
-                if price is None or size is None:
-                    raise ValueError(
-                        "price and size are required for place_limit_order"
-                    )
+                throw_if_none("price is required for place_limit_order", price)
+                throw_if_none("size is required for place_limit_order", size)
                 ok_lo, res = await adapter.place_limit_order(
                     token_id=tid,
                     side=side,

@@ -15,6 +15,7 @@ from wayfinder_paths.mcp.utils import (
     ok,
     repo_root,
     throw_if_empty_str,
+    throw_if_none,
 )
 
 
@@ -187,10 +188,10 @@ async def core_run_strategy(
             # Back-compat: allow callers to pass `amount` as the main token amount.
             if main_token_amount is None:
                 main_token_amount = amount
-            if main_token_amount is None:
-                raise ValueError(
-                    "main_token_amount required for deposit (optionally gas_token_amount)"
-                )
+            throw_if_none(
+                "main_token_amount required for deposit (optionally gas_token_amount)",
+                main_token_amount,
+            )
             success, msg = await strategy_obj.deposit(
                 main_token_amount=float(main_token_amount),
                 gas_token_amount=float(gas_token_amount),

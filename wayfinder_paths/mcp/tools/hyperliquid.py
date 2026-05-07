@@ -119,12 +119,9 @@ async def hyperliquid_execute(
 
     effects: list[dict[str, Any]] = []
 
-    try:
-        adapter = await get_adapter(
-            HyperliquidAdapter, wallet_label, config_overrides=config
-        )
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
+    adapter = await get_adapter(
+        HyperliquidAdapter, wallet_label, config_overrides=config
+    )
     sender = adapter.wallet_address
 
     match action:
@@ -136,12 +133,9 @@ async def hyperliquid_execute(
                     "amount_usdc must be >= 5 USDC (HL deposits below are lost)"
                 )
 
-            try:
-                sign_callback, deposit_sender = await get_wallet_signing_callback(
-                    wallet_label
-                )
-            except ValueError as exc:
-                return err("invalid_wallet", str(exc))
+            sign_callback, deposit_sender = await get_wallet_signing_callback(
+                wallet_label
+            )
 
             transaction = await build_send_transaction(
                 from_address=deposit_sender,
@@ -301,17 +295,16 @@ async def hyperliquid_execute(
         case "place_order" if market_type == "hip4":
             outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
             throw_if_none("is_buy is required for outcome orders", is_buy)
-            if order_type == "limit" and price is None:
-                raise ValueError("price is required for limit orders")
+            if order_type == "limit":
+                throw_if_none("price is required for limit orders", price)
 
             # Outcomes are integer contracts (szDecimals=0) with no $10 floor;
             # accept either explicit `size` or `usd_amount` for market orders.
             size_i: int | None = None if size is None else int(size)
             if size_i is None:
-                if usd_amount is None:
-                    raise ValueError(
-                        "size or usd_amount is required for outcome orders"
-                    )
+                throw_if_none(
+                    "size or usd_amount is required for outcome orders", usd_amount
+                )
                 if order_type != "market":
                     raise ValueError(
                         "usd_amount sizing is only supported for market outcome orders"
@@ -430,10 +423,9 @@ async def hyperliquid_execute(
                     }
                 )
             else:
-                if order_id is None:
-                    raise ValueError(
-                        "order_id or cancel_cloid is required for cancel_order"
-                    )
+                throw_if_none(
+                    "order_id or cancel_cloid is required for cancel_order", order_id
+                )
                 ok_cancel, res = await adapter.cancel_order(
                     resolved_asset_id, int(order_id), sender
                 )
@@ -483,11 +475,11 @@ async def hyperliquid_execute(
             tpx = throw_if_not_number("trigger_price must be a number", trigger_price)
             if tpx <= 0:
                 raise ValueError("trigger_price must be positive")
-            if is_buy is None:
-                raise ValueError(
-                    "is_buy is required for place_trigger_order — set to opposite of your position "
-                    "(long position → is_buy=False to sell; short position → is_buy=True to buy back)"
-                )
+            throw_if_none(
+                "is_buy is required for place_trigger_order — set to opposite of your position "
+                "(long position → is_buy=False to sell; short position → is_buy=True to buy back)",
+                is_buy,
+            )
             throw_if_none(
                 "size is required for place_trigger_order (asset units)", size
             )
@@ -497,10 +489,10 @@ async def hyperliquid_execute(
 
             limit_px: float | None = None
             if not is_market_trigger:
-                if price is None:
-                    raise ValueError(
-                        "price is required for limit trigger orders (is_market_trigger=False)"
-                    )
+                throw_if_none(
+                    "price is required for limit trigger orders (is_market_trigger=False)",
+                    price,
+                )
                 limit_px = throw_if_not_number("price must be a number", price)
                 if limit_px <= 0:
                     raise ValueError("price must be positive")
@@ -599,10 +591,10 @@ async def hyperliquid_execute(
                 if sz <= 0:
                     raise ValueError("size must be positive")
             else:
-                if usd_amount is None:
-                    raise ValueError(
-                        "Provide either size (asset units) or usd_amount for place_order"
-                    )
+                throw_if_none(
+                    "Provide either size (asset units) or usd_amount for place_order",
+                    usd_amount,
+                )
                 usd_amt = throw_if_not_number("usd_amount must be a number", usd_amount)
                 if usd_amt <= 0:
                     raise ValueError("usd_amount must be positive")
@@ -616,10 +608,9 @@ async def hyperliquid_execute(
                         "usd_amount_kind is required for perp: 'notional' or 'margin'"
                     )
                 elif usd_amount_kind == "margin":
-                    if leverage is None:
-                        raise ValueError(
-                            "leverage is required when usd_amount_kind='margin'"
-                        )
+                    throw_if_none(
+                        "leverage is required when usd_amount_kind='margin'", leverage
+                    )
                     lev = int(throw_if_not_number("leverage must be an int", leverage))
                     if lev <= 0:
                         raise ValueError("leverage must be positive")
@@ -845,6 +836,7 @@ async def hyperliquid_execute(
             return err("invalid_request", f"Unknown action: {action}")
 
 
+@catch_errors
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
@@ -889,6 +881,7 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     )
 
 
+@catch_errors
 async def hyperliquid_search_mid_prices(
     asset_names: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -915,6 +908,7 @@ async def hyperliquid_search_mid_prices(
     return ok({"prices": filtered})
 
 
+@catch_errors
 async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty

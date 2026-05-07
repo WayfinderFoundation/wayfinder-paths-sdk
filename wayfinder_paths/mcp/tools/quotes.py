@@ -6,6 +6,7 @@ from typing import Any
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     find_wallet_by_label,
     normalize_address,
@@ -59,6 +60,7 @@ def _unwrap_brap_quote_response(
     return [], None, 0
 
 
+@catch_errors
 async def onchain_quote_swap(
     *,
     wallet_label: str,
