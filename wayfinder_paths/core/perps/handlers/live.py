@@ -221,8 +221,12 @@ class LiveHandler:
                 symbol=symbol, bids=[], asks=[], timestamp=self.now(), venue=self.venue
             )
         levels = raw.get("levels") or [[], []]
-        bids = [(float(lvl["px"]), float(lvl["sz"])) for lvl in (levels[0] or [])[:depth]]
-        asks = [(float(lvl["px"]), float(lvl["sz"])) for lvl in (levels[1] or [])[:depth]]
+        bids = [
+            (float(lvl["px"]), float(lvl["sz"])) for lvl in (levels[0] or [])[:depth]
+        ]
+        asks = [
+            (float(lvl["px"]), float(lvl["sz"])) for lvl in (levels[1] or [])[:depth]
+        ]
         return OrderBook(
             symbol=symbol, bids=bids, asks=asks, timestamp=self.now(), venue=self.venue
         )
