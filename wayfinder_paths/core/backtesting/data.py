@@ -7,12 +7,41 @@ in backtest-ready DataFrame format.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
+from typing import Any
 
 import pandas as pd
+from loguru import logger
 
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
+
+
+_DELTA_LAB_RETRIES = 3
+_DELTA_LAB_BACKOFF_S = 2.0
+
+
+async def _delta_lab_timeseries_with_retry(**kwargs: Any) -> dict:
+    """Fetch one symbol's Delta Lab timeseries with retry-on-5xx.
+
+    Delta Lab returns transient HTTP 500s under load. Retry up to
+    _DELTA_LAB_RETRIES times with linear backoff before raising.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(_DELTA_LAB_RETRIES):
+        try:
+            return await DELTA_LAB_CLIENT.get_asset_timeseries(**kwargs)
+        except Exception as exc:  # noqa: BLE001 — surface only after retries
+            last_exc = exc
+            if attempt < _DELTA_LAB_RETRIES - 1:
+                logger.warning(
+                    "Delta Lab fetch failed (attempt {}/{}) for {}: {}",
+                    attempt + 1, _DELTA_LAB_RETRIES,
+                    kwargs.get("symbol"), exc,
+                )
+                await asyncio.sleep(_DELTA_LAB_BACKOFF_S * (attempt + 1))
+    raise last_exc  # type: ignore[misc]
 
 
 def get_available_date_range() -> tuple[datetime, datetime]:
@@ -147,7 +176,7 @@ async def _fetch_prices_delta_lab(
     all_prices = []
 
     for symbol in symbols:
-        data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+        data = await _delta_lab_timeseries_with_retry(
             symbol=symbol,
             lookback_days=lookback_days,
             limit=10000,
@@ -248,7 +277,7 @@ async def fetch_funding_rates(
     all_funding = []
 
     for symbol in symbols:
-        data = await DELTA_LAB_CLIENT.get_asset_timeseries(
+        data = await _delta_lab_timeseries_with_retry(
             symbol=symbol,
             lookback_days=lookback_days,
             limit=10000,

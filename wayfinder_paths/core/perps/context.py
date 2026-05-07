@@ -33,8 +33,11 @@ class SignalFrame:
         """
         idx = self.targets.index
         ts = pd.Timestamp(t)
+        # Reconcile tz-aware/naive between t and the index. `tz_localize(None)`
+        # raises on already-aware timestamps in modern pandas, hence the
+        # `tz_convert(None)` branch.
         if ts.tzinfo is not None and idx.tz is None:
-            ts = ts.tz_localize(None)
+            ts = ts.tz_convert(None)
         elif ts.tzinfo is None and idx.tz is not None:
             ts = ts.tz_localize(idx.tz)
         try:

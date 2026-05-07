@@ -21,6 +21,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, ClassVar, Final, final
 
+import pandas as pd
+
 from wayfinder_paths.core.backtesting.ref import BacktestRef, load_ref
 from wayfinder_paths.core.perps.context import SignalFrame, TriggerContext, normalize_signal
 from wayfinder_paths.core.perps.handlers.protocol import MarketHandler
@@ -189,11 +191,13 @@ class ActivePerpsStrategy(Strategy):
                 sym: handler.mid(sym) for sym in self._ref.data.symbols
             }
 
-        try:
-            signal_row = signal_frame.at(trigger_t)
-            signal_row_serialised = {str(k): float(v) for k, v in signal_row.items()}
-        except Exception:  # noqa: BLE001 — signal lookup is best-effort for snapshot
-            signal_row_serialised = {}
+        # Snapshot the signal row live decide() saw. Let exceptions surface —
+        # a silently-empty signal_row in monitoring is worse than a hard fail.
+        signal_row = signal_frame.at(trigger_t)
+        signal_row_serialised = {
+            str(k): (float(v) if pd.notna(v) else None)
+            for k, v in signal_row.items()
+        }
 
         self._state.update({
             "positions": positions_snapshot,
@@ -228,6 +232,36 @@ class ActivePerpsStrategy(Strategy):
         return False, (
             "Default exit not implemented. Override `exit(...)` to transfer USDC from "
             "strategy wallet to main wallet."
+        )
+
+    async def reconcile(
+        self,
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        no_fills: bool = False,
+        write_report: bool = True,
+    ) -> dict[str, Any]:
+        """Replay decide() over the recorded live snapshots and diff against the
+        captured live intents + (optionally) HL fills.
+
+        Returns a structured report (see `core/perps/reconciler.py`). When
+        `write_report` is true, also writes a JSON file to
+        `<strategy_dir>/reconciliation/<run_ts>.json`.
+
+        Args:
+            start: ISO date — defaults to 30 days ago.
+            end: ISO date — defaults to today.
+            no_fills: skip the live HL fills fetch (offline replay only).
+            write_report: persist report to disk.
+        """
+        from wayfinder_paths.core.perps.reconciler import reconcile_strategy  # noqa: PLC0415
+
+        return await reconcile_strategy(
+            strategy_dir=Path(self.REF).parent,
+            strategy_name=self._strategy_name(),
+            start=start, end=end,
+            no_fills=no_fills, write_report=write_report,
         )
 
     async def _status(self) -> StatusDict:

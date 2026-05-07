@@ -199,6 +199,17 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
                 raise ValueError(f"Strategy {strategy_name} does not support quote")
             deposit_amount = kw.get("amount") or kw.get("main_token_amount")
             return await strategy.quote(deposit_amount=deposit_amount)
+        if action == "reconcile":
+            if not hasattr(strategy, "reconcile"):
+                raise ValueError(
+                    f"Strategy {strategy_name} does not support reconcile"
+                )
+            return await strategy.reconcile(
+                start=kw.get("start"),
+                end=kw.get("end"),
+                no_fills=bool(kw.get("no_fills", False)),
+                write_report=bool(kw.get("write_report", True)),
+            )
         if action == "run":
             while True:
                 try:
@@ -292,6 +303,7 @@ def main():
             "policy",
             "analyze",
             "quote",
+            "reconcile",
         ],
     )
     p.add_argument(
