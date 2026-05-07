@@ -1,5 +1,9 @@
 # AGENTS.md
 
+## Project Overview
+
+Wayfinder Paths is a public Python SDK for DeFi trading strategies and adapters. It provides the building blocks for automated trading: adapters (exchange/protocol integrations), strategies (trading algorithms), and clients (low-level API wrappers).
+
 ## Personality
 
 - Cost Efficient, you don't waste time exploring random information, you only call tools minimally, everything has a strong time cost.
@@ -11,22 +15,13 @@
 
 ## First-Time Setup (Auto-detect)
 
-**IMPORTANT: On every new conversation, check if setup is needed:**
+**IMPORTANT: On every new conversation, Detect Shells Instance first.**
 
-1. **Detect Shells Instance first.** Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a Shells instance — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
+Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, ... }`, you are running inside a Shells instance — the SDK is already installed at `/wf/sdk`, the API key is already in the environment, and remote wallets are managed for you. **Do NOT run `setup.py`, do NOT prompt for an API key, do NOT touch `config.json`** — proceed normally.
 
-2. If `config.json` does NOT exist:
-   - Run: `python3 scripts/setup.py`
-   - After setup completes, ask the user: "Do you have a Wayfinder API key?"
-     - If yes: Add it to `config.json` under `system.api_key`
-     - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
+## Wallets
 
-3. If `config.json` exists but `system.api_key` is empty/missing AND `WAYFINDER_API_KEY` is not set:
-   - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
-   - If yes: Help them add it to `config.json` under `system.api_key`
-   - If no: Direct them to **https://strategies.wayfinder.ai** to get one
-
-4. If everything is configured, proceed normally
+**On Wayfinder Shells Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Shells.
 
 ## Wayfinder Shells Instance Environment Variables
 
@@ -36,40 +31,6 @@ When the SDK runs inside Wayfinder Shells, two env vars are injected at startup:
 | ---------------------- | -------------------------------------------------------------------------------------- |
 | `WAYFINDER_API_KEY`    | The user's `wf_…` Wayfinder API key. Picked up automatically by config priority below. |
 | `OPENCODE_INSTANCE_ID` | The Wayfinder Shells identifier for this runtime. Useful for logs / diagnostics.       |
-
-Config priority: `Constructor parameter > config.json > WAYFINDER_API_KEY env var`.
-
-## Messaging the user (Shells instances only)
-
-If you detected a Wayfinder Shells instance in "First-Time Setup", you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. Backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly.
-
-See `/using-shells-notify` for the MCP tool, Python client, limits, and Markdown formatting tips.
-
-## Frontend Context (Shells instances only)
-
-If you detected a Wayfinder Shells instance, you can read what the user is currently viewing (active chart) and project overlays (price lines, markers, ranges, trends) onto their chart in real-time.
-
-See `/using-shells-projections` for the MCP tools, Python client, projection types, and gotchas.
-
-## Memories
-
-Eagerly use the memory tools. Persist user preferences, recurring strategies, wallet labels, project context, and anything else the user is likely to reference again — read on session start, write whenever you learn something durable. Don't ration them: a memory the user has to repeat is a memory you should have written.
-
-## Scheduled Jobs (Shells instances only)
-
-On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
-
-- **Job sync**: When a job is added, updated, paused, resumed, or deleted, the daemon pushes the current state to `PUT /instances/{id}/jobs/{name}/`
-- **Run sync**: After each run completes, the daemon pushes the full log output to `POST /instances/{id}/jobs/{name}/runs/`
-- **Local-only**: On non-Shells instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
-
-The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
-
-**Don't silence `job_result` notifications.** When a scheduled job posts a `job_result` into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
-
-## Project Overview
-
-Wayfinder Paths is a Python 3.12 public SDK for community-contributed DeFi trading strategies and adapters. It provides the building blocks for automated trading: adapters (exchange/protocol integrations), strategies (trading algorithms), and clients (low-level API wrappers). In production it can be integrated with a separate execution service for hosted signing/execution.
 
 ## Safety defaults
 
@@ -104,41 +65,6 @@ When answering questions about **rates/APYs/funding**:
 - Always fetch the value via an adapter/client/tool call when possible.
 - Before searching external docs, consult this repo's own adapters/clients (and their `manifest.yaml` + `examples.json`) first.
 - If you cannot fetch it, say so explicitly and provide the exact call/script needed to fetch it.
-
-## Running strategies
-
-Strategy interface — all strategies implement these actions:
-
-**Read-only actions:**
-
-- `status` - Current positions, balances, and state
-- `analyze` - Run strategy analysis with given deposit amount
-- `snapshot` - Build batch snapshot for scoring
-- `policy` - Get strategy policies
-- `quote` - Get point-in-time expected APY for the strategy
-
-**Fund-moving actions:**
-
-- `deposit` - Add funds to the strategy (requires `main_token_amount`; optional `gas_token_amount`). First deposit should include `gas_token_amount` (e.g. `0.001`).
-- `update` - Rebalance or execute the strategy logic
-- `withdraw` - **Liquidate**: Close all positions and convert to stablecoins (funds stay in strategy wallet)
-- `exit` - **Transfer**: Move funds from strategy wallet to main wallet (call after withdraw)
-
-**Clarify withdraw vs exit** — these are separate steps:
-
-- `withdraw` closes positions → `exit` transfers to main wallet
-- "withdraw all" / "close everything" → run `withdraw` then `exit`
-- "transfer remaining funds" (positions already closed) → just `exit`
-
-**Mypy typing** - When adding or modifying Python code, ensure all _new/changed_ code is fully type-annotated and does not introduce new mypy errors.
-
-Run strategies via MCP:
-
-```
-run_strategy(strategy="<strategy_name>", action="status")
-```
-
-Discover names via the `wayfinder://strategies` resource. Fund-moving actions (`deposit`, `update`, `withdraw`, `exit`) trigger a safety review.
 
 ## Execution modes (one-off vs recurring)
 
@@ -424,13 +350,6 @@ just create-adapter "my_protocol"
 
 Creates `wayfinder_paths/adapters/<name>_adapter/` with adapter.py, manifest.yaml, test, examples.json, README.
 
-### Manifests
-
-Every adapter and strategy requires a `manifest.yaml` declaring capabilities, dependencies, and entrypoint. Manifests are validated in CI.
-
-**Adapter manifest** declares: `entrypoint`, `capabilities`, `dependencies` (client classes)
-**Strategy manifest** declares: `entrypoint`, `permissions.policy`, `adapters` with required capabilities
-
 ### Built-in Adapters
 
 - **BALANCE** - Wallet balances, token transfers, ledger recording
@@ -440,32 +359,6 @@ Every adapter and strategy requires a `manifest.yaml` declaring capabilities, de
 - **LEDGER** - Transaction recording, cashflow tracking
 - **HYPERLEND** - Lending protocol integration
 - **PENDLE** - PT/YT market discovery, time series, Hosted SDK swap tx building
-
-### Strategy Base Class
-
-Strategies extend `wayfinder_paths.core.strategies.Strategy` and must implement:
-
-- `deposit(**kwargs)` → `StatusTuple` (bool, str)
-- `update()` → `StatusTuple`
-- `status()` → `StatusDict`
-- `withdraw(**kwargs)` → `StatusTuple`
-
-## Testing Requirements
-
-### Strategies
-
-- **Required**: `examples.json` file (documentation + test data)
-- **Required**: Smoke test exercising deposit → update → status → withdraw
-- **Required**: Tests must load data from `examples.json`, never hardcode values
-
-### Adapters
-
-- **Required**: Basic functionality tests with mocked dependencies
-- **Optional**: `examples.json` file
-
-## Wallets
-
-**On Wayfinder Shells Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Shells.
 
 ### Session vs strategy wallets
 
@@ -495,18 +388,26 @@ On a Wayfinder Shells Instance, always pass `remote=True` when creating wallets 
 
 In Python scripts, prefer the helpers in `wayfinder_paths.mcp.utils` (`load_wallets`, `find_wallet_by_label`) — they hit the same code path as the resource and return remote wallets transparently.
 
-## Configuration
+## Messaging the user (Shells instances only)
 
-Config priority: Constructor parameter > config.json > Environment variable (`WAYFINDER_API_KEY`)
+If you detected a Wayfinder Shells instance in "First-Time Setup", you may email the owner to report completed work, surface decisions that need them, or flag anything you can't resolve. Backend only delivers when `email_verified` is true on the user, and throttles to **4 emails / user / day** — budget your sends accordingly.
 
-Copy `config.example.json` to `config.json` (or run `python3 scripts/setup.py`) for local development.
+See `/using-shells-notify` for the MCP tool, Python client, limits, and Markdown formatting tips.
 
-On a Wayfinder Shells Instance, the API key comes from the `WAYFINDER_API_KEY` env var and `OPENCODE_INSTANCE_ID` identifies the runtime — see [Wayfinder Shells environment variables](#wayfinder-shells-instance-environment-variables).
+## Frontend Context (Shells instances only)
 
-## Key Patterns
+If you detected a Wayfinder Shells instance, you can read what the user is currently viewing (active chart) and project overlays (price lines, markers, ranges, trends) onto their chart in real-time.
 
-- Adapters compose one or more clients and raise `NotImplementedError` for unsupported ops
-- All async methods use `async/await` pattern
-- Return types are `StatusTuple` (success bool, message str) or `StatusDict` (portfolio data)
-- Wallet generation updates `config.json` in repo root
-- Per-strategy wallets are created automatically via `just create-strategy`
+See `/using-shells-projections` for the MCP tools, Python client, projection types, and gotchas.
+
+## Scheduled Jobs (Shells instances only)
+
+On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon automatically syncs job and run state to vault-backend. This happens transparently — no agent action needed.
+
+- **Job sync**: When a job is added, updated, paused, resumed, or deleted, the daemon pushes the current state to `PUT /instances/{id}/jobs/{name}/`
+- **Run sync**: After each run completes, the daemon pushes the full log output to `POST /instances/{id}/jobs/{name}/runs/`
+- **Local-only**: On non-Shells instances (no `OPENCODE_INSTANCE_ID`), sync is skipped silently
+
+The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
+
+**Don't silence `job_result` notifications.** When a scheduled job posts a `job_result` into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
