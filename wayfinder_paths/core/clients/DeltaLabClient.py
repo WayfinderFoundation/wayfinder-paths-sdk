@@ -343,6 +343,15 @@ class DeltaLabClient(WayfinderClient):
         response = await self._authed_request("GET", url)
         return response.json()
 
+    ALL_TIMESERIES_CATEGORIES: tuple[str, ...] = (
+        "price",
+        "yield",
+        "lending",
+        "funding",
+        "pendle",
+        "boros",
+    )
+
     async def get_asset_timeseries(
         self,
         *,
@@ -350,12 +359,16 @@ class DeltaLabClient(WayfinderClient):
         lookback_days: int = 30,
         limit: int = 500,
         as_of: datetime | None = None,
-        series: str | list[str] | tuple[str, ...] | None = None,
+        series: str | list[str] | tuple[str, ...] = "price",
         venue: str | None = None,
         basis: bool = False,
     ) -> dict[str, pd.DataFrame]:
         """
         Get timeseries data for an asset.
+
+        Defaults to the `price` category only — fetching all categories at once
+        is expensive on the backend. Use `get_asset_timeseries_all()` (or pass
+        an explicit list / `series=None`) when you genuinely need every category.
 
         Args:
             symbol: Asset symbol (e.g., "ETH", "BTC")
@@ -364,8 +377,9 @@ class DeltaLabClient(WayfinderClient):
             as_of: Query timestamp (default: now)
             series: Comma-separated list of series to fetch, or a list/tuple of
                    series names (price, yield, lending, funding, pendle, boros).
-                   The alias "rates" requests all rate series. If None, returns
-                   all series.
+                   The alias "rates" requests all rate series. Defaults to
+                   "price". Pass `None` to request every category from the
+                   backend.
             venue: Venue name prefix to filter on. Applied to series that support
                    venue filtering (funding, lending, pendle, boros).
                    E.g. "hyperliquid", "moonwell". None means no filter.
@@ -423,6 +437,32 @@ class DeltaLabClient(WayfinderClient):
                 result[normalized_key] = df
 
         return result
+
+    async def get_asset_timeseries_all(
+        self,
+        *,
+        symbol: str,
+        lookback_days: int = 30,
+        limit: int = 500,
+        as_of: datetime | None = None,
+        venue: str | None = None,
+        basis: bool = False,
+    ) -> dict[str, pd.DataFrame]:
+        """Fetch every timeseries category for an asset in a single request.
+
+        Convenience wrapper around `get_asset_timeseries` for callers that
+        actually need all categories — the per-category default exists to
+        keep backend costs bounded.
+        """
+        return await self.get_asset_timeseries(
+            symbol=symbol,
+            lookback_days=lookback_days,
+            limit=limit,
+            as_of=as_of,
+            series=list(self.ALL_TIMESERIES_CATEGORIES),
+            venue=venue,
+            basis=basis,
+        )
 
     async def get_top_apy(
         self,
