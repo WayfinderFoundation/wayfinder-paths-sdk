@@ -198,7 +198,12 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
             if not hasattr(strategy, "quote"):
                 raise ValueError(f"Strategy {strategy_name} does not support quote")
             deposit_amount = kw.get("amount") or kw.get("main_token_amount")
-            return await strategy.quote(deposit_amount=deposit_amount)
+            # Some strategies (e.g. ActivePerpsStrategy) take no kwargs;
+            # introspect to keep the CLI compatible across both.
+            sig = inspect.signature(strategy.quote)
+            if "deposit_amount" in sig.parameters:
+                return await strategy.quote(deposit_amount=deposit_amount)
+            return await strategy.quote()
         if action == "reconcile":
             if not hasattr(strategy, "reconcile"):
                 raise ValueError(
@@ -270,11 +275,15 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
     else:
         result = await _run()
 
-    logger.info(
-        json.dumps(result, indent=2)
-        if isinstance(result, dict)
-        else f"{action}: {result}"
-    )
+    # Logger writes to stderr; also emit machine-readable JSON to stdout so
+    # the result can be consumed by shell pipelines / runner job parsers.
+    if isinstance(result, dict):
+        out = json.dumps(result, indent=2, default=str)
+        logger.info(out)
+        print(out)
+    else:
+        logger.info(f"{action}: {result}")
+        print(f"{action}: {result}")
 
 
 def main():
