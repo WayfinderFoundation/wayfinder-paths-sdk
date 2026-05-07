@@ -4,16 +4,16 @@
 
 **User asks:** -> **Use this:**
 
-- "What's today's alpha?" -> `wayfinder://alpha-lab/search/_/all/2026-03-06T00:00:00Z/_/20`
-- "Any good tweets?" -> `wayfinder://alpha-lab/search/_/twitter_post/_/_/20`
-- "Chain flow activity?" -> `wayfinder://alpha-lab/search/_/defi_llama_chain_flow/_/_/20`
-- "Top APY signals" -> `wayfinder://alpha-lab/search/_/delta_lab_top_apy/_/_/20`
-- "Search for ETH" -> `wayfinder://alpha-lab/search/ETH/all/_/_/10`
-- "Insights from last week" -> `wayfinder://alpha-lab/search/_/all/2026-02-27T00:00:00Z/_/20`
+- "What's today's alpha?" -> `research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")`
+- "Any good tweets?" -> `research_search_alpha(scan_type="twitter_post", limit="20")`
+- "Chain flow activity?" -> `research_search_alpha(scan_type="defi_llama_chain_flow", limit="20")`
+- "Top APY signals" -> `research_search_alpha(scan_type="delta_lab_top_apy", limit="20")`
+- "Search for ETH" -> `research_search_alpha(query="ETH", limit="10")`
+- "Insights from last week" -> `research_search_alpha(created_after="2026-02-27T00:00:00Z", limit="20")`
 
-## MCP Resources
+## MCP Tools
 
-URI format: `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}`
+Tool: `research_search_alpha(query, scan_type, created_after, created_before, limit)`
 
 | Param | Values | Default |
 |-------|--------|---------|
@@ -21,25 +21,25 @@ URI format: `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{c
 | `scan_type` | `all`, `twitter_post`, `defi_llama_chain_flow`, `defi_llama_overview`, `defi_llama_protocol`, `delta_lab_top_apy`, `delta_lab_best_delta_neutral` | `all` |
 | `created_after` | ISO 8601 datetime or `_` to skip | `_` |
 | `created_before` | ISO 8601 datetime or `_` to skip | `_` |
-| `limit` | 1-200 | `20` |
+| `limit` | 1-200 | `"20"` |
 
 Results are always sorted by insightfulness score (highest first).
 
 ```python
 # Top 20 insights
-ReadMcpResourceTool(server="wayfinder", uri="wayfinder://alpha-lab/search/_/all/_/_/20")
+research_search_alpha(limit="20")
 
 # Twitter posts only
-ReadMcpResourceTool(server="wayfinder", uri="wayfinder://alpha-lab/search/_/twitter_post/_/_/10")
+research_search_alpha(scan_type="twitter_post", limit="10")
 
 # Text search for "ETH"
-ReadMcpResourceTool(server="wayfinder", uri="wayfinder://alpha-lab/search/ETH/all/_/_/10")
+research_search_alpha(query="ETH", limit="10")
 
 # Today's insights
-ReadMcpResourceTool(server="wayfinder", uri="wayfinder://alpha-lab/search/_/all/2026-03-06T00:00:00Z/_/20")
+research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")
 
 # List available types
-ReadMcpResourceTool(server="wayfinder", uri="wayfinder://alpha-lab/types")
+research_get_alpha_types()
 ```
 
 ## Python Client (advanced)

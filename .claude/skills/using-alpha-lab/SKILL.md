@@ -28,23 +28,23 @@ await ALPHA_LAB_CLIENT.get_types()
 **MCP quick access:**
 
 ```
-wayfinder://alpha-lab/search/_/all/_/_/20                          # Top 20 insights
-wayfinder://alpha-lab/search/_/twitter_post/_/_/10                 # Top 10 tweets
-wayfinder://alpha-lab/search/ETH/all/_/_/10                        # Search "ETH"
-wayfinder://alpha-lab/search/_/all/2026-03-06T00:00:00Z/_/20       # Today's insights
-wayfinder://alpha-lab/types                                        # List scan types
+research_search_alpha(limit="20")                                                  # Top 20 insights
+research_search_alpha(scan_type="twitter_post", limit="10")                        # Top 10 tweets
+research_search_alpha(query="ETH", limit="10")                                     # Search "ETH"
+research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")            # Today's insights
+research_get_alpha_types()                                                         # List scan types
 ```
 
-URI format: `wayfinder://alpha-lab/search/{query}/{scan_type}/{created_after}/{created_before}/{limit}`
-- `query`: text search, `_` for none
-- `scan_type`: filter by type, `all` for none
-- `created_after` / `created_before`: ISO 8601 datetime bounds, `_` to skip
-- `limit`: max results (default 20, max 200)
+Tool args: `research_search_alpha(query, scan_type, created_after, created_before, limit)`
+- `query`: text search, `_` for none (default `_`)
+- `scan_type`: filter by type, `all` for none (default `all`)
+- `created_after` / `created_before`: ISO 8601 datetime bounds, `_` to skip (default `_`)
+- `limit`: max results (default `"20"`, max `"200"`)
 
 **Critical gotchas:**
 - Client returns data directly (not tuples) — `data = await ALPHA_LAB_CLIENT.search()`
 - Scores are 0-1 floats (1 = most insightful)
-- MCP resource is sorted by score descending (highest first); use Python client for custom sort/pagination
+- MCP tool sorts by score descending (highest first); use Python client for custom sort/pagination
 - Max 200 results per call; use `offset` for pagination (Python client only)
 
 ## When to use

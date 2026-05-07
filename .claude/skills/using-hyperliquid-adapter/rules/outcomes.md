@@ -30,20 +30,21 @@ Helpers exported from `wayfinder_paths.adapters.hyperliquid_adapter.adapter`:
 - `HyperliquidAdapter.get_outcome_markets()` → `(ok, list[dict])` — one entry per live outcome with parsed `description` (underlying, expiry ISO, target price, period), `sideSpecs`, and per-side `asset_id`/`book_coin`/`token_coin`.
 - Per-side order book: `adapter.get_l2_book(outcome_book_coin(oid, side))`.
 - Mid prices: `adapter.get_all_mid_prices()` returns a dict keyed by `#<encoding>` for outcome sides.
-- **Positions live in spot user state, but the MCP `/spot` resource hides them.** The raw `HyperliquidAdapter.get_spot_user_state(address)` call still returns `balances[]` with `+<encoding>` entries — there's no dedicated outcome-positions endpoint upstream. Frontend filtering happens in `wayfinder://hyperliquid/{label}/outcomes` (see below).
+- **Positions live in spot user state.** `HyperliquidAdapter.get_spot_user_state(address)` returns `balances[]` with `+<encoding>` entries — there's no dedicated outcome-positions endpoint upstream.
 
-### MCP — three balance resources, one per surface
+### MCP — `hyperliquid_get_state(label)` returns all three surfaces
 
-| Resource | Returns |
-|---|---|
-| `wayfinder://hyperliquid/{label}/state` | Perp clearinghouse (cross/isolated margin, asset positions, withdrawable). |
-| `wayfinder://hyperliquid/{label}/spot` | Pure spot balances (`USDC`, `HYPE`, `USDH`, …). **`+N` outcome entries are filtered out** — read those via `/outcomes`. |
-| `wayfinder://hyperliquid/{label}/outcomes` | Outcome positions only — `+N` entries with non-zero total, parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`. |
+`mcp__wayfinder__hyperliquid_get_state(label)` returns a single dict with `perp`, `spot`, and `outcomes` keys:
+
+- `perp.state` — perp clearinghouse (cross/isolated margin, asset positions, withdrawable).
+- `spot.state.balances` — pure spot balances (`USDC`, `HYPE`, `USDH`, …). `+N` outcome entries are filtered out into the `outcomes` bucket.
+- `outcomes.positions` — outcome positions only (parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`).
 
 Other reads:
 
-- `wayfinder://hyperliquid/outcomes` (no label) — list live outcome markets.
-- `wayfinder://hyperliquid/book/{coin}` — pass the URL-encoded `#<encoding>` (e.g. `%2320` for `#20`).
+- `mcp__wayfinder__hyperliquid_search_market(query=...)` — search live markets including outcomes.
+- `mcp__wayfinder__hyperliquid_search_mid_prices(asset_names=["#20", ...])` — fetch outcome mid prices via the `#<encoding>` key.
+- For raw L2 book data on a specific outcome side, drop into a script and call `HyperliquidAdapter.get_l2_book(outcome_book_coin(oid, side))`.
 
 ## Writes
 
