@@ -11,6 +11,7 @@ from wayfinder_paths.mcp.preview import build_run_script_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.state.runs import runs_root
 from wayfinder_paths.mcp.utils import (
+    catch_errors,
     err,
     find_wallet_by_label,
     ok,
@@ -134,6 +135,7 @@ async def _annotate_script_run(
     )
 
 
+@catch_errors
 async def core_run_script(
     *,
     script_path: str,

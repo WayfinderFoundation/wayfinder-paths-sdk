@@ -34,7 +34,8 @@ async def shells_add_chart_projection(
 ) -> dict[str, Any]:
     """Add a projection (overlay) to a specific chart.
 
-    The chart_id is available at frontend_context.chart.id (e.g. "hl-perp-BTC").
+    The chart_id is available at frontend_context.chart.id (e.g. "hl-perp-btc")
+    — treat it as an opaque string the FE owns, not a format you construct.
     Call get_frontend_context() first to read it.
 
     Supported types (engine-agnostic; the FE renderer maps to TradingView shapes):
@@ -57,7 +58,7 @@ async def shells_add_chart_projection(
         connected.
 
     Args:
-        chart_id: Chart key like "hl-perp-BTC" or "hl-perp-ETH".
+        chart_id: Chart key like "hl-perp-btc" or "hl-perp-eth".
         type: Projection type (see list above).
         config: Type-specific configuration dict.
     """
@@ -77,7 +78,7 @@ async def shells_clear_chart_projections(chart_id: str) -> dict[str, Any]:
     """Remove all projections from a chart.
 
     Args:
-        chart_id: Chart key like "hl-perp-BTC".
+        chart_id: Chart key like "hl-perp-btc".
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)

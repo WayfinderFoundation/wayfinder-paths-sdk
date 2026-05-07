@@ -10,8 +10,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import decode_outcome_
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
-    DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
-    HYPE_FEE_WALLET,
+    DEFAULT_HYPERLIQUID_BUILDER_FEE,
     HYPERLIQUID_BRIDGE_ADDRESS,
     MARKET_SEARCH_ALIASES,
     MARKET_SEARCH_MIN_MATCH_SCORE,
@@ -32,45 +31,6 @@ from wayfinder_paths.mcp.utils import (
     throw_if_none,
     throw_if_not_number,
 )
-
-
-def _resolve_builder_fee(
-    *,
-    config: dict[str, Any],
-    builder_fee_tenths_bp: int | None,
-) -> dict[str, Any]:
-    """
-    Resolve builder fee config for Hyperliquid orders.
-
-    Builder attribution is **mandatory** and always uses the Wayfinder builder wallet.
-    Fee priority:
-      1) explicit builder_fee_tenths_bp
-      2) config["builder_fee"]["f"] (typically config.json["strategy"]["builder_fee"])
-      3) DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP
-    """
-    expected_builder = HYPE_FEE_WALLET.lower()
-    fee = builder_fee_tenths_bp
-    if fee is None:
-        cfg = config.get("builder_fee") if isinstance(config, dict) else None
-        if isinstance(cfg, dict):
-            cfg_builder = str(cfg.get("b") or "").strip()
-            if cfg_builder and cfg_builder.lower() != expected_builder:
-                raise ValueError(
-                    f"config builder_fee.b must be {expected_builder} (got {cfg_builder})"
-                )
-            if cfg.get("f") is not None:
-                fee = cfg.get("f")
-    if fee is None:
-        fee = DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP
-
-    try:
-        fee_i = int(fee)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("builder_fee_tenths_bp must be an int") from exc
-    if fee_i <= 0:
-        raise ValueError("builder_fee_tenths_bp must be > 0")
-
-    return {"b": expected_builder, "f": fee_i}
 
 
 def _annotate_hl_profile(
@@ -123,7 +83,6 @@ async def hyperliquid_execute(
     leverage: int | None = None,
     is_cross: bool = True,
     amount_usdc: float | None = None,
-    builder_fee_tenths_bp: int | None = None,
     # place_trigger_order params
     trigger_price: float | None = None,
     tpsl: Literal["tp", "sl"] | None = None,
@@ -153,12 +112,9 @@ async def hyperliquid_execute(
 
     effects: list[dict[str, Any]] = []
 
-    try:
-        adapter = await get_adapter(
-            HyperliquidAdapter, wallet_label, config_overrides=config
-        )
-    except ValueError as e:
-        return err("invalid_wallet", str(e))
+    adapter = await get_adapter(
+        HyperliquidAdapter, wallet_label, config_overrides=config
+    )
     sender = adapter.wallet_address
 
     match action:
@@ -170,12 +126,9 @@ async def hyperliquid_execute(
                     "amount_usdc must be >= 5 USDC (HL deposits below are lost)"
                 )
 
-            try:
-                sign_callback, deposit_sender = await get_wallet_signing_callback(
-                    wallet_label
-                )
-            except ValueError as exc:
-                return err("invalid_wallet", str(exc))
+            sign_callback, deposit_sender = await get_wallet_signing_callback(
+                wallet_label
+            )
 
             transaction = await build_send_transaction(
                 from_address=deposit_sender,
@@ -335,17 +288,16 @@ async def hyperliquid_execute(
         case "place_order" if market_type == "hip4":
             outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
             throw_if_none("is_buy is required for outcome orders", is_buy)
-            if order_type == "limit" and price is None:
-                raise ValueError("price is required for limit orders")
+            if order_type == "limit":
+                throw_if_none("price is required for limit orders", price)
 
             # Outcomes are integer contracts (szDecimals=0) with no $10 floor;
             # accept either explicit `size` or `usd_amount` for market orders.
             size_i: int | None = None if size is None else int(size)
             if size_i is None:
-                if usd_amount is None:
-                    raise ValueError(
-                        "size or usd_amount is required for outcome orders"
-                    )
+                throw_if_none(
+                    "size or usd_amount is required for outcome orders", usd_amount
+                )
                 if order_type != "market":
                     raise ValueError(
                         "usd_amount sizing is only supported for market outcome orders"
@@ -464,10 +416,9 @@ async def hyperliquid_execute(
                     }
                 )
             else:
-                if order_id is None:
-                    raise ValueError(
-                        "order_id or cancel_cloid is required for cancel_order"
-                    )
+                throw_if_none(
+                    "order_id or cancel_cloid is required for cancel_order", order_id
+                )
                 ok_cancel, res = await adapter.cancel_order(
                     resolved_asset_id, int(order_id), sender
                 )
@@ -517,11 +468,11 @@ async def hyperliquid_execute(
             tpx = throw_if_not_number("trigger_price must be a number", trigger_price)
             if tpx <= 0:
                 raise ValueError("trigger_price must be positive")
-            if is_buy is None:
-                raise ValueError(
-                    "is_buy is required for place_trigger_order — set to opposite of your position "
-                    "(long position → is_buy=False to sell; short position → is_buy=True to buy back)"
-                )
+            throw_if_none(
+                "is_buy is required for place_trigger_order — set to opposite of your position "
+                "(long position → is_buy=False to sell; short position → is_buy=True to buy back)",
+                is_buy,
+            )
             throw_if_none(
                 "size is required for place_trigger_order (asset units)", size
             )
@@ -531,17 +482,13 @@ async def hyperliquid_execute(
 
             limit_px: float | None = None
             if not is_market_trigger:
-                if price is None:
-                    raise ValueError(
-                        "price is required for limit trigger orders (is_market_trigger=False)"
-                    )
+                throw_if_none(
+                    "price is required for limit trigger orders (is_market_trigger=False)",
+                    price,
+                )
                 limit_px = throw_if_not_number("price must be a number", price)
                 if limit_px <= 0:
                     raise ValueError("price must be positive")
-
-            builder = _resolve_builder_fee(
-                config=config, builder_fee_tenths_bp=builder_fee_tenths_bp
-            )
 
             sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
             if sz_valid <= 0:
@@ -556,7 +503,7 @@ async def hyperliquid_execute(
                 tpsl=tpsl,
                 is_market=bool(is_market_trigger),
                 limit_price=limit_px,
-                builder=builder,
+                builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
             )
             effects.append(
                 {
@@ -585,7 +532,7 @@ async def hyperliquid_execute(
                         "limit_price": limit_px,
                         "size_requested": float(sz),
                         "size_valid": float(sz_valid),
-                        "builder": builder,
+                        "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
                     },
                     "effects": effects,
                 }
@@ -637,10 +584,10 @@ async def hyperliquid_execute(
                 if sz <= 0:
                     raise ValueError("size must be positive")
             else:
-                if usd_amount is None:
-                    raise ValueError(
-                        "Provide either size (asset units) or usd_amount for place_order"
-                    )
+                throw_if_none(
+                    "Provide either size (asset units) or usd_amount for place_order",
+                    usd_amount,
+                )
                 usd_amt = throw_if_not_number("usd_amount must be a number", usd_amount)
                 if usd_amt <= 0:
                     raise ValueError("usd_amount must be positive")
@@ -654,10 +601,9 @@ async def hyperliquid_execute(
                         "usd_amount_kind is required for perp: 'notional' or 'margin'"
                     )
                 elif usd_amount_kind == "margin":
-                    if leverage is None:
-                        raise ValueError(
-                            "leverage is required when usd_amount_kind='margin'"
-                        )
+                    throw_if_none(
+                        "leverage is required when usd_amount_kind='margin'", leverage
+                    )
                     lev = int(throw_if_not_number("leverage must be an int", leverage))
                     if lev <= 0:
                         raise ValueError("leverage must be positive")
@@ -725,11 +671,6 @@ async def hyperliquid_execute(
                         f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Bump usd_amount or pass size directly."
                     )
 
-            builder = _resolve_builder_fee(
-                config=config,
-                builder_fee_tenths_bp=builder_fee_tenths_bp,
-            )
-
             if leverage is not None:
                 lev = int(throw_if_not_number("leverage must be an int", leverage))
                 if lev <= 0:
@@ -760,8 +701,8 @@ async def hyperliquid_execute(
                     return response
 
             # Builder attribution is mandatory; ensure approval before placing orders.
-            desired = int(builder.get("f") or 0)
-            builder_addr = str(builder.get("b") or "").strip()
+            builder_addr = DEFAULT_HYPERLIQUID_BUILDER_FEE["b"]
+            desired = DEFAULT_HYPERLIQUID_BUILDER_FEE["f"]
             ok_fee, current = await adapter.get_max_builder_fee(
                 user=sender, builder=builder_addr
             )
@@ -813,7 +754,7 @@ async def hyperliquid_execute(
                     float(sz_valid),
                     sender,
                     reduce_only=bool(reduce_only),
-                    builder=builder,
+                    builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
                 )
                 effects.append(
                     {
@@ -832,7 +773,7 @@ async def hyperliquid_execute(
                     sender,
                     reduce_only=bool(reduce_only),
                     cloid=cloid,
-                    builder=builder,
+                    builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
                 )
                 effects.append(
                     {
@@ -862,7 +803,7 @@ async def hyperliquid_execute(
                         "slippage": float(slippage),
                         "reduce_only": bool(reduce_only),
                         "cloid": cloid,
-                        "builder": builder,
+                        "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
                         "sizing": sizing,
                     },
                     "effects": effects,
@@ -888,6 +829,7 @@ async def hyperliquid_execute(
             return err("invalid_request", f"Unknown action: {action}")
 
 
+@catch_errors
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
@@ -932,6 +874,7 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     )
 
 
+@catch_errors
 async def hyperliquid_search_mid_prices(
     asset_names: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -958,6 +901,7 @@ async def hyperliquid_search_mid_prices(
     return ok({"prices": filtered})
 
 
+@catch_errors
 async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty

@@ -142,8 +142,7 @@ async def build_hyperliquid_execute_preview(
             f"cloid: {req.get('cloid')}\n"
             f"leverage: {req.get('leverage')}\n"
             f"is_cross: {req.get('is_cross')}\n"
-            f"builder_wallet: {HYPE_FEE_WALLET}\n"
-            f"builder_fee_tenths_bp: {req.get('builder_fee_tenths_bp') or '(from config/default)'}"
+            f"builder_wallet: {HYPE_FEE_WALLET}"
         )
         return {"summary": header + base + details}
 
@@ -160,8 +159,7 @@ async def build_hyperliquid_execute_preview(
             f"size: {req.get('size')}\n"
             f"is_market_trigger: {is_market_trigger}\n"
             f"limit_price: {req.get('price')}\n"
-            f"builder_wallet: {HYPE_FEE_WALLET}\n"
-            f"builder_fee_tenths_bp: {req.get('builder_fee_tenths_bp') or '(from config/default)'}"
+            f"builder_wallet: {HYPE_FEE_WALLET}"
         )
         return {"summary": header + base + details}
 
