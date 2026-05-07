@@ -3,10 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from wayfinder_paths.core.clients.BRAPClient import (
-    BRAP_CLIENT,
-    normalize_brap_quote_response,
-)
+from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     err,
@@ -19,25 +16,6 @@ from wayfinder_paths.mcp.utils import (
 
 def _slippage_float(slippage_bps: int) -> float:
     return max(0.0, float(int(slippage_bps)) / 10_000.0)
-
-
-def _unwrap_brap_quote_response(
-    data: Any,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None, int]:
-    """
-    BRAP quote responses have historically appeared in two shapes:
-
-    1) {"quotes": [...], "best_quote": {...}}
-    2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
-
-    This helper normalizes both to (all_quotes, best_quote, quote_count).
-    """
-    normalized = normalize_brap_quote_response(data)
-    return (
-        normalized["quotes"],
-        normalized["best_quote"],
-        normalized.get("quote_count", len(normalized["quotes"])),
-    )
 
 
 async def onchain_quote_swap(
@@ -125,13 +103,13 @@ async def onchain_quote_swap(
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
-    all_quotes, best_quote, quote_count = _unwrap_brap_quote_response(data)
+    all_quotes = [dict(q) for q in data["quotes"]]
+    best_quote = data["best_quote"]
+    quote_count = data.get("quote_count", len(all_quotes))
 
     providers: list[str] = []
     seen: set[str] = set()
     for q in all_quotes:
-        if not isinstance(q, dict):
-            continue
         p = q.get("provider")
         if not p:
             continue

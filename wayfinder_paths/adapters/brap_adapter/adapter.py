@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from web3 import Web3
 
@@ -8,10 +8,7 @@ from wayfinder_paths.adapters.ledger_adapter.adapter import LedgerAdapter
 from wayfinder_paths.adapters.token_adapter.adapter import TokenAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.adapters.models import SWAP
-from wayfinder_paths.core.clients.BRAPClient import (
-    BRAP_CLIENT,
-    normalize_brap_quote_response,
-)
+from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.utils.tokens import (
@@ -120,19 +117,18 @@ class BRAPAdapter(BaseAdapter):
         last_error = "No quotes available"
         for attempt in range(retries):
             try:
-                data = normalize_brap_quote_response(
-                    await BRAP_CLIENT.get_quote(
-                        from_token=from_token_address,
-                        to_token=to_token_address,
-                        from_chain=from_chain_id,
-                        to_chain=to_chain_id,
-                        from_wallet=from_address,
-                        from_amount=amount,
-                        slippage=slippage,
-                    )
+                data = await BRAP_CLIENT.get_quote(
+                    from_token=from_token_address,
+                    to_token=to_token_address,
+                    from_chain=from_chain_id,
+                    to_chain=to_chain_id,
+                    from_wallet=from_address,
+                    from_amount=amount,
+                    slippage=slippage,
                 )
 
-                all_quotes, quote = data.get("quotes", []), data.get("best_quote")
+                all_quotes = [dict(q) for q in data["quotes"]]
+                quote = data["best_quote"]
 
                 if preferred_providers and all_quotes:
                     selected = self._select_quote_by_provider(
@@ -142,7 +138,7 @@ class BRAPAdapter(BaseAdapter):
                         return (True, selected)
 
                 if quote:
-                    return (True, cast(dict[str, Any], quote))
+                    return (True, dict(quote))
 
                 last_error = "No quotes available"
             except Exception as e:

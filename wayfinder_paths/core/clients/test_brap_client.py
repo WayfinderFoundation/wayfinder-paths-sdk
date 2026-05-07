@@ -1,3 +1,5 @@
+import pytest
+
 from wayfinder_paths.core.clients.BRAPClient import normalize_brap_quote_response
 
 
@@ -16,22 +18,6 @@ def test_normalize_brap_quote_response_accepts_current_shape():
     assert normalized["errors"] == [{"provider": "enso", "error": "no route"}]
 
 
-def test_normalize_brap_quote_response_accepts_legacy_nested_shape():
-    payload = {
-        "quotes": {
-            "quote_count": 3,
-            "all_quotes": [{"provider": "lifi"}, {"provider": "enso"}],
-            "best_quote": {"provider": "enso", "output_amount": "200"},
-        }
-    }
-
-    normalized = normalize_brap_quote_response(payload)
-
-    assert normalized["quotes"] == [{"provider": "lifi"}, {"provider": "enso"}]
-    assert normalized["best_quote"] == {"provider": "enso", "output_amount": "200"}
-    assert normalized["quote_count"] == 3
-
-
 def test_normalize_brap_quote_response_accepts_data_envelope():
     payload = {
         "data": {
@@ -46,19 +32,14 @@ def test_normalize_brap_quote_response_accepts_data_envelope():
     assert normalized["best_quote"] == {"provider": "lifi"}
 
 
-def test_normalize_brap_quote_response_accepts_legacy_alias():
+def test_normalize_brap_quote_response_rejects_non_normalized_shape():
     payload = {
-        "legacy_quote_response": {
-            "quotes": {
-                "quote_count": 1,
-                "all_quotes": [{"provider": "debridge"}],
-                "best_quote": {"provider": "debridge"},
-            }
+        "quotes": {
+            "quote_count": 1,
+            "all_quotes": [{"provider": "debridge"}],
+            "best_quote": {"provider": "debridge"},
         }
     }
 
-    normalized = normalize_brap_quote_response(payload)
-
-    assert normalized["quotes"] == [{"provider": "debridge"}]
-    assert normalized["best_quote"] == {"provider": "debridge"}
-    assert normalized["quote_count"] == 1
+    with pytest.raises(ValueError, match="quotes as a list"):
+        normalize_brap_quote_response(payload)

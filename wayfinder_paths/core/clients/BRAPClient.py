@@ -109,65 +109,40 @@ class BRAPBridgeExecutionStatus(TypedDict, total=False):
 
 
 def normalize_brap_quote_response(data: Any) -> BRAPQuoteResponse:
-    """Normalize legacy and current BRAP quote response shapes.
+    """Parse the normalized BRAP quote response returned by vault-backend.
 
-    Historical SDK/API callers have seen both:
-    - {"quotes": [...], "best_quote": {...}}
-    - {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
+    Backward compatibility for legacy provider payloads is handled by the API. The
+    SDK consumes the normalized shape so adapter and MCP code can stay simple.
     """
-    payload = data.get("data", data) if isinstance(data, dict) else {}
+    payload = data.get("data", data) if isinstance(data, dict) else None
     if not isinstance(payload, dict):
-        return {"quotes": [], "best_quote": None, "quote_count": 0}
+        raise ValueError("BRAP quote response must be a JSON object")
 
     raw_quotes = payload.get("quotes")
     raw_best_quote = payload.get("best_quote")
     raw_quote_count = payload.get("quote_count")
     raw_errors = payload.get("errors")
-    legacy_response = payload.get("legacy_quote_response")
-    legacy_quotes = (
-        legacy_response.get("quotes")
-        if isinstance(legacy_response, dict)
-        and isinstance(legacy_response.get("quotes"), dict)
-        else None
-    )
 
-    if isinstance(raw_quotes, dict):
-        nested_quotes = raw_quotes.get("all_quotes") or raw_quotes.get("quotes")
-        if raw_best_quote is None:
-            raw_best_quote = raw_quotes.get("best_quote")
-        if raw_quote_count is None:
-            raw_quote_count = raw_quotes.get("quote_count")
-        if raw_errors is None:
-            raw_errors = raw_quotes.get("errors")
-        raw_quotes = nested_quotes
-    elif legacy_quotes is not None:
-        raw_quotes = legacy_quotes.get("all_quotes") or legacy_quotes.get("quotes")
-        if raw_best_quote is None:
-            raw_best_quote = legacy_quotes.get("best_quote")
-        if raw_quote_count is None:
-            raw_quote_count = legacy_quotes.get("quote_count")
-        if raw_errors is None:
-            raw_errors = legacy_quotes.get("errors")
-
-    quotes = (
-        [q for q in raw_quotes if isinstance(q, dict)]
-        if isinstance(raw_quotes, list)
-        else []
-    )
-    best_quote = raw_best_quote if isinstance(raw_best_quote, dict) else None
-
-    try:
-        quote_count = int(raw_quote_count)
-    except (TypeError, ValueError):
-        quote_count = len(quotes)
+    if not isinstance(raw_quotes, list):
+        raise ValueError("BRAP quote response must include quotes as a list")
+    if not all(isinstance(q, dict) for q in raw_quotes):
+        raise ValueError("BRAP quote entries must be JSON objects")
+    if raw_best_quote is not None and not isinstance(raw_best_quote, dict):
+        raise ValueError("BRAP best_quote must be a JSON object or null")
 
     response: BRAPQuoteResponse = {
-        "quotes": cast(list[BRAPQuoteEntry], quotes),
-        "best_quote": cast(BRAPQuoteEntry | None, best_quote),
-        "quote_count": quote_count,
+        "quotes": cast(list[BRAPQuoteEntry], raw_quotes),
+        "best_quote": cast(BRAPQuoteEntry | None, raw_best_quote),
+        "quote_count": len(raw_quotes)
+        if raw_quote_count is None
+        else int(raw_quote_count),
     }
-    if isinstance(raw_errors, list):
-        response["errors"] = [e for e in raw_errors if isinstance(e, dict)]
+    if raw_errors is not None:
+        if not isinstance(raw_errors, list):
+            raise ValueError("BRAP errors must be a list")
+        if not all(isinstance(e, dict) for e in raw_errors):
+            raise ValueError("BRAP error entries must be JSON objects")
+        response["errors"] = raw_errors
     return response
 
 

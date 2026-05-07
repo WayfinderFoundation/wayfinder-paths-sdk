@@ -38,28 +38,26 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     calldata = {"data": "0x" + ("ab" * 4096)}
     fake_brap.get_quote = AsyncMock(
         return_value={
-            "quotes": {
-                "quote_count": 3,
-                "best_quote": {
-                    "provider": "brap_best",
-                    "input_amount": "1700000000000000",
-                    "output_amount": "1234567",
-                    "input_amount_usd": 5.0,
-                    "output_amount_usd": 4.99,
-                    "gas_estimate": 210000,
-                    "fee_estimate": {"total_usd": 0.01},
-                    "native_input": True,
-                    "native_output": False,
-                    "calldata": calldata,
-                    "wrap_transaction": None,
-                    "unwrap_transaction": None,
-                },
-                "all_quotes": [
-                    {"provider": "brap_best"},
-                    {"provider": "brap_alt"},
-                    {"provider": "brap_alt"},
-                ],
-            }
+            "quotes": [
+                {"provider": "brap_best"},
+                {"provider": "brap_alt"},
+                {"provider": "brap_alt"},
+            ],
+            "quote_count": 3,
+            "best_quote": {
+                "provider": "brap_best",
+                "input_amount": "1700000000000000",
+                "output_amount": "1234567",
+                "input_amount_usd": 5.0,
+                "output_amount_usd": 4.99,
+                "gas_estimate": 210000,
+                "fee_estimate": {"total_usd": 0.01},
+                "native_input": True,
+                "native_output": False,
+                "calldata": calldata,
+                "wrap_transaction": None,
+                "unwrap_transaction": None,
+            },
         }
     )
 
@@ -170,15 +168,13 @@ async def test_quote_swap_can_include_calldata_when_requested():
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
         return_value={
-            "quotes": {
-                "quote_count": 1,
-                "best_quote": {
-                    "provider": "brap_best",
-                    "output_amount": "1",
-                    "calldata": calldata,
-                },
-                "all_quotes": [{"provider": "brap_best"}],
-            }
+            "quotes": [{"provider": "brap_best"}],
+            "quote_count": 1,
+            "best_quote": {
+                "provider": "brap_best",
+                "output_amount": "1",
+                "calldata": calldata,
+            },
         }
     )
 
@@ -209,7 +205,7 @@ async def test_quote_swap_can_include_calldata_when_requested():
 
 
 @pytest.mark.asyncio
-async def test_quote_swap_accepts_top_level_brap_shape():
+async def test_quote_swap_uses_normalized_brap_shape():
     fake_wallet = {"address": "0x000000000000000000000000000000000000dEaD"}
 
     from_meta = {

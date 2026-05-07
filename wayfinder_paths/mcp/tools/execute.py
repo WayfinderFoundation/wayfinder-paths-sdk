@@ -5,10 +5,7 @@ from typing import Any, Literal
 from eth_utils import to_checksum_address
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from wayfinder_paths.core.clients.BRAPClient import (
-    BRAP_CLIENT,
-    normalize_brap_quote_response,
-)
+from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT, BRAPQuoteResponse
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
@@ -77,11 +74,10 @@ class ExecutionRequest(BaseModel):
 
 
 def _compact_quote(
-    quote_data: dict[str, Any], best_quote: dict[str, Any] | None
+    quote_data: BRAPQuoteResponse, best_quote: dict[str, Any] | None
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    normalized_quote_data = normalize_brap_quote_response(quote_data)
-    all_quotes = normalized_quote_data["quotes"]
+    all_quotes = quote_data["quotes"]
 
     providers: list[str] = []
     seen: set[str] = set()
@@ -97,7 +93,7 @@ def _compact_quote(
 
     if providers:
         result["providers"] = providers
-    result["quote_count"] = normalized_quote_data.get("quote_count", len(all_quotes))
+    result["quote_count"] = quote_data.get("quote_count", len(all_quotes))
 
     if isinstance(best_quote, dict):
         result["best"] = {
@@ -329,7 +325,6 @@ async def core_execute(
         except Exception as exc:  # noqa: BLE001
             return err("quote_error", str(exc))
 
-        quote_data = normalize_brap_quote_response(quote_data)
         best_quote = quote_data.get("best_quote")
 
         if not isinstance(best_quote, dict):
