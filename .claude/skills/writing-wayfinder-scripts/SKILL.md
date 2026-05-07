@@ -167,7 +167,7 @@ contract = w3.eth.contract(address=token, abi=ERC20_ABI)
 
 ### 6. Python `quote_swap` amounts are wei strings, not human-readable
 
-Note: This applies to the Python `quote_swap()` function in scripts. The MCP `execute(...)` tool takes **human-readable** amounts (e.g. `"5"` for 5 USDC).
+Note: This applies to the Python `quote_swap()` function in scripts. The MCP `core_execute(...)` tool takes **human-readable** amounts (e.g. `"5"` for 5 USDC).
 
 ```python
 # WRONG — "10.0" is not a valid wei amount
@@ -183,9 +183,9 @@ quote = await quote_swap(from_token="usd-coin-base", to_token="ethereum-base", a
 
 Fork both chains, seed expected tokens on the destination fork, then continue. Load `/simulation-dry-run` for the full pattern.
 
-### 8. Write the script file before calling `run_script`
+### 8. Write the script file before calling `core_run_script`
 
-`mcp__wayfinder__run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `run_script`.
+`mcp__wayfinder__core_run_script` executes a file at the given path — the file must exist first. Always `Write` the script, then call `core_run_script`.
 
 ### 9. Funding rate sign (CRITICAL for perp trading)
 
