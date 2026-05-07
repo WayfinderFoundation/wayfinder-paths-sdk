@@ -1054,7 +1054,6 @@ class HyperliquidAdapter(BaseAdapter):
         amount: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        """USDC only — no other spot tokens (HYPE, USDH, etc.) move via this action."""
         return await self._usd_class_transfer(
             amount=amount, address=address, to_perp=True
         )
@@ -1064,7 +1063,6 @@ class HyperliquidAdapter(BaseAdapter):
         amount: float,
         address: str,
     ) -> tuple[bool, dict[str, Any]]:
-        """USDC only — no other spot tokens (HYPE, USDH, etc.) move via this action."""
         return await self._usd_class_transfer(
             amount=amount, address=address, to_perp=False
         )
