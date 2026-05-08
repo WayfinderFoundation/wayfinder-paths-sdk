@@ -11,6 +11,7 @@ Output: SignalFrame with target weights per symbol per timestamp. Sum |w|
 equals `target_leverage` when an entry is active, 0 when flat. Each leg
 gets ±target_leverage/2.
 """
+
 from __future__ import annotations
 
 import numpy as np

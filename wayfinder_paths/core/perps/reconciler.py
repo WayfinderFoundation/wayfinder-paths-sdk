@@ -281,7 +281,7 @@ def _cf_expected_intents(
     targets = signal_frame.targets.loc[win]
     win_prices = prices.loc[win]
     min_order_usd = ref.execution_assumptions.min_order_usd
-    cur_size = {s: 0.0 for s in syms}
+    cur_size = dict.fromkeys(syms, 0.0)
     intents: list[dict[str, Any]] = []
     for i, ts in enumerate(win):
         for s in syms:
@@ -576,6 +576,7 @@ async def _pull_funding_payments(
     """
     try:
         import httpx  # noqa: PLC0415
+
         from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
             HyperliquidAdapter,
         )
@@ -849,8 +850,8 @@ def _counterfactual_pnl(
     fee_bps = ref.execution_assumptions.fee_bps
     min_order_usd = ref.execution_assumptions.min_order_usd
 
-    cur_size = {s: 0.0 for s in syms}
-    entry_px = {s: None for s in syms}
+    cur_size = dict.fromkeys(syms, 0.0)
+    entry_px = dict.fromkeys(syms)
     realized = 0.0
     fees = 0.0
     volume = 0.0
@@ -1113,8 +1114,13 @@ async def reconcile_strategy(
                 signal_fn, ref, deploy_ts
             )
             counterfactual = _counterfactual_pnl(
-                cf_signal_frame, cf_prices, ref,
-                deploy_ts, deploy_nav, fills, current_state,
+                cf_signal_frame,
+                cf_prices,
+                ref,
+                deploy_ts,
+                deploy_nav,
+                fills,
+                current_state,
             )
         except Exception as e:  # noqa: BLE001
             counterfactual = {"ok": False, "reason": f"warm fetch failed: {e}"}
@@ -1137,7 +1143,11 @@ async def reconcile_strategy(
     # position drift compares against meaningful expected trades, not the
     # narrow-window replay (which can't warm up the signal's lookback).
     cf_expected_intents: list[dict[str, Any]] = []
-    if anchor is not None and isinstance(counterfactual, dict) and counterfactual.get("ok"):
+    if (
+        anchor is not None
+        and isinstance(counterfactual, dict)
+        and counterfactual.get("ok")
+    ):
         deploy_ts, deploy_nav = anchor
         try:
             cf_expected_intents = _cf_expected_intents(

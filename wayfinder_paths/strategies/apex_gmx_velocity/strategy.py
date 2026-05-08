@@ -14,6 +14,7 @@ Funding net ≈ 0 because both legs have similar positive funding (APEX
 +11.96% / GMX +8.47% annualized) and the strategy spends roughly equal
 time in each direction.
 """
+
 from pathlib import Path
 
 from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy

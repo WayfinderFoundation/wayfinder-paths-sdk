@@ -6,10 +6,11 @@ These verify:
   3. The signal applied through the backtester reproduces the
      audited performance ranges (Sharpe 60d ∈ [3.0, 5.0])
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pandas as pd
@@ -22,7 +23,7 @@ from wayfinder_paths.strategies.apex_gmx_velocity.strategy import (
 
 
 async def _fetch_hl_prices(days: int = 200) -> pd.DataFrame:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     start_ms = int((now - timedelta(days=days)).timestamp() * 1000)
     end_ms = int((now + timedelta(hours=1)).timestamp() * 1000)
     series = {}
@@ -72,13 +73,15 @@ def test_signal_invariants():
     assert list(targets.columns) == list(prices.columns)
     abs_sum = targets.abs().sum(axis=1)
     target_lev = ApexGmxVelocityStrategy.DEFAULT_PARAMS["target_leverage"]
-    assert (abs_sum <= target_lev + 1e-9).all(), \
+    assert (abs_sum <= target_lev + 1e-9).all(), (
         f"weights exceed target_leverage; max sum={abs_sum.max()}"
+    )
     # When entered, both legs are equal-magnitude (dollar-neutral)
     nonzero = targets[targets.abs().sum(axis=1) > 0]
     if not nonzero.empty:
-        assert ((nonzero["APEX"].abs() - nonzero["GMX"].abs()).abs() < 1e-9).all(), \
+        assert ((nonzero["APEX"].abs() - nonzero["GMX"].abs()).abs() < 1e-9).all(), (
             "APEX and GMX legs not equal magnitude when entered"
+        )
 
 
 @pytest.mark.smoke
@@ -88,9 +91,7 @@ def test_backtest_reproduces_ref():
     import json
     from pathlib import Path
 
-    fixture = json.loads(
-        (Path(__file__).parent / "examples.json").read_text()
-    )
+    fixture = json.loads((Path(__file__).parent / "examples.json").read_text())
     expected = fixture["expected_backtest_ranges"]
 
     from wayfinder_paths.core.backtesting.backtester import run_backtest
@@ -113,9 +114,11 @@ def test_backtest_reproduces_ref():
     r = run_backtest(sub, sf.targets, cfg)
     sh = float(r.stats["sharpe"])
     n = int(r.stats.get("trade_count", 0))
-    assert expected["sharpe_60d_min"] <= sh <= expected["sharpe_60d_max"], \
-        f"60d sharpe {sh:.2f} outside expected [{expected['sharpe_60d_min']}, " \
+    assert expected["sharpe_60d_min"] <= sh <= expected["sharpe_60d_max"], (
+        f"60d sharpe {sh:.2f} outside expected [{expected['sharpe_60d_min']}, "
         f"{expected['sharpe_60d_max']}]"
-    assert expected["trade_count_60d_min"] <= n <= expected["trade_count_60d_max"], \
-        f"60d trade count {n} outside expected " \
+    )
+    assert expected["trade_count_60d_min"] <= n <= expected["trade_count_60d_max"], (
+        f"60d trade count {n} outside expected "
         f"[{expected['trade_count_60d_min']}, {expected['trade_count_60d_max']}]"
+    )

@@ -5,6 +5,7 @@ when entered). decide computes target sizes from current NAV, rounds each
 order to the asset's szDecimals so HL signing accepts it, and rebalances
 through the threshold.
 """
+
 from __future__ import annotations
 
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import round_size_for_asset

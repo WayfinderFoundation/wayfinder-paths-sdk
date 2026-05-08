@@ -390,9 +390,7 @@ class LiveHandler:
 
         if self._is_unified:
             try:
-                ok_s, spot = await self.adapter.get_spot_user_state(
-                    self.wallet_address
-                )
+                ok_s, spot = await self.adapter.get_spot_user_state(self.wallet_address)
                 if ok_s and isinstance(spot, dict):
                     for bal in spot.get("balances") or []:
                         if bal.get("coin") == "USDC":
