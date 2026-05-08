@@ -83,7 +83,6 @@ def _outcome_sides(o: dict[str, Any]) -> list[dict[str, Any]]:
     outcome_id = int(o["outcome"])
     return [
         {
-            "side": idx,
             "name": s["name"],
             "asset_id": outcome_asset_id(outcome_id, idx),
             "book_coin": outcome_book_coin(outcome_id, idx),
@@ -740,23 +739,16 @@ class HyperliquidAdapter(BaseAdapter):
             spec = parse_outcome_description(q["description"])
             if spec.get("class") != "priceBucket":
                 continue
-            outcomes = []
+            named: list[dict[str, Any]] = []
             for n in q["namedOutcomes"]:
                 o = by_id[int(n)]
                 grouped.add(int(o["outcome"]))
-                outcomes.append({
-                    "outcome_id": int(o["outcome"]),
-                    "role": "named",
+                named.append({
                     "bucket_index": parse_outcome_description(o["description"])["index"],
                     "sides": _outcome_sides(o),
                 })
             fb = by_id[int(q["fallbackOutcome"])]
             grouped.add(int(fb["outcome"]))
-            outcomes.append({
-                "outcome_id": int(fb["outcome"]),
-                "role": "fallback",
-                "sides": _outcome_sides(fb),
-            })
             out.append({
                 "class": "priceBucket",
                 "question_id": int(q["question"]),
@@ -765,7 +757,8 @@ class HyperliquidAdapter(BaseAdapter):
                 "price_thresholds": spec["priceThresholds"],
                 "expiry": spec["expiry"],
                 "period": spec["period"],
-                "outcomes": outcomes,
+                "outcomes": named,
+                "fallback": {"sides": _outcome_sides(fb)},
             })
 
         for o in meta["outcomes"]:
@@ -776,7 +769,6 @@ class HyperliquidAdapter(BaseAdapter):
                 continue
             out.append({
                 "class": "priceBinary",
-                "outcome_id": int(o["outcome"]),
                 "description": o["description"],
                 "underlying": spec["underlying"],
                 "target_price": spec["targetPrice"],
