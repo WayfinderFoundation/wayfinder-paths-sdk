@@ -39,3 +39,10 @@ When exploring an unfamiliar adapter/strategy:
 - Start from its `manifest.yaml` (capabilities, entrypoint, dependencies).
 - Read its `examples.json` (expected inputs and runtime assumptions).
 - Prefer read-only calls first; only move to execution after validating inputs/units.
+
+## “Build new” approach
+
+When designing a NEW strategy in this repo:
+- For **perp strategies on Hyperliquid**, copy [`wayfinder_paths/strategies/apex_gmx_velocity/`](../../../../wayfinder_paths/strategies/apex_gmx_velocity/) as the starting layout. It is the canonical reference (see [reference-strategies.md](reference-strategies.md)).
+- For other styles, locate the closest existing strategy and copy its layout — don't construct from scratch.
+- After modifying signal/decide, run the validation checklist in [reference-strategies.md](reference-strategies.md) before claiming the strategy is done.
