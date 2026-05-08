@@ -956,18 +956,11 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         for entry in perp_data[0]["universe"]
     ]
     spots = list(spot_data)
-    outcome_sides = [
-        (s["book_coin"], market["description"])
-        for market in outcome_data
-        for s in market["sides"]
-    ]
 
     if not query.strip():
         perp_hits = [{"name": p} for p in perps[:limit]]
         spot_hits = [{"name": s} for s in spots[:limit]]
-        outcome_hits = [
-            {"name": coin, "description": desc} for coin, desc in outcome_sides[:limit]
-        ]
+        outcome_hits = outcome_data[:limit]
     else:
         terms = {
             a
@@ -1002,12 +995,27 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
             )
             return [it for it, _ in kept[:limit]]
 
-        perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
-        spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
-        outcome_hits = [
-            {"name": coin, "description": desc}
-            for coin, desc in top(outcome_sides, lambda row: row[1])
-        ]
+        def outcome_text(market: dict[str, Any]) -> str:
+            sides = (
+                market["sides"]
+                if market["class"] == "priceBinary"
+                else [s for o in market["outcomes"] for s in o["sides"]]
+            )
+            text = " ".join(side["description"] for side in sides)
+            # Side descriptions use math operators (>=, <, <=); the candidate
+            # tokenizer strips non-alphanumerics so those would be invisible
+            # to MARKET_SEARCH_ALIASES. Rewrite to natural-language words so
+            # queries like "btc above 80k" / "below 78k" / "between" land.
+            return (
+                text.replace(">=", " above ")
+                .replace("<=", " below ")
+                .replace(">", " above ")
+                .replace("<", " below ")
+            )
+
+        perp_hits = [{"name": p} for p in top(perps, lambda p: p)][:limit]
+        spot_hits = [{"name": s} for s in top(spots, lambda s: s)][:limit]
+        outcome_hits = top(outcome_data, outcome_text)[:limit]
 
     return ok(
         {
