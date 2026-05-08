@@ -80,6 +80,49 @@ async def shells_search_chart_series(
         return err("chart_series_error", str(exc))
 
 
+async def shells_set_active_market(
+    query: str | None = None,
+    market_id: str | None = None,
+    market_type: str | None = None,
+    chain_id: int | None = None,
+    clear_workspace: bool = True,
+) -> dict[str, Any]:
+    """Switch the default Shells chart and trading context to one market.
+
+    Use this for requests like "show AAVE", "switch to PENGU perp", or
+    "open this Polymarket market". This updates the live chart, order book,
+    trades, and trade ticket together. Prefer this over `shells_create_chart`
+    when the user wants a single tradable token, perp, spot, or prediction
+    market rather than a custom visual pane.
+
+    Args:
+      query: Natural search text, e.g. "AAVE perp" or "Timberwolves".
+      market_id: Exact Shells market id if known, e.g. "hl-perp-btc".
+      market_type: Optional narrowing: hl-perp, hl-spot, onchain-spot,
+        polymarket.
+      chain_id: Optional EVM chain id for onchain spot resolution.
+      clear_workspace: Set false only if an existing custom pane should stay
+        active while the trading context changes.
+    """
+    if not is_opencode_instance():
+        return err(*_NOT_OPENCODE_ERR)
+    try:
+        return ok(
+            await INSTANCE_STATE_CLIENT.set_active_market(
+                query=query,
+                market_id=market_id,
+                market_type=market_type,
+                chain_id=chain_id,
+                clear_workspace=clear_workspace,
+            )
+        )
+    except httpx.HTTPStatusError as exc:
+        message, details = _http_error_message(exc)
+        return err("active_market_http_error", message, details)
+    except Exception as exc:  # noqa: BLE001
+        return err("active_market_error", str(exc))
+
+
 async def shells_create_chart(
     chart_id: str,
     title: str,

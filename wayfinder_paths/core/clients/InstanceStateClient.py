@@ -65,6 +65,29 @@ class InstanceStateClient(WayfinderClient):
         )
         return resp.json()
 
+    async def set_active_market(
+        self,
+        *,
+        query: str | None = None,
+        market_id: str | None = None,
+        market_type: str | None = None,
+        chain_id: int | None = None,
+        clear_workspace: bool = True,
+    ) -> dict[str, Any]:
+        payload = {
+            "query": query,
+            "market_id": market_id,
+            "market_type": market_type,
+            "chain_id": chain_id,
+            "clear_workspace": clear_workspace,
+        }
+        resp = await self._authed_request(
+            "POST",
+            f"{self._base_url()}/active_market/",
+            json={k: v for k, v in payload.items() if v not in (None, "")},
+        )
+        return resp.json()
+
     async def add_workspace_chart_series(
         self, chart_id: str, series: dict[str, Any]
     ) -> dict[str, Any]:
