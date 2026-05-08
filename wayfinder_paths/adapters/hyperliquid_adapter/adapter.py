@@ -833,12 +833,19 @@ class HyperliquidAdapter(BaseAdapter):
         tif: Literal["Ioc", "Gtc"] = "Ioc",
         reduce_only: bool = False,
         cloid: str | None = None,
+        builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Place an outcome order. Reuses the existing wire/sign/broadcast path.
 
-        HIP-4 ships zero-fee — no builder is sent. Sizes are integer contracts
-        (szDecimals=0). When `price` is omitted, anchor on the live mid via
-        `allMids()` and apply slippage.
+        Sizes are integer contracts (szDecimals=0; size=1 is the floor).
+        When `price` is omitted, anchor on the live mid via `allMids()` and
+        apply slippage.
+
+        HIP-4 protocol fees are zero during initial testing, but per the
+        HIP-4 spec "builder codes do work the same as normal spot trading,
+        where builders earn builder fees on sell orders that specify their
+        builder code." We attach the standard Wayfinder builder code on
+        every outcome order; HL accrues the fee on the sell side.
         """
         if side not in (0, 1):
             return False, {"status": "err", "error": f"side must be 0 or 1, got {side}"}
@@ -852,7 +859,9 @@ class HyperliquidAdapter(BaseAdapter):
                 "status": "err",
                 "error": f"size must be a positive integer number of contracts, got {size}",
             }
+        builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
+        await self.ensure_builder_fee_approved(address, builder_fee)
 
         asset_id = outcome_asset_id(outcome_id, side)
         book_coin = outcome_book_coin(outcome_id, side)
@@ -877,7 +886,7 @@ class HyperliquidAdapter(BaseAdapter):
             int(size),
             reduce_only,
             {"limit": {"tif": tif}},
-            None,  # HIP-4 zero-fee; no builder
+            BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f")),
             cloid,
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
