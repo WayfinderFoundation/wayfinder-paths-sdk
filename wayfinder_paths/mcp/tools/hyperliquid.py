@@ -1001,11 +1001,21 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
                 if market["class"] == "priceBinary"
                 else [s for o in market["outcomes"] for s in o["sides"]]
             )
-            return " ".join(side["description"] for side in sides)
+            text = " ".join(side["description"] for side in sides)
+            # Side descriptions use math operators (>=, <, <=); the candidate
+            # tokenizer strips non-alphanumerics so those would be invisible
+            # to MARKET_SEARCH_ALIASES. Rewrite to natural-language words so
+            # queries like "btc above 80k" / "below 78k" / "between" land.
+            return (
+                text.replace(">=", " above ")
+                .replace("<=", " below ")
+                .replace(">", " above ")
+                .replace("<", " below ")
+            )
 
-        perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
-        spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
-        outcome_hits = top(outcome_data, outcome_text)
+        perp_hits = [{"name": p} for p in top(perps, lambda p: p)][:limit]
+        spot_hits = [{"name": s} for s in top(spots, lambda s: s)][:limit]
+        outcome_hits = top(outcome_data, outcome_text)[:limit]
 
     return ok(
         {
