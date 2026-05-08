@@ -79,6 +79,95 @@ def outcome_token_coin(outcome_id: int, side: int) -> str:
     return f"+{outcome_encoding(outcome_id, side)}"
 
 
+def _outcome_sides(o: dict[str, Any]) -> list[dict[str, Any]]:
+    outcome_id = int(o["outcome"])
+    return [
+        {
+            "side": idx,
+            "name": s.get("name", ""),
+            "asset_id": outcome_asset_id(outcome_id, idx),
+            "book_coin": outcome_book_coin(outcome_id, idx),
+            "token_coin": outcome_token_coin(outcome_id, idx),
+        }
+        for idx, s in enumerate(o.get("sideSpecs", []))
+    ]
+
+
+def get_outcome_class(item: dict[str, Any]) -> str | None:
+    """Class tag from an outcome's or question's description
+    (priceBinary | priceBucket | ...). None when absent."""
+    return parse_outcome_description(item.get("description", "")).get("class")
+
+
+def parse_outcome(o: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
+    """Resolve one outcome against outcomeMeta: walks meta["questions"]
+    to find the parent question (if grouped) and surfaces the effective
+    class — the parent's class for grouped outcomes (whose own description
+    is just an "index:N" / "other" stub), the outcome's own class otherwise.
+    """
+    outcome_id = int(o["outcome"])
+    parent: dict[str, Any] | None = None
+    role: str | None = None
+    bucket_index: int | None = None
+    for q in meta.get("questions", []):
+        if int(q["fallbackOutcome"]) == outcome_id:
+            parent, role = q, "fallback"
+            break
+        if any(int(n) == outcome_id for n in q["namedOutcomes"]):
+            parent, role = q, "named"
+            bucket_index = parse_outcome_description(o["description"]).get("index")
+            break
+
+    effective = parent if parent else o
+    spec = parse_outcome_description(effective["description"])
+    return {
+        "outcome": o,
+        "parent": parent,
+        "role": role,
+        "bucket_index": bucket_index,
+        "description": effective["description"],
+        "class": spec.get("class"),
+        "spec": spec,
+    }
+
+
+def build_price_binary_row(parsed: dict[str, Any]) -> dict[str, Any]:
+    o = parsed["outcome"]
+    spec = parsed["spec"]
+    return {
+        "outcome_id": int(o["outcome"]),
+        "name": o.get("name", ""),
+        "description": parsed["description"],
+        "class": "priceBinary",
+        "underlying": spec.get("underlying"),
+        "target_price": spec.get("targetPrice"),
+        "expiry": spec.get("expiry"),
+        "period": spec.get("period"),
+        "sides": _outcome_sides(o),
+    }
+
+
+def build_price_bucket_row(parsed: dict[str, Any]) -> dict[str, Any]:
+    o = parsed["outcome"]
+    spec = parsed["spec"]
+    parent = parsed["parent"]
+    return {
+        "outcome_id": int(o["outcome"]),
+        "name": o.get("name", ""),
+        "description": parsed["description"],
+        "class": "priceBucket",
+        "underlying": spec.get("underlying"),
+        "price_thresholds": spec.get("priceThresholds"),
+        "expiry": spec.get("expiry"),
+        "period": spec.get("period"),
+        "sides": _outcome_sides(o),
+        "question_id": int(parent["question"]),
+        "question_name": parent.get("name", ""),
+        "question_role": parsed["role"],
+        "bucket_index": parsed["bucket_index"],
+    }
+
+
 def parse_outcome_description(desc: str) -> dict[str, Any]:
     """Decode the pipe-encoded outcome/question description, e.g.
     "class:priceBinary|underlying:BTC|expiry:20260503-0600|targetPrice:78213|period:1d"
@@ -714,70 +803,20 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
-        """List HIP-4 outcome markets with parsed settlement spec and
-        per-side asset ids / book + token coin names.
-
-        outcomeMeta has a two-level structure: standalone outcomes (e.g.
-        priceBinary) carry their own rich description; multi-outcome
-        questions (e.g. priceBucket) split the contract across N outcome
-        rows whose per-outcome descriptions are stubs ("index:0", "other"),
-        with the rich description on the parent question. Per HIP-4,
-        "Questions are collections of outcomes that where exactly one
-        outcome will settle to Yes, and all others will settle to No."
-        We resolve each outcome's effective description (and parsed spec)
-        through its parent question when one exists, and surface the
-        grouping via question_id / question_role / bucket_index.
-        """
-        try:
-            meta = await asyncio.to_thread(get_info().outcome_meta)
-        except Exception as exc:  # noqa: BLE001
-            self.logger.error(f"Failed to fetch outcome_meta: {exc}")
-            return False, []
-
-        outcome_to_question: dict[int, dict[str, Any]] = {}
-        for q in meta.get("questions", []):
-            outcome_to_question[int(q["fallbackOutcome"])] = {"q": q, "role": "fallback"}
-            for named_id in q["namedOutcomes"]:
-                outcome_to_question[int(named_id)] = {"q": q, "role": "named"}
-
+        """One row per HIP-4 outcome with parsed settlement spec and per-side
+        books. Each outcome is resolved through parse_outcome (which joins
+        it to its parent question if grouped) and then dispatched to the
+        per-class builder. Unknown classes are skipped — only parse what
+        we've encountered."""
+        meta = await asyncio.to_thread(get_info().outcome_meta)
         out: list[dict[str, Any]] = []
         for o in meta.get("outcomes", []):
-            outcome_id = int(o["outcome"])
-            own_desc = o.get("description", "")
-            own_spec = parse_outcome_description(own_desc)
-            parent = outcome_to_question.get(outcome_id)
-            effective_desc = parent["q"].get("description", "") if parent else own_desc
-            spec = parse_outcome_description(effective_desc)
-            entry: dict[str, Any] = {
-                "outcome_id": outcome_id,
-                "name": o.get("name", ""),
-                "description": effective_desc,
-                "underlying": spec.get("underlying"),
-                "target_price": spec.get("targetPrice"),
-                "price_thresholds": spec.get("priceThresholds"),
-                "expiry": spec.get("expiry"),
-                "period": spec.get("period"),
-                "class": spec.get("class"),
-                "sides": [
-                    {
-                        "side": idx,
-                        "name": s.get("name", ""),
-                        "asset_id": outcome_asset_id(outcome_id, idx),
-                        "book_coin": outcome_book_coin(outcome_id, idx),
-                        "token_coin": outcome_token_coin(outcome_id, idx),
-                    }
-                    for idx, s in enumerate(o.get("sideSpecs", []))
-                ],
-            }
-            if parent:
-                entry["question_id"] = int(parent["q"]["question"])
-                entry["question_name"] = parent["q"].get("name", "")
-                entry["question_role"] = parent["role"]
-                # Bucket index from the outcome's own description ("index:N"),
-                # which is HL's authoritative per-outcome marker. namedOutcomes
-                # order is undocumented; don't infer position from it.
-                entry["bucket_index"] = own_spec.get("index")
-            out.append(entry)
+            parsed = parse_outcome(o, meta)
+            match parsed["class"]:
+                case "priceBinary":
+                    out.append(build_price_binary_row(parsed))
+                case "priceBucket":
+                    out.append(build_price_bucket_row(parsed))
         return True, out
 
     async def place_outcome_order(
