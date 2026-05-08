@@ -760,7 +760,6 @@ class HyperliquidAdapter(BaseAdapter):
             out.append({
                 "class": "priceBucket",
                 "question_id": int(q["question"]),
-                "name": q["name"],
                 "description": q["description"],
                 "underlying": spec["underlying"],
                 "price_thresholds": spec["priceThresholds"],
@@ -778,7 +777,6 @@ class HyperliquidAdapter(BaseAdapter):
             out.append({
                 "class": "priceBinary",
                 "outcome_id": int(o["outcome"]),
-                "name": o["name"],
                 "description": o["description"],
                 "underlying": spec["underlying"],
                 "target_price": spec["targetPrice"],
