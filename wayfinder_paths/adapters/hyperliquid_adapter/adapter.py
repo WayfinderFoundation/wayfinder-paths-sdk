@@ -733,14 +733,12 @@ class HyperliquidAdapter(BaseAdapter):
 
         outcome_to_question: dict[int, dict[str, Any]] = {}
         for q in meta.get("questions", []):
-            fallback_id = q.get("fallbackOutcome")
-            if fallback_id is not None:
-                outcome_to_question[int(fallback_id)] = {
-                    "q": q,
-                    "role": "fallback",
-                    "bucket_index": None,
-                }
-            for bucket_index, named_id in enumerate(q.get("namedOutcomes", [])):
+            outcome_to_question[int(q["fallbackOutcome"])] = {
+                "q": q,
+                "role": "fallback",
+                "bucket_index": None,
+            }
+            for bucket_index, named_id in enumerate(q["namedOutcomes"]):
                 outcome_to_question[int(named_id)] = {
                     "q": q,
                     "role": "named",

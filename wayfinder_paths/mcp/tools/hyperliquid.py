@@ -957,7 +957,7 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
     ]
     spots = list(spot_data)
     outcome_sides = [
-        (s["book_coin"], market["description"])
+        (s["book_coin"], s["name"], market["description"])
         for market in outcome_data
         for s in market["sides"]
     ]
@@ -966,7 +966,8 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         perp_hits = [{"name": p} for p in perps[:limit]]
         spot_hits = [{"name": s} for s in spots[:limit]]
         outcome_hits = [
-            {"name": coin, "description": desc} for coin, desc in outcome_sides[:limit]
+            {"name": coin, "side": side, "description": desc}
+            for coin, side, desc in outcome_sides[:limit]
         ]
     else:
         terms = {
@@ -1005,8 +1006,8 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
         spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
         outcome_hits = [
-            {"name": coin, "description": desc}
-            for coin, desc in top(outcome_sides, lambda row: row[1])
+            {"name": coin, "side": side, "description": desc}
+            for coin, side, desc in top(outcome_sides, lambda row: row[2])
         ]
 
     return ok(
