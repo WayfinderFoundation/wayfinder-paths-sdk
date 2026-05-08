@@ -1292,19 +1292,8 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def ensure_unified_account(self, address: str) -> tuple[bool, str]:
-        # /info userAbstraction returns the current mode string. Anything other
-        # than "unifiedAccount" (including legacy dex-abstraction wallets that
-        # still report "disabled") triggers a one-time userSetAbstraction sign.
-        try:
-            state = get_info().query_user_abstraction_state(address)
-            if isinstance(state, dict):
-                state = state.get("abstraction") or state.get("mode")
-            if state == "unifiedAccount":
-                return True, "Unified account already enabled"
-        except Exception as exc:
-            logger.warning(
-                f"Failed to query account abstraction state: {exc}, proceeding with set"
-            )
+        if get_info().query_user_abstraction_state(address) == "unifiedAccount":
+            return True, "Unified account already enabled"
 
         ok, result = await self.set_account_abstraction(address, "unifiedAccount")
         if ok:
