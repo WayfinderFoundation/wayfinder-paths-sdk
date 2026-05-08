@@ -94,8 +94,8 @@ If `shells_create_chart` returns `ok: false`, do not tell the user the chart is 
 Supported source types:
 
 - `market_price`: `{"type": "market_price", "market_id": "hl-perp-btc"}`
-- `dataset_series`: returned by `shells_search_chart_series`; preferred for known backend datasets
-- `delta_lab_asset`: `{"type": "delta_lab_asset", "symbol": "USDC", "series": "lending", "venue"?: "...", "basis"?: true}`
+- `dataset_series`: returned by `shells_search_chart_series`; preferred for known backend datasets, including the current Delta Lab registry-backed series
+- `delta_lab_asset`: `{"type": "delta_lab_asset", "symbol": "USDC", "series": "lending", "venue"?: "...", "basis"?: true}`. Legacy fallback only; use a returned `dataset_series` source when available.
 - `inline`: `{"type": "inline", "points": [{...}]}`
 
 Single-series time-series workspace charts render in TradingView. Multi-series
@@ -149,7 +149,7 @@ Always search known datasets before inventing or fetching your own data.
 0. If the user asks for a single tradable token/perp/spot/prediction market, use `shells_set_active_market` first. Do not search chart datasets or create a workspace chart for simple market switches.
 1. Use `shells_search_chart_series` with the user intent/assets first. Do not pass `kind` by default; inspect returned `kind`, `shape.default_y`, `shape.columns`, and `shape.supported_chart_kinds` to decide whether to use the candidate.
 2. Prefer a common source family across compared series. For example, use Hyperliquid perp prices for BTC and ETH together; do not mix Hyperliquid BTC with CoinGecko ETH unless there is no common source.
-3. For asset price/performance requests, prefer Hyperliquid perp price series over spot/fallback price series unless the user explicitly asks for spot. Prefer Delta Lab for lending/yield/Boros/Pendle/funding research series, CoinGecko only as broad spot price fallback, and DeFiLlama for current ranked yield tables/bars.
+3. For asset price/performance requests, prefer Hyperliquid perp price series over spot/fallback price series unless the user explicitly asks for spot. Prefer registry-returned Delta Lab `dataset_series` sources for lending/yield/Boros/Pendle/funding research series, CoinGecko only as broad spot price fallback, and DeFiLlama for current ranked yield tables/bars.
 4. Pass `kind` only to narrow a known data family (`funding`, `yield`, `price`) or a large result set. Do not pass chart kinds such as `line` as the first search because that hides useful candidate metadata.
 5. Use Polymarket-specific tools/API for prediction markets. Do not route Polymarket discovery through chart-series search.
 6. Use `inline` only when the registry does not expose the needed data. If using inline data, keep it small and describe the columns in the chart label or nearby message.

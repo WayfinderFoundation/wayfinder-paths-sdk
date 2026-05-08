@@ -154,10 +154,11 @@ async def shells_create_chart(
     Supported source types:
       - market_price: {"type": "market_price", "market_id": "hl-perp-btc"}
       - dataset_series: use `shells_search_chart_series` and copy the returned
-        source object. Preferred for assets, funding, APYs, Delta Lab series,
-        DeFiLlama snapshots, and CoinGecko fallback prices.
+        source object. Preferred for assets, funding, APYs, Delta Lab registry
+        series, DeFiLlama snapshots, and CoinGecko fallback prices.
       - delta_lab_asset: {"type": "delta_lab_asset", "symbol": "USDC",
-        "series": "lending", "venue"?: "...", "basis"?: true}
+        "series": "lending", "venue"?: "...", "basis"?: true}. Legacy
+        fallback only; use the dataset_series result when search returns one.
       - inline: {"type": "inline", "points": [{...}]}
 
     Supported transforms:
