@@ -83,6 +83,7 @@ def parse_outcome_description(desc: str) -> dict[str, Any]:
     """Decode the pipe-encoded outcome/question description, e.g.
     "class:priceBinary|underlying:BTC|expiry:20260503-0600|targetPrice:78213|period:1d"
     "class:priceBucket|underlying:BTC|expiry:20260509-0600|priceThresholds:77991,81174|period:1d"
+    "index:0"  (per-outcome stub: bucket index within the parent question)
     """
     out: dict[str, Any] = {}
     for part in (desc or "").split("|"):
@@ -100,6 +101,8 @@ def parse_outcome_description(desc: str) -> dict[str, Any]:
             out["priceThresholds"] = [float(v) for v in value.split(",") if v]
         elif key == "period":
             out["period"] = value
+        elif key == "index":
+            out["index"] = int(value)
         elif key == "expiry":
             # "YYYYMMDD-HHMM" UTC → ISO-8601
             out["expiry"] = (
@@ -733,22 +736,15 @@ class HyperliquidAdapter(BaseAdapter):
 
         outcome_to_question: dict[int, dict[str, Any]] = {}
         for q in meta.get("questions", []):
-            outcome_to_question[int(q["fallbackOutcome"])] = {
-                "q": q,
-                "role": "fallback",
-                "bucket_index": None,
-            }
-            for bucket_index, named_id in enumerate(q["namedOutcomes"]):
-                outcome_to_question[int(named_id)] = {
-                    "q": q,
-                    "role": "named",
-                    "bucket_index": bucket_index,
-                }
+            outcome_to_question[int(q["fallbackOutcome"])] = {"q": q, "role": "fallback"}
+            for named_id in q["namedOutcomes"]:
+                outcome_to_question[int(named_id)] = {"q": q, "role": "named"}
 
         out: list[dict[str, Any]] = []
         for o in meta.get("outcomes", []):
             outcome_id = int(o["outcome"])
             own_desc = o.get("description", "")
+            own_spec = parse_outcome_description(own_desc)
             parent = outcome_to_question.get(outcome_id)
             effective_desc = parent["q"].get("description", "") if parent else own_desc
             spec = parse_outcome_description(effective_desc)
@@ -777,7 +773,10 @@ class HyperliquidAdapter(BaseAdapter):
                 entry["question_id"] = int(parent["q"]["question"])
                 entry["question_name"] = parent["q"].get("name", "")
                 entry["question_role"] = parent["role"]
-                entry["bucket_index"] = parent["bucket_index"]
+                # Bucket index from the outcome's own description ("index:N"),
+                # which is HL's authoritative per-outcome marker. namedOutcomes
+                # order is undocumented; don't infer position from it.
+                entry["bucket_index"] = own_spec.get("index")
             out.append(entry)
         return True, out
 
