@@ -82,4 +82,16 @@ MARKET_SEARCH_ALIASES: dict[str, frozenset[str]] = {
     "nvda": frozenset({"nvidia", "nvda"}),
     "monad": frozenset({"monad", "mon"}),
     "mon": frozenset({"monad", "mon"}),
+    # Comparison-operator synonyms — outcome-side descriptions use >=/< etc.
+    # which the search tool rewrites to the words "above"/"below" so these
+    # aliases land. Helps queries like "btc above 80k" / "BTC under 78k".
+    "above": frozenset({"above", "greater", "over", "exceeds", "gt", "gte"}),
+    "greater": frozenset({"above", "greater", "over", "exceeds", "gt", "gte"}),
+    "over": frozenset({"above", "greater", "over", "exceeds", "gt", "gte"}),
+    "exceeds": frozenset({"above", "greater", "over", "exceeds", "gt", "gte"}),
+    "below": frozenset({"below", "less", "under", "beneath", "lt", "lte"}),
+    "less": frozenset({"below", "less", "under", "beneath", "lt", "lte"}),
+    "under": frozenset({"below", "less", "under", "beneath", "lt", "lte"}),
+    "beneath": frozenset({"below", "less", "under", "beneath", "lt", "lte"}),
+    "between": frozenset({"between", "within", "inside", "in"}),
 }

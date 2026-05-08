@@ -78,3 +78,65 @@ async def test_get_asset_timeseries_keeps_string_series(
 
     _, kwargs = client._authed_request.await_args
     assert kwargs["params"]["series"] == "price,funding,lending"
+
+
+@pytest.mark.asyncio
+async def test_get_asset_timeseries_defaults_to_price(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        delta_lab_client_module,
+        "get_api_base_url",
+        lambda: "https://example.com/api/v1",
+    )
+    client = DeltaLabClient()
+    client._authed_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=_Response({"asset_id": 163, "symbol": "VIRTUAL"})
+    )
+
+    await client.get_asset_timeseries(symbol="VIRTUAL")
+
+    _, kwargs = client._authed_request.await_args
+    assert kwargs["params"]["series"] == "price"
+
+
+@pytest.mark.asyncio
+async def test_get_asset_timeseries_all_requests_every_category(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        delta_lab_client_module,
+        "get_api_base_url",
+        lambda: "https://example.com/api/v1",
+    )
+    client = DeltaLabClient()
+    client._authed_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=_Response({"asset_id": 163, "symbol": "VIRTUAL"})
+    )
+
+    await client.get_asset_timeseries_all(symbol="VIRTUAL")
+
+    _, kwargs = client._authed_request.await_args
+    assert kwargs["params"]["series"] == ",".join(
+        DeltaLabClient.ALL_TIMESERIES_CATEGORIES
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_asset_timeseries_explicit_none_omits_series(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        delta_lab_client_module,
+        "get_api_base_url",
+        lambda: "https://example.com/api/v1",
+    )
+    client = DeltaLabClient()
+    client._authed_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=_Response({"asset_id": 163, "symbol": "VIRTUAL"})
+    )
+
+    await client.get_asset_timeseries(symbol="VIRTUAL", series=None)
+
+    _, kwargs = client._authed_request.await_args
+    assert "series" not in kwargs["params"]

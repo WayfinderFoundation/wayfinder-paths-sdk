@@ -52,15 +52,24 @@ async def test_mid_price_spot_purr_usdc_grandfathered():
     assert mid is not None and mid > 0
 
 
+def _first_book_coin(markets):
+    first = markets[0]
+    sides = (
+        first["sides"]
+        if first["class"] == "priceBinary"
+        else first["outcomes"][0]["sides"]
+    )
+    return sides[0]["asset_name"]
+
+
 @pytest.mark.asyncio
 async def test_mid_price_hip4_outcome():
     # HIP-4 outcomes rotate daily at 06:00 UTC; pick whatever's on book now.
     adapter = HyperliquidAdapter()
     ok_outs, outcomes = await adapter.get_outcome_markets()
     assert ok_outs and outcomes, "no HIP-4 outcomes on book"
-    book_coin = outcomes[0]["sides"][0]["book_coin"]
 
-    mid = await _resolved_mid(book_coin)
+    mid = await _resolved_mid(_first_book_coin(outcomes))
     assert mid is not None and mid > 0
 
 
@@ -77,7 +86,7 @@ async def test_search_mid_prices_filter_mixed_markets():
     adapter = HyperliquidAdapter()
     ok_outs, outcomes = await adapter.get_outcome_markets()
     assert ok_outs and outcomes
-    hip4 = outcomes[0]["sides"][0]["book_coin"]
+    hip4 = _first_book_coin(outcomes)
 
     res = await hyperliquid_search_mid_prices(
         ["BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4, "BOGUS"],

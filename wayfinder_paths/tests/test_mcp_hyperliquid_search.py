@@ -6,8 +6,6 @@ from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_search_market
 
 # Live HL tests — assertions check the expected set is a SUBSET of returned
 # names so the suite stays green as HL adds/removes markets.
-_BTC_OUTCOME_PREFIX = "class:priceBinary|underlying:BTC|expiry:"
-_BTC_OUTCOME_SUFFIX = "|period:1d"
 
 
 def _names(rows):
@@ -22,13 +20,11 @@ async def test_search_bitcoin():
 
     assert {"BTC-USDC", "flx:BTC", "hyna:BTC", "cash:BTC"} <= _names(result["perps"])
     assert {"UBTC/USDC", "UBTC/USDH"} <= _names(result["spots"])
-    # HIP-4 outcome IDs rotate daily; presence + description format is enough.
+    # HIP-4 outcome IDs rotate daily and span priceBinary/priceBucket
+    # classes; presence + BTC-underlying marker is enough.
     assert result["outcomes"]
-    assert all(
-        r["description"].startswith(_BTC_OUTCOME_PREFIX)
-        and r["description"].endswith(_BTC_OUTCOME_SUFFIX)
-        for r in result["outcomes"]
-    )
+    assert all("underlying:BTC" in r["description"] for r in result["outcomes"])
+    assert all(r["class"] in {"priceBinary", "priceBucket"} for r in result["outcomes"])
 
 
 @pytest.mark.asyncio
