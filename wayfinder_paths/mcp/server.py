@@ -13,7 +13,7 @@ allowlist can use one glob (`wayfinder_<namespace>_*: true`) per namespace
 to scope a persona's surface.
 
 Namespaces:
-  - shells       instance ↔ frontend bridge (chart projections, notify, ui ctx)
+  - shells       instance ↔ frontend bridge (chart workspace, annotations, notify, ui ctx)
   - research     alpha-lab, delta-lab
   - hyperliquid  HL perp/spot/HIP-3/HIP-4 reads + writes
   - onchain      token resolution, swaps, wallet activity
@@ -64,9 +64,15 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_search_mid_prices,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
-    shells_add_chart_projection,
-    shells_clear_chart_projections,
+    shells_add_workspace_chart_annotation,
+    shells_add_workspace_chart_overlay,
+    shells_add_workspace_chart_series,
+    shells_clear_chart_workspace,
+    shells_create_chart,
     shells_get_frontend_context,
+    shells_search_chart_series,
+    shells_set_active_chart,
+    shells_set_active_market,
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import (
@@ -95,8 +101,14 @@ mcp = FastMCP("wayfinder")
 # ─── shells_* ──────────────────────────────────────────────────────────
 if is_opencode_instance():
     mcp.tool()(shells_get_frontend_context)
-    mcp.tool()(shells_add_chart_projection)
-    mcp.tool()(shells_clear_chart_projections)
+    mcp.tool()(shells_search_chart_series)
+    mcp.tool()(shells_set_active_market)
+    mcp.tool()(shells_create_chart)
+    mcp.tool()(shells_set_active_chart)
+    mcp.tool()(shells_add_workspace_chart_series)
+    mcp.tool()(shells_add_workspace_chart_annotation)
+    mcp.tool()(shells_add_workspace_chart_overlay)
+    mcp.tool()(shells_clear_chart_workspace)
     mcp.tool()(shells_notify)
 
 # ─── research_* ────────────────────────────────────────────────────────

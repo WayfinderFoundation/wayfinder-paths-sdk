@@ -13,11 +13,11 @@ Constants available in `wayfinder_paths.core.constants.hyperliquid`:
 - `MIN_DEPOSIT_USD = 5.0`
 - `MIN_ORDER_USD_NOTIONAL = 10.0`
 
-## HIP-3 dex abstraction
+## HIP-3 collateral via UnifiedAccount
 
-Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **dex abstraction** enabled on the account. Without it, orders on non-default dexes fail with "Insufficient margin" or similar errors.
+Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **UnifiedAccount mode** enabled on the account. Without it, orders on non-default dexes fail with "Insufficient margin" or similar errors.
 
-- The adapter auto-enables this before `place_market_order`, `place_limit_order`, and `place_trigger_order` via `ensure_dex_abstraction(address)`.
+- The adapter auto-enables this before `place_market_order`, `place_limit_order`, `place_tp_sl_order`, and `place_outcome_order` via `ensure_unified_account(address)`.
 - One-time on-chain action per account — once enabled, it stays enabled.
 - HIP-3 asset IDs use offsets: first builder dex starts at 110000, then 120000, 130000, etc.
 - HIP-3 coin names are prefixed: `xyz:NVDA`, `vntl:SPACEX`, `hyna:BTC`, etc.
