@@ -176,9 +176,9 @@ See `/using-shells-notify` for the MCP tool, Python client, limits, and Markdown
 
 ## Frontend Context (Shells instances only)
 
-If you detected a Wayfinder Shells instance, you can read what the user is currently viewing (active chart) and project overlays (price lines, markers, ranges, trends) onto their chart in real-time.
+If you detected a Wayfinder Shells instance, you can read what the user is currently viewing and update chart state in real time, including switching the default market/trading context, creating visual panes, and adding annotations or overlays.
 
-See `/using-shells-projections` for the MCP tools, Python client, projection types, and gotchas.
+See `/using-shells-chart-annotations` for the MCP tools, Python client, annotation types, chart workspace tools, and gotchas.
 
 ## Scheduled Jobs (Shells instances only)
 
