@@ -13,7 +13,7 @@ from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
     USD_CLASS_TRANSFER_SIGN_TYPES,
-    USER_DEX_ABSTRACTION_SIGN_TYPES,
+    USER_SET_ABSTRACTION_SIGN_TYPES,
     WITHDRAW_SIGN_TYPES,
     OrderType,
     OrderWire,
@@ -24,7 +24,7 @@ from hyperliquid.utils.signing import (
     order_wires_to_order_action,
     user_signed_payload,
 )
-from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, BuilderInfo
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, Abstraction, BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
@@ -165,7 +165,10 @@ class HyperliquidAdapter(BaseAdapter):
 
     def _get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
-        return (6 if not is_spot else 8) - self.get_sz_decimals(asset_id)
+        max_decimals = 6 if not is_spot else 8
+        if asset_id >= OUTCOME_ASSET_OFFSET:
+            max_decimals = 8
+        return max_decimals - self.get_sz_decimals(asset_id)
 
     def _sig_hex_to_hl_signature(self, sig_hex: str) -> dict[str, Any]:
         """Convert a 65-byte hex signature into Hyperliquid {r,s,v}."""
@@ -580,6 +583,8 @@ class HyperliquidAdapter(BaseAdapter):
                 return [asset_name]
 
     def get_sz_decimals(self, asset_id: int) -> int:
+        if asset_id >= OUTCOME_ASSET_OFFSET:
+            return 0
         try:
             return self.asset_to_sz_decimals[asset_id]
         except KeyError:
@@ -661,7 +666,7 @@ class HyperliquidAdapter(BaseAdapter):
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
-        await self.ensure_dex_abstraction(address)
+        await self.ensure_unified_account(address)
         await self.ensure_builder_fee_approved(address, builder_fee)
 
         asset_name = get_info().asset_to_coin[asset_id]
@@ -771,7 +776,7 @@ class HyperliquidAdapter(BaseAdapter):
                 "status": "err",
                 "error": f"size must be a positive integer number of contracts, got {size}",
             }
-        await self.ensure_dex_abstraction(address)
+        await self.ensure_unified_account(address)
 
         asset_id = outcome_asset_id(outcome_id, side)
         book_coin = outcome_book_coin(outcome_id, side)
@@ -1080,7 +1085,7 @@ class HyperliquidAdapter(BaseAdapter):
         builder: dict[str, Any] | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
-        await self.ensure_dex_abstraction(address)
+        await self.ensure_unified_account(address)
         await self.ensure_builder_fee_approved(address, builder_fee)
         builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
 
@@ -1260,21 +1265,23 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
-    async def set_dex_abstraction(
-        self, address: str, enabled: bool
+    async def set_account_abstraction(
+        self,
+        address: str,
+        mode: Abstraction,
     ) -> tuple[bool, dict[str, Any]]:
         nonce = get_timestamp_ms()
         action = {
             "hyperliquidChain": MAINNET,
             "signatureChainId": ARBITRUM_CHAIN_ID,
             "user": address.lower(),
-            "enabled": enabled,
+            "abstraction": mode,
             "nonce": nonce,
-            "type": "userDexAbstraction",
+            "type": "userSetAbstraction",
         }
         payload = user_signed_payload(
-            "HyperliquidTransaction:UserDexAbstraction",
-            USER_DEX_ABSTRACTION_SIGN_TYPES,
+            "HyperliquidTransaction:UserSetAbstraction",
+            USER_SET_ABSTRACTION_SIGN_TYPES,
             action,
         )
         if not (sig := await self._sign(payload, action, address)):
@@ -1284,20 +1291,14 @@ class HyperliquidAdapter(BaseAdapter):
         success = result.get("status") == "ok"
         return success, result
 
-    async def ensure_dex_abstraction(self, address: str) -> tuple[bool, str]:
-        try:
-            state = get_info().query_user_dex_abstraction_state(address)
-            if state:
-                return True, "Dex abstraction already enabled"
-        except Exception as exc:
-            logger.warning(
-                f"Failed to query dex abstraction state: {exc}, proceeding with enable"
-            )
+    async def ensure_unified_account(self, address: str) -> tuple[bool, str]:
+        if get_info().query_user_abstraction_state(address) == "unifiedAccount":
+            return True, "Unified account already enabled"
 
-        ok, result = await self.set_dex_abstraction(address, enabled=True)
+        ok, result = await self.set_account_abstraction(address, "unifiedAccount")
         if ok:
-            return True, "Dex abstraction enabled"
-        return False, f"Failed to enable dex abstraction: {result}"
+            return True, "Unified account enabled"
+        return False, f"Failed to enable unified account: {result}"
 
     async def ensure_builder_fee_approved(
         self,
@@ -1347,7 +1348,7 @@ class HyperliquidAdapter(BaseAdapter):
         cloid: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
-        await self.ensure_dex_abstraction(address)
+        await self.ensure_unified_account(address)
         await self.ensure_builder_fee_approved(address, builder_fee)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
