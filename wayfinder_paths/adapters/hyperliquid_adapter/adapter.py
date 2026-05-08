@@ -79,16 +79,33 @@ def outcome_token_coin(outcome_id: int, side: int) -> str:
     return f"+{outcome_encoding(outcome_id, side)}"
 
 
-def _outcome_sides(o: dict[str, Any]) -> list[dict[str, Any]]:
-    outcome_id = int(o["outcome"])
+def _outcome_sides(
+    outcome: dict[str, Any], descriptions: list[str]
+) -> list[dict[str, Any]]:
+    outcome_id = int(outcome["outcome"])
     return [
         {
-            "name": s["name"],
-            "asset_id": outcome_asset_id(outcome_id, idx),
+            "name": side["name"],
             "asset_name": outcome_book_coin(outcome_id, idx),
+            "description": descriptions[idx],
         }
-        for idx, s in enumerate(o["sideSpecs"])
+        for idx, side in enumerate(outcome["sideSpecs"])
     ]
+
+
+def _bucket_yes_description(spec: dict[str, Any], bucket_index: int) -> str:
+    """Yes-side condition for one named bucket. bucket_index runs over
+    N+1 buckets defined by N priceThresholds: < t0, [t0, t1), ..., >= t_last."""
+    thresholds = spec["priceThresholds"]
+    underlying, expiry = spec["underlying"], spec["expiry"]
+    if bucket_index == 0:
+        cond = f"{underlying} < {thresholds[0]}"
+    elif bucket_index == len(thresholds):
+        cond = f"{underlying} >= {thresholds[-1]}"
+    else:
+        lo, hi = thresholds[bucket_index - 1], thresholds[bucket_index]
+        cond = f"{lo} <= {underlying} < {hi}"
+    return f"{cond} at {expiry}"
 
 
 def parse_outcome_description(desc: str) -> dict[str, Any]:
@@ -727,55 +744,80 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
         """HIP-4 outcome markets. priceBinary outcomes are flat entries;
-        priceBucket questions group their named outcomes + fallback under
-        one entry. Unknown classes are skipped."""
+        priceBucket questions group their named outcomes (Yes-side only —
+        the No leg is redundant since exactly one named outcome settles
+        Yes). The fallback outcome is dropped from the response.
+        Unknown classes are skipped."""
         meta = await asyncio.to_thread(get_info().outcome_meta)
-        by_id = {int(o["outcome"]): o for o in meta["outcomes"]}
+        outcomes_by_id = {
+            int(outcome["outcome"]): outcome for outcome in meta["outcomes"]
+        }
         grouped: set[int] = set()
-        out: list[dict[str, Any]] = []
+        markets: list[dict[str, Any]] = []
 
-        for q in meta["questions"]:
-            spec = parse_outcome_description(q["description"])
+        for question in meta["questions"]:
+            spec = parse_outcome_description(question["description"])
             if spec.get("class") != "priceBucket":
                 continue
             named: list[dict[str, Any]] = []
-            for n in q["namedOutcomes"]:
-                o = by_id[int(n)]
-                grouped.add(int(o["outcome"]))
-                named.append({
-                    "bucket_index": parse_outcome_description(o["description"])["index"],
-                    "sides": _outcome_sides(o),
-                })
-            fb = by_id[int(q["fallbackOutcome"])]
-            grouped.add(int(fb["outcome"]))
-            out.append({
-                "class": "priceBucket",
-                "description": q["description"],
-                "underlying": spec["underlying"],
-                "price_thresholds": spec["priceThresholds"],
-                "expiry": spec["expiry"],
-                "period": spec["period"],
-                "outcomes": named,
-                "fallback": {"sides": _outcome_sides(fb)},
-            })
+            for named_id in question["namedOutcomes"]:
+                outcome = outcomes_by_id[int(named_id)]
+                grouped.add(int(outcome["outcome"]))
+                bucket_index = parse_outcome_description(outcome["description"])[
+                    "index"
+                ]
+                yes_idx = next(
+                    idx
+                    for idx, side in enumerate(outcome["sideSpecs"])
+                    if side["name"] == "Yes"
+                )
+                named.append(
+                    {
+                        "bucket_index": bucket_index,
+                        "asset_name": outcome_book_coin(
+                            int(outcome["outcome"]), yes_idx
+                        ),
+                        "description": _bucket_yes_description(spec, bucket_index),
+                    }
+                )
+            grouped.add(int(question["fallbackOutcome"]))
+            markets.append(
+                {
+                    "class": "priceBucket",
+                    "description": question["description"],
+                    "underlying": spec["underlying"],
+                    "price_thresholds": spec["priceThresholds"],
+                    "expiry": spec["expiry"],
+                    "period": spec["period"],
+                    "outcomes": named,
+                }
+            )
 
-        for o in meta["outcomes"]:
-            if int(o["outcome"]) in grouped:
+        for outcome in meta["outcomes"]:
+            if int(outcome["outcome"]) in grouped:
                 continue
-            spec = parse_outcome_description(o["description"])
+            spec = parse_outcome_description(outcome["description"])
             if spec.get("class") != "priceBinary":
                 continue
-            out.append({
-                "class": "priceBinary",
-                "description": o["description"],
-                "underlying": spec["underlying"],
-                "target_price": spec["targetPrice"],
-                "expiry": spec["expiry"],
-                "period": spec["period"],
-                "sides": _outcome_sides(o),
-            })
+            markets.append(
+                {
+                    "class": "priceBinary",
+                    "description": outcome["description"],
+                    "underlying": spec["underlying"],
+                    "target_price": spec["targetPrice"],
+                    "expiry": spec["expiry"],
+                    "period": spec["period"],
+                    "sides": _outcome_sides(
+                        outcome,
+                        [
+                            f"{spec['underlying']} >= {spec['targetPrice']} at {spec['expiry']}",
+                            f"{spec['underlying']} < {spec['targetPrice']} at {spec['expiry']}",
+                        ],
+                    ),
+                }
+            )
 
-        return True, out
+        return True, markets
 
     async def place_outcome_order(
         self,

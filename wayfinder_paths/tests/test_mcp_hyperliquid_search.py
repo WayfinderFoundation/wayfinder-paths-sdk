@@ -24,7 +24,7 @@ async def test_search_bitcoin():
     # classes; presence + BTC-underlying marker is enough.
     assert result["outcomes"]
     assert all("underlying:BTC" in r["description"] for r in result["outcomes"])
-    assert all(r["side"] in {"Yes", "No"} for r in result["outcomes"])
+    assert all(r["class"] in {"priceBinary", "priceBucket"} for r in result["outcomes"])
 
 
 @pytest.mark.asyncio
