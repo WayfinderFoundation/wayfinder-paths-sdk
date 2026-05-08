@@ -2,16 +2,16 @@
 
 ## Minimum amounts
 
-| Type         | Minimum          | Notes                                      |
-| ------------ | ---------------- | ------------------------------------------ |
-| Deposit      | $5 USD           | Deposits below this threshold are **lost** |
-| Order (perp) | $10 USD notional | Applies to all perp markets                |
-| Order (spot) | $10 USD notional | Applies to all spot markets                |
+| Type         | Minimum          | Notes                                                          |
+| ------------ | ---------------- | -------------------------------------------------------------- |
+| Deposit      | $5 USD           | Deposits below this threshold are **lost**                     |
+| Order (perp) | $10 USD notional | Enforced by HL; client-side check removed — exchange rejects   |
+| Order (spot) | $10 USD notional | Enforced by HL; client-side check removed — exchange rejects   |
+| Order (HIP-4 outcome) | 1 contract | Integer contracts (szDecimals=0); no USD floor             |
 
 Constants available in `wayfinder_paths.core.constants.hyperliquid`:
 
 - `MIN_DEPOSIT_USD = 5.0`
-- `MIN_ORDER_USD_NOTIONAL = 10.0`
 
 ## HIP-3 collateral via UnifiedAccount
 

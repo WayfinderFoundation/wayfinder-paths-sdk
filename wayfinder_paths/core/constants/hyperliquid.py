@@ -23,7 +23,6 @@ __all__ = [
     "MARKET_SEARCH_ALIASES",
     "MARKET_SEARCH_MIN_MATCH_SCORE",
     "MIN_DEPOSIT_USD",
-    "MIN_ORDER_USD_NOTIONAL",
 ]
 
 ARBITRUM_USDC_TOKEN_ID: str = "usd-coin-arbitrum"
@@ -37,7 +36,6 @@ DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
 }
 
 MIN_DEPOSIT_USD: float = 5.0
-MIN_ORDER_USD_NOTIONAL: float = 10.0
 
 # Min `matches/min(len)` score for hyperliquid_search_market to keep a candidate.
 MARKET_SEARCH_MIN_MATCH_SCORE: float = 0.9

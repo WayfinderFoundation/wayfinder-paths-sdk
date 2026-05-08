@@ -14,7 +14,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
     HYPERLIQUID_BRIDGE_ADDRESS,
     MARKET_SEARCH_ALIASES,
     MARKET_SEARCH_MIN_MATCH_SCORE,
-    MIN_ORDER_USD_NOTIONAL,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -722,18 +721,6 @@ async def hyperliquid_execute(
                     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
                     if sz_valid <= 0:
                         raise ValueError("size is too small after lot-size rounding")
-
-                    # HL rejects spot/perp orders below $10 notional. Lot-size rounding
-                    # of `usd_amount`-derived sizes can dip just under that floor (e.g.
-                    # usd_amount=10.20 / price=0.18 → sz=56.66 → 56.66 × 0.18 = 10.1988).
-                    # Surface the actual notional so the caller can bump usd_amount.
-                    if sizing["source"] == "usd_amount" and px_for_sizing is not None:
-                        final_notional = float(sz_valid) * float(px_for_sizing)
-                        if final_notional < MIN_ORDER_USD_NOTIONAL:
-                            raise ValueError(
-                                f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
-                                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Bump usd_amount or pass size directly."
-                            )
 
                     if leverage is not None:
                         lev = throw_if_not_int("leverage must be an int", leverage)
