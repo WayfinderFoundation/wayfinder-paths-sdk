@@ -113,16 +113,15 @@ class TokenClient(WayfinderClient):
 
     async def fuzzy_search(
         self, query: str, chain: str | None = None
-    ) -> dict[str, list[FuzzyTokenResult] | str | None]:
+    ) -> dict[str, list[FuzzyTokenResult]]:
         url = f"{get_api_base_url()}/blockchain/tokens/fuzzy/"
         params: dict[str, str] = {"query": query}
         if chain:
             params["chain"] = chain
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
-        trace_id = response.headers.get("X-Token-Fuzzy-Trace")
         tokens = self._parse_fuzzy_xml(response.text)
-        return {"tokens": tokens, "trace_id": trace_id}
+        return {"tokens": tokens}
 
     def _parse_fuzzy_xml(self, xml_content: str) -> list[FuzzyTokenResult]:
         root = ET.fromstring(xml_content)

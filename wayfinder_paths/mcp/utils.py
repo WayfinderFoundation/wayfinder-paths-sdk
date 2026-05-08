@@ -60,7 +60,28 @@ def throw_if_empty_str(message: str, value: Any) -> str:
     return value.strip()
 
 
-def catch_errors(fn: Callable) -> Callable:
+def catch_errors(arg: Callable | str = "") -> Callable:
+    """Decorator. Catches uncaught exceptions and returns ``err("error", ...)``.
+
+    Usage:
+        @catch_errors
+        async def tool(...): ...
+
+        @catch_errors("Hyperliquid execute failed:")
+        async def tool(...): ...
+
+    The optional string is prepended (with a space) to the exception message.
+    """
+    if callable(arg):
+        # bare @catch_errors — `arg` is the wrapped function
+        fn, prefix = arg, ""
+        return _wrap(fn, prefix)
+    # @catch_errors("...") — `arg` is the prefix
+    prefix = arg
+    return lambda fn: _wrap(fn, prefix)
+
+
+def _wrap(fn: Callable, prefix: str) -> Callable:
     if inspect.iscoroutinefunction(fn):
 
         @functools.wraps(fn)
@@ -68,7 +89,7 @@ def catch_errors(fn: Callable) -> Callable:
             try:
                 return await fn(*args, **kwargs)
             except Exception as exc:
-                return err("error", str(exc))
+                return err("error", f"{prefix} {exc}".strip())
 
         return async_wrapper
 
@@ -77,7 +98,7 @@ def catch_errors(fn: Callable) -> Callable:
         try:
             return fn(*args, **kwargs)
         except Exception as exc:
-            return err("error", str(exc))
+            return err("error", f"{prefix} {exc}".strip())
 
     return sync_wrapper
 
