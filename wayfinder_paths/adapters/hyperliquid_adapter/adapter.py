@@ -80,8 +80,9 @@ def outcome_token_coin(outcome_id: int, side: int) -> str:
 
 
 def parse_outcome_description(desc: str) -> dict[str, Any]:
-    """Decode the pipe-encoded outcome description, e.g.
+    """Decode the pipe-encoded outcome/question description, e.g.
     "class:priceBinary|underlying:BTC|expiry:20260503-0600|targetPrice:78213|period:1d"
+    "class:priceBucket|underlying:BTC|expiry:20260509-0600|priceThresholds:77991,81174|period:1d"
     """
     out: dict[str, Any] = {}
     for part in (desc or "").split("|"):
@@ -95,6 +96,8 @@ def parse_outcome_description(desc: str) -> dict[str, Any]:
             out["underlying"] = value
         elif key == "targetPrice":
             out["targetPrice"] = float(value)
+        elif key == "priceThresholds":
+            out["priceThresholds"] = [float(v) for v in value.split(",") if v]
         elif key == "period":
             out["period"] = value
         elif key == "expiry":
@@ -709,39 +712,75 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
         """List HIP-4 outcome markets with parsed settlement spec and
-        per-side asset ids / book + token coin names."""
+        per-side asset ids / book + token coin names.
+
+        outcomeMeta has a two-level structure: standalone outcomes (e.g.
+        priceBinary) carry their own rich description; multi-outcome
+        questions (e.g. priceBucket) split the contract across N outcome
+        rows whose per-outcome descriptions are stubs ("index:0", "other"),
+        with the rich description on the parent question. Per HIP-4,
+        "Questions are collections of outcomes that where exactly one
+        outcome will settle to Yes, and all others will settle to No."
+        We resolve each outcome's effective description (and parsed spec)
+        through its parent question when one exists, and surface the
+        grouping via question_id / question_role / bucket_index.
+        """
         try:
             meta = await asyncio.to_thread(get_info().outcome_meta)
         except Exception as exc:  # noqa: BLE001
             self.logger.error(f"Failed to fetch outcome_meta: {exc}")
             return False, []
 
+        outcome_to_question: dict[int, dict[str, Any]] = {}
+        for q in meta.get("questions", []):
+            fallback_id = q.get("fallbackOutcome")
+            if fallback_id is not None:
+                outcome_to_question[int(fallback_id)] = {
+                    "q": q,
+                    "role": "fallback",
+                    "bucket_index": None,
+                }
+            for bucket_index, named_id in enumerate(q.get("namedOutcomes", [])):
+                outcome_to_question[int(named_id)] = {
+                    "q": q,
+                    "role": "named",
+                    "bucket_index": bucket_index,
+                }
+
         out: list[dict[str, Any]] = []
         for o in meta.get("outcomes", []):
             outcome_id = int(o["outcome"])
-            spec = parse_outcome_description(o.get("description", ""))
-            out.append(
-                {
-                    "outcome_id": outcome_id,
-                    "name": o.get("name", ""),
-                    "description": o.get("description", ""),
-                    "underlying": spec.get("underlying"),
-                    "target_price": spec.get("targetPrice"),
-                    "expiry": spec.get("expiry"),
-                    "period": spec.get("period"),
-                    "class": spec.get("class"),
-                    "sides": [
-                        {
-                            "side": idx,
-                            "name": s.get("name", ""),
-                            "asset_id": outcome_asset_id(outcome_id, idx),
-                            "book_coin": outcome_book_coin(outcome_id, idx),
-                            "token_coin": outcome_token_coin(outcome_id, idx),
-                        }
-                        for idx, s in enumerate(o.get("sideSpecs", []))
-                    ],
-                }
-            )
+            own_desc = o.get("description", "")
+            parent = outcome_to_question.get(outcome_id)
+            effective_desc = parent["q"].get("description", "") if parent else own_desc
+            spec = parse_outcome_description(effective_desc)
+            entry: dict[str, Any] = {
+                "outcome_id": outcome_id,
+                "name": o.get("name", ""),
+                "description": effective_desc,
+                "underlying": spec.get("underlying"),
+                "target_price": spec.get("targetPrice"),
+                "price_thresholds": spec.get("priceThresholds"),
+                "expiry": spec.get("expiry"),
+                "period": spec.get("period"),
+                "class": spec.get("class"),
+                "sides": [
+                    {
+                        "side": idx,
+                        "name": s.get("name", ""),
+                        "asset_id": outcome_asset_id(outcome_id, idx),
+                        "book_coin": outcome_book_coin(outcome_id, idx),
+                        "token_coin": outcome_token_coin(outcome_id, idx),
+                    }
+                    for idx, s in enumerate(o.get("sideSpecs", []))
+                ],
+            }
+            if parent:
+                entry["question_id"] = int(parent["q"]["question"])
+                entry["question_name"] = parent["q"].get("name", "")
+                entry["question_role"] = parent["role"]
+                entry["bucket_index"] = parent["bucket_index"]
+            out.append(entry)
         return True, out
 
     async def place_outcome_order(
