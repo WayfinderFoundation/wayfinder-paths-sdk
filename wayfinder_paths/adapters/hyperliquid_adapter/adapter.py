@@ -93,19 +93,25 @@ def _outcome_sides(
     ]
 
 
-def _bucket_yes_description(spec: dict[str, Any], bucket_index: int) -> str:
-    """Yes-side condition for one named bucket. bucket_index runs over
-    N+1 buckets defined by N priceThresholds: < t0, [t0, t1), ..., >= t_last."""
+def _bucket_named_side_descriptions(
+    spec: dict[str, Any], bucket_index: int
+) -> list[str]:
+    """[Yes, No] for one named bucket. bucket_index runs over N+1 buckets
+    defined by N priceThresholds: < t0, [t0, t1), ..., >= t_last."""
     thresholds = spec["priceThresholds"]
     underlying, expiry = spec["underlying"], spec["expiry"]
     if bucket_index == 0:
-        cond = f"{underlying} < {thresholds[0]}"
+        yes, no = f"{underlying} < {thresholds[0]}", f"{underlying} >= {thresholds[0]}"
     elif bucket_index == len(thresholds):
-        cond = f"{underlying} >= {thresholds[-1]}"
+        yes, no = (
+            f"{underlying} >= {thresholds[-1]}",
+            f"{underlying} < {thresholds[-1]}",
+        )
     else:
         lo, hi = thresholds[bucket_index - 1], thresholds[bucket_index]
-        cond = f"{lo} <= {underlying} < {hi}"
-    return f"{cond} at {expiry}"
+        yes = f"{lo} <= {underlying} < {hi}"
+        no = f"{underlying} < {lo} or {underlying} >= {hi}"
+    return [f"{yes} at {expiry}", f"{no} at {expiry}"]
 
 
 def parse_outcome_description(desc: str) -> dict[str, Any]:
@@ -766,18 +772,13 @@ class HyperliquidAdapter(BaseAdapter):
                 bucket_index = parse_outcome_description(outcome["description"])[
                     "index"
                 ]
-                yes_idx = next(
-                    idx
-                    for idx, side in enumerate(outcome["sideSpecs"])
-                    if side["name"] == "Yes"
-                )
                 named.append(
                     {
                         "bucket_index": bucket_index,
-                        "asset_name": outcome_book_coin(
-                            int(outcome["outcome"]), yes_idx
+                        "sides": _outcome_sides(
+                            outcome,
+                            _bucket_named_side_descriptions(spec, bucket_index),
                         ),
-                        "description": _bucket_yes_description(spec, bucket_index),
                     }
                 )
             grouped.add(int(question["fallbackOutcome"]))

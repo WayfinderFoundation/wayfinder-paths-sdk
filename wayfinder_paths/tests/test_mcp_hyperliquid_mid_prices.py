@@ -54,9 +54,12 @@ async def test_mid_price_spot_purr_usdc_grandfathered():
 
 def _first_book_coin(markets):
     first = markets[0]
-    if first["class"] == "priceBinary":
-        return first["sides"][0]["asset_name"]
-    return first["outcomes"][0]["asset_name"]
+    sides = (
+        first["sides"]
+        if first["class"] == "priceBinary"
+        else first["outcomes"][0]["sides"]
+    )
+    return sides[0]["asset_name"]
 
 
 @pytest.mark.asyncio

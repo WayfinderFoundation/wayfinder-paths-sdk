@@ -995,9 +995,17 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
             )
             return [it for it, _ in kept[:limit]]
 
+        def outcome_text(market: dict[str, Any]) -> str:
+            sides = (
+                market["sides"]
+                if market["class"] == "priceBinary"
+                else [s for o in market["outcomes"] for s in o["sides"]]
+            )
+            return " ".join(side["description"] for side in sides)
+
         perp_hits = [{"name": p} for p in top(perps, lambda p: p)]
         spot_hits = [{"name": s} for s in top(spots, lambda s: s)]
-        outcome_hits = top(outcome_data, lambda market: market["description"])
+        outcome_hits = top(outcome_data, outcome_text)
 
     return ok(
         {
