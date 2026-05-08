@@ -115,7 +115,7 @@ async def research_search_delta_lab_assets(
 
 @catch_errors
 async def research_get_top_apy(
-    lookback_days: str = "7", limit: str = "50"
+    lookback_days: str = "7", limit: str = "25"
 ) -> dict[str, Any]:
     """Get top APY opportunities across all basis symbols.
 
@@ -124,7 +124,9 @@ async def research_get_top_apy(
 
     Args:
         lookback_days: Days to average over (default: "7", min: "1")
-        limit: Max opportunities to return (default: "50", max: "500")
+        limit: Max opportunities to return (default: "25", max: "500").
+               Prefer the default for exploratory scans; raise only after
+               narrowing.
 
     Returns:
         Dict with top opportunities sorted by APY
@@ -142,7 +144,7 @@ async def research_get_top_apy(
 @catch_errors
 async def research_search_price(
     sort: str = "price_usd",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
     """Screen assets by price features (returns, volatility, drawdowns).
@@ -151,7 +153,9 @@ async def research_search_price(
         sort: Column to sort by (default: "price_usd"). Options include:
               price_usd, ret_1d, ret_7d, ret_30d, ret_90d,
               vol_7d, vol_30d, vol_90d, mdd_30d, mdd_90d
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis` or another filter.
         basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
                Asset symbols are auto-resolved to their root basis (USDC -> USD).
                Use "all" for no filter.
@@ -175,7 +179,7 @@ async def research_search_price(
 @catch_errors
 async def research_search_lending(
     sort: str = "net_supply_apr_now",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
     """Screen lending markets by surface features (supply/borrow APRs, TVL).
@@ -185,7 +189,9 @@ async def research_search_lending(
               net_supply_apr_now, net_supply_mean_7d, net_supply_mean_30d,
               combined_net_supply_apr_now, net_borrow_apr_now,
               supply_tvl_usd, liquidity_usd, util_now, borrow_spike_score
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis` or another filter.
         basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
                Asset symbols are auto-resolved to their root basis (USDC -> USD).
                Use "all" for no filter.
@@ -210,7 +216,7 @@ async def research_search_lending(
 @catch_errors
 async def research_search_perp(
     sort: str = "funding_now",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
     """Screen perpetual markets by surface features (funding, basis, OI).
@@ -220,7 +226,9 @@ async def research_search_perp(
               funding_now, funding_mean_7d, funding_mean_30d,
               basis_now, basis_mean_7d, basis_mean_30d,
               oi_now, volume_24h, mark_price
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis` or another filter.
         basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
                Asset symbols are auto-resolved to their root basis (USDC -> USD).
                Use "all" for no filter.
@@ -244,7 +252,7 @@ async def research_search_perp(
 @catch_errors
 async def research_search_borrow_routes(
     sort: str = "ltv_max",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
     borrow_basis: str = "all",
     chain_id: str = "all",
@@ -255,7 +263,9 @@ async def research_search_borrow_routes(
         sort: Column to sort by (default: "ltv_max"). Options include:
               ltv_max, liq_threshold, liquidation_penalty, debt_ceiling_usd,
               venue_name, market_label, created_at
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis`, `borrow_basis`, or `chain_id`.
         basis: Collateral basis symbol to filter by (e.g. "ETH"). Use "all" for no filter.
         borrow_basis: Borrow basis symbol to filter by (e.g. "USD"). Use "all" for no filter.
         chain_id: Optional chain filter (chain ID like "8453" or chain code like "base").
