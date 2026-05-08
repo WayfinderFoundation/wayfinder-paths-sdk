@@ -50,6 +50,11 @@ class LiveHandler:
         self.dex = dex
         self.delta_lab_client = delta_lab_client
         self.default_slippage = float(default_slippage)
+        # Cached lazily on first get_margin_balance call. Avoids hammering
+        # query_user_abstraction_state every margin read (and surviving
+        # transient HL 429s — once we know the wallet is unified, that
+        # doesn't change within a process lifetime).
+        self._is_unified: bool | None = None
 
     # ---------- writes ----------
     async def place_order(
@@ -350,14 +355,55 @@ class LiveHandler:
 
     # ---------- collateral ----------
     async def get_margin_balance(self) -> float:
+        """Return usable margin in USD.
+
+        On classic HL accounts: `crossMarginSummary.accountValue` is correct.
+        On UNIFIED accounts: spot+perp share a single pool, but
+        `clearinghouseState` only shows the perp leg (which is $0 until
+        positions exist). The unified margin must include spot USDC.
+        """
         ok, state = await self.adapter.get_user_state(self.wallet_address)
         if not ok or not isinstance(state, dict):
             return 0.0
         cms = state.get("crossMarginSummary") or state.get("marginSummary") or {}
         try:
-            return float(cms.get("accountValue", 0.0))
+            perp_nav = float(cms.get("accountValue", 0.0))
         except (TypeError, ValueError):
-            return 0.0
+            perp_nav = 0.0
+
+        # Unified-account detection: query_user_abstraction_state returns
+        # "unifiedAccount" when spot+perp are pooled. In that mode, fold
+        # spot USDC into the available margin. Cached after first success
+        # so transient 429s don't break later margin reads.
+        if self._is_unified is None:
+            try:
+                from wayfinder_paths.adapters.hyperliquid_adapter.info import (  # noqa: PLC0415
+                    get_info,
+                )
+
+                self._is_unified = (
+                    get_info().query_user_abstraction_state(self.wallet_address)
+                    == "unifiedAccount"
+                )
+            except Exception:  # noqa: BLE001 — leave None; will retry next call
+                pass
+
+        if self._is_unified:
+            try:
+                ok_s, spot = await self.adapter.get_spot_user_state(
+                    self.wallet_address
+                )
+                if ok_s and isinstance(spot, dict):
+                    for bal in spot.get("balances") or []:
+                        if bal.get("coin") == "USDC":
+                            try:
+                                return perp_nav + float(bal.get("total", 0.0))
+                            except (TypeError, ValueError):
+                                break
+            except Exception:  # noqa: BLE001 — fall through to perp_nav
+                pass
+
+        return perp_nav
 
     async def transfer_in(self, amount: float) -> OrderResult:
         # USDC bridge to HL — strategies typically do this once at deposit time, not per bar.
