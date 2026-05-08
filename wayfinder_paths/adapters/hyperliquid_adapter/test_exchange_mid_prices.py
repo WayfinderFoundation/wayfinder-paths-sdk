@@ -19,8 +19,8 @@ class _InfoStub(SimpleNamespace):
                 return 0
         return {"status": "ok"}
 
-    def query_user_dex_abstraction_state(self, user):
-        return True
+    def query_user_abstraction_state(self, user):
+        return "unifiedAccount"
 
     @property
     def asset_to_sz_decimals(self):
