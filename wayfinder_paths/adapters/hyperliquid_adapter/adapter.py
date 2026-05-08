@@ -24,7 +24,7 @@ from hyperliquid.utils.signing import (
     order_wires_to_order_action,
     user_signed_payload,
 )
-from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, BuilderInfo
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET, Abstraction, BuilderInfo
 from loguru import logger
 
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
@@ -1268,7 +1268,7 @@ class HyperliquidAdapter(BaseAdapter):
     async def set_account_abstraction(
         self,
         address: str,
-        mode: Literal["unifiedAccount", "portfolioMargin", "disabled"],
+        mode: Abstraction,
     ) -> tuple[bool, dict[str, Any]]:
         nonce = get_timestamp_ms()
         action = {
