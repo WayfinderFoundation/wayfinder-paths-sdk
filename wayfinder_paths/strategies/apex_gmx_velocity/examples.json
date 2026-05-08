@@ -1,0 +1,31 @@
+{
+  "strategy": "apex_gmx_velocity",
+  "description": "Test fixture for APEX/GMX pair-velocity strategy.",
+  "data": {
+    "symbols": ["APEX", "GMX"],
+    "interval": "1h",
+    "lookback_days": 14,
+    "source": "hyperliquid"
+  },
+  "params": {
+    "lookback_bars": 72,
+    "entry_z": 2.0,
+    "velocity_bars": 6,
+    "target_leverage": 1.5,
+    "rebalance_threshold": 0.02,
+    "min_order_usd": 10.0,
+    "symbols": ["APEX", "GMX"]
+  },
+  "expected_signal_invariants": {
+    "max_abs_sum_weights": 1.5,
+    "non_zero_rows_min_pct": 0.10,
+    "non_zero_rows_max_pct": 0.95,
+    "active_legs_when_entered": ["APEX", "GMX"]
+  },
+  "expected_backtest_ranges": {
+    "sharpe_60d_min": 3.0,
+    "sharpe_60d_max": 5.0,
+    "trade_count_60d_min": 30,
+    "trade_count_60d_max": 100
+  }
+}
