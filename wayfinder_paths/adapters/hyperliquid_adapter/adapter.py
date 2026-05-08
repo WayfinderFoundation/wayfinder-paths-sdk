@@ -84,87 +84,57 @@ def _outcome_sides(o: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "side": idx,
-            "name": s.get("name", ""),
+            "name": s["name"],
             "asset_id": outcome_asset_id(outcome_id, idx),
             "book_coin": outcome_book_coin(outcome_id, idx),
             "token_coin": outcome_token_coin(outcome_id, idx),
         }
-        for idx, s in enumerate(o.get("sideSpecs", []))
+        for idx, s in enumerate(o["sideSpecs"])
     ]
 
 
-def get_outcome_class(item: dict[str, Any]) -> str | None:
-    """Class tag from an outcome's or question's description
-    (priceBinary | priceBucket | ...). None when absent."""
-    return parse_outcome_description(item.get("description", "")).get("class")
-
-
-def parse_outcome(o: dict[str, Any], meta: dict[str, Any]) -> dict[str, Any]:
-    """Resolve one outcome against outcomeMeta: walks meta["questions"]
-    to find the parent question (if grouped) and surfaces the effective
-    class — the parent's class for grouped outcomes (whose own description
-    is just an "index:N" / "other" stub), the outcome's own class otherwise.
-    """
-    outcome_id = int(o["outcome"])
-    parent: dict[str, Any] | None = None
-    role: str | None = None
-    bucket_index: int | None = None
-    for q in meta.get("questions", []):
-        if int(q["fallbackOutcome"]) == outcome_id:
-            parent, role = q, "fallback"
-            break
-        if any(int(n) == outcome_id for n in q["namedOutcomes"]):
-            parent, role = q, "named"
-            bucket_index = parse_outcome_description(o["description"]).get("index")
-            break
-
-    effective = parent if parent else o
-    spec = parse_outcome_description(effective["description"])
-    return {
-        "outcome": o,
-        "parent": parent,
-        "role": role,
-        "bucket_index": bucket_index,
-        "description": effective["description"],
-        "class": spec.get("class"),
-        "spec": spec,
-    }
-
-
-def build_price_binary_row(parsed: dict[str, Any]) -> dict[str, Any]:
-    o = parsed["outcome"]
-    spec = parsed["spec"]
+def build_price_binary_row(o: dict[str, Any]) -> dict[str, Any]:
+    spec = parse_outcome_description(o["description"])
     return {
         "outcome_id": int(o["outcome"]),
-        "name": o.get("name", ""),
-        "description": parsed["description"],
+        "name": o["name"],
+        "description": o["description"],
         "class": "priceBinary",
-        "underlying": spec.get("underlying"),
-        "target_price": spec.get("targetPrice"),
-        "expiry": spec.get("expiry"),
-        "period": spec.get("period"),
+        "underlying": spec["underlying"],
+        "target_price": spec["targetPrice"],
+        "expiry": spec["expiry"],
+        "period": spec["period"],
         "sides": _outcome_sides(o),
     }
 
 
-def build_price_bucket_row(parsed: dict[str, Any]) -> dict[str, Any]:
-    o = parsed["outcome"]
-    spec = parsed["spec"]
-    parent = parsed["parent"]
+def build_price_bucket_row(
+    question: dict[str, Any],
+    outcome: dict[str, Any],
+    role: Literal["named", "fallback"],
+) -> dict[str, Any]:
+    spec = parse_outcome_description(question["description"])
+    # Per-outcome description holds "index:N" only for named buckets;
+    # fallback rows have no bucket index.
+    bucket_index: int | None = (
+        parse_outcome_description(outcome["description"])["index"]
+        if role == "named"
+        else None
+    )
     return {
-        "outcome_id": int(o["outcome"]),
-        "name": o.get("name", ""),
-        "description": parsed["description"],
+        "outcome_id": int(outcome["outcome"]),
+        "name": outcome["name"],
+        "description": question["description"],
         "class": "priceBucket",
-        "underlying": spec.get("underlying"),
-        "price_thresholds": spec.get("priceThresholds"),
-        "expiry": spec.get("expiry"),
-        "period": spec.get("period"),
-        "sides": _outcome_sides(o),
-        "question_id": int(parent["question"]),
-        "question_name": parent.get("name", ""),
-        "question_role": parsed["role"],
-        "bucket_index": parsed["bucket_index"],
+        "underlying": spec["underlying"],
+        "price_thresholds": spec["priceThresholds"],
+        "expiry": spec["expiry"],
+        "period": spec["period"],
+        "sides": _outcome_sides(outcome),
+        "question_id": int(question["question"]),
+        "question_name": question["name"],
+        "question_role": role,
+        "bucket_index": bucket_index,
     }
 
 
@@ -199,6 +169,13 @@ def parse_outcome_description(desc: str) -> dict[str, Any]:
                 f"{value[9:11]}:{value[11:13]}:00Z"
             )
     return out
+
+
+def get_outcome_class(item: dict[str, Any]) -> str | None:
+    """Class tag from an outcome's or question's description
+    (priceBinary | priceBucket | ...). None when the description is a
+    per-outcome stub like "index:N" / "other"."""
+    return parse_outcome_description(item["description"]).get("class")
 
 
 USER_DECLINED_ERROR = {
@@ -804,19 +781,41 @@ class HyperliquidAdapter(BaseAdapter):
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
         """One row per HIP-4 outcome with parsed settlement spec and per-side
-        books. Each outcome is resolved through parse_outcome (which joins
-        it to its parent question if grouped) and then dispatched to the
-        per-class builder. Unknown classes are skipped — only parse what
-        we've encountered."""
+        books. Iterates questions for grouped (priceBucket) markets and
+        standalone outcomes for ungrouped (priceBinary) markets, dispatching
+        each to its per-class builder. Unknown classes are skipped — only
+        parse what we've encountered."""
         meta = await asyncio.to_thread(get_info().outcome_meta)
+        outcomes_by_id = {int(o["outcome"]): o for o in meta["outcomes"]}
+        grouped: set[int] = set()
         out: list[dict[str, Any]] = []
-        for o in meta.get("outcomes", []):
-            parsed = parse_outcome(o, meta)
-            match parsed["class"]:
-                case "priceBinary":
-                    out.append(build_price_binary_row(parsed))
+
+        for q in meta["questions"]:
+            match get_outcome_class(q):
                 case "priceBucket":
-                    out.append(build_price_bucket_row(parsed))
+                    fallback_id = int(q["fallbackOutcome"])
+                    grouped.add(fallback_id)
+                    out.append(
+                        build_price_bucket_row(
+                            q, outcomes_by_id[fallback_id], "fallback"
+                        )
+                    )
+                    for n in q["namedOutcomes"]:
+                        named_id = int(n)
+                        grouped.add(named_id)
+                        out.append(
+                            build_price_bucket_row(
+                                q, outcomes_by_id[named_id], "named"
+                            )
+                        )
+
+        for o in meta["outcomes"]:
+            if int(o["outcome"]) in grouped:
+                continue
+            match get_outcome_class(o):
+                case "priceBinary":
+                    out.append(build_price_binary_row(o))
+
         return True, out
 
     async def place_outcome_order(
