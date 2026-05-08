@@ -1,5 +1,5 @@
 schema_version: "0.1"
-status: active
+status: stable
 entrypoint: "wayfinder_paths.strategies.apex_gmx_velocity.strategy.ApexGmxVelocityStrategy"
 
 adapters:

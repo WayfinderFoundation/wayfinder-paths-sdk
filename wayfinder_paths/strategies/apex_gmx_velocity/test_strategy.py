@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pandas as pd
@@ -20,6 +21,7 @@ from wayfinder_paths.strategies.apex_gmx_velocity.signal import compute_signal
 from wayfinder_paths.strategies.apex_gmx_velocity.strategy import (
     ApexGmxVelocityStrategy,
 )
+from wayfinder_paths.tests.test_utils import load_strategy_examples
 
 
 async def _fetch_hl_prices(days: int = 200) -> pd.DataFrame:
@@ -88,10 +90,7 @@ def test_signal_invariants():
 def test_backtest_reproduces_ref():
     """Re-run the audit's 60d window and confirm Sharpe is within the
     expected band declared in examples.json."""
-    import json
-    from pathlib import Path
-
-    fixture = json.loads((Path(__file__).parent / "examples.json").read_text())
+    fixture = load_strategy_examples(Path(__file__))
     expected = fixture["expected_backtest_ranges"]
 
     from wayfinder_paths.core.backtesting.backtester import run_backtest

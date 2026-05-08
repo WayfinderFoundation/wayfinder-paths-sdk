@@ -1,6 +1,12 @@
 {
   "strategy": "apex_gmx_velocity",
   "description": "Test fixture for APEX/GMX pair-velocity strategy.",
+  "smoke": {
+    "deposit": {"main_token_amount": 25, "gas_token_amount": 0.0},
+    "update": {},
+    "status": {},
+    "withdraw": {}
+  },
   "data": {
     "symbols": ["APEX", "GMX"],
     "interval": "1h",

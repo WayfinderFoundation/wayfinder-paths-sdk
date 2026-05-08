@@ -478,7 +478,7 @@ class ActivePerpsStrategy(Strategy):
             "gassed_up": False,
         }
 
-    async def quote(self) -> dict[str, Any]:
+    async def quote(self, **kwargs: Any) -> dict[str, Any]:
         perf = self._ref.performance
         return {
             "expected_apy": float(perf.get("apy", perf.get("annualized_return", 0.0))),
