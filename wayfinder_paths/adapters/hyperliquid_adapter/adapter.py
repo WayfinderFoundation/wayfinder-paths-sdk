@@ -85,8 +85,7 @@ def _outcome_sides(o: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "name": s["name"],
             "asset_id": outcome_asset_id(outcome_id, idx),
-            "book_coin": outcome_book_coin(outcome_id, idx),
-            "token_coin": outcome_token_coin(outcome_id, idx),
+            "asset_name": outcome_book_coin(outcome_id, idx),
         }
         for idx, s in enumerate(o["sideSpecs"])
     ]
@@ -751,7 +750,6 @@ class HyperliquidAdapter(BaseAdapter):
             grouped.add(int(fb["outcome"]))
             out.append({
                 "class": "priceBucket",
-                "question_id": int(q["question"]),
                 "description": q["description"],
                 "underlying": spec["underlying"],
                 "price_thresholds": spec["priceThresholds"],
