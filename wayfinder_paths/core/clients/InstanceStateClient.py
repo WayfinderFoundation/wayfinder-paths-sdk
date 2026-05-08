@@ -11,8 +11,34 @@ class InstanceStateClient(WayfinderClient):
     def _base_url(self) -> str:
         return f"{get_api_base_url()}/opencode/instances/{get_opencode_instance_id()}/context"
 
+    def _opencode_base_url(self) -> str:
+        return f"{get_api_base_url()}/opencode"
+
     async def get_state(self) -> dict[str, Any]:
         resp = await self._authed_request("GET", f"{self._base_url()}/")
+        return resp.json()
+
+    async def search_chart_series(
+        self,
+        *,
+        query: str = "",
+        kind: str | None = None,
+        venue: str | None = None,
+        market_type: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        params = {
+            "query": query,
+            "kind": kind,
+            "venue": venue,
+            "market_type": market_type,
+            "limit": limit,
+        }
+        resp = await self._authed_request(
+            "GET",
+            f"{self._opencode_base_url()}/chart-series/",
+            params={k: v for k, v in params.items() if v not in (None, "")},
+        )
         return resp.json()
 
     async def get_frontend_context(self) -> dict[str, Any]:
@@ -46,8 +72,18 @@ class InstanceStateClient(WayfinderClient):
         chart = self._find_workspace_chart(workspace, chart_id)
         if chart is None:
             raise ValueError(f"workspace chart not found: {chart_id}")
-        chart.setdefault("series", []).append(series)
-        return await self.patch_chart_workspace(self._bump_workspace(workspace))
+        chart_series = chart.setdefault("series", [])
+        series_id = str(series.get("id") or "").strip()
+        replaced = False
+        if series_id:
+            for idx, existing in enumerate(chart_series):
+                if isinstance(existing, dict) and existing.get("id") == series_id:
+                    chart_series[idx] = series
+                    replaced = True
+                    break
+        if not replaced:
+            chart_series.append(series)
+        return await self.upsert_workspace_chart(chart)
 
     async def add_workspace_chart_overlay(
         self, chart_id: str, overlay: dict[str, Any]
