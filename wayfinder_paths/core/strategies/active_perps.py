@@ -16,7 +16,9 @@ class MyStrategy(ActivePerpsStrategy):
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, ClassVar, Final, final
@@ -206,6 +208,13 @@ class ActivePerpsStrategy(Strategy):
             str(k): (float(v) if pd.notna(v) else None) for k, v in signal_row.items()
         }
 
+        # Hash the params live used at this trigger so reconcile can detect
+        # config drift between deploys (e.g. someone bumped target_leverage).
+        params_for_hash = json.dumps(
+            dict(self._ref.params), sort_keys=True, default=str
+        )
+        params_hash = hashlib.sha256(params_for_hash.encode()).hexdigest()[:16]
+
         self._state.update(
             {
                 "positions": positions_snapshot,
@@ -214,6 +223,7 @@ class ActivePerpsStrategy(Strategy):
                 "signal_row": signal_row_serialised,
                 "trigger_ts": trigger_t.isoformat(),
                 "nav": self._state.get("nav"),
+                "params_hash": params_hash,
             }
         )
         self._state.write_snapshot(trigger_t)
