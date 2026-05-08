@@ -956,11 +956,15 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         for entry in perp_data[0]["universe"]
     ]
     spots = list(spot_data)
-    outcome_sides = [
-        (s["book_coin"], s["name"], market["description"])
-        for market in outcome_data
-        for s in market["sides"]
-    ]
+    outcome_sides = []
+    for market in outcome_data:
+        if market["class"] == "priceBinary":
+            for s in market["sides"]:
+                outcome_sides.append((s["book_coin"], s["name"], market["description"]))
+        elif market["class"] == "priceBucket":
+            for o in market["outcomes"]:
+                for s in o["sides"]:
+                    outcome_sides.append((s["book_coin"], s["name"], market["description"]))
 
     if not query.strip():
         perp_hits = [{"name": p} for p in perps[:limit]]

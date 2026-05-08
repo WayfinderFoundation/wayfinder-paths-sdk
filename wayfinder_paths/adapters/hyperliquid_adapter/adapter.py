@@ -93,51 +93,6 @@ def _outcome_sides(o: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def build_price_binary_row(o: dict[str, Any]) -> dict[str, Any]:
-    spec = parse_outcome_description(o["description"])
-    return {
-        "outcome_id": int(o["outcome"]),
-        "name": o["name"],
-        "description": o["description"],
-        "class": "priceBinary",
-        "underlying": spec["underlying"],
-        "target_price": spec["targetPrice"],
-        "expiry": spec["expiry"],
-        "period": spec["period"],
-        "sides": _outcome_sides(o),
-    }
-
-
-def build_price_bucket_row(
-    question: dict[str, Any],
-    outcome: dict[str, Any],
-    role: Literal["named", "fallback"],
-) -> dict[str, Any]:
-    spec = parse_outcome_description(question["description"])
-    # Per-outcome description holds "index:N" only for named buckets;
-    # fallback rows have no bucket index.
-    bucket_index: int | None = (
-        parse_outcome_description(outcome["description"])["index"]
-        if role == "named"
-        else None
-    )
-    return {
-        "outcome_id": int(outcome["outcome"]),
-        "name": outcome["name"],
-        "description": question["description"],
-        "class": "priceBucket",
-        "underlying": spec["underlying"],
-        "price_thresholds": spec["priceThresholds"],
-        "expiry": spec["expiry"],
-        "period": spec["period"],
-        "sides": _outcome_sides(outcome),
-        "question_id": int(question["question"]),
-        "question_name": question["name"],
-        "question_role": role,
-        "bucket_index": bucket_index,
-    }
-
-
 def parse_outcome_description(desc: str) -> dict[str, Any]:
     """Decode the pipe-encoded outcome/question description, e.g.
     "class:priceBinary|underlying:BTC|expiry:20260503-0600|targetPrice:78213|period:1d"
@@ -169,13 +124,6 @@ def parse_outcome_description(desc: str) -> dict[str, Any]:
                 f"{value[9:11]}:{value[11:13]}:00Z"
             )
     return out
-
-
-def get_outcome_class(item: dict[str, Any]) -> str | None:
-    """Class tag from an outcome's or question's description
-    (priceBinary | priceBucket | ...). None when the description is a
-    per-outcome stub like "index:N" / "other"."""
-    return parse_outcome_description(item["description"]).get("class")
 
 
 USER_DECLINED_ERROR = {
@@ -780,41 +728,64 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
-        """One row per HIP-4 outcome with parsed settlement spec and per-side
-        books. Iterates questions for grouped (priceBucket) markets and
-        standalone outcomes for ungrouped (priceBinary) markets, dispatching
-        each to its per-class builder. Unknown classes are skipped — only
-        parse what we've encountered."""
+        """HIP-4 outcome markets. priceBinary outcomes are flat entries;
+        priceBucket questions group their named outcomes + fallback under
+        one entry. Unknown classes are skipped."""
         meta = await asyncio.to_thread(get_info().outcome_meta)
-        outcomes_by_id = {int(o["outcome"]): o for o in meta["outcomes"]}
+        by_id = {int(o["outcome"]): o for o in meta["outcomes"]}
         grouped: set[int] = set()
         out: list[dict[str, Any]] = []
 
         for q in meta["questions"]:
-            match get_outcome_class(q):
-                case "priceBucket":
-                    fallback_id = int(q["fallbackOutcome"])
-                    grouped.add(fallback_id)
-                    out.append(
-                        build_price_bucket_row(
-                            q, outcomes_by_id[fallback_id], "fallback"
-                        )
-                    )
-                    for n in q["namedOutcomes"]:
-                        named_id = int(n)
-                        grouped.add(named_id)
-                        out.append(
-                            build_price_bucket_row(
-                                q, outcomes_by_id[named_id], "named"
-                            )
-                        )
+            spec = parse_outcome_description(q["description"])
+            if spec.get("class") != "priceBucket":
+                continue
+            outcomes = []
+            for n in q["namedOutcomes"]:
+                o = by_id[int(n)]
+                grouped.add(int(o["outcome"]))
+                outcomes.append({
+                    "outcome_id": int(o["outcome"]),
+                    "role": "named",
+                    "bucket_index": parse_outcome_description(o["description"])["index"],
+                    "sides": _outcome_sides(o),
+                })
+            fb = by_id[int(q["fallbackOutcome"])]
+            grouped.add(int(fb["outcome"]))
+            outcomes.append({
+                "outcome_id": int(fb["outcome"]),
+                "role": "fallback",
+                "sides": _outcome_sides(fb),
+            })
+            out.append({
+                "class": "priceBucket",
+                "question_id": int(q["question"]),
+                "name": q["name"],
+                "description": q["description"],
+                "underlying": spec["underlying"],
+                "price_thresholds": spec["priceThresholds"],
+                "expiry": spec["expiry"],
+                "period": spec["period"],
+                "outcomes": outcomes,
+            })
 
         for o in meta["outcomes"]:
             if int(o["outcome"]) in grouped:
                 continue
-            match get_outcome_class(o):
-                case "priceBinary":
-                    out.append(build_price_binary_row(o))
+            spec = parse_outcome_description(o["description"])
+            if spec.get("class") != "priceBinary":
+                continue
+            out.append({
+                "class": "priceBinary",
+                "outcome_id": int(o["outcome"]),
+                "name": o["name"],
+                "description": o["description"],
+                "underlying": spec["underlying"],
+                "target_price": spec["targetPrice"],
+                "expiry": spec["expiry"],
+                "period": spec["period"],
+                "sides": _outcome_sides(o),
+            })
 
         return True, out
 
