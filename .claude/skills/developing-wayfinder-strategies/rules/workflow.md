@@ -25,24 +25,9 @@ For complex fund-moving flows (multi-step swaps, lending loops), run at least on
 - Use `--gorlami` on `wayfinder_paths/run_strategy.py`
 - Load `/simulation-dry-run` for setup and examples
 
-## One-off execution (Claude Code)
-
-If the user wants **immediate execution** (not a reusable strategy):
-- For simple on-chain sends/swaps: use `mcp__wayfinder__core_execute`.
-- For Hyperliquid perp orders/leverage: use `mcp__wayfinder__hyperliquid_execute`.
-- Write a short script under `.wayfinder_runs/` (gitignored).
-- Prefer running it via `mcp__wayfinder__core_run_script` so Claude Code shows a review prompt.
-
-## “Explore first” approach
+## "Explore first" approach
 
 When exploring an unfamiliar adapter/strategy:
 - Start from its `manifest.yaml` (capabilities, entrypoint, dependencies).
 - Read its `examples.json` (expected inputs and runtime assumptions).
 - Prefer read-only calls first; only move to execution after validating inputs/units.
-
-## “Build new” approach
-
-When designing a NEW strategy in this repo:
-- For **perp strategies on Hyperliquid**, copy [`wayfinder_paths/strategies/apex_gmx_velocity/`](../../../../wayfinder_paths/strategies/apex_gmx_velocity/) as the starting layout. It is the canonical reference (see [reference-strategies.md](reference-strategies.md)).
-- For other styles, locate the closest existing strategy and copy its layout — don't construct from scratch.
-- After modifying signal/decide, run the validation checklist in [reference-strategies.md](reference-strategies.md) before claiming the strategy is done.

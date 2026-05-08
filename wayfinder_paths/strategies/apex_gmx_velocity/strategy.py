@@ -22,7 +22,7 @@ from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy
 class ApexGmxVelocityStrategy(ActivePerpsStrategy):
     # `name` is the wallet label used by get_adapter() and the StateStore
     # directory. Set to a wallet present in config.json before deploying.
-    name = "apex_gmx_velocity"
+    name = "perp_dex_funded_tester"
 
     REF = Path(__file__).parent / "backtest_ref.json"
 

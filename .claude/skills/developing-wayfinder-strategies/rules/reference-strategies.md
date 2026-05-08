@@ -41,35 +41,12 @@ strategies/apex_gmx_velocity/
 
 ### Wallet-readiness gotchas (deploy blockers)
 
-Before the runner can actually trade, three wallet conditions must hold. Missing any one means the strategy *runs* but does *nothing useful*:
+Before the runner can actually trade, two wallet conditions must hold. Missing either one means the strategy *runs* but does *nothing useful*:
 
 1. **Wallet label in `config.json` matches the strategy class's `name`.**
    `get_adapter()` looks up the wallet by exact label string. Mismatch → `Wallet '<name>' not found.`
 
-2. **USDC must be in the HL PERP sub-account, not SPOT.**
-   `get_margin_balance()` reads `clearinghouseState.crossMarginSummary.accountValue` — that's the perp NAV. Spot USDC (from `spotClearinghouseState.balances`) is invisible to the strategy. **Funds deposited to the HL bridge typically land in spot.** A strategy reading $0 NAV with spot full of USDC will silently no-op every update.
-
-   To move funds spot→perp:
-   ```python
-   mcp__wayfinder__hyperliquid_execute(
-       action="spot_to_perp_transfer",
-       wallet_label="<your_wallet_label>",
-       usd_amount=50,
-   )
-   ```
-   Or via the HL UI: Vault → Send → Transfer to Perps.
-
-   **Always check both** before assuming the wallet is empty:
-   ```bash
-   curl -s -X POST https://api.hyperliquid.xyz/info \
-     -H "Content-Type: application/json" \
-     -d '{"type":"clearinghouseState","user":"<addr>"}' | jq '.marginSummary.accountValue'
-   curl -s -X POST https://api.hyperliquid.xyz/info \
-     -H "Content-Type: application/json" \
-     -d '{"type":"spotClearinghouseState","user":"<addr>"}' | jq '.balances'
-   ```
-
-3. **`risk_limits.json` exists in the strategy directory.**
+2. **`risk_limits.json` exists in the strategy directory.**
    Without it, `ActivePerpsStrategy.update()` runs but emits a `risk_warning` in every status response and runs *uncapped* — no drawdown halt, no per-symbol cap, no daily-loss halt. See "Risk limits" below for the schema.
 
 ### Contracts the SDK enforces
@@ -140,9 +117,6 @@ the reference's numbers blindly.**
 
 - **Empty `__init__.py` re-exports**: Don't `from wayfinder_paths.core.backtesting import run_backtest` — import from the submodule (`backtester.run_backtest`) since the package init was deliberately emptied.
 - **`find_strategy_class` parent-class bug**: The CLI uses module-introspection to find the strategy class. If your `strategy.py` imports `ActivePerpsStrategy` at module scope (it must), the resolver could pick the parent. Fixed in `wayfinder_paths/run_strategy.py:57+` to filter framework bases — but if you need to bypass, the manifest entrypoint always works.
-- **Signal exact-bar lookup**: `signal.at(t)` does `.loc[t]` which requires exact bar match. In live mode `t = perp.now()` is wall-clock-precise. Always use `iloc[-1]` in decide for the latest computed row.
-- **HL size rounding**: float sizes with too many decimals fail HL signing with `float_to_wire causes rounding`. Always round per-asset via `round_size_for_asset()`.
-- **Slippage assumption matters**: A 1 bps assumption hides real costs. The reference uses 25 bps based on a 10-fill live audit (avg 22.9 bps observed). Recalibrate against your own strategy's reconcile output.
 
 ### When to deviate from the reference
 
@@ -172,14 +146,10 @@ Don't deviate on:
     set to wallet-appropriate values. Verify it loads:
     poetry run python -c "from wayfinder_paths.core.strategies.risk_limits import RiskLimits; print(RiskLimits.load_optional('wayfinder_paths/strategies/<name>'))"
 
-[ ] Wallet exists in config.json with label == strategy.name:
-    jq -r '.wallets[].label' config.json | grep -x '<strategy_name>'
-
-[ ] Wallet has USDC in HL PERP sub-account (not just spot):
-    Check both clearinghouseState (perp) and spotClearinghouseState (spot).
-    If USDC is in spot only, run mcp__wayfinder__hyperliquid_execute(
-      action="spot_to_perp_transfer", wallet_label="<name>", usd_amount=...
-    ) before the first update.
+[ ] Wallet exists with label == strategy.name and has USDC in HL PERP
+    (not just spot). Use core_get_wallets(label="<name>") to verify both;
+    if spot-only, run hyperliquid_execute(action="spot_to_perp_transfer", ...)
+    before the first update.
 
 [ ] CLI status returns clean StatusDict (no risk_warning):
     poetry run python -m wayfinder_paths.run_strategy <name> --action status \
