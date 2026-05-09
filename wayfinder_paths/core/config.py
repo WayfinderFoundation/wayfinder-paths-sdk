@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
+_API_BASE_ENV_KEYS = ("WAYFINDER_API_BASE_URL", "WAYFINDER_API_URL")
 _DEFAULT_CONFIG_FILENAME = "config.json"
 _DEFAULT_API_BASE_URL = "https://strategies.wayfinder.ai/api/v1"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
@@ -94,11 +95,27 @@ def get_rpc_urls() -> dict[str, Any]:
     return CONFIG.get("strategy", {}).get("rpc_urls", {})
 
 
+def _normalize_api_base_url(value: str) -> str:
+    base = str(value or "").strip().rstrip("/")
+    if base.endswith("/api/v1"):
+        return base
+    if base.endswith("/api"):
+        return f"{base}/v1"
+    return f"{base}/api/v1"
+
+
 def get_api_base_url() -> str:
+    env_url = next(
+        (os.getenv(k, "").strip() for k in _API_BASE_ENV_KEYS if os.getenv(k)),
+        "",
+    )
+    if env_url:
+        return _normalize_api_base_url(env_url)
+
     system = CONFIG.get("system", {})
     api_url = system.get("api_base_url")
     if api_url:
-        return str(api_url).strip()
+        return _normalize_api_base_url(str(api_url))
     return _DEFAULT_API_BASE_URL
 
 
@@ -113,14 +130,14 @@ def get_polygon_builder_code() -> str | None:
 
 
 def get_paths_api_base_url() -> str:
+    env_url = os.environ.get("WAYFINDER_PATHS_API_URL")
+    if env_url:
+        return str(env_url).strip().rstrip("/")
+
     system = CONFIG.get("system", {})
     paths_url = system.get("paths_api_base_url")
     if paths_url:
         return str(paths_url).strip().rstrip("/")
-
-    env_url = os.environ.get("WAYFINDER_PATHS_API_URL")
-    if env_url:
-        return str(env_url).strip().rstrip("/")
 
     # Fallback: derive from api_base_url by stripping known API path suffixes
     base = get_api_base_url().strip().rstrip("/")
