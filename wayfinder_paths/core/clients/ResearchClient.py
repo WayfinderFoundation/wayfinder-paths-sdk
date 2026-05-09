@@ -117,8 +117,7 @@ class ResearchClient(WayfinderClient):
         normalized_livecrawl = str(livecrawl).strip().lower()
         if normalized_livecrawl not in VALID_LIVECRAWL_VALUES:
             raise ValueError(
-                "livecrawl must be one of: "
-                f"{', '.join(sorted(VALID_LIVECRAWL_VALUES))}"
+                f"livecrawl must be one of: {', '.join(sorted(VALID_LIVECRAWL_VALUES))}"
             )
         typed_livecrawl = cast(ResearchWebSearchLivecrawl, normalized_livecrawl)
 
@@ -156,7 +155,9 @@ def _gateway_error_from_response(response: httpx.Response) -> ResearchGatewayAPI
         status_code=response.status_code,
         error_type=error.get("type") or "http_error",
         code=error.get("code") or "http_error",
-        message=error.get("message") or response.reason_phrase or "Research gateway error",
+        message=error.get("message")
+        or response.reason_phrase
+        or "Research gateway error",
         details=error.get("details"),
     )
 
@@ -178,7 +179,9 @@ def _extract_gateway_error(response: httpx.Response) -> ResearchGatewayErrorBody
                 "type": str(error.get("type") or "http_error"),
                 "code": str(error.get("code") or "http_error"),
                 "message": str(
-                    error.get("message") or response.reason_phrase or "Research gateway error"
+                    error.get("message")
+                    or response.reason_phrase
+                    or "Research gateway error"
                 ),
                 "details": error.get("details"),
             }

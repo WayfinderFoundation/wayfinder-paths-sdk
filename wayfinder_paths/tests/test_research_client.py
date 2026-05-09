@@ -49,7 +49,10 @@ async def test_search_posts_gateway_payload(monkeypatch: pytest.MonkeyPatch) -> 
                 },
                 "results": [],
                 "provider": {"name": "exa", "requestId": "req_1", "cached": False},
-                "usage": {"provider": {"name": "exa", "cached": False}, "credits": None},
+                "usage": {
+                    "provider": {"name": "exa", "cached": False},
+                    "credits": None,
+                },
             }
         )
     )
@@ -97,7 +100,10 @@ async def test_search_resolves_session_from_environment(
                 },
                 "results": [],
                 "provider": {"name": "exa", "requestId": None, "cached": False},
-                "usage": {"provider": {"name": "exa", "cached": False}, "credits": None},
+                "usage": {
+                    "provider": {"name": "exa", "cached": False},
+                    "credits": None,
+                },
             }
         )
     )
