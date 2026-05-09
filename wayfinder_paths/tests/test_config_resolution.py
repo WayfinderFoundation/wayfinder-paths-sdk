@@ -66,6 +66,35 @@ def test_api_base_url_defaults_to_strategies_api(restore_global_config: None) ->
     assert config.get_api_base_url() == "https://strategies.wayfinder.ai/api/v1"
 
 
+def test_api_base_url_env_override_beats_stale_config(
+    restore_global_config: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config.set_config({"system": {"api_base_url": "https://old-ngrok.example/api/v1"}})
+    monkeypatch.setenv("WAYFINDER_API_BASE_URL", "https://strategies-dev.wayfinder.ai")
+
+    assert config.get_api_base_url() == "https://strategies-dev.wayfinder.ai/api/v1"
+
+
+def test_api_base_url_env_normalizes_api_suffix(
+    restore_global_config: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config.set_config({})
+    monkeypatch.setenv("WAYFINDER_API_URL", "https://strategies-dev.wayfinder.ai/api")
+
+    assert config.get_api_base_url() == "https://strategies-dev.wayfinder.ai/api/v1"
+
+
+def test_paths_api_base_url_env_override_beats_stale_config(
+    restore_global_config: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config.set_config(
+        {"system": {"paths_api_base_url": "https://old-ngrok.example"}}
+    )
+    monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://strategies-dev.wayfinder.ai")
+
+    assert config.get_paths_api_base_url() == "https://strategies-dev.wayfinder.ai"
+
+
 @pytest.mark.asyncio
 async def test_web3s_fallback_to_rpc_proxy(
     restore_global_config: None,
