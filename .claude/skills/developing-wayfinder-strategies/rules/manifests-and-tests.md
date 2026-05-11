@@ -16,6 +16,10 @@ For strategies in `wayfinder_paths/strategies/<strategy>/`:
 - Provide smoke coverage for the lifecycle: `deposit → update → status → withdraw`.
 - Optional read-only methods: `quote()`, `analyze()`, `build_batch_snapshot()` - implement these to support APY queries and batch scoring.
 
+## Perp strategies: extra contract
+
+Perp strategies (extending `ActivePerpsStrategy`) have additional contracts — `SignalFrame` return type, `backtest_ref.json` schema, realistic `slippage_bps`, parity test, file layout. **Always start by copying `apex_gmx_velocity/` and modifying.** See [reference-strategies.md](reference-strategies.md) for the full contract.
+
 ## Adapter testing contract
 
 For adapters in `wayfinder_paths/adapters/<adapter>/`:

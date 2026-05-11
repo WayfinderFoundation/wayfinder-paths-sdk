@@ -19,5 +19,6 @@ Follow the repo-specific workflow and patterns in these rule docs:
 - [rules/workflow.md](rules/workflow.md) - Setup, common commands, how to run strategies locally
 - [rules/manifests-and-tests.md](rules/manifests-and-tests.md) - Manifest rules, required tests, `examples.json` discipline
 - [rules/data-sources.md](rules/data-sources.md) - Where data comes from (clients/adapters), read vs write conventions
-- [rules/safety-and-execution.md](rules/safety-and-execution.md) - Approvals and safe execution patterns
+- [rules/reference-strategies.md](rules/reference-strategies.md) - **Canonical reference strategies to copy/adapt from** (perps, etc.)
 
+When designing a new strategy, **start from the canonical reference for that style** — see [rules/reference-strategies.md](rules/reference-strategies.md). It shows file layout, signal/decide separation, snapshot conventions, and reconcile-friendly patterns the SDK expects.
