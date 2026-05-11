@@ -70,6 +70,7 @@ from wayfinder_paths.mcp.tools.instance_state import (
     shells_clear_chart_workspace,
     shells_create_chart,
     shells_get_frontend_context,
+    shells_list_paths,
     shells_search_chart_series,
     shells_set_active_chart,
     shells_set_active_market,
@@ -101,6 +102,7 @@ mcp = FastMCP("wayfinder")
 # ─── shells_* ──────────────────────────────────────────────────────────
 if is_opencode_instance():
     mcp.tool()(shells_get_frontend_context)
+    mcp.tool()(shells_list_paths)
     mcp.tool()(shells_search_chart_series)
     mcp.tool()(shells_set_active_market)
     mcp.tool()(shells_create_chart)

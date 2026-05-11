@@ -43,6 +43,24 @@ async def shells_get_frontend_context() -> dict[str, Any]:
         return err("state_http_error", f"HTTP {exc.response.status_code}")
 
 
+@catch_errors
+async def shells_list_paths() -> dict[str, Any]:
+    """List Paths available to this Shell.
+
+    Use this when the user asks which Paths are available or installable in
+    Shells. The response comes from the backend Shells inventory endpoint, so
+    it matches the Paths tab filtering and includes compatibility counts such
+    as bonded paths that are not yet available for Shells.
+    """
+    if not is_opencode_instance():
+        return err(*_NOT_OPENCODE_ERR)
+    try:
+        return ok(await INSTANCE_STATE_CLIENT.list_paths())
+    except httpx.HTTPStatusError as exc:
+        message, details = _http_error_message(exc)
+        return err("shell_paths_http_error", message, details)
+
+
 async def shells_search_chart_series(
     query: str,
     kind: str | None = None,

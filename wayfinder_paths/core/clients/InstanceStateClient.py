@@ -14,8 +14,15 @@ class InstanceStateClient(WayfinderClient):
     def _opencode_base_url(self) -> str:
         return f"{get_api_base_url()}/opencode"
 
+    def _paths_base_url(self) -> str:
+        return f"{get_api_base_url()}/opencode/instances/{get_opencode_instance_id()}/paths"
+
     async def get_state(self) -> dict[str, Any]:
         resp = await self._authed_request("GET", f"{self._base_url()}/")
+        return resp.json()
+
+    async def list_paths(self) -> dict[str, Any]:
+        resp = await self._authed_request("GET", f"{self._paths_base_url()}/")
         return resp.json()
 
     async def search_chart_series(
