@@ -480,6 +480,11 @@ def test_path_install_requests_intent_and_submits_receipt(tmp_path: Path, monkey
     assert output["result"]["heartbeat_enabled"] is True
     assert output["result"]["verified_install"] is True
     assert output["result"]["warnings"] == []
+    assert output["result"]["invocation"]["title"] == "How to invoke this Path"
+    assert output["result"]["invocation"]["example_prompt"] == (
+        "Run the Install Demo Path."
+    )
+    assert output["result"]["invocation"]["slash_command"] is None
 
     receipt = FakeInstallClient.receipt_calls[0]
     assert receipt["runtime"] == "sdk-cli"
@@ -1203,6 +1208,11 @@ def test_path_install_opencode_activates_and_installs_required_dependencies(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["result"]["activated"] is True
+    assert payload["result"]["invocation"]["slash_command"] == "/install-opencode-demo"
+    assert payload["result"]["next_steps"] == [
+        "Restart OpenCode if it was already running so new plugins are loaded.",
+        "Run /install-opencode-demo.",
+    ]
     assert payload["result"]["dependencies"][0]["slug"] == "custom-market-data-pack"
     assert len(activation_calls) == 2
     assert {Path(call["path_dir"]).parent.name for call in activation_calls} == {

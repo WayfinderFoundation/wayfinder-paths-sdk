@@ -127,6 +127,10 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     assert export_manifest["install"]["preferred_sdk_command"].startswith(
         "wayfinder path install --slug multi-asset-hedge-finder --version 0.1.0 --host opencode --scope project"
     )
+    assert export_manifest["install"]["invocation"]["slash_command"] == "/hedge-finder"
+    assert export_manifest["invocation"]["example_prompt"] == (
+        "Run the Multi Asset Hedge Finder Path."
+    )
     assert export_manifest["requires"]["skills"][0]["path_slug"] == "using-delta-lab"
     assert export_manifest["requires"]["skills"][0]["skill_name"] == "using-delta-lab"
 
