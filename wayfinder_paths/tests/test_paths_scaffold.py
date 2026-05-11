@@ -40,6 +40,15 @@ def test_path_init_creates_expected_files(tmp_path: Path):
     assert (path_dir / "applet" / "dist" / "index.html").exists()
     assert (path_dir / "applet" / "dist" / "assets" / "app.js").exists()
     assert (path_dir / ".wayfinder" / "template.json").exists()
+    applet_html = (path_dir / "applet" / "dist" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    applet_js = (path_dir / "applet" / "dist" / "assets" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    assert "Applet: live as of" in applet_html
+    assert "dataUpdatedAt" in applet_js
+    assert 'source: "live_applet"' in applet_js
 
     manifest = PathManifest.load(result.manifest_path)
     assert manifest.slug == "basis-board"

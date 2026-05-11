@@ -1,5 +1,28 @@
 (function () {
-  let state = { counter: 0, updatedAt: new Date().toISOString() };
+  function metaFor(existing, ts) {
+    const dataUpdatedAt = ts
+      || (typeof existing.dataUpdatedAt === "number" ? existing.dataUpdatedAt : Date.now());
+    return {
+      source: "live_applet",
+      label: "Applet: live as of",
+      ...existing,
+      dataUpdatedAt,
+    };
+  }
+
+  function withFreshness(next, ts) {
+    const existing = next && typeof next._meta === "object" && !Array.isArray(next._meta)
+      ? next._meta
+      : {};
+    return {
+      ...next,
+      _meta: {
+        ...metaFor(existing, ts),
+      },
+    };
+  }
+
+  let state = withFreshness({ counter: 0, updatedAt: new Date().toISOString() });
 
   function post(message) {
     try {
@@ -12,6 +35,19 @@
   function render() {
     const el = document.querySelector("[data-path-state]");
     if (el) el.textContent = JSON.stringify(state, null, 2);
+    const freshness = document.querySelector("[data-path-freshness]");
+    const ts = state._meta && typeof state._meta.dataUpdatedAt === "number"
+      ? state._meta.dataUpdatedAt
+      : null;
+    if (freshness && ts) {
+      const label = typeof state._meta.label === "string"
+        ? state._meta.label
+        : "Applet: live as of";
+      freshness.textContent = label + " " + new Date(ts).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
   }
 
   window.addEventListener("message", (event) => {
@@ -25,7 +61,7 @@
     }
 
     if (msg.type === "wf:apply_state" && msg.state && typeof msg.state === "object") {
-      state = { ...(msg.state || {}) };
+      state = withFreshness({ ...(msg.state || {}) });
       render();
       post({ type: "wf:state", state });
       return;
@@ -39,8 +75,13 @@
     if (!action) return;
 
     if (action === "bump") {
-      state = { ...state, counter: (Number(state.counter) || 0) + 1, updatedAt: new Date().toISOString() };
+      state = withFreshness({
+        ...state,
+        counter: (Number(state.counter) || 0) + 1,
+        updatedAt: new Date().toISOString(),
+      });
       render();
+      post({ type: "wf:state", state });
     }
 
     if (action === "emit") {
@@ -50,4 +91,3 @@
 
   render();
 })();
-

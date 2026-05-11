@@ -229,6 +229,7 @@ _ARCHETYPES: dict[str, PipelineArchetype] = {
             "skeptic",
             "risk_gate",
             "compile_job",
+            "display_compose",
             "finalize",
         ),
         default_edges=(
@@ -239,12 +240,13 @@ _ARCHETYPES: dict[str, PipelineArchetype] = {
             ("optimizer", "skeptic"),
             ("skeptic", "risk_gate"),
             ("risk_gate", "compile_job"),
-            ("compile_job", "finalize"),
+            ("compile_job", "display_compose"),
+            ("display_compose", "finalize"),
         ),
         default_failure_edges=(
             ("hedge_search", "retryable_error", "hedge_search", 1),
             ("optimizer", "failed", "skeptic", 0),
-            ("risk_gate", "failed", "finalize", 0),
+            ("risk_gate", "failed", "display_compose", 0),
         ),
         input_slots=(
             ArchetypeInputSlot(
@@ -304,6 +306,16 @@ _ARCHETYPES: dict[str, PipelineArchetype] = {
                 description="Compile the selected hedge into a draft or armed rebalance job.",
                 tools=("read", "glob", "grep", "bash"),
                 output_name="job.json",
+            ),
+            ArchetypeAgent(
+                agent_id="display-composer",
+                phase="display_compose",
+                description=(
+                    "Transform the selected hedge run artifacts into a "
+                    "display-ready snapshot for applets and console output."
+                ),
+                tools=("read", "glob", "grep", "bash"),
+                output_name="display.json",
             ),
         ),
     ),

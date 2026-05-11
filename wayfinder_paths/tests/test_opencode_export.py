@@ -62,6 +62,13 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
         / "agents"
         / "multi-asset-hedge-finder-exposure-reader.md"
     )
+    display_worker = (
+        export_dir
+        / "install"
+        / ".opencode"
+        / "agents"
+        / "multi-asset-hedge-finder-display-composer.md"
+    )
     artifact_gate = (
         export_dir / "install" / ".opencode" / "tools" / "wayfinder_artifact_gate.ts"
     )
@@ -101,8 +108,10 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     validate_order_text = _read_text(validate_order)
     command_text = _read_text(command)
     orchestrator_text = _read_text(orchestrator)
+    display_worker_text = _read_text(display_worker)
     assert "required_files: tool.schema.array" not in artifact_gate_text
     assert 'const REQUIRED_FILES = ["exposure_reader.json"' in artifact_gate_text
+    assert '"display.json"' in artifact_gate_text
     assert (
         "context?.worktree ?? context?.directory ?? process.cwd()" in artifact_gate_text
     )
@@ -115,6 +124,10 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     assert "return { ok:" not in validate_order_text
     assert "scripts/wf_run.py" in command_text
     assert "scripts/wf_run.py" in orchestrator_text
+    assert "display-composer" in orchestrator_text
+    assert "display.json" in display_worker_text
+    assert "source: \"run_snapshot\"" in display_worker_text
+    assert "do not fetch or recompute market data" in display_worker_text
     assert "not direct files under `path/`" in command_text
     assert "Do not run files under `path/` directly" in orchestrator_text
     assert "AGENTS.md" in opencode_config_payload["instructions"]

@@ -845,6 +845,44 @@ def _pipeline_instructions(slug: str, archetype: str) -> str:
             "   - `job`\n"
             "   - `next_invalidation`\n"
         )
+    if archetype == "hedge-finder":
+        return (
+            f"# {humanize_slug(slug)}\n\n"
+            "Use this skill when the user wants to hedge a multi-asset portfolio with "
+            "perpetuals or other available SDK surfaces while preserving one run "
+            "snapshot for console and applet output.\n\n"
+            "Read `references/pipeline.md`, `references/signals.md`, and "
+            "`references/risk.md` before starting.\n\n"
+            "Execution order:\n"
+            "1. Load `inputs/assets.yaml`, `inputs/constraints.yaml`, and "
+            "`policy/default.yaml`.\n"
+            "2. Run `exposure-reader`, `beta-modeler`, and `hedge-searcher`, "
+            "complete the optimizer phase from their artifacts, then run "
+            "`skeptic` -> `risk-verifier` -> `job-compiler` -> "
+            "`display-composer`.\n"
+            "3. Treat `.wf-artifacts/$RUN_ID/display.json` as the display "
+            "snapshot for both console summaries and applet dashboards.\n"
+            "4. Surface the same funding rates, notionals, leverage, and "
+            "market-quality values from `display.json`; do not recompute or "
+            "browser-refetch those values in the final answer.\n\n"
+            "Rules:\n"
+            "1. You are the only orchestrator.\n"
+            "2. Workers are leaf agents and must not spawn more agents.\n"
+            "3. Every worker writes exactly one artifact under `.wf-artifacts/$RUN_ID/`.\n"
+            "4. Never skip the null state, even when a hedge looks strong.\n"
+            "5. If market quality is weak or risk validation fails, degrade to "
+            "`draft` or `null`.\n"
+            "6. The final output must contain:\n"
+            "   - `signal_snapshot`\n"
+            "   - `selected_playbook`\n"
+            "   - `candidate_expressions`\n"
+            "   - `null_state`\n"
+            "   - `risk_checks`\n"
+            "   - `job`\n"
+            "   - `next_invalidation`\n"
+            "   - `display` — path to `.wf-artifacts/$RUN_ID/display.json`, "
+            "the authoritative rendered snapshot for this run\n"
+        )
     if archetype == "narrative-radar":
         return (
             f"# {humanize_slug(slug)}\n\n"
@@ -920,6 +958,31 @@ def _pipeline_reference_pipeline(archetype: str) -> str:
             "Artifact rule:\n"
             "- every worker owns exactly one JSON artifact under `.wf-artifacts/$RUN_ID/`\n"
             "- the orchestrator reads artifacts and owns final synthesis\n"
+        )
+    if archetype == "hedge-finder":
+        return (
+            "# Pipeline\n\n"
+            "This path finds hedge candidates for a multi-asset portfolio and "
+            "publishes one run snapshot for both console and applet views.\n\n"
+            "Ordered phases:\n"
+            "1. `intake` — load assets, constraints, and policy\n"
+            "2. `exposure_reader` — resolve symbols and build the portfolio series\n"
+            "3. `beta_modeler` — estimate factor betas and residual exposures\n"
+            "4. `hedge_search` — collect candidates with funding, spread, and liquidity context\n"
+            "5. `optimizer` — select hedge weights against residual beta and net cost\n"
+            "6. `skeptic` — compare selected hedges against the null state\n"
+            "7. `risk_gate` — apply notional, leverage, and execution protections\n"
+            "8. `compile_job` — compile a draft or armed rebalance job\n"
+            "9. `display_compose` — write `display.json`, the display snapshot "
+            "used by applets and console output\n"
+            "10. `finalize` — emit the standard response envelope including a "
+            "`display` pointer\n\n"
+            "Artifact rule:\n"
+            "- every worker owns exactly one JSON artifact under `.wf-artifacts/$RUN_ID/`\n"
+            "- `display.json` is the authoritative rendered snapshot for user-facing "
+            "funding rates, notionals, leverage, and hedge metrics\n"
+            "- if an applet intentionally performs a browser-side live refresh, it "
+            "must label the live timestamp separately from the run snapshot\n"
         )
     if archetype == "narrative-radar":
         return (
@@ -1113,6 +1176,157 @@ def _pipeline_agent_body(agent: ArchetypeAgent, *, archetype: str) -> str:
                 [
                     "Do not arm the job if the risk gate returned `draft` or `null`.",
                     "Write the final artifact only after validation passes.",
+                ],
+            ),
+        }
+        read_items, write_items, rules = instructions.get(
+            agent.agent_id,
+            ([], [], ["Stay inside your assigned phase."]),
+        )
+        lines = [f"# {agent.agent_id}", "", agent.description, "", "Read:"]
+        lines.extend(
+            [f"- {item}" for item in read_items]
+            or ["- only the inputs required for your phase"]
+        )
+        lines.extend(
+            [
+                "",
+                "Write:",
+                f"- exactly one JSON object to `{DEFAULT_ARTIFACTS_DIR}/$RUN_ID/{agent.output_name}`",
+            ]
+        )
+        lines.extend([f"- include {item}" for item in write_items])
+        lines.extend(
+            [
+                "",
+                "Rules:",
+                "- Do not spawn other agents.",
+                "- Do not compile the final answer.",
+            ]
+        )
+        lines.extend([f"- {item}" for item in rules])
+        return "\n".join(lines) + "\n"
+    if archetype == "hedge-finder":
+        instructions: dict[str, tuple[list[str], list[str], list[str]]] = {
+            "exposure-reader": (
+                [
+                    "`inputs/assets.yaml` — portfolio symbols and weights",
+                    "`policy/default.yaml` — portfolio series signal config",
+                ],
+                [
+                    "resolved asset symbols and weights",
+                    "the portfolio time series used for all later calculations",
+                    "data freshness timestamps for every fetched source",
+                ],
+                [
+                    "Do not estimate hedges or rank candidates.",
+                    "Record source timestamps so display output can cite the run snapshot.",
+                ],
+            ),
+            "beta-modeler": (
+                [
+                    "the exposure-reader artifact",
+                    "`inputs/constraints.yaml` — factor universe and residual beta target",
+                    "`policy/default.yaml` — lookback and decision settings",
+                ],
+                [
+                    "portfolio factor betas and residual exposures",
+                    "stability diagnostics for the lookback window",
+                    "factor series timestamps reused from upstream artifacts",
+                ],
+                [
+                    "Do not fetch fresh browser/public data.",
+                    "Use the upstream run artifact as the only portfolio snapshot.",
+                ],
+            ),
+            "hedge-searcher": (
+                [
+                    "the beta-modeler artifact",
+                    "`inputs/constraints.yaml` — hedge limits",
+                    "`policy/default.yaml` — hedge universe and market-quality rules",
+                ],
+                [
+                    "candidate hedges with funding rates, spreads, liquidity, and timestamps",
+                    "annualized funding values derived from the captured run data",
+                    "rejection reasons for candidates that fail market-quality checks",
+                ],
+                [
+                    "Do not mix live browser-fetched values into the run artifact.",
+                    "For each funding rate, include the raw period rate, annualized rate, "
+                    "and provider timestamp used in this run.",
+                ],
+            ),
+            "skeptic": (
+                [
+                    "the hedge-searcher artifact",
+                    "the optimizer phase result if present",
+                    "`policy/default.yaml` — null-state rules",
+                ],
+                [
+                    "selected hedge versus null-state comparison",
+                    "materiality checks and veto reasons",
+                    "the exact candidate metrics accepted for risk verification",
+                ],
+                [
+                    "Never force a hedge if the improvement is not material.",
+                    "Carry forward the exact funding, notional, and leverage inputs "
+                    "from upstream artifacts.",
+                ],
+            ),
+            "risk-verifier": (
+                [
+                    "the skeptic artifact",
+                    "`inputs/constraints.yaml`",
+                    "`policy/default.yaml` — risk limits",
+                ],
+                [
+                    "notional, leverage, margin, spread, and liquidity checks",
+                    "the final execution mode: `armed`, `draft`, or `null`",
+                    "downgrade or rejection reasons when limits are exceeded",
+                ],
+                [
+                    "Do not increase leverage or notional to force an armed result.",
+                    "Use the same candidate metrics that will be shown in display output.",
+                ],
+            ),
+            "job-compiler": (
+                [
+                    "the risk-verifier artifact",
+                    "`policy/default.yaml` — scheduler and execution settings",
+                ],
+                [
+                    "a runner-compatible draft or armed rebalance job",
+                    "poll interval, cooldown, and invalidation logic",
+                    "the exact mode approved by the risk gate",
+                ],
+                [
+                    "Do not arm the job if the risk gate returned `draft` or `null`.",
+                    "Write the job artifact before display composition.",
+                ],
+            ),
+            "display-composer": (
+                [
+                    "all run artifacts written under `.wf-artifacts/$RUN_ID/`",
+                    "especially `exposure_reader.json`, `beta_modeler.json`, "
+                    "`hedge_search.json`, `risk_gate.json`, and `job.json`",
+                ],
+                [
+                    "a `run_meta` object with `run_id`, `generated_at`, and "
+                    "`source: \"run_snapshot\"`",
+                    "a `data_freshness` object with the source/provider timestamps "
+                    "used by the run",
+                    "display-ready hedge rows with funding rates, notionals, leverage, "
+                    "residual beta, spread, liquidity, and risk status",
+                    "a `cli_summary` object using the same values the applet will render",
+                ],
+                [
+                    "This is a presentation transform only; do not fetch or recompute "
+                    "market data.",
+                    "Every displayed funding rate, notional, and leverage value must "
+                    "come from the existing run artifacts.",
+                    "If an applet intentionally live-refetches later, label it separately "
+                    "as live data and include its timestamp; do not overwrite this "
+                    "run snapshot.",
                 ],
             ),
         }

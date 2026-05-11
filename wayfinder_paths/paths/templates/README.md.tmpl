@@ -45,6 +45,9 @@ If this path includes a presentation applet:
 - prefer the host-provided base URL from the bridge (`wf:state.apiBase`, then `wf:hello` origin) instead of hardcoding or probing multiple environments
 - do not probe both dev and prod from the same applet build
 - do not call `/api/v1/delta-lab/symbols/`; it does not exist
+- if the applet renders an execution result, render the run snapshot artifact instead of re-fetching browser data
+- if the applet intentionally shows live browser data, label it as `Applet: live as of HH:MM`
+- post `wf:state` with `state._meta.dataUpdatedAt` (ms epoch) whenever displayed data changes
 - treat non-200 responses, especially `404`, as expected unavailability and show a data-unavailable state instead of crashing
 - ensure every referenced file exists under `applet/dist/`
 - include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s
