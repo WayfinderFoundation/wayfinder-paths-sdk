@@ -331,6 +331,8 @@ For applet authors and agents:
 - do not probe both dev and prod from the same applet build
 - do not call `/api/v1/delta-lab/symbols/`; that route does not exist
 - use the public `.../public/assets/<symbol>/timeseries/` route for presentation data, and reserve authenticated Delta Lab routes for SDK/server-side use
+- if the applet renders an execution result, render the run snapshot artifact rather than re-fetching browser data; if it intentionally shows live browser data, label it as `Applet: live as of HH:MM`
+- post `wf:state` with `state._meta.dataUpdatedAt` (ms epoch) whenever displayed applet data changes so hosts can show freshness next to CLI/run output
 - treat non-200 responses, especially `404`, as expected unavailability and show a clear fallback UI instead of crashing the applet
 - make sure every referenced static asset exists under `applet/dist/`
 - include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s

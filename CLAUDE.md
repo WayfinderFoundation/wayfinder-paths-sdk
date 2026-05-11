@@ -137,6 +137,8 @@ When creating or updating a Wayfinder pack with a browser applet:
   - prefer `wf:state.apiBase`
   - otherwise use the `wf:hello` origin when embedded by the Strategies host
   - do not probe both dev and prod from the same applet build
+- if the applet renders an execution result, render the run snapshot artifact instead of re-fetching browser data; if it intentionally shows live browser data, label it as `Applet: live as of HH:MM`
+- post `wf:state` with `state._meta.dataUpdatedAt` (ms epoch) whenever displayed applet data changes so hosts can show freshness next to CLI/run output
 - treat non-200 responses, especially `404`, as expected unavailability:
   - show a clear "data unavailable" or "waiting for host API" state
   - do not crash the applet on missing data

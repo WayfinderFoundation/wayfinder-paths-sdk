@@ -30,5 +30,8 @@ Use this skill when you need to inspect, install, or operate the `{{slug}}` path
 - If the applet is embedded by the Strategies path page, same-origin `/api/v1/delta-lab/public/assets/<symbol>/timeseries/` is fine.
 - Prefer the host bridge base URL (`wf:state.apiBase`, then `wf:hello` origin) instead of hardcoding or probing environments.
 - Do not probe multiple environments from one applet build, and do not call `/api/v1/delta-lab/symbols/`.
+- If the applet renders an execution result, render the run snapshot artifact instead of re-fetching browser data.
+- If the applet intentionally shows live browser data, label it as `Applet: live as of HH:MM`.
+- Post `wf:state` with `state._meta.dataUpdatedAt` (ms epoch) whenever displayed data changes.
 - Treat non-200 responses, especially `404`, as data unavailability and render a safe fallback UI.
 - Ensure every referenced file exists in `applet/dist/`, and include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s.
