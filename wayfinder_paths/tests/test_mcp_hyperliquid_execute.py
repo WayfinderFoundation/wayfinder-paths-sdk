@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -24,6 +25,41 @@ class _StubAdapter(HyperliquidAdapter):
 
     async def get_spot_assets(self):
         return True, self._spot_assets
+
+
+class _FastOrderAdapter:
+    def __init__(self):
+        self.wallet_address = "0x000000000000000000000000000000000000bEEF"
+        self.get_all_mid_prices_calls = 0
+        self.get_max_builder_fee_calls = 0
+        self.place_market_order_call: dict[str, Any] | None = None
+
+    async def get_asset_id(self, asset_name: str):
+        return 0 if asset_name == "BTC-USDC" else None
+
+    def get_market_type(self, asset_name: str):
+        return HyperliquidAdapter.get_market_type(asset_name)
+
+    def get_mid_price_key(self, asset_name: str, asset_id: int):
+        return HyperliquidAdapter.get_mid_price_key(asset_name, asset_id)
+
+    async def get_all_mid_prices(self):
+        self.get_all_mid_prices_calls += 1
+        return True, {"BTC": 50000.0}
+
+    async def get_max_builder_fee(self, user: str, builder: str):
+        self.get_max_builder_fee_calls += 1
+        return True, 30
+
+    async def approve_builder_fee(self, builder: str, max_fee_rate: str, address: str):
+        raise AssertionError("builder fee should already be approved")
+
+    def get_valid_order_size(self, asset_id: int, size: float):
+        return size
+
+    async def place_market_order(self, *args: Any, **kwargs: Any):
+        self.place_market_order_call = {"args": args, "kwargs": kwargs}
+        return True, {"status": "ok"}
 
 
 @pytest.mark.asyncio
@@ -101,3 +137,48 @@ async def test_hyperliquid_execute_withdraw(tmp_path: Path, monkeypatch):
             "withdraw", wallet_label="main", amount_usdc=10
         )
         assert out1["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_execute_reuses_mid_price_and_builder_check(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    adapter = _FastOrderAdapter()
+    with (
+        patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.get_adapter",
+            new=AsyncMock(return_value=adapter),
+        ),
+    ):
+        out = await hyperliquid_execute(
+            "place_order",
+            wallet_label="main",
+            asset_name="BTC-USDC",
+            order_type="market",
+            is_buy=False,
+            usd_amount=100,
+            usd_amount_kind="notional",
+            slippage=0.01,
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert adapter.get_all_mid_prices_calls == 1
+    assert adapter.get_max_builder_fee_calls == 1
+    assert adapter.place_market_order_call is not None
+    assert adapter.place_market_order_call["args"][:5] == (
+        0,
+        False,
+        0.01,
+        pytest.approx(0.002),
+        adapter.wallet_address,
+    )
+    assert adapter.place_market_order_call["kwargs"]["mid_price"] == 50000.0
+    assert adapter.place_market_order_call["kwargs"]["builder_fee_preapproved"] is True
+    assert result["order"]["sizing"]["price_used"] == 50000.0
+    assert result["effects"][0]["label"] == "get_max_builder_fee"
+    assert result["effects"][1]["label"] == "place_market_order"

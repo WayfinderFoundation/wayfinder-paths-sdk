@@ -7,12 +7,17 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdap
 
 
 class _InfoStub(SimpleNamespace):
+    def __init__(self):
+        super().__init__()
+        self.post_payload_types = []
+
     def all_mids(self):
         return {"HYPE": "1.0"}
 
     def post(self, url_path, payload=None):
         if isinstance(payload, dict):
             req_type = payload.get("type", "")
+            self.post_payload_types.append(req_type)
             if req_type == "allMids":
                 return {"HYPE": "1.0"}
             if req_type == "maxBuilderFee":
@@ -68,3 +73,42 @@ class TestAdapterMidPriceFetch:
             assert action["orders"][0]["a"] == 7
             assert action["orders"][0]["b"] is True
             assert action["orders"][0]["p"] == "1.01"
+
+    @pytest.mark.asyncio
+    async def test_place_market_order_reuses_prevalidated_context(self):
+        info_stub = _InfoStub()
+        with (
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+                return_value=info_stub,
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
+                return_value=[""],
+            ),
+        ):
+            adapter = HyperliquidAdapter(
+                config={},
+                sign_typed_data_callback=AsyncMock(return_value="0x" + "00" * 65),
+            )
+
+            async def _no_broadcast(action, address):
+                return {"status": "ok", "action": action}
+
+            adapter._sign_and_broadcast_hypecore = _no_broadcast
+
+            success, result = await adapter.place_market_order(
+                asset_id=7,
+                is_buy=False,
+                slippage=0.01,
+                size=1.0,
+                address="0xabc",
+                builder_fee_preapproved=True,
+                mid_price=1.0,
+            )
+
+            action = result["action"]
+            assert success is True
+            assert action["orders"][0]["p"] == "0.99"
+            assert "allMids" not in info_stub.post_payload_types
+            assert "maxBuilderFee" not in info_stub.post_payload_types

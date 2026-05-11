@@ -97,6 +97,26 @@ async def _ensure_builder_fee_approval(
         raise ValueError(f"Failed to approve Wayfinder builder fee: {appr}")
 
 
+def _mid_price_from_snapshot(
+    adapter: HyperliquidAdapter,
+    *,
+    asset_name: str,
+    asset_id: int,
+    mids: dict[str, Any],
+) -> float | None:
+    for key in adapter.get_mid_price_key(asset_name, asset_id):
+        v = mids.get(key)
+        if v is None:
+            continue
+        try:
+            mid = float(v)
+        except (TypeError, ValueError):
+            continue
+        if mid > 0:
+            return mid
+    return None
+
+
 @catch_errors
 async def hyperliquid_execute(
     action: Literal[
@@ -327,7 +347,19 @@ async def hyperliquid_execute(
         )
     market_type = adapter.get_market_type(asset_name)
 
-    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
+    prefetch_mids_task: asyncio.Task[tuple[bool, Any]] | None = None
+    if action == "place_order" and order_type == "market":
+        needs_mid_price = market_type != "hip4" or price is None or size is None
+        if needs_mid_price:
+            prefetch_mids_task = asyncio.create_task(adapter.get_all_mid_prices())
+
+    try:
+        await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
+    except Exception:
+        if prefetch_mids_task is not None:
+            prefetch_mids_task.cancel()
+            await asyncio.gather(prefetch_mids_task, return_exceptions=True)
+        raise
 
     match action:
         case "update_leverage":
@@ -470,6 +502,7 @@ async def hyperliquid_execute(
                 is_market=bool(is_market_trigger),
                 limit_price=limit_px,
                 builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                builder_fee_preapproved=True,
             )
             effects.append(
                 {
@@ -520,6 +553,10 @@ async def hyperliquid_execute(
             return response
 
         case "place_order":
+            prefetched_mids: tuple[bool, Any] | None = None
+            if prefetch_mids_task is not None:
+                prefetched_mids = await prefetch_mids_task
+
             match market_type:
                 case "hip4":
                     outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
@@ -530,6 +567,7 @@ async def hyperliquid_execute(
                     # Outcomes are integer contracts (szDecimals=0) with no $10 floor;
                     # accept either explicit `size` or `usd_amount` for market orders.
                     size_i: int | None = None if size is None else int(size)
+                    outcome_mid_price: float | None = None
                     if size_i is None:
                         throw_if_none(
                             "size or usd_amount is required for outcome orders",
@@ -539,7 +577,13 @@ async def hyperliquid_execute(
                             raise ValueError(
                                 "usd_amount sizing is only supported for market outcome orders"
                             )
-                        ok_mids, mids = await adapter.get_all_mid_prices()
+
+                    if order_type == "market" and (size_i is None or price is None):
+                        ok_mids, mids = (
+                            prefetched_mids
+                            if prefetched_mids is not None
+                            else await adapter.get_all_mid_prices()
+                        )
                         if not ok_mids or not isinstance(mids, dict):
                             return err("price_error", "Failed to fetch mid prices")
                         mid = mids.get(asset_name)
@@ -548,7 +592,10 @@ async def hyperliquid_execute(
                                 "price_error",
                                 f"Could not resolve mid price for {asset_name}",
                             )
-                        size_i = max(1, round(float(usd_amount) / float(mid)))
+                        outcome_mid_price = float(mid)
+
+                    if size_i is None:
+                        size_i = max(1, round(float(usd_amount) / outcome_mid_price))
 
                     ok_order, res = await adapter.place_outcome_order(
                         outcome_id=outcome_id_v,
@@ -561,6 +608,9 @@ async def hyperliquid_execute(
                         reduce_only=bool(reduce_only),
                         cloid=cloid,
                         address=sender,
+                        builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                        builder_fee_preapproved=True,
+                        mid_price=outcome_mid_price,
                     )
                     effects.append(
                         {
@@ -635,6 +685,27 @@ async def hyperliquid_execute(
                             raise ValueError("slippage > 0.25 is too risky")
                         px_for_sizing = None
 
+                    market_mid_price: float | None = None
+                    if order_type == "market":
+                        ok_mids, mids = (
+                            prefetched_mids
+                            if prefetched_mids is not None
+                            else await adapter.get_all_mid_prices()
+                        )
+                        if not ok_mids or not isinstance(mids, dict):
+                            return err("price_error", "Failed to fetch mid prices")
+                        market_mid_price = _mid_price_from_snapshot(
+                            adapter,
+                            asset_name=asset_name,
+                            asset_id=resolved_asset_id,
+                            mids=mids,
+                        )
+                        if market_mid_price is None:
+                            return err(
+                                "price_error",
+                                f"Could not resolve mid price for {asset_name}",
+                            )
+
                     sizing: dict[str, Any] = {"source": "size"}
                     if size is not None:
                         sz = throw_if_not_number("size must be a number", size)
@@ -681,31 +752,7 @@ async def hyperliquid_execute(
                                     margin_usd = None
 
                         if px_for_sizing is None:
-                            ok_mids, mids = await adapter.get_all_mid_prices()
-                            if not ok_mids or not isinstance(mids, dict):
-                                response = err(
-                                    "price_error", "Failed to fetch mid prices"
-                                )
-                                return response
-                            mid = None
-                            for key in adapter.get_mid_price_key(
-                                asset_name, resolved_asset_id
-                            ):
-                                v = mids.get(key)
-                                if v is None:
-                                    continue
-                                try:
-                                    mid = float(v)
-                                    break
-                                except (TypeError, ValueError):
-                                    continue
-                            if mid is None or mid <= 0:
-                                response = err(
-                                    "price_error",
-                                    f"Could not resolve mid price for {asset_name}",
-                                )
-                                return response
-                            px_for_sizing = mid
+                            px_for_sizing = market_mid_price
 
                         sz = notional_usd / float(px_for_sizing)
                         sizing = {
@@ -773,6 +820,7 @@ async def hyperliquid_execute(
                             sender,
                             reduce_only=bool(reduce_only),
                             builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                            builder_fee_preapproved=True,
                         )
                         effects.append(
                             {
@@ -792,6 +840,8 @@ async def hyperliquid_execute(
                             reduce_only=bool(reduce_only),
                             cloid=cloid,
                             builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                            builder_fee_preapproved=True,
+                            mid_price=market_mid_price,
                         )
                         effects.append(
                             {

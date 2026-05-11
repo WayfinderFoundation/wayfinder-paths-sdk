@@ -705,19 +705,30 @@ class HyperliquidAdapter(BaseAdapter):
         reduce_only: bool = False,
         cloid: str | None = None,
         builder: dict[str, Any] | None = None,
+        builder_fee_preapproved: bool = False,
+        mid_price: float | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
-        await self.ensure_builder_fee_approved(address, builder_fee)
+        if not builder_fee_preapproved:
+            await self.ensure_builder_fee_approved(address, builder_fee)
 
-        asset_name = get_info().asset_to_coin[asset_id]
-        ok, mids = await self.get_all_mid_prices()
-        if not ok or asset_name not in mids:
-            return False, {
-                "status": "err",
-                "error": f"Could not fetch mid price for {asset_name}",
-            }
-        midprice = mids[asset_name]
+        if mid_price is None:
+            asset_name = get_info().asset_to_coin[asset_id]
+            ok, mids = await self.get_all_mid_prices()
+            if not ok or asset_name not in mids:
+                return False, {
+                    "status": "err",
+                    "error": f"Could not fetch mid price for {asset_name}",
+                }
+            midprice = mids[asset_name]
+        else:
+            midprice = float(mid_price)
+            if midprice <= 0:
+                return False, {
+                    "status": "err",
+                    "error": f"mid_price must be positive, got {mid_price}",
+                }
 
         if slippage >= 1 or slippage < 0:
             return False, {
@@ -834,6 +845,8 @@ class HyperliquidAdapter(BaseAdapter):
         reduce_only: bool = False,
         cloid: str | None = None,
         builder: dict[str, Any] | None = None,
+        builder_fee_preapproved: bool = False,
+        mid_price: float | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         """Place an outcome order. Reuses the existing wire/sign/broadcast path.
 
@@ -861,19 +874,29 @@ class HyperliquidAdapter(BaseAdapter):
             }
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
-        await self.ensure_builder_fee_approved(address, builder_fee)
+        if not builder_fee_preapproved:
+            await self.ensure_builder_fee_approved(address, builder_fee)
 
         asset_id = outcome_asset_id(outcome_id, side)
         book_coin = outcome_book_coin(outcome_id, side)
 
         if price is None:
-            ok, mids = await self.get_all_mid_prices()
-            if not ok or book_coin not in mids:
-                return False, {
-                    "status": "err",
-                    "error": f"Could not fetch mid price for {book_coin}",
-                }
-            price = mids[book_coin] * ((1 + slippage) if is_buy else (1 - slippage))
+            if mid_price is None:
+                ok, mids = await self.get_all_mid_prices()
+                if not ok or book_coin not in mids:
+                    return False, {
+                        "status": "err",
+                        "error": f"Could not fetch mid price for {book_coin}",
+                    }
+                mid = mids[book_coin]
+            else:
+                mid = float(mid_price)
+                if mid <= 0:
+                    return False, {
+                        "status": "err",
+                        "error": f"mid_price must be positive, got {mid_price}",
+                    }
+            price = mid * ((1 + slippage) if is_buy else (1 - slippage))
 
         # Clamp inside (0, 1); HL rejects 0/1.
         price = max(0.0001, min(0.9999, float(price)))
@@ -1168,10 +1191,12 @@ class HyperliquidAdapter(BaseAdapter):
         is_market: bool = True,
         limit_price: float | None = None,
         builder: dict[str, Any] | None = None,
+        builder_fee_preapproved: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
-        await self.ensure_builder_fee_approved(address, builder_fee)
+        if not builder_fee_preapproved:
+            await self.ensure_builder_fee_approved(address, builder_fee)
         builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
 
         order_type: OrderType = {
@@ -1431,10 +1456,12 @@ class HyperliquidAdapter(BaseAdapter):
         reduce_only: bool = False,
         builder: dict[str, Any] | None = None,
         cloid: str | None = None,
+        builder_fee_preapproved: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
-        await self.ensure_builder_fee_approved(address, builder_fee)
+        if not builder_fee_preapproved:
+            await self.ensure_builder_fee_approved(address, builder_fee)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
             is_buy,
