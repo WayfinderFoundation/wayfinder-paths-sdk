@@ -1,0 +1,78 @@
+{
+  "schema_version": "0.1",
+  "produced": {
+    "at": "2026-05-08T16:00:00Z",
+    "skill": "spread-radar audit + 25bps-slippage recalibration",
+    "git_sha": "3958e79bce3ff6172acdde383df85042742eeeca",
+    "ref_hash": "apex_gmx_velocity_v1"
+  },
+  "code": {
+    "signal": {
+      "module": "wayfinder_paths.strategies.apex_gmx_velocity.signal",
+      "entrypoint": "compute_signal",
+      "source_sha256": "86b9bdd23e59adad1fc1f38770ba4bb5f7250fe1bda23f8272ed6a6f6feef70f"
+    },
+    "decide": {
+      "module": "wayfinder_paths.strategies.apex_gmx_velocity.decide",
+      "entrypoint": "decide",
+      "source_sha256": "0cb632589d22d39e36e373001d47d13a28be72b079e77b66c0b1b4597ddfc443"
+    }
+  },
+  "venues": {
+    "perp": true,
+    "hip3": []
+  },
+  "data": {
+    "symbols": ["APEX", "GMX"],
+    "interval": "1h",
+    "window": {
+      "start": "2025-10-20",
+      "end": "2026-05-08",
+      "bars": 4801
+    },
+    "fingerprint": "hl_2025-10-20_2026-05-08_apex_gmx_1h"
+  },
+  "params": {
+    "lookback_bars": 72,
+    "entry_z": 2.0,
+    "velocity_bars": 6,
+    "target_leverage": 1.5,
+    "rebalance_threshold": 0.02,
+    "min_order_usd": 10.0
+  },
+  "execution_assumptions": {
+    "fill_model": "next_bar_open",
+    "slippage_bps": 25.0,
+    "fee_bps": 4.5,
+    "min_order_usd": 10.0,
+    "slippage_note": "Calibrated from 10-fill audit on perp_dex_pair_velocity (avg 22.9 bps observed). Conservative for APEX/GMX which can show wider spreads at bar boundary."
+  },
+  "performance": {
+    "sharpe": 3.78,
+    "total_return": 0.5014,
+    "max_drawdown": -0.10,
+    "sharpe_30d": 3.25,
+    "sharpe_60d": 4.07,
+    "sharpe_90d": 3.78,
+    "sharpe_120d": 3.74,
+    "total_return_30d": 0.0877,
+    "total_return_60d": 0.2654,
+    "total_return_90d": 0.5014,
+    "total_return_120d": 0.6407,
+    "trade_count_30d": 27,
+    "trade_count_60d": 55,
+    "trade_count_90d": 83,
+    "trade_count_120d": 104,
+    "annualized_return": 1.95,
+    "annualized_return_note": "120d return × 365/120 ≈ 195% gross. After realistic compounding, expect 100-150% annualized."
+  },
+  "monitoring": {
+    "drift_tolerances": {
+      "trigger_timing_ms": 60000,
+      "decision_parity": 0.90,
+      "size_drift_pct": 0.10,
+      "fill_price_drift_bps": 60.0,
+      "fill_completion_pct": 0.90
+    }
+  }
+}

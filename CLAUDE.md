@@ -351,6 +351,8 @@ just create-strategy "My Strategy Name"
 
 Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
 
+**For perp strategies (Hyperliquid `ActivePerpsStrategy`)**: after scaffolding, copy the layout from the canonical reference [`wayfinder_paths/strategies/apex_gmx_velocity/`](wayfinder_paths/strategies/apex_gmx_velocity/) — it has the right `signal.py`/`decide.py` separation, schema-compliant `backtest_ref.json`, and parity-validated test pattern. Load `/developing-wayfinder-strategies` for the full perp contracts (SignalFrame return type, size rounding via `round_size_for_asset`, the `iloc[-1]` decide pattern, etc.).
+
 **New adapter:**
 
 ```bash
