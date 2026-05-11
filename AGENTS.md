@@ -100,12 +100,11 @@ Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp
 
 Hyperliquid spot_to_perp_transfer and perp_to_spot_transfer only work with USDC spot to/from USDC perps. Other USD stables will need to be converted first.
 
-**Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present candidates side-by-side so the user can choose. Two venues:
+**Outcome / prediction markets - Polymarket first unless the user specifies a venue.** When a user mentions "outcome market" or "prediction market" without naming a platform, start with **Polymarket** because that is the expected default for broad prediction-market requests. Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`, evaluate volume/liquidity/tradability when available, and present the strongest Polymarket candidates first.
 
-- **Hyperliquid HIP-4** — daily binary price contracts settled in USDH on the HL L1; rotating daily lineup. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` (read the `outcomes` bucket).
-- **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in USDC.e on Polygon. Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
+Use **Hyperliquid HIP-4** outcome markets only when the user explicitly asks for Hyperliquid/HL/HIP-4, asks for short-dated daily binary price contracts, or when Polymarket has no clear/liquid fit and HL has a materially better match. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket. HL outcomes are daily binary price contracts settled in USDH on the HL L1 with a rotating daily lineup.
 
-Present results as a table grouped by venue, then ask which market to trade — the same theme can list on both venues with different sizes, expiries, and collateral. Load `/using-hyperliquid-adapter` or `/using-polymarket-adapter` once the user picks.
+If both venues are relevant, present Polymarket first and explain why any HL candidate is included. Before any trade, ask which market/outcome to use - the same theme can list on both venues with different sizes, expiries, and collateral. Load `/using-polymarket-adapter` or `/using-hyperliquid-adapter` once the user picks.
 
 Supported chains:
 
