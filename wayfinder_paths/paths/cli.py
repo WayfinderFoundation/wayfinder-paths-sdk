@@ -23,6 +23,7 @@ from wayfinder_paths.paths.doctor import PathDoctorError, PathDoctorReport, run_
 from wayfinder_paths.paths.evaluator import PathEvalError, run_path_eval
 from wayfinder_paths.paths.formatter import PathFormatError, format_path
 from wayfinder_paths.paths.hooks import PathHooksError, install_path_hooks
+from wayfinder_paths.paths.invocation import build_path_invocation_guidance
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
@@ -552,6 +553,18 @@ def _read_export_manifest(source_dir: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _export_invocation_guidance(
+    export_manifest: dict[str, Any],
+) -> dict[str, Any] | None:
+    invocation = export_manifest.get("invocation")
+    if isinstance(invocation, dict):
+        return invocation
+    install = export_manifest.get("install")
+    if isinstance(install, dict) and isinstance(install.get("invocation"), dict):
+        return install["invocation"]
+    return None
 
 
 def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -1099,6 +1112,12 @@ def _activate_export(
 
     export_manifest = _read_export_manifest(source_dir)
     install_targets = export_manifest.get("install_targets") or []
+    invocation = _export_invocation_guidance(export_manifest)
+    if invocation is None and path_dir is not None:
+        invocation = build_path_invocation_guidance(
+            _load_path_manifest(path_dir),
+            host=normalized_host,
+        )
     if install_targets:
         destination_root_path = destination_root or _activate_install_root(
             normalized_host, normalized_scope, cwd=Path.cwd()
@@ -1115,7 +1134,7 @@ def _activate_export(
         applied = [str(dest)]
         mode = "copy"
     root = _activation_root_from_result(mode=mode, dest=dest)
-    return {
+    result = {
         "host": normalized_host,
         "scope": normalized_scope,
         "source": str(source_dir),
@@ -1124,6 +1143,9 @@ def _activate_export(
         "mode": mode,
         "applied": applied,
     }
+    if invocation:
+        result["invocation"] = invocation
+    return result
 
 
 @click.group(name="path", help="Build, publish, and emit signals for Paths.")
@@ -2196,6 +2218,12 @@ def _install_path_with_options(
 
     dependency_results: list[dict[str, Any]] = []
     normalized_host = str(host or "").strip().lower() or None
+    installed_manifest = _load_path_manifest(installed_path)
+    invocation = build_path_invocation_guidance(
+        installed_manifest,
+        host=normalized_host,
+    )
+    response["invocation"] = invocation
     normalized_scope = (
         _normalize_host_scope(normalized_host, scope)
         if normalized_host and scope
@@ -2277,9 +2305,9 @@ def _install_path_with_options(
         response["next_steps"] = (
             [
                 "Restart OpenCode if it was already running so new plugins are loaded.",
-                f"Run /{_load_path_manifest(installed_path).pipeline.entry_command if _load_path_manifest(installed_path).pipeline and _load_path_manifest(installed_path).pipeline.entry_command else _load_path_manifest(installed_path).skill.name}.",
+                f"Run {invocation['slash_command']}.",
             ]
-            if normalized_host == "opencode"
+            if normalized_host == "opencode" and invocation.get("slash_command")
             else []
         )
     return response
