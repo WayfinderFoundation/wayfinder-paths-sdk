@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 from pathlib import Path
@@ -26,6 +27,15 @@ def _load_frontmatter(path: Path) -> dict:
     end = text.find("\n---\n", start + 4)
     assert start == 0 and end > 0
     return yaml.safe_load(text[4:end]) or {}
+
+
+def _load_bootstrap_module(path: Path):
+    spec = importlib.util.spec_from_file_location("wf_bootstrap_under_test", path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _make_pipeline_path(tmp_path: Path) -> Path:
@@ -129,6 +139,27 @@ def test_opencode_export_is_model_neutral_and_callable_by_default(tmp_path: Path
     )
     assert export_manifest["requires"]["skills"][0]["path_slug"] == "using-delta-lab"
     assert export_manifest["requires"]["skills"][0]["skill_name"] == "using-delta-lab"
+
+
+def test_opencode_bootstrap_falls_back_from_missing_config_dev_json(
+    tmp_path: Path, monkeypatch
+):
+    path_dir = _make_pipeline_path(tmp_path)
+    report = render_skill_exports(path_dir=path_dir, hosts=["opencode"])
+    export_dir = report.exports["opencode"].export_dir
+    bootstrap = _load_bootstrap_module(export_dir / "scripts" / "wf_bootstrap.py")
+
+    config_dir = tmp_path / "project"
+    config_dir.mkdir()
+    config_json = config_dir / "config.json"
+    config_json.write_text('{"system":{"api_key":"wk_test"}}\n', encoding="utf-8")
+    missing_dev_config = config_dir / "config.dev.json"
+    monkeypatch.setenv("WAYFINDER_CONFIG_PATH", str(missing_dev_config))
+
+    env = bootstrap._runtime_env({"config_path_env": "WAYFINDER_CONFIG_PATH"})
+
+    assert env["WAYFINDER_CONFIG_PATH"] == str(config_json)
+    assert bootstrap._config_has_api_key(str(missing_dev_config)) is True
 
 
 def test_opencode_export_renders_model_only_when_configured(tmp_path: Path):

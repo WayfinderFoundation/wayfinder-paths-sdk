@@ -36,6 +36,57 @@ def test_resolve_config_path_env_relative_is_repo_relative(
     assert config.resolve_config_path() == repo_root / "config.example.json"
 
 
+def test_missing_env_config_dev_falls_back_to_config_json(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_json = tmp_path / "config.json"
+    config_json.write_text('{"system":{"api_key":"wk_test"}}\n', encoding="utf-8")
+    monkeypatch.setenv("WAYFINDER_CONFIG_PATH", str(tmp_path / "config.dev.json"))
+
+    assert config.resolve_config_path() == config_json
+    assert config.load_config_json(require_exists=True)["system"]["api_key"] == "wk_test"
+
+
+def test_existing_env_config_dev_is_used(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_json = tmp_path / "config.json"
+    config_dev_json = tmp_path / "config.dev.json"
+    config_json.write_text('{"system":{"api_key":"wk_prod"}}\n', encoding="utf-8")
+    config_dev_json.write_text('{"system":{"api_key":"wk_dev"}}\n', encoding="utf-8")
+    monkeypatch.setenv("WAYFINDER_CONFIG_PATH", str(config_dev_json))
+
+    assert config.resolve_config_path() == config_dev_json
+    assert config.load_config_json(require_exists=True)["system"]["api_key"] == "wk_dev"
+
+
+def test_missing_explicit_config_dev_falls_back_to_config_json(tmp_path: Path) -> None:
+    config_json = tmp_path / "config.json"
+    config_json.write_text('{"system":{"api_key":"wk_test"}}\n', encoding="utf-8")
+
+    assert config.resolve_config_path(tmp_path / "config.dev.json") == config_json
+    assert (
+        config.load_config_json(tmp_path / "config.dev.json", require_exists=True)[
+            "system"
+        ]["api_key"]
+        == "wk_test"
+    )
+
+
+def test_write_config_json_respects_explicit_config_dev_path(tmp_path: Path) -> None:
+    config_json = tmp_path / "config.json"
+    config_dev_json = tmp_path / "config.dev.json"
+    config_json.write_text('{"system":{"api_key":"wk_prod"}}\n', encoding="utf-8")
+
+    written = config.write_config_json(
+        config_dev_json, {"system": {"api_key": "wk_dev"}}
+    )
+
+    assert written == config_dev_json
+    assert config.load_config_json(config_dev_json)["system"]["api_key"] == "wk_dev"
+    assert config.load_config_json(config_json)["system"]["api_key"] == "wk_prod"
+
+
 def test_load_config_json_supports_env_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

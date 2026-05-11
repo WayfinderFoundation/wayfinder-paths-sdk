@@ -5,6 +5,7 @@ from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
+_DEV_CONFIG_FILENAME = "config.dev.json"
 _DEFAULT_API_BASE_URL = "https://strategies.wayfinder.ai/api/v1"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 
@@ -21,9 +22,22 @@ def _project_root() -> Path | None:
     return _find_project_root(Path.cwd()) or _find_project_root(Path(__file__).parent)
 
 
-def resolve_config_path(path: str | Path | None = None) -> Path:
+def _fallback_config_path(path: Path) -> Path:
+    if path.name != _DEV_CONFIG_FILENAME or path.exists():
+        return path
+
+    fallback = path.with_name(_DEFAULT_CONFIG_FILENAME)
+    if fallback.exists():
+        return fallback
+    return path
+
+
+def resolve_config_path(
+    path: str | Path | None = None, *, allow_dev_fallback: bool = True
+) -> Path:
     if path is not None:
-        return Path(path).expanduser()
+        resolved = Path(path).expanduser()
+        return _fallback_config_path(resolved) if allow_dev_fallback else resolved
 
     env_path = next(
         (os.getenv(k, "").strip() for k in _CONFIG_ENV_KEYS if os.getenv(k)), ""
@@ -31,9 +45,9 @@ def resolve_config_path(path: str | Path | None = None) -> Path:
     if env_path:
         p = Path(env_path).expanduser()
         if p.is_absolute():
-            return p
+            return _fallback_config_path(p)
         root = _project_root()
-        return (root / p) if root else p
+        return _fallback_config_path((root / p) if root else p)
 
     root = _project_root()
     return (root / _DEFAULT_CONFIG_FILENAME) if root else Path(_DEFAULT_CONFIG_FILENAME)
@@ -54,7 +68,7 @@ def load_config_json(
 
 
 def write_config_json(path: str | Path | None, config: dict[str, Any]) -> Path:
-    cfg_path = resolve_config_path(path)
+    cfg_path = resolve_config_path(path, allow_dev_fallback=path is None)
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(json.dumps(config, indent=2) + "\n")
     return cfg_path
@@ -152,7 +166,7 @@ def load_wallet_mnemonic(path: str | Path | None = None) -> str | None:
 
 
 def write_wallet_mnemonic(mnemonic: str, path: str | Path | None = None) -> Path:
-    cfg_path = resolve_config_path(path)
+    cfg_path = resolve_config_path(path, allow_dev_fallback=path is None)
     config = load_config_json(cfg_path)
     config[_WALLET_MNEMONIC_KEY] = mnemonic
     write_config_json(cfg_path, config)

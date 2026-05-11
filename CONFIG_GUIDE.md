@@ -170,16 +170,13 @@ class MyStrategy(Strategy):
         custom_param = self.config.get("my_custom_param", "default")
 ```
 
-## Environment-Specific Configuration
+## Optional Custom Configuration Files
 
-For different environments, create separate config files:
+For most local and installed Path usage, keep the standard `config.json` filename. If you
+intentionally maintain a separate config file, pass the existing file explicitly:
 
 ```bash
-# Development
-poetry run python -m wayfinder_paths.run_strategy my_strategy --config config.dev.json
-
-# Production
-poetry run python -m wayfinder_paths.run_strategy my_strategy --config config.prod.json
+poetry run python -m wayfinder_paths.run_strategy my_strategy --config path/to/config.json
 ```
 
 ## Security Best Practices
