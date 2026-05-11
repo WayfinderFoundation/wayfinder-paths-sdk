@@ -160,6 +160,12 @@ runner(action="daemon_stop")                          # shut down daemon
 
 See `RUNNER_ARCHITECTURE.md`.
 
+## Path creation
+
+- When creating a new Wayfinder path, include a browser applet by default or explicitly ask the owner before omitting one.
+- The manage page uses applet presence as a verification requirement, so publishing without an applet can block approval until the owner publishes a replacement version.
+- `poetry run wayfinder path init <slug>` scaffolds an applet by default; use `--no-applet` only when the owner intentionally wants no presentation UI.
+
 ## Path updates
 
 - `poetry run wayfinder path update <slug>` is the single-path update command for installed paths.

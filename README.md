@@ -309,6 +309,7 @@ The backend no longer proxies archive bytes during ingest. Uploaded artifacts la
 If you are automating path publication:
 
 - prefer `wayfinder path publish` over custom multipart upload scripts
+- create a browser applet by default (`wayfinder path init ... --applet` is the default); use `--no-applet` only when the owner explicitly wants a path without presentation UI
 - run `wayfinder path fmt` and `wayfinder path doctor` before publish
 - assume `WAYFINDER_PATHS_API_URL` points at the Strategies backend and `WAYFINDER_API_KEY` provides auth when required
 - surface `manageUrl`, `ownerLinkRequired`, `reviewState`, `publishState`, and `nextAction` exactly as returned
