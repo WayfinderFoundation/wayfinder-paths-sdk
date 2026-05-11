@@ -160,6 +160,12 @@ runner(action="daemon_stop")                          # shut down daemon
 
 See `RUNNER_ARCHITECTURE.md`.
 
+## Path creation
+
+- When creating a new Wayfinder path, include a browser applet by default or explicitly ask the owner before omitting one.
+- The manage page uses applet presence as a verification requirement, so publishing without an applet can block approval until the owner publishes a replacement version.
+- `poetry run wayfinder path init <slug>` scaffolds an applet by default; use `--no-applet` only when the owner intentionally wants no presentation UI.
+
 ## Path updates
 
 - `poetry run wayfinder path update <slug>` is the single-path update command for installed paths.
@@ -191,3 +197,18 @@ On Wayfinder Shells instances (`OPENCODE_INSTANCE_ID` set), the runner daemon au
 The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sidebar.
 
 **Don't silence `job_result` notifications.** When a scheduled job posts a `job_result` into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
+
+## User Suggestions (always emit)
+
+At the END of every response, emit a `<userSuggestions>...</userSuggestions>` block with exactly 3 short follow-ups the user might click instead of typing.
+
+- Pipe-delimited inside the tags: `<userSuggestions>opt1|opt2|opt3</userSuggestions>`
+- Phrased first-person from the user's perspective ("Open a long on ETH", not "Want to long ETH?")
+- Actionable and not open open-ended
+- Keep each option short (under ~8 words).
+- Always emit the block — even after errors, clarifications, or tool failures.
+- No:
+  - NO WALLET ADDRESSES
+  - Asset ids (prefer human readable text)
+  - Markdown
+  - Asset/protocol names that haven't appeared in the conversation.

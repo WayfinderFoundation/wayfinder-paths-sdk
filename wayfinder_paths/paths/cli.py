@@ -1131,9 +1131,7 @@ def path_cli() -> None:
     pass
 
 
-@path_cli.command(
-    name="init", help="Scaffold a new path folder (wfpath.yaml + optional applet)."
-)
+@path_cli.command(name="init", help="Scaffold a new path folder.")
 @click.argument("slug")
 @click.option(
     "--dir",
@@ -1156,7 +1154,12 @@ def path_cli() -> None:
     ),
 )
 @click.option("--tag", "tags", multiple=True, help="Tag (repeatable).")
-@click.option("--applet/--no-applet", default=False, show_default=True)
+@click.option(
+    "--applet/--no-applet",
+    default=True,
+    show_default=True,
+    help="Include the browser applet scaffold used for preview and verification.",
+)
 @click.option("--skill/--no-skill", default=True, show_default=True)
 @click.option(
     "--template",

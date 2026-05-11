@@ -55,6 +55,20 @@ def test_path_init_creates_expected_files(tmp_path: Path):
     assert manifest.skill.runtime.component == "main"
 
 
+def test_path_init_defaults_to_applet(tmp_path: Path):
+    path_dir = tmp_path / "default-applet"
+    init_path(
+        path_dir=path_dir,
+        slug="default-applet",
+        primary_kind="monitor",
+    )
+
+    manifest = PathManifest.load(path_dir / "wfpath.yaml")
+    assert manifest.applet is not None
+    assert (path_dir / "applet" / "applet.manifest.json").exists()
+    assert (path_dir / "applet" / "dist" / "index.html").exists()
+
+
 def test_path_init_no_skill_omits_skill_source(tmp_path: Path):
     path_dir = tmp_path / "basic-path"
     init_path(

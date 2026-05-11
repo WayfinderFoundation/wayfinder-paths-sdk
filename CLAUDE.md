@@ -127,6 +127,11 @@ MCP tools: `research_get_alpha_types()`, `research_search_alpha(query, scan_type
 
 ## Pack applets
 
+When creating a new Wayfinder pack/path, include a browser applet by default or
+explicitly ask the owner before omitting one. The manage page uses applet
+presence as a verification requirement, so publishing without an applet can
+block approval until the owner publishes a replacement version.
+
 When creating or updating a Wayfinder pack with a browser applet:
 
 - browser applets must use the public Delta Lab browser-safe route:
@@ -345,6 +350,8 @@ just create-strategy "My Strategy Name"
 ```
 
 Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
+
+**For perp strategies (Hyperliquid `ActivePerpsStrategy`)**: after scaffolding, copy the layout from the canonical reference [`wayfinder_paths/strategies/apex_gmx_velocity/`](wayfinder_paths/strategies/apex_gmx_velocity/) — it has the right `signal.py`/`decide.py` separation, schema-compliant `backtest_ref.json`, and parity-validated test pattern. Load `/developing-wayfinder-strategies` for the full perp contracts (SignalFrame return type, size rounding via `round_size_for_asset`, the `iloc[-1]` decide pattern, etc.).
 
 **New adapter:**
 
