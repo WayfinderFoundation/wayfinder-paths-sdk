@@ -127,6 +127,11 @@ MCP tools: `research_get_alpha_types()`, `research_search_alpha(query, scan_type
 
 ## Pack applets
 
+When creating a new Wayfinder pack/path, include a browser applet by default or
+explicitly ask the owner before omitting one. The manage page uses applet
+presence as a verification requirement, so publishing without an applet can
+block approval until the owner publishes a replacement version.
+
 When creating or updating a Wayfinder pack with a browser applet:
 
 - browser applets must use the public Delta Lab browser-safe route:
