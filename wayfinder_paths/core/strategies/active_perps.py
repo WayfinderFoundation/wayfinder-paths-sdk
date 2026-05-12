@@ -75,6 +75,14 @@ class ActivePerpsStrategy(Strategy):
     AUTO_RECONCILE_WINDOW_DAYS: ClassVar[int] = 1
     AUTO_RECONCILE_MIN_INTERVAL_SECONDS: ClassVar[int] = 3600
 
+    # ---------- smoke-test config ----------
+    # The strategy's smoke test runs a backtest over the trailing
+    # `SMOKE_TEST_WINDOW_DAYS` and asserts `total_return >= SMOKE_MIN_TOTAL_RETURN`.
+    # Defaults are deliberately mild (break-even on 14d). Subclasses with stronger
+    # edge should raise the floor so regressions in signal/decide fail the smoke.
+    SMOKE_TEST_WINDOW_DAYS: ClassVar[int] = 14
+    SMOKE_MIN_TOTAL_RETURN: ClassVar[float] = 0.0
+
     # ---------- subclass shouldn't touch ----------
     _ref: BacktestRef
     _signal_fn: Callable[..., SignalFrame]

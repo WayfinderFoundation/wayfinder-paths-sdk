@@ -36,7 +36,10 @@ strategies/apex_gmx_velocity/
 │                          ActivePerpsStrategy.update() emits a risk_warning.
 ├── examples.json          Test fixture + expected backtest ranges
 ├── README.md              Performance, deploy steps, funding economics
-└── test_strategy.py       Smoke: class wires, signal invariants, backtest reproduces ref
+└── test_strategy.py       Smoke: class wires, signal invariants, backtest reproduces ref,
+                           AND a divergence check via `assert_active_perps_backtest_runs`
+                           (catches NAV-from-side-channel reads, framework-state writes,
+                           and purity violations in `decide`)
 ```
 
 ### Wallet-readiness gotchas (deploy blockers)

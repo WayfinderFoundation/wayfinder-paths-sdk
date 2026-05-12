@@ -36,6 +36,12 @@ class ApexGmxVelocityStrategy(ActivePerpsStrategy):
 
     HIP3_DEXES = []
 
+    # Backtest stats: 60d return averages ~+50% over the audit window. 60d is
+    # long enough that edge dominates variance — a smoke run dipping below 0
+    # on this strategy means a real regression.
+    SMOKE_TEST_WINDOW_DAYS = 60
+    SMOKE_MIN_TOTAL_RETURN = 0.0
+
     DEFAULT_PARAMS = {
         "lookback_bars": 72,
         "entry_z": 0.75,
