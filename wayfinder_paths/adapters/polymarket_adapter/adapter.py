@@ -100,7 +100,9 @@ def _to_base_units(amount: Decimal) -> int:
 
 
 def _deposit_wallet_buffered_amount(amount: Decimal) -> Decimal:
-    return max(amount * DEPOSIT_WALLET_FUND_BUFFER, amount + DEPOSIT_WALLET_MIN_FUND_BUFFER)
+    return max(
+        amount * DEPOSIT_WALLET_FUND_BUFFER, amount + DEPOSIT_WALLET_MIN_FUND_BUFFER
+    )
 
 
 def _wallet_id(owner: str) -> bytes:
@@ -347,7 +349,9 @@ class PolymarketAdapter(BaseAdapter):
         self._clob_http = httpx.AsyncClient(base_url=clob_base_url, timeout=timeout)
         self._data_http = httpx.AsyncClient(base_url=data_base_url, timeout=timeout)
         self._bridge_http = httpx.AsyncClient(base_url=bridge_base_url, timeout=timeout)
-        self._relayer_http = httpx.AsyncClient(base_url=relayer_base_url, timeout=timeout)
+        self._relayer_http = httpx.AsyncClient(
+            base_url=relayer_base_url, timeout=timeout
+        )
 
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
@@ -1380,7 +1384,9 @@ class PolymarketAdapter(BaseAdapter):
         deposit_wallet = self.deposit_wallet_address()
         if deposit_wallet:
             return deposit_wallet
-        raise ValueError("wallet_address is required for Polymarket deposit-wallet trading")
+        raise ValueError(
+            "wallet_address is required for Polymarket deposit-wallet trading"
+        )
 
     def _require_signer(self) -> tuple[str, Any]:
         addr = self._require_wallet_address()
@@ -1436,7 +1442,9 @@ class PolymarketAdapter(BaseAdapter):
         }
         return self._builder_creds
 
-    async def _builder_headers(self, method: str, path: str, body: str) -> dict[str, str]:
+    async def _builder_headers(
+        self, method: str, path: str, body: str
+    ) -> dict[str, str]:
         creds = await self._ensure_builder_creds()
         ts = str(int(time.time()))
         decoded_secret = base64.urlsafe_b64decode(creds["secret"])
@@ -1496,7 +1504,9 @@ class PolymarketAdapter(BaseAdapter):
                     to_checksum_address(POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION),
                     _wallet_id(owner),
                 ).call(block_identifier="pending")
-                if to_checksum_address(predicted) != to_checksum_address(deposit_wallet):
+                if to_checksum_address(predicted) != to_checksum_address(
+                    deposit_wallet
+                ):
                     raise ValueError("Deposit wallet derivation mismatch")
 
                 code = await web3.eth.get_code(to_checksum_address(deposit_wallet))

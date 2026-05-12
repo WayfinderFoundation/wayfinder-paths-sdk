@@ -69,7 +69,10 @@ class TestPolymarketAdapter:
         assert "chain" not in kwargs
         assert "chainId" not in kwargs
         assert kwargs["key"] == "0x" + "11" * 32
-        assert kwargs["signature_type"] == polymarket_adapter_module.SignatureTypeV2.POLY_1271
+        assert (
+            kwargs["signature_type"]
+            == polymarket_adapter_module.SignatureTypeV2.POLY_1271
+        )
         assert kwargs["funder"] == polymarket_adapter_module.derive_deposit_wallet(
             "0x000000000000000000000000000000000000dEaD"
         )
