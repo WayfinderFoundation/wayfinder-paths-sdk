@@ -12,10 +12,7 @@ from difflib import SequenceMatcher
 from typing import Any, Literal
 
 import httpx
-from eth_abi import encode as abi_encode
-from eth_account import Account
-from eth_account.messages import encode_typed_data
-from eth_utils import keccak, to_bytes, to_checksum_address
+from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from py_clob_client_v2 import AssetType, BalanceAllowanceParams, SignatureTypeV2
 from py_clob_client_v2.client import ClobClient  # type: ignore[import-untyped]
@@ -52,11 +49,15 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
     POLYMARKET_DEPOSIT_WALLET_FACTORY,
     POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
+    POLYMARKET_DEPOSIT_WALLET_FUND_BUFFER,
     POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
+    POLYMARKET_DEPOSIT_WALLET_MIN_FUND_BUFFER,
     POLYMARKET_GAMMA_BASE_URL,
     POLYMARKET_RELAYER_BASE_URL,
     TOKEN_UNWRAP_ABI,
     ZERO32_STR,
+    derive_deposit_wallet,
+    polymarket_deposit_wallet_id,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -86,56 +87,6 @@ def _fuzzy_score(query: str, text: str) -> float:
     if q in t:
         return 1.0
     return SequenceMatcher(None, q, t).ratio()
-
-
-DEPOSIT_WALLET_FUND_BUFFER = Decimal("1.10")
-DEPOSIT_WALLET_MIN_FUND_BUFFER = Decimal("0.50")
-ERC1967_CONST1 = "0xcc3735a920a3ca505d382bbc545af43d6000803e6038573d6000fd5b3d6000f3"
-ERC1967_CONST2 = "0x5155f3363d3d373d3d363d7f360894a13ba1a3210667c828492db98dca3e2076"
-ERC1967_PREFIX = 0x61003D3D8160233D3973
-
-
-def _to_base_units(amount: Decimal) -> int:
-    return int((amount * Decimal(1_000_000)).to_integral_value())
-
-
-def _deposit_wallet_buffered_amount(amount: Decimal) -> Decimal:
-    return max(
-        amount * DEPOSIT_WALLET_FUND_BUFFER, amount + DEPOSIT_WALLET_MIN_FUND_BUFFER
-    )
-
-
-def _wallet_id(owner: str) -> bytes:
-    return to_bytes(hexstr=to_checksum_address(owner)).rjust(32, b"\x00")
-
-
-def _create2_address(factory: str, salt: bytes, bytecode_hash: bytes) -> str:
-    raw = keccak(b"\xff" + to_bytes(hexstr=factory) + salt + bytecode_hash)
-    return to_checksum_address(raw[-20:].hex())
-
-
-def _init_code_hash_erc1967(implementation: str, args: bytes) -> bytes:
-    n = len(args)
-    combined = ERC1967_PREFIX + (n << 56)
-    init_code = (
-        combined.to_bytes(10, "big")
-        + to_bytes(hexstr=to_checksum_address(implementation))
-        + to_bytes(hexstr="0x6009")
-        + to_bytes(hexstr=ERC1967_CONST2)
-        + to_bytes(hexstr=ERC1967_CONST1)
-        + args
-    )
-    return keccak(init_code)
-
-
-def derive_deposit_wallet(owner: str) -> str:
-    factory = to_checksum_address(POLYMARKET_DEPOSIT_WALLET_FACTORY)
-    args = abi_encode(["address", "bytes32"], [factory, _wallet_id(owner)])
-    return _create2_address(
-        factory,
-        keccak(args),
-        _init_code_hash_erc1967(POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION, args),
-    )
 
 
 async def _try_brap_swap_polygon(
@@ -322,10 +273,9 @@ class PolymarketAdapter(BaseAdapter):
         *,
         sign_callback=None,
         sign_hash_callback=None,
-        private_key: str | None = None,
+        sign_typed_data_callback=None,
         wallet_address: str | None = None,
         funder: str | None = None,
-        signature_type: int | None = None,
         gamma_base_url: str = POLYMARKET_GAMMA_BASE_URL,
         clob_base_url: str = POLYMARKET_CLOB_BASE_URL,
         data_base_url: str = POLYMARKET_DATA_BASE_URL,
@@ -340,9 +290,8 @@ class PolymarketAdapter(BaseAdapter):
         )
         self.sign_callback = sign_callback
         self.sign_hash_callback = sign_hash_callback
-        self.private_key = private_key
+        self.sign_typed_data_callback = sign_typed_data_callback
         self._funder_override = funder
-        self._signature_type = signature_type
 
         timeout = httpx.Timeout(http_timeout_s)
         self._gamma_http = httpx.AsyncClient(base_url=gamma_base_url, timeout=timeout)
@@ -1414,12 +1363,21 @@ class PolymarketAdapter(BaseAdapter):
                     return builder_code
         return get_polygon_builder_code()
 
-    def _require_private_key(self) -> str:
-        if not self.private_key:
+    def _require_sign_hash_callback(self):
+        if not self.sign_hash_callback:
             raise ValueError(
-                "private_key is required for Polymarket deposit-wallet trading"
+                "sign_hash_callback is required for Polymarket deposit-wallet trading. "
+                "Use get_adapter(PolymarketAdapter, wallet_label)."
             )
-        return self.private_key
+        return self.sign_hash_callback
+
+    def _require_sign_typed_data_callback(self):
+        if not self.sign_typed_data_callback:
+            raise ValueError(
+                "sign_typed_data_callback is required for Polymarket deposit-wallet "
+                "trading. Use get_adapter(PolymarketAdapter, wallet_label)."
+            )
+        return self.sign_typed_data_callback
 
     async def _ensure_builder_creds(self) -> dict[str, str]:
         if self._builder_creds:
@@ -1428,7 +1386,8 @@ class PolymarketAdapter(BaseAdapter):
         owner_client = ClobClient(
             str(self._clob_http.base_url),
             chain_id=POLYGON_CHAIN_ID,
-            key=self._require_private_key(),
+            address_override=self._require_wallet_address(),
+            sign_callback_override=self._require_sign_hash_callback(),
         )
         creds = await owner_client.create_or_derive_api_creds()
         owner_client.set_api_creds(creds)
@@ -1502,7 +1461,7 @@ class PolymarketAdapter(BaseAdapter):
                 )
                 predicted = await factory.functions.predictWalletAddress(
                     to_checksum_address(POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION),
-                    _wallet_id(owner),
+                    polymarket_deposit_wallet_id(owner),
                 ).call(block_identifier="pending")
                 if to_checksum_address(predicted) != to_checksum_address(
                     deposit_wallet
@@ -1543,7 +1502,7 @@ class PolymarketAdapter(BaseAdapter):
     async def _fund_deposit_wallet(self, target_amount: Decimal) -> str | None:
         owner, sign_cb = self._require_signer()
         deposit_wallet = self._require_funder()
-        target_raw = _to_base_units(target_amount)
+        target_raw = int((target_amount * Decimal(1_000_000)).to_integral_value())
         current = await self._deposit_wallet_pusd_balance()
         if current >= target_raw:
             return None
@@ -1557,41 +1516,39 @@ class PolymarketAdapter(BaseAdapter):
         )
         return await send_transaction(tx, sign_cb, confirmations=1)
 
-    def _sign_deposit_wallet_batch(
+    async def _sign_deposit_wallet_batch(
         self,
         *,
         nonce: str,
         deadline: str,
         calls: list[dict[str, str]],
     ) -> str:
-        signed = Account.from_key(self._require_private_key()).sign_message(
-            encode_typed_data(
-                full_message={
-                    "primaryType": "Batch",
-                    "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
-                    "domain": {
-                        "name": "DepositWallet",
-                        "version": "1",
-                        "chainId": POLYGON_CHAIN_ID,
-                        "verifyingContract": self._require_funder(),
-                    },
-                    "message": {
-                        "wallet": self._require_funder(),
-                        "nonce": int(nonce),
-                        "deadline": int(deadline),
-                        "calls": [
-                            {
-                                "target": to_checksum_address(c["target"]),
-                                "value": int(c["value"]),
-                                "data": c["data"],
-                            }
-                            for c in calls
-                        ],
-                    },
-                }
-            )
+        sig = await self._require_sign_typed_data_callback()(
+            {
+                "primaryType": "Batch",
+                "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
+                "domain": {
+                    "name": "DepositWallet",
+                    "version": "1",
+                    "chainId": POLYGON_CHAIN_ID,
+                    "verifyingContract": self._require_funder(),
+                },
+                "message": {
+                    "wallet": self._require_funder(),
+                    "nonce": int(nonce),
+                    "deadline": int(deadline),
+                    "calls": [
+                        {
+                            "target": to_checksum_address(c["target"]),
+                            "value": int(c["value"]),
+                            "data": c["data"],
+                        }
+                        for c in calls
+                    ],
+                },
+            }
         )
-        return "0x" + signed.signature.hex()
+        return sig if str(sig).startswith("0x") else f"0x{sig}"
 
     async def ensure_deposit_wallet_approvals(
         self, *, token_id: str | None = None
@@ -1662,7 +1619,7 @@ class PolymarketAdapter(BaseAdapter):
                     "from": to_checksum_address(owner),
                     "to": to_checksum_address(POLYMARKET_DEPOSIT_WALLET_FACTORY),
                     "nonce": nonce,
-                    "signature": self._sign_deposit_wallet_batch(
+                    "signature": await self._sign_deposit_wallet_batch(
                         nonce=nonce, deadline=deadline, calls=calls
                     ),
                     "depositWalletParams": {
@@ -1687,7 +1644,8 @@ class PolymarketAdapter(BaseAdapter):
         required_collateral: Decimal | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            self._require_private_key()
+            self._require_sign_hash_callback()
+            self._require_sign_typed_data_callback()
 
             ok_deploy, deploy = await self.ensure_deposit_wallet_deployed()
             if not ok_deploy:
@@ -1695,9 +1653,11 @@ class PolymarketAdapter(BaseAdapter):
 
             fund_tx = None
             if required_collateral is not None and required_collateral > 0:
-                fund_tx = await self._fund_deposit_wallet(
-                    _deposit_wallet_buffered_amount(required_collateral)
+                target_amount = max(
+                    required_collateral * POLYMARKET_DEPOSIT_WALLET_FUND_BUFFER,
+                    required_collateral + POLYMARKET_DEPOSIT_WALLET_MIN_FUND_BUFFER,
                 )
+                fund_tx = await self._fund_deposit_wallet(target_amount)
 
             ok_appr, appr = await self.ensure_deposit_wallet_approvals(
                 token_id=token_id
@@ -1738,9 +1698,10 @@ class PolymarketAdapter(BaseAdapter):
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
                 chain_id=POLYGON_CHAIN_ID,
-                key=self._require_private_key(),
                 signature_type=SignatureTypeV2.POLY_1271,
                 funder=funder,
+                address_override=self._require_wallet_address(),
+                sign_callback_override=self._require_sign_hash_callback(),
             )
         return self._clob_client  # type: ignore[return-value]
 

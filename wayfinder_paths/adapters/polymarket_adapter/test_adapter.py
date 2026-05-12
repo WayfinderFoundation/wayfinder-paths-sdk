@@ -53,7 +53,6 @@ class TestPolymarketAdapter:
         adapter = PolymarketAdapter(
             config={},
             wallet_address="0x000000000000000000000000000000000000dEaD",
-            private_key="0x" + "11" * 32,
             sign_hash_callback=sign_hash_callback,
         )
         try:
@@ -68,7 +67,7 @@ class TestPolymarketAdapter:
         assert kwargs["chain_id"] == 137
         assert "chain" not in kwargs
         assert "chainId" not in kwargs
-        assert kwargs["key"] == "0x" + "11" * 32
+        assert "key" not in kwargs
         assert (
             kwargs["signature_type"]
             == polymarket_adapter_module.SignatureTypeV2.POLY_1271
@@ -76,6 +75,10 @@ class TestPolymarketAdapter:
         assert kwargs["funder"] == polymarket_adapter_module.derive_deposit_wallet(
             "0x000000000000000000000000000000000000dEaD"
         )
+        assert (
+            kwargs["address_override"] == "0x000000000000000000000000000000000000dEaD"
+        )
+        assert kwargs["sign_callback_override"] is sign_hash_callback
 
     @pytest.mark.asyncio
     async def test_limit_order_uses_v2_order_args_without_legacy_fee_fields(
@@ -84,7 +87,6 @@ class TestPolymarketAdapter:
         builder_code = "0x" + "12" * 32
         adapter.config = {"system": {"polymarket_builder_code": builder_code}}
         adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
-        adapter.private_key = "0x" + "11" * 32
         adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
 
@@ -132,7 +134,6 @@ class TestPolymarketAdapter:
         builder_code = "0x" + "34" * 32
         adapter.config = {"system": {"polymarket_builder_code": builder_code}}
         adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
-        adapter.private_key = "0x" + "11" * 32
         adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
 

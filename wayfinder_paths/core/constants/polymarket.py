@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
+
+from eth_abi import encode as abi_encode
+from eth_utils import keccak, to_bytes, to_checksum_address
 
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 
@@ -40,6 +44,15 @@ POLYMARKET_APPROVAL_TARGETS: list[str] = [
 
 POLYMARKET_DEPOSIT_WALLET_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
 POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+POLYMARKET_DEPOSIT_WALLET_FUND_BUFFER = Decimal("1.10")
+POLYMARKET_DEPOSIT_WALLET_MIN_FUND_BUFFER = Decimal("0.50")
+POLYMARKET_ERC1967_CONST1 = (
+    "0xcc3735a920a3ca505d382bbc545af43d6000803e6038573d6000fd5b3d6000f3"
+)
+POLYMARKET_ERC1967_CONST2 = (
+    "0x5155f3363d3d373d3d363d7f360894a13ba1a3210667c828492db98dca3e2076"
+)
+POLYMARKET_ERC1967_PREFIX = 0x61003D3D8160233D3973
 
 POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI: list[dict[str, Any]] = [
     {
@@ -73,6 +86,30 @@ POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES = {
         {"name": "calls", "type": "Call[]"},
     ],
 }
+
+
+def polymarket_deposit_wallet_id(owner: str) -> bytes:
+    return to_bytes(hexstr=to_checksum_address(owner)).rjust(32, b"\x00")
+
+
+def derive_deposit_wallet(owner: str) -> str:
+    factory = to_checksum_address(POLYMARKET_DEPOSIT_WALLET_FACTORY)
+    args = abi_encode(
+        ["address", "bytes32"], [factory, polymarket_deposit_wallet_id(owner)]
+    )
+    n = len(args)
+    combined = POLYMARKET_ERC1967_PREFIX + (n << 56)
+    init_code = (
+        combined.to_bytes(10, "big")
+        + to_bytes(hexstr=to_checksum_address(POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION))
+        + to_bytes(hexstr="0x6009")
+        + to_bytes(hexstr=POLYMARKET_ERC1967_CONST2)
+        + to_bytes(hexstr=POLYMARKET_ERC1967_CONST1)
+        + args
+    )
+    raw = keccak(b"\xff" + to_bytes(hexstr=factory) + keccak(args) + keccak(init_code))
+    return to_checksum_address(raw[-20:].hex())
+
 
 # Some NegRisk markets pay out an adapter "collateral" token which must be unwrapped.
 POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = "0x3A3BD7bb9528E159577F7C2e685CC81A765002E2"

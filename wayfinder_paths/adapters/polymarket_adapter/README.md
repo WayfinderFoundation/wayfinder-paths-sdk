@@ -63,7 +63,7 @@ Most methods return `(ok: bool, data_or_error: Any | str)`.
 You need:
 
 - A configured wallet. Trading uses the Polymarket deposit wallet derived from the
-  owner wallet and currently requires a local `private_key_hex`.
+  owner wallet and signs through wallet callbacks.
 - A Polygon RPC URL (`strategy.rpc_urls["137"]`)
 - Some native Polygon gas token for owner-wallet transactions such as pUSD funding
 
