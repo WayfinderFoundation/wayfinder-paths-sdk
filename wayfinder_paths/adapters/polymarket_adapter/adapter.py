@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
@@ -275,7 +276,6 @@ class PolymarketAdapter(BaseAdapter):
         sign_hash_callback=None,
         sign_typed_data_callback=None,
         wallet_address: str | None = None,
-        funder: str | None = None,
         gamma_base_url: str = POLYMARKET_GAMMA_BASE_URL,
         clob_base_url: str = POLYMARKET_CLOB_BASE_URL,
         data_base_url: str = POLYMARKET_DATA_BASE_URL,
@@ -291,7 +291,6 @@ class PolymarketAdapter(BaseAdapter):
         self.sign_callback = sign_callback
         self.sign_hash_callback = sign_hash_callback
         self.sign_typed_data_callback = sign_typed_data_callback
-        self._funder_override = funder
 
         timeout = httpx.Timeout(http_timeout_s)
         self._gamma_http = httpx.AsyncClient(base_url=gamma_base_url, timeout=timeout)
@@ -304,7 +303,6 @@ class PolymarketAdapter(BaseAdapter):
 
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
-        self._builder_creds: dict[str, str] | None = None
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -1319,23 +1317,14 @@ class PolymarketAdapter(BaseAdapter):
             )
         return self.wallet_address
 
-    def deposit_wallet_address(self) -> str | None:
-        if not self.wallet_address:
-            return None
-        return derive_deposit_wallet(self.wallet_address)
+    def deposit_wallet_address(self) -> str:
+        return derive_deposit_wallet(self._require_wallet_address())
 
     def trading_address(self) -> str:
-        return self.deposit_wallet_address() or self._require_funder()
+        return self.deposit_wallet_address()
 
     def _require_funder(self) -> str:
-        if self._funder_override:
-            return to_checksum_address(self._funder_override)
-        deposit_wallet = self.deposit_wallet_address()
-        if deposit_wallet:
-            return deposit_wallet
-        raise ValueError(
-            "wallet_address is required for Polymarket deposit-wallet trading"
-        )
+        return self.deposit_wallet_address()
 
     def _require_signer(self) -> tuple[str, Any]:
         addr = self._require_wallet_address()
@@ -1363,46 +1352,6 @@ class PolymarketAdapter(BaseAdapter):
                     return builder_code
         return get_polygon_builder_code()
 
-    async def _ensure_builder_creds(self) -> dict[str, str]:
-        if self._builder_creds:
-            return self._builder_creds
-
-        owner_client = ClobClient(
-            str(self._clob_http.base_url),
-            chain_id=POLYGON_CHAIN_ID,
-            address_override=self._require_wallet_address(),
-            sign_callback_override=self.sign_hash_callback,
-        )
-        creds = await owner_client.create_or_derive_api_creds()
-        owner_client.set_api_creds(creds)
-        raw = owner_client.create_builder_api_key()
-        self._builder_creds = {
-            "key": str(raw["key"]),
-            "secret": str(raw["secret"]),
-            "passphrase": str(raw["passphrase"]),
-        }
-        return self._builder_creds
-
-    async def _builder_headers(
-        self, method: str, path: str, body: str
-    ) -> dict[str, str]:
-        creds = await self._ensure_builder_creds()
-        ts = str(int(time.time()))
-        decoded_secret = base64.urlsafe_b64decode(creds["secret"])
-        message = f"{ts}{method}{path}"
-        if body:
-            message += body.replace("'", '"')
-        sig = base64.urlsafe_b64encode(
-            hmac.new(decoded_secret, message.encode("utf-8"), hashlib.sha256).digest()
-        ).decode("utf-8")
-        return {
-            "Content-Type": "application/json",
-            "POLY_BUILDER_API_KEY": creds["key"],
-            "POLY_BUILDER_TIMESTAMP": ts,
-            "POLY_BUILDER_PASSPHRASE": creds["passphrase"],
-            "POLY_BUILDER_SIGNATURE": sig,
-        }
-
     async def _relayer_get(self, path: str, params: dict[str, Any]) -> Any:
         res = await self._relayer_http.get(path, params=params)
         res.raise_for_status()
@@ -1410,13 +1359,48 @@ class PolymarketAdapter(BaseAdapter):
 
     async def _relayer_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        headers = await self._builder_headers("POST", "/submit", body)
+        headers = {"Content-Type": "application/json"}
+        system = self.config.get("system", {})
+        relayer_key = system.get("polymarket_relayer_api_key") or os.environ.get(
+            "RELAYER_API_KEY"
+        )
+        relayer_addr = system.get(
+            "polymarket_relayer_api_key_address"
+        ) or os.environ.get("RELAYER_API_KEY_ADDRESS")
+        if relayer_key and relayer_addr:
+            headers["RELAYER_API_KEY"] = str(relayer_key)
+            headers["RELAYER_API_KEY_ADDRESS"] = to_checksum_address(str(relayer_addr))
+        else:
+            builder_key = system.get("polymarket_builder_api_key") or os.environ.get(
+                "BUILDER_API_KEY"
+            )
+            builder_secret = system.get("polymarket_builder_secret") or os.environ.get(
+                "BUILDER_SECRET"
+            )
+            builder_passphrase = system.get(
+                "polymarket_builder_passphrase"
+            ) or os.environ.get("BUILDER_PASS_PHRASE")
+            if builder_key and builder_secret and builder_passphrase:
+                ts = str(int(time.time()))
+                message = f"{ts}POST/submit" + body.replace("'", '"')
+                sig = base64.urlsafe_b64encode(
+                    hmac.new(
+                        base64.urlsafe_b64decode(str(builder_secret)),
+                        message.encode("utf-8"),
+                        hashlib.sha256,
+                    ).digest()
+                ).decode("utf-8")
+                headers.update(
+                    {
+                        "POLY_BUILDER_API_KEY": str(builder_key),
+                        "POLY_BUILDER_TIMESTAMP": ts,
+                        "POLY_BUILDER_PASSPHRASE": str(builder_passphrase),
+                        "POLY_BUILDER_SIGNATURE": sig,
+                    }
+                )
         res = await self._relayer_http.post("/submit", content=body, headers=headers)
         res.raise_for_status()
-        data = res.json()
-        if not isinstance(data, dict):
-            raise ValueError(f"Unexpected relayer response: {data}")
-        return data
+        return res.json()
 
     async def _poll_relayer_tx(self, transaction_id: str) -> dict[str, Any]:
         last: dict[str, Any] | None = None

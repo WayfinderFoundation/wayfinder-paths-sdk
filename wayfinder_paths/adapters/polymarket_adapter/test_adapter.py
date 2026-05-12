@@ -500,8 +500,8 @@ class TestPolymarketAdapter:
             polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
         )
 
-        account = "0x" + "11" * 20
-        adapter._funder_override = account  # allow open-order fetch for this account
+        adapter.wallet_address = "0x" + "11" * 20
+        account = adapter.trading_address()
 
         ok, state = await adapter.get_full_user_state(account=account)
         assert ok is True
