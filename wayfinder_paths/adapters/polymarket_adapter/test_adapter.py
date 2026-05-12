@@ -81,6 +81,50 @@ class TestPolymarketAdapter:
         assert kwargs["sign_callback_override"] is sign_hash_callback
 
     @pytest.mark.asyncio
+    async def test_poly_1271_order_signature_uses_sign_callback(self):
+        polymarket_adapter_module._patch_clob_poly_1271_callback_signing()
+        sign_hash_callback = AsyncMock(return_value=b"\x11" * 65)
+        signer = polymarket_adapter_module.clob_order_builder_v2.Signer(
+            chain_id=137,
+            address_override="0x000000000000000000000000000000000000dEaD",
+            sign_callback_override=sign_hash_callback,
+        )
+        builder = (
+            polymarket_adapter_module.clob_order_builder_v2.ExchangeOrderBuilderV2(
+                contract_address="0x2222222222222222222222222222222222222222",
+                chain_id=137,
+                signer=signer,
+            )
+        )
+
+        signature = await builder.build_order_signature(
+            {
+                "message": {
+                    "salt": 1,
+                    "maker": "0x3333333333333333333333333333333333333333",
+                    "signer": "0x4444444444444444444444444444444444444444",
+                    "tokenId": 123,
+                    "makerAmount": 100,
+                    "takerAmount": 200,
+                    "side": 0,
+                    "signatureType": int(
+                        polymarket_adapter_module.SignatureTypeV2.POLY_1271
+                    ),
+                    "timestamp": 123456,
+                    "metadata": b"\x00" * 32,
+                    "builder": b"\x00" * 32,
+                }
+            }
+        )
+
+        sign_hash_callback.assert_awaited_once()
+        digest = sign_hash_callback.await_args.args[0]
+        assert isinstance(digest, str)
+        assert digest.startswith("0x")
+        assert len(digest) == 66
+        assert signature.startswith("0x" + "11" * 65)
+
+    @pytest.mark.asyncio
     async def test_limit_order_uses_v2_order_args_without_legacy_fee_fields(
         self, adapter
     ):

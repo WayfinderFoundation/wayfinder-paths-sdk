@@ -9,6 +9,8 @@ from difflib import SequenceMatcher
 from typing import Any, Literal
 
 import httpx
+from eth_abi import encode as abi_encode
+from eth_utils import keccak as _keccak
 from eth_utils import to_checksum_address
 from hexbytes import HexBytes
 from py_clob_client_v2 import AssetType, BalanceAllowanceParams, SignatureTypeV2
@@ -21,6 +23,9 @@ from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
 )
 from py_clob_client_v2.config import (  # type: ignore[import-untyped]
     get_contract_config,
+)
+from py_clob_client_v2.order_utils import (  # type: ignore[import-untyped]
+    exchange_order_builder_v2 as clob_order_builder_v2,
 )
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
@@ -70,6 +75,113 @@ from wayfinder_paths.core.utils.tokens import (
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.units import to_erc20_raw
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+
+_clob_poly_1271_callback_patch_applied = False
+
+
+def _bytes32(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    return bytes.fromhex(str(value).replace("0x", "").zfill(64))
+
+
+def _patch_clob_poly_1271_callback_signing() -> None:
+    global _clob_poly_1271_callback_patch_applied
+    if _clob_poly_1271_callback_patch_applied:
+        return
+
+    original = clob_order_builder_v2.ExchangeOrderBuilderV2.build_order_signature
+
+    async def build_order_signature(self, typed_data: dict) -> str:
+        message = typed_data["message"]
+        if message["signatureType"] != int(SignatureTypeV2.POLY_1271):
+            return await original(self, typed_data)
+
+        if not getattr(self.signer, "sign_callback_override", None):
+            return self._build_poly_1271_order_signature(typed_data)
+
+        contents_hash = _keccak(
+            primitive=abi_encode(
+                [
+                    "bytes32",
+                    "uint256",
+                    "address",
+                    "address",
+                    "uint256",
+                    "uint256",
+                    "uint256",
+                    "uint8",
+                    "uint8",
+                    "uint256",
+                    "bytes32",
+                    "bytes32",
+                ],
+                [
+                    clob_order_builder_v2.ORDER_TYPE_HASH,
+                    int(message["salt"]),
+                    message["maker"],
+                    message["signer"],
+                    int(message["tokenId"]),
+                    int(message["makerAmount"]),
+                    int(message["takerAmount"]),
+                    int(message["side"]),
+                    int(message["signatureType"]),
+                    int(message["timestamp"]),
+                    _bytes32(message["metadata"]),
+                    _bytes32(message["builder"]),
+                ],
+            )
+        )
+        typed_data_sign_struct_hash = _keccak(
+            primitive=abi_encode(
+                [
+                    "bytes32",
+                    "bytes32",
+                    "bytes32",
+                    "bytes32",
+                    "uint256",
+                    "address",
+                    "bytes32",
+                ],
+                [
+                    clob_order_builder_v2.SOLADY_TYPE_HASH,
+                    contents_hash,
+                    clob_order_builder_v2.DEPOSIT_WALLET_NAME_HASH,
+                    clob_order_builder_v2.DEPOSIT_WALLET_VERSION_HASH,
+                    self.chain_id,
+                    message["signer"],
+                    clob_order_builder_v2.DEPOSIT_WALLET_DOMAIN_SALT,
+                ],
+            )
+        )
+        digest = _keccak(
+            primitive=(
+                b"\x19\x01" + self.app_domain_separator + typed_data_sign_struct_hash
+            )
+        )
+        inner_signature = await self.signer.sign("0x" + digest.hex())
+        if isinstance(inner_signature, bytes):
+            inner_signature = inner_signature.hex()
+        if inner_signature.startswith("0x"):
+            inner_signature = inner_signature[2:]
+
+        contents_type = clob_order_builder_v2.ORDER_TYPE_STRING.encode("utf-8").hex()
+        contents_type_len = (
+            len(clob_order_builder_v2.ORDER_TYPE_STRING).to_bytes(2, "big").hex()
+        )
+        return (
+            "0x"
+            + inner_signature
+            + self.app_domain_separator.hex()
+            + contents_hash.hex()
+            + contents_type
+            + contents_type_len
+        )
+
+    clob_order_builder_v2.ExchangeOrderBuilderV2.build_order_signature = (
+        build_order_signature
+    )
+    _clob_poly_1271_callback_patch_applied = True
 
 
 def _normalize_text(value: str) -> str:
@@ -282,6 +394,7 @@ class PolymarketAdapter(BaseAdapter):
         http_timeout_s: float = 30.0,
     ) -> None:
         super().__init__("polymarket_adapter", config)
+        _patch_clob_poly_1271_callback_signing()
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
