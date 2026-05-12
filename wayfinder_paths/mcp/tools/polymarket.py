@@ -13,6 +13,7 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
     get_wallet_signing_callback,
 )
+from wayfinder_paths.mcp import utils as mcp_utils
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -128,6 +129,15 @@ def _annotate(
     )
 
 
+async def _private_key_for_wallet_label(wallet_label: str | None) -> str | None:
+    if not wallet_label:
+        return None
+    wallet = await mcp_utils.find_wallet_by_label(wallet_label)
+    if not wallet:
+        return None
+    return mcp_utils.get_private_key(wallet)
+
+
 @catch_errors
 async def polymarket_get_state(
     *,
@@ -144,16 +154,15 @@ async def polymarket_get_state(
 ) -> dict[str, Any]:
     """Full Polymarket account state — positions, optional orders / activity / trades.
 
-    Account precedence: `account` > `wallet_address` > `wallet_label`-resolved address.
+    Account precedence: `account` > `wallet_address` > deposit wallet derived from
+    `wallet_label`.
     `include_orders` defaults to true; `include_activity` / `include_trades` default false
     to keep payloads tight. Each `*_limit` caps its respective list.
     """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
-    acct = normalize_address(account) or normalize_address(wallet_address) or waddr
-
     if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
-    if not acct:
+    if not (normalize_address(account) or normalize_address(wallet_address) or waddr):
         return err(
             "invalid_request",
             "account (or wallet_label/wallet_address) is required",
@@ -166,6 +175,7 @@ async def polymarket_get_state(
 
     sign_cb = None
     sign_hash_cb = None
+    private_key = None
     config: dict[str, Any] | None = None
     if want and waddr:
         try:
@@ -176,6 +186,7 @@ async def polymarket_get_state(
             sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
         except ValueError:
             pass
+        private_key = await _private_key_for_wallet_label(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -183,9 +194,15 @@ async def polymarket_get_state(
         config=config,
         sign_callback=sign_cb,
         sign_hash_callback=sign_hash_cb,
+        private_key=private_key,
         wallet_address=waddr,
     )
     try:
+        acct = (
+            normalize_address(account)
+            or normalize_address(wallet_address)
+            or (adapter.trading_address() if waddr else None)
+        )
         ok_state, state = await adapter.get_full_user_state(
             account=str(acct),
             include_orders=bool(include_orders),
@@ -265,7 +282,7 @@ async def polymarket_read(
       - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
         (unix sec), `fidelity` (denser sampling for tight buckets).
       - `bridge_status`: pUSD bridge state for an account.
-      - `open_orders`: requires Level-2 auth — wallet must have `private_key_hex` in config.
+      - `open_orders`: requires Level-2 auth from a local wallet private key.
 
     Args:
         wallet_label / wallet_address / account: Target account; precedence is account >
@@ -298,6 +315,7 @@ async def polymarket_read(
     config: dict[str, Any] | None = None
     sign_cb = None
     sign_hash_cb = None
+    private_key = None
     if want and waddr:
         try:
             sign_cb, _ = await get_wallet_signing_callback(want)
@@ -307,6 +325,7 @@ async def polymarket_read(
             sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
         except ValueError:
             pass
+        private_key = await _private_key_for_wallet_label(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -314,6 +333,7 @@ async def polymarket_read(
         config=config,
         sign_callback=sign_cb,
         sign_hash_callback=sign_hash_cb,
+        private_key=private_key,
         wallet_address=waddr,
     )
     try:
@@ -458,10 +478,10 @@ async def polymarket_read(
             case "open_orders":
                 if not want or not waddr:
                     return err("not_found", f"Unknown wallet_label: {wallet_label}")
-                if not sign_cb:
+                if not private_key:
                     return err(
                         "invalid_wallet",
-                        "Wallet must include private_key_hex in config.json to fetch open orders",
+                        "Wallet must include a local private key to fetch open orders",
                         {"wallet_label": want},
                     )
                 # Open orders require Level-2 auth and the signing wallet in config.
@@ -551,6 +571,7 @@ async def polymarket_execute(
         sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
     except ValueError:
         sign_hash_cb = None
+    private_key = await _private_key_for_wallet_label(wallet_label)
     want = wallet_label
 
     tool_input = {
@@ -591,6 +612,7 @@ async def polymarket_execute(
         config=cfg,
         sign_callback=sign_callback,
         sign_hash_callback=sign_hash_cb,
+        private_key=private_key,
         wallet_address=sender,
     )
     try:

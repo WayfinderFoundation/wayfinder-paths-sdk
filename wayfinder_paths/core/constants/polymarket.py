@@ -10,6 +10,7 @@ POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 # POLYMARKET_CLOB_BASE_URL = "https://clob-v2.polymarket.com"
 POLYMARKET_DATA_BASE_URL = "https://data-api.polymarket.com"
 POLYMARKET_BRIDGE_BASE_URL = "https://bridge.polymarket.com"
+POLYMARKET_RELAYER_BASE_URL = "https://relayer-v2.polymarket.com"
 
 POLYGON_CHAIN_ID = 137
 
@@ -36,6 +37,42 @@ POLYMARKET_APPROVAL_TARGETS: list[str] = [
     POLYMARKET_NEG_RISK_CTF_EXCHANGE_ADDRESS,
     POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
 ]
+
+POLYMARKET_DEPOSIT_WALLET_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+
+POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "name": "predictWalletAddress",
+        "stateMutability": "view",
+        "inputs": [
+            {"name": "_implementation", "type": "address"},
+            {"name": "_id", "type": "bytes32"},
+        ],
+        "outputs": [{"name": "", "type": "address"}],
+    }
+]
+
+POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES = {
+    "EIP712Domain": [
+        {"name": "name", "type": "string"},
+        {"name": "version", "type": "string"},
+        {"name": "chainId", "type": "uint256"},
+        {"name": "verifyingContract", "type": "address"},
+    ],
+    "Call": [
+        {"name": "target", "type": "address"},
+        {"name": "value", "type": "uint256"},
+        {"name": "data", "type": "bytes"},
+    ],
+    "Batch": [
+        {"name": "wallet", "type": "address"},
+        {"name": "nonce", "type": "uint256"},
+        {"name": "deadline", "type": "uint256"},
+        {"name": "calls", "type": "Call[]"},
+    ],
+}
 
 # Some NegRisk markets pay out an adapter "collateral" token which must be unwrapped.
 POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = "0x3A3BD7bb9528E159577F7C2e685CC81A765002E2"

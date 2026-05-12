@@ -3447,21 +3447,22 @@ files = [
 
 [[package]]
 name = "py-clob-client-v2-wayfinder"
-version = "1.0.0"
-description = ""
+version = "1.0.1"
+description = "Wayfinder fork of the Polymarket CLOBV2 Python client"
 optional = false
 python-versions = ">=3.9.10"
 groups = ["main"]
 files = [
-    {file = "py_clob_client_v2_wayfinder-1.0.0-py3-none-any.whl", hash = "sha256:ce89c0ea860019b435ca505c2d35bd22357e497a597f2b885335477a8bf1d69d"},
-    {file = "py_clob_client_v2_wayfinder-1.0.0.tar.gz", hash = "sha256:e7c6583f4af65cc120922ad41560fea34009e878f8d34a878168f7af6f01bbc6"},
+    {file = "py_clob_client_v2_wayfinder-1.0.1-py3-none-any.whl", hash = "sha256:32842cb11038182ff78b31de5a4861eab9d8ec55647590ff8377b061767da4ac"},
+    {file = "py_clob_client_v2_wayfinder-1.0.1.tar.gz", hash = "sha256:aa413ac42138755931dfbd5da45c977ad245f339c5a30463407993bf69323ec8"},
 ]
 
 [package.dependencies]
+eth-abi = ">=5.0.0"
 eth-account = ">=0.13.0"
 eth-utils = ">=4.1.1"
 httpx = {version = ">=0.27.0", extras = ["http2"]}
-poly_eip712_structs = ">=0.0.1"
+poly-eip712-structs = ">=0.0.1"
 py-order-utils = ">=0.3.2"
 
 [[package]]
@@ -5241,4 +5242,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "625801f1ea55986f89036502ae4eb11af298ec8ba5b8049891775ebfb9a9fd67"
+content-hash = "096dc2c46f153da13cc18c3721d63c23f199afb27305cfe3f2049aa1201c7f4e"

@@ -62,9 +62,10 @@ Most methods return `(ok: bool, data_or_error: Any | str)`.
 
 You need:
 
-- A configured wallet (local with `private_key_hex` or remote via Privy)
+- A configured wallet. Trading uses the Polymarket deposit wallet derived from the
+  owner wallet and currently requires a local `private_key_hex`.
 - A Polygon RPC URL (`strategy.rpc_urls["137"]`)
-- Some native Polygon gas token for transactions
+- Some native Polygon gas token for owner-wallet transactions such as pUSD funding
 
 Convenient pattern used by repo scripts:
 
@@ -82,8 +83,8 @@ Typical lifecycle for an automated agent:
 1) **Acquire pUSD** (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
 2) **Search and select a market** (Gamma `public-search` / `markets`, filter for `enableOrderBook` + `acceptingOrders`).
 3) **Resolve the CLOB token id** for the desired outcome (`resolve_clob_token_id`).
-4) **Approve once** (`ensure_onchain_approvals`).
-5) **Buy** outcome shares (CLOB market order BUY).
+4) **Set up the deposit wallet**. Order placement automatically deploys the deposit wallet if needed, funds it with buffered pUSD for BUY orders, grants deposit-wallet approvals through the relayer, and syncs CLOB balance allowances.
+5) **Buy** outcome shares (CLOB market order BUY from the deposit wallet).
 6) **Exit** either by:
    - **Selling** shares back on the orderbook (CLOB market order SELL), or
    - **Redeeming** after resolution (`redeem_positions` using the market’s `conditionId`).
@@ -245,18 +246,26 @@ The Polymarket Bridge fallback works by transferring tokens to bridge-generated 
 
 ## Trading cycle (buy → sell/cash-out)
 
-### 1) Ensure approvals (one-time)
+### 1) Deposit wallet setup
 
-Trading needs:
+Trading uses the owner wallet's Polymarket deposit wallet. `place_prediction()`,
+`place_market_order()`, and `place_limit_order()` call setup automatically:
 
-- ERC20 allowance of **pUSD** to the exchange(s)
-- ERC1155 `setApprovalForAll` on ConditionalTokens to the exchange(s)
+- deploy the deposit wallet if it does not exist
+- transfer buffered pUSD from the owner wallet to the deposit wallet for BUY orders
+- grant pUSD and ConditionalTokens approvals from the deposit wallet through the relayer
+- sync CLOB balance allowances for the deposit wallet
 
 ```python
-ok, res = await adapter.ensure_onchain_approvals()
+from decimal import Decimal
+
+ok, res = await adapter.ensure_trading_setup(
+    token_id="<clob token id>",
+    required_collateral=Decimal("2.0"),
+)
 ```
 
-This can broadcast multiple transactions the first time you run it.
+Normally call this directly only for preflight checks; order placement invokes it.
 
 ### 2) Place a prediction (market buy)
 
@@ -340,7 +349,8 @@ Collateral conversion (Bridge API):
 
 Trading (authenticated CLOB):
 
-- `ensure_onchain_approvals`, `place_market_order`, `place_limit_order`, `cancel_order`, `list_open_orders`
+- `ensure_deposit_wallet_deployed`, `ensure_deposit_wallet_approvals`, `ensure_trading_setup`
+- `place_market_order`, `place_limit_order`, `cancel_order`, `list_open_orders`
 - Convenience: `place_prediction`, `cash_out_prediction`
 
 ## Builder attribution

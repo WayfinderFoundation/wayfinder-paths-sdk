@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+import wayfinder_paths.core.utils.wallets as wallet_utils
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
@@ -39,6 +40,12 @@ async def get_adapter[T](
             if "sign_typed_data_callback" in params:
                 typed_cb, _ = await get_wallet_sign_typed_data_callback(wallet_label)
                 adapter_kwargs["sign_typed_data_callback"] = typed_cb
+            if "private_key" in params:
+                wallet = await wallet_utils.find_wallet_by_label(wallet_label)
+                if wallet:
+                    private_key = wallet_utils.get_private_key(wallet)
+                    if private_key:
+                        adapter_kwargs["private_key"] = private_key
 
         elif "main_sign_callback" in params:
             adapter_kwargs["main_sign_callback"] = sign_cb

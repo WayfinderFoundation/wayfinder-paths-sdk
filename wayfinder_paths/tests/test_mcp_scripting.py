@@ -102,6 +102,26 @@ class TestGetAdapter:
             assert adapter.wallet_address == MAIN_WALLET["address"]
 
     @pytest.mark.asyncio
+    async def test_wires_private_key_when_adapter_accepts_it(self):
+        class MockAdapter:
+            def __init__(
+                self,
+                config=None,
+                sign_callback=None,
+                wallet_address=None,
+                private_key=None,
+            ):
+                self.callback = sign_callback
+                self.wallet_address = wallet_address
+                self.private_key = private_key
+
+        with _mock_find({"main": MAIN_WALLET}), _mock_config():
+            adapter = await get_adapter(MockAdapter, "main")
+            assert adapter.callback is not None
+            assert adapter.wallet_address == MAIN_WALLET["address"]
+            assert adapter.private_key == TEST_PK
+
+    @pytest.mark.asyncio
     async def test_applies_config_overrides(self):
         class MockAdapter:
             def __init__(self, config=None):
