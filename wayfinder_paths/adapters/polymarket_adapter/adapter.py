@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import json
-import os
 import re
 import time
 from decimal import Decimal, InvalidOperation
@@ -32,7 +28,6 @@ from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.config import get_polygon_builder_code
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
-    CONDITIONAL_TOKENS_ABI,
     MAX_UINT256,
     POLYGON_CHAIN_ID,
     POLYGON_P_USDC_PROXY_ADDRESS,
@@ -44,21 +39,24 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_CLOB_BASE_URL,
     POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
     POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
-    POLYMARKET_COLLATERAL_RAMP_ABI,
     POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
     POLYMARKET_DATA_BASE_URL,
-    POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
     POLYMARKET_DEPOSIT_WALLET_FACTORY,
-    POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
     POLYMARKET_DEPOSIT_WALLET_FUND_BUFFER,
     POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
     POLYMARKET_DEPOSIT_WALLET_MIN_FUND_BUFFER,
     POLYMARKET_GAMMA_BASE_URL,
     POLYMARKET_RELAYER_BASE_URL,
-    TOKEN_UNWRAP_ABI,
     ZERO32_STR,
     derive_deposit_wallet,
     polymarket_deposit_wallet_id,
+)
+from wayfinder_paths.core.constants.polymarket_abi import (
+    CONDITIONAL_TOKENS_ABI,
+    POLYMARKET_COLLATERAL_RAMP_ABI,
+    POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
+    POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
+    TOKEN_UNWRAP_ABI,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -1360,44 +1358,6 @@ class PolymarketAdapter(BaseAdapter):
     async def _relayer_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
         body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         headers = {"Content-Type": "application/json"}
-        system = self.config.get("system", {})
-        relayer_key = system.get("polymarket_relayer_api_key") or os.environ.get(
-            "RELAYER_API_KEY"
-        )
-        relayer_addr = system.get(
-            "polymarket_relayer_api_key_address"
-        ) or os.environ.get("RELAYER_API_KEY_ADDRESS")
-        if relayer_key and relayer_addr:
-            headers["RELAYER_API_KEY"] = str(relayer_key)
-            headers["RELAYER_API_KEY_ADDRESS"] = to_checksum_address(str(relayer_addr))
-        else:
-            builder_key = system.get("polymarket_builder_api_key") or os.environ.get(
-                "BUILDER_API_KEY"
-            )
-            builder_secret = system.get("polymarket_builder_secret") or os.environ.get(
-                "BUILDER_SECRET"
-            )
-            builder_passphrase = system.get(
-                "polymarket_builder_passphrase"
-            ) or os.environ.get("BUILDER_PASS_PHRASE")
-            if builder_key and builder_secret and builder_passphrase:
-                ts = str(int(time.time()))
-                message = f"{ts}POST/submit" + body.replace("'", '"')
-                sig = base64.urlsafe_b64encode(
-                    hmac.new(
-                        base64.urlsafe_b64decode(str(builder_secret)),
-                        message.encode("utf-8"),
-                        hashlib.sha256,
-                    ).digest()
-                ).decode("utf-8")
-                headers.update(
-                    {
-                        "POLY_BUILDER_API_KEY": str(builder_key),
-                        "POLY_BUILDER_TIMESTAMP": ts,
-                        "POLY_BUILDER_PASSPHRASE": str(builder_passphrase),
-                        "POLY_BUILDER_SIGNATURE": sig,
-                    }
-                )
         res = await self._relayer_http.post("/submit", content=body, headers=headers)
         res.raise_for_status()
         return res.json()

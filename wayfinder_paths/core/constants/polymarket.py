@@ -1,12 +1,9 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
 from eth_abi import encode as abi_encode
 from eth_utils import keccak, to_bytes, to_checksum_address
-
-from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
@@ -54,39 +51,6 @@ POLYMARKET_ERC1967_CONST2 = (
 )
 POLYMARKET_ERC1967_PREFIX = 0x61003D3D8160233D3973
 
-POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "name": "predictWalletAddress",
-        "stateMutability": "view",
-        "inputs": [
-            {"name": "_implementation", "type": "address"},
-            {"name": "_id", "type": "bytes32"},
-        ],
-        "outputs": [{"name": "", "type": "address"}],
-    }
-]
-
-POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES = {
-    "EIP712Domain": [
-        {"name": "name", "type": "string"},
-        {"name": "version", "type": "string"},
-        {"name": "chainId", "type": "uint256"},
-        {"name": "verifyingContract", "type": "address"},
-    ],
-    "Call": [
-        {"name": "target", "type": "address"},
-        {"name": "value", "type": "uint256"},
-        {"name": "data", "type": "bytes"},
-    ],
-    "Batch": [
-        {"name": "wallet", "type": "address"},
-        {"name": "nonce", "type": "uint256"},
-        {"name": "deadline", "type": "uint256"},
-        {"name": "calls", "type": "Call[]"},
-    ],
-}
-
 
 def polymarket_deposit_wallet_id(owner: str) -> bytes:
     return to_bytes(hexstr=to_checksum_address(owner)).rjust(32, b"\x00")
@@ -116,88 +80,3 @@ POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = "0x3A3BD7bb9528E159577F7C2e685CC81A76500
 
 MAX_UINT256 = (1 << 256) - 1
 ZERO32_STR = "0x" + "00" * 32
-
-CONDITIONAL_TOKENS_ABI: list[dict[str, Any]] = [
-    *ERC1155_APPROVAL_ABI,
-    {
-        "type": "function",
-        "stateMutability": "view",
-        "name": "getCollectionId",
-        "inputs": [
-            {"name": "parentCollectionId", "type": "bytes32"},
-            {"name": "conditionId", "type": "bytes32"},
-            {"name": "indexSet", "type": "uint256"},
-        ],
-        "outputs": [{"name": "", "type": "bytes32"}],
-    },
-    {
-        "type": "function",
-        "stateMutability": "view",
-        "name": "getPositionId",
-        "inputs": [
-            {"name": "collateralToken", "type": "address"},
-            {"name": "collectionId", "type": "bytes32"},
-        ],
-        "outputs": [{"name": "", "type": "uint256"}],
-    },
-    {
-        "type": "function",
-        "stateMutability": "view",
-        "name": "balanceOf",
-        "inputs": [
-            {"name": "account", "type": "address"},
-            {"name": "id", "type": "uint256"},
-        ],
-        "outputs": [{"name": "", "type": "uint256"}],
-    },
-    {
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "name": "redeemPositions",
-        "inputs": [
-            {"name": "collateralToken", "type": "address"},
-            {"name": "parentCollectionId", "type": "bytes32"},
-            {"name": "conditionId", "type": "bytes32"},
-            {"name": "indexSets", "type": "uint256[]"},
-        ],
-        "outputs": [],
-    },
-]
-
-TOKEN_UNWRAP_ABI: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "name": "unwrap",
-        "inputs": [
-            {"name": "to", "type": "address"},
-            {"name": "amount", "type": "uint256"},
-        ],
-        "outputs": [],
-    }
-]
-
-POLYMARKET_COLLATERAL_RAMP_ABI: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "name": "wrap",
-        "inputs": [
-            {"name": "_asset", "type": "address", "internalType": "address"},
-            {"name": "_to", "type": "address", "internalType": "address"},
-            {"name": "_amount", "type": "uint256", "internalType": "uint256"},
-        ],
-        "outputs": [],
-    },
-    {
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "name": "unwrap",
-        "inputs": [
-            {"name": "_asset", "type": "address", "internalType": "address"},
-            {"name": "_to", "type": "address", "internalType": "address"},
-            {"name": "_amount", "type": "uint256", "internalType": "uint256"},
-        ],
-        "outputs": [],
-    },
-]
