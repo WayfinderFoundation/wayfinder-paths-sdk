@@ -1363,22 +1363,6 @@ class PolymarketAdapter(BaseAdapter):
                     return builder_code
         return get_polygon_builder_code()
 
-    def _require_sign_hash_callback(self):
-        if not self.sign_hash_callback:
-            raise ValueError(
-                "sign_hash_callback is required for Polymarket deposit-wallet trading. "
-                "Use get_adapter(PolymarketAdapter, wallet_label)."
-            )
-        return self.sign_hash_callback
-
-    def _require_sign_typed_data_callback(self):
-        if not self.sign_typed_data_callback:
-            raise ValueError(
-                "sign_typed_data_callback is required for Polymarket deposit-wallet "
-                "trading. Use get_adapter(PolymarketAdapter, wallet_label)."
-            )
-        return self.sign_typed_data_callback
-
     async def _ensure_builder_creds(self) -> dict[str, str]:
         if self._builder_creds:
             return self._builder_creds
@@ -1387,13 +1371,11 @@ class PolymarketAdapter(BaseAdapter):
             str(self._clob_http.base_url),
             chain_id=POLYGON_CHAIN_ID,
             address_override=self._require_wallet_address(),
-            sign_callback_override=self._require_sign_hash_callback(),
+            sign_callback_override=self.sign_hash_callback,
         )
         creds = await owner_client.create_or_derive_api_creds()
         owner_client.set_api_creds(creds)
         raw = owner_client.create_builder_api_key()
-        if not isinstance(raw, dict):
-            raise ValueError(f"Unexpected builder key response: {raw}")
         self._builder_creds = {
             "key": str(raw["key"]),
             "secret": str(raw["secret"]),
@@ -1523,7 +1505,7 @@ class PolymarketAdapter(BaseAdapter):
         deadline: str,
         calls: list[dict[str, str]],
     ) -> str:
-        sig = await self._require_sign_typed_data_callback()(
+        sig = await self.sign_typed_data_callback(
             {
                 "primaryType": "Batch",
                 "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
@@ -1644,9 +1626,6 @@ class PolymarketAdapter(BaseAdapter):
         required_collateral: Decimal | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            self._require_sign_hash_callback()
-            self._require_sign_typed_data_callback()
-
             ok_deploy, deploy = await self.ensure_deposit_wallet_deployed()
             if not ok_deploy:
                 return False, deploy
@@ -1701,7 +1680,7 @@ class PolymarketAdapter(BaseAdapter):
                 signature_type=SignatureTypeV2.POLY_1271,
                 funder=funder,
                 address_override=self._require_wallet_address(),
-                sign_callback_override=self._require_sign_hash_callback(),
+                sign_callback_override=self.sign_hash_callback,
             )
         return self._clob_client  # type: ignore[return-value]
 
