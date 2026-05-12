@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, ClassVar, Final, final
@@ -64,6 +65,15 @@ class ActivePerpsStrategy(Strategy):
     SIGNAL: ClassVar[str]  # "module:fn" or "module.fn"
     DECIDE: ClassVar[str | None] = None  # None ⇒ default_decide
     HIP3_DEXES: ClassVar[list[str]] = []
+
+    # ---------- auto-reconciliation ----------
+    # Every active-perps trigger records intents (via RecordingHandler, hard-wired
+    # in _run_trigger). After a successful trigger, `update()` automatically runs
+    # a short-window reconcile so drift between live and replay never goes silent.
+    # Overrideable by subclasses only to widen the window or raise the floor — the
+    # auto-run itself cannot be disabled.
+    AUTO_RECONCILE_WINDOW_DAYS: ClassVar[int] = 1
+    AUTO_RECONCILE_MIN_INTERVAL_SECONDS: ClassVar[int] = 3600
 
     # ---------- subclass shouldn't touch ----------
     _ref: BacktestRef
@@ -145,7 +155,50 @@ class ActivePerpsStrategy(Strategy):
             halt = self._risk_limits.check(snap)
             if halt:
                 return False, f"Halted: {halt}"
-        return await self._run_trigger()
+        ok, msg = await self._run_trigger()
+        if ok:
+            recon_msg = await self._maybe_auto_reconcile()
+            if recon_msg:
+                msg = f"{msg}; {recon_msg}"
+        return ok, msg
+
+    async def _maybe_auto_reconcile(self) -> str | None:
+        """Throttled background reconcile after every successful trigger.
+
+        Recon is mandatory for active-perps strategies — if live ever drifts
+        from replay we want to know within hours, not weeks. To keep cost
+        bounded, runs only once per `AUTO_RECONCILE_MIN_INTERVAL_SECONDS` and
+        covers only the trailing `AUTO_RECONCILE_WINDOW_DAYS`.
+
+        Failures are swallowed into the returned message so they don't break
+        the trigger result. Operators should monitor the reconciliation
+        directory and recon report contents, not this return value.
+        """
+        last = self._state.get("last_auto_reconcile_at")
+        now_s = time.time()
+        if last is not None:
+            try:
+                if (now_s - float(last)) < self.AUTO_RECONCILE_MIN_INTERVAL_SECONDS:
+                    return None
+            except (TypeError, ValueError):
+                pass
+        self._state.set("last_auto_reconcile_at", now_s)
+
+        end = pd.Timestamp.utcnow()
+        start = end - pd.Timedelta(days=self.AUTO_RECONCILE_WINDOW_DAYS)
+        try:
+            report = await self.reconcile(
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                no_fills=False,
+                write_report=True,
+            )
+        except Exception as e:  # noqa: BLE001 — reconcile must not break trigger
+            self.logger.warning("auto-reconcile failed: %s", e)
+            return f"auto-reconcile failed: {e}"
+
+        verdict = report.get("verdict") or report.get("status") or "ran"
+        return f"auto-reconcile: {verdict}"
 
     @final
     async def _run_trigger(self) -> StatusTuple:
@@ -154,10 +207,10 @@ class ActivePerpsStrategy(Strategy):
         )
 
         raw_perp, raw_hip3 = await self._build_handlers()
-        # Wrap each handler so every place_order is teed into an intents log.
-        # The reconciler replays decide() against snapshotted positions and then
-        # diffs replay-intents vs these recorded live-intents (strict axis) — and
-        # also vs HL fills (execution-path axis).
+        # Recording is unconditional. Every place_order is teed into an intents
+        # log so the reconciler can replay decide() against snapshotted state and
+        # diff intents (strict) + HL fills (execution-path). Subclasses cannot
+        # opt out — auto-reconcile after each trigger depends on this.
         perp = RecordingHandler(raw_perp)
         hip3 = {k: RecordingHandler(h) for k, h in raw_hip3.items()}
 

@@ -77,6 +77,12 @@ Three handler implementations satisfy the same `MarketHandler` protocol:
   parent class; the framework refuses to run if an unknown dex is named.
 - **Don't override locked methods.** `ActivePerpsStrategy.update()` and `_run_trigger()` are
   `@final`; subclassing tries to override them raise at class definition.
+- **Recording + reconcile are mandatory.** Every trigger wraps handlers in
+  `RecordingHandler` (intents are teed to disk unconditionally), and every
+  successful `update()` automatically runs a short-window reconcile
+  (`AUTO_RECONCILE_WINDOW_DAYS=1`, throttled to once per
+  `AUTO_RECONCILE_MIN_INTERVAL_SECONDS=3600`). Subclasses can widen the window
+  but cannot disable. Reports land in `<strategy_dir>/reconciliation/`.
 
 ## Sizing helpers (opt-in, in `wayfinder_paths.core.perps.sizing`)
 
