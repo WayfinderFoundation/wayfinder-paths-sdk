@@ -29,21 +29,32 @@ async def decide(ctx: TriggerContext) -> None:
     min_order_usd = float(ctx.params.get("min_order_usd", 10.0))
     rebalance_threshold = float(ctx.params.get("rebalance_threshold", 0.02))
 
-    targets = ctx.signal.targets
-    if targets.empty:
+    if ctx.signal.targets.empty:
         return
-    target_w = targets.iloc[-1]  # Wall-clock t doesn't align to bars in live;
-    # use the most recent computed row.
+    target_w = ctx.signal_at_now()
     gross = float(target_w.abs().sum())
     if gross > target_leverage and gross > 0:
         target_w = target_w * (target_leverage / gross)
 
-    nav = await ctx.perp.get_margin_balance()
+    # In backtest the driver writes pre-trade NAV to state; in live the handler
+    # exposes the real margin balance. Prefer state when present.
+    nav_state = ctx.state.get("nav")
+    nav = float(nav_state) if nav_state else await ctx.perp.get_margin_balance()
     if nav <= 0:
         ctx.state.set("nav", 0.0)
         return
     ctx.state.set("nav", float(nav))
     positions = await ctx.perp.get_positions()
+
+    # Force-rebalance when current gross has drifted above target_leverage due
+    # to adverse price moves. Lets reducing-gross trades bypass the threshold
+    # so the book gets back inside the leverage budget.
+    current_gross = sum(
+        abs(positions[s].size * ctx.perp.mid(s))
+        for s in positions
+        if ctx.perp.mid(s) > 0
+    )
+    over_leveraged = nav > 0 and (current_gross / nav) > target_leverage + 1e-9
 
     for sym in target_w.index:
         target_weight = float(target_w[sym])
@@ -55,11 +66,15 @@ async def decide(ctx: TriggerContext) -> None:
         cur_notional = cur_size * mid
         cur_weight = cur_notional / nav if nav > 0 else 0.0
 
-        if abs(target_weight - cur_weight) < rebalance_threshold:
-            continue
-
         target_size = (target_weight * nav) / mid
         diff = target_size - cur_size
+        reducing_gross = abs(target_size * mid) < abs(cur_notional) - 1e-12
+
+        if abs(target_weight - cur_weight) < rebalance_threshold and not (
+            over_leveraged and reducing_gross
+        ):
+            continue
+
         if diff == 0:
             continue
         if abs(diff) * mid < min_order_usd:

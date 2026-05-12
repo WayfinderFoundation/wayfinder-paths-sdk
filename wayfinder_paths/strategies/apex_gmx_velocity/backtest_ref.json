@@ -1,21 +1,21 @@
 {
   "schema_version": "0.1",
   "produced": {
-    "at": "2026-05-08T16:00:00Z",
-    "skill": "spread-radar audit + 25bps-slippage recalibration",
-    "git_sha": "3958e79bce3ff6172acdde383df85042742eeeca",
-    "ref_hash": "apex_gmx_velocity_v1"
+    "at": "2026-05-12T00:00:00Z",
+    "skill": "leverage + entry_z recalibration (lev=2.5, ez=0.75, 30bps slip) after decide.py bug fix (iloc[-1] + get_margin_balance=0)",
+    "git_sha": "8f63aefad45ae66eb184773ce083358fd5bde3ea",
+    "ref_hash": "apex_gmx_velocity_v2"
   },
   "code": {
     "signal": {
       "module": "wayfinder_paths.strategies.apex_gmx_velocity.signal",
       "entrypoint": "compute_signal",
-      "source_sha256": "86b9bdd23e59adad1fc1f38770ba4bb5f7250fe1bda23f8272ed6a6f6feef70f"
+      "source_sha256": "ccd96818f1ca5c365d5e33ffe6c553c8edf59808b9e49fc1bd603b63744b1d4b"
     },
     "decide": {
       "module": "wayfinder_paths.strategies.apex_gmx_velocity.decide",
       "entrypoint": "decide",
-      "source_sha256": "0cb632589d22d39e36e373001d47d13a28be72b079e77b66c0b1b4597ddfc443"
+      "source_sha256": "e5703f72b438f372e02d2e12e6eff4e21448d6057642efc811ae9399c75887ac"
     }
   },
   "venues": {
@@ -26,45 +26,53 @@
     "symbols": ["APEX", "GMX"],
     "interval": "1h",
     "window": {
-      "start": "2025-10-20",
+      "start": "2025-11-08",
       "end": "2026-05-08",
-      "bars": 4801
+      "bars": 4344
     },
-    "fingerprint": "hl_2025-10-20_2026-05-08_apex_gmx_1h"
+    "fingerprint": "hl_2025-11-08_2026-05-08_apex_gmx_1h"
   },
   "params": {
     "lookback_bars": 72,
-    "entry_z": 2.0,
+    "entry_z": 0.75,
     "velocity_bars": 6,
-    "target_leverage": 1.5,
+    "target_leverage": 2.5,
     "rebalance_threshold": 0.02,
     "min_order_usd": 10.0
   },
   "execution_assumptions": {
     "fill_model": "next_bar_open",
-    "slippage_bps": 25.0,
+    "slippage_bps": 30.0,
     "fee_bps": 4.5,
     "min_order_usd": 10.0,
-    "slippage_note": "Calibrated from 10-fill audit on perp_dex_pair_velocity (avg 22.9 bps observed). Conservative for APEX/GMX which can show wider spreads at bar boundary."
+    "slippage_note": "Realistic HL taker assumption for APEX/GMX (low-cap perps). Breakeven slippage ~100 bps; 30 bps leaves ~3x cushion."
   },
   "performance": {
-    "sharpe": 3.78,
-    "total_return": 0.5014,
-    "max_drawdown": -0.10,
-    "sharpe_30d": 3.25,
-    "sharpe_60d": 4.07,
-    "sharpe_90d": 3.78,
-    "sharpe_120d": 3.74,
-    "total_return_30d": 0.0877,
-    "total_return_60d": 0.2654,
-    "total_return_90d": 0.5014,
-    "total_return_120d": 0.6407,
-    "trade_count_30d": 27,
-    "trade_count_60d": 55,
-    "trade_count_90d": 83,
-    "trade_count_120d": 104,
-    "annualized_return": 1.95,
-    "annualized_return_note": "120d return × 365/120 ≈ 195% gross. After realistic compounding, expect 100-150% annualized."
+    "sharpe": 2.51,
+    "total_return": 1.804,
+    "max_drawdown": -0.400,
+    "sharpe_30d": 2.45,
+    "sharpe_60d": 2.54,
+    "sharpe_90d": 3.08,
+    "sharpe_120d": 2.19,
+    "sharpe_180d": 2.51,
+    "total_return_30d": 0.277,
+    "total_return_60d": 0.504,
+    "total_return_90d": 1.305,
+    "total_return_120d": 0.975,
+    "total_return_180d": 1.804,
+    "max_drawdown_30d": -0.229,
+    "max_drawdown_60d": -0.229,
+    "max_drawdown_90d": -0.308,
+    "max_drawdown_120d": -0.389,
+    "max_drawdown_180d": -0.400,
+    "trade_count_30d": 45,
+    "trade_count_60d": 116,
+    "trade_count_90d": 195,
+    "trade_count_120d": 221,
+    "trade_count_180d": 328,
+    "annualized_return": 3.66,
+    "annualized_return_note": "180d return × 365/180 ≈ 366% gross. Expect substantially lower after realistic compounding/regime change; treat as upper bound."
   },
   "monitoring": {
     "drift_tolerances": {

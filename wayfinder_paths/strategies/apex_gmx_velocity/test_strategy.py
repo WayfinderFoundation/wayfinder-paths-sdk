@@ -61,8 +61,8 @@ def test_class_wires():
     p = cls.DEFAULT_PARAMS
     assert set(p["symbols"]) == {"APEX", "GMX"}
     assert p["lookback_bars"] == 72
-    assert p["entry_z"] == 2.0
-    assert p["target_leverage"] == 1.5
+    assert p["entry_z"] == 0.75
+    assert p["target_leverage"] == 2.5
 
 
 @pytest.mark.smoke
