@@ -156,6 +156,16 @@ def run_backtest(
     prices = prices[symbols].ffill()
     target_positions = target_positions[symbols].ffill().fillna(0.0).clip(-1.0, 1.0)
 
+    # Remove look-ahead: signal computed from bar t's close should fill at the
+    # next bar's price, not the same bar's. Shift weights down by 1 so the row
+    # at timestamp t reflects the signal decided at t-1.
+    if config.fill_model == "next_bar_open":
+        target_positions = target_positions.shift(1).fillna(0.0)
+    elif config.fill_model != "same_bar":
+        raise ValueError(
+            f"Unknown fill_model={config.fill_model!r}; expected 'next_bar_open' or 'same_bar'"
+        )
+
     # Align funding rates with prices safely (no lookahead bias)
     if config.funding_rates is not None:
         # Join funding rates with prices, forward fill, then slice out just funding
