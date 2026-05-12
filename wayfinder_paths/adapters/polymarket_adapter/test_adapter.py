@@ -501,7 +501,7 @@ class TestPolymarketAdapter:
         )
 
         adapter.wallet_address = "0x" + "11" * 20
-        account = adapter.trading_address()
+        account = adapter.deposit_wallet_address()
 
         ok, state = await adapter.get_full_user_state(account=account)
         assert ok is True

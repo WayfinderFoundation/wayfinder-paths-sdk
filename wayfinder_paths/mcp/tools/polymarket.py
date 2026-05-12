@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -184,7 +185,7 @@ async def polymarket_get_state(
         wallet_address=waddr,
     )
     try:
-        acct = adapter.trading_address() if waddr else direct_account
+        acct = adapter.deposit_wallet_address() if waddr else direct_account
         ok_state, state = await adapter.get_full_user_state(
             account=str(acct),
             include_orders=bool(include_orders),
@@ -468,7 +469,7 @@ async def polymarket_read(
                     {
                         "action": action,
                         "wallet_label": want,
-                        "account": adapter.trading_address(),
+                        "account": adapter.deposit_wallet_address(),
                         "openOrders": orders,
                     }
                 )
@@ -484,6 +485,8 @@ async def polymarket_execute(
     action: Literal[
         "bridge_deposit",
         "bridge_withdraw",
+        "fund_deposit_wallet",
+        "withdraw_deposit_wallet",
         "buy",
         "sell",
         "close_position",
@@ -527,6 +530,10 @@ async def polymarket_execute(
       - `bridge_deposit`: bridge `amount` of `from_token_address` from `from_chain_id` into
         Polymarket pUSD. `recipient_address` defaults to sender. `token_decimals` defaults to 6.
       - `bridge_withdraw`: bridge `amount_pusd` out to `to_chain_id` / `to_token_address`.
+      - `fund_deposit_wallet`: move `amount` pUSD from the owner EOA into the derived deposit
+        wallet (Polygon transfer). Required before trading.
+      - `withdraw_deposit_wallet`: pull pUSD from the deposit wallet back to the owner EOA
+        via the relayer. Omit `amount` to withdraw the full balance.
       - `buy` / `sell`: market order. Specify `market_slug`+`outcome` OR `token_id`. BUY needs
         `amount_collateral` (USDC); SELL needs `shares`.
       - `close_position`: SELL the full holding. Resolves token via `token_id`, or
@@ -671,6 +678,49 @@ async def polymarket_execute(
                         "to_token_address": str(to_token_address),
                         "recipient_addr": str(rcpt),
                     },
+                )
+                return _done(status)
+
+            case "fund_deposit_wallet":
+                throw_if_none("amount is required for fund_deposit_wallet", amount)
+                ok_fund, res = await adapter.fund_deposit_wallet(
+                    amount=Decimal(str(amount))
+                )
+                effects.append({
+                    "type": "polymarket",
+                    "label": "fund_deposit_wallet",
+                    "ok": ok_fund,
+                    "result": res,
+                })
+                status = "confirmed" if ok_fund else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="fund_deposit_wallet",
+                    status=status,
+                    chain_id=POLYGON_CHAIN_ID,
+                    details={"amount": float(amount)},
+                )
+                return _done(status)
+
+            case "withdraw_deposit_wallet":
+                ok_w, res = await adapter.withdraw_deposit_wallet(
+                    amount=Decimal(str(amount)) if amount is not None else None
+                )
+                effects.append({
+                    "type": "polymarket",
+                    "label": "withdraw_deposit_wallet",
+                    "ok": ok_w,
+                    "result": res,
+                })
+                status = "confirmed" if ok_w else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="withdraw_deposit_wallet",
+                    status=status,
+                    chain_id=POLYGON_CHAIN_ID,
+                    details={"amount": float(amount) if amount is not None else None},
                 )
                 return _done(status)
 

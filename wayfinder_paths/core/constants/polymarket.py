@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from decimal import Decimal
-
 from eth_abi import encode as abi_encode
 from eth_utils import keccak, to_bytes, to_checksum_address
 
@@ -41,8 +39,6 @@ POLYMARKET_APPROVAL_TARGETS: list[str] = [
 
 POLYMARKET_DEPOSIT_WALLET_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
 POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
-POLYMARKET_DEPOSIT_WALLET_FUND_BUFFER = Decimal("1.10")
-POLYMARKET_DEPOSIT_WALLET_MIN_FUND_BUFFER = Decimal("0.50")
 POLYMARKET_ERC1967_CONST1 = (
     "0xcc3735a920a3ca505d382bbc545af43d6000803e6038573d6000fd5b3d6000f3"
 )
