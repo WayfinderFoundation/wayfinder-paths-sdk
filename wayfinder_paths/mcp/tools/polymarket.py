@@ -686,12 +686,14 @@ async def polymarket_execute(
                 ok_fund, res = await adapter.fund_deposit_wallet(
                     amount=Decimal(str(amount))
                 )
-                effects.append({
-                    "type": "polymarket",
-                    "label": "fund_deposit_wallet",
-                    "ok": ok_fund,
-                    "result": res,
-                })
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "fund_deposit_wallet",
+                        "ok": ok_fund,
+                        "result": res,
+                    }
+                )
                 status = "confirmed" if ok_fund else "failed"
                 _annotate(
                     address=sender,
@@ -707,12 +709,14 @@ async def polymarket_execute(
                 ok_w, res = await adapter.withdraw_deposit_wallet(
                     amount=Decimal(str(amount)) if amount is not None else None
                 )
-                effects.append({
-                    "type": "polymarket",
-                    "label": "withdraw_deposit_wallet",
-                    "ok": ok_w,
-                    "result": res,
-                })
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "withdraw_deposit_wallet",
+                        "ok": ok_w,
+                        "result": res,
+                    }
+                )
                 status = "confirmed" if ok_w else "failed"
                 _annotate(
                     address=sender,
