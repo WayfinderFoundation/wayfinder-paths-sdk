@@ -112,11 +112,10 @@ class BacktestConfig:
     periods_per_year: int | None = None  # If None, will auto-detect from data frequency
     funding_rates: pd.DataFrame | None = None
     force_rebalance_if_overleveraged: bool = False
-    # Fill model. "next_bar_open" (default, no look-ahead): the signal computed
-    # from bar t's close fills at bar t+1's price. "same_bar" is the legacy
-    # behavior that fills at the same bar's price as the signal — it includes
-    # look-ahead bias and is only kept for backward-compatible replay of old
-    # backtest reports.
+    # "replay": fill on the same bar the signal was computed. Use ONLY when
+    # reconciling a live strategy against its own historical decisions (the
+    # live decide() saw bar t's close and acted into bar t — reproduce that
+    # exactly). Never use for research; results carry look-ahead bias.
     fill_model: str = "next_bar_open"
 
 

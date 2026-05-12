@@ -31,7 +31,7 @@ decide_fn(ctx) → places orders via ctx.<venue>.handler  # per-bar
 - `ctx.t` — current bar timestamp (use this — never `datetime.now()`)
 
 Three handler implementations satisfy the same `MarketHandler` protocol:
-- `BacktestHandler` — fills queue to next-bar open (or same-bar via `fill_model="same_bar"`).
+- `BacktestHandler` — fills queue to next-bar open. `fill_model="replay"` fills on the same bar the signal was computed; use ONLY for live↔history reconciliation.
 - `LiveHandler` — wraps `HyperliquidAdapter`.
 - `ReconcileHandler` — records intents only, reads positions from `StateStore.snapshot_at(t)`.
 

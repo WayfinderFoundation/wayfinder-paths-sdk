@@ -97,9 +97,15 @@ async def backtest_perps_trigger(
 
     `signal_fn` is called once with the full price + funding frames; output is
     a target-size DataFrame (or SignalFrame). `decide_fn(ctx)` runs per bar.
+
+    `fill_model="replay"` fills on the same bar the signal was computed.
+    Use ONLY when reconciling a live strategy against its own historical
+    decisions; results carry look-ahead bias for any other purpose.
     """
-    if fill_model not in ("next_bar_open", "same_bar"):
-        raise NotImplementedError(f"fill_model={fill_model!r} not implemented")
+    if fill_model not in ("next_bar_open", "replay"):
+        raise NotImplementedError(
+            f"fill_model={fill_model!r} not implemented; expected 'next_bar_open' or 'replay'"
+        )
 
     hip3_dexes = list(hip3_dexes or [])
     params = dict(params or {})
@@ -211,8 +217,8 @@ async def backtest_perps_trigger(
 
         all_handlers = [perp, *hip3.values()]
 
-        # 5) same-bar fills happen at this bar's price, after decide.
-        if fill_model == "same_bar":
+        # replay: fill at this bar's price after decide (reconciliation only).
+        if fill_model == "replay":
             for h in all_handlers:
                 _record_fills(h.apply_pending_fills(), t)
 
