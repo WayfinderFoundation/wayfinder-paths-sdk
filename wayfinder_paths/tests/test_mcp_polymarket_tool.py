@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from wayfinder_paths.core.constants.polymarket import derive_deposit_wallet
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_execute,
     polymarket_get_state,
@@ -27,6 +28,7 @@ _TYPED_CB = AsyncMock(return_value="0x" + "00" * 65)
 
 @pytest.mark.asyncio
 async def test_polymarket_get_state_uses_adapter_full_state():
+    full_state = AsyncMock(return_value=(True, {"protocol": "polymarket_read"}))
     with (
         patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
         patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
@@ -35,13 +37,15 @@ async def test_polymarket_get_state_uses_adapter_full_state():
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
             "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_full_user_state",
-            new=AsyncMock(return_value=(True, {"protocol": "polymarket_read"})),
+            new=full_state,
         ),
     ):
         out = await polymarket_get_state(wallet_label="main")
         assert out["ok"] is True
         assert out["result"]["ok"] is True
         assert out["result"]["state"]["protocol"] == "polymarket_read"
+        assert out["result"]["account"] == derive_deposit_wallet(_ADDR)
+        assert full_state.await_args.kwargs["account"] == derive_deposit_wallet(_ADDR)
 
 
 @pytest.mark.asyncio

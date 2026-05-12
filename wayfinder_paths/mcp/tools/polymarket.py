@@ -145,15 +145,16 @@ async def polymarket_get_state(
 ) -> dict[str, Any]:
     """Full Polymarket account state — positions, optional orders / activity / trades.
 
-    Account precedence: `account` > `wallet_address` > deposit wallet derived from
-    `wallet_label`.
+    With `wallet_label`, state is read from the derived deposit wallet. Without
+    `wallet_label`, pass `account` or `wallet_address` directly.
     `include_orders` defaults to true; `include_activity` / `include_trades` default false
     to keep payloads tight. Each `*_limit` caps its respective list.
     """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
     if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
-    if not (normalize_address(account) or normalize_address(wallet_address) or waddr):
+    direct_account = normalize_address(account) or normalize_address(wallet_address)
+    if not waddr and not direct_account:
         return err(
             "invalid_request",
             "account (or wallet_label/wallet_address) is required",
@@ -169,18 +170,9 @@ async def polymarket_get_state(
     sign_typed_data_cb = None
     config: dict[str, Any] | None = None
     if want and waddr:
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
-        except ValueError:
-            pass
+        sign_cb, _ = await get_wallet_signing_callback(want)
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -192,11 +184,7 @@ async def polymarket_get_state(
         wallet_address=waddr,
     )
     try:
-        acct = (
-            normalize_address(account)
-            or normalize_address(wallet_address)
-            or (adapter.trading_address() if waddr else None)
-        )
+        acct = adapter.trading_address() if waddr else direct_account
         ok_state, state = await adapter.get_full_user_state(
             account=str(acct),
             include_orders=bool(include_orders),
@@ -311,18 +299,9 @@ async def polymarket_read(
     sign_hash_cb = None
     sign_typed_data_cb = None
     if want and waddr:
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
-        except ValueError:
-            pass
+        sign_cb, _ = await get_wallet_signing_callback(want)
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -489,7 +468,7 @@ async def polymarket_read(
                     {
                         "action": action,
                         "wallet_label": want,
-                        "account": waddr,
+                        "account": adapter.trading_address(),
                         "openOrders": orders,
                     }
                 )
@@ -564,16 +543,10 @@ async def polymarket_execute(
         Other args: see action-specific descriptions above.
     """
     sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
-    try:
-        sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
-    except ValueError:
-        sign_hash_cb = None
-    try:
-        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(
-            wallet_label or ""
-        )
-    except ValueError:
-        sign_typed_data_cb = None
+    sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
+    sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(
+        wallet_label or ""
+    )
     want = wallet_label
 
     tool_input = {
