@@ -201,9 +201,10 @@ async def backtest_perps_trigger(
             for h in [perp, *hip3.values()]
         )
         nav_pre = float(cash) + float(unrealized_pre) - bar_costs_pre
+        # Also write to state for the reconciler's snapshot anchor — but decide
+        # must read ctx.nav, not ctx.state.get("nav") (see TriggerContext).
         state.set("nav", nav_pre)
 
-        # 4) build context and run decide.
         ctx = TriggerContext(
             perp=perp,
             hip3=hip3,
@@ -211,6 +212,7 @@ async def backtest_perps_trigger(
             state=state,
             signal=signal_frame,
             t=t.to_pydatetime(),
+            nav=nav_pre,
         )
         with purity_sandbox():
             await decide(ctx)

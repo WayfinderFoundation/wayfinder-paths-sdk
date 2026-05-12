@@ -4,6 +4,12 @@ Signal weights already include `target_leverage` (sum |w| ≤ target_leverage
 when entered). decide computes target sizes from current NAV, rounds each
 order to the asset's szDecimals so HL signing accepts it, and rebalances
 through the threshold.
+
+decide() is a PURE function of `ctx`. It must not call
+`ctx.perp.get_margin_balance()` or any other side-channel to fetch NAV —
+read `ctx.nav` (framework-owned, identical in backtest and live). It also
+must not write framework-owned values back to `ctx.state`. State is reserved
+for strategy-owned multi-bar bookkeeping. See `TriggerContext` docs.
 """
 
 from __future__ import annotations
@@ -36,14 +42,9 @@ async def decide(ctx: TriggerContext) -> None:
     if gross > target_leverage and gross > 0:
         target_w = target_w * (target_leverage / gross)
 
-    # In backtest the driver writes pre-trade NAV to state; in live the handler
-    # exposes the real margin balance. Prefer state when present.
-    nav_state = ctx.state.get("nav")
-    nav = float(nav_state) if nav_state else await ctx.perp.get_margin_balance()
+    nav = float(ctx.nav)
     if nav <= 0:
-        ctx.state.set("nav", 0.0)
         return
-    ctx.state.set("nav", float(nav))
     positions = await ctx.perp.get_positions()
 
     # Force-rebalance when current gross has drifted above target_leverage due

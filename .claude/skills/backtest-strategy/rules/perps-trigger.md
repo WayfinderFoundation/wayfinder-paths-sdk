@@ -51,8 +51,25 @@ Three handler implementations satisfy the same `MarketHandler` protocol:
 
 ## Required disciplines
 
-- **Use `ctx.t`, never `datetime.now()`.** The backtest is reproducible only if decide()
-  is deterministic. The purity sandbox raises `PurityViolation` on `time.*` and `random.random()`.
+- **`decide(ctx)` is a pure function of `ctx`. No side-channel state reads.**
+  Every value decide needs is on the context. The framework guarantees these are
+  computed the same way in backtest and live:
+  - **NAV** — read `ctx.nav`. Never call `await ctx.perp.get_margin_balance()` from
+    inside decide. In backtest, `BacktestHandler.get_margin_balance()` returns `0.0`
+    (the driver tracks NAV separately); in live, calling it bypasses the framework's
+    snapshot of pre-trade truth. This is the canonical live↔backtest divergence trap.
+  - **Positions** — `await ctx.perp.get_positions()`. Same shape in backtest (handler-tracked)
+    and live (exchange-queried).
+  - **Mids** — `ctx.perp.mid(sym)`. Synchronous; backtest reads the bar's price, live reads
+    pre-fetched mids.
+  - **Time** — `ctx.t`. Never `datetime.now()` (purity sandbox raises `PurityViolation`).
+- **`ctx.state` is strategy-owned, not framework-owned.** Use it for multi-bar bookkeeping
+  the strategy genuinely needs (e.g. a cooldown timer, a regime flag). Do NOT smuggle
+  framework values like NAV into `ctx.state` — that's how the apex_gmx NAV bug crept in
+  (decide stored NAV on first run, then read the stale value forever after).
+- **Slippage helpers are idealized in backtest.** `quantity_at_price` / `price_for_quantity`
+  assume infinite depth at mid. Reconciliation catches the deviation between assumed and
+  realized live slippage.
 - **Slippage helpers are idealized in backtest.** `quantity_at_price` / `price_for_quantity`
   assume infinite depth at mid. Reconciliation catches the deviation between assumed and
   realized live slippage.

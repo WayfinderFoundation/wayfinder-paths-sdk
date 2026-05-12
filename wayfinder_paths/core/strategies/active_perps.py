@@ -168,6 +168,10 @@ class ActivePerpsStrategy(Strategy):
         )
 
         trigger_t = perp.now()
+        # Fetch NAV from the exchange-of-record (primary perp). Pass it through
+        # ctx.nav so decide() reads framework-owned truth, not a side-channel
+        # call (which would diverge from backtest — see TriggerContext docs).
+        nav = float(await perp.get_margin_balance())
         ctx = TriggerContext(
             perp=perp,
             hip3=hip3,
@@ -175,6 +179,7 @@ class ActivePerpsStrategy(Strategy):
             state=self._state,
             signal=signal_frame,
             t=trigger_t,
+            nav=nav,
         )
         await self._decide_fn(ctx)
 
@@ -222,7 +227,7 @@ class ActivePerpsStrategy(Strategy):
                 "mids": mids_snapshot,
                 "signal_row": signal_row_serialised,
                 "trigger_ts": trigger_t.isoformat(),
-                "nav": self._state.get("nav"),
+                "nav": nav,
                 "params_hash": params_hash,
             }
         )

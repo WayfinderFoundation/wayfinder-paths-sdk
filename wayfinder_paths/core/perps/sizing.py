@@ -18,7 +18,7 @@ def _all_handlers(ctx: TriggerContext) -> list:
 
 def _free_margin_from_ctx(ctx: TriggerContext, leverage: float) -> float:
     """Pre-trade free margin = NAV − margin currently in use across all venues."""
-    nav = float(ctx.state.get("nav") or 0.0)
+    nav = float(ctx.nav or 0.0)
     if nav <= 0:
         return 0.0
     gross = 0.0
@@ -96,7 +96,7 @@ async def scale_pending_atomically(
         cost_bps = fee + slip
     cost_rate = float(cost_bps) / 1e4
 
-    nav = float(ctx.state.get("nav") or 0.0)
+    nav = float(ctx.nav or 0.0)
     if nav <= 0:
         return 1.0
 

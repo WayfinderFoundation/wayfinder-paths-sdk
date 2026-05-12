@@ -60,7 +60,10 @@ Before the runner can actually trade, two wallet conditions must hold. Missing e
 2. **`decide.py::decide(ctx: TriggerContext) -> None`**
    - Read targets via `ctx.signal.targets.iloc[-1]` (live `ctx.t` is wall-clock,
      doesn't align to bar index — exact-match `.loc[t]` will fail)
-   - Read NAV via `await ctx.perp.get_margin_balance()`, store with `ctx.state.set("nav", ...)`
+   - Read NAV via `ctx.nav` — framework-owned, identical in backtest and live.
+     **Never** call `await ctx.perp.get_margin_balance()` or `ctx.state.set("nav", ...)`
+     from inside decide. Backtest's `BacktestHandler.get_margin_balance()` returns 0,
+     and any stored NAV gets pinned to first-observed truth in live (canonical bug).
    - Read positions via `await ctx.perp.get_positions()`
    - Round order size via `round_size_for_asset(adapter.asset_to_sz_decimals,
      asset_id, raw_size)` — HL signing rejects floats with too many decimals

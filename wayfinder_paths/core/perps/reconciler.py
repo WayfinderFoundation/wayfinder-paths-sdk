@@ -1064,9 +1064,12 @@ async def reconcile_strategy(
     replay_intents: list[dict[str, Any]] = []
     recorded_live: list[dict[str, Any]] = []
     for i, t in enumerate(prices.index):
+        snap_nav = 0.0
         for h in handlers.values():
             h.set_bar(i)
-            h.load_snapshot_at(t.to_pydatetime())
+            snap = h.load_snapshot_at(t.to_pydatetime())
+            if h.venue == "perp":
+                snap_nav = float(snap.get("nav") or 0.0)
             for live in h.recorded_live_intents:
                 rec = dict(live)
                 rec["bar_t"] = str(t)
@@ -1079,6 +1082,7 @@ async def reconcile_strategy(
             state=state,
             signal=signal_frame,
             t=t.to_pydatetime(),
+            nav=snap_nav,
         )
         await decide_fn(ctx)
         for h in handlers.values():
