@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from eth_utils import to_checksum_address
+
 from wayfinder_paths.core.constants.chains import CHAIN_ID_HYPEREVM
 from wayfinder_paths.core.constants.contracts import (
     HYPEREVM_WHYPE,
@@ -12,15 +14,15 @@ from wayfinder_paths.core.constants.contracts import (
     PRJX_ROUTER,
 )
 
-PRJX_FACTORY = "0xFf7B3e8C00e57ea31477c32A5B52a58Eea47b072"
-PRJX_QUOTER = "0x239F11a7A3E08f2B8110D4CA9F6B95d4c8865258"
+PRJX_FACTORY = to_checksum_address("0xFf7B3e8C00e57ea31477c32A5B52a58Eea47b072")
+PRJX_QUOTER = to_checksum_address("0x239F11a7A3E08f2B8110D4CA9F6B95d4c8865258")
 PRJX_WNATIVE = HYPEREVM_WHYPE
 
 PROJECTX_CHAIN_ID = CHAIN_ID_HYPEREVM
 
-THBILL_USDC_POOL = "0x49dfe4bbBD4c664E921aA2Cde7bA1fC553959bF5"
-THBILL_TOKEN = "0xfDD22Ce6D1F66bc0Ec89b20BF16CcB6670F55A5a"
-USDC_TOKEN = "0xb88339CB7199b77E23DB6E890353E22632Ba630f"
+THBILL_USDC_POOL = to_checksum_address("0x49dfe4bbBD4c664E921aA2Cde7bA1fC553959bF5")
+THBILL_TOKEN = to_checksum_address("0xfDD22Ce6D1F66bc0Ec89b20BF16CcB6670F55A5a")
+USDC_TOKEN = to_checksum_address("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
 WHYPE_TOKEN = PRJX_WNATIVE
 
 # Strategy metadata for THBILL<>USDC pool
