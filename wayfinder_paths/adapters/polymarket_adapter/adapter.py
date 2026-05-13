@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import re
+import time
 from decimal import Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any, Literal
@@ -10,6 +14,7 @@ from typing import Any, Literal
 import httpx
 from eth_utils import to_checksum_address
 from hexbytes import HexBytes
+from py_clob_client_v2 import AssetType, BalanceAllowanceParams, SignatureTypeV2
 from py_clob_client_v2.client import ClobClient  # type: ignore[import-untyped]
 from py_clob_client_v2.clob_types import (  # type: ignore[import-untyped]
     MarketOrderArgs,
@@ -23,26 +28,36 @@ from py_clob_client_v2.config import (  # type: ignore[import-untyped]
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
-from wayfinder_paths.core.config import get_polygon_builder_code
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
-    CONDITIONAL_TOKENS_ABI,
     MAX_UINT256,
     POLYGON_CHAIN_ID,
     POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
     POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+    POLYMARKET_APPROVAL_TARGETS,
     POLYMARKET_BRIDGE_BASE_URL,
+    POLYMARKET_BUILDER_CODE,
     POLYMARKET_CLOB_BASE_URL,
     POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS,
     POLYMARKET_COLLATERAL_ONRAMP_ADDRESS,
-    POLYMARKET_COLLATERAL_RAMP_ABI,
+    POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
     POLYMARKET_DATA_BASE_URL,
+    POLYMARKET_DEPOSIT_WALLET_FACTORY,
+    POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
     POLYMARKET_GAMMA_BASE_URL,
-    POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
-    TOKEN_UNWRAP_ABI,
+    POLYMARKET_RELAYER_BASE_URL,
     ZERO32_STR,
+    derive_deposit_wallet,
+    polymarket_deposit_wallet_id,
+)
+from wayfinder_paths.core.constants.polymarket_abi import (
+    CONDITIONAL_TOKENS_ABI,
+    POLYMARKET_COLLATERAL_RAMP_ABI,
+    POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
+    POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
+    TOKEN_UNWRAP_ABI,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -51,7 +66,6 @@ from wayfinder_paths.core.utils.multicall import (
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
-    ensure_erc1155_approval,
     get_token_balance,
 )
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
@@ -259,13 +273,13 @@ class PolymarketAdapter(BaseAdapter):
         *,
         sign_callback=None,
         sign_hash_callback=None,
+        sign_typed_data_callback=None,
         wallet_address: str | None = None,
-        funder: str | None = None,
-        signature_type: int | None = None,
         gamma_base_url: str = POLYMARKET_GAMMA_BASE_URL,
         clob_base_url: str = POLYMARKET_CLOB_BASE_URL,
         data_base_url: str = POLYMARKET_DATA_BASE_URL,
         bridge_base_url: str = POLYMARKET_BRIDGE_BASE_URL,
+        relayer_base_url: str = POLYMARKET_RELAYER_BASE_URL,
         http_timeout_s: float = 30.0,
     ) -> None:
         super().__init__("polymarket_adapter", config)
@@ -275,17 +289,21 @@ class PolymarketAdapter(BaseAdapter):
         )
         self.sign_callback = sign_callback
         self.sign_hash_callback = sign_hash_callback
-        self._funder_override = funder
-        self._signature_type = signature_type
+        self.sign_typed_data_callback = sign_typed_data_callback
 
         timeout = httpx.Timeout(http_timeout_s)
         self._gamma_http = httpx.AsyncClient(base_url=gamma_base_url, timeout=timeout)
         self._clob_http = httpx.AsyncClient(base_url=clob_base_url, timeout=timeout)
         self._data_http = httpx.AsyncClient(base_url=data_base_url, timeout=timeout)
         self._bridge_http = httpx.AsyncClient(base_url=bridge_base_url, timeout=timeout)
+        self._relayer_http = httpx.AsyncClient(
+            base_url=relayer_base_url, timeout=timeout
+        )
 
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
+        self._setup_complete = False
+        self._builder_creds: dict[str, str] | None = None
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -293,6 +311,7 @@ class PolymarketAdapter(BaseAdapter):
             self._clob_http.aclose(),
             self._data_http.aclose(),
             self._bridge_http.aclose(),
+            self._relayer_http.aclose(),
             return_exceptions=True,
         )
 
@@ -1299,10 +1318,8 @@ class PolymarketAdapter(BaseAdapter):
             )
         return self.wallet_address
 
-    def _require_funder(self) -> str:
-        if self._funder_override:
-            return to_checksum_address(self._funder_override)
-        return self._require_wallet_address()
+    def deposit_wallet_address(self) -> str:
+        return derive_deposit_wallet(self._require_wallet_address())
 
     def _require_signer(self) -> tuple[str, Any]:
         addr = self._require_wallet_address()
@@ -1320,28 +1337,311 @@ class PolymarketAdapter(BaseAdapter):
             "conditional_tokens": str(cfg.conditional_tokens),
         }
 
-    def _builder_code(self) -> str | None:
-        system = self.config.get("system", {})
-        if isinstance(system, dict):
-            builder_code = system.get("polymarket_builder_code")
-            if isinstance(builder_code, str):
-                builder_code = builder_code.strip()
-                if builder_code:
-                    return builder_code
-        return get_polygon_builder_code()
+    async def _relayer_get(self, path: str, params: dict[str, Any]) -> Any:
+        res = await self._relayer_http.get(path, params=params)
+        res.raise_for_status()
+        return res.json()
+
+    async def _ensure_builder_creds(self) -> dict[str, str]:
+        if self._builder_creds:
+            return self._builder_creds
+        owner_client = ClobClient(  # type: ignore[misc]
+            str(self._clob_http.base_url),
+            chain_id=POLYGON_CHAIN_ID,
+            address_override=self._require_wallet_address(),
+            sign_callback_override=self.sign_hash_callback,
+        )
+        creds = await owner_client.create_or_derive_api_creds()
+        owner_client.set_api_creds(creds)
+        raw = owner_client.create_builder_api_key()
+        self._builder_creds = {
+            "key": str(raw["key"]),
+            "secret": str(raw["secret"]),
+            "passphrase": str(raw["passphrase"]),
+        }
+        return self._builder_creds
+
+    async def _builder_headers(
+        self, method: str, path: str, body: str
+    ) -> dict[str, str]:
+        creds = await self._ensure_builder_creds()
+        ts = str(int(time.time()))
+        # Relayer expects the canonical JSON body with single→double quote normalization
+        message = f"{ts}{method}{path}" + body.replace("'", '"')
+        sig = base64.urlsafe_b64encode(
+            hmac.new(
+                base64.urlsafe_b64decode(creds["secret"]),
+                message.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        ).decode("utf-8")
+        return {
+            "Content-Type": "application/json",
+            "POLY_BUILDER_API_KEY": creds["key"],
+            "POLY_BUILDER_TIMESTAMP": ts,
+            "POLY_BUILDER_PASSPHRASE": creds["passphrase"],
+            "POLY_BUILDER_SIGNATURE": sig,
+        }
+
+    async def _relayer_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        headers = await self._builder_headers("POST", "/submit", body)
+        res = await self._relayer_http.post("/submit", content=body, headers=headers)
+        res.raise_for_status()
+        return res.json()
+
+    async def _poll_relayer_tx(self, transaction_id: str) -> dict[str, Any]:
+        last: dict[str, Any] | None = None
+        for _ in range(720):
+            rows = await self._relayer_get("/transaction", {"id": transaction_id})
+            if rows:
+                last = rows[0]
+                state = last["state"]
+                if state in {"STATE_CONFIRMED", "STATE_MINED"}:
+                    return last
+                if state in {"STATE_FAILED", "STATE_INVALID"}:
+                    raise ValueError(f"Relayer transaction failed: {last}")
+            await asyncio.sleep(0.25)
+        raise TimeoutError(f"Timed out waiting for relayer tx {transaction_id}: {last}")
+
+    async def _submit_wallet_batch(
+        self, *, calls: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        owner = self._require_wallet_address()
+        deposit_wallet = self.deposit_wallet_address()
+        nonce: int = (
+            await self._relayer_get("/nonce", {"address": owner, "type": "WALLET"})
+        )["nonce"]
+        deadline = int(time.time()) + 600
+        signature: str = await self.sign_typed_data_callback(
+            {
+                "primaryType": "Batch",
+                "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
+                "domain": {
+                    "name": "DepositWallet",
+                    "version": "1",
+                    "chainId": POLYGON_CHAIN_ID,
+                    "verifyingContract": deposit_wallet,
+                },
+                "message": {
+                    "wallet": deposit_wallet,
+                    "nonce": nonce,
+                    "deadline": deadline,
+                    "calls": calls,
+                },
+            }
+        )
+        submitted = await self._relayer_submit(
+            {
+                "type": "WALLET",
+                "from": owner,
+                "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                "nonce": str(nonce),
+                "signature": signature,
+                "depositWalletParams": {
+                    "depositWallet": deposit_wallet,
+                    "deadline": str(deadline),
+                    "calls": [
+                        {
+                            "target": c["target"],
+                            "value": str(c["value"]),
+                            "data": c["data"],
+                        }
+                        for c in calls
+                    ],
+                },
+            }
+        )
+        tx = await self._poll_relayer_tx(submitted["transactionID"])
+        return {"deposit_wallet": deposit_wallet, "tx_hash": tx["transactionHash"]}
+
+    async def fund_deposit_wallet(
+        self, *, amount_raw: int
+    ) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            owner, sign_cb = self._require_signer()
+            deposit_wallet = self.deposit_wallet_address()
+            if amount_raw <= 0:
+                return False, "amount must be positive"
+            tx = await build_send_transaction(
+                from_address=owner,
+                to_address=deposit_wallet,
+                token_address=POLYGON_P_USDC_PROXY_ADDRESS,
+                chain_id=POLYGON_CHAIN_ID,
+                amount=amount_raw,
+            )
+            tx_hash = await send_transaction(tx, sign_cb, confirmations=1)
+            return True, {
+                "deposit_wallet": deposit_wallet,
+                "amount_raw": amount_raw,
+                "tx_hash": tx_hash,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def withdraw_deposit_wallet(
+        self, *, amount_raw: int | None = None
+    ) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            owner = self._require_wallet_address()
+            deposit_wallet = self.deposit_wallet_address()
+            balance: int = await get_token_balance(
+                POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, deposit_wallet
+            )
+            if amount_raw is None:
+                amount_raw = balance
+            if amount_raw <= 0:
+                return False, "nothing to withdraw"
+            if amount_raw > balance:
+                return (
+                    False,
+                    f"insufficient deposit wallet balance: have {balance}, requested {amount_raw}",
+                )
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                pusd = web3.eth.contract(
+                    address=POLYGON_P_USDC_PROXY_ADDRESS, abi=ERC20_ABI
+                )
+                calls = [
+                    {
+                        "target": POLYGON_P_USDC_PROXY_ADDRESS,
+                        "value": 0,
+                        "data": pusd.encode_abi("transfer", [owner, amount_raw]),
+                    }
+                ]
+            result = await self._submit_wallet_batch(calls=calls)
+            return True, {**result, "amount_raw": amount_raw, "recipient": owner}
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def _setup_deposit_wallet(self) -> tuple[str | None, str | None]:
+        owner = self._require_wallet_address()
+        deposit_wallet = self.deposit_wallet_address()
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+            factory = web3.eth.contract(
+                address=POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                abi=POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
+            )
+            pusd = web3.eth.contract(
+                address=POLYGON_P_USDC_PROXY_ADDRESS, abi=ERC20_ABI
+            )
+            ctf = web3.eth.contract(
+                address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                abi=CONDITIONAL_TOKENS_ABI,
+            )
+            predicted, code, allowances, approvals = await asyncio.gather(
+                factory.functions.predictWalletAddress(
+                    POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
+                    polymarket_deposit_wallet_id(owner),
+                ).call(block_identifier="latest"),
+                web3.eth.get_code(deposit_wallet),
+                asyncio.gather(
+                    *[
+                        pusd.functions.allowance(deposit_wallet, s).call(
+                            block_identifier="latest"
+                        )
+                        for s in POLYMARKET_APPROVAL_TARGETS
+                    ]
+                ),
+                asyncio.gather(
+                    *[
+                        ctf.functions.isApprovedForAll(deposit_wallet, o).call(
+                            block_identifier="latest"
+                        )
+                        for o in POLYMARKET_APPROVAL_TARGETS
+                    ]
+                ),
+            )
+            if to_checksum_address(predicted) != deposit_wallet:
+                raise ValueError(
+                    "Deposit wallet derivation mismatch, this should never happen, please contact support."
+                )
+
+            deploy_tx_hash: str | None = None
+            if not code:
+                submitted = await self._relayer_submit(
+                    {
+                        "type": "WALLET-CREATE",
+                        "from": owner,
+                        "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                    }
+                )
+                deploy_tx = await self._poll_relayer_tx(submitted["transactionID"])
+                deploy_tx_hash = deploy_tx["transactionHash"]
+
+            calls: list[dict[str, Any]] = []
+            for spender, allowance in zip(
+                POLYMARKET_APPROVAL_TARGETS, allowances, strict=True
+            ):
+                if allowance < MAX_UINT256 // 2:
+                    calls.append(
+                        {
+                            "target": POLYGON_P_USDC_PROXY_ADDRESS,
+                            "value": 0,
+                            "data": pusd.encode_abi("approve", [spender, MAX_UINT256]),
+                        }
+                    )
+            for operator, approved in zip(
+                POLYMARKET_APPROVAL_TARGETS, approvals, strict=True
+            ):
+                if not approved:
+                    calls.append(
+                        {
+                            "target": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                            "value": 0,
+                            "data": ctf.encode_abi(
+                                "setApprovalForAll", [operator, True]
+                            ),
+                        }
+                    )
+
+        approval_tx_hash: str | None = None
+        if calls:
+            approval = await self._submit_wallet_batch(calls=calls)
+            approval_tx_hash = approval["tx_hash"]
+        return deploy_tx_hash, approval_tx_hash
+
+    async def ensure_trading_setup(
+        self, *, token_id: str | None = None
+    ) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            if self._setup_complete:
+                return True, {"deposit_wallet": self.deposit_wallet_address()}
+            deploy_tx_hash, approval_tx_hash = await self._setup_deposit_wallet()
+            ok_creds, msg = await self.ensure_api_creds()
+            if not ok_creds:
+                return False, msg
+            self.clob_client.update_balance_allowance(
+                BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=SignatureTypeV2.POLY_1271,
+                )
+            )
+            if token_id:
+                self.clob_client.update_balance_allowance(
+                    BalanceAllowanceParams(
+                        asset_type=AssetType.CONDITIONAL,
+                        token_id=token_id,
+                        signature_type=SignatureTypeV2.POLY_1271,
+                    )
+                )
+            self._setup_complete = True
+            return True, {
+                "deposit_wallet": self.deposit_wallet_address(),
+                "deploy_tx_hash": deploy_tx_hash,
+                "approval_tx_hash": approval_tx_hash,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
 
     @property
     def clob_client(self) -> ClobClient:  # type: ignore[valid-type]
         if self._clob_client is None:
-            addr = self._require_wallet_address()
-            funder = self._require_funder()
             self._clob_client = ClobClient(  # type: ignore[misc]
                 str(self._clob_http.base_url),
                 chain_id=POLYGON_CHAIN_ID,
-                key="0x" + "00" * 32,
-                signature_type=self._signature_type,
-                funder=funder,
-                address_override=addr,
+                signature_type=SignatureTypeV2.POLY_1271,
+                funder=self.deposit_wallet_address(),
+                address_override=self._require_wallet_address(),
                 sign_callback_override=self.sign_hash_callback,
             )
         return self._clob_client  # type: ignore[return-value]
@@ -1358,59 +1658,6 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def ensure_onchain_approvals(self) -> tuple[bool, dict[str, Any] | str]:
-        from_address, sign_cb = self._require_signer()
-
-        cfg = self._contract_addrs(neg_risk=False)
-        cfg_nr = self._contract_addrs(neg_risk=True)
-
-        exchanges: set[str] = {
-            cfg["exchange"],
-            cfg_nr["exchange"],
-            POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS,
-        }
-        collateral = cfg["collateral"]
-        conditional_tokens = cfg["conditional_tokens"]
-
-        spenders = set(exchanges) | {conditional_tokens}
-
-        txs: list[str] = []
-        for spender in sorted(spenders):
-            ok, res = await ensure_allowance(
-                token_address=collateral,
-                owner=from_address,
-                spender=spender,
-                amount=MAX_UINT256 // 2,
-                chain_id=POLYGON_CHAIN_ID,
-                signing_callback=sign_cb,
-                approval_amount=MAX_UINT256,
-            )
-            if not ok:
-                return False, res
-            if isinstance(res, str) and res.startswith("0x"):
-                txs.append(res)
-
-        for operator in sorted(exchanges):
-            ok, res = await ensure_erc1155_approval(
-                token_address=conditional_tokens,
-                owner=from_address,
-                operator=operator,
-                approved=True,
-                chain_id=POLYGON_CHAIN_ID,
-                signing_callback=sign_cb,
-            )
-            if not ok:
-                return False, res
-            if isinstance(res, str) and res.startswith("0x"):
-                txs.append(res)
-
-        return True, {
-            "tx_hashes": txs,
-            "collateral": collateral,
-            "ctf": conditional_tokens,
-            "exchanges": sorted(exchanges),
-        }
-
     async def place_limit_order(
         self,
         *,
@@ -1420,29 +1667,26 @@ class PolymarketAdapter(BaseAdapter):
         size: float,
         post_only: bool = False,
     ) -> tuple[bool, dict[str, Any] | str]:
-        ok_appr, appr = await self.ensure_onchain_approvals()
-        if not ok_appr:
-            return False, appr
+        ok_setup, setup = await self.ensure_trading_setup(token_id=token_id)
+        if not ok_setup:
+            return False, setup
         ok, msg = await self.ensure_api_creds()
         if not ok:
             return False, msg
         try:
-            builder_code = self._builder_code()
-            order_kwargs: dict[str, Any] = {
-                "token_id": token_id,
-                "price": price,
-                "size": size,
-                "side": side,
-            }
-            if builder_code:
-                order_kwargs["builder_code"] = builder_code
-
             order_args = OrderArgsV2(
-                **order_kwargs,
+                token_id=token_id,
+                price=price,
+                size=size,
+                side=side,
+                builder_code=POLYMARKET_BUILDER_CODE,
             )  # type: ignore[misc]
             order = await self.clob_client.create_order(order_args)
             resp = self.clob_client.post_order(order, "GTC", post_only)
-            return True, resp if isinstance(resp, dict) else {"result": resp}
+            out = resp if isinstance(resp, dict) else {"result": resp}
+            out.setdefault("deposit_wallet", self.deposit_wallet_address())
+            out.setdefault("setup", setup)
+            return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -1455,28 +1699,27 @@ class PolymarketAdapter(BaseAdapter):
         price: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         # BUY amount = collateral ($) to spend, SELL amount = shares to sell
-        ok_appr, appr = await self.ensure_onchain_approvals()
-        if not ok_appr:
-            return False, appr
+        ok_setup, setup = await self.ensure_trading_setup(token_id=token_id)
+        if not ok_setup:
+            return False, setup
         ok, msg = await self.ensure_api_creds()
         if not ok:
             return False, msg
 
         try:
-            builder_code = self._builder_code()
-            order_kwargs: dict[str, Any] = {
-                "token_id": token_id,
-                "side": side,
-                "amount": amount,
-                "price": price or 0.0,
-            }
-            if builder_code:
-                order_kwargs["builder_code"] = builder_code
-
-            order_args = MarketOrderArgs(**order_kwargs)  # type: ignore[misc]
+            order_args = MarketOrderArgs(
+                token_id=token_id,
+                side=side,
+                amount=amount,
+                price=price or 0.0,
+                builder_code=POLYMARKET_BUILDER_CODE,
+            )  # type: ignore[misc]
             order = await self.clob_client.create_market_order(order_args)
             resp = self.clob_client.post_order(order, order_args.order_type, False)
-            return True, resp if isinstance(resp, dict) else {"result": resp}
+            out = resp if isinstance(resp, dict) else {"result": resp}
+            out.setdefault("deposit_wallet", self.deposit_wallet_address())
+            out.setdefault("setup", setup)
+            return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -1612,12 +1855,11 @@ class PolymarketAdapter(BaseAdapter):
             }
 
         async def _fetch_orders() -> tuple[bool, list[dict[str, Any]] | str]:
-            # CLOB requires Level-2 auth; only works for the configured signing wallet.
-            signer_addr = self._require_funder()
-            if to_checksum_address(signer_addr) != addr:
+            # CLOB orders are tied to the deposit wallet, not the owner EOA.
+            if self.deposit_wallet_address() != addr:
                 return (
                     False,
-                    "Open orders can only be fetched for the configured signing wallet (account mismatch).",
+                    "Open orders can only be fetched for the configured trading wallet (account mismatch).",
                 )
             return await self.list_open_orders()
 
@@ -2011,51 +2253,73 @@ class PolymarketAdapter(BaseAdapter):
         return False, "No redeemable balance detected for the provided condition_id."
 
     async def redeem_positions(
-        self,
-        *,
-        condition_id: str,
-        holder: str,
+        self, *, condition_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
-        holder_addr, sign_cb = self._require_signer()
-        if holder and to_checksum_address(holder) != holder_addr:
-            return False, "holder must match the configured signing wallet"
-
-        ok, path = await self.preflight_redeem(
-            condition_id=condition_id, holder=holder_addr
-        )
-        if not ok:
-            return False, path
-
-        collateral = path["collateral"]
-        parent = path["parentCollectionId"]
-        cond = path["conditionId"]
-        index_sets = path["indexSets"]
-
-        tx = await encode_call(
-            target=self._contract_addrs(neg_risk=False)["conditional_tokens"],
-            abi=CONDITIONAL_TOKENS_ABI,
-            fn_name="redeemPositions",
-            args=[collateral, parent, cond, index_sets],
-            from_address=holder_addr,
-            chain_id=POLYGON_CHAIN_ID,
-        )
-        tx_hash = await send_transaction(tx, sign_cb)
-
-        if to_checksum_address(collateral) == to_checksum_address(
-            POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
-        ):
-            shares = await get_token_balance(
-                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, POLYGON_CHAIN_ID, holder_addr
+        try:
+            deposit_wallet = self.deposit_wallet_address()
+            ok, path = await self.preflight_redeem(
+                condition_id=condition_id, holder=deposit_wallet
             )
-            if shares > 0:
-                unwrap_tx = await encode_call(
-                    target=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-                    abi=TOKEN_UNWRAP_ABI,
-                    fn_name="unwrap",
-                    args=[holder_addr, shares],
-                    from_address=holder_addr,
-                    chain_id=POLYGON_CHAIN_ID,
-                )
-                await send_transaction(unwrap_tx, sign_cb)
+            if not ok:
+                return False, path
 
-        return True, {"tx_hash": tx_hash, "path": path}
+            collateral = path["collateral"]
+            parent = path["parentCollectionId"]
+            cond = path["conditionId"]
+            index_sets = path["indexSets"]
+
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                ctf = web3.eth.contract(
+                    address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                    abi=CONDITIONAL_TOKENS_ABI,
+                )
+                redeem_data = ctf.encode_abi(
+                    "redeemPositions", [collateral, parent, cond, index_sets]
+                )
+            redeem = await self._submit_wallet_batch(
+                calls=[
+                    {
+                        "target": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                        "value": 0,
+                        "data": redeem_data,
+                    }
+                ]
+            )
+
+            unwrap_tx_hash: str | None = None
+            if to_checksum_address(collateral) == to_checksum_address(
+                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
+            ):
+                shares = await get_token_balance(
+                    POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                )
+                if shares > 0:
+                    async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                        wrapper = web3.eth.contract(
+                            address=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                            abi=TOKEN_UNWRAP_ABI,
+                        )
+                        unwrap_data = wrapper.encode_abi(
+                            "unwrap", [deposit_wallet, shares]
+                        )
+                    unwrap = await self._submit_wallet_batch(
+                        calls=[
+                            {
+                                "target": POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                                "value": 0,
+                                "data": unwrap_data,
+                            }
+                        ]
+                    )
+                    unwrap_tx_hash = unwrap["tx_hash"]
+
+            return True, {
+                "deposit_wallet": deposit_wallet,
+                "tx_hash": redeem["tx_hash"],
+                "unwrap_tx_hash": unwrap_tx_hash,
+                "path": path,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
