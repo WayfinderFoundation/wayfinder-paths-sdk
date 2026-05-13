@@ -14,7 +14,8 @@ The adapter wraps these public services:
 - **Gamma API** (`https://gamma-api.polymarket.com`): markets/events metadata + search
 - **CLOB API** (`https://clob.polymarket.com`): prices, orderbooks, and historic price time series
 - **Data API** (`https://data-api.polymarket.com`): positions, trades, activity (useful for PnL/exposure views)
-- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket’s deposit/withdraw address flow, which is asynchronous and settles as pUSD on Polygon.
+- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket's deposit/withdraw address flow, which is asynchronous and settles as pUSD on Polygon.
+- **Relayer API** (`https://relayer-v2.polymarket.com`): sponsored on-chain execution for deposit wallet operations — Polymarket pays POL gas for deploy / approval / withdraw / redeem batches authorized by user EIP-712 signatures (the deposit wallet contract verifies the signature on-chain). See `.claude/skills/using-polymarket-adapter/rules/deposit-wallet.md` for the gas-payer matrix and liveness considerations.
 
 Trading uses the Python V2 client installed in this repo:
 
@@ -62,9 +63,10 @@ Most methods return `(ok: bool, data_or_error: Any | str)`.
 
 You need:
 
-- A configured wallet (local with `private_key_hex` or remote via Privy)
+- A configured wallet. Trading uses the Polymarket deposit wallet derived from the
+  owner wallet and signs through wallet callbacks.
 - A Polygon RPC URL (`strategy.rpc_urls["137"]`)
-- Some native Polygon gas token for transactions
+- Some native Polygon gas token for owner-wallet transactions such as pUSD funding
 
 Convenient pattern used by repo scripts:
 
@@ -75,19 +77,21 @@ from wayfinder_paths.mcp.scripting import get_adapter
 adapter = await get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
 ```
 
-## End-to-end cycle (USDC / USDC.e -> pUSD -> buy -> sell/redeem -> pUSD -> USDC.e / USDC)
+## End-to-end cycle (USDC / USDC.e -> pUSD -> fund deposit wallet -> buy -> sell/redeem -> withdraw -> pUSD -> USDC.e / USDC)
 
 Typical lifecycle for an automated agent:
 
-1) **Acquire pUSD** (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
+1) **Acquire pUSD** on the owner EOA (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
 2) **Search and select a market** (Gamma `public-search` / `markets`, filter for `enableOrderBook` + `acceptingOrders`).
 3) **Resolve the CLOB token id** for the desired outcome (`resolve_clob_token_id`).
-4) **Approve once** (`ensure_onchain_approvals`).
-5) **Buy** outcome shares (CLOB market order BUY).
-6) **Exit** either by:
+4) **Fund the deposit wallet** with pUSD via `fund_deposit_wallet(amount_raw=...)`. Trading happens from a per-user smart contract wallet (deposit wallet), not the owner EOA — order placement does not auto-fund.
+5) **Set up trading** (idempotent, cached). `place_market_order` / `place_limit_order` / `place_prediction` call `ensure_trading_setup` automatically: deploy the deposit wallet if missing, grant pUSD + ConditionalTokens approvals through the relayer, derive CLOB API creds, sync balance allowances.
+6) **Buy** outcome shares (CLOB market order BUY from the deposit wallet).
+7) **Exit** either by:
    - **Selling** shares back on the orderbook (CLOB market order SELL), or
    - **Redeeming** after resolution (`redeem_positions` using the market’s `conditionId`).
-7) **Convert back** to native Polygon USDC if desired (`bridge_withdraw`).
+8) **Withdraw** pUSD from the deposit wallet back to the owner EOA via `withdraw_deposit_wallet(amount_raw=...)` (omit `amount_raw` to drain).
+9) **Convert back** to native Polygon USDC if desired (`bridge_withdraw`).
 
 ## Market discovery & search
 
@@ -245,18 +249,38 @@ The Polymarket Bridge fallback works by transferring tokens to bridge-generated 
 
 ## Trading cycle (buy → sell/cash-out)
 
-### 1) Ensure approvals (one-time)
+### 1) Fund the deposit wallet (explicit, separate from setup)
 
-Trading needs:
-
-- ERC20 allowance of **pUSD** to the exchange(s)
-- ERC1155 `setApprovalForAll` on ConditionalTokens to the exchange(s)
+Trading uses a per-user smart contract wallet (deposit wallet) derived from the owner EOA. Fund it with pUSD before placing orders — order placement does **not** auto-fund.
 
 ```python
-ok, res = await adapter.ensure_onchain_approvals()
+ok, res = await adapter.fund_deposit_wallet(amount_raw=2_000_000)  # 2.0 pUSD (6 decimals)
+# returns (True, {"deposit_wallet", "amount_raw", "tx_hash"})
 ```
 
-This can broadcast multiple transactions the first time you run it.
+To withdraw back to the owner EOA (drain by default):
+
+```python
+ok, res = await adapter.withdraw_deposit_wallet()              # full balance
+ok, res = await adapter.withdraw_deposit_wallet(amount_raw=1_000_000)  # partial
+```
+
+### 2) Deposit wallet setup (idempotent, cached)
+
+`place_prediction()`, `place_market_order()`, and `place_limit_order()` call `ensure_trading_setup()` automatically. On the first call it:
+
+- deploys the deposit wallet if it does not exist (relayer-mediated)
+- grants pUSD ERC20 + ConditionalTokens ERC1155 approvals from the deposit wallet through the relayer, batched in one signed call
+- derives CLOB API creds
+- syncs CLOB balance allowances (COLLATERAL + CONDITIONAL for the order's `token_id`)
+
+Subsequent calls short-circuit via the `_setup_complete` flag.
+
+```python
+ok, res = await adapter.ensure_trading_setup(token_id="<clob token id>")
+```
+
+Normally only used directly for preflight checks; order placement invokes it.
 
 ### 2) Place a prediction (market buy)
 
@@ -296,15 +320,16 @@ If you held shares through resolution, you can redeem on-chain to get collateral
 ```python
 ok, res = await adapter.redeem_positions(
     condition_id=condition_id,  # from Gamma market metadata
-    holder="0xYourWallet",      # must match signing wallet
 )
 ```
 
 The adapter:
 
-- Preflights possible redemption paths (`collateral`, `parentCollectionId`, `indexSets`)
-- Calls ConditionalTokens `redeemPositions()`
-- If payout is an “adapter collateral” wrapper token, it attempts to `unwrap()` automatically
+- Preflights redemption against the deposit wallet (`collateral`, `parentCollectionId`, `indexSets`)
+- Submits `redeemPositions()` as a relayer batch from the deposit wallet
+- If payout is an "adapter collateral" wrapper token, submits a follow-up `unwrap()` batch from the deposit wallet automatically
+
+Collateral lands on the deposit wallet — use `withdraw_deposit_wallet()` to move it back to the owner EOA.
 
 ## Search + analysis strategies (what worked in practice)
 
@@ -340,7 +365,9 @@ Collateral conversion (Bridge API):
 
 Trading (authenticated CLOB):
 
-- `ensure_onchain_approvals`, `place_market_order`, `place_limit_order`, `cancel_order`, `list_open_orders`
+- `deposit_wallet_address`, `fund_deposit_wallet`, `withdraw_deposit_wallet`
+- `ensure_trading_setup` (idempotent; deploys deposit wallet + grants approvals + syncs CLOB state)
+- `place_market_order`, `place_limit_order`, `cancel_order`, `list_open_orders`
 - Convenience: `place_prediction`, `cash_out_prediction`
 
 ## Builder attribution

@@ -39,7 +39,7 @@ class TestPolymarketAdapter:
         assert "geoBlockToken" not in params
 
     @pytest.mark.asyncio
-    async def test_clob_client_is_configured_with_python_v2_chain_id(self, monkeypatch):
+    async def test_clob_client_is_configured_for_deposit_wallet(self, monkeypatch):
         calls = []
 
         class FakeClobClient:
@@ -67,6 +67,17 @@ class TestPolymarketAdapter:
         assert kwargs["chain_id"] == 137
         assert "chain" not in kwargs
         assert "chainId" not in kwargs
+        assert "key" not in kwargs
+        assert (
+            kwargs["signature_type"]
+            == polymarket_adapter_module.SignatureTypeV2.POLY_1271
+        )
+        assert kwargs["funder"] == polymarket_adapter_module.derive_deposit_wallet(
+            "0x000000000000000000000000000000000000dEaD"
+        )
+        assert (
+            kwargs["address_override"] == "0x000000000000000000000000000000000000dEaD"
+        )
         assert kwargs["sign_callback_override"] is sign_hash_callback
 
     @pytest.mark.asyncio
@@ -75,7 +86,8 @@ class TestPolymarketAdapter:
     ):
         builder_code = "0x" + "12" * 32
         adapter.config = {"system": {"polymarket_builder_code": builder_code}}
-        adapter.ensure_onchain_approvals = AsyncMock(return_value=(True, {}))
+        adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
+        adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
 
         class FakeClobClient:
@@ -121,7 +133,8 @@ class TestPolymarketAdapter:
     ):
         builder_code = "0x" + "34" * 32
         adapter.config = {"system": {"polymarket_builder_code": builder_code}}
-        adapter.ensure_onchain_approvals = AsyncMock(return_value=(True, {}))
+        adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
+        adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
 
         class FakeClobClient:
@@ -487,8 +500,8 @@ class TestPolymarketAdapter:
             polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
         )
 
-        account = "0x" + "11" * 20
-        adapter._funder_override = account  # allow open-order fetch for this account
+        adapter.wallet_address = "0x" + "11" * 20
+        account = adapter.deposit_wallet_address()
 
         ok, state = await adapter.get_full_user_state(account=account)
         assert ok is True

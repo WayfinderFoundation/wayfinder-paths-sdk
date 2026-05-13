@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -11,6 +12,7 @@ from wayfinder_paths.core.constants.polymarket import (
 )
 from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
+    get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
@@ -144,16 +146,16 @@ async def polymarket_get_state(
 ) -> dict[str, Any]:
     """Full Polymarket account state — positions, optional orders / activity / trades.
 
-    Account precedence: `account` > `wallet_address` > `wallet_label`-resolved address.
+    With `wallet_label`, state is read from the derived deposit wallet. Without
+    `wallet_label`, pass `account` or `wallet_address` directly.
     `include_orders` defaults to true; `include_activity` / `include_trades` default false
     to keep payloads tight. Each `*_limit` caps its respective list.
     """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
-    acct = normalize_address(account) or normalize_address(wallet_address) or waddr
-
     if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
-    if not acct:
+    direct_account = normalize_address(account) or normalize_address(wallet_address)
+    if not waddr and not direct_account:
         return err(
             "invalid_request",
             "account (or wallet_label/wallet_address) is required",
@@ -166,16 +168,12 @@ async def polymarket_get_state(
 
     sign_cb = None
     sign_hash_cb = None
+    sign_typed_data_cb = None
     config: dict[str, Any] | None = None
     if want and waddr:
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
-        except ValueError:
-            pass
+        sign_cb, _ = await get_wallet_signing_callback(want)
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -183,9 +181,11 @@ async def polymarket_get_state(
         config=config,
         sign_callback=sign_cb,
         sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
         wallet_address=waddr,
     )
     try:
+        acct = adapter.deposit_wallet_address() if waddr else direct_account
         ok_state, state = await adapter.get_full_user_state(
             account=str(acct),
             include_orders=bool(include_orders),
@@ -265,7 +265,7 @@ async def polymarket_read(
       - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
         (unix sec), `fidelity` (denser sampling for tight buckets).
       - `bridge_status`: pUSD bridge state for an account.
-      - `open_orders`: requires Level-2 auth — wallet must have `private_key_hex` in config.
+      - `open_orders`: requires Level-2 auth through the wallet hash-signing callback.
 
     Args:
         wallet_label / wallet_address / account: Target account; precedence is account >
@@ -298,15 +298,11 @@ async def polymarket_read(
     config: dict[str, Any] | None = None
     sign_cb = None
     sign_hash_cb = None
+    sign_typed_data_cb = None
     if want and waddr:
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
-        except ValueError:
-            pass
+        sign_cb, _ = await get_wallet_signing_callback(want)
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -314,6 +310,7 @@ async def polymarket_read(
         config=config,
         sign_callback=sign_cb,
         sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
         wallet_address=waddr,
     )
     try:
@@ -458,10 +455,10 @@ async def polymarket_read(
             case "open_orders":
                 if not want or not waddr:
                     return err("not_found", f"Unknown wallet_label: {wallet_label}")
-                if not sign_cb:
+                if not sign_hash_cb:
                     return err(
                         "invalid_wallet",
-                        "Wallet must include private_key_hex in config.json to fetch open orders",
+                        "Wallet must support hash signing to fetch open orders",
                         {"wallet_label": want},
                     )
                 # Open orders require Level-2 auth and the signing wallet in config.
@@ -472,7 +469,7 @@ async def polymarket_read(
                     {
                         "action": action,
                         "wallet_label": want,
-                        "account": waddr,
+                        "account": adapter.deposit_wallet_address(),
                         "openOrders": orders,
                     }
                 )
@@ -488,6 +485,8 @@ async def polymarket_execute(
     action: Literal[
         "bridge_deposit",
         "bridge_withdraw",
+        "fund_deposit_wallet",
+        "withdraw_deposit_wallet",
         "buy",
         "sell",
         "close_position",
@@ -531,6 +530,10 @@ async def polymarket_execute(
       - `bridge_deposit`: bridge `amount` of `from_token_address` from `from_chain_id` into
         Polymarket pUSD. `recipient_address` defaults to sender. `token_decimals` defaults to 6.
       - `bridge_withdraw`: bridge `amount_pusd` out to `to_chain_id` / `to_token_address`.
+      - `fund_deposit_wallet`: move `amount` pUSD from the owner EOA into the derived deposit
+        wallet (Polygon transfer). Required before trading.
+      - `withdraw_deposit_wallet`: pull pUSD from the deposit wallet back to the owner EOA
+        via the relayer. Omit `amount` to withdraw the full balance.
       - `buy` / `sell`: market order. Specify `market_slug`+`outcome` OR `token_id`. BUY needs
         `amount_collateral` (USDC); SELL needs `shares`.
       - `close_position`: SELL the full holding. Resolves token via `token_id`, or
@@ -547,10 +550,10 @@ async def polymarket_execute(
         Other args: see action-specific descriptions above.
     """
     sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
-    try:
-        sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
-    except ValueError:
-        sign_hash_cb = None
+    sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
+    sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(
+        wallet_label or ""
+    )
     want = wallet_label
 
     tool_input = {
@@ -591,6 +594,7 @@ async def polymarket_execute(
         config=cfg,
         sign_callback=sign_callback,
         sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
         wallet_address=sender,
     )
     try:
@@ -674,6 +678,55 @@ async def polymarket_execute(
                         "to_token_address": str(to_token_address),
                         "recipient_addr": str(rcpt),
                     },
+                )
+                return _done(status)
+
+            case "fund_deposit_wallet":
+                throw_if_none("amount is required for fund_deposit_wallet", amount)
+                ok_fund, res = await adapter.fund_deposit_wallet(
+                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "fund_deposit_wallet",
+                        "ok": ok_fund,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_fund else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="fund_deposit_wallet",
+                    status=status,
+                    chain_id=POLYGON_CHAIN_ID,
+                    details={"amount": float(amount)},
+                )
+                return _done(status)
+
+            case "withdraw_deposit_wallet":
+                ok_w, res = await adapter.withdraw_deposit_wallet(
+                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
+                    if amount is not None
+                    else None
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "withdraw_deposit_wallet",
+                        "ok": ok_w,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_w else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="withdraw_deposit_wallet",
+                    status=status,
+                    chain_id=POLYGON_CHAIN_ID,
+                    details={"amount": float(amount) if amount is not None else None},
                 )
                 return _done(status)
 
@@ -896,9 +949,7 @@ async def polymarket_execute(
                 cid = throw_if_empty_str(
                     "condition_id is required for redeem_positions", condition_id
                 )
-                ok_r, res = await adapter.redeem_positions(
-                    condition_id=cid, holder=sender
-                )
+                ok_r, res = await adapter.redeem_positions(condition_id=cid)
                 effects.append(
                     {
                         "type": "polymarket",
