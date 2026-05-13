@@ -84,8 +84,6 @@ class TestPolymarketAdapter:
     async def test_limit_order_uses_v2_order_args_without_legacy_fee_fields(
         self, adapter
     ):
-        builder_code = "0x" + "12" * 32
-        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
         adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
         adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
@@ -121,7 +119,9 @@ class TestPolymarketAdapter:
         assert response["post_only"] is True
         order_args = fake_clob_client.created_order
         assert isinstance(order_args, polymarket_adapter_module.OrderArgsV2)
-        assert order_args.builder_code == builder_code
+        assert (
+            order_args.builder_code == polymarket_adapter_module.POLYMARKET_BUILDER_CODE
+        )
         assert not hasattr(order_args, "fee_rate_bps")
         assert not hasattr(order_args, "feeRateBps")
         assert not hasattr(order_args, "nonce")
@@ -131,8 +131,6 @@ class TestPolymarketAdapter:
     async def test_market_order_uses_v2_order_args_without_manual_fee_fields(
         self, adapter
     ):
-        builder_code = "0x" + "34" * 32
-        adapter.config = {"system": {"polymarket_builder_code": builder_code}}
         adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
         adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
@@ -166,7 +164,9 @@ class TestPolymarketAdapter:
         assert response["post_only"] is False
         order_args = fake_clob_client.created_order
         assert isinstance(order_args, polymarket_adapter_module.MarketOrderArgs)
-        assert order_args.builder_code == builder_code
+        assert (
+            order_args.builder_code == polymarket_adapter_module.POLYMARKET_BUILDER_CODE
+        )
         assert order_args.user_usdc_balance == 0
         assert not hasattr(order_args, "fee_rate_bps")
         assert not hasattr(order_args, "feeRateBps")

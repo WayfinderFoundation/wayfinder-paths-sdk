@@ -372,10 +372,7 @@ Trading (authenticated CLOB):
 
 ## Builder attribution
 
-Optional builder attribution is supported.
-
-- Set `system.polymarket_builder_code` in `config.json` to attach your builder code on every order.
-- `config.example.json` includes the same field as `null` so users know where to put it.
+Every order attaches a hardcoded builder code (`POLYMARKET_BUILDER_CODE` in `wayfinder_paths/core/constants/polymarket.py`); fees route to `POLYMARKET_FEE_WALLET` (`0xf304c19fb8248a4ded27ae1a60cb43b653717003`). No config knob — same pattern as Hyperliquid's `HYPE_FEE_WALLET`.
 
 Redemption (on-chain):
 
