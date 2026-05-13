@@ -711,7 +711,7 @@ class AerodromeAdapter(
                     block_identifier="latest"
                 )
             pool = to_checksum_address(pool)
-            if pool.lower() == ZERO_ADDRESS:
+            if pool == ZERO_ADDRESS:
                 return False, "Pool does not exist"
             return True, pool
         except Exception as exc:
@@ -733,7 +733,7 @@ class AerodromeAdapter(
                     block_identifier="latest"
                 )
             gauge = to_checksum_address(gauge)
-            if gauge.lower() == ZERO_ADDRESS:
+            if gauge == ZERO_ADDRESS:
                 return False, "Gauge not found for pool"
             return True, gauge
         except Exception as exc:
@@ -829,7 +829,7 @@ class AerodromeAdapter(
                 gauge_period_finishes: list[int] = [0] * len(gauges)
 
                 if include_gauge_state:
-                    gauges_nonzero = [g for g in gauges if g.lower() != ZERO_ADDRESS]
+                    gauges_nonzero = [g for g in gauges if g != ZERO_ADDRESS]
                     gauge_contracts = [
                         web3.eth.contract(address=g, abi=AERODROME_GAUGE_ABI)
                         for g in gauges_nonzero
@@ -878,7 +878,7 @@ class AerodromeAdapter(
                     # Map back to original gauge list indices.
                     j = 0
                     for i, g in enumerate(gauges):
-                        if g.lower() == ZERO_ADDRESS:
+                        if g == ZERO_ADDRESS:
                             continue
                         fees_rewards[i] = fee_res[j]
                         bribe_rewards[i] = bribe_res[j]
@@ -1279,7 +1279,7 @@ class AerodromeAdapter(
                     )
 
             pool = to_checksum_address(pool)
-            if pool.lower() == ZERO_ADDRESS:
+            if pool == ZERO_ADDRESS:
                 return False, "Pool does not exist"
 
             approved = await ensure_allowance(
@@ -1633,11 +1633,11 @@ class AerodromeAdapter(
 
                 gauge_contracts: dict[str, Any] = {}
                 for g in gauges:
-                    if g.lower() == ZERO_ADDRESS:
+                    if g == ZERO_ADDRESS:
                         continue
-                    if g.lower() not in gauge_contracts:
-                        gauge_contracts[g.lower()] = web3.eth.contract(
-                            address=to_checksum_address(g), abi=AERODROME_GAUGE_ABI
+                    if g not in gauge_contracts:
+                        gauge_contracts[g] = web3.eth.contract(
+                            address=g, abi=AERODROME_GAUGE_ABI
                         )
 
                 gauge_state = await read_only_calls_multicall_or_gather(
@@ -1658,30 +1658,26 @@ class AerodromeAdapter(
                 g_earned = gauge_state[1::2]
 
                 gauge_items: dict[str, dict[str, Any]] = {}
-                for (addr_l, contract), bal, earned in zip(
-                    gauge_contracts.items(), g_bal, g_earned, strict=True
+                for gauge_addr, bal, earned in zip(
+                    gauge_contracts.keys(), g_bal, g_earned, strict=True
                 ):
-                    gauge_items[addr_l] = {
-                        "gauge": to_checksum_address(contract.address),
+                    gauge_items[gauge_addr] = {
+                        "gauge": gauge_addr,
                         "staked_balance": bal,
                         "earned": earned,
                     }
 
                 pools_out: list[dict[str, Any]] = []
                 for pool, bal, gauge in zip(pools, pool_balances, gauges, strict=True):
-                    pool_addr = to_checksum_address(pool)
-                    gauge_addr = to_checksum_address(gauge)
                     pools_out.append(
                         {
-                            "pool": pool_addr,
+                            "pool": pool,
                             "wallet_lp_balance": bal,
-                            "gauge": gauge_addr,
-                            "gauge_staked_balance": gauge_items.get(
-                                gauge_addr.lower(), {}
-                            ).get("staked_balance", 0),
-                            "gauge_earned": gauge_items.get(gauge_addr.lower(), {}).get(
-                                "earned", 0
+                            "gauge": gauge,
+                            "gauge_staked_balance": gauge_items.get(gauge, {}).get(
+                                "staked_balance", 0
                             ),
+                            "gauge_earned": gauge_items.get(gauge, {}).get("earned", 0),
                         }
                     )
 

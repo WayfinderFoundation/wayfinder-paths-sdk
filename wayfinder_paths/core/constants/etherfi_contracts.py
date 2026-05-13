@@ -29,7 +29,7 @@ ETHERFI_BY_CHAIN: dict[int, dict[str, str]] = {
         "eeth": to_checksum_address("0x35fA164735182de50811E8e2E824cFb9B6118ac2"),
         "weeth": to_checksum_address("0xCd5fE23C85820F7B72D0926FC9b05b43E359b7ee"),
         "withdraw_request_nft": to_checksum_address(
-            "0x7d5706f6ef3f89b3951e23e557cdfbc3239d4e2c"
+            "0x7d5706f6ef3F89B3951E23e557CDFBC3239D4E2c"
         ),
         "ethfi": to_checksum_address("0xFe0c30065B384F05761f15d0CC899D4F9F9Cc0eB"),
     }
@@ -56,7 +56,7 @@ WEETH_TOKEN_BY_CHAIN_ID: dict[int, str] = {
     CHAIN_ID_SCROLL: to_checksum_address("0x01f0a31698C4d065659b9bdC21B3610292a1c506"),
     CHAIN_ID_LINEA: to_checksum_address("0x1Bf74C010E6320bab11e2e5A532b5AC15e0b8aA6"),
     CHAIN_ID_ZKSYNC_ERA: to_checksum_address(
-        "0xc1fa6e2e8667d9be0ca938a54c7e0285e9df924a"
+        "0xc1Fa6E2E8667d9bE0Ca938a54c7E0285E9Df924a"
     ),
     CHAIN_ID_BSC: to_checksum_address("0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A"),
 }
