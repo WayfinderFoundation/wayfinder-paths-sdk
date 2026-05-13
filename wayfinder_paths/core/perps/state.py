@@ -10,7 +10,7 @@ Modes:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -87,6 +87,34 @@ class StateStore:
             return {}
         with path.open() as f:
             return json.load(f)
+
+    @classmethod
+    def snapshots_in_bar(
+        cls,
+        strategy_name: str,
+        bar_t: datetime,
+        bar_interval: timedelta,
+    ) -> list[dict[str, Any]]:
+        """Return all snapshots whose recorded ts falls within the bar
+        `[bar_t, bar_t + bar_interval)`, ordered oldest → newest.
+
+        Snapshots are written at trigger time (e.g. T00:08:44Z) but reconcilers
+        iterate bar-aligned timestamps (e.g. T00:00:00Z). A snapshot belongs to
+        the bar whose interval contains its timestamp. Multiple triggers can
+        fire within one bar — callers decide whether to take the latest state
+        or union per-trigger intents across all of them.
+        """
+        if bar_t.tzinfo is None:
+            bar_t = bar_t.replace(tzinfo=UTC)
+        upper = bar_t + bar_interval
+        out: list[dict[str, Any]] = []
+        for ts in cls.list_snapshots(strategy_name):
+            if ts < bar_t:
+                continue
+            if ts >= upper:
+                break
+            out.append(cls.snapshot_at(strategy_name, ts))
+        return out
 
     @classmethod
     def list_snapshots(cls, strategy_name: str) -> list[datetime]:
