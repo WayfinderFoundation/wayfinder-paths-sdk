@@ -300,7 +300,8 @@ class PolymarketAdapter(BaseAdapter):
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
         self._deposit_wallet_synced = False
-        self._balance_allowance_synced: set[str] = set()
+        self._collateral_allowance_synced = False
+        self._conditional_allowances_synced: set[str] = set()
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -1477,117 +1478,113 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def _setup_deposit_wallet(self) -> tuple[str | None, str | None]:
+        if self._deposit_wallet_synced:
+            return None, None
+        owner = self._require_wallet_address()
+        deposit_wallet = self.deposit_wallet_address()
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+            factory = web3.eth.contract(
+                address=POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                abi=POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
+            )
+            pusd = web3.eth.contract(
+                address=POLYGON_P_USDC_PROXY_ADDRESS, abi=ERC20_ABI
+            )
+            ctf = web3.eth.contract(
+                address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                abi=CONDITIONAL_TOKENS_ABI,
+            )
+            predicted, code, allowances, approvals = await asyncio.gather(
+                factory.functions.predictWalletAddress(
+                    POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
+                    polymarket_deposit_wallet_id(owner),
+                ).call(block_identifier="latest"),
+                web3.eth.get_code(deposit_wallet),
+                asyncio.gather(
+                    *[
+                        pusd.functions.allowance(deposit_wallet, s).call(
+                            block_identifier="latest"
+                        )
+                        for s in POLYMARKET_APPROVAL_TARGETS
+                    ]
+                ),
+                asyncio.gather(
+                    *[
+                        ctf.functions.isApprovedForAll(deposit_wallet, o).call(
+                            block_identifier="latest"
+                        )
+                        for o in POLYMARKET_APPROVAL_TARGETS
+                    ]
+                ),
+            )
+            if to_checksum_address(predicted) != deposit_wallet:
+                raise ValueError(
+                    "Deposit wallet derivation mismatch, this should never happen, please contact support."
+                )
+
+            deploy_tx_hash: str | None = None
+            if not code:
+                submitted = await self._relayer_submit(
+                    {
+                        "type": "WALLET-CREATE",
+                        "from": owner,
+                        "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                    }
+                )
+                deploy_tx = await self._poll_relayer_tx(submitted["transactionID"])
+                deploy_tx_hash = deploy_tx["transactionHash"]
+
+            calls: list[dict[str, Any]] = []
+            for spender, allowance in zip(
+                POLYMARKET_APPROVAL_TARGETS, allowances, strict=True
+            ):
+                if allowance < MAX_UINT256 // 2:
+                    calls.append(
+                        {
+                            "target": POLYGON_P_USDC_PROXY_ADDRESS,
+                            "value": 0,
+                            "data": pusd.encode_abi("approve", [spender, MAX_UINT256]),
+                        }
+                    )
+            for operator, approved in zip(
+                POLYMARKET_APPROVAL_TARGETS, approvals, strict=True
+            ):
+                if not approved:
+                    calls.append(
+                        {
+                            "target": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                            "value": 0,
+                            "data": ctf.encode_abi(
+                                "setApprovalForAll", [operator, True]
+                            ),
+                        }
+                    )
+
+        approval_tx_hash: str | None = None
+        if calls:
+            approval = await self._submit_wallet_batch(calls=calls)
+            approval_tx_hash = approval["tx_hash"]
+        self._deposit_wallet_synced = True
+        return deploy_tx_hash, approval_tx_hash
+
     async def ensure_trading_setup(
         self, *, token_id: str | None = None
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
-            deposit_wallet = self.deposit_wallet_address()
-            deploy_tx_hash: str | None = None
-            approval_tx_hash: str | None = None
-            if not self._deposit_wallet_synced:
-                owner = self._require_wallet_address()
-                async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
-                    factory = web3.eth.contract(
-                        address=POLYMARKET_DEPOSIT_WALLET_FACTORY,
-                        abi=POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
-                    )
-                    pusd = web3.eth.contract(
-                        address=POLYGON_P_USDC_PROXY_ADDRESS, abi=ERC20_ABI
-                    )
-                    ctf = web3.eth.contract(
-                        address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
-                        abi=CONDITIONAL_TOKENS_ABI,
-                    )
-                    predicted, code, allowances, approvals = await asyncio.gather(
-                        factory.functions.predictWalletAddress(
-                            POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
-                            polymarket_deposit_wallet_id(owner),
-                        ).call(block_identifier="latest"),
-                        web3.eth.get_code(deposit_wallet),
-                        asyncio.gather(
-                            *[
-                                pusd.functions.allowance(deposit_wallet, s).call(
-                                    block_identifier="latest"
-                                )
-                                for s in POLYMARKET_APPROVAL_TARGETS
-                            ]
-                        ),
-                        asyncio.gather(
-                            *[
-                                ctf.functions.isApprovedForAll(deposit_wallet, o).call(
-                                    block_identifier="latest"
-                                )
-                                for o in POLYMARKET_APPROVAL_TARGETS
-                            ]
-                        ),
-                    )
-                    if to_checksum_address(predicted) != deposit_wallet:
-                        raise ValueError(
-                            "Deposit wallet derivation mismatch, this should never happen, please contact support."
-                        )
-
-                    if not code:
-                        submitted = await self._relayer_submit(
-                            {
-                                "type": "WALLET-CREATE",
-                                "from": owner,
-                                "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
-                            }
-                        )
-                        deploy_tx = await self._poll_relayer_tx(
-                            submitted["transactionID"]
-                        )
-                        deploy_tx_hash = deploy_tx["transactionHash"]
-
-                    calls: list[dict[str, Any]] = []
-                    for spender, allowance in zip(
-                        POLYMARKET_APPROVAL_TARGETS, allowances, strict=True
-                    ):
-                        if allowance < MAX_UINT256 // 2:
-                            calls.append(
-                                {
-                                    "target": POLYGON_P_USDC_PROXY_ADDRESS,
-                                    "value": 0,
-                                    "data": pusd.encode_abi(
-                                        "approve", [spender, MAX_UINT256]
-                                    ),
-                                }
-                            )
-                    for operator, approved in zip(
-                        POLYMARKET_APPROVAL_TARGETS, approvals, strict=True
-                    ):
-                        if not approved:
-                            calls.append(
-                                {
-                                    "target": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
-                                    "value": 0,
-                                    "data": ctf.encode_abi(
-                                        "setApprovalForAll", [operator, True]
-                                    ),
-                                }
-                            )
-
-                if calls:
-                    approval = await self._submit_wallet_batch(calls=calls)
-                    approval_tx_hash = approval["tx_hash"]
-                self._deposit_wallet_synced = True
-
+            deploy_tx_hash, approval_tx_hash = await self._setup_deposit_wallet()
             ok_creds, msg = await self.ensure_api_creds()
             if not ok_creds:
                 return False, msg
-            if "COLLATERAL" not in self._balance_allowance_synced:
+            if not self._collateral_allowance_synced:
                 self.clob_client.update_balance_allowance(
                     BalanceAllowanceParams(
                         asset_type=AssetType.COLLATERAL,
                         signature_type=SignatureTypeV2.POLY_1271,
                     )
                 )
-                self._balance_allowance_synced.add("COLLATERAL")
-            conditional_key = f"CONDITIONAL:{token_id}" if token_id else None
-            if (
-                conditional_key
-                and conditional_key not in self._balance_allowance_synced
-            ):
+                self._collateral_allowance_synced = True
+            if token_id and token_id not in self._conditional_allowances_synced:
                 self.clob_client.update_balance_allowance(
                     BalanceAllowanceParams(
                         asset_type=AssetType.CONDITIONAL,
@@ -1595,9 +1592,9 @@ class PolymarketAdapter(BaseAdapter):
                         signature_type=SignatureTypeV2.POLY_1271,
                     )
                 )
-                self._balance_allowance_synced.add(conditional_key)
+                self._conditional_allowances_synced.add(token_id)
             return True, {
-                "deposit_wallet": deposit_wallet,
+                "deposit_wallet": self.deposit_wallet_address(),
                 "deploy_tx_hash": deploy_tx_hash,
                 "approval_tx_hash": approval_tx_hash,
             }
