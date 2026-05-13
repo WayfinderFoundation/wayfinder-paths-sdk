@@ -10,6 +10,7 @@ These verify:
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -156,7 +157,7 @@ def test_trigger_backtest_divergence_check():
 @pytest.mark.ref_reproduction
 @pytest.mark.smoke
 @pytest.mark.skipif(
-    not (REPO_ROOT / "config.json").exists(),
+    not (REPO_ROOT / "config.json").exists() or os.getenv("GITHUB_ACTIONS") == "true",
     reason="Requires config.json (network-bound test)",
 )
 def test_reproduces_backtest_ref():
