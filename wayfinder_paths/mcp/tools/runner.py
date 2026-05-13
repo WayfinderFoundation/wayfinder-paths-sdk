@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -16,6 +17,44 @@ from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
+
+RunnerAction = Literal[
+    "daemon_status",
+    "daemon_start",
+    "daemon_stop",
+    "ensure_started",
+    "status",
+    "add_job",
+    "update_job",
+    "pause_job",
+    "resume_job",
+    "delete_job",
+    "run_once",
+    "job_runs",
+    "run_report",
+]
+
+RunnerMutationAction = Literal[
+    "daemon_stop",
+    "add_job",
+    "update_job",
+    "pause_job",
+    "resume_job",
+    "delete_job",
+    "run_once",
+]
+
+_RUNNER_MUTATION_ACTIONS: frozenset[str] = frozenset(
+    {
+        "daemon_stop",
+        "add_job",
+        "update_job",
+        "pause_job",
+        "resume_job",
+        "delete_job",
+        "run_once",
+    }
+)
 
 
 def _default_sock_path() -> Path:
@@ -39,23 +78,8 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
     )
 
 
-@catch_errors
-async def core_runner(
-    action: Literal[
-        "daemon_status",
-        "daemon_start",
-        "daemon_stop",
-        "ensure_started",
-        "status",
-        "add_job",
-        "update_job",
-        "pause_job",
-        "resume_job",
-        "delete_job",
-        "run_once",
-        "job_runs",
-        "run_report",
-    ],
+async def _core_runner_impl(
+    action: RunnerAction,
     *,
     sock_path: str | None = None,
     # daemon start options
@@ -83,6 +107,7 @@ async def core_runner(
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     debug: bool = False,
+    opencode_mutation_approved: bool = False,
 ) -> dict[str, Any]:
     """Control the local runner daemon — the only sanctioned scheduler for recurring jobs.
 
@@ -115,6 +140,24 @@ async def core_runner(
         sock_path: Override the daemon socket (default: standard runner location).
         debug: Verbose response payload for troubleshooting.
     """
+
+    if (
+        is_opencode_instance()
+        and action in _RUNNER_MUTATION_ACTIONS
+        and not opencode_mutation_approved
+    ):
+        return err(
+            "runner_action_requires_approval",
+            (
+                f"runner action '{action}' changes scheduled job or daemon state. "
+                "Use core_runner_mutation for this action so OpenCode can request "
+                "explicit user approval."
+            ),
+            details={
+                "action": action,
+                "approval_tool": "core_runner_mutation",
+            },
+        )
 
     client = _client(sock_path)
 
@@ -246,7 +289,7 @@ async def core_runner(
                         }
                     )
 
-                started_resp = await core_runner(  # type: ignore[misc]
+                started_resp = await _core_runner_impl(
                     action="daemon_start",
                     sock_path=sock_path,
                     tick_seconds=tick_seconds,
@@ -254,6 +297,7 @@ async def core_runner(
                     max_failures=max_failures,
                     default_timeout_seconds=default_timeout_seconds,
                     log_level=log_level,
+                    opencode_mutation_approved=opencode_mutation_approved,
                 )
                 if not started_resp.get("ok"):
                     return started_resp
@@ -458,3 +502,133 @@ async def core_runner(
             str(exc),
             details={"sock_path": str(client.sock_path)},
         )
+
+
+@catch_errors
+async def core_runner(
+    action: RunnerAction,
+    *,
+    sock_path: str | None = None,
+    # daemon start options
+    tick_seconds: float | None = None,
+    max_workers: int | None = None,
+    max_failures: int | None = None,
+    default_timeout_seconds: int | None = None,
+    log_level: str | None = None,
+    # Job fields
+    name: str | None = None,
+    type: str | None = None,  # noqa: A002 (matches CLI/API)
+    payload: dict[str, Any] | None = None,
+    interval_seconds: int | None = None,
+    limit: int | None = None,
+    run_id: int | None = None,
+    tail_bytes: int | None = None,
+    # Strategy payload fields
+    strategy: str | None = None,
+    strategy_action: str | None = None,
+    config: str | None = None,
+    wallet_label: str | None = None,
+    timeout_seconds: int | None = None,
+    # Script payload fields
+    script_path: str | None = None,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    debug: bool = False,
+) -> dict[str, Any]:
+    """Inspect and safely start the local runner daemon.
+
+    Use this tool for read-only runner actions (`daemon_status`, `status`,
+    `job_runs`, `run_report`) and idempotent daemon start actions
+    (`ensure_started`, `daemon_start`).
+
+    On Wayfinder Shells/OpenCode, actions that mutate scheduled job or daemon
+    state (`add_job`, `update_job`, `pause_job`, `resume_job`, `delete_job`,
+    `run_once`, `daemon_stop`) are blocked here. Use `core_runner_mutation`
+    only when the user explicitly asks for that state change so OpenCode can
+    request approval before the action runs.
+    """
+
+    return await _core_runner_impl(
+        action=action,
+        sock_path=sock_path,
+        tick_seconds=tick_seconds,
+        max_workers=max_workers,
+        max_failures=max_failures,
+        default_timeout_seconds=default_timeout_seconds,
+        log_level=log_level,
+        name=name,
+        type=type,
+        payload=payload,
+        interval_seconds=interval_seconds,
+        limit=limit,
+        run_id=run_id,
+        tail_bytes=tail_bytes,
+        strategy=strategy,
+        strategy_action=strategy_action,
+        config=config,
+        wallet_label=wallet_label,
+        timeout_seconds=timeout_seconds,
+        script_path=script_path,
+        args=args,
+        env=env,
+        debug=debug,
+        opencode_mutation_approved=False,
+    )
+
+
+@catch_errors
+async def core_runner_mutation(
+    action: RunnerMutationAction,
+    *,
+    sock_path: str | None = None,
+    # Job fields
+    name: str | None = None,
+    type: str | None = None,  # noqa: A002 (matches CLI/API)
+    payload: dict[str, Any] | None = None,
+    interval_seconds: int | None = None,
+    # Strategy payload fields
+    strategy: str | None = None,
+    strategy_action: str | None = None,
+    config: str | None = None,
+    wallet_label: str | None = None,
+    timeout_seconds: int | None = None,
+    # Script payload fields
+    script_path: str | None = None,
+    args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+    debug: bool = False,
+) -> dict[str, Any]:
+    """Mutate local runner scheduled job or daemon state after approval.
+
+    This tool is for explicit user-directed runner changes only:
+    `add_job`, `update_job`, `pause_job`, `resume_job`, `delete_job`,
+    `run_once`, and `daemon_stop`. Wayfinder Shells/OpenCode config requires
+    approval for this tool so an agent cannot silently pause, delete, stop, or
+    otherwise mutate scheduled jobs while responding to routine job results.
+    """
+
+    if action not in _RUNNER_MUTATION_ACTIONS:
+        return err(
+            "invalid_request",
+            f"unsupported mutating runner action: {action}",
+            details={"supported_actions": sorted(_RUNNER_MUTATION_ACTIONS)},
+        )
+
+    return await _core_runner_impl(
+        action=action,
+        sock_path=sock_path,
+        name=name,
+        type=type,
+        payload=payload,
+        interval_seconds=interval_seconds,
+        strategy=strategy,
+        strategy_action=strategy_action,
+        config=config,
+        wallet_label=wallet_label,
+        timeout_seconds=timeout_seconds,
+        script_path=script_path,
+        args=args,
+        env=env,
+        debug=debug,
+        opencode_mutation_approved=True,
+    )

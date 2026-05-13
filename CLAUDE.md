@@ -285,6 +285,15 @@ poetry run wayfinder runner status | run-once | pause | resume | delete <job> | 
 See `RUNNER_ARCHITECTURE.md`.
 
 Runner MCP tool: `mcp__wayfinder__core_runner(action=...)`.
+Runner mutation MCP tool: `mcp__wayfinder__core_runner_mutation(action=...)`.
+
+`pause_job`, `resume_job`, `delete_job`, `update_job`, `run_once`, and
+`daemon_stop` change runtime state. Only use them when the user explicitly asks
+for that exact change or approves your proposed change. Never pause, delete,
+stop, or reschedule a job just because its `job_result` notifications are noisy,
+unchanged, or below a trigger threshold; offer the change and wait for the user.
+On OpenCode/Shells, these actions go through the approval-gated
+`core_runner_mutation` MCP tool.
 
 Safety note:
 

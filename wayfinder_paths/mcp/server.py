@@ -82,7 +82,7 @@ from wayfinder_paths.mcp.tools.polymarket import (
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.run_script import core_run_script
-from wayfinder_paths.mcp.tools.runner import core_runner
+from wayfinder_paths.mcp.tools.runner import core_runner, core_runner_mutation
 from wayfinder_paths.mcp.tools.strategies import core_run_strategy
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
@@ -161,6 +161,7 @@ mcp.tool()(core_execute)
 mcp.tool()(core_run_script)
 mcp.tool()(core_run_strategy)
 mcp.tool()(core_runner)
+mcp.tool()(core_runner_mutation)
 
 
 def main() -> None:
