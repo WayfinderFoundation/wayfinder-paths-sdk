@@ -684,7 +684,7 @@ async def polymarket_execute(
             case "fund_deposit_wallet":
                 throw_if_none("amount is required for fund_deposit_wallet", amount)
                 ok_fund, res = await adapter.fund_deposit_wallet(
-                    amount=Decimal(str(amount))
+                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
                 )
                 effects.append(
                     {
@@ -707,7 +707,9 @@ async def polymarket_execute(
 
             case "withdraw_deposit_wallet":
                 ok_w, res = await adapter.withdraw_deposit_wallet(
-                    amount=Decimal(str(amount)) if amount is not None else None
+                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
+                    if amount is not None
+                    else None
                 )
                 effects.append(
                     {
