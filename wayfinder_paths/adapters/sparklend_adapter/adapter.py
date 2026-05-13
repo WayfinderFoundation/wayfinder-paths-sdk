@@ -46,7 +46,7 @@ class SparkLendAdapter(AaveV3Adapter):
         )
         self.name = "sparklend_adapter"
 
-        # Cache: (chain_id, underlying.lower()) -> reserve config dict
+        # Cache: (chain_id, checksummed underlying) -> reserve config dict
         self._reserve_config_by_chain_underlying: dict[
             tuple[int, str], dict[str, Any]
         ] = {}
@@ -67,7 +67,7 @@ class SparkLendAdapter(AaveV3Adapter):
             "is_frozen": data[9],
         }
         self._reserve_config_by_chain_underlying[
-            (chain_id, to_checksum_address(underlying).lower())
+            (chain_id, to_checksum_address(underlying))
         ] = cfg
         return cfg
 
@@ -111,7 +111,7 @@ class SparkLendAdapter(AaveV3Adapter):
         self, *, chain_id: int, underlying: str, web3: Any
     ) -> dict[str, Any]:
         underlying = to_checksum_address(underlying)
-        cache_key = (chain_id, underlying.lower())
+        cache_key = (chain_id, underlying)
         if cached := self._reserve_config_by_chain_underlying.get(cache_key):
             return cached
 
@@ -763,7 +763,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 debt_token = (
                     variable_debt if rate_mode == VARIABLE_RATE_MODE else stable_debt
                 )
-                if debt_token.lower() == ZERO_ADDRESS:
+                if debt_token == ZERO_ADDRESS:
                     return False, "debt token address not found for wrapped native"
 
                 debt, native_balance = await asyncio.gather(

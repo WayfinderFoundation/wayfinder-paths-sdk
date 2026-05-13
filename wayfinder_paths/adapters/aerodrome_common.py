@@ -164,14 +164,15 @@ class AerodromeVotingRewardsMixin:
         tx_hash: str,
         expected_to: str,
     ) -> int | None:
-        nft_l = to_checksum_address(nft_contract).lower()
-        expected_to_l = to_checksum_address(expected_to).lower()
+        nft_checksum = to_checksum_address(nft_contract)
+        expected_to_checksum = to_checksum_address(expected_to)
         async with web3_from_chain_id(self.chain_id) as web3:
             receipt = await web3.eth.get_transaction_receipt(tx_hash)
             logs = (receipt or {}).get("logs") or []
             for log in logs if isinstance(logs, list) else []:
                 try:
-                    if (log.get("address") or "").lower() != nft_l:
+                    log_addr = log.get("address")
+                    if not log_addr or to_checksum_address(log_addr) != nft_checksum:
                         continue
                     topics = log.get("topics") or []
                     if not topics or HexBytes(topics[0]) != _ERC721_TRANSFER_TOPIC0:
@@ -183,9 +184,9 @@ class AerodromeVotingRewardsMixin:
                     token_id = args.get("tokenId")
                     if not from_addr or not to_addr or token_id is None:
                         continue
-                    if to_checksum_address(from_addr).lower() != ZERO_ADDRESS:
+                    if to_checksum_address(from_addr) != ZERO_ADDRESS:
                         continue
-                    if to_checksum_address(to_addr).lower() != expected_to_l:
+                    if to_checksum_address(to_addr) != expected_to_checksum:
                         continue
                     return token_id
                 except Exception:
