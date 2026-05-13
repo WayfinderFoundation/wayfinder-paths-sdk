@@ -79,18 +79,15 @@ def normalize_signal(
 
 @dataclass
 class TriggerContext:
-    """Inputs handed to `decide()` once per bar / trigger.
+    """Inputs to `decide()`, one per bar / trigger.
 
-    `decide()` must be a pure function of this context. The framework guarantees
-    `nav` (and the handler-derived `positions`/`mids` reads) are computed the
-    same way in backtest and live — that is what makes a strategy replayable
-    without divergence. Side-channel reads (e.g. `await perp.get_margin_balance()`
-    inside decide) bypass this guarantee and will silently diverge: in backtest
-    `BacktestHandler.get_margin_balance()` returns 0, and stored-then-cached
-    values get pinned to first-observed truth in live. Always read `ctx.nav`.
+    `decide()` must be a pure function of this context. Read NAV from
+    `ctx.nav`, not via side channels — `await perp.get_margin_balance()`
+    inside decide returns 0 in backtest (`BacktestHandler` tracks NAV in the
+    driver, not the handler) and silently diverges from live.
 
-    `state` is for the strategy's own multi-bar bookkeeping (e.g. a cooldown
-    timer). Do NOT use it to smuggle framework-owned values like NAV.
+    `state` is for strategy-owned multi-bar bookkeeping (cooldowns, regime
+    flags). Never smuggle framework-owned values like NAV through it.
     """
 
     perp: MarketHandler
@@ -99,11 +96,9 @@ class TriggerContext:
     state: StateStore
     signal: SignalFrame
     t: datetime
-    # Pre-trade account value, in account-currency units (typically USD).
-    # Computed by the framework: backtest driver passes book NAV (cash +
-    # unrealized); live `_run_trigger` passes the exchange-reported account
-    # value. Always > 0 when the strategy is funded; 0 means decide should
-    # no-op for this bar.
+    # Pre-trade account value in account-currency (typically USD). Backtest
+    # passes book NAV (cash + unrealized); live passes exchange-reported
+    # account value. 0 means decide should no-op for this bar.
     nav: float = 0.0
 
     def signal_at_now(self) -> pd.Series:

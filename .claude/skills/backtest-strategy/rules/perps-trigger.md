@@ -70,9 +70,6 @@ Three handler implementations satisfy the same `MarketHandler` protocol:
 - **Slippage helpers are idealized in backtest.** `quantity_at_price` / `price_for_quantity`
   assume infinite depth at mid. Reconciliation catches the deviation between assumed and
   realized live slippage.
-- **Slippage helpers are idealized in backtest.** `quantity_at_price` / `price_for_quantity`
-  assume infinite depth at mid. Reconciliation catches the deviation between assumed and
-  realized live slippage.
 - **HIP-3 venues must be declared.** Strategies declare `HIP3_DEXES = ["xyz", ...]` on the
   parent class; the framework refuses to run if an unknown dex is named.
 - **Don't override locked methods.** `ActivePerpsStrategy.update()` and `_run_trigger()` are

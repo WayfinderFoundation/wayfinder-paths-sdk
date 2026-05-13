@@ -154,14 +154,6 @@ async def assert_active_perps_backtest_runs(
     if expect_trades:
         assert len(result.trades) > 0, "backtest produced zero trades"
 
-    return _enforce_min_return(result, strategy_cls, min_total_return)
-
-
-def _enforce_min_return(
-    result: BacktestResult,
-    strategy_cls: type[ActivePerpsStrategy],
-    min_total_return: float | None,
-) -> BacktestResult:
     floor = (
         min_total_return
         if min_total_return is not None
@@ -173,7 +165,6 @@ def _enforce_min_return(
         f"Check signal/decide for regressions or widen the window if the floor "
         f"is too tight for the strategy's variance."
     )
-
     return result
 
 

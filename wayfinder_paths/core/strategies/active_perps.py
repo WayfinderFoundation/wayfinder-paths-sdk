@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -66,20 +67,12 @@ class ActivePerpsStrategy(Strategy):
     DECIDE: ClassVar[str | None] = None  # None ⇒ default_decide
     HIP3_DEXES: ClassVar[list[str]] = []
 
-    # ---------- auto-reconciliation ----------
-    # Every active-perps trigger records intents (via RecordingHandler, hard-wired
-    # in _run_trigger). After a successful trigger, `update()` automatically runs
-    # a short-window reconcile so drift between live and replay never goes silent.
-    # Overrideable by subclasses only to widen the window or raise the floor — the
-    # auto-run itself cannot be disabled.
+    # Auto-reconcile after every successful trigger, throttled.
     AUTO_RECONCILE_WINDOW_DAYS: ClassVar[int] = 1
     AUTO_RECONCILE_MIN_INTERVAL_SECONDS: ClassVar[int] = 3600
 
-    # ---------- smoke-test config ----------
-    # The strategy's smoke test runs a backtest over the trailing
-    # `SMOKE_TEST_WINDOW_DAYS` and asserts `total_return >= SMOKE_MIN_TOTAL_RETURN`.
-    # Defaults are deliberately mild (break-even on 14d). Subclasses with stronger
-    # edge should raise the floor so regressions in signal/decide fail the smoke.
+    # Smoke test window + minimum total_return floor. Subclasses with proven
+    # edge should raise the floor so regressions fail the smoke check.
     SMOKE_TEST_WINDOW_DAYS: ClassVar[int] = 14
     SMOKE_MIN_TOTAL_RETURN: ClassVar[float] = 0.0
 
@@ -171,16 +164,9 @@ class ActivePerpsStrategy(Strategy):
         return ok, msg
 
     async def _maybe_auto_reconcile(self) -> str | None:
-        """Throttled background reconcile after every successful trigger.
-
-        Recon is mandatory for active-perps strategies — if live ever drifts
-        from replay we want to know within hours, not weeks. To keep cost
-        bounded, runs only once per `AUTO_RECONCILE_MIN_INTERVAL_SECONDS` and
-        covers only the trailing `AUTO_RECONCILE_WINDOW_DAYS`.
-
-        Failures are swallowed into the returned message so they don't break
-        the trigger result. Operators should monitor the reconciliation
-        directory and recon report contents, not this return value.
+        """Throttled reconcile after each successful trigger. Failures are
+        captured into the return message and never break the trigger.
+        Operators should monitor the reconciliation/ directory, not this msg.
         """
         last = self._state.get("last_auto_reconcile_at")
         now_s = time.time()
@@ -215,10 +201,13 @@ class ActivePerpsStrategy(Strategy):
         )
 
         raw_perp, raw_hip3 = await self._build_handlers()
-        # Recording is unconditional. Every place_order is teed into an intents
-        # log so the reconciler can replay decide() against snapshotted state and
-        # diff intents (strict) + HL fills (execution-path). Subclasses cannot
-        # opt out — auto-reconcile after each trigger depends on this.
+        # Repair venue leverage to match `target_leverage` before any orders go
+        # out. Live-only; no-op for non-live handlers. Required for parity:
+        # backtest sizes orders against `target_leverage`, so if the venue is
+        # set lower, the exchange trims FIFO and multi-leg trades end lopsided.
+        await self._ensure_venue_leverage(raw_perp, raw_hip3)
+
+        # Recording is unconditional — auto-reconcile depends on the intents log.
         perp = RecordingHandler(raw_perp)
         hip3 = {k: RecordingHandler(h) for k, h in raw_hip3.items()}
 
@@ -229,9 +218,8 @@ class ActivePerpsStrategy(Strategy):
         )
 
         trigger_t = perp.now()
-        # Fetch NAV from the exchange-of-record (primary perp). Pass it through
-        # ctx.nav so decide() reads framework-owned truth, not a side-channel
-        # call (which would diverge from backtest — see TriggerContext docs).
+        # NAV from the exchange-of-record; decide must read ctx.nav, not call
+        # get_margin_balance() itself (see TriggerContext).
         nav = float(await perp.get_margin_balance())
         ctx = TriggerContext(
             perp=perp,
@@ -613,6 +601,86 @@ class ActivePerpsStrategy(Strategy):
         for h in hip3.values():
             await h.refresh_mids()
         return perp, hip3
+
+    async def _ensure_venue_leverage(
+        self,
+        perp: MarketHandler,
+        hip3: dict[str, MarketHandler],
+    ) -> None:
+        """Repair venue leverage on all signal symbols to match `target_leverage`.
+
+        Called from `_run_trigger` before `decide()`. Live-only — backtest
+        handlers have no per-asset leverage knob (the backtester respects
+        `target_leverage` directly), so this method is a no-op there.
+
+        Default behavior (live HL):
+          - Read clearinghouseState to discover the current leverage / margin
+            mode for each symbol.
+          - For each signal symbol whose current leverage is below
+            `ceil(target_leverage)`, call `update_leverage(...)`. Preserves
+            cross/isolated mode for symbols with an existing position;
+            defaults to cross for symbols with no position.
+
+        Override this when a strategy intentionally runs at a lower live
+        leverage than the backtest assumes, OR uses isolated margin with
+        deposits managed separately.
+        """
+        from wayfinder_paths.core.perps.handlers.live import (
+            LiveHandler,  # noqa: PLC0415
+        )
+
+        if not isinstance(perp, LiveHandler):
+            return
+
+        target_leverage = float(self._ref.params.get("target_leverage", 1.0))
+        required = max(1, math.ceil(target_leverage))
+
+        adapter = perp.adapter
+        addr = perp.wallet_address
+        ok, state = await adapter.get_user_state(addr)
+        existing_modes: dict[str, tuple[int, bool]] = {}
+        if ok and isinstance(state, dict):
+            for ap in state.get("assetPositions") or []:
+                p = ap.get("position") or {}
+                coin = p.get("coin")
+                lev = p.get("leverage") or {}
+                if not coin or not isinstance(lev, dict):
+                    continue
+                try:
+                    cur_val = int(lev.get("value") or 0)
+                except (TypeError, ValueError):
+                    cur_val = 0
+                is_cross = (lev.get("type") or "cross") == "cross"
+                existing_modes[coin] = (cur_val, is_cross)
+
+        symbols = list(self._ref.data.symbols)
+        for sym in symbols:
+            asset_id = adapter.coin_to_asset.get(sym)
+            if asset_id is None:
+                continue
+            cur_val, is_cross = existing_modes.get(sym, (0, True))
+            if cur_val >= required:
+                continue
+            try:
+                await adapter.update_leverage(
+                    asset_id=int(asset_id),
+                    leverage=int(required),
+                    is_cross=bool(is_cross),
+                    address=addr,
+                )
+                self.logger.info(
+                    "venue leverage repaired: %s %s→%s (cross=%s)",
+                    sym,
+                    cur_val,
+                    required,
+                    is_cross,
+                )
+            except Exception as e:  # noqa: BLE001 — log and continue; the
+                # `decide()` step still computes correctly, only sizing margin
+                # will be tighter if the repair didn't land.
+                self.logger.warning(
+                    "venue leverage repair failed for %s: %s", sym, e
+                )
 
     async def _fetch_recent_data(self, perp: MarketHandler) -> tuple[Any, Any]:
         """Pull recent prices + funding for the signal window."""

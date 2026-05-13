@@ -187,22 +187,22 @@ async def backtest_perps_trigger(
                 )
 
     for i, t in enumerate(prices.index):
-        # 1) advance handlers; apply pending fills (next-bar-open mode only — at the new bar's price).
+        # next_bar_open mode: queued fills land at this new bar's price.
         for h in [perp, *hip3.values()]:
             h.set_bar(i)
             if fill_model == "next_bar_open":
                 _record_fills(h.apply_pending_fills(), t)
 
-        # 2) expose pre-trade NAV to decide. Match legacy: NAV is measured BEFORE
-        #    this bar's funding accrual (funding is debited after the trade loop).
+        # NAV is measured BEFORE this bar's funding accrual; funding is
+        # debited after the trade loop to match legacy ordering.
         unrealized_pre = sum(h.mark_to_market_value() for h in [perp, *hip3.values()])
         bar_costs_pre = sum(
             h._bar_fees - h._bar_realized_pnl  # noqa: SLF001
             for h in [perp, *hip3.values()]
         )
         nav_pre = float(cash) + float(unrealized_pre) - bar_costs_pre
-        # Also write to state for the reconciler's snapshot anchor — but decide
-        # must read ctx.nav, not ctx.state.get("nav") (see TriggerContext).
+        # state.set is for the reconciler's snapshot anchor; decide reads
+        # ctx.nav (see TriggerContext).
         state.set("nav", nav_pre)
 
         ctx = TriggerContext(
@@ -219,16 +219,14 @@ async def backtest_perps_trigger(
 
         all_handlers = [perp, *hip3.values()]
 
-        # replay: fill at this bar's price after decide (reconciliation only).
+        # replay mode: queued fills land at this bar's price (reconciliation only).
         if fill_model == "replay":
             for h in all_handlers:
                 _record_fills(h.apply_pending_fills(), t)
 
-        # 6) accrue funding on the post-trade book — matches legacy ordering.
         for h in all_handlers:
             h.accrue_funding()
 
-        # 4) snapshot per-bar metrics.
         bar_fees = 0.0
         bar_funding = 0.0
         bar_realized = 0.0
@@ -240,7 +238,6 @@ async def backtest_perps_trigger(
             bar_realized += rl
             bar_turnover += h.gross_notional()
 
-        # 5) NAV and pnl accounting.
         unrealized = sum(h.mark_to_market_value() for h in [perp, *hip3.values()])
         cash += bar_realized + bar_funding - bar_fees
         nav = float(cash) + float(unrealized)
