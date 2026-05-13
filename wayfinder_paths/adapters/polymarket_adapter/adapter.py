@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import re
 import time
@@ -300,6 +303,7 @@ class PolymarketAdapter(BaseAdapter):
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
         self._setup_complete = False
+        self._builder_creds: dict[str, str] | None = None
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -1348,8 +1352,51 @@ class PolymarketAdapter(BaseAdapter):
         res.raise_for_status()
         return res.json()
 
+    async def _ensure_builder_creds(self) -> dict[str, str]:
+        if self._builder_creds:
+            return self._builder_creds
+        owner_client = ClobClient(  # type: ignore[misc]
+            str(self._clob_http.base_url),
+            chain_id=POLYGON_CHAIN_ID,
+            address_override=self._require_wallet_address(),
+            sign_callback_override=self.sign_hash_callback,
+        )
+        creds = await owner_client.create_or_derive_api_creds()
+        owner_client.set_api_creds(creds)
+        raw = owner_client.create_builder_api_key()
+        self._builder_creds = {
+            "key": str(raw["key"]),
+            "secret": str(raw["secret"]),
+            "passphrase": str(raw["passphrase"]),
+        }
+        return self._builder_creds
+
+    async def _builder_headers(
+        self, method: str, path: str, body: str
+    ) -> dict[str, str]:
+        creds = await self._ensure_builder_creds()
+        ts = str(int(time.time()))
+        # Relayer expects the canonical JSON body with single→double quote normalization
+        message = f"{ts}{method}{path}" + body.replace("'", '"')
+        sig = base64.urlsafe_b64encode(
+            hmac.new(
+                base64.urlsafe_b64decode(creds["secret"]),
+                message.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+        ).decode("utf-8")
+        return {
+            "Content-Type": "application/json",
+            "POLY_BUILDER_API_KEY": creds["key"],
+            "POLY_BUILDER_TIMESTAMP": ts,
+            "POLY_BUILDER_PASSPHRASE": creds["passphrase"],
+            "POLY_BUILDER_SIGNATURE": sig,
+        }
+
     async def _relayer_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        res = await self._relayer_http.post("/submit", json=payload)
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        headers = await self._builder_headers("POST", "/submit", body)
+        res = await self._relayer_http.post("/submit", content=body, headers=headers)
         res.raise_for_status()
         return res.json()
 
