@@ -934,20 +934,6 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def bridge_supported_assets(self) -> tuple[bool, dict[str, Any] | str]:
-        try:
-            res = await self._bridge_http.get("/supported-assets")
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /supported-assets response: {type(data).__name__}",
-                )
-            return True, data
-        except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
-
     async def bridge_quote(
         self,
         *,
@@ -1337,11 +1323,6 @@ class PolymarketAdapter(BaseAdapter):
             "conditional_tokens": str(cfg.conditional_tokens),
         }
 
-    async def _relayer_get(self, path: str, params: dict[str, Any]) -> Any:
-        res = await self._relayer_http.get(path, params=params)
-        res.raise_for_status()
-        return res.json()
-
     async def _ensure_builder_creds(self) -> dict[str, str]:
         if self._builder_creds:
             return self._builder_creds
@@ -1383,17 +1364,14 @@ class PolymarketAdapter(BaseAdapter):
             "POLY_BUILDER_SIGNATURE": sig,
         }
 
-    async def _relayer_submit(self, payload: dict[str, Any]) -> dict[str, Any]:
-        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        headers = await self._builder_headers("POST", "/submit", body)
-        res = await self._relayer_http.post("/submit", content=body, headers=headers)
-        res.raise_for_status()
-        return res.json()
-
     async def _poll_relayer_tx(self, transaction_id: str) -> dict[str, Any]:
         last: dict[str, Any] | None = None
         for _ in range(720):
-            rows = await self._relayer_get("/transaction", {"id": transaction_id})
+            res = await self._relayer_http.get(
+                "/transaction", params={"id": transaction_id}
+            )
+            res.raise_for_status()
+            rows = res.json()
             if rows:
                 last = rows[0]
                 state = last["state"]
@@ -1409,9 +1387,11 @@ class PolymarketAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         owner = self._require_wallet_address()
         deposit_wallet = self.deposit_wallet_address()
-        nonce: int = (
-            await self._relayer_get("/nonce", {"address": owner, "type": "WALLET"})
-        )["nonce"]
+        nonce_res = await self._relayer_http.get(
+            "/nonce", params={"address": owner, "type": "WALLET"}
+        )
+        nonce_res.raise_for_status()
+        nonce: int = nonce_res.json()["nonce"]
         deadline = int(time.time()) + 600
         signature: str = await self.sign_typed_data_callback(
             {
@@ -1431,27 +1411,32 @@ class PolymarketAdapter(BaseAdapter):
                 },
             }
         )
-        submitted = await self._relayer_submit(
-            {
-                "type": "WALLET",
-                "from": owner,
-                "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
-                "nonce": str(nonce),
-                "signature": signature,
-                "depositWalletParams": {
-                    "depositWallet": deposit_wallet,
-                    "deadline": str(deadline),
-                    "calls": [
-                        {
-                            "target": c["target"],
-                            "value": str(c["value"]),
-                            "data": c["data"],
-                        }
-                        for c in calls
-                    ],
-                },
-            }
+        payload = {
+            "type": "WALLET",
+            "from": owner,
+            "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+            "nonce": str(nonce),
+            "signature": signature,
+            "depositWalletParams": {
+                "depositWallet": deposit_wallet,
+                "deadline": str(deadline),
+                "calls": [
+                    {
+                        "target": c["target"],
+                        "value": str(c["value"]),
+                        "data": c["data"],
+                    }
+                    for c in calls
+                ],
+            },
+        }
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+        headers = await self._builder_headers("POST", "/submit", body)
+        submit_res = await self._relayer_http.post(
+            "/submit", content=body, headers=headers
         )
+        submit_res.raise_for_status()
+        submitted = submit_res.json()
         tx = await self._poll_relayer_tx(submitted["transactionID"])
         return {"deposit_wallet": deposit_wallet, "tx_hash": tx["transactionHash"]}
 
@@ -1558,14 +1543,18 @@ class PolymarketAdapter(BaseAdapter):
 
             deploy_tx_hash: str | None = None
             if not code:
-                submitted = await self._relayer_submit(
-                    {
-                        "type": "WALLET-CREATE",
-                        "from": owner,
-                        "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
-                    }
+                payload = {
+                    "type": "WALLET-CREATE",
+                    "from": owner,
+                    "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                }
+                body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+                headers = await self._builder_headers("POST", "/submit", body)
+                res = await self._relayer_http.post(
+                    "/submit", content=body, headers=headers
                 )
-                deploy_tx = await self._poll_relayer_tx(submitted["transactionID"])
+                res.raise_for_status()
+                deploy_tx = await self._poll_relayer_tx(res.json()["transactionID"])
                 deploy_tx_hash = deploy_tx["transactionHash"]
 
             calls: list[dict[str, Any]] = []
