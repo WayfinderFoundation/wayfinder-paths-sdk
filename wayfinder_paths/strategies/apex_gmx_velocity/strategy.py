@@ -19,8 +19,14 @@ Funding net ≈ 0 because both legs have similar positive funding (APEX
 time in each direction.
 """
 
+import time
 from pathlib import Path
+from typing import Any
 
+import pandas as pd
+
+from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
+from wayfinder_paths.core.perps.handlers.protocol import MarketHandler
 from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy
 
 
@@ -49,3 +55,30 @@ class ApexGmxVelocityStrategy(ActivePerpsStrategy):
         "min_order_usd": 10.0,
         "symbols": ["APEX", "GMX"],
     }
+
+    # Override the default Delta Lab path: Delta Lab's hourly timeseries for
+    # APEX/GMX has been observed to lag 16+h with 200 OK responses, so the
+    # try/except fallback in LiveHandler.recent_prices never triggered and the
+    # strategy ran on stale bars (missed multiple z-cross-zero exits on
+    # 2026-05-13). Source candles directly from the HL data client; bars are
+    # hourly UTC-aligned, matching what compute_signal expects.
+    async def _fetch_recent_data(
+        self, perp: MarketHandler
+    ) -> tuple[Any, Any]:
+        symbols = self._ref.data.symbols
+        lookback = int(self._ref.params.get("signal_lookback_bars", 256))
+        end_ms = int(time.time() * 1000)
+        # +24 bar buffer so rolling-stat warmup completes when lookback ≈ data window
+        start_ms = end_ms - (lookback + 24) * 3600 * 1000
+
+        async def one(coin: str) -> pd.Series:
+            rows = await HYPERLIQUID_DATA_CLIENT.get_candles(
+                coin, start_ms, end_ms, "1h"
+            )
+            df = pd.DataFrame(rows)
+            df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+            return df.set_index("t")["c"].astype(float)
+
+        series = {s: await one(s) for s in symbols}
+        prices = pd.concat(series, axis=1).dropna()
+        return prices, pd.DataFrame()
