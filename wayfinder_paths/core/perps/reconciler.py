@@ -757,10 +757,9 @@ async def _pull_live_fills(
     if not ok or not isinstance(raw, list):
         return []
     start_ms = pd.Timestamp(start).timestamp() * 1000
-    # Bare date strings ("2026-05-13") parse as midnight; without this bump we'd
-    # drop every fill on the final day of the window. Inclusive end-of-day.
+    # Bare date strings parse as midnight; bump so the final day is inclusive.
     end_ts = pd.Timestamp(end)
-    if end_ts.normalize() == end_ts:  # midnight → bump to end-of-day
+    if end_ts.normalize() == end_ts:
         end_ts = end_ts + pd.Timedelta(days=1)
     end_ms = end_ts.timestamp() * 1000
     return [f for f in raw if start_ms <= float(f.get("time", 0)) <= end_ms]
@@ -988,21 +987,9 @@ def _counterfactual_pnl(
 def _compute_verdict(
     drift: dict[str, Any], warnings: list[str]
 ) -> tuple[str, list[str]]:
-    """Aggregate per-axis drift into a single PASS / WARN / FAIL verdict.
-
-    FAIL when any of these indicate the reconcile is no longer a valid
-    comparison against the bonded ref:
-      - code or data drift detected (hash mismatches in `warnings`)
-      - live params hashed away from the ref's
-      - position axis shows orders only one side took (sim or live only)
-      - fill_rate has any no-fill rows
-      - signal axis has any weight drift
-
-    WARN for soft signals — partial fills, slippage outliers, funding drift —
-    which are operational quality indicators, not parity breaks.
-
-    Empty result for everything → PASS.
-    """
+    """PASS / WARN / FAIL aggregated across drift axes. FAIL = parity-broken
+    (code, data, config, position, signal, or no-fill). WARN = operational
+    noise (partial fills, slippage outliers, funding drift)."""
     reasons: list[str] = []
 
     drift_warning_markers = (
@@ -1072,8 +1059,7 @@ def _compute_verdict(
     funding = drift.get("funding") or {}
     f_drift = abs(float((funding.get("summary") or {}).get("drift") or 0.0))
     total_real = abs(float((funding.get("summary") or {}).get("total_real_funding") or 0.0))
-    # Flag funding drift only when both meaningful in absolute terms AND
-    # not explainable by an empty counterfactual baseline.
+    # Skip when total_real is small — likely an empty counterfactual baseline.
     if f_drift > 0.50 and total_real > 0.50:
         soft_reasons.append(f"funding drift ${f_drift:.2f}")
 

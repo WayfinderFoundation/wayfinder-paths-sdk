@@ -101,10 +101,7 @@ class BacktestHandler:
         self.slippage_bps = float(slippage_bps)
         self.fee_bps = float(fee_bps)
         self.min_order_usd = float(min_order_usd)
-        # When provided, place_order rounds size DOWN to 10^-sz_decimals[sym]
-        # so backtest mirrors HL's szDecimals truncation. Without this, backtest
-        # over-sizes by ≤0.5 step per trade vs live (asymmetric, always favors
-        # backtest). Keys missing from the dict → no rounding for that symbol.
+        # Per-symbol szDecimals; place_order rounds DOWN to match HL's truncation.
         self.sz_decimals: dict[str, int] = dict(sz_decimals or {})
 
         # Position state — signed sizes in base units.
@@ -379,11 +376,8 @@ class BacktestHandler:
         mid = float(self._prices_arr[self._bar_index, self._sym_to_col[symbol]])
         decimals = self.sz_decimals.get(symbol)
         if decimals is not None:
-            # ROUND_DOWN to step = 10^-decimals — mirrors live HL's
-            # `round_size_for_asset` semantics so backtest never trades a finer
-            # step than the exchange allows.
             step = 10.0 ** (-int(decimals))
-            size = float(int(abs(size) / step)) * step
+            size = float(int(size / step)) * step
             if size <= 0:
                 return OrderResult(
                     ok=False,

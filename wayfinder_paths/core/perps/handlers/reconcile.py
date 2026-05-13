@@ -58,27 +58,15 @@ class ReconcileHandler(BacktestHandler):
         self._snapshot_intents: list[dict[str, Any]] = []
 
     def _bar_interval(self) -> timedelta:
-        """Infer one bar interval from the price index. Defaults to 1h if the
-        index is too short to compute a delta — that's the canonical cadence
-        for Hyperliquid hourly bars used by the reconciler."""
+        """One bar interval inferred from the price index (1h fallback)."""
         if len(self._index) < 2:
             return timedelta(hours=1)
-        delta = self._index[1] - self._index[0]
-        return delta.to_pytimedelta() if hasattr(delta, "to_pytimedelta") else delta
+        return (self._index[1] - self._index[0]).to_pytimedelta()
 
     def load_snapshot_at(self, t: datetime) -> dict[str, Any]:
-        """Pull the live-state snapshot for bar `t` and project venue positions,
-        mids, and live intents out of it.
-
-        Snapshots are written at trigger time (e.g. T00:08:44Z), not bar-aligned
-        (T00:00:00Z). A snapshot belongs to the bar that contains its timestamp,
-        so we look up the latest snapshot with ts in `[t, t + bar_interval)`.
-
-        The live runtime stores under `state` (see `ActivePerpsStrategy._run_trigger`):
-          - `positions[venue][sym] = {size, entry_price, mark_price}`
-          - `orders[venue]         = [intent dicts captured by RecordingHandler]`
-          - `mids[venue][sym]      = float`
-        """
+        """Project venue positions, mids, and live intents from the snapshots
+        whose trigger ts lies in `[t, t + bar_interval)`. Multiple triggers can
+        fire in one bar; we take state from the latest and union intents."""
         snaps = StateStore.snapshots_in_bar(
             self.strategy_name, t, self._bar_interval()
         )
@@ -89,9 +77,6 @@ class ReconcileHandler(BacktestHandler):
             self._snapshot_intents = []
             return {}
 
-        # State (positions/mids/nav) reflects the latest trigger in the bar.
-        # Intents are unioned across every trigger so multi-action bars don't
-        # silently drop earlier orders (e.g. entry + follow-up reduce in same bar).
         latest = snaps[-1]
         venue_positions = (latest.get("positions") or {}).get(self.venue) or {}
         self._snapshot_positions = {

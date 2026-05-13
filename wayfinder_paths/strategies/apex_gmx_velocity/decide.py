@@ -1,17 +1,8 @@
-"""Execution decisions for APEX/GMX Pair Velocity Strategy.
+"""APEX/GMX Pair Velocity execution.
 
-Signal weights already include `target_leverage` (sum |w| ≤ target_leverage
-when entered). decide computes target sizes from `ctx.nav`, rounds each
-order to the asset's szDecimals so HL signing accepts it, and rebalances
-through the threshold. See `TriggerContext` for the purity contract.
-
-Pattern for multi-leg strategies: stage intended trades, compute an atomic
-scale that fits margin+fees within free cash, then place all legs at that
-scale. Live `place_order` ships immediately and HL trims FIFO under tight
-margin — without pre-scaling, the first leg starves the rest. Backtest
-behavior is unchanged: `compute_atomic_scale` and `scale_pending_atomically`
-share the same math, and the post-place call below becomes a no-op once
-pre-scaling has already trimmed pending notional into budget.
+Multi-leg pattern: stage intended trades → `compute_atomic_scale` →
+place. Live HL trims FIFO under tight margin, so scaling MUST happen
+before the first `place_order`. See `TriggerContext` for purity rules.
 """
 
 from __future__ import annotations
@@ -61,12 +52,9 @@ async def decide(ctx: TriggerContext) -> None:
         for s in positions
         if ctx.perp.mid(s) > 0
     )
-    # Force-rebalance when current gross has drifted above target_leverage due
-    # to adverse price moves. Lets reducing-gross trades bypass the threshold
-    # so the book gets back inside the leverage budget.
+    # Bypass threshold when over-leveraged so reducing trades can land.
     over_leveraged = nav > 0 and (current_gross / nav) > target_leverage + 1e-9
 
-    # Stage 1: compute intended new positions per symbol (don't place yet).
     pending: list[dict] = []
     for sym in target_w.index:
         target_weight = float(target_w[sym])
@@ -91,8 +79,6 @@ async def decide(ctx: TriggerContext) -> None:
             }
         )
 
-    # Stage 2: scale ALL legs atomically so margin+fees fit free cash. Required
-    # for multi-leg trades in live mode — see module docstring.
     if pending:
         scale = compute_atomic_scale(
             pending,
@@ -106,7 +92,6 @@ async def decide(ctx: TriggerContext) -> None:
                 signed_delta = (p["new_size"] - p["current_size"]) * scale
                 p["new_size"] = p["current_size"] + signed_delta
 
-    # Stage 3: place each (possibly-scaled) order.
     for p in pending:
         sym = p["symbol"]
         mid = p["mid"]
@@ -131,9 +116,5 @@ async def decide(ctx: TriggerContext) -> None:
             sym, side, order_size, "market", reduce_only=reduce_only
         )
 
-    # Backtest belt-and-suspenders: in backtest, scales the handler's pending
-    # queue post-`place_order`. With Stage 2 already applied, free cash now
-    # covers the queued notional, so this becomes a no-op (scale=1.0). Kept
-    # so backtests using strategies that DON'T pre-scale still get the same
-    # safety net they had before.
+    # Backtest-only safety net; no-op in live and after a successful pre-scale.
     await scale_pending_atomically(ctx, leverage=target_leverage)

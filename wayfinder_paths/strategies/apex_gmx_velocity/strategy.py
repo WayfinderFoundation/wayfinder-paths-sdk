@@ -56,19 +56,15 @@ class ApexGmxVelocityStrategy(ActivePerpsStrategy):
         "symbols": ["APEX", "GMX"],
     }
 
-    # Override the default Delta Lab path: Delta Lab's hourly timeseries for
-    # APEX/GMX has been observed to lag 16+h with 200 OK responses, so the
-    # try/except fallback in LiveHandler.recent_prices never triggered and the
-    # strategy ran on stale bars (missed multiple z-cross-zero exits on
-    # 2026-05-13). Source candles directly from the HL data client; bars are
-    # hourly UTC-aligned, matching what compute_signal expects.
+    # Bypass Delta Lab — APEX/GMX hourly series was observed lagging 16+h
+    # behind HL while still returning 200, causing stale bars and missed exits.
     async def _fetch_recent_data(
         self, perp: MarketHandler
     ) -> tuple[Any, Any]:
         symbols = self._ref.data.symbols
         lookback = int(self._ref.params.get("signal_lookback_bars", 256))
         end_ms = int(time.time() * 1000)
-        # +24 bar buffer so rolling-stat warmup completes when lookback ≈ data window
+        # +24 bars buffer for rolling-stat warmup at the edge of the window.
         start_ms = end_ms - (lookback + 24) * 3600 * 1000
 
         async def one(coin: str) -> pd.Series:

@@ -112,9 +112,6 @@ async def assert_active_perps_backtest_runs(
     )
     leverage = float(effective_params.get("target_leverage", 1.0))
 
-    # Format dates as YYYY-MM-DD; the driver's data layer validates ISO date
-    # strings. Skip funding fetch when caller hasn't supplied a frame — the
-    # smoke check is about divergence logic, not funding accuracy.
     start_str = pd.Timestamp(prices.index[0]).strftime("%Y-%m-%d")
     end_str = pd.Timestamp(prices.index[-1]).strftime("%Y-%m-%d")
     extra: dict[str, Any] = {}

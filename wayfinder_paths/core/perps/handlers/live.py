@@ -350,17 +350,10 @@ class LiveHandler:
 
     # ---------- collateral ----------
     async def get_margin_balance(self) -> float:
-        """Return usable margin (NAV) in USD.
-
-        `crossMarginSummary.accountValue` is the unified-pool equity on both
-        classic and unified HL accounts — observed to be correctly populated
-        even when no perp positions exist on a funded unified wallet. An
-        earlier branch added spot USDC on top for unified accounts; that
-        double-counted once positions were open (spot USDC stays denominated
-        in the same USD that backs the unified margin) and caused live NAV
-        to drift above backtest by a factor of ~2× under specific cache
-        states. Strategies size orders against this NAV — drift here means
-        live orders go out at ~2× target leverage. Removed.
+        """Usable margin in USD. `crossMarginSummary.accountValue` is the
+        unified-pool equity on both classic and unified HL accounts — don't
+        add spot USDC on top (it's already counted there once positions are
+        open).
         """
         ok, state = await self.adapter.get_user_state(self.wallet_address)
         if not ok or not isinstance(state, dict):

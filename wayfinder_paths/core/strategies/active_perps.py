@@ -201,13 +201,9 @@ class ActivePerpsStrategy(Strategy):
         )
 
         raw_perp, raw_hip3 = await self._build_handlers()
-        # Repair venue leverage to match `target_leverage` before any orders go
-        # out. Live-only; no-op for non-live handlers. Required for parity:
-        # backtest sizes orders against `target_leverage`, so if the venue is
-        # set lower, the exchange trims FIFO and multi-leg trades end lopsided.
+        # Match venue leverage to target so the exchange doesn't FIFO-trim multi-leg trades.
         await self._ensure_venue_leverage(raw_perp, raw_hip3)
 
-        # Recording is unconditional — auto-reconcile depends on the intents log.
         perp = RecordingHandler(raw_perp)
         hip3 = {k: RecordingHandler(h) for k, h in raw_hip3.items()}
 
@@ -269,17 +265,11 @@ class ActivePerpsStrategy(Strategy):
         )
         params_hash = hashlib.sha256(params_for_hash.encode()).hexdigest()[:16]
 
-        # cost_bps_applied: the value `compute_atomic_scale` saw at this
-        # trigger. Persisting it lets a replay deterministically reproduce
-        # sizing even if `backtest_ref` fee/slip params change later.
-        fee_bps = float(self._ref.params.get("fee_bps", 0.0))
-        slippage_bps = float(self._ref.params.get("slippage_bps", 0.0))
-        cost_bps_applied = fee_bps + slippage_bps
-
-        # free_margin_at_trigger: NAV minus margin already locked by current
-        # positions, computed at handler mids. The sizing math derives all
-        # order budgets from this number; recording it makes the scaling
-        # decision auditable post-hoc without re-querying HL state.
+        # Persist the values `compute_atomic_scale` saw so replays don't have
+        # to recompute them from params and re-fetch live state.
+        cost_bps_applied = float(self._ref.params.get("fee_bps", 0.0)) + float(
+            self._ref.params.get("slippage_bps", 0.0)
+        )
         target_leverage = float(self._ref.params.get("target_leverage", 1.0))
         current_gross = sum(
             abs(positions_snapshot.get(venue_key, {}).get(sym, {}).get("size", 0.0))
@@ -631,23 +621,9 @@ class ActivePerpsStrategy(Strategy):
         perp: MarketHandler,
         hip3: dict[str, MarketHandler],
     ) -> None:
-        """Repair venue leverage on all signal symbols to match `target_leverage`.
-
-        Called from `_run_trigger` before `decide()`. Live-only — backtest
-        handlers have no per-asset leverage knob (the backtester respects
-        `target_leverage` directly), so this method is a no-op there.
-
-        Default behavior (live HL):
-          - Read clearinghouseState to discover the current leverage / margin
-            mode for each symbol.
-          - For each signal symbol whose current leverage is below
-            `ceil(target_leverage)`, call `update_leverage(...)`. Preserves
-            cross/isolated mode for symbols with an existing position;
-            defaults to cross for symbols with no position.
-
-        Override this when a strategy intentionally runs at a lower live
-        leverage than the backtest assumes, OR uses isolated margin with
-        deposits managed separately.
+        """Raise venue leverage to ≥ ceil(target_leverage) on all signal
+        symbols. Live-only; preserves cross/isolated mode for existing
+        positions and defaults to cross for new ones. Override to opt out.
         """
         from wayfinder_paths.core.perps.handlers.live import (
             LiveHandler,  # noqa: PLC0415
@@ -699,9 +675,7 @@ class ActivePerpsStrategy(Strategy):
                     required,
                     is_cross,
                 )
-            except Exception as e:  # noqa: BLE001 — log and continue; the
-                # `decide()` step still computes correctly, only sizing margin
-                # will be tighter if the repair didn't land.
+            except Exception as e:  # noqa: BLE001 — never break the trigger
                 self.logger.warning(
                     "venue leverage repair failed for %s: %s", sym, e
                 )

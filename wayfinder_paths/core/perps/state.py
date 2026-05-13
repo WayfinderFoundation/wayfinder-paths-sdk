@@ -95,15 +95,9 @@ class StateStore:
         bar_t: datetime,
         bar_interval: timedelta,
     ) -> list[dict[str, Any]]:
-        """Return all snapshots whose recorded ts falls within the bar
-        `[bar_t, bar_t + bar_interval)`, ordered oldest → newest.
-
-        Snapshots are written at trigger time (e.g. T00:08:44Z) but reconcilers
-        iterate bar-aligned timestamps (e.g. T00:00:00Z). A snapshot belongs to
-        the bar whose interval contains its timestamp. Multiple triggers can
-        fire within one bar — callers decide whether to take the latest state
-        or union per-trigger intents across all of them.
-        """
+        """Snapshots whose ts ∈ `[bar_t, bar_t + bar_interval)`, oldest first.
+        Multiple triggers can fire per bar; callers usually take latest state
+        but union intents across all of them."""
         if bar_t.tzinfo is None:
             bar_t = bar_t.replace(tzinfo=UTC)
         upper = bar_t + bar_interval
