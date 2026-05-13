@@ -299,9 +299,7 @@ class PolymarketAdapter(BaseAdapter):
 
         self._clob_client: ClobClient | None = None  # type: ignore[valid-type]
         self._api_creds_set = False
-        self._deposit_wallet_synced = False
-        self._collateral_allowance_synced = False
-        self._conditional_allowances_synced: set[str] = set()
+        self._setup_complete = False
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -1479,8 +1477,6 @@ class PolymarketAdapter(BaseAdapter):
             return False, str(exc)
 
     async def _setup_deposit_wallet(self) -> tuple[str | None, str | None]:
-        if self._deposit_wallet_synced:
-            return None, None
         owner = self._require_wallet_address()
         deposit_wallet = self.deposit_wallet_address()
         async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
@@ -1565,26 +1561,25 @@ class PolymarketAdapter(BaseAdapter):
         if calls:
             approval = await self._submit_wallet_batch(calls=calls)
             approval_tx_hash = approval["tx_hash"]
-        self._deposit_wallet_synced = True
         return deploy_tx_hash, approval_tx_hash
 
     async def ensure_trading_setup(
         self, *, token_id: str | None = None
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
+            if self._setup_complete:
+                return True, {"deposit_wallet": self.deposit_wallet_address()}
             deploy_tx_hash, approval_tx_hash = await self._setup_deposit_wallet()
             ok_creds, msg = await self.ensure_api_creds()
             if not ok_creds:
                 return False, msg
-            if not self._collateral_allowance_synced:
-                self.clob_client.update_balance_allowance(
-                    BalanceAllowanceParams(
-                        asset_type=AssetType.COLLATERAL,
-                        signature_type=SignatureTypeV2.POLY_1271,
-                    )
+            self.clob_client.update_balance_allowance(
+                BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=SignatureTypeV2.POLY_1271,
                 )
-                self._collateral_allowance_synced = True
-            if token_id and token_id not in self._conditional_allowances_synced:
+            )
+            if token_id:
                 self.clob_client.update_balance_allowance(
                     BalanceAllowanceParams(
                         asset_type=AssetType.CONDITIONAL,
@@ -1592,7 +1587,7 @@ class PolymarketAdapter(BaseAdapter):
                         signature_type=SignatureTypeV2.POLY_1271,
                     )
                 )
-                self._conditional_allowances_synced.add(token_id)
+            self._setup_complete = True
             return True, {
                 "deposit_wallet": self.deposit_wallet_address(),
                 "deploy_tx_hash": deploy_tx_hash,
