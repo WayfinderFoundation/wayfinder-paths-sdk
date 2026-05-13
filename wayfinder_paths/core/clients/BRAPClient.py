@@ -80,6 +80,7 @@ class BRAPClient(WayfinderClient):
         from_wallet: str,
         from_amount: str,
         slippage: float | None = None,
+        to_wallet: str | None = None,
     ) -> BRAPQuoteResponse:  # type: ignore # noqa: E501
         logger.info(
             f"Getting BRAP quote: {from_token} -> {to_token} (chain {from_chain} -> {to_chain})"
@@ -99,6 +100,8 @@ class BRAPClient(WayfinderClient):
         }
         if slippage is not None:
             params["slippage"] = slippage
+        if to_wallet is not None:
+            params["to_wallet"] = to_wallet
 
         try:
             response = await self._authed_request("GET", url, params=params, headers={})
