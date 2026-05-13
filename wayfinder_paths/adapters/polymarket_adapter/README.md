@@ -76,19 +76,21 @@ from wayfinder_paths.mcp.scripting import get_adapter
 adapter = await get_adapter(PolymarketAdapter, wallet_label="main")  # loads `config.json`
 ```
 
-## End-to-end cycle (USDC / USDC.e -> pUSD -> buy -> sell/redeem -> pUSD -> USDC.e / USDC)
+## End-to-end cycle (USDC / USDC.e -> pUSD -> fund deposit wallet -> buy -> sell/redeem -> withdraw -> pUSD -> USDC.e / USDC)
 
 Typical lifecycle for an automated agent:
 
-1) **Acquire pUSD** (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
+1) **Acquire pUSD** on the owner EOA (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
 2) **Search and select a market** (Gamma `public-search` / `markets`, filter for `enableOrderBook` + `acceptingOrders`).
 3) **Resolve the CLOB token id** for the desired outcome (`resolve_clob_token_id`).
-4) **Set up the deposit wallet**. Order placement automatically deploys the deposit wallet if needed, funds it with buffered pUSD for BUY orders, grants deposit-wallet approvals through the relayer, and syncs CLOB balance allowances.
-5) **Buy** outcome shares (CLOB market order BUY from the deposit wallet).
-6) **Exit** either by:
+4) **Fund the deposit wallet** with pUSD via `fund_deposit_wallet(amount_raw=...)`. Trading happens from a per-user smart contract wallet (deposit wallet), not the owner EOA — order placement does not auto-fund.
+5) **Set up trading** (idempotent, cached). `place_market_order` / `place_limit_order` / `place_prediction` call `ensure_trading_setup` automatically: deploy the deposit wallet if missing, grant pUSD + ConditionalTokens approvals through the relayer, derive CLOB API creds, sync balance allowances.
+6) **Buy** outcome shares (CLOB market order BUY from the deposit wallet).
+7) **Exit** either by:
    - **Selling** shares back on the orderbook (CLOB market order SELL), or
    - **Redeeming** after resolution (`redeem_positions` using the market’s `conditionId`).
-7) **Convert back** to native Polygon USDC if desired (`bridge_withdraw`).
+8) **Withdraw** pUSD from the deposit wallet back to the owner EOA via `withdraw_deposit_wallet(amount_raw=...)` (omit `amount_raw` to drain).
+9) **Convert back** to native Polygon USDC if desired (`bridge_withdraw`).
 
 ## Market discovery & search
 
@@ -246,26 +248,38 @@ The Polymarket Bridge fallback works by transferring tokens to bridge-generated 
 
 ## Trading cycle (buy → sell/cash-out)
 
-### 1) Deposit wallet setup
+### 1) Fund the deposit wallet (explicit, separate from setup)
 
-Trading uses the owner wallet's Polymarket deposit wallet. `place_prediction()`,
-`place_market_order()`, and `place_limit_order()` call setup automatically:
-
-- deploy the deposit wallet if it does not exist
-- transfer buffered pUSD from the owner wallet to the deposit wallet for BUY orders
-- grant pUSD and ConditionalTokens approvals from the deposit wallet through the relayer
-- sync CLOB balance allowances for the deposit wallet
+Trading uses a per-user smart contract wallet (deposit wallet) derived from the owner EOA. Fund it with pUSD before placing orders — order placement does **not** auto-fund.
 
 ```python
-from decimal import Decimal
-
-ok, res = await adapter.ensure_trading_setup(
-    token_id="<clob token id>",
-    required_collateral=Decimal("2.0"),
-)
+ok, res = await adapter.fund_deposit_wallet(amount_raw=2_000_000)  # 2.0 pUSD (6 decimals)
+# returns (True, {"deposit_wallet", "amount_raw", "tx_hash"})
 ```
 
-Normally call this directly only for preflight checks; order placement invokes it.
+To withdraw back to the owner EOA (drain by default):
+
+```python
+ok, res = await adapter.withdraw_deposit_wallet()              # full balance
+ok, res = await adapter.withdraw_deposit_wallet(amount_raw=1_000_000)  # partial
+```
+
+### 2) Deposit wallet setup (idempotent, cached)
+
+`place_prediction()`, `place_market_order()`, and `place_limit_order()` call `ensure_trading_setup()` automatically. On the first call it:
+
+- deploys the deposit wallet if it does not exist (relayer-mediated)
+- grants pUSD ERC20 + ConditionalTokens ERC1155 approvals from the deposit wallet through the relayer, batched in one signed call
+- derives CLOB API creds
+- syncs CLOB balance allowances (COLLATERAL + CONDITIONAL for the order's `token_id`)
+
+Subsequent calls short-circuit via the `_setup_complete` flag.
+
+```python
+ok, res = await adapter.ensure_trading_setup(token_id="<clob token id>")
+```
+
+Normally only used directly for preflight checks; order placement invokes it.
 
 ### 2) Place a prediction (market buy)
 
@@ -349,7 +363,8 @@ Collateral conversion (Bridge API):
 
 Trading (authenticated CLOB):
 
-- `ensure_deposit_wallet_deployed`, `ensure_deposit_wallet_approvals`, `ensure_trading_setup`
+- `deposit_wallet_address`, `fund_deposit_wallet`, `withdraw_deposit_wallet`
+- `ensure_trading_setup` (idempotent; deploys deposit wallet + grants approvals + syncs CLOB state)
 - `place_market_order`, `place_limit_order`, `cancel_order`, `list_open_orders`
 - Convenience: `place_prediction`, `cash_out_prediction`
 

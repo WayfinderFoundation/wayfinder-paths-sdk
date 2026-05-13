@@ -18,6 +18,14 @@
 - **USDC.e** is the direct wrap asset for pUSD on Polygon.
 - If you only have Polygon USDC, use the adapter’s preparation flow to reach pUSD (see `rules/deposits-withdrawals.md`).
 
+## Trading wallet ≠ owner EOA (V2 deposit wallet)
+
+- Orders execute from a per-user **deposit wallet** (smart contract derived from owner EOA), not the owner EOA itself.
+- Positions, pUSD collateral used for orders, and conditional shares all live on the deposit wallet — querying the owner EOA’s pUSD balance won’t reflect tradeable collateral.
+- Use `adapter.deposit_wallet_address()` to get the trading address. `get_full_user_state(wallet_label=...)` reads from it automatically.
+- Funding the deposit wallet is **explicit** — `polymarket_execute(action="fund_deposit_wallet", amount=...)`. Order placement does **not** auto-fund.
+- See `rules/deposit-wallet.md` for the full pattern.
+
 ## Market is “found” but not tradable
 
 Always filter search results:

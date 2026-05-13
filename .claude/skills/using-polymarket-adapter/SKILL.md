@@ -18,6 +18,7 @@ Use this skill when you are:
 
 - `wayfinder_paths/adapters/polymarket_adapter/README.md` - Adapter overview + end-to-end cycle
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Market discovery, IDs, time series, analysis patterns
-- [rules/deposits-withdrawals.md](rules/deposits-withdrawals.md) - Preparing **pUSD** and unwinding back to other assets
+- [rules/deposit-wallet.md](rules/deposit-wallet.md) - **V2 derived deposit wallet pattern** (per-user smart contract, funding from owner EOA, withdraw via relayer)
+- [rules/deposits-withdrawals.md](rules/deposits-withdrawals.md) - Preparing **pUSD** collateral and unwinding back to USDC/USDC.e
 - [rules/execution-opportunities.md](rules/execution-opportunities.md) - Approvals + trading flows (buy/sell/cancel/orders)
 - [rules/gotchas.md](rules/gotchas.md) - Common pitfalls (pUSD vs USDC/USDC.e, outcomes, tradability filters, rate limits)
