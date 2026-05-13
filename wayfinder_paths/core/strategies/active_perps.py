@@ -676,9 +676,7 @@ class ActivePerpsStrategy(Strategy):
                     is_cross,
                 )
             except Exception as e:  # noqa: BLE001 — never break the trigger
-                self.logger.warning(
-                    "venue leverage repair failed for %s: %s", sym, e
-                )
+                self.logger.warning("venue leverage repair failed for %s: %s", sym, e)
 
     async def _fetch_recent_data(self, perp: MarketHandler) -> tuple[Any, Any]:
         """Pull recent prices + funding for the signal window."""

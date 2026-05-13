@@ -67,9 +67,7 @@ class ReconcileHandler(BacktestHandler):
         """Project venue positions, mids, and live intents from the snapshots
         whose trigger ts lies in `[t, t + bar_interval)`. Multiple triggers can
         fire in one bar; we take state from the latest and union intents."""
-        snaps = StateStore.snapshots_in_bar(
-            self.strategy_name, t, self._bar_interval()
-        )
+        snaps = StateStore.snapshots_in_bar(self.strategy_name, t, self._bar_interval())
         if not snaps:
             self._snapshot_positions = {}
             self._snapshot_entry = {}

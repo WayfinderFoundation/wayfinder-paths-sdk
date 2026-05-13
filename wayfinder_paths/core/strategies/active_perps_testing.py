@@ -244,9 +244,7 @@ async def assert_active_perps_reproduces_ref(
         exp = float(expected[key])
         act = float(result.stats.get(key, 0.0))
         if abs(act - exp) > tol:
-            failures.append(
-                f"{key}: ref={exp:.4f} actual={act:.4f} (tol ±{tol:.2f})"
-            )
+            failures.append(f"{key}: ref={exp:.4f} actual={act:.4f} (tol ±{tol:.2f})")
 
     _check_abs("sharpe", sharpe_tol)
     _check_abs("total_return", total_return_tol)
@@ -266,7 +264,7 @@ async def assert_active_perps_reproduces_ref(
         f"{strategy_cls.__name__} no longer reproduces backtest_ref.json:\n  "
         + "\n  ".join(failures)
         + "\n\nThis means signal/decide/data changed since the ref was bonded. "
-        f"Either revert the regression or re-bond the ref via emit_backtest_ref(...)."
+        "Either revert the regression or re-bond the ref via emit_backtest_ref(...)."
     )
 
     return result

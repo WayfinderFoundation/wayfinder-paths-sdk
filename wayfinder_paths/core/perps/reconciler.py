@@ -1052,13 +1052,13 @@ def _compute_verdict(
         > 2.0 * float(d.get("expected_bps") or 0.0)
     ]
     if outliers_excess:
-        soft_reasons.append(
-            f"{len(outliers_excess)} slippage outlier(s) >2× expected"
-        )
+        soft_reasons.append(f"{len(outliers_excess)} slippage outlier(s) >2× expected")
 
     funding = drift.get("funding") or {}
     f_drift = abs(float((funding.get("summary") or {}).get("drift") or 0.0))
-    total_real = abs(float((funding.get("summary") or {}).get("total_real_funding") or 0.0))
+    total_real = abs(
+        float((funding.get("summary") or {}).get("total_real_funding") or 0.0)
+    )
     # Skip when total_real is small — likely an empty counterfactual baseline.
     if f_drift > 0.50 and total_real > 0.50:
         soft_reasons.append(f"funding drift ${f_drift:.2f}")

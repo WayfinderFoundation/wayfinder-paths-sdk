@@ -188,7 +188,5 @@ def test_reproduces_backtest_ref():
 
     prices, funding = asyncio.run(_fetch_window())
     asyncio.run(
-        assert_active_perps_reproduces_ref(
-            ApexGmxVelocityStrategy, prices, funding
-        )
+        assert_active_perps_reproduces_ref(ApexGmxVelocityStrategy, prices, funding)
     )

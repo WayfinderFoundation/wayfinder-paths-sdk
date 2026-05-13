@@ -58,9 +58,7 @@ class ApexGmxVelocityStrategy(ActivePerpsStrategy):
 
     # Bypass Delta Lab — APEX/GMX hourly series was observed lagging 16+h
     # behind HL while still returning 200, causing stale bars and missed exits.
-    async def _fetch_recent_data(
-        self, perp: MarketHandler
-    ) -> tuple[Any, Any]:
+    async def _fetch_recent_data(self, perp: MarketHandler) -> tuple[Any, Any]:
         symbols = self._ref.data.symbols
         lookback = int(self._ref.params.get("signal_lookback_bars", 256))
         end_ms = int(time.time() * 1000)
