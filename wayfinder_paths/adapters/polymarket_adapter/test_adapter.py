@@ -544,10 +544,12 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
         )
+        # get_token_balance is called three times: initial source-token check,
+        # then USDC.e before/after leg 1 to compute the on-chain delta.
         monkeypatch.setattr(
             polymarket_adapter_module,
             "get_token_balance",
-            AsyncMock(return_value=2_000_000),
+            AsyncMock(side_effect=[2_000_000, 50_000, 1_049_000]),
         )
 
         brap_swap = AsyncMock(
@@ -602,6 +604,8 @@ class TestPolymarketAdapter:
         second_call_kwargs = brap_swap.await_args_list[1].kwargs
         assert second_call_kwargs["from_token_address"] == POLYGON_USDC_E_ADDRESS
         assert second_call_kwargs["to_token_address"] == POLYGON_P_USDC_PROXY_ADDRESS
+        # Leg 2 must use the on-chain USDC.e delta (1_049_000 - 50_000),
+        # not the leg-1 quote's optimistic `to_amount`.
         assert second_call_kwargs["amount_base_unit"] == 999_000
         assert second_call_kwargs["recipient_address"] == from_address
 
@@ -919,6 +923,12 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        # get_token_balance is called twice: USDC.e before/after the unwrap.
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(side_effect=[50_000, 1_050_000]),
+        )
 
         brap_swap = AsyncMock(
             side_effect=[
@@ -982,6 +992,11 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=0),
+        )
         brap_swap = AsyncMock(
             return_value=(
                 True,
@@ -1024,6 +1039,11 @@ class TestPolymarketAdapter:
             return b""
 
         monkeypatch.setattr(adapter, "_require_signer", lambda: (from_address, sign_cb))
+        monkeypatch.setattr(
+            polymarket_adapter_module,
+            "get_token_balance",
+            AsyncMock(return_value=0),
+        )
         monkeypatch.setattr(
             adapter,
             "_brap_swap_polygon",

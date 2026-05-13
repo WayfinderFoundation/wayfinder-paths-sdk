@@ -833,6 +833,12 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    # Stable-asset swaps (USDC ↔ USDC.e and wraps to/from pUSD) need a little
+    # headroom because LI.FI routes occasionally revert at inclusion when a
+    # pool shifts between quote and inclusion. 1% is generous for stables and
+    # absorbs MEV/state-change races without users having to think about it.
+    _BRAP_DEFAULT_SLIPPAGE = 0.01
+
     async def _brap_swap_polygon(
         self,
         *,
@@ -840,6 +846,7 @@ class PolymarketAdapter(BaseAdapter):
         to_token_address: str,
         amount_base_unit: int,
         recipient_address: str | None = None,
+        slippage: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         """Swap `from_token → to_token` on Polygon via BRAP.
 
@@ -865,6 +872,9 @@ class PolymarketAdapter(BaseAdapter):
                 from_wallet=from_address,
                 from_amount=str(amount_base_unit),
                 to_wallet=rcpt if rcpt != from_address else None,
+                slippage=slippage
+                if slippage is not None
+                else self._BRAP_DEFAULT_SLIPPAGE,
             )
         except Exception as exc:  # noqa: BLE001
             return False, f"BRAP quote failed: {exc}"
@@ -992,6 +1002,17 @@ class PolymarketAdapter(BaseAdapter):
             }
 
         if from_chain_id == POLYGON_CHAIN_ID and from_token == POLYGON_USDC_ADDRESS:
+            # Read USDC.e balance before leg 1 so leg 2 can use the on-chain
+            # delta (the BRAP quote's `output_amount` is the quoted upper bound;
+            # actual fills are usually slightly lower after slippage and would
+            # cause the wrap's transferFrom to revert during gas estimation).
+            usdce_balance_before = await get_token_balance(
+                POLYGON_USDC_E_ADDRESS,
+                POLYGON_CHAIN_ID,
+                from_address,
+                block_identifier="latest",
+            )
+
             ok_swap, swap = await self._brap_swap_polygon(
                 from_token_address=POLYGON_USDC_ADDRESS,
                 to_token_address=POLYGON_USDC_E_ADDRESS,
@@ -1000,10 +1021,16 @@ class PolymarketAdapter(BaseAdapter):
             if not ok_swap:
                 return False, swap
 
-            usdce_received = int(swap.get("to_amount") or 0)
+            usdce_balance_after = await get_token_balance(
+                POLYGON_USDC_E_ADDRESS,
+                POLYGON_CHAIN_ID,
+                from_address,
+                block_identifier="latest",
+            )
+            usdce_received = max(0, usdce_balance_after - usdce_balance_before)
             if usdce_received <= 0:
                 return False, (
-                    "BRAP swap completed, but no USDC.e output amount reported "
+                    "BRAP swap completed, but no USDC.e balance delta detected "
                     "for wrapping into pUSD."
                 )
 
@@ -1083,6 +1110,15 @@ class PolymarketAdapter(BaseAdapter):
         base_units = to_erc20_raw(amount_pusd, token_decimals)
         rcpt = to_checksum_address(recipient_addr)
 
+        # Same pattern as bridge_deposit: read USDC.e balance before the
+        # unwrap so the optional second leg uses the actual on-chain delta.
+        usdce_balance_before = await get_token_balance(
+            POLYGON_USDC_E_ADDRESS,
+            POLYGON_CHAIN_ID,
+            from_address,
+            block_identifier="latest",
+        )
+
         ok_unwrap, unwrap = await self._brap_swap_polygon(
             from_token_address=POLYGON_P_USDC_PROXY_ADDRESS,
             to_token_address=POLYGON_USDC_E_ADDRESS,
@@ -1116,11 +1152,17 @@ class PolymarketAdapter(BaseAdapter):
             and to_checksum_address(to_token_address) == POLYGON_USDC_ADDRESS
             and rcpt == from_address
         ):
-            usdce_received = int(unwrap.get("to_amount") or 0)
+            usdce_balance_after = await get_token_balance(
+                POLYGON_USDC_E_ADDRESS,
+                POLYGON_CHAIN_ID,
+                from_address,
+                block_identifier="latest",
+            )
+            usdce_received = max(0, usdce_balance_after - usdce_balance_before)
             if usdce_received <= 0:
                 return False, (
-                    "BRAP unwrap completed, but no USDC.e output amount reported "
-                    "for swap into USDC."
+                    "BRAP unwrap completed, but no USDC.e balance delta "
+                    "detected for swap into USDC."
                 )
             ok_swap, swap = await self._brap_swap_polygon(
                 from_token_address=POLYGON_USDC_E_ADDRESS,
