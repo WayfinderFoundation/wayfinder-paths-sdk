@@ -52,8 +52,10 @@ Use one of:
 
 ### Account state
 
-`mcp__wayfinder__hyperliquid_get_state(label)` returns all three asset surfaces in one shot:
+`mcp__wayfinder__hyperliquid_get_state(label)` returns account mode, a derived perp-collateral interpretation, and all three asset surfaces in one shot:
 
+- `account.mode` — Hyperliquid account abstraction mode, such as `unifiedAccount`.
+- `perp_collateral` — normalized guidance for perp order planning. In `unifiedAccount` / `portfolioMargin`, `spot_usdc_usable_for_perp_orders=true` and `estimated_usdc_available_for_perp_orders` comes from `spotClearinghouseState.balances[USDC]` (`total - hold`). Do **not** treat zero/low `perp.state.crossMarginSummary.totalRawUsd` or `accountValue` alone as proof that the account lacks perp collateral.
 - `perp.state` — perp clearinghouse (margin summary, asset positions, withdrawable).
 - `spot.state.balances` — pure spot balances (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out into the `outcomes` bucket.
 - `outcomes.positions` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.

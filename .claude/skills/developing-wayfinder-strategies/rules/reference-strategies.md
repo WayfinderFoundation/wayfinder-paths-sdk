@@ -146,10 +146,13 @@ Don't deviate on:
     set to wallet-appropriate values. Verify it loads:
     poetry run python -c "from wayfinder_paths.core.strategies.risk_limits import RiskLimits; print(RiskLimits.load_optional('wayfinder_paths/strategies/<name>'))"
 
-[ ] Wallet exists with label == strategy.name and has USDC in HL PERP
-    (not just spot). Use core_get_wallets(label="<name>") to verify both;
-    if spot-only, run hyperliquid_execute(action="spot_to_perp_transfer", ...)
-    before the first update.
+[ ] Wallet exists with label == strategy.name and has Hyperliquid USDC usable
+    for perp orders. Use hyperliquid_get_state(label="<name>") and read
+    account.mode plus perp_collateral. In unifiedAccount / portfolioMargin,
+    spot USDC is also perp collateral; do not transfer just because the perp
+    clearinghouse summary is zero. In non-unified modes, if the account is
+    spot-only, run hyperliquid_execute(action="spot_to_perp_transfer", ...)
+    only after explicit user confirmation.
 
 [ ] CLI status returns clean StatusDict (no risk_warning):
     poetry run python -m wayfinder_paths.run_strategy <name> --action status \

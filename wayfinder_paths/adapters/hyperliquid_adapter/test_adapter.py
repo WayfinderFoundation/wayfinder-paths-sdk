@@ -110,6 +110,32 @@ class TestHyperliquidAdapter:
             assert success
             assert "assetPositions" in data
 
+    @pytest.mark.asyncio
+    async def test_get_user_abstraction_state(self, adapter, mock_info, _patch_adapter):
+        mock_info.query_user_abstraction_state.return_value = "unifiedAccount"
+
+        p1, p2 = _patch_adapter()
+        with p1, p2:
+            success, state = await adapter.get_user_abstraction_state("0x1234")
+
+        assert success
+        assert state == "unifiedAccount"
+
+    @pytest.mark.asyncio
+    async def test_ensure_unified_account_accepts_portfolio_margin(
+        self, adapter, mock_info, _patch_adapter
+    ):
+        mock_info.query_user_abstraction_state.return_value = "portfolioMargin"
+        adapter.set_account_abstraction = AsyncMock()
+
+        p1, p2 = _patch_adapter()
+        with p1, p2:
+            success, message = await adapter.ensure_unified_account("0x1234")
+
+        assert success
+        assert message == "portfolioMargin already enabled"
+        adapter.set_account_abstraction.assert_not_awaited()
+
     def test_get_sz_decimals(self, adapter, mock_info, _patch_adapter):
         p1, p2 = _patch_adapter()
         with p1, p2:

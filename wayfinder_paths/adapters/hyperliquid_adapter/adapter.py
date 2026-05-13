@@ -479,6 +479,20 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch spot_user_state for {address}: {exc}")
             return False, str(exc)
 
+    async def get_user_abstraction_state(
+        self, address: str
+    ) -> tuple[Literal[True], str] | tuple[Literal[False], str]:
+        try:
+            data = await asyncio.to_thread(
+                get_info().query_user_abstraction_state, address
+            )
+            return True, str(data)
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to fetch user_abstraction_state for {address}: {exc}"
+            )
+            return False, str(exc)
+
     async def get_full_user_state(
         self,
         *,
@@ -1377,8 +1391,11 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def ensure_unified_account(self, address: str) -> tuple[bool, str]:
-        if get_info().query_user_abstraction_state(address) == "unifiedAccount":
-            return True, "Unified account already enabled"
+        ok, state = await self.get_user_abstraction_state(address)
+        if ok and state in {"unifiedAccount", "portfolioMargin"}:
+            return True, f"{state} already enabled"
+        if not ok:
+            return False, f"Failed to query account abstraction mode: {state}"
 
         ok, result = await self.set_account_abstraction(address, "unifiedAccount")
         if ok:
