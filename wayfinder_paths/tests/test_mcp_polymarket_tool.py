@@ -190,7 +190,7 @@ async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
+async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 
     with (
@@ -205,14 +205,15 @@ async def test_polymarket_execute_buy_market_order(tmp_path: Path, monkeypatch):
         ),
     ):
         out = await polymarket_execute(
-            "buy",
+            "place_market_order",
             wallet_label="main",
             market_slug="bitcoin-above-70k-on-february-9",
             outcome="YES",
+            side="BUY",
             amount_collateral=2.0,
         )
         assert out["ok"] is True
         assert out["result"]["status"] == "confirmed"
-        assert out["result"]["action"] == "buy"
+        assert out["result"]["action"] == "place_market_order"
         effects = out["result"]["effects"]
-        assert effects and effects[0]["label"] == "buy"
+        assert effects and effects[0]["label"] == "place_market_order"

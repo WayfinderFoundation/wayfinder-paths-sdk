@@ -47,7 +47,7 @@ Trading collateral lives in **two places**, and the adapter has **two distinct f
 A full first-time flow looks like:
 1. `bridge_deposit` — Polygon USDC → pUSD (on owner EOA)
 2. `fund_deposit_wallet` — pUSD owner EOA → pUSD deposit wallet
-3. trade — `buy` / `sell` / `place_limit_order` / `close_position`
+3. trade — `place_market_order` / `place_limit_order`
 4. (optional) `withdraw_deposit_wallet` — pUSD deposit wallet → pUSD owner EOA
 5. (optional) `bridge_withdraw` — pUSD → Polygon USDC
 

@@ -38,7 +38,7 @@ ok, res = await adapter.place_prediction(
 
 MCP shortcut:
 
-- `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_collateral=2)`
+- `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
 
 Lower-level control (CLOB token id + side):
 
@@ -62,10 +62,9 @@ ok, res = await adapter.cash_out_prediction(
 )
 ```
 
-MCP shortcuts:
+MCP shortcut:
 
-- Sell partial: `mcp__wayfinder__polymarket_execute(action="sell", wallet_label="main", market_slug="...", outcome="...", shares=1)`
-- Sell full position size: `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="...", outcome="...")`
+- `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="...", outcome="...", side="SELL", shares=1)` (pass the full position size from `polymarket_get_state` to fully close)
 
 Practical note (important): after a BUY, there can be a **settlement lag** before shares are sellable. If you’re chaining BUY → SELL in automation, wait for the buy match transaction to confirm (the CLOB response typically includes `transactionsHashes`).
 
