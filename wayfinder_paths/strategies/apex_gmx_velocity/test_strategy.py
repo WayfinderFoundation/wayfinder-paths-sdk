@@ -27,6 +27,8 @@ from wayfinder_paths.strategies.apex_gmx_velocity.strategy import (
 )
 from wayfinder_paths.tests.test_utils import load_strategy_examples
 
+REPO_ROOT = Path(__file__).resolve().parents[3]  # adjust depth to repo root
+
 
 async def _fetch_hl_prices(
     days: int = 200,
@@ -152,6 +154,11 @@ def test_trigger_backtest_divergence_check():
 
 
 @pytest.mark.ref_reproduction
+@pytest.mark.smoke
+@pytest.mark.skipif(
+    not (REPO_ROOT / "config.json").exists(),
+    reason="Requires config.json (network-bound test)",
+)
 def test_reproduces_backtest_ref():
     """Slow: re-run the trigger backtest over the exact `ref.data.window` and
     assert stats match `ref.performance` within tolerance. Fails on any
