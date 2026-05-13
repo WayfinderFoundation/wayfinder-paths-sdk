@@ -99,3 +99,25 @@ ERC20_APPROVAL_ABI = [
         "type": "function",
     },
 ]
+
+# Fallback ABIs for non-standard ERC20s that return bytes32 instead of string
+# for name()/symbol() (e.g. MakerDAO's original MKR token).
+ERC20_NAME_BYTES32_ABI = [
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"name": "", "type": "bytes32"}],
+        "type": "function",
+    }
+]
+
+ERC20_SYMBOL_BYTES32_ABI = [
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"name": "", "type": "bytes32"}],
+        "type": "function",
+    }
+]
