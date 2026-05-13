@@ -7,7 +7,7 @@ import time
 import traceback
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_DOWN, ROUND_UP, Decimal, getcontext
+from decimal import ROUND_UP, Decimal, getcontext
 from pathlib import Path
 from statistics import fmean
 from typing import Any
@@ -829,53 +829,8 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             if not close_success:
                 return (False, f"Failed to close position: {close_msg}")
 
-        # Wait for spot sale to settle before checking balance
+        # Wait for spot sale to settle before checking the unified balance.
         await asyncio.sleep(5)
-
-        for _transfer_attempt in range(3):
-            spot_state_result = await self.hyperliquid_adapter.get_spot_user_state(
-                address
-            )
-            if not spot_state_result[0]:
-                continue
-
-            spot_balances = spot_state_result[1].get("balances", [])
-            for bal in spot_balances:
-                if bal.get("coin") == "USDC":
-                    # Use available balance (total - hold), not total
-                    total = float(bal.get("total", 0))
-                    hold = float(bal.get("hold", 0))
-                    available = total - hold
-
-                    # Floor to 2 decimal places to avoid precision issues
-                    spot_usdc = math.floor(available * 100) / 100
-
-                    if spot_usdc > 1.0:
-                        self.logger.info(
-                            f"Transferring ${spot_usdc:.2f} from spot to perp "
-                            f"(available={available:.8f}, floored={spot_usdc:.2f})"
-                        )
-                        (
-                            transfer_ok,
-                            transfer_result,
-                        ) = await self.hyperliquid_adapter.transfer_spot_to_perp(
-                            amount=spot_usdc,
-                            address=address,
-                        )
-                        if transfer_ok:
-                            self.logger.info("Spot to perp transfer successful")
-                        else:
-                            self.logger.warning(
-                                f"Spot to perp transfer failed: {transfer_result}. "
-                                f"Retrying after delay..."
-                            )
-                            await asyncio.sleep(5)
-                            continue
-                    break
-            break
-
-        # Wait a moment for transfers to settle
-        await asyncio.sleep(2)
 
         withdrawable = 0.0
         for attempt in range(3):
@@ -1241,14 +1196,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
                 self.logger.warning(f"Failed to set leverage: {lev_result}")
                 # Continue anyway - leverage might already be set
 
-            # Target: spot has order_usd for the spot buy, perp holds the remainder as margin.
-            split_ok, split_msg = await self._rebalance_usdc_between_perp_and_spot(
-                target_spot_usdc=order_usd,
-                address=address,
-            )
-            if not split_ok:
-                self.logger.warning(f"USDC rebalance failed: {split_msg}")
-
             filler = PairedFiller(
                 adapter=self.hyperliquid_adapter,
                 address=address,
@@ -1492,69 +1439,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
 
         return withdrawable, spot_usdc
 
-    async def _rebalance_usdc_between_perp_and_spot(
-        self,
-        *,
-        target_spot_usdc: float,
-        address: str,
-    ) -> tuple[bool, str]:
-        if target_spot_usdc <= 0:
-            return False, "Target spot USDC must be positive"
-
-        perp_margin, spot_usdc = await self._get_undeployed_capital()
-        total_usdc = perp_margin + spot_usdc
-        if total_usdc <= 0:
-            return False, "No deployable USDC on Hyperliquid"
-
-        # Operate at cent precision to avoid dust churn.
-        eps = 0.01
-        target = float(
-            Decimal(str(target_spot_usdc)).quantize(Decimal("0.01"), rounding=ROUND_UP)
-        )
-
-        if target > total_usdc + eps:
-            return (
-                False,
-                f"Target spot ${target:.2f} exceeds total deployable ${total_usdc:.2f}",
-            )
-
-        delta = target - spot_usdc
-        if abs(delta) < eps:
-            return True, "Spot/perp USDC already balanced"
-
-        if delta > 0:
-            # Need more spot USDC: move from perp to spot.
-            amount = float(
-                Decimal(str(min(delta, perp_margin))).quantize(
-                    Decimal("0.01"), rounding=ROUND_UP
-                )
-            )
-            if amount < eps:
-                return True, "No meaningful perp->spot transfer needed"
-            success, result = await self.hyperliquid_adapter.transfer_perp_to_spot(
-                amount=amount,
-                address=address,
-            )
-            if not success:
-                return False, f"Perp->spot transfer failed: {result}"
-            return True, f"Transferred ${amount:.2f} perp->spot"
-
-        # Need more perp USDC: move from spot to perp.
-        amount = float(
-            Decimal(str(min(-delta, spot_usdc))).quantize(
-                Decimal("0.01"), rounding=ROUND_DOWN
-            )
-        )
-        if amount < eps:
-            return True, "No meaningful spot->perp transfer needed"
-        success, result = await self.hyperliquid_adapter.transfer_spot_to_perp(
-            amount=amount,
-            address=address,
-        )
-        if not success:
-            return False, f"Spot->perp transfer failed: {result}"
-        return True, f"Transferred ${amount:.2f} spot->perp"
-
     async def _scale_up_position(self, additional_capital: float) -> StatusTuple:
         if self.current_position is None:
             return False, "No position to scale up"
@@ -1603,14 +1487,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
             f"Scaling up {pos.coin} position: adding {units_to_add:.4f} units "
             f"(${order_usd:.2f}) at {leverage}x leverage"
         )
-
-        # Target: spot has order_usd for the spot buy, perp holds the remainder as margin.
-        split_ok, split_msg = await self._rebalance_usdc_between_perp_and_spot(
-            target_spot_usdc=order_usd,
-            address=address,
-        )
-        if not split_ok:
-            self.logger.warning(f"USDC rebalance failed: {split_msg}")
 
         filler = PairedFiller(
             adapter=self.hyperliquid_adapter,
