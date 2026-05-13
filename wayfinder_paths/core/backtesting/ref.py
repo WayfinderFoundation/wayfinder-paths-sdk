@@ -66,6 +66,12 @@ class ExecutionAssumptions:
     slippage_bps: float = 1.0
     fee_bps: float = 4.5
     min_order_usd: float = 10.0
+    # Per-symbol size precision. Live HL rounds DOWN to these decimals before
+    # placing an order (smaller decimals = coarser step). Without it, backtest
+    # would systematically over-size relative to live by ≤0.5 step per trade.
+    # Empty/None → no rounding (preserves legacy backtest behavior for refs
+    # bonded before this field existed).
+    sz_decimals: dict[str, int] | None = None
 
 
 @dataclass

@@ -47,7 +47,11 @@
     "fill_model": "next_bar_open",
     "slippage_bps": 30.0,
     "fee_bps": 10.5,
-    "min_order_usd": 10.0
+    "min_order_usd": 10.0,
+    "sz_decimals": {
+      "APEX": 0,
+      "GMX": 2
+    }
   },
   "performance": {
     "sharpe": 2.09,

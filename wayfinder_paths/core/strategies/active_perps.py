@@ -269,6 +269,28 @@ class ActivePerpsStrategy(Strategy):
         )
         params_hash = hashlib.sha256(params_for_hash.encode()).hexdigest()[:16]
 
+        # cost_bps_applied: the value `compute_atomic_scale` saw at this
+        # trigger. Persisting it lets a replay deterministically reproduce
+        # sizing even if `backtest_ref` fee/slip params change later.
+        fee_bps = float(self._ref.params.get("fee_bps", 0.0))
+        slippage_bps = float(self._ref.params.get("slippage_bps", 0.0))
+        cost_bps_applied = fee_bps + slippage_bps
+
+        # free_margin_at_trigger: NAV minus margin already locked by current
+        # positions, computed at handler mids. The sizing math derives all
+        # order budgets from this number; recording it makes the scaling
+        # decision auditable post-hoc without re-querying HL state.
+        target_leverage = float(self._ref.params.get("target_leverage", 1.0))
+        current_gross = sum(
+            abs(positions_snapshot.get(venue_key, {}).get(sym, {}).get("size", 0.0))
+            * mids_snapshot.get(venue_key, {}).get(sym, 0.0)
+            for venue_key in positions_snapshot
+            for sym in positions_snapshot[venue_key]
+        )
+        free_margin_at_trigger = max(
+            0.0, nav - (current_gross / target_leverage if target_leverage > 0 else 0.0)
+        )
+
         self._state.update(
             {
                 "positions": positions_snapshot,
@@ -278,6 +300,8 @@ class ActivePerpsStrategy(Strategy):
                 "trigger_ts": trigger_t.isoformat(),
                 "nav": nav,
                 "params_hash": params_hash,
+                "cost_bps_applied": cost_bps_applied,
+                "free_margin_at_trigger": free_margin_at_trigger,
             }
         )
         self._state.write_snapshot(trigger_t)

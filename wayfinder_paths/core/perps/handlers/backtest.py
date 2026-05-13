@@ -77,6 +77,7 @@ class BacktestHandler:
         slippage_bps: float = 1.0,
         fee_bps: float = 4.5,
         min_order_usd: float = 10.0,
+        sz_decimals: dict[str, int] | None = None,
     ):
         if not isinstance(prices.index, pd.DatetimeIndex):
             raise TypeError("prices must have a DatetimeIndex")
@@ -100,6 +101,11 @@ class BacktestHandler:
         self.slippage_bps = float(slippage_bps)
         self.fee_bps = float(fee_bps)
         self.min_order_usd = float(min_order_usd)
+        # When provided, place_order rounds size DOWN to 10^-sz_decimals[sym]
+        # so backtest mirrors HL's szDecimals truncation. Without this, backtest
+        # over-sizes by ≤0.5 step per trade vs live (asymmetric, always favors
+        # backtest). Keys missing from the dict → no rounding for that symbol.
+        self.sz_decimals: dict[str, int] = dict(sz_decimals or {})
 
         # Position state — signed sizes in base units.
         self._positions: dict[str, float] = dict.fromkeys(self._symbols, 0.0)
@@ -371,6 +377,24 @@ class BacktestHandler:
                 error=f"unknown symbol on venue {self.venue}",
             )
         mid = float(self._prices_arr[self._bar_index, self._sym_to_col[symbol]])
+        decimals = self.sz_decimals.get(symbol)
+        if decimals is not None:
+            # ROUND_DOWN to step = 10^-decimals — mirrors live HL's
+            # `round_size_for_asset` semantics so backtest never trades a finer
+            # step than the exchange allows.
+            step = 10.0 ** (-int(decimals))
+            size = float(int(abs(size) / step)) * step
+            if size <= 0:
+                return OrderResult(
+                    ok=False,
+                    venue=self.venue,
+                    symbol=symbol,
+                    side=side,
+                    size=0.0,
+                    order_type=order_type,
+                    limit_price=limit_price,
+                    error=f"below szDecimals step ({step})",
+                )
         notional = abs(size) * mid
         if notional < self.min_order_usd:
             return OrderResult(

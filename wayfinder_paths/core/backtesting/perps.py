@@ -89,6 +89,7 @@ async def backtest_perps_trigger(
     include_funding: bool = True,
     prices: pd.DataFrame | None = None,
     funding: pd.DataFrame | None = None,
+    sz_decimals: dict[str, int] | None = None,
 ) -> BacktestResult:
     """Run a trigger-pattern perps backtest.
 
@@ -138,11 +139,23 @@ async def backtest_perps_trigger(
     # Build handlers — primary perp + one per hip3 dex (data shared for now; per-dex
     # data wiring is a Phase 7+ concern).
     perp = BacktestHandler(
-        "perp", prices, funding, slippage_bps, fee_bps, min_order_usd
+        "perp",
+        prices,
+        funding,
+        slippage_bps,
+        fee_bps,
+        min_order_usd,
+        sz_decimals=sz_decimals,
     )
     hip3 = {
         dex: BacktestHandler(
-            f"hip3:{dex}", prices, funding, slippage_bps, fee_bps, min_order_usd
+            f"hip3:{dex}",
+            prices,
+            funding,
+            slippage_bps,
+            fee_bps,
+            min_order_usd,
+            sz_decimals=sz_decimals,
         )
         for dex in hip3_dexes
     }

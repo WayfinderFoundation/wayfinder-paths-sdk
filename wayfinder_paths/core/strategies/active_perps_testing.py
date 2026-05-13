@@ -58,6 +58,7 @@ async def assert_active_perps_backtest_runs(
     slippage_bps: float | None = None,
     fee_bps: float | None = None,
     min_order_usd: float | None = None,
+    sz_decimals: dict[str, int] | None = None,
 ) -> BacktestResult:
     """Drive `strategy_cls`'s signal + decide through `backtest_perps_trigger`.
 
@@ -123,6 +124,8 @@ async def assert_active_perps_backtest_runs(
         extra["fee_bps"] = fee_bps
     if min_order_usd is not None:
         extra["min_order_usd"] = min_order_usd
+    if sz_decimals is not None:
+        extra["sz_decimals"] = sz_decimals
     result = await backtest_perps_trigger(
         signal_fn=signal_fn,
         decide_fn=spying_decide,
@@ -233,6 +236,7 @@ async def assert_active_perps_reproduces_ref(
         slippage_bps=exe.slippage_bps,
         fee_bps=exe.fee_bps,
         min_order_usd=exe.min_order_usd,
+        sz_decimals=exe.sz_decimals,
     )
 
     failures: list[str] = []
