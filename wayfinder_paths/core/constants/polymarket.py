@@ -27,15 +27,9 @@ POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS = "0x2957922Eb93258b93368531d39fAcCA3B4dC5
 # Exchanges / operators that may require approvals depending on market type.
 # NOTE: If interacting with the contracts directly, use version 2 except for ClobAuthDomain
 # https://docs.polymarket.com/v2-migration#eip-712-domain
-POLYMARKET_CTF_EXCHANGE_ADDRESS = to_checksum_address(
-    "0xE111180000d2663C0091e4f400237545B87B996B"
-)
-POLYMARKET_NEG_RISK_CTF_EXCHANGE_ADDRESS = to_checksum_address(
-    "0xe2222d279d744050d28e00520010520000310F59"
-)
-POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS = to_checksum_address(
-    "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
-)
+POLYMARKET_CTF_EXCHANGE_ADDRESS = "0xE111180000d2663C0091e4f400237545B87B996B"
+POLYMARKET_NEG_RISK_CTF_EXCHANGE_ADDRESS = "0xe2222d279d744050d28e00520010520000310F59"
+POLYMARKET_RISK_ADAPTER_EXCHANGE_ADDRESS = "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
 
 POLYMARKET_APPROVAL_TARGETS: list[str] = [
     POLYMARKET_CTF_EXCHANGE_ADDRESS,
@@ -67,21 +61,26 @@ def polymarket_deposit_wallet_id(owner: str) -> bytes:
 
 
 def derive_deposit_wallet(owner: str) -> str:
-    factory = to_checksum_address(POLYMARKET_DEPOSIT_WALLET_FACTORY)
     args = abi_encode(
-        ["address", "bytes32"], [factory, polymarket_deposit_wallet_id(owner)]
+        ["address", "bytes32"],
+        [POLYMARKET_DEPOSIT_WALLET_FACTORY, polymarket_deposit_wallet_id(owner)],
     )
     n = len(args)
     combined = POLYMARKET_ERC1967_PREFIX + (n << 56)
     init_code = (
         combined.to_bytes(10, "big")
-        + to_bytes(hexstr=to_checksum_address(POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION))
+        + to_bytes(hexstr=POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION)
         + to_bytes(hexstr="0x6009")
         + to_bytes(hexstr=POLYMARKET_ERC1967_CONST2)
         + to_bytes(hexstr=POLYMARKET_ERC1967_CONST1)
         + args
     )
-    raw = keccak(b"\xff" + to_bytes(hexstr=factory) + keccak(args) + keccak(init_code))
+    raw = keccak(
+        b"\xff"
+        + to_bytes(hexstr=POLYMARKET_DEPOSIT_WALLET_FACTORY)
+        + keccak(args)
+        + keccak(init_code)
+    )
     return to_checksum_address(raw[-20:].hex())
 
 

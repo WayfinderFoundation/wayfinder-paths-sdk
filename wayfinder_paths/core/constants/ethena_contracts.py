@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from eth_utils import to_checksum_address
-
 # ---------------------------------------------------------------------------
 # Ethena: key addresses
 # ---------------------------------------------------------------------------
@@ -14,29 +12,23 @@ from eth_utils import to_checksum_address
 # Sources: Ethena docs (key addresses / staking USDe).
 
 # Ethereum mainnet
-ETHENA_USDE_MAINNET = to_checksum_address("0x4c9EDD5852cd905f086C759E8383e09bff1E68B3")
-ETHENA_SUSDE_VAULT_MAINNET = to_checksum_address(
-    "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497"
-)
-ETHENA_REWARDS_DISTRIBUTOR_MAINNET = to_checksum_address(
-    "0xf2fa332bd83149c66b09b45670bce64746c6b439"
-)
-ETHENA_USDE_SILO_MAINNET = to_checksum_address(
-    "0x7FC7c91D556B400AFa565013E3F32055a0713425"
-)
-ETHENA_ENA_MAINNET = to_checksum_address("0x57e114B691Db790C35207b2e685D4A43181e6061")
+ETHENA_USDE_MAINNET = "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3"
+ETHENA_SUSDE_VAULT_MAINNET = "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497"
+ETHENA_REWARDS_DISTRIBUTOR_MAINNET = "0xf2fa332bD83149c66b09B45670bCe64746C6b439"
+ETHENA_USDE_SILO_MAINNET = "0x7FC7c91D556B400AFa565013E3F32055a0713425"
+ETHENA_ENA_MAINNET = "0x57e114B691Db790C35207b2e685D4A43181e6061"
 
 # Most EVM chains (non-mainnet): OFT token addresses
-ETHENA_USDE_OFT = to_checksum_address("0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34")
-ETHENA_SUSDE_OFT = to_checksum_address("0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2")
-ETHENA_ENA_OFT = to_checksum_address("0x58538e6A46E07434d7E7375Bc268D3cb839C0133")
+ETHENA_USDE_OFT = "0x5d3a1Ff2b6BAb83b63cd9AD0787074081a52ef34"
+ETHENA_SUSDE_OFT = "0x211Cc4DD073734dA055fbF44a2b4667d5E5fE5d2"
+ETHENA_ENA_OFT = "0x58538e6A46E07434d7E7375Bc268D3cb839C0133"
 
 # Exceptions (EVM)
-ETHENA_USDE_ZKSYNC = to_checksum_address("0x39Fe7a0DACcE31Bd90418e3e659fb0b5f0B3Db0d")
-ETHENA_SUSDE_ZKSYNC = to_checksum_address("0xAD17Da2f6Ac76746EF261E835C50b2651ce36DA8")
-ETHENA_ENA_ZKSYNC = to_checksum_address("0x686b311F82b407f0be842652a98e5619F64cC25F")
+ETHENA_USDE_ZKSYNC = "0x39Fe7a0DACcE31Bd90418e3e659fb0b5f0B3Db0d"
+ETHENA_SUSDE_ZKSYNC = "0xAD17Da2f6Ac76746EF261E835C50b2651ce36DA8"
+ETHENA_ENA_ZKSYNC = "0x686b311F82b407f0be842652a98e5619F64cC25F"
 
-ETHENA_ENA_ZIRCUIT = to_checksum_address("0x813635891aA06bd55036bbd8f7d1A34aB3de9a0F")
+ETHENA_ENA_ZIRCUIT = "0x813635891aA06bd55036bbd8f7d1A34aB3de9a0F"
 
 # Chain IDs for known exceptions (kept local to this module to avoid expanding
 # the global supported-chain list).
