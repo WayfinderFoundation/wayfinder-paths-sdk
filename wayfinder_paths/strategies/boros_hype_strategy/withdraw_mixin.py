@@ -699,8 +699,6 @@ class BorosHypeWithdrawMixin:
         # ─────────────────────────────────────────────────────────────────
         # STEP 5: Unwind HYPE exposure on Hyperliquid (paired when possible)
         # ─────────────────────────────────────────────────────────────────
-        sold_hl_spot_hype = False
-
         try:
             await self._cancel_hl_open_orders_for_hype(address)
         except Exception as exc:  # noqa: BLE001
@@ -764,7 +762,6 @@ class BorosHypeWithdrawMixin:
                         direction="short_spot_long_perp",
                         builder_fee=self.builder_fee,
                     )
-                    sold_hl_spot_hype = filled_spot > 0.0
                     logger.info(
                         f"Paired unwind complete: sold_spot={filled_spot:.4f} (${spot_notional:.2f}), "
                         f"closed_perp={filled_perp:.4f} (${perp_notional:.2f})"
@@ -825,7 +822,6 @@ class BorosHypeWithdrawMixin:
                     if not ok_sell:
                         return False, f"Failed to sell HL spot HYPE: {res_sell}"
                     logger.info(f"Sold {rounded_size:.4f} HYPE to USDC on HL spot")
-                    sold_hl_spot_hype = True
                     # HL spot trades need time to clear hold
                     await asyncio.sleep(10)
 
@@ -879,154 +875,7 @@ class BorosHypeWithdrawMixin:
             return False, f"Failed to unwind HYPE on Hyperliquid: {exc}"
 
         # ─────────────────────────────────────────────────────────────────
-        # STEP 7: Move all USDC from spot to perp margin (poll until cleared)
-        # ─────────────────────────────────────────────────────────────────
-        usdc_sz_decimals = 8
-
-        spot_transfer_succeeded = False
-        did_transfer_spot_usdc_to_perp = False
-        observed_spot_usdc_after_sell = not sold_hl_spot_hype
-        spot_total = 0.0
-        spot_hold = 0.0
-        spot_usdc = 0.0
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                spot_total = 0.0
-                spot_hold = 0.0
-                spot_usdc = 0.0
-                spot_total_s = "0"
-                spot_hold_s = "0"
-
-                (
-                    ok_spot,
-                    spot_state,
-                ) = await self.hyperliquid_adapter.get_spot_user_state(address)
-                if ok_spot and isinstance(spot_state, dict):
-                    for bal in spot_state.get("balances", []):
-                        token = bal.get("coin") or bal.get("token")
-                        if token == "USDC":
-                            spot_total_s = str(bal.get("total", "0") or "0")
-                            spot_hold_s = str(bal.get("hold", "0") or "0")
-                            spot_hold = float(spot_hold_s)
-                            spot_total = float(spot_total_s)
-                            spot_usdc = spot_total - spot_hold
-                            break
-
-                logger.info(
-                    f"Spot USDC balance (attempt {attempt}): "
-                    f"total={spot_total:.2f}, hold={spot_hold:.2f}, available={spot_usdc:.2f}"
-                )
-
-                if not observed_spot_usdc_after_sell:
-                    if spot_total > 1.0 or spot_hold > 0.5 or spot_usdc > 1.0:
-                        observed_spot_usdc_after_sell = True
-                    else:
-                        if time.time() >= deadline_ts:
-                            break
-                        logger.info(
-                            "Waiting for HL spot USDC to settle after HYPE sale..."
-                        )
-                        await asyncio.sleep(poll_interval_s)
-                        continue
-
-                if spot_total <= 1.0:
-                    # No significant USDC remaining on spot (including hold), nothing to transfer.
-                    spot_transfer_succeeded = True
-                    break
-
-                if spot_usdc > 1.0:
-                    # Compute a safe amount using Decimal math and szDecimals, leaving 1 tick.
-                    spot_usdc_to_xfer = (
-                        self.hyperliquid_adapter.max_transferable_amount(
-                            spot_total_s,
-                            spot_hold_s,
-                            sz_decimals=int(usdc_sz_decimals),
-                            leave_one_tick=True,
-                        )
-                    )
-                    # Fallback: some Hyperliquid client versions effectively round to 2dp
-                    # internally for usdClassTransfer. If we get an "insufficient balance"
-                    # error, retry with 2dp floor.
-                    fallback_2dp = (
-                        self.hyperliquid_adapter.max_transferable_amount(
-                            spot_total_s,
-                            spot_hold_s,
-                            sz_decimals=2,
-                            leave_one_tick=True,
-                        )
-                        if int(usdc_sz_decimals) != 2
-                        else 0.0
-                    )
-
-                    if spot_usdc_to_xfer <= 1.0:
-                        if time.time() >= deadline_ts:
-                            break
-                        await asyncio.sleep(poll_interval_s)
-                        continue
-
-                    # Transfer the full available amount (fresh balance query each attempt)
-                    (
-                        ok_xfer,
-                        res_xfer,
-                    ) = await self.hyperliquid_adapter.transfer_spot_to_perp(
-                        amount=float(spot_usdc_to_xfer),
-                        address=address,
-                    )
-                    if ok_xfer:
-                        logger.info(
-                            f"Transferred ${spot_usdc_to_xfer:.2f} USDC from spot to perp"
-                        )
-                        did_transfer_spot_usdc_to_perp = True
-                        await asyncio.sleep(3)
-                    else:
-                        res_s = str(res_xfer)
-                        if fallback_2dp > 1.0 and (
-                            "insufficient balance" in res_s.lower()
-                        ):
-                            (
-                                ok_xfer2,
-                                res_xfer2,
-                            ) = await self.hyperliquid_adapter.transfer_spot_to_perp(
-                                amount=float(fallback_2dp),
-                                address=address,
-                            )
-                            if ok_xfer2:
-                                logger.info(
-                                    f"Transferred ${fallback_2dp:.2f} USDC from spot to perp (2dp fallback)"
-                                )
-                                did_transfer_spot_usdc_to_perp = True
-                                await asyncio.sleep(3)
-                                continue
-                            res_xfer = res_xfer2
-
-                        logger.warning(
-                            f"Failed to move USDC spot→perp (attempt {attempt}): {res_xfer}"
-                        )
-                else:
-                    # USDC exists but is still held (trade settlement). Wait and retry.
-                    if time.time() >= deadline_ts:
-                        break
-                    await asyncio.sleep(poll_interval_s)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    f"Failed to move USDC spot→perp (attempt {attempt}): {exc}"
-                )
-                if time.time() >= deadline_ts:
-                    break
-                await asyncio.sleep(poll_interval_s)
-
-        remaining_spot_usdc = 0.0
-        if not spot_transfer_succeeded:
-            remaining_spot_usdc = spot_total
-            logger.error(
-                f"Failed to transfer spot USDC to perp before timeout. "
-                f"Spot USDC may still be on Hyperliquid spot account (total=${spot_total:.2f}, hold=${spot_hold:.2f})."
-            )
-
-        # ─────────────────────────────────────────────────────────────────
-        # STEP 8: Withdraw all from Hyperliquid to Arbitrum
+        # STEP 7: Withdraw all from Hyperliquid to Arbitrum
         # ─────────────────────────────────────────────────────────────────
         hl_wait_min_usdc_raw: int | None = None
         try:
@@ -1117,15 +966,7 @@ class BorosHypeWithdrawMixin:
                     await asyncio.sleep(poll_interval_s)
                     continue
 
-                # No perp balance yet. If we just moved spot→perp, wait for it to reflect.
-                if not did_transfer_spot_usdc_to_perp:
-                    break
-                if time.time() >= deadline_ts:
-                    break
-                logger.info(
-                    f"Waiting for spot→perp transfer to reflect in HL margin (attempt {attempt})..."
-                )
-                await asyncio.sleep(poll_interval_s)
+                break
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed Hyperliquid withdrawal: {exc}")
 
@@ -1349,12 +1190,6 @@ class BorosHypeWithdrawMixin:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug(f"Final withdrawal inventory check failed: {exc}")
-
-        if remaining_spot_usdc > 1.0:
-            return False, (
-                f"Withdrawal incomplete: ${remaining_spot_usdc:.2f} USDC still on Hyperliquid spot. "
-                "Run withdraw again (or increase max_wait_s) to retry the spot→perp transfer."
-            )
 
         return (
             True,

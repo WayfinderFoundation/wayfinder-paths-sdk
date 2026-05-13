@@ -186,20 +186,6 @@ class HyperliquidExecutorProtocol(Protocol):
         address: str,
     ) -> dict[str, Any]: ...
 
-    async def transfer_spot_to_perp(
-        self,
-        *,
-        amount: float,
-        address: str,
-    ) -> dict[str, Any]: ...
-
-    async def transfer_perp_to_spot(
-        self,
-        *,
-        amount: float,
-        address: str,
-    ) -> dict[str, Any]: ...
-
     async def place_stop_loss(
         self,
         *,

@@ -183,14 +183,6 @@ async def build_hyperliquid_execute_preview(
         details = f"\n\nWITHDRAW\namount_usdc: {req.get('amount_usdc')}"
         return {"summary": header + base + details}
 
-    if action == "spot_to_perp_transfer":
-        details = f"\n\nTRANSFER SPOT → PERP\nusd_amount: {req.get('usd_amount')}"
-        return {"summary": header + base + details}
-
-    if action == "perp_to_spot_transfer":
-        details = f"\n\nTRANSFER PERP → SPOT\nusd_amount: {req.get('usd_amount')}"
-        return {"summary": header + base + details}
-
     return {"summary": header + base}
 
 

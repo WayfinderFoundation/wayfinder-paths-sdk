@@ -106,8 +106,6 @@ async def hyperliquid_execute(
         "update_leverage",
         "deposit",
         "withdraw",
-        "spot_to_perp_transfer",
-        "perp_to_spot_transfer",
     ],
     *,
     wallet_label: str,
@@ -145,8 +143,6 @@ async def hyperliquid_execute(
       - `deposit`: bridge `amount_usdc` from Arbitrum USDC into the HL perp account
         (≥ 5 USDC; below is lost). Auto-waits for the perp clearinghouse credit before returning.
       - `withdraw`: bridge `amount_usdc` from perp account back to Arbitrum.
-      - `spot_to_perp_transfer` / `perp_to_spot_transfer`: shift `usd_amount` between sub-accounts.
-        Only works with USDC spot to/from USDC perps. Other USD stables (USDH, etc.) must be converted first.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
 
@@ -272,46 +268,6 @@ async def hyperliquid_execute(
                 action="withdraw",
                 status=status,
                 details={"amount_usdc": amt},
-            )
-
-            return response
-
-        case "spot_to_perp_transfer" | "perp_to_spot_transfer":
-            throw_if_none(f"usd_amount is required for {action}", usd_amount)
-            amt = throw_if_not_number("usd_amount must be a number", usd_amount)
-            if amt <= 0:
-                raise ValueError("usd_amount must be positive")
-
-            to_perp = action == "spot_to_perp_transfer"
-            if to_perp:
-                ok_transfer, res = await adapter.transfer_spot_to_perp(
-                    amount=amt, address=sender
-                )
-            else:
-                ok_transfer, res = await adapter.transfer_perp_to_spot(
-                    amount=amt, address=sender
-                )
-            effects.append(
-                {"type": "hl", "label": action, "ok": ok_transfer, "result": res}
-            )
-            status = "confirmed" if ok_transfer else "failed"
-            response = ok(
-                {
-                    "status": status,
-                    "action": action,
-                    "wallet_label": wallet_label,
-                    "address": sender,
-                    "usd_amount": amt,
-                    "to_perp": to_perp,
-                    "effects": effects,
-                }
-            )
-            _annotate_hl_profile(
-                address=sender,
-                label=wallet_label,
-                action=action,
-                status=status,
-                details={"usd_amount": amt, "to_perp": to_perp},
             )
 
             return response
