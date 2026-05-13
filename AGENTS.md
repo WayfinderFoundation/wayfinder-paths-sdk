@@ -98,7 +98,13 @@ Hyperliquid minimums:
 
 Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp dexes (`xyz`/`flx`/`vntl`/`hyna`/`km`...), and HIP-4 outcome markets (binary/multi-outcome prediction contracts). Outcomes use a separate asset-id space (`100_000_000 + 10*outcome_id + side`) and integer contract sizes; **settle in USDH** (token 360), not USDC; settle daily at 06:00 UTC; written via `hyperliquid_execute(action="place_outcome_order", ...)`. See `/using-hyperliquid-adapter` rules for details.
 
-Hyperliquid spot_to_perp_transfer and perp_to_spot_transfer only work with USDC spot to/from USDC perps. Other USD stables will need to be converted first.
+Hyperliquid spot_to_perp_transfer and perp_to_spot_transfer only work with USDC
+spot to/from USDC perps. Other USD stables will need to be converted first.
+Before recommending a transfer, check `hyperliquid_get_state(label)` and read
+`account.mode` plus `perp_collateral`: in `unifiedAccount` / `portfolioMargin`,
+USDC spot balance is already usable as perp collateral, so zero
+`perp.state.crossMarginSummary.totalRawUsd` alone does not mean the perp account
+is unfunded.
 
 **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present candidates side-by-side so the user can choose. Two venues:
 

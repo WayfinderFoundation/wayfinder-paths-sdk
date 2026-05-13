@@ -55,6 +55,96 @@ def _annotate_hl_profile(
     )
 
 
+_UNIFIED_BALANCE_ACCOUNT_MODES = {"unifiedAccount", "portfolioMargin"}
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _spot_balance_amounts(
+    spot: dict[str, Any] | str,
+    coin: str,
+) -> dict[str, float | None]:
+    if not isinstance(spot, dict):
+        return {"total": None, "hold": None, "available": None}
+
+    for bal in spot.get("balances") or []:
+        if not isinstance(bal, dict) or bal.get("coin") != coin:
+            continue
+        total = _float_or_none(bal.get("total"))
+        hold = _float_or_none(bal.get("hold"))
+        available = None
+        if total is not None:
+            available = total - (hold or 0.0)
+            if available < 0:
+                available = 0.0
+        return {"total": total, "hold": hold, "available": available}
+
+    return {"total": None, "hold": None, "available": None}
+
+
+def _perp_margin_amounts(perp: dict[str, Any] | str) -> dict[str, float | None]:
+    if not isinstance(perp, dict):
+        return {"account_value": None, "withdrawable": None}
+
+    summary = perp.get("crossMarginSummary") or perp.get("marginSummary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
+    return {
+        "account_value": _float_or_none(summary.get("accountValue")),
+        "withdrawable": _float_or_none(perp.get("withdrawable")),
+    }
+
+
+def _build_perp_collateral_summary(
+    *,
+    account_mode: str | None,
+    mode_success: bool,
+    perp: dict[str, Any] | str,
+    spot: dict[str, Any] | str,
+) -> dict[str, Any]:
+    spot_usdc = _spot_balance_amounts(spot, "USDC")
+    perp_margin = _perp_margin_amounts(perp)
+    unified = account_mode in _UNIFIED_BALANCE_ACCOUNT_MODES
+
+    if unified:
+        balance_source = "spotClearinghouseState.balances[USDC]"
+        estimated_available = spot_usdc["available"]
+        guidance = (
+            "This account mode unifies spot USDC with cross-margin perp collateral. "
+            "Do not treat a zero perp totalRawUsd/accountValue alone as an unfunded perp account."
+        )
+    else:
+        balance_source = "clearinghouseState"
+        estimated_available = (
+            perp_margin["withdrawable"]
+            if perp_margin["withdrawable"] is not None
+            else perp_margin["account_value"]
+        )
+        guidance = (
+            "Spot balances are separate from perp margin unless the account mode is unified. "
+            "Only suggest transfers/deposits after checking account mode and getting explicit user approval."
+        )
+
+    return {
+        "account_mode_success": mode_success,
+        "account_mode": account_mode,
+        "spot_usdc_usable_for_perp_orders": unified,
+        "perp_balance_source": balance_source,
+        "spot_usdc_total": spot_usdc["total"],
+        "spot_usdc_hold": spot_usdc["hold"],
+        "spot_usdc_available": spot_usdc["available"],
+        "perp_account_value": perp_margin["account_value"],
+        "perp_withdrawable": perp_margin["withdrawable"],
+        "estimated_usdc_available_for_perp_orders": estimated_available,
+        "guidance": guidance,
+    }
+
+
 async def _ensure_builder_fee_approval(
     adapter: HyperliquidAdapter,
     *,
@@ -857,8 +947,11 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         return err("not_found", f"Wallet not found: {label}")
 
     adapter = HyperliquidAdapter()
-    perp_ok, perp = await adapter.get_user_state(addr)
-    spot_ok, spot = await adapter.get_spot_user_state(addr)
+    (mode_ok, account_mode), (perp_ok, perp), (spot_ok, spot) = await asyncio.gather(
+        adapter.get_user_abstraction_state(addr),
+        adapter.get_user_state(addr),
+        adapter.get_spot_user_state(addr),
+    )
 
     spot_balances: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
@@ -887,6 +980,17 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         {
             "label": label,
             "address": addr,
+            "account": {
+                "success": mode_ok,
+                "mode": account_mode if mode_ok else None,
+                "error": None if mode_ok else account_mode,
+            },
+            "perp_collateral": _build_perp_collateral_summary(
+                account_mode=account_mode if mode_ok else None,
+                mode_success=mode_ok,
+                perp=perp,
+                spot=spot,
+            ),
             "perp": {"success": perp_ok, "state": perp},
             "spot": {"success": spot_ok, "state": spot},
             "outcomes": {"success": spot_ok, "positions": outcome_positions},

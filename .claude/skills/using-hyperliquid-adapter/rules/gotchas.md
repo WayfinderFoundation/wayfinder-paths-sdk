@@ -22,6 +22,16 @@ Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **UnifiedAccoun
 - HIP-3 asset IDs use offsets: first builder dex starts at 110000, then 120000, 130000, etc.
 - HIP-3 coin names are prefixed: `xyz:NVDA`, `vntl:SPACEX`, `hyna:BTC`, etc.
 
+### Unified account balance interpretation
+
+Before telling a user they need to fund perps, call `hyperliquid_get_state(label)` and read:
+
+- `account.mode`
+- `perp_collateral.spot_usdc_usable_for_perp_orders`
+- `perp_collateral.estimated_usdc_available_for_perp_orders`
+
+In `unifiedAccount` / `portfolioMargin`, Hyperliquid exposes balances and holds through `spotClearinghouseState`; the USDC spot balance is also the cross-margin source for USDC perps and HIP-3 USDC-quoted perps. A zero or low `perp.state.crossMarginSummary.totalRawUsd`, `accountValue`, or `withdrawable` can simply mean there is no open perp leg yet. Do **not** describe the USDC as spot-only, and do **not** recommend a `spot_to_perp_transfer` just because the perp clearinghouse summary is zero.
+
 ## Asset ID conventions
 
 - Perp assets: `asset_id < 10000`
@@ -51,7 +61,7 @@ Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
 - `usd_amount` is always treated as notional (no `usd_amount_kind` required)
 - `leverage` and `reduce_only` are ignored for spot
 
-**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin. Use `spot_to_perp_transfer` / `perp_to_spot_transfer` to move USDC between them.
+**Spot balance location:** Spot balances are separate from perp margin only in non-unified account modes. In `unifiedAccount` / `portfolioMargin`, USDC spot balance is also usable as perp collateral. Use `spot_to_perp_transfer` / `perp_to_spot_transfer` only after checking `account.mode` and confirming the user really needs a transfer.
 
 ## Spot L2 naming quirks
 
