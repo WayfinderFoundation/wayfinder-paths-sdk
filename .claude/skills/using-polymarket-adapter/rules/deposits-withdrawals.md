@@ -1,5 +1,7 @@
 # Polymarket collateral: pUSD (deposit / withdraw preparation)
 
+This page covers **collateral conversion** — moving between Polygon USDC / USDC.e and pUSD on the **owner EOA**. For funding the per-user **deposit wallet** (the actual trading address under V2), see `rules/deposit-wallet.md`. A full trade lifecycle uses both flows.
+
 ## Key requirement
 
 - Polymarket V2 CLOB trading collateral is **pUSD** on Polygon:

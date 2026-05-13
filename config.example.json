@@ -3,8 +3,7 @@
     "api_base_url": "https://strategies.wayfinder.ai/api/v1",
     "api_key": "wk_your_key_here",
     "etherscan_api_key": "",
-    "allow_local_wallets": true,
-    "polymarket_builder_code": null
+    "allow_local_wallets": true
   },
   "strategy": {
     "rpc_urls": {}

@@ -9,14 +9,20 @@
 
 - Polygon RPC configured (`strategy.rpc_urls["137"]`)
 - Wallet configured (local with `private_key_hex` or remote via Privy)
-- Have Polygon gas token for tx fees
-- Have **pUSD** ready, or use `bridge_deposit()` / `polymarket_execute(action="bridge_deposit", ...)` to prepare it (see `rules/deposits-withdrawals.md`)
+- Have Polygon gas token (POL) on the **owner EOA** — funding the deposit wallet costs gas
+- Have **pUSD** ready on the owner EOA (see `rules/deposits-withdrawals.md` to prepare it from USDC/USDC.e)
+- **Deposit wallet funded** — orders execute from the per-user deposit wallet, not the owner EOA. Use `polymarket_execute(action="fund_deposit_wallet", amount=...)` before trading. See `rules/deposit-wallet.md`.
 
-## Approvals + API creds (automatic)
+## Deposit wallet setup + API creds (automatic, cached)
 
-Trading requires ERC20 allowance of **pUSD** and ERC1155 `setApprovalForAll` on ConditionalTokens to exchange contracts. These are handled automatically on every order — `ensure_onchain_approvals()` is idempotent and called before every `place_market_order` and `place_limit_order`.
+`ensure_trading_setup()` is idempotent and called before every order. On the first call it:
 
-API creds (`ensure_api_creds()`) are also derived automatically before order placement.
+- deploys the per-user deposit wallet (if missing) via the relayer
+- batches pUSD ERC20 allowance + ConditionalTokens ERC1155 `setApprovalForAll` for the three exchange addresses into one relayer-signed call
+- derives CLOB API creds (`ensure_api_creds()`)
+- syncs CLOB balance allowance for COLLATERAL (+ CONDITIONAL if a `token_id` is passed)
+
+After the first successful call, `_setup_complete=True` and subsequent orders short-circuit. **It does not fund the deposit wallet** — that's an explicit step (`fund_deposit_wallet`).
 
 ## Buying (place prediction)
 
@@ -32,7 +38,7 @@ ok, res = await adapter.place_prediction(
 
 MCP shortcut:
 
-- `mcp__wayfinder__polymarket_execute(action="buy", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", amount_collateral=2)`
+- `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
 
 Lower-level control (CLOB token id + side):
 
@@ -56,10 +62,9 @@ ok, res = await adapter.cash_out_prediction(
 )
 ```
 
-MCP shortcuts:
+MCP shortcut:
 
-- Sell partial: `mcp__wayfinder__polymarket_execute(action="sell", wallet_label="main", market_slug="...", outcome="...", shares=1)`
-- Sell full position size: `mcp__wayfinder__polymarket_execute(action="close_position", wallet_label="main", market_slug="...", outcome="...")`
+- `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="...", outcome="...", side="SELL", shares=1)` (pass the full position size from `polymarket_get_state` to fully close)
 
 Practical note (important): after a BUY, there can be a **settlement lag** before shares are sellable. If you’re chaining BUY → SELL in automation, wait for the buy match transaction to confirm (the CLOB response typically includes `transactionsHashes`).
 
@@ -83,14 +88,11 @@ If you held shares through resolution, redeem on-chain:
 2) Call:
 
 ```python
-ok, res = await adapter.redeem_positions(
-    condition_id=condition_id,
-    holder="0xYourWallet",  # must match signing wallet
-)
+ok, res = await adapter.redeem_positions(condition_id=condition_id)
 ```
 
 MCP shortcut:
 
 - `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
-The adapter preflights the redemption path and calls ConditionalTokens `redeemPositions()`. Some markets can pay out an “adapter collateral” wrapper token; the adapter attempts to unwrap automatically.
+The adapter preflights against the deposit wallet, submits `redeemPositions()` via a relayer batch from the deposit wallet, and (for NegRisk markets) submits a follow-up `unwrap()` batch. Collateral lands on the deposit wallet — use `withdraw_deposit_wallet` to move it back to the owner EOA.
