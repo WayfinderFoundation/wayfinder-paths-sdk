@@ -12,7 +12,6 @@ from hyperliquid.exchange import get_timestamp_ms
 from hyperliquid.utils.signing import (
     BUILDER_FEE_SIGN_TYPES,
     SPOT_TRANSFER_SIGN_TYPES,
-    USD_CLASS_TRANSFER_SIGN_TYPES,
     USER_SET_ABSTRACTION_SIGN_TYPES,
     WITHDRAW_SIGN_TYPES,
     OrderType,
@@ -1114,48 +1113,6 @@ class HyperliquidAdapter(BaseAdapter):
 
         success = result.get("status") == "ok"
         return success, result
-
-    async def _usd_class_transfer(
-        self, amount: float, address: str, to_perp: bool
-    ) -> tuple[bool, dict[str, Any]]:
-        nonce = get_timestamp_ms()
-        action = {
-            "hyperliquidChain": MAINNET,
-            "signatureChainId": ARBITRUM_CHAIN_ID,
-            "amount": str(amount),
-            "toPerp": to_perp,
-            "nonce": nonce,
-            "type": "usdClassTransfer",
-        }
-        payload = user_signed_payload(
-            "HyperliquidTransaction:UsdClassTransfer",
-            USD_CLASS_TRANSFER_SIGN_TYPES,
-            action,
-        )
-        if not (sig := await self._sign(payload, action, address)):
-            return False, USER_DECLINED_ERROR
-        result = self._broadcast_hypecore(action, nonce, sig)
-
-        success = result.get("status") == "ok"
-        return success, result
-
-    async def transfer_spot_to_perp(
-        self,
-        amount: float,
-        address: str,
-    ) -> tuple[bool, dict[str, Any]]:
-        return await self._usd_class_transfer(
-            amount=amount, address=address, to_perp=True
-        )
-
-    async def transfer_perp_to_spot(
-        self,
-        amount: float,
-        address: str,
-    ) -> tuple[bool, dict[str, Any]]:
-        return await self._usd_class_transfer(
-            amount=amount, address=address, to_perp=False
-        )
 
     async def place_trigger_order(
         self,

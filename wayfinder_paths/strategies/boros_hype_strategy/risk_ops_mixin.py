@@ -203,56 +203,6 @@ class BorosHypeRiskOpsMixin:
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed to sell spot HYPE: {exc}")
 
-        try:
-            usdc_sz_decimals = 8
-
-            ok_spot, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-                address
-            )
-            spot_usdc = 0.0
-            spot_total_s = "0"
-            spot_hold_s = "0"
-            if ok_spot and isinstance(spot_state, dict):
-                for bal in spot_state.get("balances", []):
-                    token = bal.get("coin") or bal.get("token")
-                    if token != "USDC":
-                        continue
-                    spot_total_s = str(bal.get("total", "0") or "0")
-                    spot_hold_s = str(bal.get("hold", "0") or "0")
-                    hold = float(spot_hold_s)
-                    total = float(spot_total_s)
-                    spot_usdc = max(0.0, total - hold)
-                    break
-            if spot_usdc > 1.0:
-                amount = self.hyperliquid_adapter.max_transferable_amount(
-                    spot_total_s,
-                    spot_hold_s,
-                    sz_decimals=int(usdc_sz_decimals),
-                    leave_one_tick=True,
-                )
-                (
-                    ok_xfer,
-                    res_xfer,
-                ) = await self.hyperliquid_adapter.transfer_spot_to_perp(
-                    amount=float(amount),
-                    address=address,
-                )
-                if (not ok_xfer) and int(usdc_sz_decimals) != 2:
-                    if "insufficient balance" in str(res_xfer).lower():
-                        fallback_2dp = self.hyperliquid_adapter.max_transferable_amount(
-                            spot_total_s,
-                            spot_hold_s,
-                            sz_decimals=2,
-                            leave_one_tick=True,
-                        )
-                        if fallback_2dp > 1.0:
-                            await self.hyperliquid_adapter.transfer_spot_to_perp(
-                                amount=float(fallback_2dp),
-                                address=address,
-                            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Failed to move spot USDC to perp: {exc}")
-
         hl_perp_balance = 0.0
         try:
             ok_state, user_state = await self.hyperliquid_adapter.get_user_state(
@@ -281,12 +231,6 @@ class BorosHypeRiskOpsMixin:
 
         if spot_target > self._planner_config.min_usdc_action:
             try:
-                await self.hyperliquid_adapter.transfer_perp_to_spot(
-                    amount=float(spot_target),
-                    address=address,
-                )
-                await asyncio.sleep(2)
-
                 success, mids = await self.hyperliquid_adapter.get_all_mid_prices()
                 hype_price = (
                     float(mids.get("HYPE", 0.0))
@@ -874,57 +818,6 @@ class BorosHypeRiskOpsMixin:
                     )
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Failed to sell spot HYPE: {exc}")
-
-        try:
-            usdc_sz_decimals = 8
-
-            ok_spot, spot_state = await self.hyperliquid_adapter.get_spot_user_state(
-                address
-            )
-            spot_usdc = 0.0
-            spot_total_s = "0"
-            spot_hold_s = "0"
-            if ok_spot and isinstance(spot_state, dict):
-                for bal in spot_state.get("balances", []):
-                    token = bal.get("coin") or bal.get("token")
-                    if token != "USDC":
-                        continue
-                    spot_total_s = str(bal.get("total", "0") or "0")
-                    spot_hold_s = str(bal.get("hold", "0") or "0")
-                    hold = float(spot_hold_s)
-                    total = float(spot_total_s)
-                    spot_usdc = max(0.0, total - hold)
-                    break
-
-            if spot_usdc > 1.0:
-                amount = self.hyperliquid_adapter.max_transferable_amount(
-                    spot_total_s,
-                    spot_hold_s,
-                    sz_decimals=int(usdc_sz_decimals),
-                    leave_one_tick=True,
-                )
-                (
-                    ok_xfer,
-                    res_xfer,
-                ) = await self.hyperliquid_adapter.transfer_spot_to_perp(
-                    amount=float(amount),
-                    address=address,
-                )
-                if (not ok_xfer) and int(usdc_sz_decimals) != 2:
-                    if "insufficient balance" in str(res_xfer).lower():
-                        fallback_2dp = self.hyperliquid_adapter.max_transferable_amount(
-                            spot_total_s,
-                            spot_hold_s,
-                            sz_decimals=2,
-                            leave_one_tick=True,
-                        )
-                        if fallback_2dp > 1.0:
-                            await self.hyperliquid_adapter.transfer_spot_to_perp(
-                                amount=float(fallback_2dp),
-                                address=address,
-                            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Failed to move USDC spot→perp: {exc}")
 
         inv_after = await self.observe()
         ok_short, msg_short = await self._ensure_hl_short(

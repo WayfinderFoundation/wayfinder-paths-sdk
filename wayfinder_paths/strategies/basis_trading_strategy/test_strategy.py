@@ -109,8 +109,6 @@ class TestBasisTradingStrategy:
             return_value=(True, "Builder fee approved: 0.030%")
         )
         mock.update_leverage = AsyncMock(return_value=(True, {"status": "ok"}))
-        mock.transfer_perp_to_spot = AsyncMock(return_value=(True, {"status": "ok"}))
-        mock.transfer_spot_to_perp = AsyncMock(return_value=(True, {"status": "ok"}))
         mock.place_market_order = AsyncMock(return_value=(True, {"status": "ok"}))
         mock.place_limit_order = AsyncMock(return_value=(True, {"status": "ok"}))
         mock.place_stop_loss = AsyncMock(return_value=(True, {"status": "ok"}))
@@ -538,9 +536,6 @@ class TestBasisTradingStrategy:
         mock_hyperliquid_adapter.get_valid_order_size = MagicMock(
             side_effect=lambda _aid, sz: sz
         )
-        mock_hyperliquid_adapter.transfer_perp_to_spot = AsyncMock(
-            return_value=(True, "ok")
-        )
         mock_hyperliquid_adapter.get_frontend_open_orders = AsyncMock(
             return_value=(
                 True,
@@ -614,9 +609,6 @@ class TestBasisTradingStrategy:
         )
         mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
             return_value=(True, {"balances": [{"coin": "ETH", "total": "1.08"}]})
-        )
-        strategy._rebalance_usdc_between_perp_and_spot = AsyncMock(
-            return_value=(True, "ok")
         )
 
         with patch(
@@ -1236,74 +1228,6 @@ class TestBasisTradingStrategy:
 
         # deposit_amount should now be set from detected balance
         assert strategy.deposit_amount == 50.0
-
-    @pytest.mark.asyncio
-    async def test_update_spot_usdc_only_rebalances_before_open(
-        self, strategy, mock_hyperliquid_adapter
-    ):
-        strategy.deposit_amount = 0.0
-        strategy.current_position = None
-
-        # Perp account has $0 withdrawable, spot has $100 USDC
-        mock_hyperliquid_adapter.get_user_state = AsyncMock(
-            return_value=(
-                True,
-                {
-                    "marginSummary": {"accountValue": "0"},
-                    "withdrawable": "0",
-                    "assetPositions": [],
-                },
-            )
-        )
-        mock_hyperliquid_adapter.get_spot_user_state = AsyncMock(
-            return_value=(
-                True,
-                {"balances": [{"coin": "USDC", "total": "100"}]},
-            )
-        )
-
-        # Avoid running the full solver; return a deterministic best trade.
-        strategy.find_best_trade_with_backtest = AsyncMock(
-            return_value={
-                "coin": "ETH",
-                "spot_asset_id": 10000,
-                "perp_asset_id": 1,
-                "net_apy": 0.1,
-                "best_L": 2,
-                "safe": {
-                    "7": {
-                        "safe_leverage": 2,
-                        "spot_usdc": 66.67,
-                        "spot_amount": 0.033335,
-                        "perp_amount": 0.033335,
-                    }
-                },
-            }
-        )
-
-        # Mock the paired filler to avoid actual execution
-        with patch(
-            "wayfinder_paths.strategies.basis_trading_strategy.strategy.PairedFiller"
-        ) as mock_filler_class:
-            mock_filler = MagicMock()
-            mock_filler.fill_pair_units = AsyncMock(
-                return_value=(0.5, 0.5, 1000.0, 1000.0, [], [])
-            )
-            mock_filler_class.return_value = mock_filler
-
-            success, _ = assert_status_tuple(await strategy.update())
-            assert success
-
-        # Target spot was $66.67, so we should transfer $33.33 spot->perp.
-        mock_hyperliquid_adapter.transfer_spot_to_perp.assert_called_once()
-        _, kwargs = mock_hyperliquid_adapter.transfer_spot_to_perp.call_args
-        assert kwargs["address"] == "0x5678"
-        assert abs(kwargs["amount"] - 33.33) < 1e-6
-
-        # Should not attempt perp->spot when spot already has sufficient USDC.
-        mock_hyperliquid_adapter.transfer_perp_to_spot.assert_not_called()
-
-        assert strategy.deposit_amount == 100.0
 
     @pytest.mark.asyncio
     async def test_update_near_liquidation_closes_and_redeploys(
