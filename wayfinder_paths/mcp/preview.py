@@ -251,12 +251,13 @@ async def build_polymarket_execute_preview(
         )
         return {"summary": header + base + details, "recipient_mismatch": mismatch}
 
-    if action in {"buy", "sell", "close_position"}:
+    if action == "place_market_order":
         details = (
-            "\n\nTRADE\n"
+            "\n\nMARKET ORDER\n"
             f"market_slug: {req.get('market_slug')}\n"
             f"outcome: {req.get('outcome')}\n"
             f"token_id: {req.get('token_id')}\n"
+            f"side: {req.get('side')}\n"
             f"amount_collateral: {req.get('amount_collateral')}\n"
             f"shares: {req.get('shares')}"
         )
