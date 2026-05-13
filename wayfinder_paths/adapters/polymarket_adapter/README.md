@@ -14,7 +14,8 @@ The adapter wraps these public services:
 - **Gamma API** (`https://gamma-api.polymarket.com`): markets/events metadata + search
 - **CLOB API** (`https://clob.polymarket.com`): prices, orderbooks, and historic price time series
 - **Data API** (`https://data-api.polymarket.com`): positions, trades, activity (useful for PnL/exposure views)
-- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket’s deposit/withdraw address flow, which is asynchronous and settles as pUSD on Polygon.
+- **Bridge API** (`https://bridge.polymarket.com`): fallback helper endpoints for asynchronous Polymarket deposit/withdraw flows. On Polygon, the adapter can wrap USDC.e -> pUSD directly, or swap native Polygon USDC -> USDC.e via BRAP and then wrap to pUSD. For other supported assets/chains, it can fall back to Polymarket's deposit/withdraw address flow, which is asynchronous and settles as pUSD on Polygon.
+- **Relayer API** (`https://relayer-v2.polymarket.com`): sponsored on-chain execution for deposit wallet operations — Polymarket pays POL gas for deploy / approval / withdraw / redeem batches authorized by user EIP-712 signatures (the deposit wallet contract verifies the signature on-chain). See `.claude/skills/using-polymarket-adapter/rules/deposit-wallet.md` for the gas-payer matrix and liveness considerations.
 
 Trading uses the Python V2 client installed in this repo:
 

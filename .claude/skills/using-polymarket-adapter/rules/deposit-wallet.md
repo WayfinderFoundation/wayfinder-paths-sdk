@@ -15,6 +15,26 @@ Polymarket V2 trades **from a per-user smart contract wallet** ("deposit wallet"
 - **EIP-1271 signer**: orders are typed-data-signed by the owner EOA (POLY_1271 signature type), validated on-chain by the deposit wallet contract via `isValidSignature`.
 - **Holds your positions**: ERC1155 conditional shares live at the deposit wallet, not the owner EOA. Same for pUSD collateral used for trading.
 
+## Relayer (sponsored execution)
+
+The deposit wallet is a smart contract — no private key — so every state change on it needs *some* EOA to broadcast the tx and pay Polygon gas. Polymarket runs a **sponsored-tx relayer** at `relayer-v2.polymarket.com` that does this on the user's behalf, same pattern as ERC-4337 bundlers / Gelato / Biconomy. The user signs an EIP-712 `Batch` typed-data message off-chain; the relayer submits it on-chain and pays POL. The deposit wallet contract verifies the signature on-chain before executing — relayer can't forge or modify anything.
+
+**Gas-payer matrix:**
+
+| Action | Gas paid by | Mechanism |
+| --- | --- | --- |
+| Deposit wallet deploy (first `ensure_trading_setup`) | Relayer | `POST /submit` type=`WALLET-CREATE` |
+| Approvals batch (pUSD + CTF × 3 exchanges) | Relayer | `POST /submit` type=`WALLET`, owner signs Batch |
+| `withdraw_deposit_wallet` | Relayer | `POST /submit` type=`WALLET`, owner signs Batch |
+| `redeem_positions` (+ NegRisk unwrap) | Relayer | Same — owner signs, relayer broadcasts |
+| `fund_deposit_wallet` | **Owner EOA** | Direct `pUSD.transfer` from owner; needs POL |
+| `bridge_deposit` / `bridge_withdraw` (collateral conversion) | **Owner EOA** | wrap/unwrap + BRAP swaps; needs POL |
+| Order placement (CLOB market/limit) | Polymarket CLOB engine | Order signed POLY_1271, matched off-chain, settled on-chain by Polymarket |
+
+Net: the owner EOA needs Polygon POL **only for `fund_deposit_wallet` and the upstream collateral-prep flows**. Everything that touches the deposit wallet contract itself is free.
+
+**Liveness dependency:** withdraws, redemptions, and approval refreshes all require the Polymarket relayer to be up. The adapter has no escape-hatch path that bypasses the relayer — if it goes down, those operations block until it recovers.
+
 ## Two-step funding model (the common pitfall)
 
 Trading collateral lives in **two places**, and the adapter has **two distinct flows**:

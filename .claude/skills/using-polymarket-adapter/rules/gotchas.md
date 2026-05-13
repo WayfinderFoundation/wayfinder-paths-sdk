@@ -18,6 +18,13 @@
 - **USDC.e** is the direct wrap asset for pUSD on Polygon.
 - If you only have Polygon USDC, use the adapter’s preparation flow to reach pUSD (see `rules/deposits-withdrawals.md`).
 
+## Relayer liveness dependency (V2)
+
+- The Polymarket relayer (`relayer-v2.polymarket.com`) is a third-party sponsored-tx service. It pays POL gas for **deposit wallet creation, approvals, withdraws, and redemptions** on user-signed batches.
+- If the relayer is degraded / down, those operations block. The adapter has **no escape-hatch path** that bypasses it.
+- Operations that do NOT depend on the relayer: `fund_deposit_wallet` (owner-EOA direct transfer), `bridge_deposit` / `bridge_withdraw` (collateral conversion on owner EOA), and order placement itself (CLOB engine matches/settles).
+- See `rules/deposit-wallet.md` for the full gas-payer matrix.
+
 ## Trading wallet ≠ owner EOA (V2 deposit wallet)
 
 - Orders execute from a per-user **deposit wallet** (smart contract derived from owner EOA), not the owner EOA itself.
