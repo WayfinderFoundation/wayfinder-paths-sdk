@@ -11,6 +11,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
+from wayfinder_paths.core.constants.pendle_abi import PENDLE_ROUTER_STATIC_ABI
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -63,37 +64,6 @@ PENDLE_CHAIN_IDS: dict[str, int] = {
 }
 
 PENDLE_DEFAULT_DEPLOYMENTS_BASE_URL = "https://raw.githubusercontent.com/pendle-finance/pendle-core-v2-public/main/deployments"
-
-PENDLE_ROUTER_STATIC_ABI: list[dict[str, Any]] = [
-    {
-        "inputs": [{"internalType": "address", "name": "market", "type": "address"}],
-        "name": "getLpToSyRate",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "market", "type": "address"}],
-        "name": "getPtToSyRate",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "market", "type": "address"}],
-        "name": "getLpToAssetRate",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "market", "type": "address"}],
-        "name": "getPtToAssetRate",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    },
-]
 
 ChainLike = int | str
 

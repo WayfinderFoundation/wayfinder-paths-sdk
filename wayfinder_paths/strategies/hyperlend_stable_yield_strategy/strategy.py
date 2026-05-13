@@ -559,18 +559,12 @@ class HyperlendStableYieldStrategy(Strategy):
         except Exception:
             return True
 
-        try:
-            target_lower = Web3.to_checksum_address(checksum).lower()
-        except Exception:
-            target_lower = str(checksum).lower()
-
         for addr in markets.keys():
             try:
-                if Web3.to_checksum_address(addr).lower() == target_lower:
+                if Web3.to_checksum_address(addr) == checksum:
                     return True
             except Exception:
-                if str(addr).lower() == target_lower:
-                    return True
+                continue
         return False
 
     async def _get_lent_positions(self, snapshot=None) -> dict[str, dict[str, Any]]:

@@ -14,15 +14,27 @@ POLYMARKET_RELAYER_BASE_URL = "https://relayer-v2.polymarket.com"
 POLYGON_CHAIN_ID = 137
 
 # Collateral
-POLYGON_USDC_E_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
-POLYGON_USDC_ADDRESS = "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359"
-POLYGON_P_USDC_PROXY_ADDRESS = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
-POLYGON_P_USDC_ADDRESS = "0x6bBCef9f7ef3B6C592c99e0f206a0DE94Ad0925f"
+POLYGON_USDC_E_ADDRESS = to_checksum_address(
+    "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+)
+POLYGON_USDC_ADDRESS = to_checksum_address("0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359")
+POLYGON_P_USDC_PROXY_ADDRESS = to_checksum_address(
+    "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"
+)
+POLYGON_P_USDC_ADDRESS = to_checksum_address(
+    "0x6bBCef9f7ef3B6C592c99e0f206a0DE94Ad0925f"
+)
 
 # Polymarket contracts (CTF)
-POLYMARKET_CONDITIONAL_TOKENS_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-POLYMARKET_COLLATERAL_ONRAMP_ADDRESS = "0x93070a847efEf7F70739046A929D47a521F5B8ee"
-POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS = "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
+POLYMARKET_CONDITIONAL_TOKENS_ADDRESS = to_checksum_address(
+    "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+)
+POLYMARKET_COLLATERAL_ONRAMP_ADDRESS = to_checksum_address(
+    "0x93070a847efEf7F70739046A929D47a521F5B8ee"
+)
+POLYMARKET_COLLATERAL_OFFRAMP_ADDRESS = to_checksum_address(
+    "0x2957922Eb93258b93368531d39fAcCA3B4dC5854"
+)
 
 # Exchanges / operators that may require approvals depending on market type.
 # NOTE: If interacting with the contracts directly, use version 2 except for ClobAuthDomain
@@ -51,8 +63,12 @@ POLYMARKET_BUILDER_CODE = (
     "0x3d4f1802bced20451887db608970a81a5d4ea72a2567d82346ea36bb62c0d68e"
 )
 
-POLYMARKET_DEPOSIT_WALLET_FACTORY = "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
-POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION = "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+POLYMARKET_DEPOSIT_WALLET_FACTORY = to_checksum_address(
+    "0x00000000000Fb5C9ADea0298D729A0CB3823Cc07"
+)
+POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION = to_checksum_address(
+    "0x58CA52ebe0DadfdF531Cde7062e76746de4Db1eB"
+)
 POLYMARKET_ERC1967_CONST1 = (
     "0xcc3735a920a3ca505d382bbc545af43d6000803e6038573d6000fd5b3d6000f3"
 )
@@ -67,26 +83,33 @@ def polymarket_deposit_wallet_id(owner: str) -> bytes:
 
 
 def derive_deposit_wallet(owner: str) -> str:
-    factory = to_checksum_address(POLYMARKET_DEPOSIT_WALLET_FACTORY)
     args = abi_encode(
-        ["address", "bytes32"], [factory, polymarket_deposit_wallet_id(owner)]
+        ["address", "bytes32"],
+        [POLYMARKET_DEPOSIT_WALLET_FACTORY, polymarket_deposit_wallet_id(owner)],
     )
     n = len(args)
     combined = POLYMARKET_ERC1967_PREFIX + (n << 56)
     init_code = (
         combined.to_bytes(10, "big")
-        + to_bytes(hexstr=to_checksum_address(POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION))
+        + to_bytes(hexstr=POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION)
         + to_bytes(hexstr="0x6009")
         + to_bytes(hexstr=POLYMARKET_ERC1967_CONST2)
         + to_bytes(hexstr=POLYMARKET_ERC1967_CONST1)
         + args
     )
-    raw = keccak(b"\xff" + to_bytes(hexstr=factory) + keccak(args) + keccak(init_code))
+    raw = keccak(
+        b"\xff"
+        + to_bytes(hexstr=POLYMARKET_DEPOSIT_WALLET_FACTORY)
+        + keccak(args)
+        + keccak(init_code)
+    )
     return to_checksum_address(raw[-20:].hex())
 
 
 # Some NegRisk markets pay out an adapter "collateral" token which must be unwrapped.
-POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = "0x3A3BD7bb9528E159577F7C2e685CC81A765002E2"
+POLYMARKET_ADAPTER_COLLATERAL_ADDRESS = to_checksum_address(
+    "0x3A3BD7bb9528E159577F7C2e685CC81A765002E2"
+)
 
 MAX_UINT256 = (1 << 256) - 1
 ZERO32_STR = "0x" + "00" * 32
