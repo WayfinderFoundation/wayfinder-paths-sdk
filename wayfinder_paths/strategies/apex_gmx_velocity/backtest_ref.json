@@ -1,10 +1,10 @@
 {
   "schema_version": "0.1",
   "produced": {
-    "at": "2026-05-12T00:00:00Z",
-    "skill": "leverage + entry_z recalibration (lev=2.5, ez=0.75, 30bps slip) after decide.py bug fix (iloc[-1] + get_margin_balance=0)",
-    "git_sha": "8f63aefad45ae66eb184773ce083358fd5bde3ea",
-    "ref_hash": "apex_gmx_velocity_v2"
+    "at": "2026-05-13T19:10:13.987459+00:00",
+    "skill": "rebond after recon fix: fresh signal/decide sha + data fingerprint, fee_bps 4.5\u219210.5 from observed live fees",
+    "git_sha": "15a5302a231e0dfea2d76a5f2473ebbc07a65dbd",
+    "ref_hash": "ceda1d047db89b0a3a4781f5004e7d71241a0a72bf917792d3d269bb398e93ac"
   },
   "code": {
     "signal": {
@@ -15,7 +15,7 @@
     "decide": {
       "module": "wayfinder_paths.strategies.apex_gmx_velocity.decide",
       "entrypoint": "decide",
-      "source_sha256": "e5703f72b438f372e02d2e12e6eff4e21448d6057642efc811ae9399c75887ac"
+      "source_sha256": "0738200bb82be7aae7823cf433f74971c71dfc10a3bdc16096d6ef63334fd325"
     }
   },
   "venues": {
@@ -23,14 +23,17 @@
     "hip3": []
   },
   "data": {
-    "symbols": ["APEX", "GMX"],
+    "symbols": [
+      "APEX",
+      "GMX"
+    ],
     "interval": "1h",
     "window": {
-      "start": "2025-11-08",
-      "end": "2026-05-08",
-      "bars": 4344
+      "start": "2025-11-09",
+      "end": "2026-05-13",
+      "bars": 3913
     },
-    "fingerprint": "hl_2025-11-08_2026-05-08_apex_gmx_1h"
+    "fingerprint": "ea8ae4b9e2f617c5bf881b2979273a09f3d7bf61a33671f3ceab7ab04c603a3c"
   },
   "params": {
     "lookback_bars": 72,
@@ -43,44 +46,43 @@
   "execution_assumptions": {
     "fill_model": "next_bar_open",
     "slippage_bps": 30.0,
-    "fee_bps": 4.5,
-    "min_order_usd": 10.0,
-    "slippage_note": "Realistic HL taker assumption for APEX/GMX (low-cap perps). Breakeven slippage ~100 bps; 30 bps leaves ~3x cushion."
+    "fee_bps": 10.5,
+    "min_order_usd": 10.0
   },
   "performance": {
-    "sharpe": 2.51,
-    "total_return": 1.804,
-    "max_drawdown": -0.400,
-    "sharpe_30d": 2.45,
-    "sharpe_60d": 2.54,
-    "sharpe_90d": 3.08,
-    "sharpe_120d": 2.19,
-    "sharpe_180d": 2.51,
-    "total_return_30d": 0.277,
-    "total_return_60d": 0.504,
-    "total_return_90d": 1.305,
-    "total_return_120d": 0.975,
-    "total_return_180d": 1.804,
-    "max_drawdown_30d": -0.229,
-    "max_drawdown_60d": -0.229,
-    "max_drawdown_90d": -0.308,
-    "max_drawdown_120d": -0.389,
-    "max_drawdown_180d": -0.400,
-    "trade_count_30d": 45,
-    "trade_count_60d": 116,
-    "trade_count_90d": 195,
-    "trade_count_120d": 221,
-    "trade_count_180d": 328,
-    "annualized_return": 3.66,
-    "annualized_return_note": "180d return × 365/180 ≈ 366% gross. Expect substantially lower after realistic compounding/regime change; treat as upper bound."
+    "sharpe": 2.09,
+    "total_return": 1.275,
+    "max_drawdown": -0.411,
+    "sharpe_30d": 2.31,
+    "total_return_30d": 0.187,
+    "max_drawdown_30d": -0.173,
+    "trade_count_30d": 42,
+    "sharpe_60d": 2.22,
+    "total_return_60d": 0.346,
+    "max_drawdown_60d": -0.232,
+    "trade_count_60d": 124,
+    "sharpe_90d": 2.17,
+    "total_return_90d": 0.606,
+    "max_drawdown_90d": -0.313,
+    "trade_count_90d": 163,
+    "sharpe_120d": 2.74,
+    "total_return_120d": 1.319,
+    "max_drawdown_120d": -0.313,
+    "trade_count_120d": 263,
+    "sharpe_180d": 2.09,
+    "total_return_180d": 1.275,
+    "max_drawdown_180d": -0.411,
+    "trade_count_180d": 349,
+    "annualized_return": 2.59,
+    "annualized_return_note": "180d return \u00d7 365/180. Gross, before compounding/regime change; treat as upper bound."
   },
   "monitoring": {
     "drift_tolerances": {
       "trigger_timing_ms": 60000,
-      "decision_parity": 0.90,
-      "size_drift_pct": 0.10,
+      "decision_parity": 0.9,
+      "size_drift_pct": 0.1,
       "fill_price_drift_bps": 60.0,
-      "fill_completion_pct": 0.90
+      "fill_completion_pct": 0.9
     }
   }
 }
