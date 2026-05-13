@@ -8,15 +8,23 @@ from wayfinder_paths.core.constants.contracts import (
 from wayfinder_paths.core.constants.contracts import (
     HYPEREVM_WHYPE as WHYPE_ADDRESS,
 )
+from wayfinder_paths.core.constants.hype_abi import (
+    KHYPE_STAKING_ACCOUNTANT_ABI,
+    LHYPE_ACCOUNTANT_ABI,
+    WHYPE_ABI,
+)
 
-# Re-export addresses for use by strategy modules
+# Re-export addresses and ABIs for use by strategy modules
 __all__ = [
     "HYPE_OFT_ADDRESS",
-    "WHYPE_ADDRESS",
     "KHYPE_ADDRESS",
     "KHYPE_STAKING_ACCOUNTANT",
+    "KHYPE_STAKING_ACCOUNTANT_ABI",
     "LHYPE_ACCOUNTANT",
+    "LHYPE_ACCOUNTANT_ABI",
     "LOOPED_HYPE_ADDRESS",
+    "WHYPE_ABI",
+    "WHYPE_ADDRESS",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,47 +47,8 @@ USDC_HYPE = "usd-coin-hyperevm"
 HYPEREVM_CHAIN_ID = 999
 ARBITRUM_CHAIN_ID = 42161
 
-# ABIs for exchange rate reads
-KHYPE_STAKING_ACCOUNTANT_ABI = [
-    {
-        "inputs": [
-            {"internalType": "uint256", "name": "kHYPEAmount", "type": "uint256"}
-        ],
-        "name": "kHYPEToHYPE",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    }
-]
-
-LHYPE_ACCOUNTANT_ABI = [
-    {
-        "inputs": [{"internalType": "address", "name": "quote", "type": "address"}],
-        "name": "getRateInQuote",
-        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
-        "stateMutability": "view",
-        "type": "function",
-    }
-]
-
-# WHYPE contract ABI for unwrapping (standard WETH-like interface)
-WHYPE_ABI = [
-    {
-        "name": "withdraw",
-        "type": "function",
-        "stateMutability": "nonpayable",
-        "inputs": [{"name": "wad", "type": "uint256"}],
-        "outputs": [],
-    },
-    {
-        "name": "balanceOf",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [{"name": "owner", "type": "address"}],
-        "outputs": [{"type": "uint256"}],
-    },
-]
-
+# ABIs (KHYPE_STAKING_ACCOUNTANT_ABI, LHYPE_ACCOUNTANT_ABI, WHYPE_ABI) live
+# in `wayfinder_paths/core/constants/hype_abi.py` and are re-exported above.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STRATEGY THRESHOLDS
