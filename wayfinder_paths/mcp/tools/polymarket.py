@@ -949,9 +949,7 @@ async def polymarket_execute(
                 cid = throw_if_empty_str(
                     "condition_id is required for redeem_positions", condition_id
                 )
-                ok_r, res = await adapter.redeem_positions(
-                    condition_id=cid, holder=sender
-                )
+                ok_r, res = await adapter.redeem_positions(condition_id=cid)
                 effects.append(
                     {
                         "type": "polymarket",

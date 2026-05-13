@@ -319,15 +319,16 @@ If you held shares through resolution, you can redeem on-chain to get collateral
 ```python
 ok, res = await adapter.redeem_positions(
     condition_id=condition_id,  # from Gamma market metadata
-    holder="0xYourWallet",      # must match signing wallet
 )
 ```
 
 The adapter:
 
-- Preflights possible redemption paths (`collateral`, `parentCollectionId`, `indexSets`)
-- Calls ConditionalTokens `redeemPositions()`
-- If payout is an “adapter collateral” wrapper token, it attempts to `unwrap()` automatically
+- Preflights redemption against the deposit wallet (`collateral`, `parentCollectionId`, `indexSets`)
+- Submits `redeemPositions()` as a relayer batch from the deposit wallet
+- If payout is an "adapter collateral" wrapper token, submits a follow-up `unwrap()` batch from the deposit wallet automatically
+
+Collateral lands on the deposit wallet — use `withdraw_deposit_wallet()` to move it back to the owner EOA.
 
 ## Search + analysis strategies (what worked in practice)
 

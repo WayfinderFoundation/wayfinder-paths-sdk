@@ -2273,51 +2273,73 @@ class PolymarketAdapter(BaseAdapter):
         return False, "No redeemable balance detected for the provided condition_id."
 
     async def redeem_positions(
-        self,
-        *,
-        condition_id: str,
-        holder: str,
+        self, *, condition_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
-        holder_addr, sign_cb = self._require_signer()
-        if holder and to_checksum_address(holder) != holder_addr:
-            return False, "holder must match the configured signing wallet"
-
-        ok, path = await self.preflight_redeem(
-            condition_id=condition_id, holder=holder_addr
-        )
-        if not ok:
-            return False, path
-
-        collateral = path["collateral"]
-        parent = path["parentCollectionId"]
-        cond = path["conditionId"]
-        index_sets = path["indexSets"]
-
-        tx = await encode_call(
-            target=self._contract_addrs(neg_risk=False)["conditional_tokens"],
-            abi=CONDITIONAL_TOKENS_ABI,
-            fn_name="redeemPositions",
-            args=[collateral, parent, cond, index_sets],
-            from_address=holder_addr,
-            chain_id=POLYGON_CHAIN_ID,
-        )
-        tx_hash = await send_transaction(tx, sign_cb)
-
-        if to_checksum_address(collateral) == to_checksum_address(
-            POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
-        ):
-            shares = await get_token_balance(
-                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS, POLYGON_CHAIN_ID, holder_addr
+        try:
+            deposit_wallet = self.deposit_wallet_address()
+            ok, path = await self.preflight_redeem(
+                condition_id=condition_id, holder=deposit_wallet
             )
-            if shares > 0:
-                unwrap_tx = await encode_call(
-                    target=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-                    abi=TOKEN_UNWRAP_ABI,
-                    fn_name="unwrap",
-                    args=[holder_addr, shares],
-                    from_address=holder_addr,
-                    chain_id=POLYGON_CHAIN_ID,
-                )
-                await send_transaction(unwrap_tx, sign_cb)
+            if not ok:
+                return False, path
 
-        return True, {"tx_hash": tx_hash, "path": path}
+            collateral = path["collateral"]
+            parent = path["parentCollectionId"]
+            cond = path["conditionId"]
+            index_sets = path["indexSets"]
+
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                ctf = web3.eth.contract(
+                    address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                    abi=CONDITIONAL_TOKENS_ABI,
+                )
+                redeem_data = ctf.encode_abi(
+                    "redeemPositions", [collateral, parent, cond, index_sets]
+                )
+            redeem = await self._submit_wallet_batch(
+                calls=[
+                    {
+                        "target": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+                        "value": 0,
+                        "data": redeem_data,
+                    }
+                ]
+            )
+
+            unwrap_tx_hash: str | None = None
+            if to_checksum_address(collateral) == to_checksum_address(
+                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
+            ):
+                shares = await get_token_balance(
+                    POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                )
+                if shares > 0:
+                    async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                        wrapper = web3.eth.contract(
+                            address=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                            abi=TOKEN_UNWRAP_ABI,
+                        )
+                        unwrap_data = wrapper.encode_abi(
+                            "unwrap", [deposit_wallet, shares]
+                        )
+                    unwrap = await self._submit_wallet_batch(
+                        calls=[
+                            {
+                                "target": POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                                "value": 0,
+                                "data": unwrap_data,
+                            }
+                        ]
+                    )
+                    unwrap_tx_hash = unwrap["tx_hash"]
+
+            return True, {
+                "deposit_wallet": deposit_wallet,
+                "tx_hash": redeem["tx_hash"],
+                "unwrap_tx_hash": unwrap_tx_hash,
+                "path": path,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)

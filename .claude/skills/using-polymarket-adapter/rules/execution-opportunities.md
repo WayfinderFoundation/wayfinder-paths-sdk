@@ -89,14 +89,11 @@ If you held shares through resolution, redeem on-chain:
 2) Call:
 
 ```python
-ok, res = await adapter.redeem_positions(
-    condition_id=condition_id,
-    holder="0xYourWallet",  # must match signing wallet
-)
+ok, res = await adapter.redeem_positions(condition_id=condition_id)
 ```
 
 MCP shortcut:
 
 - `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
-The adapter preflights the redemption path and calls ConditionalTokens `redeemPositions()`. Some markets can pay out an “adapter collateral” wrapper token; the adapter attempts to unwrap automatically.
+The adapter preflights against the deposit wallet, submits `redeemPositions()` via a relayer batch from the deposit wallet, and (for NegRisk markets) submits a follow-up `unwrap()` batch. Collateral lands on the deposit wallet — use `withdraw_deposit_wallet` to move it back to the owner EOA.
