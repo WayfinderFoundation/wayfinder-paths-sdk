@@ -214,7 +214,7 @@ async def _fetch_prices_hyperliquid(
 
         if candles:
             df = pd.DataFrame(candles)
-            df["timestamp"] = pd.to_datetime(df["t"], unit="ms")
+            df["timestamp"] = pd.to_datetime(df["t"], unit="ms", utc=True)
             df = df.set_index("timestamp")
             price_series = df["c"].astype(float).rename(symbol)
             all_prices.append(price_series)

@@ -157,9 +157,8 @@ def test_reproduces_backtest_ref():
     assert stats match `ref.performance` within tolerance. Fails on any
     signal/decide/data drift since the ref was bonded.
 
-    Uses the framework's `fetch_prices` (Delta Lab → Hyperliquid fallback),
-    same code path as bonding. Fetching directly from HL candles produces
-    different coverage and prices and will not reproduce the ref.
+    Pulls prices and funding from Hyperliquid only; the ref must be bonded
+    against the same source for this test to reproduce.
     """
     from wayfinder_paths.core.backtesting.data import (
         align_dataframes,
@@ -176,14 +175,22 @@ def test_reproduces_backtest_ref():
             ref.data.window.start,
             ref.data.window.end,
             ref.data.interval,
+            source="hyperliquid",
         )
         try:
             funding = await fetch_funding_rates(
-                ref.data.symbols, ref.data.window.start, ref.data.window.end
+                ref.data.symbols,
+                ref.data.window.start,
+                ref.data.window.end,
+                venue="hyperliquid",
             )
             prices, funding = await align_dataframes(prices, funding, method="ffill")
         except (ValueError, KeyError):
             funding = None
+        valid = prices.dropna(how="any").index
+        prices = prices.loc[valid]
+        if funding is not None:
+            funding = funding.loc[valid]
         return prices, funding
 
     prices, funding = asyncio.run(_fetch_window())
