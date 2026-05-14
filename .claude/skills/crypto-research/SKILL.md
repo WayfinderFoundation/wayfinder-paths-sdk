@@ -74,52 +74,24 @@ Default lookback windows:
 
 ## Delta Lab rules
 
-Delta Lab is read-only. It is for discovery, screening, APY/funding/lending/basis research, historical series, and backtest inputs. It is not for execution.
+Delta Lab is the source for APY, yield, lending, borrow routes, basis, delta-neutral, funding, and related time-series research. It is read-only and never executes positions.
 
-Use Delta Lab when the user asks about:
+Use Delta Lab to answer these parts of a crypto research task:
 
-- APY, yield, lending rates, borrow rates, borrow routes, LTV, liquidation thresholds, TVL/liquidity in lending markets.
-- Basis, delta-neutral opportunities, carry/hedge pairs, perp funding, open interest, volume, mark/index prices.
-- Price features such as 1d/7d/30d/90d returns, volatility, or max drawdown.
-- Asset relationships, basis groups, wrapped/yield-bearing versions, or DeFi market participation.
-- Historical time series for assets, lending markets, funding, Pendle, Boros, yields, or prices.
+- Rate surfaces: current and historical lending supply/borrow rates, net APY, rewarded APY, TVL, liquidity, utilization, and borrow stress.
+- Perp/basis surfaces: funding, mark/index prices, basis, open interest, volume, and carry or hedge candidates.
+- Yield opportunity discovery: top APY screens, basis-specific opportunity sources, Pendle/Boros/lending/yield-bearing-token comparisons, and delta-neutral candidates.
+- Asset context: Delta Lab asset/basis resolution, related wrapped/yield-bearing assets, and DeFi market participation.
+- Historical analysis: price, lending, funding, Pendle, Boros, yield, and backtest input series.
 
-### Delta Lab APY format
+Before doing detailed Delta Lab work, load `/using-delta-lab`. In this repo that skill lives at `.claude/skills/using-delta-lab/SKILL.md`; it links to the supporting instructions:
 
-APY values are decimal floats, not percentages.
+- `.claude/skills/using-delta-lab/MCP_INTEGRATION.md` for MCP tool arguments and snapshot workflows.
+- `.claude/skills/using-delta-lab/rules/v2-surface.md` for `DELTA_LAB_CLIENT`, time-series, latest, bulk, graph/entity, `explore`, and backtest-bundle methods.
+- `.claude/skills/using-delta-lab/rules/response-structures.md` for field meanings, APY/rate units, and response shapes.
+- `.claude/skills/using-delta-lab/rules/gotchas.md` for sparse data, symbol resolution, and common mistakes.
 
-- `0.05` = 5% APY.
-- `0.98` = 98% APY.
-- `2.40` = 240% APY.
-
-When displaying APY, multiply by 100 and format as a percentage. Always state whether a rate is current, 7d mean, 30d mean, or a net/combined rate.
-
-### Delta Lab MCP versus Python client
-
-Use MCP tools for fast overview/snapshot questions. These are good for agent turns and usually fit in context:
-
-- Market overview / top movers: `research_search_price(sort="ret_1d", limit="10")`.
-- Price volatility: `research_search_price(sort="vol_30d", basis="ETH")`; drawdown: `research_search_price(sort="mdd_30d", basis="ETH")`.
-- Lending overview: `research_search_lending(sort="net_supply_apr_now", basis="ETH")`.
-- Combined/rewarded lending rates: `research_search_lending(sort="combined_net_supply_apr_now")`.
-- Borrow stress/spikes: `research_search_lending(sort="borrow_spike_score")`.
-- Perp funding overview: `research_search_perp(sort="funding_now")`.
-- Perp trend: `research_search_perp(sort="funding_mean_30d", basis="BTC")`.
-- Open-interest activity: `research_search_perp(sort="oi_now")`; use Python client for richer OI-change features when needed.
-- Borrow route overview: `research_search_borrow_routes(sort="ltv_max", basis="ETH", borrow_basis="USD")`.
-- Top yield opportunities: `research_get_top_apy(lookback_days="7", limit="25")`.
-- Enriched yield detail for one basis: `research_get_basis_apy_sources(basis_symbol="ETH", lookback_days="7", limit="25")`.
-
-Use `DELTA_LAB_CLIENT` in a Python script for:
-
-- Time series: `get_asset_timeseries`, `get_asset_price_ts`, `get_market_lending_ts`, `get_instrument_funding_ts`.
-- Latest typed records: `get_asset_price_latest`, `get_market_lending_latest`, `get_instrument_funding_latest`, `get_market_pendle_latest`, `get_market_boros_latest`, `get_asset_yield_latest`.
-- Bulk hydration: `bulk_latest_prices`, `bulk_latest_lending`, `bulk_prices`, `bulk_lending`, `bulk_funding`, `bulk_pendle`, `bulk_boros`.
-- Entity/catalog/graph: `search_assets_v2`, `search_markets`, `search_instruments`, `search_opportunities`, `list_venues`, `list_chains`, `get_asset_relations`, `summarize_asset_relations`, `get_graph_paths`.
-- One-shot discovery: `explore(symbol="ETH", relations_depth=1)`.
-- Backtest data: `fetch_backtest_bundle`, `fetch_lending_bundle`, `fetch_perp_bundle`.
-
-Never default to huge Delta Lab limits in agent context. Prefer `limit=25`. Use larger limits only after narrowing by basis, venue, chain, market, or asset id.
+Use Delta Lab MCP tools for quick snapshots in agent answers. Use `DELTA_LAB_CLIENT` scripts for time series, bulk hydration, entity/graph lookup, backtest bundles, or anything that needs DataFrame-style analysis. Keep limits small by default, usually `limit=25`, and label APY/rate fields with the lookback/window used.
 
 ## Intent router
 
@@ -349,18 +321,8 @@ User examples:
 
 Use this flow:
 
-1. Use Delta Lab first when the ask is about rates, APY, lending, borrowing, perps, basis, or strategy construction:
-   - Broad yield scan: `research_get_top_apy(lookback_days="7", limit="25")`.
-   - Asset-specific opportunities: `research_get_basis_apy_sources(basis_symbol="ETH", lookback_days="7", limit="25")`.
-   - Lending snapshot: `research_search_lending(sort="net_supply_apr_now", basis="USD" | "ETH" | "BTC")`.
-   - Combined/reward APY: `research_search_lending(sort="combined_net_supply_apr_now")`.
-   - Borrow routes: `research_search_borrow_routes(basis="ETH", borrow_basis="USD", sort="ltv_max")`.
-   - Perp funding/carry: `research_search_perp(sort="funding_now" | "funding_mean_30d", basis="BTC")`.
-2. Use `DELTA_LAB_CLIENT` Python for serious analysis:
-   - `get_asset_timeseries(symbol="USDC", series="lending", lookback_days=30, venue="moonwell")`.
-   - `fetch_lending_bundle(basis_root="ETH", side="LONG", lookback_days=30)`.
-   - `fetch_perp_bundle(basis_root="BTC", side="SHORT", lookback_days=30)`.
-   - `get_best_delta_neutral_pairs(basis_symbol="ETH", limit=20)`.
+1. Use Delta Lab first when the ask is about rates, APY, lending, borrowing, perps, basis, or strategy construction. Load `/using-delta-lab` for exact MCP/client calls before doing detailed screening.
+2. Use Delta Lab MCP tools for quick snapshots, and `DELTA_LAB_CLIENT` for historical stability, bulk comparisons, or strategy/backtest inputs.
 3. Use DeFiLlama for protocol-level fundamentals:
    - `research_defillama_free(dataset="protocol")` and/or `dataset="tvl"` for named protocols.
    - `research_defillama_free(dataset="fees_overview")` for fees/revenue.
@@ -393,11 +355,7 @@ Use this flow:
 1. `research_defillama_free(dataset="stablecoins")` for stablecoin supply/liquidity context.
 2. `research_defillama_free(dataset="chains")` for chain TVL if relevant.
 3. `research_defillama_free(dataset="dex_overview")` for DEX volume.
-4. Delta Lab for leverage/rates:
-   - `research_search_perp(sort="funding_now", limit="20")` for current funding extremes.
-   - `research_search_perp(sort="funding_mean_30d", limit="20")` for persistent funding.
-   - `research_search_perp(sort="oi_now", limit="20")` and `research_search_perp(sort="volume_24h", limit="20")` for leverage/OI/volume context; use Python client for richer OI-change features.
-   - Python `bulk_funding` or `get_instrument_funding_ts` for deeper funding trends.
+4. Use Delta Lab for leverage/rates/funding; load `/using-delta-lab` for exact screeners or client methods.
 5. `research_defillama_free(dataset="open_interest_overview")` if exposed and the user asks about perps/leverage.
 6. `research_web_search` for ETF flows or macro items. DeFiLlama Pro is disabled, so do not use it.
 7. `research_crypto_sentiment` for broad mood.
@@ -421,61 +379,10 @@ User examples:
 
 Use this flow:
 
-1. Start with MCP materialized-view screeners for a quick overview:
-   - `research_search_lending` for current lending/rate surface.
-   - `research_search_perp` for current funding/basis/OI surface.
-   - `research_search_price` for price/return/vol/drawdown surface.
-2. If the user needs history, charts, or stability, use `DELTA_LAB_CLIENT` in a Python script:
-
-```python
-from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
-
-# Price history
-data = await DELTA_LAB_CLIENT.get_asset_timeseries(
-    symbol="ETH",
-    series="price",
-    lookback_days=30,
-    limit=1000,
-)
-price_df = data["price"]
-
-# Lending history, exact asset by default
-ldata = await DELTA_LAB_CLIENT.get_asset_timeseries(
-    symbol="USDC",
-    series="lending",
-    lookback_days=30,
-    limit=1000,
-    venue="moonwell",
-)
-lending_df = ldata["lending"]
-
-# Funding history
-fdata = await DELTA_LAB_CLIENT.get_asset_timeseries(
-    symbol="BTC",
-    series="funding",
-    lookback_days=30,
-    venue="hyperliquid",
-)
-funding_df = fdata["funding"]
-```
-
-3. For multi-asset or multi-market comparisons, use bulk methods rather than many single calls:
-
-```python
-latest = await DELTA_LAB_CLIENT.bulk_latest_prices(asset_ids=[1, 2, 3])
-lending = await DELTA_LAB_CLIENT.bulk_latest_lending(pairs=[(912, 2), (50, 7)])
-```
-
-4. For backtest inputs, use bundles and keep them in scripts, not MCP answers:
-
-```python
-bundle = await DELTA_LAB_CLIENT.fetch_lending_bundle(
-    basis_root="ETH",
-    side="LONG",
-    lookback_days=30,
-    instrument_limit=25,
-)
-```
+1. Load `/using-delta-lab`; do not duplicate Delta Lab method details from memory.
+2. Start with MCP materialized-view screeners for a quick overview.
+3. If the user needs history, charts, stability, bulk comparison, or backtest inputs, use `DELTA_LAB_CLIENT` in a script as described in `.claude/skills/using-delta-lab/rules/v2-surface.md`.
+4. For multi-asset or multi-market comparisons, use bulk methods rather than many single calls.
 
 Answer shape:
 
@@ -662,87 +569,11 @@ Every answer should include:
 - Delta Lab filters used when relevant: basis, venue, chain, sort, limit, lookback.
 - Caveats and confidence.
 
-For broad or category research, use this structure:
+Use compact sections by default:
 
-```markdown
-## As of <time>, lookback <window>
-
-### Bottom line
-<2-4 sentence synthesis>
-
-### Main themes
-1. <theme> — <evidence>
-2. <theme> — <evidence>
-3. <theme> — <evidence>
-
-### Signals checked
-- News/EXA: <summary>
-- X/social: <summary or not checked>
-- Crypto Fear & Greed: <value/classification or not checked>
-- Delta Lab: <top movers/funding/lending/APY overview or not relevant>
-- DeFiLlama/free metrics: <summary or not relevant>
-
-### Caveats
-<uncertainty, source limitations, missing market data, noisy social data>
-```
-
-For token/protocol research, use this structure:
-
-```markdown
-## <Asset/protocol> brief — as of <time>, lookback <window>
-
-### TL;DR
-<2-4 sentence summary>
-
-### Identity
-- Asset/protocol:
-- Ticker:
-- Chain/address, if known:
-- Delta Lab basis/asset id, if resolved:
-- Assumptions:
-
-### What changed
-- <fresh catalyst 1>
-- <fresh catalyst 2>
-
-### Market / rates / basis
-<Delta Lab price/lending/funding/APY/basis context, or explain why not checked>
-
-### Fundamentals / onchain / DeFi
-<metrics checked, or explain why not applicable>
-
-### Social and sentiment
-<official posts/community narrative; caveat noise>
-
-### Risks and red flags
-<risks>
-
-### Confidence
-High / medium / low, with reason.
-```
-
-For yield/rates research, use this structure:
-
-```markdown
-## Yield/rates brief — as of <time>, lookback <window>
-
-### Bottom line
-<best opportunities and whether the surface looks attractive or risky>
-
-### Delta Lab screen
-- Basis / venue / chain filters:
-- Sort:
-- Top rows:
-
-### Stability / history
-<time series or “not checked”>
-
-### Risk notes
-<liquidity, TVL, utilization, borrow spike, reward sustainability, smart contract, oracle, duration, counterparty>
-
-### Caveats
-<APY decimals converted to %, data freshness, sparse rows, missing latest snapshots>
-```
+- Broad/category: bottom line, main themes, signals checked, caveats.
+- Token/protocol: TL;DR, identity/assumptions, what changed, market/rates, fundamentals, social, risks, confidence.
+- Yield/rates: bottom line, Delta Lab screen filters/top rows, stability/history, risk notes, caveats.
 
 ## Attribution and caveats
 
