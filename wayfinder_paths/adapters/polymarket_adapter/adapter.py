@@ -7,7 +7,7 @@ import hmac
 import json
 import re
 import time
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
@@ -545,6 +545,7 @@ class PolymarketAdapter(BaseAdapter):
         market_slug: str,
         outcome: str | int = "YES",
         amount_collateral: float = 1.0,
+        max_slippage_bps: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -558,6 +559,7 @@ class PolymarketAdapter(BaseAdapter):
             token_id=token_id,
             side="BUY",
             amount=amount_collateral,
+            max_slippage_bps=max_slippage_bps,
         )
 
     async def cash_out_prediction(
@@ -566,6 +568,7 @@ class PolymarketAdapter(BaseAdapter):
         market_slug: str,
         outcome: str | int = "YES",
         shares: float = 1.0,
+        max_slippage_bps: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -579,6 +582,7 @@ class PolymarketAdapter(BaseAdapter):
             token_id=token_id,
             side="SELL",
             amount=shares,
+            max_slippage_bps=max_slippage_bps,
         )
 
     async def get_market_prices_history(
@@ -1605,15 +1609,22 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    DEFAULT_MAX_SLIPPAGE_BPS = (
+        200  # 2% — Polymarket prices live in [0, 1], no native slippage param
+    )
+
     async def place_market_order(
         self,
         *,
         token_id: str,
         side: Literal["BUY", "SELL"],
         amount: float,
-        price: float | None = None,
+        max_slippage_bps: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
-        # BUY amount = collateral ($) to spend, SELL amount = shares to sell
+        # BUY amount = collateral ($) to spend, SELL amount = shares to sell.
+        # Polymarket has no slippage param; canonical pattern (see py-clob-client-v2
+        # MarketOrderArgsV2.price doc + create_market_order source) is to derive a
+        # worst-acceptable price from the book and sign an FOK at that cap.
         ok_setup, setup = await self.ensure_trading_setup(token_id=token_id)
         if not ok_setup:
             return False, setup
@@ -1621,12 +1632,39 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
 
+        ok_quote, quote = await self.quote_market_order(
+            token_id=token_id, side=side, amount=amount
+        )
+        if not ok_quote:
+            return False, quote
+        if not isinstance(quote, dict) or not quote.get("fully_fillable"):
+            return False, {"error": "insufficient book liquidity", "quote": quote}
+
+        worst = Decimal(str(quote["worst_price"]))
+        tick = Decimal(str((quote.get("book_meta") or {}).get("tick_size") or "0.01"))
+        bps = Decimal(
+            str(
+                self.DEFAULT_MAX_SLIPPAGE_BPS
+                if max_slippage_bps is None
+                else max_slippage_bps
+            )
+        )
+        slip = bps / Decimal(10_000)
+        if side == "BUY":
+            raw = worst * (Decimal(1) + slip)
+            cap = (raw / tick).quantize(Decimal(1), rounding=ROUND_CEILING) * tick
+            cap = min(cap, Decimal(1) - tick)
+        else:
+            raw = worst * (Decimal(1) - slip)
+            cap = (raw / tick).quantize(Decimal(1), rounding=ROUND_FLOOR) * tick
+            cap = max(cap, tick)
+
         try:
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 side=side,
                 amount=amount,
-                price=price or 0.0,
+                price=float(cap),
                 builder_code=POLYMARKET_BUILDER_CODE,
             )  # type: ignore[misc]
             order = await self.clob_client.create_market_order(order_args)
@@ -1634,6 +1672,9 @@ class PolymarketAdapter(BaseAdapter):
             out = resp if isinstance(resp, dict) else {"result": resp}
             out.setdefault("deposit_wallet", self.deposit_wallet_address())
             out.setdefault("setup", setup)
+            out.setdefault("quote", quote)
+            out.setdefault("price_cap", float(cap))
+            out.setdefault("max_slippage_bps", float(bps))
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
