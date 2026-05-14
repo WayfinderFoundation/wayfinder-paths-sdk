@@ -4,7 +4,7 @@ Simple, realistic backtesting framework for strategy development and validation.
 
 ## Features
 
-- ✅ Automatic data fetching from Delta Lab and Hyperliquid
+- ✅ Automatic data fetching from Delta Lab / Hyperliquid (default, ~7-month retention) or CCXT Binance (`source="ccxt"`, multi-year)
 - ✅ Realistic transaction costs (fees, slippage, funding rates)
 - ✅ Comprehensive performance metrics (Sharpe, Sortino, max drawdown, etc.)
 - ✅ Liquidation simulation with symbol-specific maintenance margins

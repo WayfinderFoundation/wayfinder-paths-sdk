@@ -1,6 +1,11 @@
 """Backtesting helpers — re-exports for the common public surface."""
 
 from wayfinder_paths.core.backtesting.backtester import run_backtest
+from wayfinder_paths.core.backtesting.data import (
+    fetch_funding_rates,
+    fetch_lending_rates,
+    fetch_prices,
+)
 from wayfinder_paths.core.backtesting.helpers import (
     backtest_delta_neutral,
     backtest_with_rates,
@@ -36,6 +41,9 @@ __all__ = [
     "backtest_with_rates",
     "default_decide",
     "emit_backtest_ref",
+    "fetch_funding_rates",
+    "fetch_lending_rates",
+    "fetch_prices",
     "fingerprint_frames",
     "hash_module_source",
     "load_ref",
