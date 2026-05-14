@@ -37,7 +37,7 @@ def _import_dotted(spec: str):
         module, attr = spec.split(":", 1)
     else:
         module, _, attr = spec.rpartition(".")
-    return getattr(importlib.import_module(module), attr)
+    return getattr(importlib.reload(importlib.import_module(module)), attr)
 
 
 def _warn_hash_mismatch(ref: BacktestRef) -> list[str]:
