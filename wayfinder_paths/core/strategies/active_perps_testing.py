@@ -43,7 +43,7 @@ def _import_dotted(spec: str) -> Any:
         module, attr = spec.split(":", 1)
     else:
         module, _, attr = spec.rpartition(".")
-    return getattr(importlib.import_module(module), attr)
+    return getattr(importlib.reload(importlib.import_module(module)), attr)
 
 
 async def assert_active_perps_backtest_runs(

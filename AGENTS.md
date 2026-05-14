@@ -103,6 +103,7 @@ Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp
 **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present candidates side-by-side so the user can choose. Two venues:
 
 - **Hyperliquid HIP-4** — daily binary price contracts settled in USDH on the HL L1; rotating daily lineup. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` (read the `outcomes` bucket).
+- **Hyperliquid unified accounts** - UnifiedAccount mode means that perp and spot account have the same margin. In this mode transfers between perp and spot accounts aren't needed and will not work.
 - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
 Present results as a table grouped by venue, then ask which market to trade — the same theme can list on both venues with different sizes, expiries, and collateral. Load `/using-hyperliquid-adapter` or `/using-polymarket-adapter` once the user picks.
