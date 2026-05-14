@@ -40,6 +40,7 @@ from wayfinder_paths.mcp.tools.contracts import (
     contracts_get,
     contracts_list,
 )
+from wayfinder_paths.mcp.tools.defillama_free import research_defillama_free
 from wayfinder_paths.mcp.tools.delta_lab import (
     research_get_asset_basis_info,
     research_get_basis_apy_sources,
@@ -57,6 +58,11 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_execute,
 )
 from wayfinder_paths.mcp.tools.execute import core_execute
+from wayfinder_paths.mcp.tools.goldsky_direct import (
+    research_goldsky_graphql,
+    research_goldsky_schema,
+    research_goldsky_search,
+)
 from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_execute,
     hyperliquid_get_state,
@@ -82,6 +88,8 @@ from wayfinder_paths.mcp.tools.polymarket import (
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.research_gateway import (
+    research_crypto_sentiment,
+    research_social_x_search,
     research_web_fetch,
     research_web_search,
 )
@@ -131,6 +139,12 @@ mcp.tool()(research_search_perp)
 mcp.tool()(research_search_borrow_routes)
 mcp.tool()(research_web_search)
 mcp.tool()(research_web_fetch)
+mcp.tool()(research_crypto_sentiment)
+mcp.tool()(research_social_x_search)
+mcp.tool()(research_defillama_free)
+mcp.tool()(research_goldsky_graphql)
+mcp.tool()(research_goldsky_search)
+mcp.tool()(research_goldsky_schema)
 
 # ─── hyperliquid_* ─────────────────────────────────────────────────────
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.

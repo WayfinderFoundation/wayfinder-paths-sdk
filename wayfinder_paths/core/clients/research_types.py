@@ -137,6 +137,42 @@ class ResearchWebFetchResponse(TypedDict):
     usage: ResearchWebSearchUsage
 
 
+class ResearchCryptoSentimentRequest(TypedDict):
+    sessionID: str
+
+
+class ResearchCryptoSentimentRow(TypedDict):
+    value: int
+    classification: str
+    timestamp: str
+    timeUntilUpdate: Any
+
+
+class ResearchCryptoSentimentResponse(TypedDict):
+    query: dict[str, Any]
+    results: list[ResearchCryptoSentimentRow]
+    provider: dict[str, Any]
+    usage: ResearchWebSearchUsage
+    context: dict[str, Any]
+
+
+class ResearchSocialXSearchRequest(TypedDict):
+    query: str
+    sessionID: str
+    allowedXHandles: NotRequired[list[str]]
+    excludedXHandles: NotRequired[list[str]]
+    fromDate: NotRequired[str]
+    toDate: NotRequired[str]
+
+
+class ResearchSocialXSearchResponse(TypedDict):
+    query: dict[str, Any]
+    result: dict[str, Any]
+    provider: dict[str, Any]
+    usage: ResearchWebSearchUsage
+    context: dict[str, Any]
+
+
 class ResearchGatewayErrorBody(TypedDict, total=False):
     type: str
     code: str

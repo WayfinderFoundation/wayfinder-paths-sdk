@@ -6,7 +6,11 @@ from typing import Any, cast
 import httpx
 
 from wayfinder_paths.core.clients.research_types import (
+    ResearchCryptoSentimentRequest,
+    ResearchCryptoSentimentResponse,
     ResearchGatewayErrorBody,
+    ResearchSocialXSearchRequest,
+    ResearchSocialXSearchResponse,
     ResearchWebContentType,
     ResearchWebFetchRequest,
     ResearchWebFetchResponse,
@@ -138,10 +142,42 @@ class ResearchClient(WayfinderClient):
         )
         return await self._post_gateway("webfetch", payload)
 
+    async def crypto_sentiment(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> ResearchCryptoSentimentResponse:
+        """Fetch crypto Fear & Greed sentiment through the research gateway."""
+        payload: ResearchCryptoSentimentRequest = {
+            "sessionID": self.resolve_session_id(session_id)
+        }
+        return await self._post_gateway("crypto/sentiment", payload)
+
+    async def social_x_search(
+        self,
+        *,
+        query: str,
+        allowed_x_handles: list[str] | None = None,
+        excluded_x_handles: list[str] | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        session_id: str | None = None,
+    ) -> ResearchSocialXSearchResponse:
+        """Search X through the backend-controlled research gateway."""
+        payload = self._social_x_search_payload(
+            query=query,
+            allowed_x_handles=allowed_x_handles,
+            excluded_x_handles=excluded_x_handles,
+            from_date=from_date,
+            to_date=to_date,
+            session_id=session_id,
+        )
+        return await self._post_gateway("social/x-search", payload)
+
     async def _post_gateway(
         self,
         path: str,
-        payload: ResearchWebSearchRequest | ResearchWebFetchRequest,
+        payload: dict[str, Any],
     ) -> Any:
         try:
             response = await self._authed_request(
@@ -222,6 +258,46 @@ class ResearchClient(WayfinderClient):
             )
         if context_max_characters is not None:
             payload["contextMaxCharacters"] = self._context_max(context_max_characters)
+        return payload
+
+    def _social_x_search_payload(
+        self,
+        *,
+        query: str,
+        allowed_x_handles: list[str] | None,
+        excluded_x_handles: list[str] | None,
+        from_date: str | None,
+        to_date: str | None,
+        session_id: str | None,
+    ) -> ResearchSocialXSearchRequest:
+        normalized_query = str(query).strip()
+        if not normalized_query:
+            raise ValueError("query is required")
+        if allowed_x_handles and excluded_x_handles:
+            raise ValueError(
+                "allowed_x_handles and excluded_x_handles cannot both be set"
+            )
+
+        payload: ResearchSocialXSearchRequest = {
+            "query": normalized_query,
+            "sessionID": self.resolve_session_id(session_id),
+        }
+        if allowed_x_handles:
+            payload["allowedXHandles"] = self._string_list(
+                allowed_x_handles,
+                "allowed_x_handles",
+                max_items=10,
+            )
+        if excluded_x_handles:
+            payload["excludedXHandles"] = self._string_list(
+                excluded_x_handles,
+                "excluded_x_handles",
+                max_items=10,
+            )
+        if from_date:
+            payload["fromDate"] = str(from_date).strip()
+        if to_date:
+            payload["toDate"] = str(to_date).strip()
         return payload
 
     def _fetch_payload(
@@ -324,10 +400,18 @@ class ResearchClient(WayfinderClient):
             )
         return parsed
 
-    def _string_list(self, values: list[str], field_name: str) -> list[str]:
+    def _string_list(
+        self,
+        values: list[str],
+        field_name: str,
+        *,
+        max_items: int | None = None,
+    ) -> list[str]:
         normalized = [str(value).strip() for value in values if str(value).strip()]
         if not normalized:
             raise ValueError(f"{field_name} must include at least one value")
+        if max_items is not None and len(normalized) > max_items:
+            raise ValueError(f"{field_name} must include {max_items} values or fewer")
         return normalized
 
     @staticmethod

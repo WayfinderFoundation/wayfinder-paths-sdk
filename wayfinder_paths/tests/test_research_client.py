@@ -201,6 +201,83 @@ async def test_fetch_posts_gateway_payload(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_crypto_sentiment_posts_gateway_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_base_url(monkeypatch)
+    client = ResearchClient()
+    client._authed_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=_Response(
+            {"results": [], "provider": {"name": "alternative_me_fng"}}
+        )
+    )
+
+    await client.crypto_sentiment(session_id="ses_123")
+
+    args, kwargs = client._authed_request.await_args
+    assert args == ("POST", "https://example.com/api/v1/research/crypto/sentiment/")
+    assert kwargs["json"] == {"sessionID": "ses_123"}
+
+
+@pytest.mark.asyncio
+async def test_social_x_search_posts_gateway_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_base_url(monkeypatch)
+    client = ResearchClient()
+    client._authed_request = AsyncMock(  # type: ignore[method-assign]
+        return_value=_Response({"result": {"content": ""}})
+    )
+
+    await client.social_x_search(
+        query=" $ENA launch ",
+        allowed_x_handles=["ethena_labs"],
+        from_date="2026-05-01",
+        to_date="2026-05-14",
+        session_id="ses_123",
+    )
+
+    args, kwargs = client._authed_request.await_args
+    assert args == ("POST", "https://example.com/api/v1/research/social/x-search/")
+    assert kwargs["json"] == {
+        "query": "$ENA launch",
+        "allowedXHandles": ["ethena_labs"],
+        "fromDate": "2026-05-01",
+        "toDate": "2026-05-14",
+        "sessionID": "ses_123",
+    }
+
+
+@pytest.mark.asyncio
+async def test_social_x_search_rejects_conflicting_handle_filters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_base_url(monkeypatch)
+    client = ResearchClient()
+
+    with pytest.raises(ValueError, match="cannot both be set"):
+        await client.social_x_search(
+            query="$ENA launch",
+            allowed_x_handles=["ethena_labs"],
+            excluded_x_handles=["spam"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_social_x_search_rejects_too_many_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_base_url(monkeypatch)
+    client = ResearchClient()
+
+    with pytest.raises(ValueError, match="10 values or fewer"):
+        await client.social_x_search(
+            query="$ENA launch",
+            allowed_x_handles=[f"handle_{index}" for index in range(11)],
+        )
+
+
+@pytest.mark.asyncio
 async def test_search_raises_structured_gateway_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

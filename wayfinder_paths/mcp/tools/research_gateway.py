@@ -27,7 +27,12 @@ def _optional_int(value: str, *, field_name: str) -> int | None:
         raise ValueError(f"{field_name} must be an integer") from exc
 
 
-def _split_values(value: str, *, field_name: str) -> list[str] | None:
+def _split_values(
+    value: str,
+    *,
+    field_name: str,
+    max_items: int = 25,
+) -> list[str] | None:
     raw = _optional_str(value)
     if raw is None:
         return None
@@ -36,8 +41,8 @@ def _split_values(value: str, *, field_name: str) -> list[str] | None:
     ]
     if not values:
         return None
-    if len(values) > 25:
-        raise ValueError(f"{field_name} must include 25 values or fewer")
+    if len(values) > max_items:
+        raise ValueError(f"{field_name} must include {max_items} values or fewer")
     return values
 
 
@@ -154,6 +159,50 @@ async def research_web_fetch(
         subpages=_optional_int(subpages, field_name="subpages"),
         subpage_target=_split_values(subpageTarget, field_name="subpageTarget"),
         context_max_characters=context_max,
+        session_id=sessionID,
+    )
+    return ok(result)
+
+
+@catch_errors
+async def research_crypto_sentiment(sessionID: str = "_") -> dict[str, Any]:
+    """Fetch crypto Fear & Greed sentiment through the Wayfinder Research Gateway."""
+    return ok(await RESEARCH_CLIENT.crypto_sentiment(session_id=sessionID))
+
+
+@catch_errors
+async def research_social_x_search(
+    query: str,
+    allowedXHandles: str = "_",
+    excludedXHandles: str = "_",
+    fromDate: str = "_",
+    toDate: str = "_",
+    sessionID: str = "_",
+) -> dict[str, Any]:
+    """Search X through the Wayfinder Research Gateway.
+
+    Args:
+        query: Social/X search query.
+        allowedXHandles: Optional comma/newline-separated handles to include.
+        excludedXHandles: Optional comma/newline-separated handles to exclude.
+        fromDate: Optional YYYY-MM-DD lower bound, or "_".
+        toDate: Optional YYYY-MM-DD upper bound, or "_".
+        sessionID: Optional OpenCode session id. Use "_" to resolve from runtime.
+    """
+    result = await RESEARCH_CLIENT.social_x_search(
+        query=query,
+        allowed_x_handles=_split_values(
+            allowedXHandles,
+            field_name="allowedXHandles",
+            max_items=10,
+        ),
+        excluded_x_handles=_split_values(
+            excludedXHandles,
+            field_name="excludedXHandles",
+            max_items=10,
+        ),
+        from_date=_optional_str(fromDate, field_name="fromDate"),
+        to_date=_optional_str(toDate, field_name="toDate"),
         session_id=sessionID,
     )
     return ok(result)
