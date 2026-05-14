@@ -2315,8 +2315,17 @@ class PolymarketAdapter(BaseAdapter):
 
             # Sweep any USDC.e in the deposit wallet into pUSD. Catches both
             # paths above (direct USDC.e settlement, neg-risk unwrap) and any
-            # stale balance from prior activity. Soft-fail: a missing route
-            # shouldn't undo a successful redemption.
+            # stale balance from prior activity. Wait for the last on-chain
+            # batch to land on the public RPC first — the relayer reports
+            # MINED before public node propagation, and a stale balance read
+            # here would silently skip the wrap. Soft-fail downstream: a
+            # missing BRAP route shouldn't undo a successful redemption.
+            final_tx_hash = unwrap_tx_hash or redeem["tx_hash"]
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                await web3.eth.wait_for_transaction_receipt(
+                    final_tx_hash, timeout=120
+                )
+
             wrap_tx_hash: str | None = None
             wrap_error: str | None = None
             usdce_balance = await get_token_balance(
