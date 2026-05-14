@@ -12,31 +12,35 @@ description: |
   Market-neutral pair velocity z-score on APEX/GMX (Hyperliquid perps).
 
   Signal: rolling 72h z-score of log(APEX/GMX), velocity-confirmed entry
-  at |z| > 2.0, exit on z-cross-zero. Single pair, dollar-neutral by
-  construction, low turnover.
+  at |z| > 0.75, exit on z-cross-zero. Single pair, dollar-neutral by
+  construction.
 
   Universe: APEX, GMX
   Capital efficiency: runs cleanly at $25+ NAV (per-leg notional > $10
-  HL minimum at lev=1.5)
+  HL minimum at lev=2.5, per-leg = 1.25× NAV).
 
-  Backtest (200 days, with 25 bps slippage + 4.5 bps fees + funding):
-    - 30d  Sharpe 3.25, return +8.77%,  27 trades
-    - 60d  Sharpe 4.07, return +26.54%, 55 trades
-    - 90d  Sharpe 3.78, return +50.14%, 83 trades
-    - 120d Sharpe 3.74, return +64.07%, 104 trades
+  Backtest (180 days, 30 bps slippage + 4.5 bps fees + funding):
+    - 30d  Sharpe 2.45, return  +27.7%, 45 trades
+    - 60d  Sharpe 2.54, return  +50.4%, 116 trades
+    - 90d  Sharpe 3.08, return +130.5%, 195 trades
+    - 120d Sharpe 2.19, return  +97.5%, 221 trades
+    - 180d Sharpe 2.51, return +180.4%, 328 trades
+
+  Max drawdown over the 180d window is −40%. DD is largely structural
+  at this leverage — loosening entry_z does not increase DD within this band.
 
   Funding net ≈ 0 — both legs have positive funding (APEX +11.96% /
   GMX +8.47% annualized) and the strategy alternates direction.
 
 parameters:
   lookback_bars: 72
-  entry_z: 2.0
+  entry_z: 0.75
   velocity_bars: 6
-  target_leverage: 1.5
+  target_leverage: 2.5
   rebalance_threshold: 0.02
   min_order_usd: 10.0
 
 risk_limits:
-  max_drawdown: -0.20
+  max_drawdown: -0.50
   max_position_per_symbol_usd: 1000
   max_gross_exposure_usd: 2000

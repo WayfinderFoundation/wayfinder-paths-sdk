@@ -8,7 +8,7 @@ backtest implementation against historical frames.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -57,17 +57,26 @@ class ReconcileHandler(BacktestHandler):
         self._snapshot_mids: dict[str, float] = {}
         self._snapshot_intents: list[dict[str, Any]] = []
 
-    def load_snapshot_at(self, t: datetime) -> dict[str, Any]:
-        """Pull the live-state snapshot recorded at bar `t` and project venue
-        positions, mids, and live intents out of it.
+    def _bar_interval(self) -> timedelta:
+        """One bar interval inferred from the price index (1h fallback)."""
+        if len(self._index) < 2:
+            return timedelta(hours=1)
+        return (self._index[1] - self._index[0]).to_pytimedelta()
 
-        The live runtime stores under `state` (see `ActivePerpsStrategy._run_trigger`):
-          - `positions[venue][sym] = {size, entry_price, mark_price}`
-          - `orders[venue]         = [intent dicts captured by RecordingHandler]`
-          - `mids[venue][sym]      = float`
-        """
-        snap = StateStore.snapshot_at(self.strategy_name, t)
-        venue_positions = (snap.get("positions") or {}).get(self.venue) or {}
+    def load_snapshot_at(self, t: datetime) -> dict[str, Any]:
+        """Project venue positions, mids, and live intents from the snapshots
+        whose trigger ts lies in `[t, t + bar_interval)`. Multiple triggers can
+        fire in one bar; we take state from the latest and union intents."""
+        snaps = StateStore.snapshots_in_bar(self.strategy_name, t, self._bar_interval())
+        if not snaps:
+            self._snapshot_positions = {}
+            self._snapshot_entry = {}
+            self._snapshot_mids = {}
+            self._snapshot_intents = []
+            return {}
+
+        latest = snaps[-1]
+        venue_positions = (latest.get("positions") or {}).get(self.venue) or {}
         self._snapshot_positions = {
             sym: float(p.get("size", 0.0)) for sym, p in venue_positions.items()
         }
@@ -76,10 +85,13 @@ class ReconcileHandler(BacktestHandler):
         }
         self._snapshot_mids = {
             sym: float(v)
-            for sym, v in ((snap.get("mids") or {}).get(self.venue) or {}).items()
+            for sym, v in ((latest.get("mids") or {}).get(self.venue) or {}).items()
         }
-        self._snapshot_intents = list((snap.get("orders") or {}).get(self.venue) or [])
-        return snap
+        unioned: list[dict[str, Any]] = []
+        for s in snaps:
+            unioned.extend((s.get("orders") or {}).get(self.venue) or [])
+        self._snapshot_intents = unioned
+        return latest
 
     @property
     def recorded_live_intents(self) -> list[dict[str, Any]]:

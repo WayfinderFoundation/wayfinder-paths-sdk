@@ -19,6 +19,8 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import math
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, ClassVar, Final, final
@@ -53,7 +55,7 @@ def _import_dotted(spec: str) -> Callable[..., Any]:
         module, _, attr = spec.rpartition(".")
     if not module or not attr:
         raise ImportError(f"Invalid dotted spec {spec!r}")
-    return getattr(importlib.import_module(module), attr)
+    return getattr(importlib.reload(importlib.import_module(module)), attr)
 
 
 class ActivePerpsStrategy(Strategy):
@@ -64,6 +66,15 @@ class ActivePerpsStrategy(Strategy):
     SIGNAL: ClassVar[str]  # "module:fn" or "module.fn"
     DECIDE: ClassVar[str | None] = None  # None ⇒ default_decide
     HIP3_DEXES: ClassVar[list[str]] = []
+
+    # Auto-reconcile after every successful trigger, throttled.
+    AUTO_RECONCILE_WINDOW_DAYS: ClassVar[int] = 1
+    AUTO_RECONCILE_MIN_INTERVAL_SECONDS: ClassVar[int] = 3600
+
+    # Smoke test window + minimum total_return floor. Subclasses with proven
+    # edge should raise the floor so regressions fail the smoke check.
+    SMOKE_TEST_WINDOW_DAYS: ClassVar[int] = 14
+    SMOKE_MIN_TOTAL_RETURN: ClassVar[float] = 0.0
 
     # ---------- subclass shouldn't touch ----------
     _ref: BacktestRef
@@ -145,7 +156,43 @@ class ActivePerpsStrategy(Strategy):
             halt = self._risk_limits.check(snap)
             if halt:
                 return False, f"Halted: {halt}"
-        return await self._run_trigger()
+        ok, msg = await self._run_trigger()
+        if ok:
+            recon_msg = await self._maybe_auto_reconcile()
+            if recon_msg:
+                msg = f"{msg}; {recon_msg}"
+        return ok, msg
+
+    async def _maybe_auto_reconcile(self) -> str | None:
+        """Throttled reconcile after each successful trigger. Failures are
+        captured into the return message and never break the trigger.
+        Operators should monitor the reconciliation/ directory, not this msg.
+        """
+        last = self._state.get("last_auto_reconcile_at")
+        now_s = time.time()
+        if last is not None:
+            try:
+                if (now_s - float(last)) < self.AUTO_RECONCILE_MIN_INTERVAL_SECONDS:
+                    return None
+            except (TypeError, ValueError):
+                pass
+        self._state.set("last_auto_reconcile_at", now_s)
+
+        end = pd.Timestamp.utcnow()
+        start = end - pd.Timedelta(days=self.AUTO_RECONCILE_WINDOW_DAYS)
+        try:
+            report = await self.reconcile(
+                start=start.strftime("%Y-%m-%d"),
+                end=end.strftime("%Y-%m-%d"),
+                no_fills=False,
+                write_report=True,
+            )
+        except Exception as e:  # noqa: BLE001 — reconcile must not break trigger
+            self.logger.warning("auto-reconcile failed: %s", e)
+            return f"auto-reconcile failed: {e}"
+
+        verdict = report.get("verdict") or report.get("status") or "ran"
+        return f"auto-reconcile: {verdict}"
 
     @final
     async def _run_trigger(self) -> StatusTuple:
@@ -154,10 +201,9 @@ class ActivePerpsStrategy(Strategy):
         )
 
         raw_perp, raw_hip3 = await self._build_handlers()
-        # Wrap each handler so every place_order is teed into an intents log.
-        # The reconciler replays decide() against snapshotted positions and then
-        # diffs replay-intents vs these recorded live-intents (strict axis) — and
-        # also vs HL fills (execution-path axis).
+        # Match venue leverage to target so the exchange doesn't FIFO-trim multi-leg trades.
+        await self._ensure_venue_leverage(raw_perp, raw_hip3)
+
         perp = RecordingHandler(raw_perp)
         hip3 = {k: RecordingHandler(h) for k, h in raw_hip3.items()}
 
@@ -168,6 +214,9 @@ class ActivePerpsStrategy(Strategy):
         )
 
         trigger_t = perp.now()
+        # NAV from the exchange-of-record; decide must read ctx.nav, not call
+        # get_margin_balance() itself (see TriggerContext).
+        nav = float(await perp.get_margin_balance())
         ctx = TriggerContext(
             perp=perp,
             hip3=hip3,
@@ -175,6 +224,7 @@ class ActivePerpsStrategy(Strategy):
             state=self._state,
             signal=signal_frame,
             t=trigger_t,
+            nav=nav,
         )
         await self._decide_fn(ctx)
 
@@ -215,6 +265,22 @@ class ActivePerpsStrategy(Strategy):
         )
         params_hash = hashlib.sha256(params_for_hash.encode()).hexdigest()[:16]
 
+        # Persist the values `compute_atomic_scale` saw so replays don't have
+        # to recompute them from params and re-fetch live state.
+        cost_bps_applied = float(self._ref.params.get("fee_bps", 0.0)) + float(
+            self._ref.params.get("slippage_bps", 0.0)
+        )
+        target_leverage = float(self._ref.params.get("target_leverage", 1.0))
+        current_gross = sum(
+            abs(positions_snapshot.get(venue_key, {}).get(sym, {}).get("size", 0.0))
+            * mids_snapshot.get(venue_key, {}).get(sym, 0.0)
+            for venue_key in positions_snapshot
+            for sym in positions_snapshot[venue_key]
+        )
+        free_margin_at_trigger = max(
+            0.0, nav - (current_gross / target_leverage if target_leverage > 0 else 0.0)
+        )
+
         self._state.update(
             {
                 "positions": positions_snapshot,
@@ -222,8 +288,10 @@ class ActivePerpsStrategy(Strategy):
                 "mids": mids_snapshot,
                 "signal_row": signal_row_serialised,
                 "trigger_ts": trigger_t.isoformat(),
-                "nav": self._state.get("nav"),
+                "nav": nav,
                 "params_hash": params_hash,
+                "cost_bps_applied": cost_bps_applied,
+                "free_margin_at_trigger": free_margin_at_trigger,
             }
         )
         self._state.write_snapshot(trigger_t)
@@ -547,6 +615,68 @@ class ActivePerpsStrategy(Strategy):
         for h in hip3.values():
             await h.refresh_mids()
         return perp, hip3
+
+    async def _ensure_venue_leverage(
+        self,
+        perp: MarketHandler,
+        hip3: dict[str, MarketHandler],
+    ) -> None:
+        """Raise venue leverage to ≥ ceil(target_leverage) on all signal
+        symbols. Live-only; preserves cross/isolated mode for existing
+        positions and defaults to cross for new ones. Override to opt out.
+        """
+        from wayfinder_paths.core.perps.handlers.live import (
+            LiveHandler,  # noqa: PLC0415
+        )
+
+        if not isinstance(perp, LiveHandler):
+            return
+
+        target_leverage = float(self._ref.params.get("target_leverage", 1.0))
+        required = max(1, math.ceil(target_leverage))
+
+        adapter = perp.adapter
+        addr = perp.wallet_address
+        ok, state = await adapter.get_user_state(addr)
+        existing_modes: dict[str, tuple[int, bool]] = {}
+        if ok and isinstance(state, dict):
+            for ap in state.get("assetPositions") or []:
+                p = ap.get("position") or {}
+                coin = p.get("coin")
+                lev = p.get("leverage") or {}
+                if not coin or not isinstance(lev, dict):
+                    continue
+                try:
+                    cur_val = int(lev.get("value") or 0)
+                except (TypeError, ValueError):
+                    cur_val = 0
+                is_cross = (lev.get("type") or "cross") == "cross"
+                existing_modes[coin] = (cur_val, is_cross)
+
+        symbols = list(self._ref.data.symbols)
+        for sym in symbols:
+            asset_id = adapter.coin_to_asset.get(sym)
+            if asset_id is None:
+                continue
+            cur_val, is_cross = existing_modes.get(sym, (0, True))
+            if cur_val >= required:
+                continue
+            try:
+                await adapter.update_leverage(
+                    asset_id=int(asset_id),
+                    leverage=int(required),
+                    is_cross=bool(is_cross),
+                    address=addr,
+                )
+                self.logger.info(
+                    "venue leverage repaired: %s %s→%s (cross=%s)",
+                    sym,
+                    cur_val,
+                    required,
+                    is_cross,
+                )
+            except Exception as e:  # noqa: BLE001 — never break the trigger
+                self.logger.warning("venue leverage repair failed for %s: %s", sym, e)
 
     async def _fetch_recent_data(self, perp: MarketHandler) -> tuple[Any, Any]:
         """Pull recent prices + funding for the signal window."""

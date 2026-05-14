@@ -4,29 +4,34 @@ Market-neutral pair-mean-reversion on Hyperliquid perps. Trades the
 log-spread between APEX and GMX with a velocity-confirmed z-score
 entry and zero-cross exit.
 
-## Performance (200d, with 25 bps slippage + 4.5 bps fee + funding)
+## Performance (180d, with 30 bps slippage + 4.5 bps fee + funding)
 
-| Window | Sharpe | Return | Trades |
-|---|---:|---:|---:|
-| 30d | 3.25 | +8.77% | 27 |
-| 60d | 4.07 | +26.54% | 55 |
-| 90d | 3.78 | +50.14% | 83 |
-| 120d | 3.74 | +64.07% | 104 |
+| Window | Sharpe | Return  | Max DD | Trades |
+|---|---:|---:|---:|---:|
+| 30d   | 2.45 |  +27.7% | −22.9% | 45  |
+| 60d   | 2.54 |  +50.4% | −22.9% | 116 |
+| 90d   | 3.08 | +130.5% | −30.8% | 195 |
+| 120d  | 2.19 |  +97.5% | −38.9% | 221 |
+| 180d  | 2.51 | +180.4% | −40.0% | 328 |
 
-Activity at $46 NAV: ~0.9 trades/day, ~$25 daily volume. Per-leg
-notional ~$34 — well above HL's $10 minimum at lev=1.5.
+Max drawdown ~−40% is structural at this leverage and largely
+invariant to `entry_z` between 0.5 and 1.5. Breakeven slippage is
+~100 bps; at the realistic 30 bps assumption there is 3× headroom.
+
+Activity at $46 NAV: ~1.8 trades/day, per-leg notional ~$57 — well
+above HL's $10 minimum at lev=2.5.
 
 ## Logic
 
 For each hourly bar:
 - `z = (log(APEX/GMX) - rolling_mean) / rolling_std` over 72 bars
 - `dz = z[t] - z[t-6]` (6-bar velocity)
-- LONG APEX / SHORT GMX when `z < -2.0` AND `dz > 0`
-- SHORT APEX / LONG GMX when `z > +2.0` AND `dz < 0`
+- LONG APEX / SHORT GMX when `z < -0.75` AND `dz > 0`
+- SHORT APEX / LONG GMX when `z > +0.75` AND `dz < 0`
 - Exit when z crosses zero
 
-Each side gets `target_leverage / 2 = 0.75` of NAV. Total gross
-exposure when entered: 1.5× NAV.
+Each side gets `target_leverage / 2 = 1.25` of NAV. Total gross
+exposure when entered: 2.5× NAV.
 
 ## Funding economics
 

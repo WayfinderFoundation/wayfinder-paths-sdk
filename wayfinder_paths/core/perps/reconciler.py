@@ -37,7 +37,7 @@ def _import_dotted(spec: str):
         module, attr = spec.split(":", 1)
     else:
         module, _, attr = spec.rpartition(".")
-    return getattr(importlib.import_module(module), attr)
+    return getattr(importlib.reload(importlib.import_module(module)), attr)
 
 
 def _warn_hash_mismatch(ref: BacktestRef) -> list[str]:
@@ -757,7 +757,11 @@ async def _pull_live_fills(
     if not ok or not isinstance(raw, list):
         return []
     start_ms = pd.Timestamp(start).timestamp() * 1000
-    end_ms = pd.Timestamp(end).timestamp() * 1000
+    # Bare date strings parse as midnight; bump so the final day is inclusive.
+    end_ts = pd.Timestamp(end)
+    if end_ts.normalize() == end_ts:
+        end_ts = end_ts + pd.Timedelta(days=1)
+    end_ms = end_ts.timestamp() * 1000
     return [f for f in raw if start_ms <= float(f.get("time", 0)) <= end_ms]
 
 
@@ -980,6 +984,90 @@ def _counterfactual_pnl(
     }
 
 
+def _compute_verdict(
+    drift: dict[str, Any], warnings: list[str]
+) -> tuple[str, list[str]]:
+    """PASS / WARN / FAIL aggregated across drift axes. FAIL = parity-broken
+    (code, data, config, position, signal, or no-fill). WARN = operational
+    noise (partial fills, slippage outliers, funding drift)."""
+    reasons: list[str] = []
+
+    drift_warning_markers = (
+        "decide source_sha256 drift",
+        "ref source_sha256 drift",
+        "data fingerprint drift",
+        "signal_fn",
+        "decide_fn",
+        "not importable",
+    )
+    for w in warnings:
+        if any(marker in w for marker in drift_warning_markers):
+            reasons.append(f"code/data drift: {w}")
+
+    config = drift.get("config") or {}
+    if config.get("drifted_from_ref"):
+        reasons.append(
+            f"live params hash {config.get('live_params_hashes')} differ from "
+            f"ref {config.get('ref_params_hash')}"
+        )
+
+    position = drift.get("position") or {}
+    pos_summary = position.get("summary") or {}
+    sim_only = int(pos_summary.get("sim_only_count") or 0)
+    live_only = int(pos_summary.get("live_only_count") or 0)
+    if sim_only > 0:
+        reasons.append(f"position: {sim_only} sim-only intent(s) without live fill")
+    if live_only > 0:
+        reasons.append(f"position: {live_only} live-only fill(s) without sim intent")
+
+    fill_rate = drift.get("fill_rate") or {}
+    fr_summary = fill_rate.get("summary") or {}
+    no_fill = int(fr_summary.get("no_fill_count") or 0)
+    if no_fill > 0:
+        reasons.append(f"fill_rate: {no_fill} intended order(s) had zero fill")
+
+    signal = drift.get("signal") or {}
+    sig_summary = signal.get("summary") or {}
+    bars_drift = int(sig_summary.get("bars_with_drift") or 0)
+    max_drift = float(sig_summary.get("max_abs_drift") or 0.0)
+    if bars_drift > 0 or max_drift > 1e-6:
+        reasons.append(
+            f"signal: {bars_drift} bars with weight drift, max |Δw|={max_drift:.4f}"
+        )
+
+    if reasons:
+        return "FAIL", reasons
+
+    soft_reasons: list[str] = []
+    partial = int((fill_rate.get("summary") or {}).get("partial_count") or 0)
+    if partial > 0:
+        soft_reasons.append(f"{partial} partial fill(s)")
+
+    slip = drift.get("slippage") or {}
+    slip_outliers = slip.get("price_drifts") or []
+    outliers_excess = [
+        d
+        for d in slip_outliers
+        if abs(float(d.get("drift_bps") or 0.0))
+        > 2.0 * float(d.get("expected_bps") or 0.0)
+    ]
+    if outliers_excess:
+        soft_reasons.append(f"{len(outliers_excess)} slippage outlier(s) >2× expected")
+
+    funding = drift.get("funding") or {}
+    f_drift = abs(float((funding.get("summary") or {}).get("drift") or 0.0))
+    total_real = abs(
+        float((funding.get("summary") or {}).get("total_real_funding") or 0.0)
+    )
+    # Skip when total_real is small — likely an empty counterfactual baseline.
+    if f_drift > 0.50 and total_real > 0.50:
+        soft_reasons.append(f"funding drift ${f_drift:.2f}")
+
+    if soft_reasons:
+        return "WARN", soft_reasons
+    return "PASS", []
+
+
 async def reconcile_strategy(
     *,
     strategy_dir: str | Path,
@@ -1064,9 +1152,12 @@ async def reconcile_strategy(
     replay_intents: list[dict[str, Any]] = []
     recorded_live: list[dict[str, Any]] = []
     for i, t in enumerate(prices.index):
+        snap_nav = 0.0
         for h in handlers.values():
             h.set_bar(i)
-            h.load_snapshot_at(t.to_pydatetime())
+            snap = h.load_snapshot_at(t.to_pydatetime())
+            if h.venue == "perp":
+                snap_nav = float(snap.get("nav") or 0.0)
             for live in h.recorded_live_intents:
                 rec = dict(live)
                 rec["bar_t"] = str(t)
@@ -1079,6 +1170,7 @@ async def reconcile_strategy(
             state=state,
             signal=signal_frame,
             t=t.to_pydatetime(),
+            nav=snap_nav,
         )
         await decide_fn(ctx)
         for h in handlers.values():
@@ -1170,10 +1262,14 @@ async def reconcile_strategy(
         counterfactual_positions=cf_positions,
     )
 
+    verdict, verdict_reasons = _compute_verdict(drift, warnings)
+
     payload = {
         "strategy": strategy_name,
         "ref_hash": ref.produced.ref_hash,
         "window": {"start": start, "end": end, "bars": len(prices.index)},
+        "verdict": verdict,
+        "verdict_reasons": verdict_reasons,
         "warnings": warnings,
         "intents": replay_intents,
         "recorded_live_intents": recorded_live,

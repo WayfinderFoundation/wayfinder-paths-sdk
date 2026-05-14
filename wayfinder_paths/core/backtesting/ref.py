@@ -66,6 +66,8 @@ class ExecutionAssumptions:
     slippage_bps: float = 1.0
     fee_bps: float = 4.5
     min_order_usd: float = 10.0
+    # Per-symbol szDecimals so backtest rounds the same way live does.
+    sz_decimals: dict[str, int] | None = None
 
 
 @dataclass
