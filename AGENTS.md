@@ -156,6 +156,14 @@ runner(action="delete_job", name="<name>")
 runner(action="daemon_stop")                          # shut down daemon
 ```
 
+`pause_job`, `resume_job`, `delete_job`, `update_job`, `run_once`, and
+`daemon_stop` change runtime state. Only use them when the user explicitly asks
+for that exact change or approves your proposed change. Never pause, delete,
+stop, or reschedule a job just because its `job_result` notifications are noisy,
+unchanged, or below a trigger threshold; offer the change and wait for the user.
+On OpenCode/Shells, these actions go through the approval-gated
+`core_runner_mutation` MCP tool.
+
 See `RUNNER_ARCHITECTURE.md`.
 
 ## Path creation
