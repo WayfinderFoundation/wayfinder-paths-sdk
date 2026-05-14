@@ -210,11 +210,11 @@ When a user wants **immediate, one-off execution**:
 - **On-chain:** use `mcp__wayfinder__core_execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
 - **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
   - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
-  - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in USDC.e on Polygon. Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
+  - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
   Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
 - **Hyperliquid perps/spot/outcomes:** use `mcp__wayfinder__hyperliquid_execute` (market/limit, leverage, cancel; HIP-4 outcome markets via `place_outcome_order`). **Before your first `hyperliquid_execute` call in a session, invoke `/using-hyperliquid-adapter`** to load the MCP tool's required-parameter rules (`is_spot`, `leverage`, `usd_amount_kind`, outcome `outcome_id`/`side`, etc.). The skill covers both the MCP tool interface and the Python adapter.
-- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔USDC.e, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (USDC.e collateral + tradability filters + outcome selection).
+- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔pUSD, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (pUSD collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__core_run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 ### Complex transaction flow (multi-step or fund-moving)
@@ -246,16 +246,17 @@ Polymarket quick flows:
 
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
 - Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
-- Convert **native Polygon USDC (0x3c499c...) → USDC.e (0x2791..., required collateral)**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` (skip if you already have USDC.e)
+- Convert **native Polygon USDC (0x3c499c...) → pUSD (0xC011a7..., V2 collateral)**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` (adapter routes USDC → USDC.e → pUSD automatically; skip if you already have pUSD)
 - Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
 - Sell shares (market order): `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
 - Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
-Polymarket funding (USDC.e collateral):
+Polymarket funding (pUSD collateral):
 
-- **Polygon USDC → USDC.e:** `polymarket_execute(action="bridge_deposit", amount=10)` converts native USDC (0x3c499c...) → USDC.e (0x2791...).
-- **Already have USDC.e:** Trade immediately, skip `bridge_deposit`.
-- **Funds on other chains:** BRAP swap to USDC.e: `execute(kind="swap", from_token="usd-coin-base", to_token="polygon_0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")`. Or use `bridge_deposit` with `from_chain_id` + `from_token_address`.
+- **Polygon USDC → pUSD:** `polymarket_execute(action="bridge_deposit", amount=10)` converts native USDC (0x3c499c...) → pUSD (0xC011a7...), routing through USDC.e automatically.
+- **Polygon USDC.e → pUSD:** same `bridge_deposit` call wraps USDC.e → pUSD in a single step (polymarket_bridge solver).
+- **Already have pUSD:** Trade immediately, skip `bridge_deposit`.
+- **Funds on other chains:** use `bridge_deposit` with `from_chain_id` + `from_token_address` — the adapter bridges to Polygon and wraps into pUSD end-to-end.
 
 Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X`is **notional** or **margin** (use`usd_amount_kind="notional"|"margin"`on`mcp**wayfinder**hyperliquid_execute`).
 
