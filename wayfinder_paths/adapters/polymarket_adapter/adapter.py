@@ -2266,6 +2266,21 @@ class PolymarketAdapter(BaseAdapter):
             cond = path["conditionId"]
             index_sets = path["indexSets"]
 
+            pusd_before, usdce_before = await asyncio.gather(
+                get_token_balance(
+                    POLYGON_P_USDC_PROXY_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
+                get_token_balance(
+                    POLYGON_USDC_E_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
+            )
+
             async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
                 ctf = web3.eth.contract(
                     address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
@@ -2313,22 +2328,38 @@ class PolymarketAdapter(BaseAdapter):
                     )
                     unwrap_tx_hash = unwrap["tx_hash"]
 
-            # Sweep any USDC.e in the deposit wallet into pUSD. Catches both
-            # paths above (direct USDC.e settlement, neg-risk unwrap) and any
-            # stale balance from prior activity. Soft-fail: a missing route
-            # shouldn't undo a successful redemption.
+            # Poll for the redemption's payout to land on the public RPC —
+            # the relayer reports MINED ahead of public-node propagation.
+            # Bounded at 5s; whichever side increases tells us how the market
+            # settled (pUSD direct → done, USDC.e → wrap the delta).
             wrap_tx_hash: str | None = None
             wrap_error: str | None = None
-            usdce_balance = await get_token_balance(
-                POLYGON_USDC_E_ADDRESS,
-                POLYGON_CHAIN_ID,
-                deposit_wallet,
-                block_identifier="latest",
-            )
-            if usdce_balance > 0:
+            usdce_delta = 0
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                pusd_now, usdce_now = await asyncio.gather(
+                    get_token_balance(
+                        POLYGON_P_USDC_PROXY_ADDRESS,
+                        POLYGON_CHAIN_ID,
+                        deposit_wallet,
+                        block_identifier="latest",
+                    ),
+                    get_token_balance(
+                        POLYGON_USDC_E_ADDRESS,
+                        POLYGON_CHAIN_ID,
+                        deposit_wallet,
+                        block_identifier="latest",
+                    ),
+                )
+                if pusd_now > pusd_before or usdce_now > usdce_before:
+                    usdce_delta = usdce_now - usdce_before
+                    break
+                await asyncio.sleep(0.25)
+
+            if usdce_delta > 0:
                 try:
                     wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
-                        amount_base_unit=usdce_balance,
+                        amount_base_unit=usdce_delta,
                     )
                 except Exception as wrap_exc:  # noqa: BLE001
                     wrap_error = str(wrap_exc)
