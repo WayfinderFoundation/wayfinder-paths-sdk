@@ -199,6 +199,7 @@ The frontend shows synced jobs and runs in the "Scheduled" tab of the shells sid
 ## Migration notes
 
 - Hyperliquid UnifiedAccount is the preferred account mode. If the user is on a legacy split spot/perp account, migrating may require closing all open positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before every order placement, but the flip can fail mid-state if open positions or stuck spot balances prevent the switch — you may need to edit code and write a custom script to unblock the user.
+- UnifiedAccount mode means that perp and spot account have the same margin. In this mode transfers between perp and spot accounts aren't needed and will not work.
 
 ## User Suggestions (always emit)
 
