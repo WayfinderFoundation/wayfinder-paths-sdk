@@ -2334,7 +2334,7 @@ class PolymarketAdapter(BaseAdapter):
             # settled (pUSD direct → done, USDC.e → wrap the delta).
             wrap_tx_hash: str | None = None
             wrap_error: str | None = None
-            usdce_delta = 0
+            usdce_to_wrap = 0
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
                 pusd_now, usdce_now = await asyncio.gather(
@@ -2352,14 +2352,14 @@ class PolymarketAdapter(BaseAdapter):
                     ),
                 )
                 if pusd_now > pusd_before or usdce_now > usdce_before:
-                    usdce_delta = usdce_now - usdce_before
+                    usdce_to_wrap = usdce_now
                     break
                 await asyncio.sleep(0.25)
 
-            if usdce_delta > 0:
+            if usdce_to_wrap > 0:
                 try:
                     wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
-                        amount_base_unit=usdce_delta,
+                        amount_base_unit=usdce_to_wrap,
                     )
                 except Exception as wrap_exc:  # noqa: BLE001
                     wrap_error = str(wrap_exc)
