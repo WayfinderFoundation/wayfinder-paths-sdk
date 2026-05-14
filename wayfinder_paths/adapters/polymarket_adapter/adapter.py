@@ -2319,8 +2319,8 @@ class PolymarketAdapter(BaseAdapter):
             wrap_tx_hash: str | None = None
             wrap_error: str | None = None
             produces_usdce = to_checksum_address(collateral) in {
-                to_checksum_address(POLYMARKET_ADAPTER_COLLATERAL_ADDRESS),
-                to_checksum_address(POLYGON_USDC_E_ADDRESS),
+                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                POLYGON_USDC_E_ADDRESS,
             }
             if produces_usdce:
                 usdce_balance = await get_token_balance(
