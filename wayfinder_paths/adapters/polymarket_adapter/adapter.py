@@ -2251,10 +2251,7 @@ class PolymarketAdapter(BaseAdapter):
         return False, "No redeemable balance detected for the provided condition_id."
 
     async def redeem_positions(
-        self,
-        *,
-        condition_id: str,
-        auto_wrap_redemption_usdce: bool = True,
+        self, *, condition_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             deposit_wallet = self.deposit_wallet_address()
@@ -2326,7 +2323,7 @@ class PolymarketAdapter(BaseAdapter):
                 POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
                 POLYGON_USDC_E_ADDRESS,
             }
-            if auto_wrap_redemption_usdce and produces_usdce:
+            if produces_usdce:
                 usdce_balance = await get_token_balance(
                     POLYGON_USDC_E_ADDRESS,
                     POLYGON_CHAIN_ID,

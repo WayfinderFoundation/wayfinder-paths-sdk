@@ -520,8 +520,6 @@ async def polymarket_execute(
     max_slippage_pct: float | None = None,
     # redeem
     condition_id: str | None = None,
-    # auto-wrap USDC.e → pUSD on redemption (true by default; set false to leave USDC.e).
-    auto_wrap_redemption_usdce: bool = True,
 ) -> dict[str, Any]:
     """Execute Polymarket trades, bridge collateral, cancel/redeem.
 
@@ -542,9 +540,9 @@ async def polymarket_execute(
         (default 2%); order is killed if the book moves past the cap.
       - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
       - `cancel_order`: by `order_id`.
-      - `redeem_positions`: claim winnings on a resolved market by `condition_id`. By default
-        any USDC.e proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver
-        through the deposit wallet — set `auto_wrap_redemption_usdce=False` to skip.
+      - `redeem_positions`: claim winnings on a resolved market by `condition_id`. USDC.e
+        proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver through
+        the deposit wallet.
 
     Args:
         wallet_label: Required.
@@ -583,7 +581,6 @@ async def polymarket_execute(
         "order_id": order_id,
         "max_slippage_pct": max_slippage_pct,
         "condition_id": condition_id,
-        "auto_wrap_redemption_usdce": auto_wrap_redemption_usdce,
     }
     preview_obj = await build_polymarket_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
@@ -865,10 +862,7 @@ async def polymarket_execute(
                 cid = throw_if_empty_str(
                     "condition_id is required for redeem_positions", condition_id
                 )
-                ok_r, res = await adapter.redeem_positions(
-                    condition_id=cid,
-                    auto_wrap_redemption_usdce=auto_wrap_redemption_usdce,
-                )
+                ok_r, res = await adapter.redeem_positions(condition_id=cid)
                 effects.append(
                     {
                         "type": "polymarket",
@@ -884,10 +878,7 @@ async def polymarket_execute(
                     action="redeem_positions",
                     status=status,
                     chain_id=int(POLYGON_CHAIN_ID),
-                    details={
-                        "condition_id": cid,
-                        "auto_wrap_redemption_usdce": auto_wrap_redemption_usdce,
-                    },
+                    details={"condition_id": cid},
                 )
                 return _done(status)
 

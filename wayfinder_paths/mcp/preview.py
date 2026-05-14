@@ -272,11 +272,7 @@ async def build_polymarket_execute_preview(
         return {"summary": header + base + details, "recipient_mismatch": False}
 
     if action == "redeem_positions":
-        details = (
-            "\n\nREDEEM\n"
-            f"condition_id: {req.get('condition_id')}\n"
-            f"auto_wrap_redemption_usdce: {req.get('auto_wrap_redemption_usdce')}"
-        )
+        details = f"\n\nREDEEM\ncondition_id: {req.get('condition_id')}"
         return {"summary": header + base + details, "recipient_mismatch": False}
 
     return {"summary": header + base, "recipient_mismatch": mismatch}
