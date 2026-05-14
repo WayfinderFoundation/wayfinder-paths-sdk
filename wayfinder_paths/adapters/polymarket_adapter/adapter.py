@@ -898,6 +898,49 @@ class PolymarketAdapter(BaseAdapter):
             quote=quote,
         )
 
+    async def _wrap_deposit_wallet_usdce_to_pusd(self, *, amount_base_unit: int) -> str:
+        """USDC.e → pUSD swap signed by the deposit wallet via its batch entry.
+
+        BRAP solver builds the route against `from_wallet=deposit_wallet`; we
+        bundle the ERC20 approval + router call into a single batch so the
+        deposit wallet never holds an open USDC.e allowance between txs.
+        """
+        deposit_wallet = self.deposit_wallet_address()
+        quote_response = await BRAP_CLIENT.get_quote(
+            from_token=POLYGON_USDC_E_ADDRESS,
+            to_token=POLYGON_P_USDC_PROXY_ADDRESS,
+            from_chain=POLYGON_CHAIN_ID,
+            to_chain=POLYGON_CHAIN_ID,
+            from_wallet=deposit_wallet,
+            from_amount=str(amount_base_unit),
+            slippage=self._BRAP_DEFAULT_SLIPPAGE,
+        )
+        quote = quote_response.get("best_quote")
+        if not quote:
+            raise ValueError("No BRAP quote for USDC.e → pUSD")
+        calldata = quote.get("calldata") or {}
+        router = to_checksum_address(calldata["to"])
+
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+            usdce = web3.eth.contract(address=POLYGON_USDC_E_ADDRESS, abi=ERC20_ABI)
+            approve_data = usdce.encode_abi("approve", [router, amount_base_unit])
+
+        result = await self._submit_wallet_batch(
+            calls=[
+                {
+                    "target": POLYGON_USDC_E_ADDRESS,
+                    "value": 0,
+                    "data": approve_data,
+                },
+                {
+                    "target": router,
+                    "value": int(calldata.get("value") or 0),
+                    "data": calldata["data"],
+                },
+            ]
+        )
+        return result["tx_hash"]
+
     async def bridge_deposit(
         self,
         *,
@@ -2271,10 +2314,32 @@ class PolymarketAdapter(BaseAdapter):
                     )
                     unwrap_tx_hash = unwrap["tx_hash"]
 
+            # Redemption settles in USDC.e (directly, or via the neg-risk
+            # wrapper unwrapped above). The deposit wallet's tradable balance
+            # is pUSD, so wrap any USDC.e back through BRAP. Soft-fail: a
+            # missing route shouldn't undo a successful redemption.
+            wrap_tx_hash: str | None = None
+            wrap_error: str | None = None
+            usdce_balance = await get_token_balance(
+                POLYGON_USDC_E_ADDRESS,
+                POLYGON_CHAIN_ID,
+                deposit_wallet,
+                block_identifier="latest",
+            )
+            if usdce_balance > 0:
+                try:
+                    wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
+                        amount_base_unit=usdce_balance,
+                    )
+                except Exception as wrap_exc:  # noqa: BLE001
+                    wrap_error = str(wrap_exc)
+
             return True, {
                 "deposit_wallet": deposit_wallet,
                 "tx_hash": redeem["tx_hash"],
                 "unwrap_tx_hash": unwrap_tx_hash,
+                "wrap_tx_hash": wrap_tx_hash,
+                "wrap_error": wrap_error,
                 "path": path,
             }
         except Exception as exc:  # noqa: BLE001
