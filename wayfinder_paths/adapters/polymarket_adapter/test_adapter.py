@@ -132,6 +132,16 @@ class TestPolymarketAdapter:
         adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
         adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+        adapter.quote_market_order = AsyncMock(
+            return_value=(
+                True,
+                {
+                    "fully_fillable": True,
+                    "worst_price": 0.55,
+                    "book_meta": {"tick_size": "0.01"},
+                },
+            )
+        )
 
         class FakeClobClient:
             def __init__(self):
@@ -160,8 +170,12 @@ class TestPolymarketAdapter:
         assert ok is True
         assert response["order_type"] == "FOK"
         assert response["post_only"] is False
+        # 0.55 * (1 + 2/100) = 0.561 → ceil to next 0.01 tick = 0.57
+        assert response["price_cap"] == pytest.approx(0.57)
+        assert response["max_slippage_pct"] == 2.0
         order_args = fake_clob_client.created_order
         assert isinstance(order_args, polymarket_adapter_module.MarketOrderArgs)
+        assert order_args.price == pytest.approx(0.57)
         assert (
             order_args.builder_code == polymarket_adapter_module.POLYMARKET_BUILDER_CODE
         )

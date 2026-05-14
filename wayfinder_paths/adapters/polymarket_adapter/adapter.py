@@ -7,7 +7,7 @@ import hmac
 import json
 import re
 import time
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from difflib import SequenceMatcher
 from typing import Any, Literal
 
@@ -88,6 +88,10 @@ def _fuzzy_score(query: str, text: str) -> float:
 
 class PolymarketAdapter(BaseAdapter):
     adapter_type = "POLYMARKET"
+
+    DEFAULT_MAX_SLIPPAGE_PCT = (
+        2.0  # Polymarket prices live in [0, 1], no native slippage param
+    )
 
     def __init__(
         self,
@@ -545,6 +549,7 @@ class PolymarketAdapter(BaseAdapter):
         market_slug: str,
         outcome: str | int = "YES",
         amount_collateral: float = 1.0,
+        max_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -558,6 +563,7 @@ class PolymarketAdapter(BaseAdapter):
             token_id=token_id,
             side="BUY",
             amount=amount_collateral,
+            max_slippage_pct=max_slippage_pct,
         )
 
     async def cash_out_prediction(
@@ -566,6 +572,7 @@ class PolymarketAdapter(BaseAdapter):
         market_slug: str,
         outcome: str | int = "YES",
         shares: float = 1.0,
+        max_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -579,6 +586,7 @@ class PolymarketAdapter(BaseAdapter):
             token_id=token_id,
             side="SELL",
             amount=shares,
+            max_slippage_pct=max_slippage_pct,
         )
 
     async def get_market_prices_history(
@@ -893,6 +901,48 @@ class PolymarketAdapter(BaseAdapter):
             from_address=from_address,
             quote=quote,
         )
+
+    async def _wrap_deposit_wallet_usdce_to_pusd(self, *, amount_base_unit: int) -> str:
+        """USDC.e → pUSD wrap signed by the deposit wallet via its batch entry.
+
+        Routes through BRAP's polymarket_bridge solver, which wraps 1:1 — no
+        slippage. We bundle the ERC20 approval + router call into a single
+        batch so the deposit wallet never holds an open USDC.e allowance
+        between txs.
+        """
+        deposit_wallet = self.deposit_wallet_address()
+        quote_response = await BRAP_CLIENT.get_quote(
+            from_token=POLYGON_USDC_E_ADDRESS,
+            to_token=POLYGON_P_USDC_PROXY_ADDRESS,
+            from_chain=POLYGON_CHAIN_ID,
+            to_chain=POLYGON_CHAIN_ID,
+            from_wallet=deposit_wallet,
+            from_amount=str(amount_base_unit),
+            slippage=0,
+        )
+        quote = quote_response["best_quote"]
+        calldata = quote["calldata"]
+        router = to_checksum_address(calldata["to"])
+
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+            usdce = web3.eth.contract(address=POLYGON_USDC_E_ADDRESS, abi=ERC20_ABI)
+            approve_data = usdce.encode_abi("approve", [router, amount_base_unit])
+
+        result = await self._submit_wallet_batch(
+            calls=[
+                {
+                    "target": POLYGON_USDC_E_ADDRESS,
+                    "value": 0,
+                    "data": approve_data,
+                },
+                {
+                    "target": router,
+                    "value": int(calldata.get("value", 0)),
+                    "data": calldata["data"],
+                },
+            ]
+        )
+        return result["tx_hash"]
 
     async def bridge_deposit(
         self,
@@ -1301,7 +1351,7 @@ class PolymarketAdapter(BaseAdapter):
             if rows:
                 last = rows[0]
                 state = last["state"]
-                if state in {"STATE_CONFIRMED", "STATE_MINED"}:
+                if state == "STATE_MINED":
                     return last
                 if state in {"STATE_FAILED", "STATE_INVALID"}:
                     raise ValueError(f"Relayer transaction failed: {last}")
@@ -1611,9 +1661,12 @@ class PolymarketAdapter(BaseAdapter):
         token_id: str,
         side: Literal["BUY", "SELL"],
         amount: float,
-        price: float | None = None,
+        max_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
-        # BUY amount = collateral ($) to spend, SELL amount = shares to sell
+        # BUY amount = collateral ($) to spend, SELL amount = shares to sell.
+        # Polymarket has no slippage param; canonical pattern (see py-clob-client-v2
+        # MarketOrderArgsV2.price doc + create_market_order source) is to derive a
+        # worst-acceptable price from the book and sign an FOK at that cap.
         ok_setup, setup = await self.ensure_trading_setup(token_id=token_id)
         if not ok_setup:
             return False, setup
@@ -1621,12 +1674,39 @@ class PolymarketAdapter(BaseAdapter):
         if not ok:
             return False, msg
 
+        ok_quote, quote = await self.quote_market_order(
+            token_id=token_id, side=side, amount=amount
+        )
+        if not ok_quote:
+            return False, quote
+        if not quote["fully_fillable"]:
+            return False, {"error": "insufficient book liquidity", "quote": quote}
+
+        worst = Decimal(str(quote["worst_price"]))
+        tick = Decimal(str(quote["book_meta"].get("tick_size") or "0.01"))
+        pct = Decimal(
+            str(
+                self.DEFAULT_MAX_SLIPPAGE_PCT
+                if max_slippage_pct is None
+                else max_slippage_pct
+            )
+        )
+        slip = pct / Decimal(100)
+        if side == "BUY":
+            raw = worst * (Decimal(1) + slip)
+            cap = (raw / tick).quantize(Decimal(1), rounding=ROUND_CEILING) * tick
+            cap = min(cap, Decimal(1) - tick)
+        else:
+            raw = worst * (Decimal(1) - slip)
+            cap = (raw / tick).quantize(Decimal(1), rounding=ROUND_FLOOR) * tick
+            cap = max(cap, tick)
+
         try:
             order_args = MarketOrderArgs(
                 token_id=token_id,
                 side=side,
                 amount=amount,
-                price=price or 0.0,
+                price=float(cap),
                 builder_code=POLYMARKET_BUILDER_CODE,
             )  # type: ignore[misc]
             order = await self.clob_client.create_market_order(order_args)
@@ -1634,6 +1714,9 @@ class PolymarketAdapter(BaseAdapter):
             out = resp if isinstance(resp, dict) else {"result": resp}
             out.setdefault("deposit_wallet", self.deposit_wallet_address())
             out.setdefault("setup", setup)
+            out["quote"] = quote
+            out["price_cap"] = float(cap)
+            out["max_slippage_pct"] = float(pct)
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -2188,6 +2271,21 @@ class PolymarketAdapter(BaseAdapter):
             cond = path["conditionId"]
             index_sets = path["indexSets"]
 
+            pusd_before, usdce_before = await asyncio.gather(
+                get_token_balance(
+                    POLYGON_P_USDC_PROXY_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
+                get_token_balance(
+                    POLYGON_USDC_E_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
+            )
+
             async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
                 ctf = web3.eth.contract(
                     address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
@@ -2235,10 +2333,48 @@ class PolymarketAdapter(BaseAdapter):
                     )
                     unwrap_tx_hash = unwrap["tx_hash"]
 
+            # Poll for the redemption's payout to land on the public RPC —
+            # the relayer reports MINED ahead of public-node propagation.
+            # Bounded at 5s; whichever side increases tells us how the market
+            # settled (pUSD direct → done, USDC.e → wrap the delta).
+            wrap_tx_hash: str | None = None
+            wrap_error: str | None = None
+            usdce_to_wrap = 0
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                pusd_now, usdce_now = await asyncio.gather(
+                    get_token_balance(
+                        POLYGON_P_USDC_PROXY_ADDRESS,
+                        POLYGON_CHAIN_ID,
+                        deposit_wallet,
+                        block_identifier="latest",
+                    ),
+                    get_token_balance(
+                        POLYGON_USDC_E_ADDRESS,
+                        POLYGON_CHAIN_ID,
+                        deposit_wallet,
+                        block_identifier="latest",
+                    ),
+                )
+                if pusd_now > pusd_before or usdce_now > usdce_before:
+                    usdce_to_wrap = usdce_now
+                    break
+                await asyncio.sleep(0.25)
+
+            if usdce_to_wrap > 0:
+                try:
+                    wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
+                        amount_base_unit=usdce_to_wrap,
+                    )
+                except Exception as wrap_exc:  # noqa: BLE001
+                    wrap_error = str(wrap_exc)
+
             return True, {
                 "deposit_wallet": deposit_wallet,
                 "tx_hash": redeem["tx_hash"],
                 "unwrap_tx_hash": unwrap_tx_hash,
+                "wrap_tx_hash": wrap_tx_hash,
+                "wrap_error": wrap_error,
                 "path": path,
             }
         except Exception as exc:  # noqa: BLE001

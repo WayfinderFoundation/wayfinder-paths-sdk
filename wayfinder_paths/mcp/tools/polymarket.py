@@ -516,6 +516,8 @@ async def polymarket_execute(
     size: float | None = None,
     post_only: bool = False,
     order_id: str | None = None,
+    # market-order slippage cap (percent). None = adapter default (2%).
+    max_slippage_pct: float | None = None,
     # redeem
     condition_id: str | None = None,
 ) -> dict[str, Any]:
@@ -533,10 +535,14 @@ async def polymarket_execute(
       - `withdraw_deposit_wallet`: pull pUSD from the deposit wallet back to the owner EOA
         via the relayer. Omit `amount` to withdraw the full balance.
       - `place_market_order`: market order. Specify `market_slug`+`outcome` OR `token_id`, with
-        `side="BUY"|"SELL"`. BUY needs `amount_collateral` (pUSD); SELL needs `shares`.
+        `side="BUY"|"SELL"`. BUY needs `amount_collateral` (pUSD); SELL needs `shares`. Adapter
+        quotes the book and signs an FOK limit at `worst_price * (1 ± max_slippage_pct/100)`
+        (default 2%); order is killed if the book moves past the cap.
       - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
       - `cancel_order`: by `order_id`.
-      - `redeem_positions`: claim winnings on a resolved market by `condition_id`.
+      - `redeem_positions`: claim winnings on a resolved market by `condition_id`. USDC.e
+        proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver through
+        the deposit wallet.
 
     Args:
         wallet_label: Required.
@@ -573,6 +579,7 @@ async def polymarket_execute(
         "size": size,
         "post_only": post_only,
         "order_id": order_id,
+        "max_slippage_pct": max_slippage_pct,
         "condition_id": condition_id,
     }
     preview_obj = await build_polymarket_execute_preview(tool_input)
@@ -738,12 +745,14 @@ async def polymarket_execute(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             amount_collateral=float(amount_collateral),
+                            max_slippage_pct=max_slippage_pct,
                         )
                     else:
                         ok_trade, res = await adapter.cash_out_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             shares=float(shares),
+                            max_slippage_pct=max_slippage_pct,
                         )
                 else:
                     tid = throw_if_empty_str(
@@ -753,6 +762,7 @@ async def polymarket_execute(
                         token_id=tid,
                         side=side,
                         amount=float(amount_collateral if side == "BUY" else shares),
+                        max_slippage_pct=max_slippage_pct,
                     )
 
                 effects.append(
@@ -779,6 +789,9 @@ async def polymarket_execute(
                         if amount_collateral is not None
                         else None,
                         "shares": float(shares) if shares is not None else None,
+                        "max_slippage_pct": float(max_slippage_pct)
+                        if max_slippage_pct is not None
+                        else None,
                     },
                 )
                 return _done(status)
