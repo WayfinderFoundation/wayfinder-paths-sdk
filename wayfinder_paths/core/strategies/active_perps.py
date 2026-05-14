@@ -55,7 +55,7 @@ def _import_dotted(spec: str) -> Callable[..., Any]:
         module, _, attr = spec.rpartition(".")
     if not module or not attr:
         raise ImportError(f"Invalid dotted spec {spec!r}")
-    return getattr(importlib.import_module(module), attr)
+    return getattr(importlib.reload(importlib.import_module(module)), attr)
 
 
 class ActivePerpsStrategy(Strategy):

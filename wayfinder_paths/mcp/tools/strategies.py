@@ -31,6 +31,7 @@ def _load_strategy_class(strategy_name: str) -> tuple[type[Strategy], str]:
     manifest = load_strategy_manifest(str(manifest_path))
     module_path, class_name = manifest.entrypoint.rsplit(".", 1)
     module = importlib.import_module(module_path)
+    module = importlib.reload(module)
     return getattr(module, class_name), manifest.status
 
 
