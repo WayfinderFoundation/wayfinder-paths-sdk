@@ -89,8 +89,8 @@ def _fuzzy_score(query: str, text: str) -> float:
 class PolymarketAdapter(BaseAdapter):
     adapter_type = "POLYMARKET"
 
-    DEFAULT_MAX_SLIPPAGE_BPS = (
-        200  # 2% — Polymarket prices live in [0, 1], no native slippage param
+    DEFAULT_MAX_SLIPPAGE_PCT = (
+        2.0  # Polymarket prices live in [0, 1], no native slippage param
     )
 
     def __init__(
@@ -549,7 +549,7 @@ class PolymarketAdapter(BaseAdapter):
         market_slug: str,
         outcome: str | int = "YES",
         amount_collateral: float = 1.0,
-        max_slippage_bps: float | None = None,
+        max_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -563,7 +563,7 @@ class PolymarketAdapter(BaseAdapter):
             token_id=token_id,
             side="BUY",
             amount=amount_collateral,
-            max_slippage_bps=max_slippage_bps,
+            max_slippage_pct=max_slippage_pct,
         )
 
     async def cash_out_prediction(
@@ -572,7 +572,7 @@ class PolymarketAdapter(BaseAdapter):
         market_slug: str,
         outcome: str | int = "YES",
         shares: float = 1.0,
-        max_slippage_bps: float | None = None,
+        max_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         ok, market = await self.get_market_by_slug(market_slug)
         if not ok:
@@ -586,7 +586,7 @@ class PolymarketAdapter(BaseAdapter):
             token_id=token_id,
             side="SELL",
             amount=shares,
-            max_slippage_bps=max_slippage_bps,
+            max_slippage_pct=max_slippage_pct,
         )
 
     async def get_market_prices_history(
@@ -902,7 +902,9 @@ class PolymarketAdapter(BaseAdapter):
             quote=quote,
         )
 
-    async def _wrap_deposit_wallet_usdce_to_pusd(self, *, amount_base_unit: int) -> str:
+    async def _wrap_deposit_wallet_usdce_to_pusd(
+        self, *, amount_base_unit: int, slippage_pct: float | None = None
+    ) -> str:
         """USDC.e → pUSD swap signed by the deposit wallet via its batch entry.
 
         BRAP solver builds the route against `from_wallet=deposit_wallet`; we
@@ -910,6 +912,9 @@ class PolymarketAdapter(BaseAdapter):
         deposit wallet never holds an open USDC.e allowance between txs.
         """
         deposit_wallet = self.deposit_wallet_address()
+        slippage = (
+            self._BRAP_DEFAULT_SLIPPAGE if slippage_pct is None else slippage_pct / 100
+        )
         quote_response = await BRAP_CLIENT.get_quote(
             from_token=POLYGON_USDC_E_ADDRESS,
             to_token=POLYGON_P_USDC_PROXY_ADDRESS,
@@ -917,7 +922,7 @@ class PolymarketAdapter(BaseAdapter):
             to_chain=POLYGON_CHAIN_ID,
             from_wallet=deposit_wallet,
             from_amount=str(amount_base_unit),
-            slippage=self._BRAP_DEFAULT_SLIPPAGE,
+            slippage=slippage,
         )
         quote = quote_response["best_quote"]
         calldata = quote["calldata"]
@@ -1660,7 +1665,7 @@ class PolymarketAdapter(BaseAdapter):
         token_id: str,
         side: Literal["BUY", "SELL"],
         amount: float,
-        max_slippage_bps: float | None = None,
+        max_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         # BUY amount = collateral ($) to spend, SELL amount = shares to sell.
         # Polymarket has no slippage param; canonical pattern (see py-clob-client-v2
@@ -1683,14 +1688,14 @@ class PolymarketAdapter(BaseAdapter):
 
         worst = Decimal(str(quote["worst_price"]))
         tick = Decimal(str(quote["book_meta"].get("tick_size") or "0.01"))
-        bps = Decimal(
+        pct = Decimal(
             str(
-                self.DEFAULT_MAX_SLIPPAGE_BPS
-                if max_slippage_bps is None
-                else max_slippage_bps
+                self.DEFAULT_MAX_SLIPPAGE_PCT
+                if max_slippage_pct is None
+                else max_slippage_pct
             )
         )
-        slip = bps / Decimal(10_000)
+        slip = pct / Decimal(100)
         if side == "BUY":
             raw = worst * (Decimal(1) + slip)
             cap = (raw / tick).quantize(Decimal(1), rounding=ROUND_CEILING) * tick
@@ -1715,7 +1720,7 @@ class PolymarketAdapter(BaseAdapter):
             out.setdefault("setup", setup)
             out["quote"] = quote
             out["price_cap"] = float(cap)
-            out["max_slippage_bps"] = float(bps)
+            out["max_slippage_pct"] = float(pct)
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -2250,7 +2255,11 @@ class PolymarketAdapter(BaseAdapter):
         return False, "No redeemable balance detected for the provided condition_id."
 
     async def redeem_positions(
-        self, *, condition_id: str
+        self,
+        *,
+        condition_id: str,
+        auto_wrap_redemption_usdce: bool = True,
+        wrap_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             deposit_wallet = self.deposit_wallet_address()
@@ -2322,7 +2331,7 @@ class PolymarketAdapter(BaseAdapter):
                 POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
                 POLYGON_USDC_E_ADDRESS,
             }
-            if produces_usdce:
+            if auto_wrap_redemption_usdce and produces_usdce:
                 usdce_balance = await get_token_balance(
                     POLYGON_USDC_E_ADDRESS,
                     POLYGON_CHAIN_ID,
@@ -2333,6 +2342,7 @@ class PolymarketAdapter(BaseAdapter):
                     try:
                         wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
                             amount_base_unit=usdce_balance,
+                            slippage_pct=wrap_slippage_pct,
                         )
                     except Exception as wrap_exc:  # noqa: BLE001
                         wrap_error = str(wrap_exc)

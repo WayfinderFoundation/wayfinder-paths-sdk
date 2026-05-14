@@ -170,9 +170,9 @@ class TestPolymarketAdapter:
         assert ok is True
         assert response["order_type"] == "FOK"
         assert response["post_only"] is False
-        # 0.55 * (1 + 200/10000) = 0.561 → ceil to next 0.01 tick = 0.57
+        # 0.55 * (1 + 2/100) = 0.561 → ceil to next 0.01 tick = 0.57
         assert response["price_cap"] == pytest.approx(0.57)
-        assert response["max_slippage_bps"] == 200.0
+        assert response["max_slippage_pct"] == 2.0
         order_args = fake_clob_client.created_order
         assert isinstance(order_args, polymarket_adapter_module.MarketOrderArgs)
         assert order_args.price == pytest.approx(0.57)

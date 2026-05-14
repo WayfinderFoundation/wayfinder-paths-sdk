@@ -516,10 +516,14 @@ async def polymarket_execute(
     size: float | None = None,
     post_only: bool = False,
     order_id: str | None = None,
-    # market-order slippage cap (bps). None = adapter default (200 bps).
-    max_slippage_bps: float | None = None,
+    # market-order slippage cap (percent). None = adapter default (2%).
+    max_slippage_pct: float | None = None,
     # redeem
     condition_id: str | None = None,
+    # auto-wrap USDC.e → pUSD on redemption (true by default; set false to leave USDC.e).
+    auto_wrap_redemption_usdce: bool = True,
+    # BRAP slippage cap (percent) for the redemption wrap. None = BRAP default (1%).
+    wrap_slippage_pct: float | None = None,
 ) -> dict[str, Any]:
     """Execute Polymarket trades, bridge collateral, cancel/redeem.
 
@@ -536,11 +540,14 @@ async def polymarket_execute(
         via the relayer. Omit `amount` to withdraw the full balance.
       - `place_market_order`: market order. Specify `market_slug`+`outcome` OR `token_id`, with
         `side="BUY"|"SELL"`. BUY needs `amount_collateral` (pUSD); SELL needs `shares`. Adapter
-        quotes the book and signs an FOK limit at `worst_price * (1 ± max_slippage_bps/10000)`
-        (default 200 bps); order is killed if the book moves past the cap.
+        quotes the book and signs an FOK limit at `worst_price * (1 ± max_slippage_pct/100)`
+        (default 2%); order is killed if the book moves past the cap.
       - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
       - `cancel_order`: by `order_id`.
-      - `redeem_positions`: claim winnings on a resolved market by `condition_id`.
+      - `redeem_positions`: claim winnings on a resolved market by `condition_id`. By default
+        any USDC.e proceeds are auto-wrapped to pUSD via BRAP through the deposit wallet —
+        set `auto_wrap_redemption_usdce=False` to skip, or `wrap_slippage_pct` to widen
+        BRAP slippage tolerance.
 
     Args:
         wallet_label: Required.
@@ -577,8 +584,10 @@ async def polymarket_execute(
         "size": size,
         "post_only": post_only,
         "order_id": order_id,
-        "max_slippage_bps": max_slippage_bps,
+        "max_slippage_pct": max_slippage_pct,
         "condition_id": condition_id,
+        "auto_wrap_redemption_usdce": auto_wrap_redemption_usdce,
+        "wrap_slippage_pct": wrap_slippage_pct,
     }
     preview_obj = await build_polymarket_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
@@ -743,14 +752,14 @@ async def polymarket_execute(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             amount_collateral=float(amount_collateral),
-                            max_slippage_bps=max_slippage_bps,
+                            max_slippage_pct=max_slippage_pct,
                         )
                     else:
                         ok_trade, res = await adapter.cash_out_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             shares=float(shares),
-                            max_slippage_bps=max_slippage_bps,
+                            max_slippage_pct=max_slippage_pct,
                         )
                 else:
                     tid = throw_if_empty_str(
@@ -760,7 +769,7 @@ async def polymarket_execute(
                         token_id=tid,
                         side=side,
                         amount=float(amount_collateral if side == "BUY" else shares),
-                        max_slippage_bps=max_slippage_bps,
+                        max_slippage_pct=max_slippage_pct,
                     )
 
                 effects.append(
@@ -787,8 +796,8 @@ async def polymarket_execute(
                         if amount_collateral is not None
                         else None,
                         "shares": float(shares) if shares is not None else None,
-                        "max_slippage_bps": float(max_slippage_bps)
-                        if max_slippage_bps is not None
+                        "max_slippage_pct": float(max_slippage_pct)
+                        if max_slippage_pct is not None
                         else None,
                     },
                 )
@@ -860,7 +869,11 @@ async def polymarket_execute(
                 cid = throw_if_empty_str(
                     "condition_id is required for redeem_positions", condition_id
                 )
-                ok_r, res = await adapter.redeem_positions(condition_id=cid)
+                ok_r, res = await adapter.redeem_positions(
+                    condition_id=cid,
+                    auto_wrap_redemption_usdce=auto_wrap_redemption_usdce,
+                    wrap_slippage_pct=wrap_slippage_pct,
+                )
                 effects.append(
                     {
                         "type": "polymarket",
@@ -876,7 +889,13 @@ async def polymarket_execute(
                     action="redeem_positions",
                     status=status,
                     chain_id=int(POLYGON_CHAIN_ID),
-                    details={"condition_id": cid},
+                    details={
+                        "condition_id": cid,
+                        "auto_wrap_redemption_usdce": auto_wrap_redemption_usdce,
+                        "wrap_slippage_pct": float(wrap_slippage_pct)
+                        if wrap_slippage_pct is not None
+                        else None,
+                    },
                 )
                 return _done(status)
 
