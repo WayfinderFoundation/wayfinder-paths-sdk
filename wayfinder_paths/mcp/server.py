@@ -14,7 +14,7 @@ to scope a persona's surface.
 
 Namespaces:
   - shells       instance ↔ frontend bridge (chart workspace, annotations, notify, ui ctx)
-  - research     alpha-lab, delta-lab
+  - research     alpha-lab, delta-lab, backend-mediated web search/fetch
   - hyperliquid  HL perp/spot/HIP-3/HIP-4 reads + writes
   - onchain      token resolution, swaps, wallet activity
   - polymarket   prediction markets reads + writes
@@ -81,7 +81,10 @@ from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_read,
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
-from wayfinder_paths.mcp.tools.research_gateway import research_web_search
+from wayfinder_paths.mcp.tools.research_gateway import (
+    research_web_fetch,
+    research_web_search,
+)
 from wayfinder_paths.mcp.tools.run_script import core_run_script
 from wayfinder_paths.mcp.tools.runner import core_runner
 from wayfinder_paths.mcp.tools.strategies import core_run_strategy
@@ -127,6 +130,7 @@ mcp.tool()(research_search_lending)
 mcp.tool()(research_search_perp)
 mcp.tool()(research_search_borrow_routes)
 mcp.tool()(research_web_search)
+mcp.tool()(research_web_fetch)
 
 # ─── hyperliquid_* ─────────────────────────────────────────────────────
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
