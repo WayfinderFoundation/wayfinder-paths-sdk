@@ -89,6 +89,10 @@ def _fuzzy_score(query: str, text: str) -> float:
 class PolymarketAdapter(BaseAdapter):
     adapter_type = "POLYMARKET"
 
+    DEFAULT_MAX_SLIPPAGE_BPS = (
+        200  # 2% — Polymarket prices live in [0, 1], no native slippage param
+    )
+
     def __init__(
         self,
         config: dict[str, Any] | None = None,
@@ -915,10 +919,8 @@ class PolymarketAdapter(BaseAdapter):
             from_amount=str(amount_base_unit),
             slippage=self._BRAP_DEFAULT_SLIPPAGE,
         )
-        quote = quote_response.get("best_quote")
-        if not quote:
-            raise ValueError("No BRAP quote for USDC.e → pUSD")
-        calldata = quote.get("calldata") or {}
+        quote = quote_response["best_quote"]
+        calldata = quote["calldata"]
         router = to_checksum_address(calldata["to"])
 
         async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
@@ -934,7 +936,7 @@ class PolymarketAdapter(BaseAdapter):
                 },
                 {
                     "target": router,
-                    "value": int(calldata.get("value") or 0),
+                    "value": int(calldata.get("value", 0)),
                     "data": calldata["data"],
                 },
             ]
@@ -1652,10 +1654,6 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    DEFAULT_MAX_SLIPPAGE_BPS = (
-        200  # 2% — Polymarket prices live in [0, 1], no native slippage param
-    )
-
     async def place_market_order(
         self,
         *,
@@ -1680,11 +1678,11 @@ class PolymarketAdapter(BaseAdapter):
         )
         if not ok_quote:
             return False, quote
-        if not isinstance(quote, dict) or not quote.get("fully_fillable"):
+        if not quote["fully_fillable"]:
             return False, {"error": "insufficient book liquidity", "quote": quote}
 
         worst = Decimal(str(quote["worst_price"]))
-        tick = Decimal(str((quote.get("book_meta") or {}).get("tick_size") or "0.01"))
+        tick = Decimal(str(quote["book_meta"].get("tick_size") or "0.01"))
         bps = Decimal(
             str(
                 self.DEFAULT_MAX_SLIPPAGE_BPS
@@ -1715,9 +1713,9 @@ class PolymarketAdapter(BaseAdapter):
             out = resp if isinstance(resp, dict) else {"result": resp}
             out.setdefault("deposit_wallet", self.deposit_wallet_address())
             out.setdefault("setup", setup)
-            out.setdefault("quote", quote)
-            out.setdefault("price_cap", float(cap))
-            out.setdefault("max_slippage_bps", float(bps))
+            out["quote"] = quote
+            out["price_cap"] = float(cap)
+            out["max_slippage_bps"] = float(bps)
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -2320,19 +2318,24 @@ class PolymarketAdapter(BaseAdapter):
             # missing route shouldn't undo a successful redemption.
             wrap_tx_hash: str | None = None
             wrap_error: str | None = None
-            usdce_balance = await get_token_balance(
-                POLYGON_USDC_E_ADDRESS,
-                POLYGON_CHAIN_ID,
-                deposit_wallet,
-                block_identifier="latest",
-            )
-            if usdce_balance > 0:
-                try:
-                    wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
-                        amount_base_unit=usdce_balance,
-                    )
-                except Exception as wrap_exc:  # noqa: BLE001
-                    wrap_error = str(wrap_exc)
+            produces_usdce = to_checksum_address(collateral) in {
+                to_checksum_address(POLYMARKET_ADAPTER_COLLATERAL_ADDRESS),
+                to_checksum_address(POLYGON_USDC_E_ADDRESS),
+            }
+            if produces_usdce:
+                usdce_balance = await get_token_balance(
+                    POLYGON_USDC_E_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                )
+                if usdce_balance > 0:
+                    try:
+                        wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
+                            amount_base_unit=usdce_balance,
+                        )
+                    except Exception as wrap_exc:  # noqa: BLE001
+                        wrap_error = str(wrap_exc)
 
             return True, {
                 "deposit_wallet": deposit_wallet,
