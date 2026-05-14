@@ -91,6 +91,8 @@ chaining three or more, write a script.
 
 ### Key domain knowledge
 
+**Don't assume a market or token exists or doesn't exist** — always use the search/read tools to find ground truth. Listings rotate, tickers can be ambiguous, and your priors are stale.
+
 Hyperliquid minimums:
 
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
