@@ -528,6 +528,61 @@ class TestPolymarketAdapter:
         assert state["balances"]["usdc"]["amount_base_units"] == 4_560_000
 
     @pytest.mark.asyncio
+    async def test_get_full_user_state_drops_zero_value_redeemable_losers(
+        self, adapter, monkeypatch
+    ):
+        sample_positions = [
+            {
+                "initialValue": 10,
+                "currentValue": 12,
+                "cashPnl": 2,
+                "realizedPnl": 0,
+                "curPrice": 0.6,
+                "redeemable": False,
+            },
+            {
+                "initialValue": 8,
+                "currentValue": 0,
+                "cashPnl": -8,
+                "realizedPnl": 0,
+                "curPrice": 0,
+                "redeemable": True,
+            },
+        ]
+
+        async def mock_get_positions(*_args, **_kwargs):
+            return True, sample_positions
+
+        mock_contract = MagicMock()
+        mock_contract.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(side_effect=[0, 0, 0])
+        )
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = mock_contract
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(adapter, "get_positions", mock_get_positions)
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
+
+        adapter.wallet_address = "0x" + "11" * 20
+        account = adapter.deposit_wallet_address()
+
+        ok, state = await adapter.get_full_user_state(
+            account=account, include_orders=False
+        )
+        assert ok is True
+        assert len(state["positions"]) == 1
+        assert state["positions"][0]["redeemable"] is False
+        assert state["positionsSummary"]["count"] == 1
+        assert state["pnl"]["totalInitialValue"] == pytest.approx(10.0)
+        assert state["pnl"]["totalCurrentValue"] == pytest.approx(12.0)
+
+    @pytest.mark.asyncio
     async def test_bridge_deposit_prefers_brap_swap(self, adapter, monkeypatch):
         from_address = "0x000000000000000000000000000000000000dEaD"
 

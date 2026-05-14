@@ -1718,6 +1718,11 @@ class PolymarketAdapter(BaseAdapter):
                 if len(page) < positions_limit:
                     break
                 offset += positions_limit
+            rows = [
+                p
+                for p in rows
+                if not (p.get("redeemable") is True and p.get("curPrice") == 0)
+            ]
             return True, rows
 
         async def _fetch_balances() -> tuple[bool, dict[str, Any] | str]:
