@@ -156,6 +156,14 @@ def run_backtest(
     prices = prices[symbols].ffill()
     target_positions = target_positions[symbols].ffill().fillna(0.0).clip(-1.0, 1.0)
 
+    # "replay" skips the shift — reconciliation only (see BacktestConfig).
+    if config.fill_model == "next_bar_open":
+        target_positions = target_positions.shift(1).fillna(0.0)
+    elif config.fill_model != "replay":
+        raise ValueError(
+            f"Unknown fill_model={config.fill_model!r}; expected 'next_bar_open' or 'replay'"
+        )
+
     # Align funding rates with prices safely (no lookahead bias)
     if config.funding_rates is not None:
         # Join funding rates with prices, forward fill, then slice out just funding

@@ -1,22 +1,32 @@
 """APEX/GMX Pair Velocity Strategy.
 
 Market-neutral mean-reversion on the APEX/GMX log-price spread on
-Hyperliquid perps. Single-pair, low turnover, capital-efficient — runs
-at ~0.9 trades/day and ~$25 daily volume on a $46 NAV at lev=1.5.
+Hyperliquid perps. Single-pair, capital-efficient — runs at lev=2.5
+with a loose entry threshold (|z|>0.75) for higher trade frequency.
 
-Backtest (200 days, 25 bps slippage + 4.5 bps fee, with funding):
-    30d Sharpe 3.25  / +8.77%  / 27 trades
-    60d Sharpe 4.07  / +26.54% / 55 trades
-    90d Sharpe 3.78  / +50.14% / 83 trades
-    120d Sharpe 3.74 / +64.07% / 104 trades
+Backtest (180 days, 30 bps slippage + 4.5 bps fee, with funding):
+    30d  Sharpe 2.45 / +27.7%  / 45 trades
+    60d  Sharpe 2.54 / +50.4%  / 116 trades
+    90d  Sharpe 3.08 / +130.5% / 195 trades
+    120d Sharpe 2.19 / +97.5%  / 221 trades
+    180d Sharpe 2.51 / +180.4% / 328 trades
+
+Max drawdown over the 180d window: −40.0%. DD is largely structural
+at this leverage — invariant from ez=0.5 to ez=1.5.
 
 Funding net ≈ 0 because both legs have similar positive funding (APEX
 +11.96% / GMX +8.47% annualized) and the strategy spends roughly equal
 time in each direction.
 """
 
+import time
 from pathlib import Path
+from typing import Any
 
+import pandas as pd
+
+from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
+from wayfinder_paths.core.perps.handlers.protocol import MarketHandler
 from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy
 
 
@@ -32,12 +42,37 @@ class ApexGmxVelocityStrategy(ActivePerpsStrategy):
 
     HIP3_DEXES = []
 
+    # 60d window: edge dominates variance (audit shows ~+50% trailing 60d).
+    SMOKE_TEST_WINDOW_DAYS = 60
+    SMOKE_MIN_TOTAL_RETURN = 0.0
+
     DEFAULT_PARAMS = {
         "lookback_bars": 72,
-        "entry_z": 2.0,
+        "entry_z": 0.75,
         "velocity_bars": 6,
-        "target_leverage": 1.5,
+        "target_leverage": 2.5,
         "rebalance_threshold": 0.02,
         "min_order_usd": 10.0,
         "symbols": ["APEX", "GMX"],
     }
+
+    # Bypass Delta Lab — APEX/GMX hourly series was observed lagging 16+h
+    # behind HL while still returning 200, causing stale bars and missed exits.
+    async def _fetch_recent_data(self, perp: MarketHandler) -> tuple[Any, Any]:
+        symbols = self._ref.data.symbols
+        lookback = int(self._ref.params.get("signal_lookback_bars", 256))
+        end_ms = int(time.time() * 1000)
+        # +24 bars buffer for rolling-stat warmup at the edge of the window.
+        start_ms = end_ms - (lookback + 24) * 3600 * 1000
+
+        async def one(coin: str) -> pd.Series:
+            rows = await HYPERLIQUID_DATA_CLIENT.get_candles(
+                coin, start_ms, end_ms, "1h"
+            )
+            df = pd.DataFrame(rows)
+            df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+            return df.set_index("t")["c"].astype(float)
+
+        series = {s: await one(s) for s in symbols}
+        prices = pd.concat(series, axis=1).dropna()
+        return prices, pd.DataFrame()

@@ -18,7 +18,7 @@ def _all_handlers(ctx: TriggerContext) -> list:
 
 def _free_margin_from_ctx(ctx: TriggerContext, leverage: float) -> float:
     """Pre-trade free margin = NAV − margin currently in use across all venues."""
-    nav = float(ctx.state.get("nav") or 0.0)
+    nav = float(ctx.nav or 0.0)
     if nav <= 0:
         return 0.0
     gross = 0.0
@@ -63,6 +63,46 @@ async def reservable_size_for(
     )
 
 
+def compute_atomic_scale(
+    pending: list[dict[str, float]],
+    *,
+    nav: float,
+    leverage: float,
+    cost_bps: float = 0.0,
+    current_gross_override: float | None = None,
+) -> float:
+    """Pre-place equivalent of `scale_pending_atomically`. Takes intended
+    trades (`current_size`, `new_size`, `mid` per entry), returns the [0, 1]
+    factor to apply to each signed delta so margin+fees fit free cash.
+
+    Required for multi-leg live `decide()` — exchanges trim FIFO, so the
+    first leg starves the rest if scaling happens after `place_order`.
+    """
+    if nav <= 0 or leverage <= 0:
+        return 1.0
+    current_gross = (
+        float(current_gross_override)
+        if current_gross_override is not None
+        else sum(abs(p["current_size"]) * p["mid"] for p in pending)
+    )
+    free_cash = max(0.0, nav - current_gross / leverage)
+    cost_rate = float(cost_bps) / 1e4
+
+    margin_required = 0.0
+    fee_required = 0.0
+    for p in pending:
+        cur = abs(p["current_size"]) * p["mid"]
+        new = abs(p["new_size"]) * p["mid"]
+        delta = abs(p["new_size"] - p["current_size"]) * p["mid"]
+        margin_required += max(0.0, new - cur) / leverage
+        fee_required += delta * cost_rate
+
+    total = margin_required + fee_required
+    if total <= 1e-12:
+        return 1.0
+    return max(0.0, min(1.0, free_cash / total))
+
+
 async def scale_pending_atomically(
     ctx: TriggerContext,
     *,
@@ -96,7 +136,7 @@ async def scale_pending_atomically(
         cost_bps = fee + slip
     cost_rate = float(cost_bps) / 1e4
 
-    nav = float(ctx.state.get("nav") or 0.0)
+    nav = float(ctx.nav or 0.0)
     if nav <= 0:
         return 1.0
 

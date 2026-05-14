@@ -36,7 +36,10 @@ strategies/apex_gmx_velocity/
 │                          ActivePerpsStrategy.update() emits a risk_warning.
 ├── examples.json          Test fixture + expected backtest ranges
 ├── README.md              Performance, deploy steps, funding economics
-└── test_strategy.py       Smoke: class wires, signal invariants, backtest reproduces ref
+└── test_strategy.py       Smoke: class wires, signal invariants, backtest reproduces ref,
+                           AND a divergence check via `assert_active_perps_backtest_runs`
+                           (catches NAV-from-side-channel reads, framework-state writes,
+                           and purity violations in `decide`)
 ```
 
 ### Wallet-readiness gotchas (deploy blockers)
@@ -60,7 +63,10 @@ Before the runner can actually trade, two wallet conditions must hold. Missing e
 2. **`decide.py::decide(ctx: TriggerContext) -> None`**
    - Read targets via `ctx.signal.targets.iloc[-1]` (live `ctx.t` is wall-clock,
      doesn't align to bar index — exact-match `.loc[t]` will fail)
-   - Read NAV via `await ctx.perp.get_margin_balance()`, store with `ctx.state.set("nav", ...)`
+   - Read NAV via `ctx.nav` — framework-owned, identical in backtest and live.
+     **Never** call `await ctx.perp.get_margin_balance()` or `ctx.state.set("nav", ...)`
+     from inside decide. Backtest's `BacktestHandler.get_margin_balance()` returns 0,
+     and any stored NAV gets pinned to first-observed truth in live (canonical bug).
    - Read positions via `await ctx.perp.get_positions()`
    - Round order size via `round_size_for_asset(adapter.asset_to_sz_decimals,
      asset_id, raw_size)` — HL signing rejects floats with too many decimals

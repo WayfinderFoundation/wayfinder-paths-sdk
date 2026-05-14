@@ -31,7 +31,7 @@ decide_fn(ctx) → places orders via ctx.<venue>.handler  # per-bar
 - `ctx.t` — current bar timestamp (use this — never `datetime.now()`)
 
 Three handler implementations satisfy the same `MarketHandler` protocol:
-- `BacktestHandler` — fills queue to next-bar open (or same-bar via `fill_model="same_bar"`).
+- `BacktestHandler` — fills queue to next-bar open. `fill_model="replay"` fills on the same bar the signal was computed; use ONLY for live↔history reconciliation.
 - `LiveHandler` — wraps `HyperliquidAdapter`.
 - `ReconcileHandler` — records intents only, reads positions from `StateStore.snapshot_at(t)`.
 
@@ -51,8 +51,22 @@ Three handler implementations satisfy the same `MarketHandler` protocol:
 
 ## Required disciplines
 
-- **Use `ctx.t`, never `datetime.now()`.** The backtest is reproducible only if decide()
-  is deterministic. The purity sandbox raises `PurityViolation` on `time.*` and `random.random()`.
+- **`decide(ctx)` is a pure function of `ctx`. No side-channel state reads.**
+  Every value decide needs is on the context. The framework guarantees these are
+  computed the same way in backtest and live:
+  - **NAV** — read `ctx.nav`. Never call `await ctx.perp.get_margin_balance()` from
+    inside decide. In backtest, `BacktestHandler.get_margin_balance()` returns `0.0`
+    (the driver tracks NAV separately); in live, calling it bypasses the framework's
+    snapshot of pre-trade truth. This is the canonical live↔backtest divergence trap.
+  - **Positions** — `await ctx.perp.get_positions()`. Same shape in backtest (handler-tracked)
+    and live (exchange-queried).
+  - **Mids** — `ctx.perp.mid(sym)`. Synchronous; backtest reads the bar's price, live reads
+    pre-fetched mids.
+  - **Time** — `ctx.t`. Never `datetime.now()` (purity sandbox raises `PurityViolation`).
+- **`ctx.state` is strategy-owned, not framework-owned.** Use it for multi-bar bookkeeping
+  the strategy genuinely needs (e.g. a cooldown timer, a regime flag). Do NOT smuggle
+  framework values like NAV into `ctx.state` — that's how the apex_gmx NAV bug crept in
+  (decide stored NAV on first run, then read the stale value forever after).
 - **Slippage helpers are idealized in backtest.** `quantity_at_price` / `price_for_quantity`
   assume infinite depth at mid. Reconciliation catches the deviation between assumed and
   realized live slippage.
@@ -60,6 +74,12 @@ Three handler implementations satisfy the same `MarketHandler` protocol:
   parent class; the framework refuses to run if an unknown dex is named.
 - **Don't override locked methods.** `ActivePerpsStrategy.update()` and `_run_trigger()` are
   `@final`; subclassing tries to override them raise at class definition.
+- **Recording + reconcile are mandatory.** Every trigger wraps handlers in
+  `RecordingHandler` (intents are teed to disk unconditionally), and every
+  successful `update()` automatically runs a short-window reconcile
+  (`AUTO_RECONCILE_WINDOW_DAYS=1`, throttled to once per
+  `AUTO_RECONCILE_MIN_INTERVAL_SECONDS=3600`). Subclasses can widen the window
+  but cannot disable. Reports land in `<strategy_dir>/reconciliation/`.
 
 ## Sizing helpers (opt-in, in `wayfinder_paths.core.perps.sizing`)
 

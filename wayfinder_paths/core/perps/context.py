@@ -79,12 +79,27 @@ def normalize_signal(
 
 @dataclass
 class TriggerContext:
+    """Inputs to `decide()`, one per bar / trigger.
+
+    `decide()` must be a pure function of this context. Read NAV from
+    `ctx.nav`, not via side channels — `await perp.get_margin_balance()`
+    inside decide returns 0 in backtest (`BacktestHandler` tracks NAV in the
+    driver, not the handler) and silently diverges from live.
+
+    `state` is for strategy-owned multi-bar bookkeeping (cooldowns, regime
+    flags). Never smuggle framework-owned values like NAV through it.
+    """
+
     perp: MarketHandler
     hip3: dict[str, MarketHandler]
     params: dict[str, Any]
     state: StateStore
     signal: SignalFrame
     t: datetime
+    # Pre-trade account value in account-currency (typically USD). Backtest
+    # passes book NAV (cash + unrealized); live passes exchange-reported
+    # account value. 0 means decide should no-op for this bar.
+    nav: float = 0.0
 
     def signal_at_now(self) -> pd.Series:
         return self.signal.at(self.t)

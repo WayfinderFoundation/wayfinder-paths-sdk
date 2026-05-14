@@ -94,3 +94,40 @@ def test_record_then_reconcile_round_trip(cleanup):
 
     # Snapshotted mid is honoured for deterministic replay.
     assert recon.mid("BTC") == 101.0
+
+
+def test_load_snapshot_at_handles_misaligned_trigger_ts(cleanup):
+    """Live snapshots are written at trigger time (e.g. T+8min), not bar-aligned.
+    The reconciler iterates bar-aligned timestamps (T+0). The lookup must map
+    a snapshot inside `[bar_t, bar_t + interval)` to bar_t — otherwise every
+    snapshot is dropped and `recorded_live_intents` is silently empty.
+    """
+    from datetime import timedelta
+
+    idx = pd.date_range("2026-05-13 00:00:00+00:00", periods=3, freq="1h")
+    prices = pd.DataFrame({"BTC": [100.0, 101.0, 102.0]}, index=idx)
+    inner = BacktestHandler(
+        "perp", prices, None, slippage_bps=0, fee_bps=0, min_order_usd=0.01
+    )
+    inner.set_bar(0)
+    rec = RecordingHandler(inner)
+
+    state = StateStore(STRATEGY_NAME, "live")
+    trigger_t = idx[0].to_pydatetime() + timedelta(minutes=8, seconds=44)
+
+    async def fake_run_trigger():
+        await rec.place_order("BTC", "buy", 0.3, "market")
+        state.update({"orders": {"perp": list(rec.intents)}, "nav": 500.0})
+        state.write_snapshot(trigger_t)
+
+    asyncio.run(fake_run_trigger())
+
+    recon = ReconcileHandler(
+        venue="perp", prices=prices, funding=None, strategy_name=STRATEGY_NAME
+    )
+    recon.set_bar(0)
+    snap = recon.load_snapshot_at(idx[0].to_pydatetime())
+
+    assert snap.get("nav") == 500.0
+    assert len(recon.recorded_live_intents) == 1
+    assert recon.recorded_live_intents[0]["side"] == "buy"
