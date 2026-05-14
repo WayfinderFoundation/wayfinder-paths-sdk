@@ -2313,30 +2313,25 @@ class PolymarketAdapter(BaseAdapter):
                     )
                     unwrap_tx_hash = unwrap["tx_hash"]
 
-            # Redemption settles in USDC.e (directly, or via the neg-risk
-            # wrapper unwrapped above). The deposit wallet's tradable balance
-            # is pUSD, so wrap any USDC.e back through BRAP. Soft-fail: a
-            # missing route shouldn't undo a successful redemption.
+            # Sweep any USDC.e in the deposit wallet into pUSD. Catches both
+            # paths above (direct USDC.e settlement, neg-risk unwrap) and any
+            # stale balance from prior activity. Soft-fail: a missing route
+            # shouldn't undo a successful redemption.
             wrap_tx_hash: str | None = None
             wrap_error: str | None = None
-            produces_usdce = to_checksum_address(collateral) in {
-                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+            usdce_balance = await get_token_balance(
                 POLYGON_USDC_E_ADDRESS,
-            }
-            if produces_usdce:
-                usdce_balance = await get_token_balance(
-                    POLYGON_USDC_E_ADDRESS,
-                    POLYGON_CHAIN_ID,
-                    deposit_wallet,
-                    block_identifier="latest",
-                )
-                if usdce_balance > 0:
-                    try:
-                        wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
-                            amount_base_unit=usdce_balance,
-                        )
-                    except Exception as wrap_exc:  # noqa: BLE001
-                        wrap_error = str(wrap_exc)
+                POLYGON_CHAIN_ID,
+                deposit_wallet,
+                block_identifier="latest",
+            )
+            if usdce_balance > 0:
+                try:
+                    wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
+                        amount_base_unit=usdce_balance,
+                    )
+                except Exception as wrap_exc:  # noqa: BLE001
+                    wrap_error = str(wrap_exc)
 
             return True, {
                 "deposit_wallet": deposit_wallet,
