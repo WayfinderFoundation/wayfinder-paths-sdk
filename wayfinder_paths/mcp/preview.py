@@ -275,8 +275,7 @@ async def build_polymarket_execute_preview(
         details = (
             "\n\nREDEEM\n"
             f"condition_id: {req.get('condition_id')}\n"
-            f"auto_wrap_redemption_usdce: {req.get('auto_wrap_redemption_usdce')}\n"
-            f"wrap_slippage_pct: {req.get('wrap_slippage_pct')} (None = BRAP default 1%)"
+            f"auto_wrap_redemption_usdce: {req.get('auto_wrap_redemption_usdce')}"
         )
         return {"summary": header + base + details, "recipient_mismatch": False}
 

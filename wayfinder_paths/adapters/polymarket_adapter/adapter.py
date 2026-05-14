@@ -902,19 +902,15 @@ class PolymarketAdapter(BaseAdapter):
             quote=quote,
         )
 
-    async def _wrap_deposit_wallet_usdce_to_pusd(
-        self, *, amount_base_unit: int, slippage_pct: float | None = None
-    ) -> str:
-        """USDC.e → pUSD swap signed by the deposit wallet via its batch entry.
+    async def _wrap_deposit_wallet_usdce_to_pusd(self, *, amount_base_unit: int) -> str:
+        """USDC.e → pUSD wrap signed by the deposit wallet via its batch entry.
 
-        BRAP solver builds the route against `from_wallet=deposit_wallet`; we
-        bundle the ERC20 approval + router call into a single batch so the
-        deposit wallet never holds an open USDC.e allowance between txs.
+        Routes through BRAP's polymarket_bridge solver, which wraps 1:1 — no
+        slippage. We bundle the ERC20 approval + router call into a single
+        batch so the deposit wallet never holds an open USDC.e allowance
+        between txs.
         """
         deposit_wallet = self.deposit_wallet_address()
-        slippage = (
-            self._BRAP_DEFAULT_SLIPPAGE if slippage_pct is None else slippage_pct / 100
-        )
         quote_response = await BRAP_CLIENT.get_quote(
             from_token=POLYGON_USDC_E_ADDRESS,
             to_token=POLYGON_P_USDC_PROXY_ADDRESS,
@@ -922,7 +918,7 @@ class PolymarketAdapter(BaseAdapter):
             to_chain=POLYGON_CHAIN_ID,
             from_wallet=deposit_wallet,
             from_amount=str(amount_base_unit),
-            slippage=slippage,
+            slippage=0,
         )
         quote = quote_response["best_quote"]
         calldata = quote["calldata"]
@@ -2259,7 +2255,6 @@ class PolymarketAdapter(BaseAdapter):
         *,
         condition_id: str,
         auto_wrap_redemption_usdce: bool = True,
-        wrap_slippage_pct: float | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
         try:
             deposit_wallet = self.deposit_wallet_address()
@@ -2342,7 +2337,6 @@ class PolymarketAdapter(BaseAdapter):
                     try:
                         wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
                             amount_base_unit=usdce_balance,
-                            slippage_pct=wrap_slippage_pct,
                         )
                     except Exception as wrap_exc:  # noqa: BLE001
                         wrap_error = str(wrap_exc)

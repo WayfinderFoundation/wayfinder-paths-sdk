@@ -522,8 +522,6 @@ async def polymarket_execute(
     condition_id: str | None = None,
     # auto-wrap USDC.e → pUSD on redemption (true by default; set false to leave USDC.e).
     auto_wrap_redemption_usdce: bool = True,
-    # BRAP slippage cap (percent) for the redemption wrap. None = BRAP default (1%).
-    wrap_slippage_pct: float | None = None,
 ) -> dict[str, Any]:
     """Execute Polymarket trades, bridge collateral, cancel/redeem.
 
@@ -545,9 +543,8 @@ async def polymarket_execute(
       - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
       - `cancel_order`: by `order_id`.
       - `redeem_positions`: claim winnings on a resolved market by `condition_id`. By default
-        any USDC.e proceeds are auto-wrapped to pUSD via BRAP through the deposit wallet —
-        set `auto_wrap_redemption_usdce=False` to skip, or `wrap_slippage_pct` to widen
-        BRAP slippage tolerance.
+        any USDC.e proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver
+        through the deposit wallet — set `auto_wrap_redemption_usdce=False` to skip.
 
     Args:
         wallet_label: Required.
@@ -587,7 +584,6 @@ async def polymarket_execute(
         "max_slippage_pct": max_slippage_pct,
         "condition_id": condition_id,
         "auto_wrap_redemption_usdce": auto_wrap_redemption_usdce,
-        "wrap_slippage_pct": wrap_slippage_pct,
     }
     preview_obj = await build_polymarket_execute_preview(tool_input)
     preview_text = str(preview_obj.get("summary") or "").strip()
@@ -872,7 +868,6 @@ async def polymarket_execute(
                 ok_r, res = await adapter.redeem_positions(
                     condition_id=cid,
                     auto_wrap_redemption_usdce=auto_wrap_redemption_usdce,
-                    wrap_slippage_pct=wrap_slippage_pct,
                 )
                 effects.append(
                     {
@@ -892,9 +887,6 @@ async def polymarket_execute(
                     details={
                         "condition_id": cid,
                         "auto_wrap_redemption_usdce": auto_wrap_redemption_usdce,
-                        "wrap_slippage_pct": float(wrap_slippage_pct)
-                        if wrap_slippage_pct is not None
-                        else None,
                     },
                 )
                 return _done(status)
