@@ -10,23 +10,63 @@ from wayfinder_paths.mcp.utils import catch_errors, ok
 logger = logging.getLogger(__name__)
 
 
-async def _resolve_basis_symbol(symbol: str) -> str:
-    """Resolve an asset symbol to its root basis symbol.
+async def _resolve_basis_filter(
+    symbol: str,
+) -> tuple[str | None, list[int] | None]:
+    """Resolve an asset symbol into a screen-filter pair `(basis, asset_ids)`.
 
-    E.g. "USDC" -> "USD", "wstETH" -> "ETH". Returns the input unchanged
-    if it's already a root basis symbol or if resolution fails.
+    - If `symbol` belongs to a basis group, returns `(root_symbol, None)` so
+      the screen filters by basis (e.g. "USDC" -> ("USD", None),
+      "wstETH" -> ("ETH", None)).
+    - If the asset exists but isn't part of any basis group, returns
+      `(None, [asset_id])` so callers can still filter to that single asset.
+      In practice every Delta Lab asset is at minimum its own basis group, so
+      this branch is defensive — it guards against backend schema drift where
+      a known asset reports `basis: null`. Sending the raw symbol through
+      `basis=` in that case would 400 — the backend validates basis groups.
+    - Raises ValueError if the symbol doesn't resolve to anything in Delta
+      Lab. Silently dropping the filter would return every row as if no
+      filter had been requested — misleading to the caller.
     """
     try:
         result = await DELTA_LAB_CLIENT.get_asset_basis(symbol=symbol)
-        basis = result.get("basis")
-        if basis and basis.get("root_symbol"):
-            root = basis["root_symbol"]
-            if root != symbol:
-                logger.debug("Resolved basis symbol %s -> %s", symbol, root)
-            return root
-    except Exception:
-        pass
-    return symbol
+    except Exception as exc:
+        raise ValueError(
+            f"Unknown Delta Lab asset symbol {symbol!r}; "
+            "check the spelling or call research_get_basis_symbols / "
+            "research_search_delta_lab_assets to discover valid symbols."
+        ) from exc
+    basis = result.get("basis")
+    if basis and basis.get("root_symbol"):
+        root = basis["root_symbol"]
+        if root != symbol:
+            logger.debug("Resolved basis symbol %s -> %s", symbol, root)
+        return root, None
+    asset_id = result.get("asset_id")
+    if isinstance(asset_id, int):
+        logger.debug(
+            "Asset %s has no basis group; falling back to asset_ids=[%d]",
+            symbol,
+            asset_id,
+        )
+        return None, [asset_id]
+    raise ValueError(
+        f"Symbol {symbol!r} resolved without a basis group or asset_id; "
+        "cannot apply a filter."
+    )
+
+
+async def _resolve_basis_root(symbol: str) -> str:
+    """Resolve a symbol to its basis root, falling back to the input unchanged.
+
+    Used by endpoints that only accept a basis symbol (no asset_ids escape
+    hatch) — callers must accept that an unresolved symbol gets forwarded.
+    """
+    try:
+        root, _ = await _resolve_basis_filter(symbol)
+    except ValueError:
+        return symbol
+    return root or symbol
 
 
 @catch_errors
@@ -45,7 +85,7 @@ async def research_get_basis_apy_sources(
     """
     lookback_int = max(1, int(lookback_days))
     limit_int = min(1000, max(1, int(limit)))
-    resolved = await _resolve_basis_symbol(basis_symbol.upper())
+    resolved = await _resolve_basis_root(basis_symbol.upper())
     return ok(
         await DELTA_LAB_CLIENT.get_basis_apy_sources(
             basis_symbol=resolved,
@@ -115,7 +155,7 @@ async def research_search_delta_lab_assets(
 
 @catch_errors
 async def research_get_top_apy(
-    lookback_days: str = "7", limit: str = "50"
+    lookback_days: str = "7", limit: str = "25"
 ) -> dict[str, Any]:
     """Get top APY opportunities across all basis symbols.
 
@@ -124,7 +164,9 @@ async def research_get_top_apy(
 
     Args:
         lookback_days: Days to average over (default: "7", min: "1")
-        limit: Max opportunities to return (default: "50", max: "500")
+        limit: Max opportunities to return (default: "25", max: "500").
+               Prefer the default for exploratory scans; raise only after
+               narrowing.
 
     Returns:
         Dict with top opportunities sorted by APY
@@ -142,7 +184,7 @@ async def research_get_top_apy(
 @catch_errors
 async def research_search_price(
     sort: str = "price_usd",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
     """Screen assets by price features (returns, volatility, drawdowns).
@@ -151,7 +193,9 @@ async def research_search_price(
         sort: Column to sort by (default: "price_usd"). Options include:
               price_usd, ret_1d, ret_7d, ret_30d, ret_90d,
               vol_7d, vol_30d, vol_90d, mdd_30d, mdd_90d
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis` or another filter.
         basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
                Asset symbols are auto-resolved to their root basis (USDC -> USD).
                Use "all" for no filter.
@@ -160,14 +204,18 @@ async def research_search_price(
         Dict with data (list of price feature rows) and count
     """
     limit_int = min(1000, max(1, int(limit)))
-    basis_param = None
+    basis_param: str | None = None
+    asset_ids_param: list[int] | None = None
     if basis.strip().lower() != "all":
-        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+        basis_param, asset_ids_param = await _resolve_basis_filter(
+            basis.strip().upper()
+        )
     return ok(
         await DELTA_LAB_CLIENT.screen_price(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
+            asset_ids=asset_ids_param,
         )
     )
 
@@ -175,7 +223,7 @@ async def research_search_price(
 @catch_errors
 async def research_search_lending(
     sort: str = "net_supply_apr_now",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
     """Screen lending markets by surface features (supply/borrow APRs, TVL).
@@ -185,7 +233,9 @@ async def research_search_lending(
               net_supply_apr_now, net_supply_mean_7d, net_supply_mean_30d,
               combined_net_supply_apr_now, net_borrow_apr_now,
               supply_tvl_usd, liquidity_usd, util_now, borrow_spike_score
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis` or another filter.
         basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
                Asset symbols are auto-resolved to their root basis (USDC -> USD).
                Use "all" for no filter.
@@ -194,14 +244,18 @@ async def research_search_lending(
         Dict with data (list of lending surface feature rows) and count
     """
     limit_int = min(1000, max(1, int(limit)))
-    basis_param = None
+    basis_param: str | None = None
+    asset_ids_param: list[int] | None = None
     if basis.strip().lower() != "all":
-        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+        basis_param, asset_ids_param = await _resolve_basis_filter(
+            basis.strip().upper()
+        )
     return ok(
         await DELTA_LAB_CLIENT.screen_lending(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
+            asset_ids=asset_ids_param,
             exclude_frozen=True,
         )
     )
@@ -210,7 +264,7 @@ async def research_search_lending(
 @catch_errors
 async def research_search_perp(
     sort: str = "funding_now",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
     """Screen perpetual markets by surface features (funding, basis, OI).
@@ -220,7 +274,9 @@ async def research_search_perp(
               funding_now, funding_mean_7d, funding_mean_30d,
               basis_now, basis_mean_7d, basis_mean_30d,
               oi_now, volume_24h, mark_price
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis` or another filter.
         basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
                Asset symbols are auto-resolved to their root basis (USDC -> USD).
                Use "all" for no filter.
@@ -229,14 +285,18 @@ async def research_search_perp(
         Dict with data (list of perp surface feature rows) and count
     """
     limit_int = min(1000, max(1, int(limit)))
-    basis_param = None
+    basis_param: str | None = None
+    asset_ids_param: list[int] | None = None
     if basis.strip().lower() != "all":
-        basis_param = await _resolve_basis_symbol(basis.strip().upper())
+        basis_param, asset_ids_param = await _resolve_basis_filter(
+            basis.strip().upper()
+        )
     return ok(
         await DELTA_LAB_CLIENT.screen_perp(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
+            asset_ids=asset_ids_param,
         )
     )
 
@@ -244,7 +304,7 @@ async def research_search_perp(
 @catch_errors
 async def research_search_borrow_routes(
     sort: str = "ltv_max",
-    limit: str = "100",
+    limit: str = "25",
     basis: str = "all",
     borrow_basis: str = "all",
     chain_id: str = "all",
@@ -255,7 +315,9 @@ async def research_search_borrow_routes(
         sort: Column to sort by (default: "ltv_max"). Options include:
               ltv_max, liq_threshold, liquidation_penalty, debt_ceiling_usd,
               venue_name, market_label, created_at
-        limit: Max rows to return (default: "100", max: "1000")
+        limit: Max rows to return (default: "25", max: "1000"). Prefer the
+              default for exploratory scans; raise only after narrowing by
+              `basis`, `borrow_basis`, or `chain_id`.
         basis: Collateral basis symbol to filter by (e.g. "ETH"). Use "all" for no filter.
         borrow_basis: Borrow basis symbol to filter by (e.g. "USD"). Use "all" for no filter.
         chain_id: Optional chain filter (chain ID like "8453" or chain code like "base").
@@ -265,12 +327,18 @@ async def research_search_borrow_routes(
         Dict with data (list of borrow route rows) and count
     """
     limit_int = min(1000, max(1, int(limit)))
-    basis_param = None
+    basis_param: str | None = None
+    asset_ids_param: list[int] | None = None
     if basis.strip().lower() != "all":
-        basis_param = await _resolve_basis_symbol(basis.strip().upper())
-    borrow_basis_param = None
+        basis_param, asset_ids_param = await _resolve_basis_filter(
+            basis.strip().upper()
+        )
+    borrow_basis_param: str | None = None
+    borrow_asset_ids_param: list[int] | None = None
     if borrow_basis.strip().lower() != "all":
-        borrow_basis_param = await _resolve_basis_symbol(borrow_basis.strip().upper())
+        borrow_basis_param, borrow_asset_ids_param = await _resolve_basis_filter(
+            borrow_basis.strip().upper()
+        )
     chain_id_param: int | None = None
     chain_value = chain_id.strip().lower()
     if chain_value not in ("all", "_"):
@@ -285,7 +353,9 @@ async def research_search_borrow_routes(
             sort=sort.strip(),
             limit=limit_int,
             basis=basis_param,
+            asset_ids=asset_ids_param,
             borrow_basis=borrow_basis_param,
+            borrow_asset_ids=borrow_asset_ids_param,
             chain_id=chain_id_param,
         )
     )

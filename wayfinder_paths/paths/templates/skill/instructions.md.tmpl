@@ -16,12 +16,13 @@ Use this skill when you need to inspect, install, or operate the `{{slug}}` path
 4. Summarize what changed and any next actions.
 
 ## If you need to publish this path
-1. Run `wayfinder path fmt --path .` and `wayfinder path doctor --path .`.
-2. Set `WAYFINDER_PATHS_API_URL` to the target Strategies backend and set `WAYFINDER_API_KEY` if that environment requires auth.
-3. Run `wayfinder path publish --path .` for a normal publish, or add `--bonded --owner-wallet 0x... --risk-tier ...` for a bonded publish.
-4. The CLI will build `bundle.zip` and `source.zip`, generate thin skill exports, request signed upload URLs from the Paths API, upload artifacts directly to object storage, then finalize the submission.
-5. Report the returned `manageUrl`, `reviewState`, `publishState`, and `nextAction` to the user.
-6. If `ownerLinkRequired` is `true`, tell the owner to link the wallet and post the required bond. If `reviewState` is `review`, point them to the submissions page for recommended changes.
+1. Confirm the path includes a browser applet, or explicitly ask the owner before publishing without one.
+2. Run `wayfinder path fmt --path .` and `wayfinder path doctor --path .`.
+3. Set `WAYFINDER_PATHS_API_URL` to the target Strategies backend and set `WAYFINDER_API_KEY` if that environment requires auth.
+4. Run `wayfinder path publish --path .` for a normal publish, or add `--bonded --owner-wallet 0x... --risk-tier ...` for a bonded publish.
+5. The CLI will build `bundle.zip` and `source.zip`, generate thin skill exports, request signed upload URLs from the Paths API, upload artifacts directly to object storage, then finalize the submission.
+6. Report the returned `manageUrl`, `reviewState`, `publishState`, and `nextAction` to the user.
+7. If `ownerLinkRequired` is `true`, tell the owner to link the wallet and post the required bond. If `reviewState` is `review`, point them to the submissions page for recommended changes.
 
 ## Delta Lab note
 - Use authenticated `DELTA_LAB_CLIENT` or `${system.api_base_url}/delta-lab/...` for scripts, server-side logic, and agent-side Python.

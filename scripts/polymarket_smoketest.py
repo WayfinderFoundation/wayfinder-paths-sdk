@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
+from decimal import Decimal
 from typing import Any
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -85,7 +86,7 @@ async def main() -> int:
     addr: str | None = None
     if args.execute:
         adapter = await get_adapter(PolymarketAdapter, args.wallet_label)
-        addr = adapter._resolve_funder()
+        addr = adapter.wallet_address
     else:
         adapter = PolymarketAdapter()
 
@@ -178,11 +179,14 @@ async def main() -> int:
                 )
                 print(f"pUSD after deposit: {pusd_after / 1e6:.6f}")
 
-        print("Ensuring on-chain approvals (pUSD + ConditionalTokens)...")
-        ok, appr = await adapter.ensure_onchain_approvals()
+        print("Ensuring deposit wallet setup...")
+        ok, setup = await adapter.ensure_trading_setup(
+            token_id=token_id,
+            required_collateral=Decimal(str(args.trade_usdce)),
+        )
         if not ok:
-            raise RuntimeError(f"ensure_onchain_approvals failed: {appr}")
-        print(f"Approval txs: {appr.get('tx_hashes')}")
+            raise RuntimeError(f"ensure_trading_setup failed: {setup}")
+        print(f"Deposit wallet setup: {setup}")
 
         print(f"Placing BUY market order for ${args.trade_usdce}...")
         ok, buy = await adapter.place_market_order(

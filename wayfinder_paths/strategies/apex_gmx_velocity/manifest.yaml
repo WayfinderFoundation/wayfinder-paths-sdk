@@ -1,0 +1,42 @@
+schema_version: "0.1"
+status: stable
+entrypoint: "wayfinder_paths.strategies.apex_gmx_velocity.strategy.ApexGmxVelocityStrategy"
+
+adapters:
+  - name: hyperliquid
+    capabilities:
+      - perp_trading
+      - order_management
+
+description: |
+  Market-neutral pair velocity z-score on APEX/GMX (Hyperliquid perps).
+
+  Signal: rolling 72h z-score of log(APEX/GMX), velocity-confirmed entry
+  at |z| > 2.0, exit on z-cross-zero. Single pair, dollar-neutral by
+  construction, low turnover.
+
+  Universe: APEX, GMX
+  Capital efficiency: runs cleanly at $25+ NAV (per-leg notional > $10
+  HL minimum at lev=1.5)
+
+  Backtest (200 days, with 25 bps slippage + 4.5 bps fees + funding):
+    - 30d  Sharpe 3.25, return +8.77%,  27 trades
+    - 60d  Sharpe 4.07, return +26.54%, 55 trades
+    - 90d  Sharpe 3.78, return +50.14%, 83 trades
+    - 120d Sharpe 3.74, return +64.07%, 104 trades
+
+  Funding net ≈ 0 — both legs have positive funding (APEX +11.96% /
+  GMX +8.47% annualized) and the strategy alternates direction.
+
+parameters:
+  lookback_bars: 72
+  entry_z: 2.0
+  velocity_bars: 6
+  target_leverage: 1.5
+  rebalance_threshold: 0.02
+  min_order_usd: 10.0
+
+risk_limits:
+  max_drawdown: -0.20
+  max_position_per_symbol_usd: 1000
+  max_gross_exposure_usd: 2000

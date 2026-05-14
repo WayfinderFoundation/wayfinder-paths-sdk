@@ -9,38 +9,7 @@ from hexbytes import HexBytes
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.contracts import MULTICALL3_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
-
-MULTICALL3_ABI = [
-    {
-        "inputs": [
-            {
-                "components": [
-                    {"internalType": "address", "name": "target", "type": "address"},
-                    {"internalType": "bytes", "name": "callData", "type": "bytes"},
-                ],
-                "internalType": "struct Multicall3.Call[]",
-                "name": "calls",
-                "type": "tuple[]",
-            }
-        ],
-        "name": "aggregate",
-        "outputs": [
-            {"internalType": "uint256", "name": "blockNumber", "type": "uint256"},
-            {"internalType": "bytes[]", "name": "returnData", "type": "bytes[]"},
-        ],
-        "stateMutability": "payable",
-        "type": "function",
-    },
-    {
-        "inputs": [{"internalType": "address", "name": "addr", "type": "address"}],
-        "name": "getEthBalance",
-        "outputs": [
-            {"internalType": "uint256", "name": "balance", "type": "uint256"},
-        ],
-        "stateMutability": "view",
-        "type": "function",
-    },
-]
+from wayfinder_paths.core.constants.multicall3_abi import MULTICALL3_ABI
 
 
 @dataclass(frozen=True)

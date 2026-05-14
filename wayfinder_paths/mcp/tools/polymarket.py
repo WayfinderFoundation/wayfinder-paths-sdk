@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -11,6 +12,7 @@ from wayfinder_paths.core.constants.polymarket import (
 )
 from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
+    get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
 from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
@@ -144,16 +146,16 @@ async def polymarket_get_state(
 ) -> dict[str, Any]:
     """Full Polymarket account state — positions, optional orders / activity / trades.
 
-    Account precedence: `account` > `wallet_address` > `wallet_label`-resolved address.
+    With `wallet_label`, state is read from the derived deposit wallet. Without
+    `wallet_label`, pass `account` or `wallet_address` directly.
     `include_orders` defaults to true; `include_activity` / `include_trades` default false
     to keep payloads tight. Each `*_limit` caps its respective list.
     """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
-    acct = normalize_address(account) or normalize_address(wallet_address) or waddr
-
     if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")
-    if not acct:
+    direct_account = normalize_address(account) or normalize_address(wallet_address)
+    if not waddr and not direct_account:
         return err(
             "invalid_request",
             "account (or wallet_label/wallet_address) is required",
@@ -166,16 +168,12 @@ async def polymarket_get_state(
 
     sign_cb = None
     sign_hash_cb = None
+    sign_typed_data_cb = None
     config: dict[str, Any] | None = None
     if want and waddr:
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
-        except ValueError:
-            pass
+        sign_cb, _ = await get_wallet_signing_callback(want)
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -183,9 +181,11 @@ async def polymarket_get_state(
         config=config,
         sign_callback=sign_cb,
         sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
         wallet_address=waddr,
     )
     try:
+        acct = adapter.deposit_wallet_address() if waddr else direct_account
         ok_state, state = await adapter.get_full_user_state(
             account=str(acct),
             include_orders=bool(include_orders),
@@ -265,7 +265,7 @@ async def polymarket_read(
       - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
         (unix sec), `fidelity` (denser sampling for tight buckets).
       - `bridge_status`: pUSD bridge state for an account.
-      - `open_orders`: requires Level-2 auth — wallet must have `private_key_hex` in config.
+      - `open_orders`: requires Level-2 auth through the wallet hash-signing callback.
 
     Args:
         wallet_label / wallet_address / account: Target account; precedence is account >
@@ -298,15 +298,11 @@ async def polymarket_read(
     config: dict[str, Any] | None = None
     sign_cb = None
     sign_hash_cb = None
+    sign_typed_data_cb = None
     if want and waddr:
-        try:
-            sign_cb, _ = await get_wallet_signing_callback(want)
-        except ValueError:
-            pass
-        try:
-            sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
-        except ValueError:
-            pass
+        sign_cb, _ = await get_wallet_signing_callback(want)
+        sign_hash_cb, _ = await get_wallet_sign_hash_callback(want)
+        sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(want)
         config = dict(CONFIG)
         config["strategy_wallet"] = {"address": waddr}
 
@@ -314,6 +310,7 @@ async def polymarket_read(
         config=config,
         sign_callback=sign_cb,
         sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
         wallet_address=waddr,
     )
     try:
@@ -458,10 +455,10 @@ async def polymarket_read(
             case "open_orders":
                 if not want or not waddr:
                     return err("not_found", f"Unknown wallet_label: {wallet_label}")
-                if not sign_cb:
+                if not sign_hash_cb:
                     return err(
                         "invalid_wallet",
-                        "Wallet must include private_key_hex in config.json to fetch open orders",
+                        "Wallet must support hash signing to fetch open orders",
                         {"wallet_label": want},
                     )
                 # Open orders require Level-2 auth and the signing wallet in config.
@@ -472,7 +469,7 @@ async def polymarket_read(
                     {
                         "action": action,
                         "wallet_label": want,
-                        "account": waddr,
+                        "account": adapter.deposit_wallet_address(),
                         "openOrders": orders,
                     }
                 )
@@ -488,9 +485,9 @@ async def polymarket_execute(
     action: Literal[
         "bridge_deposit",
         "bridge_withdraw",
-        "buy",
-        "sell",
-        "close_position",
+        "fund_deposit_wallet",
+        "withdraw_deposit_wallet",
+        "place_market_order",
         "place_limit_order",
         "cancel_order",
         "redeem_positions",
@@ -531,11 +528,12 @@ async def polymarket_execute(
       - `bridge_deposit`: bridge `amount` of `from_token_address` from `from_chain_id` into
         Polymarket pUSD. `recipient_address` defaults to sender. `token_decimals` defaults to 6.
       - `bridge_withdraw`: bridge `amount_pusd` out to `to_chain_id` / `to_token_address`.
-      - `buy` / `sell`: market order. Specify `market_slug`+`outcome` OR `token_id`. BUY needs
-        `amount_collateral` (USDC); SELL needs `shares`.
-      - `close_position`: SELL the full holding. Resolves token via `token_id`, or
-        `market_slug`+`outcome`, or `condition_id` (looks up holding via positions API).
-        Pass `shares` to partially close.
+      - `fund_deposit_wallet`: move `amount` pUSD from the owner EOA into the derived deposit
+        wallet (Polygon transfer). Required before trading.
+      - `withdraw_deposit_wallet`: pull pUSD from the deposit wallet back to the owner EOA
+        via the relayer. Omit `amount` to withdraw the full balance.
+      - `place_market_order`: market order. Specify `market_slug`+`outcome` OR `token_id`, with
+        `side="BUY"|"SELL"`. BUY needs `amount_collateral` (pUSD); SELL needs `shares`.
       - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
       - `cancel_order`: by `order_id`.
       - `redeem_positions`: claim winnings on a resolved market by `condition_id`.
@@ -547,10 +545,10 @@ async def polymarket_execute(
         Other args: see action-specific descriptions above.
     """
     sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
-    try:
-        sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
-    except ValueError:
-        sign_hash_cb = None
+    sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
+    sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(
+        wallet_label or ""
+    )
     want = wallet_label
 
     tool_input = {
@@ -591,6 +589,7 @@ async def polymarket_execute(
         config=cfg,
         sign_callback=sign_callback,
         sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
         wallet_address=sender,
     )
     try:
@@ -677,19 +676,70 @@ async def polymarket_execute(
                 )
                 return _done(status)
 
-            case "buy" | "sell":
+            case "fund_deposit_wallet":
+                throw_if_none("amount is required for fund_deposit_wallet", amount)
+                ok_fund, res = await adapter.fund_deposit_wallet(
+                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "fund_deposit_wallet",
+                        "ok": ok_fund,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_fund else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="fund_deposit_wallet",
+                    status=status,
+                    chain_id=POLYGON_CHAIN_ID,
+                    details={"amount": float(amount)},
+                )
+                return _done(status)
+
+            case "withdraw_deposit_wallet":
+                ok_w, res = await adapter.withdraw_deposit_wallet(
+                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
+                    if amount is not None
+                    else None
+                )
+                effects.append(
+                    {
+                        "type": "polymarket",
+                        "label": "withdraw_deposit_wallet",
+                        "ok": ok_w,
+                        "result": res,
+                    }
+                )
+                status = "confirmed" if ok_w else "failed"
+                _annotate(
+                    address=sender,
+                    label=want,
+                    action="withdraw_deposit_wallet",
+                    status=status,
+                    chain_id=POLYGON_CHAIN_ID,
+                    details={"amount": float(amount) if amount is not None else None},
+                )
+                return _done(status)
+
+            case "place_market_order":
+                if side == "BUY":
+                    throw_if_none(
+                        "amount_collateral is required for BUY", amount_collateral
+                    )
+                else:
+                    throw_if_none("shares is required for SELL", shares)
                 if market_slug:
-                    if action == "buy":
-                        throw_if_none(
-                            "amount_collateral is required for buy", amount_collateral
-                        )
+                    if side == "BUY":
                         ok_trade, res = await adapter.place_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
                             amount_collateral=float(amount_collateral),
                         )
                     else:
-                        throw_if_none("shares is required for sell", shares)
                         ok_trade, res = await adapter.cash_out_prediction(
                             market_slug=str(market_slug),
                             outcome=outcome,
@@ -699,27 +749,16 @@ async def polymarket_execute(
                     tid = throw_if_empty_str(
                         "token_id or market_slug is required", token_id
                     )
-                    if action == "buy":
-                        throw_if_none(
-                            "amount_collateral is required for buy", amount_collateral
-                        )
-                        ok_trade, res = await adapter.place_market_order(
-                            token_id=tid,
-                            side="BUY",
-                            amount=float(amount_collateral),
-                        )
-                    else:
-                        throw_if_none("shares is required for sell", shares)
-                        ok_trade, res = await adapter.place_market_order(
-                            token_id=tid,
-                            side="SELL",
-                            amount=float(shares),
-                        )
+                    ok_trade, res = await adapter.place_market_order(
+                        token_id=tid,
+                        side=side,
+                        amount=float(amount_collateral if side == "BUY" else shares),
+                    )
 
                 effects.append(
                     {
                         "type": "polymarket",
-                        "label": action,
+                        "label": "place_market_order",
                         "ok": ok_trade,
                         "result": res,
                     }
@@ -728,105 +767,19 @@ async def polymarket_execute(
                 _annotate(
                     address=sender,
                     label=want,
-                    action=action,
+                    action="place_market_order",
                     status=status,
                     chain_id=int(POLYGON_CHAIN_ID),
                     details={
                         "market_slug": str(market_slug) if market_slug else None,
                         "token_id": str(token_id) if token_id else None,
                         "outcome": str(outcome),
+                        "side": side,
                         "amount_collateral": float(amount_collateral)
                         if amount_collateral is not None
                         else None,
                         "shares": float(shares) if shares is not None else None,
                     },
-                )
-                return _done(status)
-
-            case "close_position":
-                # Convenience: sell the full size from Data API positions.
-                tid = str(token_id or "").strip()
-
-                if not tid and market_slug:
-                    ok_m, market = await adapter.get_market_by_slug(str(market_slug))
-                    if not ok_m or not isinstance(market, dict):
-                        return err("not_found", f"Market not found: {market_slug}")
-                    ok_tid, tid_or_err = adapter.resolve_clob_token_id(
-                        market=market, outcome=outcome
-                    )
-                    if not ok_tid:
-                        return err("invalid_request", str(tid_or_err))
-                    tid = str(tid_or_err)
-
-                if not tid and condition_id:
-                    ok_pos, pos = await adapter.get_positions(
-                        user=sender, limit=500, offset=0
-                    )
-                    if ok_pos and isinstance(pos, list):
-                        for p in pos:
-                            if not isinstance(p, dict):
-                                continue
-                            if (
-                                str(p.get("conditionId") or "").lower()
-                                == str(condition_id).lower()
-                            ):
-                                tid = str(p.get("asset") or "").strip()
-                                if tid:
-                                    break
-
-                if not tid:
-                    raise ValueError(
-                        "Provide token_id, or market_slug+outcome, or condition_id for close_position"
-                    )
-
-                sell_shares = shares
-                if sell_shares is None:
-                    ok_pos, pos = await adapter.get_positions(
-                        user=sender, limit=500, offset=0
-                    )
-                    if not ok_pos:
-                        return err("error", f"Failed to fetch positions: {pos}")
-                    if not isinstance(pos, list):
-                        return err("error", "Unexpected positions response")
-                    match = next(
-                        (
-                            p
-                            for p in pos
-                            if isinstance(p, dict)
-                            and str(p.get("asset") or "").strip() == tid
-                        ),
-                        None,
-                    )
-                    if not match:
-                        return err("not_found", "No matching position found to close")
-                    try:
-                        sell_shares = float(match.get("size") or 0)
-                    except (TypeError, ValueError):
-                        sell_shares = 0.0
-                if not sell_shares or float(sell_shares) <= 0:
-                    raise ValueError("No shares available to close")
-
-                ok_sell, res = await adapter.place_market_order(
-                    token_id=str(tid),
-                    side="SELL",
-                    amount=float(sell_shares),
-                )
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "close_position",
-                        "ok": ok_sell,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_sell else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="close_position",
-                    status=status,
-                    chain_id=int(POLYGON_CHAIN_ID),
-                    details={"token_id": str(tid), "shares": float(sell_shares)},
                 )
                 return _done(status)
 
@@ -896,9 +849,7 @@ async def polymarket_execute(
                 cid = throw_if_empty_str(
                     "condition_id is required for redeem_positions", condition_id
                 )
-                ok_r, res = await adapter.redeem_positions(
-                    condition_id=cid, holder=sender
-                )
+                ok_r, res = await adapter.redeem_positions(condition_id=cid)
                 effects.append(
                     {
                         "type": "polymarket",

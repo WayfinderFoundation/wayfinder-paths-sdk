@@ -183,14 +183,6 @@ async def build_hyperliquid_execute_preview(
         details = f"\n\nWITHDRAW\namount_usdc: {req.get('amount_usdc')}"
         return {"summary": header + base + details}
 
-    if action == "spot_to_perp_transfer":
-        details = f"\n\nTRANSFER SPOT → PERP\nusd_amount: {req.get('usd_amount')}"
-        return {"summary": header + base + details}
-
-    if action == "perp_to_spot_transfer":
-        details = f"\n\nTRANSFER PERP → SPOT\nusd_amount: {req.get('usd_amount')}"
-        return {"summary": header + base + details}
-
     return {"summary": header + base}
 
 
@@ -251,12 +243,13 @@ async def build_polymarket_execute_preview(
         )
         return {"summary": header + base + details, "recipient_mismatch": mismatch}
 
-    if action in {"buy", "sell", "close_position"}:
+    if action == "place_market_order":
         details = (
-            "\n\nTRADE\n"
+            "\n\nMARKET ORDER\n"
             f"market_slug: {req.get('market_slug')}\n"
             f"outcome: {req.get('outcome')}\n"
             f"token_id: {req.get('token_id')}\n"
+            f"side: {req.get('side')}\n"
             f"amount_collateral: {req.get('amount_collateral')}\n"
             f"shares: {req.get('shares')}"
         )

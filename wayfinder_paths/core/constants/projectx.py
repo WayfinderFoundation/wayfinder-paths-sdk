@@ -20,9 +20,9 @@ PRJX_WNATIVE = HYPEREVM_WHYPE
 
 PROJECTX_CHAIN_ID = CHAIN_ID_HYPEREVM
 
-THBILL_USDC_POOL = to_checksum_address("0x49dfe4bbbd4c664e921aa2cde7ba1fc553959bf5")
-THBILL_TOKEN = to_checksum_address("0xfdd22ce6d1f66bc0ec89b20bf16ccb6670f55a5a")
-USDC_TOKEN = to_checksum_address("0xb88339cb7199b77e23db6e890353e22632ba630f")
+THBILL_USDC_POOL = to_checksum_address("0x49dfe4bbBD4c664E921aA2Cde7bA1fC553959bF5")
+THBILL_TOKEN = to_checksum_address("0xfDD22Ce6D1F66bc0Ec89b20BF16CcB6670F55A5a")
+USDC_TOKEN = to_checksum_address("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
 WHYPE_TOKEN = PRJX_WNATIVE
 
 # Strategy metadata for THBILL<>USDC pool

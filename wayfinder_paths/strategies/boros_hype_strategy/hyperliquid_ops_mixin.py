@@ -6,7 +6,6 @@ Kept as a mixin so the main strategy file stays readable without changing behavi
 
 from __future__ import annotations
 
-from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from loguru import logger
@@ -249,68 +248,6 @@ class BorosHypeHyperliquidOpsMixin:
         if canceled:
             logger.info(f"Canceled {canceled} Hyperliquid HYPE order(s)")
 
-    async def _sweep_hl_spot_usdc_to_perp(
-        self,
-        *,
-        address: str,
-        min_usdc: float = 0.5,
-    ) -> tuple[bool, str]:
-        """Best-effort: keep HL USDC on perp margin (not spot) when possible."""
-        if not self.hyperliquid_adapter:
-            return False, "Hyperliquid adapter not configured"
-
-        try:
-            # HL spot USDC amounts can have >6dp; usdClassTransfer may effectively round
-            # to USDC decimals. Round down and retry with a small epsilon if needed.
-            quant = Decimal("0.000001")  # USDC precision (6dp)
-            min_usdc_dec = Decimal(str(min_usdc))
-            last_res: object | None = None
-
-            for attempt in range(3):
-                (
-                    success,
-                    spot_state,
-                ) = await self.hyperliquid_adapter.get_spot_user_state(address)
-                if not success or not isinstance(spot_state, dict):
-                    return False, "Failed to read HL spot balances"
-
-                balances = spot_state.get("balances", [])
-                total_dec = Decimal("0")
-                hold_dec = Decimal("0")
-                for bal in balances:
-                    token = bal.get("coin") or bal.get("token")
-                    if token != "USDC":
-                        continue
-                    hold_dec = Decimal(str(bal.get("hold", 0)))
-                    total_dec = Decimal(str(bal.get("total", 0)))
-                    break
-
-                available_dec = max(Decimal("0"), total_dec - hold_dec)
-                amount_dec = available_dec.quantize(quant, rounding=ROUND_DOWN)
-                if attempt:
-                    amount_dec = max(
-                        Decimal("0"), amount_dec - (quant * Decimal(attempt))
-                    )
-
-                if amount_dec <= min_usdc_dec:
-                    return True, "No meaningful HL spot USDC to sweep"
-
-                ok, res = await self.hyperliquid_adapter.transfer_spot_to_perp(
-                    amount=float(amount_dec),
-                    address=address,
-                )
-                if ok:
-                    return True, f"Swept ${float(amount_dec):.2f} HL spot USDC → perp"
-
-                last_res = res
-                err_str = str(res.get("response") if isinstance(res, dict) else res)
-                if "insufficient balance" not in err_str.lower():
-                    break
-
-            return False, f"HL spot→perp transfer failed: {last_res}"
-        except Exception as exc:  # noqa: BLE001
-            return False, f"Failed to sweep HL spot USDC → perp: {exc}"
-
     async def _deploy_excess_hl_margin(
         self, params: dict[str, Any], inventory: Inventory
     ) -> tuple[bool, str]:
@@ -365,17 +302,6 @@ class BorosHypeHyperliquidOpsMixin:
                 "Skipping excess margin deployment: insufficient HL withdrawable after buffer "
                 f"(withdrawable=${withdrawable_now:.2f}, buffer=${buffer_usd:.2f})"
             )
-
-        success, result = await self.hyperliquid_adapter.transfer_perp_to_spot(
-            amount=float(deploy_usd),
-            address=address,
-        )
-
-        if not success:
-            error_msg = result if isinstance(result, str) else str(result)
-            return False, f"Perp to spot transfer failed: {error_msg}"
-
-        logger.info(f"Transferred ${deploy_usd:.2f} from perp margin to spot")
 
         if deploy_usd < MIN_NOTIONAL_USD:
             return True, f"Excess margin ${deploy_usd:.2f} too small for paired fill"
@@ -470,14 +396,6 @@ class BorosHypeHyperliquidOpsMixin:
                 address=address,
             )
             if ok:
-                try:
-                    ok_sweep, sweep_msg = await self._sweep_hl_spot_usdc_to_perp(
-                        address=address
-                    )
-                    if not ok_sweep:
-                        logger.warning(sweep_msg)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"HL spot USDC sweep failed: {exc}")
                 return (
                     True,
                     f"Deployed ${deploy_usd:.2f} excess margin → {amount_to_bridge:.4f} HYPE to HyperEVM",
@@ -740,11 +658,10 @@ class BorosHypeHyperliquidOpsMixin:
         if hype_price <= 0:
             return False, "Could not determine HYPE price"
 
-        # Transfer from perp→spot, but never below the reserved perp margin.
-        spot_usdc_before = float(inventory.hl_spot_usdc or 0.0)
-        perp_margin = float(inventory.hl_perp_margin or 0.0)
+        # Unified-account pool funds both legs of the paired fill (spot buy +
+        # short margin). Total consumption is deployable * (1 + 1/leverage);
+        # cap so we keep the reserved short margin + buffer untouched.
         withdrawable = float(inventory.hl_withdrawable_usd or 0.0)
-
         leverage = float(MAX_HL_LEVERAGE or 2.0)
         if leverage <= 0:
             leverage = 2.0
@@ -752,40 +669,16 @@ class BorosHypeHyperliquidOpsMixin:
             getattr(self._planner_config, "hl_withdrawable_buffer_usd", 5.0) or 0.0
         )
         denom = 1.0 + (1.0 / leverage)
-        max_xfer_by_margin = max(
-            0.0,
-            (withdrawable - buffer_usd - (spot_usdc_before / leverage)) / denom,
+        max_deployable = max(
+            0.0, (withdrawable - buffer_usd - reserve_hl_margin_usd) / denom
         )
-        transferable_from_perp = max(
-            0.0,
-            min(
-                max_xfer_by_margin,
-                perp_margin - reserve_hl_margin_usd,
-            ),
-        )
-
-        need_from_perp = max(0.0, desired_usd - spot_usdc_before)
-        xfer_usd = min(need_from_perp, transferable_from_perp)
-
-        if xfer_usd >= self._planner_config.min_usdc_action:
-            xfer_ok, xfer_res = await self.hyperliquid_adapter.transfer_perp_to_spot(
-                amount=float(xfer_usd),
-                address=address,
-            )
-            if not xfer_ok:
-                return False, f"Perp→spot transfer failed: {xfer_res}"
-            logger.info(
-                f"Transferred ${xfer_usd:.2f} from HL perp→spot "
-                f"(reserve_perp=${reserve_hl_margin_usd:.2f})"
-            )
-
-        deployable_usd = min(desired_usd, spot_usdc_before + xfer_usd)
+        deployable_usd = min(desired_usd, max_deployable)
         if deployable_usd < MIN_NOTIONAL_USD:
             return False, (
-                "Insufficient deployable HL spot USDC after reserving perp margin "
+                "Insufficient deployable HL USDC after reserving perp margin "
                 f"(${deployable_usd:.2f} < ${MIN_NOTIONAL_USD:.2f}; "
-                f"reserve=${reserve_hl_margin_usd:.2f}, perp=${perp_margin:.2f}, "
-                f"withdrawable=${withdrawable:.2f}, spot=${spot_usdc_before:.2f})"
+                f"reserve=${reserve_hl_margin_usd:.2f}, "
+                f"withdrawable=${withdrawable:.2f})"
             )
 
         # Atomic Paired Fill: buy spot HYPE, short perp HYPE
@@ -873,14 +766,6 @@ class BorosHypeHyperliquidOpsMixin:
             address=address,
         )
         if ok:
-            try:
-                ok_sweep, sweep_msg = await self._sweep_hl_spot_usdc_to_perp(
-                    address=address
-                )
-                if not ok_sweep:
-                    logger.warning(sweep_msg)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"HL spot USDC sweep failed: {exc}")
             return True, f"Bridged {amount_to_bridge:.4f} HYPE to HyperEVM"
 
         err = res if isinstance(res, str) else str(res)

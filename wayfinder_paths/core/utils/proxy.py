@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
-
 from web3 import AsyncWeb3
 
+from wayfinder_paths.core.constants.eip897_abi import EIP897_ABI
 from wayfinder_paths.core.utils import web3 as web3_utils
 
 EIP1967_IMPLEMENTATION_SLOT = (
@@ -12,27 +11,6 @@ EIP1967_IMPLEMENTATION_SLOT = (
 ZEPPELINOS_IMPLEMENTATION_SLOT = (
     "0x7050c9e0f4ca769c69bd3a8ef740bc37934f8e2c036e5a723fd8ee048ed3f8c3"
 )
-
-EIP897_ABI: list[dict[str, Any]] = [
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "proxyType",
-        "outputs": [{"name": "proxyTypeId", "type": "uint256"}],
-        "payable": False,
-        "stateMutability": "pure",
-        "type": "function",
-    },
-    {
-        "constant": True,
-        "inputs": [],
-        "name": "implementation",
-        "outputs": [{"name": "codeAddr", "type": "address"}],
-        "payable": False,
-        "stateMutability": "view",
-        "type": "function",
-    },
-]
 
 
 async def _impl_from_storage_slot(
