@@ -510,9 +510,9 @@ async def polymarket_execute(
 ) -> dict[str, Any]:
     """Execute Polymarket trades on the owner EOA / deposit wallet.
 
-    Polymarket V2 settles on Polygon in pUSD (`0xC011a7...`). This tool only handles the
-    deposit-wallet + CLOB surface — it does NOT convert collateral. To route in/out of pUSD,
-    use the BRAP swap MCP tools (see "Routing collateral" below).
+    Polymarket V2 settles on Polygon in pUSD (`0xC011a7...`). This tool handles the
+    deposit-wallet + CLOB surface. For collateral routing in/out of pUSD, use the BRAP
+    swap MCP tools (see "Routing collateral" below).
 
     Actions:
       - `fund_deposit_wallet`: move `amount` pUSD from the owner EOA into the derived deposit

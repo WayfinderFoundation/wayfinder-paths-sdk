@@ -11,9 +11,9 @@ This page covers **collateral routing** — moving between any token/chain and p
 - Native Polygon **USDC**:
   - `0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359`
 
-## MCP recipe — use the BRAP swap tools
+## MCP recipe — BRAP swap tools
 
-Polymarket-specific bridge actions no longer exist on `polymarket_execute`. Use the BRAP swap MCP tools — they pick the right solver automatically (`polymarket_bridge` for USDC.e ↔ pUSD 1:1 wraps; standard DEX routes for everything else; cross-chain bridges when source chain ≠ Polygon).
+Route into and out of pUSD with the BRAP swap MCP tools. They pick the right solver automatically (`polymarket_bridge` for USDC.e ↔ pUSD 1:1 wraps; standard DEX routes for everything else; cross-chain bridges when source chain ≠ Polygon).
 
 **In: any token → pUSD on Polygon**
 
