@@ -163,33 +163,6 @@ async def test_polymarket_quote_surfaces_adapter_failure():
 
 
 @pytest.mark.asyncio
-async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
-
-    with (
-        patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
-        patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
-        patch(_GET_HASH_CB, AsyncMock(return_value=(_HASH_CB, _ADDR))),
-        patch(_GET_TYPED_CB, AsyncMock(return_value=(_TYPED_CB, _ADDR))),
-        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
-        patch(
-            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.bridge_deposit",
-            new=AsyncMock(return_value=(True, {"tx_hash": "0xabc"})),
-        ),
-    ):
-        out = await polymarket_execute(
-            "bridge_deposit",
-            wallet_label="main",
-            amount=1.0,
-        )
-        assert out["ok"] is True
-        assert out["result"]["status"] == "confirmed"
-        assert out["result"]["action"] == "bridge_deposit"
-        effects = out["result"]["effects"]
-        assert effects and effects[0]["label"] == "bridge_deposit"
-
-
-@pytest.mark.asyncio
 async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 

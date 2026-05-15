@@ -246,17 +246,16 @@ Polymarket quick flows:
 
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
 - Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
-- Convert **native Polygon USDC (0x3c499c...) → pUSD (0xC011a7..., V2 collateral)**: `mcp__wayfinder__polymarket_execute(action="bridge_deposit", wallet_label="main", amount=10)` (adapter routes USDC → USDC.e → pUSD automatically; skip if you already have pUSD)
+- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<wei>", slippage_bps=50)`, then `mcp__wayfinder__core_execute(request=<suggested_execute_request>)`. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
 - Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
 - Sell shares (market order): `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
 - Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
 
 Polymarket funding (pUSD collateral):
 
-- **Polygon USDC → pUSD:** `polymarket_execute(action="bridge_deposit", amount=10)` converts native USDC (0x3c499c...) → pUSD (0xC011a7...), routing through USDC.e automatically.
-- **Polygon USDC.e → pUSD:** same `bridge_deposit` call wraps USDC.e → pUSD in a single step (polymarket_bridge solver).
-- **Already have pUSD:** Trade immediately, skip `bridge_deposit`.
-- **Funds on other chains:** use `bridge_deposit` with `from_chain_id` + `from_token_address` — the adapter bridges to Polygon and wraps into pUSD end-to-end.
+- **Any token/chain → pUSD:** use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) with `to_token` = `polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`. Works for Polygon USDC, Polygon USDC.e, or any supported asset on any supported chain — BRAP picks the route.
+- **Already have pUSD:** Trade immediately, skip routing.
+- **pUSD → any token/chain:** flip `from_token` / `to_token` in the same BRAP swap flow.
 
 Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X`is **notional** or **margin** (use`usd_amount_kind="notional"|"margin"`on`mcp**wayfinder**hyperliquid_execute`).
 
