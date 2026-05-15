@@ -118,12 +118,16 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp dexes (`xyz`/`flx`/`vntl`/`hyna`/`km`...), and HIP-4 outcome markets (binary/multi-outcome prediction contracts). Outcomes use a separate asset-id space (`100_000_000 + 10*outcome_id + side`) and integer contract sizes; **settle in USDH** (token 360), not USDC; settle daily at 06:00 UTC. They go through the same `hyperliquid_place_market_order` / `hyperliquid_place_limit_order` tools — pass `asset_name="#<encoding>"` and the tool dispatches the outcome path (no builder fee, integer contracts). See `/using-hyperliquid-adapter` rules for details.
+Hyperliquid UnifiedAccount mode (repo default):
+
+- Spot + perp share one collateral balance — **no spot ↔ perp transfers** (they don't exist and will fail).
+- Deposits land in the **unified balance**, surfaced via `spotClearinghouseState` as the `USDC` coin. Perp `marginSummary.accountValue` stays `0` — that's expected, not a failed deposit.
+
+- Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp dexes (`xyz`/`flx`/`vntl`/`hyna`/`km`...), and HIP-4 outcome markets (binary/multi-outcome prediction contracts). Outcomes use a separate asset-id space (`100_000_000 + 10*outcome_id + side`) and integer contract sizes; **settle in USDH** (token 360), not USDC; settle daily at 06:00 UTC. They go through the same `hyperliquid_place_market_order` / `hyperliquid_place_limit_order` tools — pass `asset_name="#<encoding>"` and the tool dispatches the outcome path (no builder fee, integer contracts). See `/using-hyperliquid-adapter` rules for details.
 
 **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present candidates side-by-side so the user can choose. Two venues:
 
 - **Hyperliquid HIP-4** — daily binary price contracts settled in USDH on the HL L1; rotating daily lineup. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` (read the `outcomes` bucket).
-- **Hyperliquid unified accounts** - UnifiedAccount mode means that perp and spot account have the same margin. In this mode transfers between perp and spot accounts aren't needed and will not work.
 - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
 Present results as a table grouped by venue, then ask which market to trade — the same theme can list on both venues with different sizes, expiries, and collateral. Load `/using-hyperliquid-adapter` or `/using-polymarket-adapter` once the user picks.
@@ -159,7 +163,7 @@ Strategies:
 
 - A strategy has 3 parts: 1) signal -- this is the formula, data, computation or thesis that drives returns for the strategy 2) monetization -- this is the specific decision logic that maximizes the return of a given signal (choosing when, how and where to trade) 3) execution -- this is how money is moved (the venues, procedures and clients used)
 
-- Help a user arrive at real signal, use the tools available to rigorously vet ideas. Signal examples: spread reversion, anomalous funding rates, 
+- Help a user arrive at real signal, use the tools available to rigorously vet ideas. Signal examples: spread reversion, anomalous funding rates,
 - Help the user have efficient monetization. Examples: delta-neutral portfolio (capture funding rates without directional risk), leveraged lending, liquidity taking when signal is > threshold
 - Use the existing adapters and clients for execution
 

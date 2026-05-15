@@ -1419,12 +1419,20 @@ class HyperliquidAdapter(BaseAdapter):
         poll_interval_s = max(1, int(poll_interval_s))
         iterations = int(timeout_s // poll_interval_s) + 1
 
-        success, initial_state = await self.get_user_state(address)
+        # UnifiedAccount mode: USDC sits in spotClearinghouseState (perp
+        # marginSummary.accountValue is meaningless for unified users).
+        def _usdc_from_spot(state: dict[str, Any]) -> float:
+            for bal in state.get("balances") or []:
+                if bal.get("coin") == "USDC":
+                    return float(bal.get("total") or 0.0)
+            return 0.0
+
+        success, initial_state = await self.get_spot_user_state(address)
         if not success:
-            self.logger.warning(f"Could not fetch initial state: {initial_state}")
+            self.logger.warning(f"Could not fetch initial spot state: {initial_state}")
             initial_balance = 0.0
         else:
-            initial_balance = self.get_perp_margin_amount(initial_state)
+            initial_balance = _usdc_from_spot(initial_state)
 
         self.logger.info(
             f"Waiting for Hyperliquid deposit. Initial balance: ${initial_balance:.2f}, "
@@ -1439,17 +1447,19 @@ class HyperliquidAdapter(BaseAdapter):
         ok_ledger, deposits = await self.get_user_deposits(address, from_timestamp_ms)
         if ok_ledger and any(float(v or 0) >= expected_min for v in deposits.values()):
             self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
-            return True, float(initial_balance)
+            success, state = await self.get_spot_user_state(address)
+            current = _usdc_from_spot(state) if success else initial_balance
+            return True, float(current)
 
         for i in range(iterations):
             if i > 0:
                 await asyncio.sleep(poll_interval_s)
 
-            success, state = await self.get_user_state(address)
+            success, state = await self.get_spot_user_state(address)
             if not success:
                 continue
 
-            current_balance = self.get_perp_margin_amount(state)
+            current_balance = _usdc_from_spot(state)
 
             # Allow 5% tolerance for fees/slippage
             if current_balance >= initial_balance + expected_min:
@@ -1478,10 +1488,8 @@ class HyperliquidAdapter(BaseAdapter):
             f"Hyperliquid deposit not confirmed after {timeout_s}s. "
             "Deposits typically credit in < 1 minute (but can take longer)."
         )
-        success, state = await self.get_user_state(address)
-        final_balance = (
-            self.get_perp_margin_amount(state) if success else initial_balance
-        )
+        success, state = await self.get_spot_user_state(address)
+        final_balance = _usdc_from_spot(state) if success else initial_balance
         return False, final_balance
 
     async def get_user_deposits(

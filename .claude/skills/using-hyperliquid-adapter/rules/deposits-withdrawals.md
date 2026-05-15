@@ -59,8 +59,13 @@ Claude Code shortcut:
 ### Deposit monitoring (recommended)
 
 - Call: `HyperliquidAdapter.wait_for_deposit(address, expected_increase, timeout_s=..., poll_interval_s=...)`
-- Mechanism: polls `get_user_state(address)` and checks perp margin increase.
-- The `mcp__wayfinder__hyperliquid_deposit` shortcut already waits for the clearinghouse credit before returning.
+- Mechanism: confirms via the user's non-funding ledger updates (`get_user_deposits`) first; falls back to polling `get_user_state(address)` perp `marginSummary.accountValue`.
+- The `mcp__wayfinder__hyperliquid_deposit` shortcut already waits for the credit before returning.
+
+**Under UnifiedAccount mode (the repo default — see [gotchas.md](gotchas.md)):**
+- Funds land in the **unified balance**, surfaced via `spotClearinghouseState` as the `USDC` coin (token=0). Perp `marginSummary.accountValue` stays `0` and is not meaningful — per HL docs, individual perp dex user states are not meaningful for unified-account users.
+- Confirmation still works correctly because the ledger fast-path runs first.
+- The `final_balance_usd` returned by `mcp__wayfinder__hyperliquid_deposit` reads perp margin, so it will report `0` even on a successful deposit. To read the actual credited balance, use `hyperliquid_get_state` and look at `spot.balances[coin="USDC"].total`.
 
 ### Withdrawal monitoring (best-effort)
 
