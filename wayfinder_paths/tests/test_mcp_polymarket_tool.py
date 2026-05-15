@@ -7,8 +7,8 @@ import pytest
 
 from wayfinder_paths.core.constants.polymarket import derive_deposit_wallet
 from wayfinder_paths.mcp.tools.polymarket import (
-    polymarket_execute,
     polymarket_get_state,
+    polymarket_place_market_order,
     polymarket_read,
 )
 
@@ -163,7 +163,7 @@ async def test_polymarket_quote_surfaces_adapter_failure():
 
 
 @pytest.mark.asyncio
-async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch):
+async def test_polymarket_place_market_order(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 
     with (
@@ -177,8 +177,7 @@ async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch
             new=AsyncMock(return_value=(True, {"status": "matched"})),
         ),
     ):
-        out = await polymarket_execute(
-            "place_market_order",
+        out = await polymarket_place_market_order(
             wallet_label="main",
             market_slug="bitcoin-above-70k-on-february-9",
             outcome="YES",
@@ -187,6 +186,5 @@ async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch
         )
         assert out["ok"] is True
         assert out["result"]["status"] == "confirmed"
-        assert out["result"]["action"] == "place_market_order"
         effects = out["result"]["effects"]
         assert effects and effects[0]["label"] == "place_market_order"
