@@ -31,6 +31,7 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
+    ASSET_NAME_SYNONYMS,
     MAX_UINT256,
     POLYGON_CHAIN_ID,
     POLYGON_P_USDC_PROXY_ADDRESS,
@@ -84,6 +85,27 @@ def _fuzzy_score(query: str, text: str) -> float:
     if q in t:
         return 1.0
     return SequenceMatcher(None, q, t).ratio()
+
+
+def _expand_query_synonyms(query: str) -> str | None:
+    """Swap any standalone asset ticker in `query` for its full name.
+
+    Returns the rewritten query if at least one substitution happened, else None.
+    """
+    normalized = _normalize_text(query)
+    if not normalized:
+        return None
+    tokens = normalized.split()
+    swapped = False
+    out: list[str] = []
+    for tok in tokens:
+        full = ASSET_NAME_SYNONYMS.get(tok)
+        if full:
+            out.append(full)
+            swapped = True
+        else:
+            out.append(tok)
+    return " ".join(out) if swapped else None
 
 
 class PolymarketAdapter(BaseAdapter):
@@ -277,29 +299,50 @@ class PolymarketAdapter(BaseAdapter):
         end_date_min: str | None = None,
         rerank: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        ok, data = await self.public_search(
-            q=query,
-            limit_per_type=max(limit, 1),
-            page=page,
-            keep_closed_markets=keep_closed_markets,
-            events_status=events_status,
-        )
-        if not ok:
-            return False, str(data)
+        # Polymarket titles short-duration markets with full asset names ("Bitcoin
+        # Up or Down"); ticker queries ("BTC 5m") miss them because Gamma matches
+        # the ticker literally and returns long-dated commentary markets instead.
+        # Fan out: original query + ticker-expanded query.
+        expanded = _expand_query_synonyms(query)
+        queries = [query] if expanded is None else [query, expanded]
 
-        markets: list[dict[str, Any]] = []
-        for event in data.get("events") or []:
-            for market in event.get("markets") or []:
-                markets.append(
-                    {
-                        **self._normalize_market(market),
-                        "_event": {
-                            "id": event.get("id"),
-                            "slug": event.get("slug"),
-                            "title": event.get("title"),
-                        },
-                    }
+        responses = await asyncio.gather(
+            *(
+                self.public_search(
+                    q=q,
+                    limit_per_type=max(limit, 1),
+                    page=page,
+                    keep_closed_markets=keep_closed_markets,
+                    events_status=events_status,
                 )
+                for q in queries
+            )
+        )
+
+        for ok, data in responses:
+            if not ok:
+                return False, str(data)
+
+        seen_market_ids: set[str] = set()
+        markets: list[dict[str, Any]] = []
+        for _, data in responses:
+            for event in data.get("events") or []:
+                for market in event.get("markets") or []:
+                    mid = str(market.get("id") or "")
+                    if mid and mid in seen_market_ids:
+                        continue
+                    if mid:
+                        seen_market_ids.add(mid)
+                    markets.append(
+                        {
+                            **self._normalize_market(market),
+                            "_event": {
+                                "id": event.get("id"),
+                                "slug": event.get("slug"),
+                                "title": event.get("title"),
+                            },
+                        }
+                    )
 
         if end_date_min:
             markets = [
@@ -312,10 +355,13 @@ class PolymarketAdapter(BaseAdapter):
             return True, markets[:limit]
 
         def score(m: dict[str, Any]) -> float:
+            question = str(m.get("question") or "")
+            slug = str(m.get("slug") or "")
+            event_title = str((m.get("_event") or {}).get("title") or "")
             return max(
-                _fuzzy_score(query, str(m.get("question") or "")),
-                _fuzzy_score(query, str(m.get("slug") or "")),
-                _fuzzy_score(query, str((m.get("_event") or {}).get("title") or "")),
+                _fuzzy_score(q, field)
+                for q in queries
+                for field in (question, slug, event_title)
             )
 
         markets.sort(key=score, reverse=True)

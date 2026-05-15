@@ -271,6 +271,70 @@ class TestPolymarketAdapter:
         assert "events" in data
 
     @pytest.mark.asyncio
+    async def test_search_markets_fuzzy_expands_ticker_synonyms(
+        self, adapter, monkeypatch
+    ):
+        ticker_response = {
+            "events": [
+                {
+                    "id": "ev-ticker",
+                    "slug": "anthropic-flip-btc",
+                    "title": "Will Anthropic flip BTC?",
+                    "markets": [
+                        {
+                            "id": "m-ticker",
+                            "question": "Will Anthropic flip BTC?",
+                            "slug": "anthropic-flip-btc",
+                            "outcomes": '["Yes","No"]',
+                            "outcomePrices": "[0.5,0.5]",
+                            "clobTokenIds": '["t1","t2"]',
+                        }
+                    ],
+                }
+            ]
+        }
+        fullname_response = {
+            "events": [
+                {
+                    "id": "ev-full",
+                    "slug": "btc-updown",
+                    "title": "Bitcoin Up or Down",
+                    "markets": [
+                        {
+                            "id": "m-full",
+                            "question": "Bitcoin Up or Down - 5m",
+                            "slug": "btc-updown-5m-1",
+                            "outcomes": '["Up","Down"]',
+                            "outcomePrices": "[0.5,0.5]",
+                            "clobTokenIds": '["t3","t4"]',
+                        }
+                    ],
+                }
+            ]
+        }
+        calls: list[str] = []
+
+        async def mock_get(_path, params=None, **_kwargs):
+            q = (params or {}).get("q", "")
+            calls.append(q)
+            resp = MagicMock()
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = (
+                fullname_response if "bitcoin" in q.lower() else ticker_response
+            )
+            return resp
+
+        monkeypatch.setattr(adapter._gamma_http, "get", mock_get)
+
+        ok, rows = await adapter.search_markets_fuzzy(query="BTC 5 min", limit=5)
+        assert ok is True
+        assert isinstance(rows, list)
+        questions = [m["question"] for m in rows]
+        assert "Bitcoin Up or Down - 5m" in questions
+        assert any("BTC" in c for c in calls)
+        assert any("bitcoin" in c.lower() for c in calls)
+
+    @pytest.mark.asyncio
     async def test_get_price(self, adapter, monkeypatch):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None

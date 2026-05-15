@@ -3,6 +3,23 @@ from __future__ import annotations
 from eth_abi import encode as abi_encode
 from eth_utils import keccak, to_bytes, to_checksum_address
 
+# Ticker → full name. Polymarket's high-volume short-duration markets
+# ("Bitcoin Up or Down", "Ethereum Up or Down", daily/hourly) are titled with
+# full asset names; ticker queries ("BTC 5m") miss them and only match
+# commentary markets that happen to contain the ticker literally.
+ASSET_NAME_SYNONYMS: dict[str, str] = {
+    "btc": "bitcoin",
+    "eth": "ethereum",
+    "sol": "solana",
+    "xrp": "ripple",
+    "doge": "dogecoin",
+    "ltc": "litecoin",
+    "ada": "cardano",
+    "avax": "avalanche",
+    "dot": "polkadot",
+    "link": "chainlink",
+}
+
 POLYMARKET_GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_BASE_URL = "https://clob.polymarket.com"
 # v2 test url before crossover. once crossover is complete, v2 will use the original url
