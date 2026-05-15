@@ -54,13 +54,104 @@ async def test_defillama_free_open_interest_overview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {"protocols": []}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     await llama_module.DEFILLAMA_FREE_CLIENT.open_interest_overview()
 
     assert _FakeAsyncClient.calls == [
-        ("GET", "https://api.llama.fi/overview/open-interest", {"params": {}})
+        (
+            "GET",
+            "https://api.llama.fi/overview/open-interest",
+            {
+                "params": {
+                    "excludeTotalDataChart": "true",
+                    "excludeTotalDataChartBreakdown": "true",
+                }
+            },
+        )
     ]
+
+
+@pytest.mark.asyncio
+async def test_defillama_free_stablecoins_uses_stablecoins_host_and_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "peggedAssets": [
+            {
+                "id": "usdt",
+                "name": "Tether",
+                "symbol": "USDT",
+                "circulating": {"peggedUSD": 100},
+            },
+            {
+                "id": "usdc",
+                "name": "USD Coin",
+                "symbol": "USDC",
+                "circulating": {"peggedUSD": 90},
+            },
+        ],
+        "chains": [{"name": "Ethereum"}],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await llama_module.DEFILLAMA_FREE_CLIENT.stablecoins(limit=1)
+
+    assert _FakeAsyncClient.calls == [
+        ("GET", "https://stablecoins.llama.fi/stablecoins", {"params": {}})
+    ]
+    assert result["result"]["items"][0]["symbol"] == "USDT"
+    assert result["result"]["page"]["nextCursor"] == "1"
+    assert result["result"]["rawPayloadOmitted"] is True
+
+
+@pytest.mark.asyncio
+async def test_defillama_free_fees_overview_compacts_and_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "total24h": 300,
+        "total7d": 700,
+        "protocols": [
+            {
+                "name": "Small",
+                "slug": "small",
+                "total24h": 10,
+                "breakdown24h": {"ethereum": {"Small": 10}},
+            },
+            {
+                "name": "Large",
+                "slug": "large",
+                "total24h": 200,
+                "breakdown24h": {"base": {"Large": 200}},
+            },
+        ],
+        "totalDataChart": [[1, 2]],
+        "totalDataChartBreakdown": [[1, {"ethereum": {"Large": 200}}]],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await llama_module.DEFILLAMA_FREE_CLIENT.fees_overview(limit=1)
+
+    assert _FakeAsyncClient.calls == [
+        (
+            "GET",
+            "https://api.llama.fi/overview/fees",
+            {
+                "params": {
+                    "excludeTotalDataChart": "true",
+                    "excludeTotalDataChartBreakdown": "true",
+                }
+            },
+        )
+    ]
+    assert result["result"]["items"][0]["name"] == "Large"
+    assert result["result"]["page"]["nextCursor"] == "1"
+    assert result["result"]["totals"]["total24h"] == 300
+    assert "totalDataChart" not in result["result"]
 
 
 @pytest.mark.asyncio
