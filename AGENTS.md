@@ -118,7 +118,7 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp dexes (`xyz`/`flx`/`vntl`/`hyna`/`km`...), and HIP-4 outcome markets (binary/multi-outcome prediction contracts). Outcomes use a separate asset-id space (`100_000_000 + 10*outcome_id + side`) and integer contract sizes; **settle in USDH** (token 360), not USDC; settle daily at 06:00 UTC; written via `hyperliquid_place_market_order(asset_name="#<encoding>", ...)` (or `_place_limit_order`). See `/using-hyperliquid-adapter` rules for details.
+Hyperliquid surfaces in the adapter/MCP: perp, spot, HIP-3 builder-deployed perp dexes (`xyz`/`flx`/`vntl`/`hyna`/`km`...), and HIP-4 outcome markets (binary/multi-outcome prediction contracts). Outcomes use a separate asset-id space (`100_000_000 + 10*outcome_id + side`) and integer contract sizes; **settle in USDH** (token 360), not USDC; settle daily at 06:00 UTC; written via `hyperliquid_place_outcome_order(asset_name="#<encoding>", order_type="market"|"limit", ...)`. See `/using-hyperliquid-adapter` rules for details.
 
 **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present candidates side-by-side so the user can choose. Two venues:
 

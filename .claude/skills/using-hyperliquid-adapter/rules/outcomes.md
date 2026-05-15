@@ -48,12 +48,12 @@ Other reads:
 
 ## Writes
 
-### MCP — `hyperliquid_place_market_order` / `_place_limit_order` on a `#<encoding>` market
+### MCP — `hyperliquid_place_outcome_order` on a `#<encoding>` market
 
-Outcome markets are placed via the same tools as perp/spot — the `#<encoding>` `asset_name` routes to the outcome path.
+Outcome markets have their own MCP tool; perp/spot tools reject `#<encoding>` asset names.
 
 **Required (market):** `wallet_label`, `asset_name` (e.g. `"#200"` for outcome_id=20, side=0), `is_buy`, `size` (int contracts) or `usd_amount`.
-**Required (limit):** same as market plus `price`. `size` is required (no `usd_amount` for limit outcomes).
+**Required (limit):** add `order_type="limit"` and `price`; `size` is required (no `usd_amount` for limit outcomes).
 
 **Optional:** `slippage` (market only, default 0.01), `reduce_only`, `cloid`.
 
@@ -63,7 +63,7 @@ Outcome markets are placed via the same tools as perp/spot — the `#<encoding>`
 - No leverage, no `is_spot` — outcome resolution comes from the `#<encoding>` asset name.
 
 ```python
-hyperliquid_place_market_order(
+hyperliquid_place_outcome_order(
     wallet_label="main",
     asset_name="#200",   # outcome_id=20, side=0 (YES — verify via get_outcome_markets sideSpecs)
     is_buy=True,
