@@ -48,13 +48,14 @@ Other reads:
 
 ## Writes
 
-### MCP — `hyperliquid_place_order` on a `#<encoding>` market
+### MCP — `hyperliquid_place_market_order` / `_place_limit_order` on a `#<encoding>` market
 
-Outcome markets are placed via the same tool as perp/spot — the `#<encoding>` `asset_name` routes the call to the outcome path.
+Outcome markets are placed via the same tools as perp/spot — the `#<encoding>` `asset_name` routes to the outcome path.
 
-**Required:** `wallet_label`, `asset_name` (e.g. `"#200"` for outcome_id=20, side=0), `is_buy`, `size` (int contracts) or `usd_amount` (market only).
+**Required (market):** `wallet_label`, `asset_name` (e.g. `"#200"` for outcome_id=20, side=0), `is_buy`, `size` (int contracts) or `usd_amount`.
+**Required (limit):** same as market plus `price`. `size` is required (no `usd_amount` for limit outcomes).
 
-**Optional:** `order_type` (`"market"` default → IOC; `"limit"` → GTC), `price` (required for limit), `slippage` (default 0.01), `reduce_only`, `cloid`.
+**Optional:** `slippage` (market only, default 0.01), `reduce_only`, `cloid`.
 
 **Notes:**
 - `size` is **integer contracts** (`szDecimals=0`).
@@ -62,7 +63,7 @@ Outcome markets are placed via the same tool as perp/spot — the `#<encoding>` 
 - No leverage, no `is_spot` — outcome resolution comes from the `#<encoding>` asset name.
 
 ```python
-hyperliquid_place_order(
+hyperliquid_place_market_order(
     wallet_label="main",
     asset_name="#200",   # outcome_id=20, side=0 (YES — verify via get_outcome_markets sideSpecs)
     is_buy=True,

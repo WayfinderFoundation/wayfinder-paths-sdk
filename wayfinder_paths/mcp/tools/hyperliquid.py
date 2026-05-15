@@ -518,48 +518,22 @@ async def hyperliquid_place_trigger_order(
     )
 
 
-@catch_errors
-async def hyperliquid_place_order(
+async def _place_order_impl(
     *,
     wallet_label: str,
     asset_name: str,
     is_buy: bool,
-    order_type: Literal["market", "limit"] = "market",
-    size: float | None = None,
-    usd_amount: float | None = None,
-    usd_amount_kind: Literal["notional", "margin"] | None = None,
-    price: float | None = None,
-    slippage: float = 0.01,
-    reduce_only: bool = False,
-    cloid: str | None = None,
-    leverage: int | None = None,
-    is_cross: bool = True,
+    order_type: Literal["market", "limit"],
+    size: float | None,
+    usd_amount: float | None,
+    usd_amount_kind: Literal["notional", "margin"] | None,
+    price: float | None,
+    slippage: float,
+    reduce_only: bool,
+    cloid: str | None,
+    leverage: int | None,
+    is_cross: bool,
 ) -> dict[str, Any]:
-    """Place a market or limit order on a Hyperliquid perp, spot, or HIP-4 outcome market.
-
-    HL rejects perp/spot orders below $10 notional. Provide exactly one of `size`
-    (asset units) or `usd_amount` (USD); for perps with `usd_amount`,
-    `usd_amount_kind` must be `"notional"` or `"margin"` (margin also requires `leverage`).
-    Outcome markets (`#N`) take integer contracts and skip the $10 floor.
-
-    Args:
-        wallet_label: Wallet placing the order.
-        asset_name: Canonical market identifier from `hyperliquid_search_market`
-            (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#40`).
-        is_buy: True to buy, False to sell.
-        order_type: `"market"` (default, IOC) or `"limit"` (GTC, requires `price`).
-        size: Order size in asset units. Rounded to the asset's lot size.
-        usd_amount: Alternative to `size`, denominated in USD.
-        usd_amount_kind: For perps with `usd_amount`: `"notional"` (position size) or
-            `"margin"` (collateral; needs `leverage`). Ignored for spot.
-        price: Limit price; required when `order_type="limit"`. Spot/perp only;
-            outcomes use it too for limit orders.
-        slippage: Market-order slippage cap as a fraction (default 0.01 = 1%, max 0.25).
-        reduce_only: True to close-only (perp). Ignored for spot.
-        leverage: Per-asset leverage; updated before the order when set.
-        is_cross: Cross margin (default) vs isolated. Only matters with `leverage`.
-        cloid: Client order id for later cancellation.
-    """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     throw_if_none("is_buy is required", is_buy)
@@ -872,6 +846,114 @@ async def _place_outcome_order(
             },
             "effects": effects,
         }
+    )
+
+
+@catch_errors
+async def hyperliquid_place_market_order(
+    *,
+    wallet_label: str,
+    asset_name: str,
+    is_buy: bool,
+    size: float | None = None,
+    usd_amount: float | None = None,
+    usd_amount_kind: Literal["notional", "margin"] | None = None,
+    slippage: float = 0.01,
+    reduce_only: bool = False,
+    cloid: str | None = None,
+    leverage: int | None = None,
+    is_cross: bool = True,
+) -> dict[str, Any]:
+    """Place an IOC market order on a Hyperliquid perp, spot, or HIP-4 outcome market.
+
+    HL rejects perp/spot orders below $10 notional. Provide exactly one of `size`
+    (asset units) or `usd_amount` (USD); for perps with `usd_amount`,
+    `usd_amount_kind` must be `"notional"` or `"margin"` (margin also requires
+    `leverage`). Outcome markets (`#N`) take integer contracts and skip the $10 floor.
+
+    Args:
+        wallet_label: Wallet placing the order.
+        asset_name: Canonical market identifier from `hyperliquid_search_market`
+            (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#40`).
+        is_buy: True to buy, False to sell.
+        size: Order size in asset units. Rounded to the asset's lot size.
+        usd_amount: Alternative to `size`, denominated in USD.
+        usd_amount_kind: For perps with `usd_amount`: `"notional"` (position size) or
+            `"margin"` (collateral; needs `leverage`). Ignored for spot.
+        slippage: Slippage cap as a fraction (default 0.01 = 1%, max 0.25).
+        reduce_only: True to close-only (perp). Ignored for spot.
+        leverage: Per-asset leverage; updated before the order when set.
+        is_cross: Cross margin (default) vs isolated. Only matters with `leverage`.
+        cloid: Client order id for later cancellation.
+    """
+    return await _place_order_impl(
+        wallet_label=wallet_label,
+        asset_name=asset_name,
+        is_buy=is_buy,
+        order_type="market",
+        size=size,
+        usd_amount=usd_amount,
+        usd_amount_kind=usd_amount_kind,
+        price=None,
+        slippage=slippage,
+        reduce_only=reduce_only,
+        cloid=cloid,
+        leverage=leverage,
+        is_cross=is_cross,
+    )
+
+
+@catch_errors
+async def hyperliquid_place_limit_order(
+    *,
+    wallet_label: str,
+    asset_name: str,
+    is_buy: bool,
+    price: float,
+    size: float | None = None,
+    usd_amount: float | None = None,
+    usd_amount_kind: Literal["notional", "margin"] | None = None,
+    reduce_only: bool = False,
+    cloid: str | None = None,
+    leverage: int | None = None,
+    is_cross: bool = True,
+) -> dict[str, Any]:
+    """Place a GTC limit order on a Hyperliquid perp, spot, or HIP-4 outcome market.
+
+    HL rejects perp/spot orders below $10 notional. Provide exactly one of `size`
+    (asset units) or `usd_amount` (USD); for perps with `usd_amount`,
+    `usd_amount_kind` must be `"notional"` or `"margin"` (margin also requires
+    `leverage`). Outcome markets (`#N`) take integer contracts and skip the $10 floor.
+
+    Args:
+        wallet_label: Wallet placing the order.
+        asset_name: Canonical market identifier from `hyperliquid_search_market`
+            (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#40`).
+        is_buy: True to buy, False to sell.
+        price: Limit price (positive).
+        size: Order size in asset units. Rounded to the asset's lot size.
+        usd_amount: Alternative to `size`, denominated in USD.
+        usd_amount_kind: For perps with `usd_amount`: `"notional"` (position size) or
+            `"margin"` (collateral; needs `leverage`). Ignored for spot.
+        reduce_only: True to close-only (perp). Ignored for spot.
+        leverage: Per-asset leverage; updated before the order when set.
+        is_cross: Cross margin (default) vs isolated. Only matters with `leverage`.
+        cloid: Client order id for later cancellation.
+    """
+    return await _place_order_impl(
+        wallet_label=wallet_label,
+        asset_name=asset_name,
+        is_buy=is_buy,
+        order_type="limit",
+        size=size,
+        usd_amount=usd_amount,
+        usd_amount_kind=usd_amount_kind,
+        price=price,
+        slippage=0.0,
+        reduce_only=reduce_only,
+        cloid=cloid,
+        leverage=leverage,
+        is_cross=is_cross,
     )
 
 

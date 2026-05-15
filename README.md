@@ -352,7 +352,7 @@ poetry run python -m wayfinder_paths.mcp.server
 | `quote_swap` | Quote swaps without executing |
 | `execute` | Execute swaps, transfers, and Hyperliquid deposits |
 | `hyperliquid` | Read-only Hyperliquid market/user data |
-| `hyperliquid_place_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw` | Per-action Hyperliquid writes |
+| `hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw` | Per-action Hyperliquid writes |
 | `run_strategy` | Status, policy, and strategy actions |
 | `run_script` | Execute a local Python script inside `.wayfinder_runs/` |
 | `wallets` | Create or list local wallets |

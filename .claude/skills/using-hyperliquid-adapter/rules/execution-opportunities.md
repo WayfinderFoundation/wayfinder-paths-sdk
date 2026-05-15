@@ -56,7 +56,8 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
 - Writes — each action is its own tool:
-  - `mcp__wayfinder__hyperliquid_place_order` — perp / spot / HIP-4 outcome market or limit (see [outcomes.md](outcomes.md) for outcomes)
+  - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 outcome
+  - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 outcome (see [outcomes.md](outcomes.md))
   - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
   - `mcp__wayfinder__hyperliquid_cancel_order`
   - `mcp__wayfinder__hyperliquid_update_leverage`
@@ -124,17 +125,17 @@ Builder attribution is **mandatory** in this repo:
 Set it in `config.json`:
 - `config.json["strategy"]["builder_fee"] = {"b": "0xaA1D89f333857eD78F8434CC4f896A9293EFE65c", "f": 30}`
 
-`mcp__wayfinder__hyperliquid_place_order` (and the trigger / cancel tools) will:
+The `place_market_order` / `place_limit_order` (and trigger) tools will:
 - attach the builder config to orders
 - auto-approve the builder fee (via `approve_builder_fee`) if needed
 
 ### Spot vs perp orders
 
-`hyperliquid_place_order` reads the market type from `asset_name` — no `is_spot` flag.
+The place-order tools read the market type from `asset_name` — no `is_spot` flag.
 
-**Perp order:**
+**Perp market order:**
 ```
-hyperliquid_place_order(
+hyperliquid_place_market_order(
     wallet_label="main",
     asset_name="HYPE-USDC",
     is_buy=True,
@@ -143,13 +144,24 @@ hyperliquid_place_order(
 )
 ```
 
-**Spot order:**
+**Spot market order:**
 ```
-hyperliquid_place_order(
+hyperliquid_place_market_order(
     wallet_label="main",
     asset_name="HYPE/USDC",
     is_buy=True,
     usd_amount=11,
+)
+```
+
+**Perp limit order:**
+```
+hyperliquid_place_limit_order(
+    wallet_label="main",
+    asset_name="HYPE-USDC",
+    is_buy=True,
+    price=12.50,
+    size=10,
 )
 ```
 
@@ -170,7 +182,7 @@ For spot:
 ## Claude Code "execution mode" (one-off scripts)
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
-- `mcp__wayfinder__hyperliquid_place_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
+- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
 - `mcp__wayfinder__core_execute` for on-chain transfers (send/swap/deposit)
 
 ### `mcp__wayfinder__core_execute` examples

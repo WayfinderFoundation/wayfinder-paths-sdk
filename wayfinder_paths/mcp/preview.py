@@ -113,19 +113,39 @@ async def _hl_preview_base(req: dict[str, Any], header: str) -> tuple[str, str]:
     return header, "\n".join(base_lines)
 
 
-async def build_hyperliquid_place_order_preview(
+async def build_hyperliquid_place_market_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_PLACE_ORDER\n")
+    header, base = await _hl_preview_base(
+        tool_input, "HYPERLIQUID_PLACE_MARKET_ORDER\n"
+    )
     details = (
-        "\n\nORDER\n"
-        f"order_type: {tool_input.get('order_type')}\n"
+        "\n\nMARKET ORDER (IOC)\n"
         f"is_buy: {tool_input.get('is_buy')}\n"
         f"size: {tool_input.get('size')}\n"
         f"usd_amount: {tool_input.get('usd_amount')}\n"
         f"usd_amount_kind: {tool_input.get('usd_amount_kind')}\n"
-        f"price: {tool_input.get('price')}\n"
         f"slippage: {tool_input.get('slippage')}\n"
+        f"reduce_only: {tool_input.get('reduce_only')}\n"
+        f"cloid: {tool_input.get('cloid')}\n"
+        f"leverage: {tool_input.get('leverage')}\n"
+        f"is_cross: {tool_input.get('is_cross')}\n"
+        f"builder_wallet: {HYPE_FEE_WALLET}"
+    )
+    return {"summary": header + base + details}
+
+
+async def build_hyperliquid_place_limit_order_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_PLACE_LIMIT_ORDER\n")
+    details = (
+        "\n\nLIMIT ORDER (GTC)\n"
+        f"is_buy: {tool_input.get('is_buy')}\n"
+        f"price: {tool_input.get('price')}\n"
+        f"size: {tool_input.get('size')}\n"
+        f"usd_amount: {tool_input.get('usd_amount')}\n"
+        f"usd_amount_kind: {tool_input.get('usd_amount_kind')}\n"
         f"reduce_only: {tool_input.get('reduce_only')}\n"
         f"cloid: {tool_input.get('cloid')}\n"
         f"leverage: {tool_input.get('leverage')}\n"

@@ -115,7 +115,7 @@ When a user asks for “a **$X bet** at **Y× leverage**”, clarify whether `$X
 
 Claude Code MCP:
 
-- `hyperliquid_place_order(usd_amount=..., usd_amount_kind="notional"|"margin", leverage=...)`
+- `hyperliquid_place_market_order(usd_amount=..., usd_amount_kind="notional"|"margin", leverage=...)` (same args on `_place_limit_order`)
 - If `usd_amount_kind="margin"`, `leverage` is required.
 - If you provide `size`, it is **coin units**, not USD.
 
