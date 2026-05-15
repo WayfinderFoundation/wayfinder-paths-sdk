@@ -16,14 +16,6 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
-from wayfinder_paths.mcp.preview import (
-    build_polymarket_cancel_order_preview,
-    build_polymarket_deposit_preview,
-    build_polymarket_place_limit_order_preview,
-    build_polymarket_place_market_order_preview,
-    build_polymarket_redeem_positions_preview,
-    build_polymarket_withdraw_preview,
-)
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -164,26 +156,6 @@ async def _make_polymarket_adapter(
         wallet_address=sender,
     )
     return adapter, sender
-
-
-def _execution_response(
-    *,
-    preview_obj: dict[str, Any],
-    status: str,
-    wallet_label: str,
-    sender: str,
-    effects: list[dict[str, Any]],
-) -> dict[str, Any]:
-    preview_text = str(preview_obj.get("summary") or "").strip()
-    return ok(
-        {
-            "status": status,
-            "wallet_label": wallet_label,
-            "address": sender,
-            "preview": preview_text,
-            "effects": effects,
-        }
-    )
 
 
 @catch_errors
@@ -537,9 +509,6 @@ async def polymarket_deposit(
     amt = throw_if_not_number("amount must be a number", amount)
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_deposit_preview(
-            {"wallet_label": wallet_label, "amount": amt}
-        )
         ok_fund, res = await adapter.fund_deposit_wallet(
             amount_raw=int(Decimal(str(amt)) * Decimal(1_000_000))
         )
@@ -560,12 +529,14 @@ async def polymarket_deposit(
             chain_id=POLYGON_CHAIN_ID,
             details={"amount": amt},
         )
-        return _execution_response(
-            preview_obj=preview_obj,
-            status=status,
-            wallet_label=wallet_label,
-            sender=sender,
-            effects=effects,
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "amount": amt,
+                "effects": effects,
+            }
         )
     finally:
         await adapter.close()
@@ -594,9 +565,6 @@ async def polymarket_withdraw(
     )
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_withdraw_preview(
-            {"wallet_label": wallet_label, "amount": amt}
-        )
         ok_w, res = await adapter.withdraw_deposit_wallet(
             amount_raw=int(Decimal(str(amt)) * Decimal(1_000_000))
             if amt is not None
@@ -619,12 +587,14 @@ async def polymarket_withdraw(
             chain_id=POLYGON_CHAIN_ID,
             details={"amount": amt},
         )
-        return _execution_response(
-            preview_obj=preview_obj,
-            status=status,
-            wallet_label=wallet_label,
-            sender=sender,
-            effects=effects,
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "amount": amt,
+                "effects": effects,
+            }
         )
     finally:
         await adapter.close()
@@ -667,18 +637,6 @@ async def polymarket_place_market_order(
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_place_market_order_preview(
-            {
-                "wallet_label": wallet_label,
-                "market_slug": market_slug,
-                "outcome": outcome,
-                "token_id": token_id,
-                "side": side,
-                "amount_collateral": amount_collateral,
-                "shares": shares,
-                "max_slippage_pct": max_slippage_pct,
-            }
-        )
         if market_slug:
             if side == "BUY":
                 ok_trade, res = await adapter.place_prediction(
@@ -731,12 +689,24 @@ async def polymarket_place_market_order(
                 else None,
             },
         )
-        return _execution_response(
-            preview_obj=preview_obj,
-            status=status,
-            wallet_label=wallet_label,
-            sender=sender,
-            effects=effects,
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "market_slug": str(market_slug) if market_slug else None,
+                "token_id": str(token_id) if token_id else None,
+                "outcome": str(outcome),
+                "side": side,
+                "amount_collateral": float(amount_collateral)
+                if amount_collateral is not None
+                else None,
+                "shares": float(shares) if shares is not None else None,
+                "max_slippage_pct": float(max_slippage_pct)
+                if max_slippage_pct is not None
+                else None,
+                "effects": effects,
+            }
         )
     finally:
         await adapter.close()
@@ -771,16 +741,6 @@ async def polymarket_place_limit_order(
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_place_limit_order_preview(
-            {
-                "wallet_label": wallet_label,
-                "token_id": tid,
-                "side": side,
-                "price": price,
-                "size": size,
-                "post_only": post_only,
-            }
-        )
         ok_lo, res = await adapter.place_limit_order(
             token_id=tid,
             side=side,
@@ -811,12 +771,18 @@ async def polymarket_place_limit_order(
                 "post_only": bool(post_only),
             },
         )
-        return _execution_response(
-            preview_obj=preview_obj,
-            status=status,
-            wallet_label=wallet_label,
-            sender=sender,
-            effects=effects,
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "token_id": tid,
+                "side": side,
+                "price": float(price),
+                "size": float(size),
+                "post_only": bool(post_only),
+                "effects": effects,
+            }
         )
     finally:
         await adapter.close()
@@ -838,9 +804,6 @@ async def polymarket_cancel_order(
     oid = throw_if_empty_str("order_id is required", order_id)
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_cancel_order_preview(
-            {"wallet_label": wallet_label, "order_id": oid}
-        )
         ok_c, res = await adapter.cancel_order(order_id=oid)
         effects = [
             {
@@ -859,12 +822,14 @@ async def polymarket_cancel_order(
             chain_id=POLYGON_CHAIN_ID,
             details={"order_id": oid},
         )
-        return _execution_response(
-            preview_obj=preview_obj,
-            status=status,
-            wallet_label=wallet_label,
-            sender=sender,
-            effects=effects,
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "order_id": oid,
+                "effects": effects,
+            }
         )
     finally:
         await adapter.close()
@@ -889,9 +854,6 @@ async def polymarket_redeem_positions(
     cid = throw_if_empty_str("condition_id is required", condition_id)
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_redeem_positions_preview(
-            {"wallet_label": wallet_label, "condition_id": cid}
-        )
         ok_r, res = await adapter.redeem_positions(condition_id=cid)
         effects = [
             {
@@ -910,12 +872,14 @@ async def polymarket_redeem_positions(
             chain_id=POLYGON_CHAIN_ID,
             details={"condition_id": cid},
         )
-        return _execution_response(
-            preview_obj=preview_obj,
-            status=status,
-            wallet_label=wallet_label,
-            sender=sender,
-            effects=effects,
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "condition_id": cid,
+                "effects": effects,
+            }
         )
     finally:
         await adapter.close()
