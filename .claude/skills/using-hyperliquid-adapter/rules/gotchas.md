@@ -51,7 +51,7 @@ Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
 - `usd_amount` is always treated as notional (no `usd_amount_kind` required)
 - `leverage` and `reduce_only` are ignored for spot
 
-**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin. Use `spot_to_perp_transfer` / `perp_to_spot_transfer` to move USDC between them.
+**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin.
 
 ## Spot L2 naming quirks
 

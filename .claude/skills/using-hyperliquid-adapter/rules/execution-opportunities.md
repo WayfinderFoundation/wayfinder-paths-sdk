@@ -32,7 +32,6 @@ Account/risk:
 - `approve_builder_fee(builder, max_fee_rate, address)`
 
 Transfers:
-- `transfer_spot_to_perp(amount, address)` / `transfer_perp_to_spot(amount, address)`
 - `spot_transfer(amount, destination, token, address)`
 - `hypercore_to_hyperevm(amount, address, token_address=None)`
 
@@ -62,8 +61,8 @@ For interactive use in Claude Code, this repo exposes a small MCP surface:
   - `place_trigger_order` (stop-loss / take-profit, perp only — see below)
   - `cancel_order`
   - `update_leverage`
+  - `deposit`
   - `withdraw`
-  - `spot_to_perp_transfer` / `perp_to_spot_transfer` (move USDC between wallets)
 
 ### `place_trigger_order` via MCP
 

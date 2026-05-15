@@ -154,8 +154,7 @@ Don't deviate on:
 
 [ ] Wallet exists with label == strategy.name and has USDC in HL PERP
     (not just spot). Use core_get_wallets(label="<name>") to verify both;
-    if spot-only, run hyperliquid_execute(action="spot_to_perp_transfer", ...)
-    before the first update.
+    if spot-only, move USDC into perp margin before the first update.
 
 [ ] CLI status returns clean StatusDict (no risk_warning):
     poetry run python -m wayfinder_paths.run_strategy <name> --action status \
