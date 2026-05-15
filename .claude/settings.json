@@ -73,7 +73,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_hyperliquid_execute_review.py\""
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_hyperliquid_review.py\""
           }
         ]
       },

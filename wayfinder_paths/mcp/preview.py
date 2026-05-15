@@ -116,21 +116,20 @@ async def _hl_preview_base(req: dict[str, Any], header: str) -> tuple[str, str]:
 async def build_hyperliquid_place_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    header, base = await _hl_preview_base(req, "HYPERLIQUID_PLACE_ORDER\n")
+    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_PLACE_ORDER\n")
     details = (
         "\n\nORDER\n"
-        f"order_type: {req.get('order_type')}\n"
-        f"is_buy: {req.get('is_buy')}\n"
-        f"size: {req.get('size')}\n"
-        f"usd_amount: {req.get('usd_amount')}\n"
-        f"usd_amount_kind: {req.get('usd_amount_kind')}\n"
-        f"price: {req.get('price')}\n"
-        f"slippage: {req.get('slippage')}\n"
-        f"reduce_only: {req.get('reduce_only')}\n"
-        f"cloid: {req.get('cloid')}\n"
-        f"leverage: {req.get('leverage')}\n"
-        f"is_cross: {req.get('is_cross')}\n"
+        f"order_type: {tool_input.get('order_type')}\n"
+        f"is_buy: {tool_input.get('is_buy')}\n"
+        f"size: {tool_input.get('size')}\n"
+        f"usd_amount: {tool_input.get('usd_amount')}\n"
+        f"usd_amount_kind: {tool_input.get('usd_amount_kind')}\n"
+        f"price: {tool_input.get('price')}\n"
+        f"slippage: {tool_input.get('slippage')}\n"
+        f"reduce_only: {tool_input.get('reduce_only')}\n"
+        f"cloid: {tool_input.get('cloid')}\n"
+        f"leverage: {tool_input.get('leverage')}\n"
+        f"is_cross: {tool_input.get('is_cross')}\n"
         f"builder_wallet: {HYPE_FEE_WALLET}"
     )
     return {"summary": header + base + details}
@@ -139,20 +138,21 @@ async def build_hyperliquid_place_order_preview(
 async def build_hyperliquid_place_trigger_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    header, base = await _hl_preview_base(req, "HYPERLIQUID_PLACE_TRIGGER_ORDER\n")
-    tpsl_val = req.get("tpsl")
+    header, base = await _hl_preview_base(
+        tool_input, "HYPERLIQUID_PLACE_TRIGGER_ORDER\n"
+    )
+    tpsl_val = tool_input.get("tpsl")
     tpsl_label = "TAKE-PROFIT" if tpsl_val == "tp" else "STOP-LOSS"
-    is_market_trigger = req.get("is_market_trigger", True)
+    is_market_trigger = tool_input.get("is_market_trigger", True)
     trigger_kind = "market" if is_market_trigger else "limit"
     details = (
         f"\n\n{tpsl_label} ({trigger_kind} trigger)\n"
         f"tpsl: {tpsl_val}\n"
-        f"is_buy: {req.get('is_buy')}\n"
-        f"trigger_price: {req.get('trigger_price')}\n"
-        f"size: {req.get('size')}\n"
+        f"is_buy: {tool_input.get('is_buy')}\n"
+        f"trigger_price: {tool_input.get('trigger_price')}\n"
+        f"size: {tool_input.get('size')}\n"
         f"is_market_trigger: {is_market_trigger}\n"
-        f"limit_price: {req.get('price')}\n"
+        f"limit_price: {tool_input.get('price')}\n"
         f"builder_wallet: {HYPE_FEE_WALLET}"
     )
     return {"summary": header + base + details}
@@ -161,12 +161,11 @@ async def build_hyperliquid_place_trigger_order_preview(
 async def build_hyperliquid_cancel_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    header, base = await _hl_preview_base(req, "HYPERLIQUID_CANCEL_ORDER\n")
+    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_CANCEL_ORDER\n")
     details = (
         "\n\nCANCEL\n"
-        f"order_id: {req.get('order_id')}\n"
-        f"cancel_cloid: {req.get('cancel_cloid')}"
+        f"order_id: {tool_input.get('order_id')}\n"
+        f"cancel_cloid: {tool_input.get('cancel_cloid')}"
     )
     return {"summary": header + base + details}
 
@@ -174,12 +173,11 @@ async def build_hyperliquid_cancel_order_preview(
 async def build_hyperliquid_update_leverage_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    header, base = await _hl_preview_base(req, "HYPERLIQUID_UPDATE_LEVERAGE\n")
+    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_UPDATE_LEVERAGE\n")
     details = (
         "\n\nLEVERAGE\n"
-        f"leverage: {req.get('leverage')}\n"
-        f"is_cross: {req.get('is_cross')}"
+        f"leverage: {tool_input.get('leverage')}\n"
+        f"is_cross: {tool_input.get('is_cross')}"
     )
     return {"summary": header + base + details}
 
@@ -187,18 +185,16 @@ async def build_hyperliquid_update_leverage_preview(
 async def build_hyperliquid_deposit_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    header, base = await _hl_preview_base(req, "HYPERLIQUID_DEPOSIT\n")
-    details = f"\n\nDEPOSIT\namount_usdc: {req.get('amount_usdc')}"
+    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_DEPOSIT\n")
+    details = f"\n\nDEPOSIT\namount_usdc: {tool_input.get('amount_usdc')}"
     return {"summary": header + base + details}
 
 
 async def build_hyperliquid_withdraw_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    header, base = await _hl_preview_base(req, "HYPERLIQUID_WITHDRAW\n")
-    details = f"\n\nWITHDRAW\namount_usdc: {req.get('amount_usdc')}"
+    header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_WITHDRAW\n")
+    details = f"\n\nWITHDRAW\namount_usdc: {tool_input.get('amount_usdc')}"
     return {"summary": header + base + details}
 
 

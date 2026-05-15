@@ -18,7 +18,6 @@ from wayfinder_paths.core.constants.hyperliquid import (
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -139,7 +138,12 @@ async def hyperliquid_deposit(
     if amt < 5:
         raise ValueError("amount_usdc must be >= 5 USDC (HL deposits below are lost)")
 
-    sign_callback, deposit_sender = await get_wallet_signing_callback(wallet_label)
+    strategy_raw = CONFIG.get("strategy")
+    strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
+    adapter = await get_adapter(
+        HyperliquidAdapter, wallet_label, config_overrides=dict(strategy_cfg)
+    )
+    deposit_sender = adapter.wallet_address
 
     effects: list[dict[str, Any]] = []
     transaction = await build_send_transaction(
@@ -151,7 +155,7 @@ async def hyperliquid_deposit(
     )
     try:
         tx_hash = await send_transaction(
-            transaction, sign_callback, wait_for_receipt=True
+            transaction, adapter._sign_callback, wait_for_receipt=True
         )
         sent_ok = True
         sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": 42161}
@@ -163,11 +167,6 @@ async def hyperliquid_deposit(
     )
 
     if sent_ok:
-        strategy_raw = CONFIG.get("strategy")
-        strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
-        adapter = await get_adapter(
-            HyperliquidAdapter, wallet_label, config_overrides=dict(strategy_cfg)
-        )
         ok_landed, final_balance = await adapter.wait_for_deposit(deposit_sender, amt)
         effects.append(
             {
@@ -353,7 +352,6 @@ async def hyperliquid_cancel_order(
         return err("invalid_coin", str(exc))
 
     effects: list[dict[str, Any]] = []
-    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
 
     if cancel_cloid:
         ok_cancel, res = await adapter.cancel_order_by_cloid(
@@ -375,7 +373,7 @@ async def hyperliquid_cancel_order(
             {"type": "hl", "label": "cancel_order", "ok": ok_cancel, "result": res}
         )
 
-    ok_all = all(bool(e.get("ok")) for e in effects)
+    ok_all = all(e["ok"] for e in effects)
     status = "confirmed" if ok_all else "failed"
     _annotate_hl_profile(
         address=sender,
@@ -483,7 +481,7 @@ async def hyperliquid_place_trigger_order(
             "result": res,
         }
     )
-    status = "confirmed" if all(bool(e.get("ok")) for e in effects) else "failed"
+    status = "confirmed" if all(e["ok"] for e in effects) else "failed"
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,
@@ -650,12 +648,9 @@ async def hyperliquid_place_order(
             notional_usd = usd_amt
             margin_usd = None
             if leverage is not None:
-                try:
-                    lev = int(leverage)
-                    if lev > 0:
-                        margin_usd = notional_usd / float(lev)
-                except Exception:
-                    margin_usd = None
+                lev = throw_if_not_int("leverage must be an int", leverage)
+                if lev > 0:
+                    margin_usd = notional_usd / float(lev)
 
         if px_for_sizing is None:
             ok_mids, mids = await adapter.get_all_mid_prices()
@@ -754,7 +749,7 @@ async def hyperliquid_place_order(
             {"type": "hl", "label": "place_market_order", "ok": ok_order, "result": res}
         )
 
-    status = "confirmed" if all(bool(e.get("ok")) for e in effects) else "failed"
+    status = "confirmed" if all(e["ok"] for e in effects) else "failed"
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,
