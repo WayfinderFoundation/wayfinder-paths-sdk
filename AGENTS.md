@@ -153,6 +153,19 @@ Token identifiers (important for quoting/execution/lookups):
 
 - Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`).
 
+Strategies:
+
+- Strategies are not trivial to develop, they take time and require details. If the user asks to build a strategy figure out exactly what they want before building. You can recommend the available strategies or variations on them. Assuming details and proceeding is not good.
+
+- A strategy has 3 parts: 1) signal -- this is the formula, data, computation or thesis that drives returns for the strategy 2) monetization -- this is the specific decision logic that maximizes the return of a given signal (choosing when, how and where to trade) 3) execution -- this is how money is moved (the venues, procedures and clients used)
+
+- Help a user arrive at real signal, use the tools available to rigorously vet ideas. Signal examples: spread reversion, anomalous funding rates, 
+- Help the user have efficient monetization. Examples: delta-neutral portfolio (capture funding rates without directional risk), leveraged lending, liquidity taking when signal is > threshold
+- Use the existing adapters and clients for execution
+
+- Avoid assuming what signals will be good or what the user wants. Confirm, verify, empirically validate.
+- Details matter here a lot. If the user is unclear, help them come up with the right details.
+
 ## Recurring automation (Runner)
 
 **All scheduled/recurring tasks MUST go through the runner daemon.** Do not use cron, systemd timers, or background loops. The daemon handles job persistence, failure tracking, timeouts, and session notifications.
