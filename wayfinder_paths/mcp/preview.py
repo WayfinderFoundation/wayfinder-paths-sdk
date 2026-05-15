@@ -198,7 +198,7 @@ async def build_polymarket_fund_deposit_wallet_preview(
         tool_input, "POLYMARKET_FUND_DEPOSIT_WALLET\n"
     )
     details = f"\n\nFUND DEPOSIT WALLET\namount (pUSD): {tool_input.get('amount')}"
-    return {"summary": header + base + details, "recipient_mismatch": False}
+    return {"summary": header + base + details}
 
 
 async def build_polymarket_withdraw_deposit_wallet_preview(
@@ -212,7 +212,7 @@ async def build_polymarket_withdraw_deposit_wallet_preview(
         "\n\nWITHDRAW DEPOSIT WALLET\n"
         f"amount (pUSD): {amount if amount is not None else '(drain full balance)'}"
     )
-    return {"summary": header + base + details, "recipient_mismatch": False}
+    return {"summary": header + base + details}
 
 
 async def build_polymarket_place_market_order_preview(
@@ -229,7 +229,7 @@ async def build_polymarket_place_market_order_preview(
         f"shares: {tool_input.get('shares')}\n"
         f"max_slippage_pct: {tool_input.get('max_slippage_pct')} (None = adapter default 2%)"
     )
-    return {"summary": header + base + details, "recipient_mismatch": False}
+    return {"summary": header + base + details}
 
 
 async def build_polymarket_place_limit_order_preview(
@@ -244,7 +244,7 @@ async def build_polymarket_place_limit_order_preview(
         f"size: {tool_input.get('size')}\n"
         f"post_only: {tool_input.get('post_only')}"
     )
-    return {"summary": header + base + details, "recipient_mismatch": False}
+    return {"summary": header + base + details}
 
 
 async def build_polymarket_cancel_order_preview(
@@ -252,7 +252,7 @@ async def build_polymarket_cancel_order_preview(
 ) -> dict[str, Any]:
     header, base = await _pm_preview_base(tool_input, "POLYMARKET_CANCEL_ORDER\n")
     details = f"\n\nCANCEL ORDER\norder_id: {tool_input.get('order_id')}"
-    return {"summary": header + base + details, "recipient_mismatch": False}
+    return {"summary": header + base + details}
 
 
 async def build_polymarket_redeem_positions_preview(
@@ -260,7 +260,7 @@ async def build_polymarket_redeem_positions_preview(
 ) -> dict[str, Any]:
     header, base = await _pm_preview_base(tool_input, "POLYMARKET_REDEEM_POSITIONS\n")
     details = f"\n\nREDEEM\ncondition_id: {tool_input.get('condition_id')}"
-    return {"summary": header + base + details, "recipient_mismatch": False}
+    return {"summary": header + base + details}
 
 
 async def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:

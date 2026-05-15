@@ -69,8 +69,6 @@ async def main() -> None:
 
     preview = await builder(_tool_input(payload))
     summary = str(preview.get("summary") or "").strip() or f"Review {name} request."
-    if preview.get("recipient_mismatch"):
-        summary = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + summary
 
     out = {
         "hookSpecificOutput": {

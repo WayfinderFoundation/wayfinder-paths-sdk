@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -141,9 +142,15 @@ async def _make_polymarket_adapter(
     wallet_label: str,
 ) -> tuple[PolymarketAdapter, str]:
     """Resolve signing callbacks + build a wallet-bound PolymarketAdapter."""
-    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
-    sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label)
-    sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(wallet_label)
+    (
+        (sign_callback, sender),
+        (sign_hash_cb, _),
+        (sign_typed_data_cb, _),
+    ) = await asyncio.gather(
+        get_wallet_signing_callback(wallet_label),
+        get_wallet_sign_hash_callback(wallet_label),
+        get_wallet_sign_typed_data_callback(wallet_label),
+    )
 
     cfg = dict(CONFIG)
     cfg["main_wallet"] = {"address": sender}
@@ -168,8 +175,6 @@ def _execution_response(
     effects: list[dict[str, Any]],
 ) -> dict[str, Any]:
     preview_text = str(preview_obj.get("summary") or "").strip()
-    if preview_obj.get("recipient_mismatch"):
-        preview_text = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + preview_text
     return ok(
         {
             "status": status,
@@ -711,7 +716,7 @@ async def polymarket_place_market_order(
             label=wallet_label,
             action="place_market_order",
             status=status,
-            chain_id=int(POLYGON_CHAIN_ID),
+            chain_id=POLYGON_CHAIN_ID,
             details={
                 "market_slug": str(market_slug) if market_slug else None,
                 "token_id": str(token_id) if token_id else None,
@@ -797,7 +802,7 @@ async def polymarket_place_limit_order(
             label=wallet_label,
             action="place_limit_order",
             status=status,
-            chain_id=int(POLYGON_CHAIN_ID),
+            chain_id=POLYGON_CHAIN_ID,
             details={
                 "token_id": tid,
                 "side": side,
@@ -851,7 +856,7 @@ async def polymarket_cancel_order(
             label=wallet_label,
             action="cancel_order",
             status=status,
-            chain_id=int(POLYGON_CHAIN_ID),
+            chain_id=POLYGON_CHAIN_ID,
             details={"order_id": oid},
         )
         return _execution_response(
@@ -902,7 +907,7 @@ async def polymarket_redeem_positions(
             label=wallet_label,
             action="redeem_positions",
             status=status,
-            chain_id=int(POLYGON_CHAIN_ID),
+            chain_id=POLYGON_CHAIN_ID,
             details={"condition_id": cid},
         )
         return _execution_response(
