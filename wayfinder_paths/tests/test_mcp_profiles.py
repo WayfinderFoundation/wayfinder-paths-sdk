@@ -46,6 +46,9 @@ def test_research_profile_exposes_research_and_scripts_without_live_execution() 
     assert "research_web_search" in names
     assert "research_goldsky_graphql" in names
     assert "research_get_top_apy" in names
+    assert "research_search_delta_lab_markets" in names
+    assert "research_search_delta_lab_instruments" in names
+    assert "research_get_delta_lab_pendle_market" in names
     assert "core_get_adapters_and_strategies" in names
     assert "core_run_script" in names
 

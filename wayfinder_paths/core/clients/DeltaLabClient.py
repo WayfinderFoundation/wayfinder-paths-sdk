@@ -130,6 +130,13 @@ class DeltaLabClient(WayfinderClient):
         if ts_col in df.columns:
             df[ts_col] = pd.to_datetime(df[ts_col], format="ISO8601")
             df.set_index(ts_col, inplace=True)
+        for column in df.columns:
+            if df[column].dtype != "object":
+                continue
+            converted = pd.to_numeric(df[column], errors="coerce")
+            non_null_count = df[column].notna().sum()
+            if non_null_count and converted.notna().sum() == non_null_count:
+                df[column] = converted
         return df
 
     @staticmethod
@@ -170,15 +177,17 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 400 (invalid params/unknown symbol) or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/basis/{basis_symbol}/apy-sources"
         params: dict[str, str | int] = {
             "lookback_days": lookback_days,
             "limit": limit,
         }
         if as_of:
             params["as_of"] = as_of.isoformat()
-        response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return await self._dl_request(
+            "GET",
+            f"/basis/{basis_symbol}/apy-sources/",
+            params=params,
+        )
 
     async def get_asset(self, *, asset_id: int) -> dict[str, Any]:
         """
@@ -193,9 +202,7 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 404 (not found) or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/assets/{asset_id}"
-        response = await self._authed_request("GET", url)
-        return response.json()
+        return await self._dl_request("GET", f"/assets/{asset_id}/")
 
     async def get_basis_symbols(
         self,
@@ -252,15 +259,17 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 400 (invalid params/unknown symbol) or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/basis/{basis_symbol}/best-delta-neutral"
         params: dict[str, str | int] = {
             "lookback_days": lookback_days,
             "limit": limit,
         }
         if as_of:
             params["as_of"] = as_of.isoformat()
-        response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return await self._dl_request(
+            "GET",
+            f"/basis/{basis_symbol}/best-delta-neutral/",
+            params=params,
+        )
 
     async def get_assets_by_address(
         self,
@@ -284,12 +293,10 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 400 (invalid params) or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/assets/by-address"
         params: dict[str, str | int] = {"address": address}
         if chain_id is not None:
             params["chain_id"] = chain_id
-        response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return await self._dl_request("GET", "/assets/by-address/", params=params)
 
     async def search_assets(
         self,
@@ -309,12 +316,10 @@ class DeltaLabClient(WayfinderClient):
         Returns:
             {"assets": [AssetResponse, ...], "total_count": N}
         """
-        url = f"{get_api_base_url()}/delta-lab/assets/search"
         params: dict[str, str | int] = {"query": query, "limit": limit}
         if chain_id is not None:
             params["chain_id"] = chain_id
-        response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return await self._dl_request("GET", "/assets/search/", params=params)
 
     async def get_asset_basis(self, *, symbol: str) -> dict[str, Any]:
         """
@@ -339,9 +344,7 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 404 (not found) or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/assets/{symbol}/basis"
-        response = await self._authed_request("GET", url)
-        return response.json()
+        return await self._dl_request("GET", f"/assets/{symbol}/basis/")
 
     ALL_TIMESERIES_CATEGORIES: tuple[str, ...] = (
         "price",
@@ -401,7 +404,6 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 400 (invalid params), 404 (not found), or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/assets/{symbol}/timeseries"
         params: dict[str, str | int] = {
             "lookback_days": lookback_days,
             "limit": limit,
@@ -416,8 +418,11 @@ class DeltaLabClient(WayfinderClient):
         if not basis:
             params["basis"] = "false"
 
-        response = await self._authed_request("GET", url, params=params)
-        data = response.json()
+        data = await self._dl_request(
+            "GET",
+            f"/assets/{symbol}/timeseries/",
+            params=params,
+        )
 
         # Convert each series to DataFrame
         result: dict[str, pd.DataFrame] = {}
@@ -429,12 +434,7 @@ class DeltaLabClient(WayfinderClient):
             normalized_key = "yield" if key == "yield_" else key
             # Convert to DataFrame if we have data
             if records and isinstance(records, list):
-                df = pd.DataFrame(records)
-                # Convert ts to datetime and set as index
-                if "ts" in df.columns:
-                    df["ts"] = pd.to_datetime(df["ts"], format="ISO8601")
-                    df.set_index("ts", inplace=True)
-                result[normalized_key] = df
+                result[normalized_key] = self._to_df(records)
 
         return result
 
@@ -494,15 +494,13 @@ class DeltaLabClient(WayfinderClient):
         Raises:
             httpx.HTTPStatusError: For 400 (invalid params) or 500 (server error)
         """
-        url = f"{get_api_base_url()}/delta-lab/top-apy"
         params: dict[str, str | int] = {
             "limit": limit,
             "lookback_days": lookback_days,
         }
         if as_of:
             params["as_of"] = as_of.isoformat()
-        response = await self._authed_request("GET", url, params=params)
-        return response.json()
+        return await self._dl_request("GET", "/top-apy/", params=params)
 
     async def screen_price(
         self,
@@ -526,7 +524,6 @@ class DeltaLabClient(WayfinderClient):
         Returns:
             ScreenResponse: {"data": [ScreenPriceRow, ...], "count": N}
         """
-        url = f"{get_api_base_url()}/delta-lab/screen/price"
         params: dict[str, str | int] = {
             "sort": sort,
             "order": order,
@@ -536,8 +533,9 @@ class DeltaLabClient(WayfinderClient):
             params["basis"] = basis
         elif asset_ids:
             params["asset_ids"] = ",".join(str(a) for a in asset_ids)
-        response = await self._authed_request("GET", url, params=params)
-        return self._alias_screen_items(response.json())
+        return self._alias_screen_items(
+            await self._dl_request("GET", "/screen/price/", params=params)
+        )
 
     async def screen_lending(
         self,
@@ -567,7 +565,6 @@ class DeltaLabClient(WayfinderClient):
         Returns:
             ScreenResponse: {"data": [ScreenLendingRow, ...], "count": N}
         """
-        url = f"{get_api_base_url()}/delta-lab/screen/lending"
         params: dict[str, str | int] = {
             "sort": sort,
             "order": order,
@@ -583,8 +580,9 @@ class DeltaLabClient(WayfinderClient):
             params["min_tvl"] = min_tvl
         if exclude_frozen:
             params["exclude_frozen"] = "true"
-        response = await self._authed_request("GET", url, params=params)
-        return self._alias_screen_items(response.json())
+        return self._alias_screen_items(
+            await self._dl_request("GET", "/screen/lending/", params=params)
+        )
 
     async def screen_perp(
         self,
@@ -610,7 +608,6 @@ class DeltaLabClient(WayfinderClient):
         Returns:
             ScreenResponse: {"data": [ScreenPerpRow, ...], "count": N}
         """
-        url = f"{get_api_base_url()}/delta-lab/screen/perp"
         params: dict[str, str | int] = {
             "sort": sort,
             "order": order,
@@ -622,8 +619,9 @@ class DeltaLabClient(WayfinderClient):
             params["asset_ids"] = ",".join(str(a) for a in asset_ids)
         if venue:
             params["venue"] = venue
-        response = await self._authed_request("GET", url, params=params)
-        return self._alias_screen_items(response.json())
+        return self._alias_screen_items(
+            await self._dl_request("GET", "/screen/perp/", params=params)
+        )
 
     async def screen_borrow_routes(
         self,
@@ -661,7 +659,6 @@ class DeltaLabClient(WayfinderClient):
         Returns:
             ScreenResponse: {"data": [ScreenBorrowRouteRow, ...], "count": N}
         """
-        url = f"{get_api_base_url()}/delta-lab/screen/borrow-routes"
         params: dict[str, str | int] = {
             "sort": sort,
             "order": order,
@@ -689,8 +686,9 @@ class DeltaLabClient(WayfinderClient):
         if mode_type:
             params["mode_type"] = mode_type
 
-        response = await self._authed_request("GET", url, params=params)
-        return self._alias_screen_items(response.json())
+        return self._alias_screen_items(
+            await self._dl_request("GET", "/screen/borrow-routes/", params=params)
+        )
 
     # ------------------------------------------------------------------
     # Pass 2: Entity lookups

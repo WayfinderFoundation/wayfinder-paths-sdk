@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
@@ -8,6 +9,55 @@ from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
 logger = logging.getLogger(__name__)
+
+_SKIP_VALUES = {"", "_", "all", "none", "null"}
+
+
+def _optional_text(value: str) -> str | None:
+    normalized = str(value).strip()
+    if normalized.lower() in _SKIP_VALUES:
+        return None
+    return normalized
+
+
+def _optional_int(value: str, *, field_name: str) -> int | None:
+    normalized = _optional_text(value)
+    if normalized is None:
+        return None
+    try:
+        return int(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an integer") from exc
+
+
+def _chain_filter(value: str) -> int | None:
+    normalized = _optional_text(value)
+    if normalized is None:
+        return None
+    if normalized.isdigit():
+        return int(normalized)
+    chain_id = CHAIN_CODE_TO_ID.get(normalized.lower())
+    if chain_id is None:
+        raise ValueError(f"unknown chain filter: {value!r}")
+    return chain_id
+
+
+def _json_safe(value: Any) -> Any:
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
+
+
+def _df_records(df) -> list[dict[str, Any]]:
+    if df is None or df.empty:
+        return []
+    frame = df.reset_index()
+    return [
+        {key: _json_safe(value) for key, value in row.items()}
+        for row in frame.to_dict(orient="records")
+    ]
 
 
 async def _resolve_basis_filter(
@@ -150,6 +200,87 @@ async def research_search_delta_lab_assets(
             chain_id=chain_id_param,
             limit=int(limit),
         )
+    )
+
+
+@catch_errors
+async def research_search_delta_lab_markets(
+    venue: str = "all",
+    chain: str = "all",
+    marketType: str = "all",
+    assetId: str = "_",
+    basisRoot: str = "all",
+    limit: str = "25",
+    offset: str = "0",
+) -> dict[str, Any]:
+    """Search Delta Lab markets by venue, chain, type, asset id, or basis root.
+
+    Use this before Pendle/PT/YT or market-volume analysis to discover the
+    exact market IDs needed for time-series calls.
+    """
+    return ok(
+        await DELTA_LAB_CLIENT.search_markets(
+            venue=_optional_text(venue),
+            chain_id=_chain_filter(chain),
+            market_type=_optional_text(marketType),
+            asset_id=_optional_int(assetId, field_name="assetId"),
+            basis_root=_optional_text(basisRoot.upper()),
+            limit=min(100, max(1, int(limit))),
+            offset=max(0, int(offset)),
+        )
+    )
+
+
+@catch_errors
+async def research_search_delta_lab_instruments(
+    instrumentType: str = "all",
+    basisRoot: str = "all",
+    venue: str = "all",
+    chain: str = "all",
+    quoteAssetId: str = "_",
+    maturityAfter: str = "_",
+    maturityBefore: str = "_",
+    limit: str = "25",
+    offset: str = "0",
+) -> dict[str, Any]:
+    """Search Delta Lab instruments, including Pendle PT/YT instruments."""
+    return ok(
+        await DELTA_LAB_CLIENT.search_instruments(
+            instrument_type=_optional_text(instrumentType),
+            basis_root=_optional_text(basisRoot.upper()),
+            venue=_optional_text(venue),
+            chain_id=_chain_filter(chain),
+            quote_asset_id=_optional_int(quoteAssetId, field_name="quoteAssetId"),
+            maturity_after=_optional_text(maturityAfter),
+            maturity_before=_optional_text(maturityBefore),
+            limit=min(100, max(1, int(limit))),
+            offset=max(0, int(offset)),
+        )
+    )
+
+
+@catch_errors
+async def research_get_delta_lab_pendle_market(
+    marketID: str,
+    lookbackDays: str = "30",
+    limit: str = "500",
+) -> dict[str, Any]:
+    """Get latest and time-series Delta Lab Pendle analytics for one market."""
+    market_id = int(marketID)
+    latest = await DELTA_LAB_CLIENT.get_market_pendle_latest(market_id=market_id)
+    ts = await DELTA_LAB_CLIENT.get_market_pendle_ts(
+        market_id=market_id,
+        lookback_days=max(1, int(lookbackDays)),
+        limit=min(5000, max(1, int(limit))),
+    )
+    return ok(
+        {
+            "marketID": market_id,
+            "latest": latest.raw if latest else None,
+            "rows": _df_records(ts),
+            "count": 0 if ts is None else len(ts),
+            "lookbackDays": int(lookbackDays),
+        }
     )
 
 

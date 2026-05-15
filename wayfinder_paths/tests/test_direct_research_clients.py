@@ -64,6 +64,102 @@ async def test_defillama_free_open_interest_overview(
 
 
 @pytest.mark.asyncio
+async def test_defillama_free_protocol_search_compacts_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = [
+        {"name": "Pendle", "slug": "pendle", "category": "Yield", "tvl": 10},
+        {"name": "Other", "slug": "other", "category": "DEX", "tvl": 5},
+    ]
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await llama_module.DEFILLAMA_FREE_CLIENT.protocol_search("pendle")
+
+    assert _FakeAsyncClient.calls == [
+        ("GET", "https://api.llama.fi/protocols", {"params": {}})
+    ]
+    assert result["result"]["matches"] == [
+        {
+            "name": "Pendle",
+            "slug": "pendle",
+            "symbol": None,
+            "category": "Yield",
+            "chains": None,
+            "tvl": 10,
+            "change_1d": None,
+            "change_7d": None,
+            "url": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_defillama_free_protocol_fees_returns_daily_and_weekly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "totalDataChart": [[1778803200, 100], [1778889600, 200]],
+        "totalDataChartBreakdown": [[1778803200, {"Ethereum": {"Pendle": 100}}]],
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await llama_module.DEFILLAMA_FREE_CLIENT.protocol_fees(
+        "pendle",
+        data_type="dailyFees",
+        days=365,
+    )
+
+    assert _FakeAsyncClient.calls == [
+        (
+            "GET",
+            "https://api.llama.fi/summary/fees/pendle",
+            {"params": {"dataType": "dailyFees"}},
+        )
+    ]
+    assert result["result"]["dailyRows"][-1]["value"] == 200
+    assert result["result"]["weeklyRollups"][0]["sum"] == 300
+    assert result["result"]["chainDailyRows"][0]["breakdown"] == {
+        "Ethereum": {"Pendle": 100}
+    }
+
+
+@pytest.mark.asyncio
+async def test_defillama_free_protocol_tvl_history_compacts_chain_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _FakeAsyncClient.calls = []
+    _FakeAsyncClient.get_body = {
+        "tvl": [
+            {"date": 1778803200, "totalLiquidityUSD": 1000},
+            {"date": 1778889600, "totalLiquidityUSD": 1200},
+        ],
+        "chainTvls": {
+            "Plasma": {
+                "tvl": [
+                    {"date": 1778803200, "totalLiquidityUSD": 100},
+                    {"date": 1778889600, "totalLiquidityUSD": 300},
+                ]
+            }
+        },
+    }
+    monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    result = await llama_module.DEFILLAMA_FREE_CLIENT.protocol_tvl_history(
+        "pendle",
+        days=365,
+    )
+
+    assert _FakeAsyncClient.calls == [
+        ("GET", "https://api.llama.fi/protocol/pendle", {"params": {}})
+    ]
+    assert result["result"]["latestDaily"]["tvlUsd"] == 1200
+    assert result["result"]["chainSummary"][0]["chain"] == "Plasma"
+    assert result["result"]["chainSummary"][0]["changeUsd"] == 200
+
+
+@pytest.mark.asyncio
 async def test_defillama_free_validates_path_params() -> None:
     with pytest.raises(ValueError, match="invalid characters"):
         await llama_module.DEFILLAMA_FREE_CLIENT.tvl("aave?bad=true")
