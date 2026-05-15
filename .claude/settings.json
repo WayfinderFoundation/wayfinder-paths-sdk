@@ -23,7 +23,12 @@
       "mcp__wayfinder__hyperliquid_update_leverage",
       "mcp__wayfinder__hyperliquid_deposit",
       "mcp__wayfinder__hyperliquid_withdraw",
-      "mcp__wayfinder__polymarket_execute",
+      "mcp__wayfinder__polymarket_deposit",
+      "mcp__wayfinder__polymarket_withdraw",
+      "mcp__wayfinder__polymarket_place_market_order",
+      "mcp__wayfinder__polymarket_place_limit_order",
+      "mcp__wayfinder__polymarket_cancel_order",
+      "mcp__wayfinder__polymarket_redeem_positions",
       "mcp__wayfinder__run_strategy",
       "mcp__wayfinder__deploy_contract",
       "mcp__wayfinder__contract_execute"
@@ -79,11 +84,11 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__polymarket_execute",
+        "matcher": "mcp__wayfinder__polymarket_(deposit|withdraw|place_market_order|place_limit_order|cancel_order|redeem_positions)",
         "hooks": [
           {
             "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_polymarket_execute_review.py\""
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_polymarket_review.py\""
           }
         ]
       },

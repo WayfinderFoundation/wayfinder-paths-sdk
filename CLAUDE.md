@@ -57,7 +57,7 @@ Safety defaults:
   - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
   - To fetch an ABI directly (without making a call), use MCP `contract_get_abi(...)`.
 - Hyperliquid writes: use the per-action MCP tools — `hyperliquid_place_market_order`, `hyperliquid_place_limit_order`, `hyperliquid_place_trigger_order`, `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit`, `hyperliquid_withdraw`. All gated by a review prompt.
-- Polymarket writes: use MCP `polymarket_execute(...)` (bridge deposit/withdraw, buy/sell, limit orders, redemption). Also gated by a review prompt.
+- Polymarket writes: use the per-action MCP tools — `polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`. All gated by a review prompt.
 - Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
   - Deployments (and other contract actions) are recorded in wallet profiles. Call `core_get_wallets(label="...")` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
   - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `contracts_list()` (list all) or `contracts_get(chain_id, address)` (specific contract — includes ABI).
@@ -214,7 +214,7 @@ When a user wants **immediate, one-off execution**:
 
   Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
 - **Hyperliquid perps/spot/outcomes:** use the per-action MCP tools — `hyperliquid_place_market_order` (IOC), `hyperliquid_place_limit_order` (GTC), `hyperliquid_place_trigger_order` (TP/SL), `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit`, `hyperliquid_withdraw`. `asset_name` selects perp (`BTC-USDC`) vs spot (`BTC/USDC`) vs HIP-3 (`xyz:SP500`) vs HIP-4 outcomes (`#<encoding>`); the market/limit tools dispatch the outcome path inline (integer contracts, no builder fee). Order tools don't take leverage — call `hyperliquid_update_leverage` first. **Before your first Hyperliquid write in a session, invoke `/using-hyperliquid-adapter`**.
-- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔pUSD, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (pUSD collateral + tradability filters + outcome selection).
+- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + the per-action write tools (`polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). **Before your first Polymarket write in a session, invoke `/using-polymarket-adapter`** (pUSD collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__core_run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 ### Complex transaction flow (multi-step or fund-moving)
@@ -247,9 +247,9 @@ Polymarket quick flows:
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
 - Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
 - Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<wei>", slippage_bps=50)`, then `mcp__wayfinder__core_execute(request=<suggested_execute_request>)`. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
-- Buy shares (market order): `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
-- Sell shares (market order): `mcp__wayfinder__polymarket_execute(action="place_market_order", wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
-- Redeem after resolution: `mcp__wayfinder__polymarket_execute(action="redeem_positions", wallet_label="main", condition_id="0x...")`
+- Buy shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
+- Sell shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
+- Redeem after resolution: `mcp__wayfinder__polymarket_redeem_positions(wallet_label="main", condition_id="0x...")`
 
 Polymarket funding (pUSD collateral):
 

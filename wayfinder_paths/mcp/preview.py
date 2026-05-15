@@ -212,61 +212,85 @@ async def build_hyperliquid_withdraw_preview(
     return {"summary": header + base + details}
 
 
-async def build_polymarket_execute_preview(
-    tool_input: dict[str, Any],
-) -> dict[str, Any]:
-    req = tool_input if isinstance(tool_input, dict) else {}
-    if not req:
-        return {
-            "summary": "POLYMARKET_EXECUTE missing parameters.",
-            "recipient_mismatch": False,
-        }
-
-    action = str(req.get("action") or "").strip()
-    wallet_label = str(req.get("wallet_label") or "").strip()
+async def _pm_preview_base(tool_input: dict[str, Any], header: str) -> tuple[str, str]:
+    wallet_label = str(tool_input.get("wallet_label") or "").strip()
     w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
-
-    header = "POLYMARKET_EXECUTE\n"
-    base = (
-        f"action: {action or '(missing)'}\n"
-        f"wallet_label: {wallet_label or '(missing)'}\n"
-        f"address: {sender or '(unknown)'}"
+    return header, (
+        f"wallet_label: {wallet_label or '(missing)'}\naddress: {sender or '(unknown)'}"
     )
 
-    if action == "place_market_order":
-        details = (
-            "\n\nMARKET ORDER\n"
-            f"market_slug: {req.get('market_slug')}\n"
-            f"outcome: {req.get('outcome')}\n"
-            f"token_id: {req.get('token_id')}\n"
-            f"side: {req.get('side')}\n"
-            f"amount_collateral: {req.get('amount_collateral')}\n"
-            f"shares: {req.get('shares')}\n"
-            f"max_slippage_pct: {req.get('max_slippage_pct')} (None = adapter default 2%)"
-        )
-        return {"summary": header + base + details, "recipient_mismatch": False}
 
-    if action == "place_limit_order":
-        details = (
-            "\n\nLIMIT ORDER\n"
-            f"token_id: {req.get('token_id')}\n"
-            f"side: {req.get('side')}\n"
-            f"price: {req.get('price')}\n"
-            f"size: {req.get('size')}\n"
-            f"post_only: {req.get('post_only')}"
-        )
-        return {"summary": header + base + details, "recipient_mismatch": False}
+async def build_polymarket_deposit_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _pm_preview_base(
+        tool_input, "POLYMARKET_FUND_DEPOSIT_WALLET\n"
+    )
+    details = f"\n\nFUND DEPOSIT WALLET\namount (pUSD): {tool_input.get('amount')}"
+    return {"summary": header + base + details}
 
-    if action == "cancel_order":
-        details = f"\n\nCANCEL ORDER\norder_id: {req.get('order_id')}"
-        return {"summary": header + base + details, "recipient_mismatch": False}
 
-    if action == "redeem_positions":
-        details = f"\n\nREDEEM\ncondition_id: {req.get('condition_id')}"
-        return {"summary": header + base + details, "recipient_mismatch": False}
+async def build_polymarket_withdraw_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _pm_preview_base(
+        tool_input, "POLYMARKET_WITHDRAW_DEPOSIT_WALLET\n"
+    )
+    amount = tool_input.get("amount")
+    details = (
+        "\n\nWITHDRAW DEPOSIT WALLET\n"
+        f"amount (pUSD): {amount if amount is not None else '(drain full balance)'}"
+    )
+    return {"summary": header + base + details}
 
-    return {"summary": header + base, "recipient_mismatch": False}
+
+async def build_polymarket_place_market_order_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _pm_preview_base(tool_input, "POLYMARKET_PLACE_MARKET_ORDER\n")
+    details = (
+        "\n\nMARKET ORDER\n"
+        f"market_slug: {tool_input.get('market_slug')}\n"
+        f"outcome: {tool_input.get('outcome')}\n"
+        f"token_id: {tool_input.get('token_id')}\n"
+        f"side: {tool_input.get('side')}\n"
+        f"amount_collateral: {tool_input.get('amount_collateral')}\n"
+        f"shares: {tool_input.get('shares')}\n"
+        f"max_slippage_pct: {tool_input.get('max_slippage_pct')} (None = adapter default 2%)"
+    )
+    return {"summary": header + base + details}
+
+
+async def build_polymarket_place_limit_order_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _pm_preview_base(tool_input, "POLYMARKET_PLACE_LIMIT_ORDER\n")
+    details = (
+        "\n\nLIMIT ORDER\n"
+        f"token_id: {tool_input.get('token_id')}\n"
+        f"side: {tool_input.get('side')}\n"
+        f"price: {tool_input.get('price')}\n"
+        f"size: {tool_input.get('size')}\n"
+        f"post_only: {tool_input.get('post_only')}"
+    )
+    return {"summary": header + base + details}
+
+
+async def build_polymarket_cancel_order_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _pm_preview_base(tool_input, "POLYMARKET_CANCEL_ORDER\n")
+    details = f"\n\nCANCEL ORDER\norder_id: {tool_input.get('order_id')}"
+    return {"summary": header + base + details}
+
+
+async def build_polymarket_redeem_positions_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base = await _pm_preview_base(tool_input, "POLYMARKET_REDEEM_POSITIONS\n")
+    details = f"\n\nREDEEM\ncondition_id: {tool_input.get('condition_id')}"
+    return {"summary": header + base + details}
 
 
 async def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:

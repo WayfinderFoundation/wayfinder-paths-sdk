@@ -88,9 +88,14 @@ from wayfinder_paths.mcp.tools.instance_state import (
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import (
-    polymarket_execute,
+    polymarket_cancel_order,
+    polymarket_deposit,
     polymarket_get_state,
+    polymarket_place_limit_order,
+    polymarket_place_market_order,
     polymarket_read,
+    polymarket_redeem_positions,
+    polymarket_withdraw,
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.research_gateway import (
@@ -175,7 +180,12 @@ mcp.tool()(onchain_quote_swap)
 # ─── polymarket_* ──────────────────────────────────────────────────────
 mcp.tool()(polymarket_read)
 mcp.tool()(polymarket_get_state)
-mcp.tool()(polymarket_execute)
+mcp.tool()(polymarket_deposit)
+mcp.tool()(polymarket_withdraw)
+mcp.tool()(polymarket_place_market_order)
+mcp.tool()(polymarket_place_limit_order)
+mcp.tool()(polymarket_cancel_order)
+mcp.tool()(polymarket_redeem_positions)
 
 # ─── contracts_* ───────────────────────────────────────────────────────
 mcp.tool()(contracts_list)

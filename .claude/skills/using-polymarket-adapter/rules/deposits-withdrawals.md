@@ -37,4 +37,4 @@ Flip `from_token` and `to_token`. For pUSD → native Polygon USDC, BRAP routes 
 
 ## Already have pUSD?
 
-Skip routing entirely and call `polymarket_execute(action="fund_deposit_wallet", ...)` to move pUSD from the owner EOA into the deposit wallet (the actual trading address — see `rules/deposit-wallet.md`).
+Skip routing entirely and call `polymarket_deposit(...)` to move pUSD from the owner EOA into the deposit wallet (the actual trading address — see `rules/deposit-wallet.md`).
