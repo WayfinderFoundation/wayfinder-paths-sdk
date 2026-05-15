@@ -203,7 +203,7 @@ class HyperliquidAdapter(BaseAdapter):
         results = await asyncio.gather(*[_post_one(dex) for dex in get_perp_dexes()])
         return aggregator([r for r in results if r is not None])
 
-    def _get_price_decimals(self, asset_id: int) -> int:
+    def get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
         max_decimals = 6 if not is_spot else 8
         if asset_id >= OUTCOME_ASSET_OFFSET:
@@ -727,7 +727,7 @@ class HyperliquidAdapter(BaseAdapter):
         price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
         price = round(
             float(f"{price:.5g}"),
-            self._get_price_decimals(asset_id),
+            self.get_price_decimals(asset_id),
         )
         order_actions = self._create_hypecore_order_actions(
             asset_id,
@@ -876,7 +876,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         # Clamp inside (0, 1); HL rejects 0/1.
         price = max(0.0001, min(0.9999, float(price)))
-        price = round(float(f"{price:.5g}"), self._get_price_decimals(asset_id))
+        price = round(float(f"{price:.5g}"), self.get_price_decimals(asset_id))
 
         order_actions = self._create_hypecore_order_actions(
             asset_id,

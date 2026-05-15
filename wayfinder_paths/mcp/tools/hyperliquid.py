@@ -6,10 +6,11 @@ import re
 from decimal import Decimal
 from typing import Any, Literal
 
-from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
-
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import decode_outcome_encoding
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
+    decode_outcome_encoding,
+    outcome_asset_id,
+)
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -601,10 +602,14 @@ def _validate_sized_order(
     if sizing["source"] == "usd_amount" and px_for_sizing is not None:
         final_notional = float(sz_valid) * float(px_for_sizing)
         if final_notional < MIN_ORDER_USD_NOTIONAL:
-            bump = MIN_ORDER_USD_NOTIONAL * float(sizing["usd_amount"]) / final_notional
+            sz_decimals = adapter.get_sz_decimals(asset_id)
+            tick = float(Decimal(10) ** (-sz_decimals))
+            # Smallest lot whose notional clears the floor.
+            ticks_needed = -(-MIN_ORDER_USD_NOTIONAL // (tick * px_for_sizing))
+            suggested_usd = ticks_needed * tick * px_for_sizing
             raise ValueError(
                 f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
-                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Try usd_amount={bump:.2f}."
+                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Try usd_amount={suggested_usd:.2f}."
             )
 
 
@@ -615,7 +620,7 @@ def _validate_price(
     price: float,
 ) -> None:
     """Apply HL's price rounding (5 sig figs → max decimals) and reject divergence."""
-    price_decimals = adapter._get_price_decimals(asset_id)
+    price_decimals = adapter.get_price_decimals(asset_id)
     rounded = round(float(f"{price:.5g}"), price_decimals)
     if rounded != float(price):
         raise ValueError(
@@ -654,6 +659,11 @@ async def hyperliquid_place_market_order(
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     throw_if_none("is_buy is required", is_buy)
+    slip = throw_if_not_number("slippage must be a number", slippage)
+    if slip < 0:
+        raise ValueError("slippage must be >= 0")
+    if slip > 0.25:
+        raise ValueError("slippage > 0.25 is too risky")
 
     try:
         (
@@ -670,12 +680,6 @@ async def hyperliquid_place_market_order(
             "invalid_request",
             "Use hyperliquid_place_outcome_order for HIP-4 outcome markets.",
         )
-
-    slip = throw_if_not_number("slippage must be a number", slippage)
-    if slip < 0:
-        raise ValueError("slippage must be >= 0")
-    if slip > 0.25:
-        raise ValueError("slippage > 0.25 is too risky")
 
     effects: list[dict[str, Any]] = []
     await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
@@ -724,6 +728,7 @@ async def hyperliquid_place_market_order(
             "asset_name": asset_name,
             "is_buy": bool(is_buy),
             "size": float(sz_valid),
+            "slippage": float(slip),
         },
     )
     return ok(
@@ -926,15 +931,21 @@ async def hyperliquid_place_outcome_order(
         throw_if_none("price is required for limit orders", price)
 
     outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
-    asset_id = OUTCOME_ASSET_OFFSET + (10 * outcome_id_v + side_v)
     if price is not None:
-        _validate_price(adapter=adapter, asset_id=asset_id, price=float(price))
-
-    if size is not None and float(size) != int(size):
-        raise ValueError(
-            f"size {size} must be an integer (HIP-4 outcomes use integer contracts). "
-            f"Try size={int(size)}."
+        _validate_price(
+            adapter=adapter,
+            asset_id=outcome_asset_id(outcome_id_v, side_v),
+            price=float(price),
         )
+
+    if size is not None:
+        if float(size) != int(size):
+            raise ValueError(
+                f"size {size} must be an integer (HIP-4 outcomes use integer contracts). "
+                f"Try size={int(size)}."
+            )
+        if int(size) <= 0:
+            raise ValueError("size must be a positive integer")
     size_i: int | None = None if size is None else int(size)
     if size_i is None:
         throw_if_none("size or usd_amount is required for outcome orders", usd_amount)
