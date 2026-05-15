@@ -43,27 +43,14 @@ async def _pick_tradable(
     *,
     outcome: str,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
-    # Try open markets first, but fall back to any market whose token_id resolves on CLOB.
-    for attempt_open_only in (True, False):
-        for m in markets:
-            if not m.get("enableOrderBook") or not m.get("clobTokenIds"):
-                continue
-            if attempt_open_only and (
-                m.get("closed") is True or m.get("active") is False
-            ):
-                continue
-
-            ok_tid, token_id = adapter.resolve_clob_token_id(market=m, outcome=outcome)
-            if not ok_tid:
-                # Fallback: pick first outcome when the query isn't a YES/NO market.
-                ok_tid, token_id = adapter.resolve_clob_token_id(market=m, outcome=0)
-                if not ok_tid:
-                    continue
-
-            ok_price, price = await adapter.get_price(token_id=token_id, side="BUY")
-            if ok_price and isinstance(price, dict):
-                return m, token_id, price
-
+    want_yes = outcome.strip().lower() in {"yes", "up", "0"}
+    for m in markets:
+        token_id = m["yesTokenId"] if want_yes else m["noTokenId"]
+        if not token_id:
+            continue
+        ok_price, price = await adapter.get_price(token_id=token_id, side="BUY")
+        if ok_price and isinstance(price, dict):
+            return m, token_id, price
     raise RuntimeError("No tradable market found for query")
 
 
@@ -106,24 +93,13 @@ async def main() -> int:
             print(f"USDC.e: {usdce0 / 1e6:.6f}")
             print(f"pUSD:   {pusd0 / 1e6:.6f}")
 
-        ok, markets = await adapter.search_markets_fuzzy(query=args.query, limit=20)
+        ok, markets = await adapter.search_markets(query=args.query, limit=20)
         if not ok:
-            raise RuntimeError(f"search_markets_fuzzy failed: {markets}")
-        try:
-            market, token_id, price = await _pick_tradable(
-                adapter, markets, outcome=str(args.outcome)
-            )
-        except RuntimeError as err:
-            print("No tradable market in search results; falling back to trending...")
-            ok2, trending = await adapter.list_markets(
-                closed=False, limit=50, order="volume24hr", ascending=False
-            )
-            if not ok2:
-                raise RuntimeError(f"list_markets trending failed: {trending}") from err
-            market, token_id, price = await _pick_tradable(
-                adapter, trending, outcome=str(args.outcome)
-            )
-        slug = market.get("slug")
+            raise RuntimeError(f"search_markets failed: {markets}")
+        market, token_id, price = await _pick_tradable(
+            adapter, markets, outcome=str(args.outcome)
+        )
+        slug = market["slug"]
         print(f"Selected market: {slug}")
         print(f"Token: {token_id}")
         print(f"Price(BUY): {price.get('price')}")

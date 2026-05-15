@@ -256,19 +256,33 @@ class TestPolymarketAdapter:
         assert data[0]["slug"] == "test-market"
 
     @pytest.mark.asyncio
-    async def test_public_search(self, adapter, monkeypatch):
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status.return_value = None
-        mock_resp.json.return_value = {"events": [], "pagination": {}}
+    async def test_search_markets_delegates_to_polymarket_client(
+        self, adapter, monkeypatch
+    ):
+        captured: dict = {}
 
-        async def mock_get(*_args, **_kwargs):
-            return mock_resp
+        async def fake_search_markets(**kwargs):
+            captured.update(kwargs)
+            return [{"slug": "btc-updown-5m-1", "symbol": "Bitcoin Up or Down — 5m"}]
 
-        monkeypatch.setattr(adapter._gamma_http, "get", mock_get)
-        ok, data = await adapter.public_search(q="bitcoin", limit_per_type=1)
+        monkeypatch.setattr(
+            polymarket_adapter_module.POLYMARKET_CLIENT,
+            "search_markets",
+            fake_search_markets,
+        )
+
+        ok, rows = await adapter.search_markets(
+            query="btc 5 min", limit=5, sort="trending", status="active"
+        )
         assert ok is True
-        assert isinstance(data, dict)
-        assert "events" in data
+        assert isinstance(rows, list)
+        assert rows[0]["slug"] == "btc-updown-5m-1"
+        assert captured == {
+            "query": "btc 5 min",
+            "limit": 5,
+            "sort": "trending",
+            "status": "active",
+        }
 
     @pytest.mark.asyncio
     async def test_get_price(self, adapter, monkeypatch):
