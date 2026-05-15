@@ -1300,58 +1300,82 @@ class PolymarketAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         owner = self._require_wallet_address()
         deposit_wallet = self.deposit_wallet_address()
-        nonce_res = await self._relayer_http.get(
-            "/nonce", params={"address": owner, "type": "WALLET"}
-        )
-        nonce_res.raise_for_status()
-        nonce: int = nonce_res.json()["nonce"]
-        deadline = int(time.time()) + 600
-        signature: str = await self.sign_typed_data_callback(
-            {
-                "primaryType": "Batch",
-                "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
-                "domain": {
-                    "name": "DepositWallet",
-                    "version": "1",
-                    "chainId": POLYGON_CHAIN_ID,
-                    "verifyingContract": deposit_wallet,
-                },
-                "message": {
-                    "wallet": deposit_wallet,
-                    "nonce": nonce,
-                    "deadline": deadline,
-                    "calls": calls,
+        # Retry the relayer's registry race: WALLET-CREATE → batch propagation
+        # can lag ~5-10s, so the batch 400s "wallet registry validation failed"
+        # in that window. 250ms interval, 15s total budget.
+        retry_deadline = time.monotonic() + 15.0
+        last_error_text: str | None = None
+        while True:
+            nonce_res = await self._relayer_http.get(
+                "/nonce", params={"address": owner, "type": "WALLET"}
+            )
+            nonce_res.raise_for_status()
+            nonce: int = nonce_res.json()["nonce"]
+            deadline = int(time.time()) + 600
+            signature: str = await self.sign_typed_data_callback(
+                {
+                    "primaryType": "Batch",
+                    "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
+                    "domain": {
+                        "name": "DepositWallet",
+                        "version": "1",
+                        "chainId": POLYGON_CHAIN_ID,
+                        "verifyingContract": deposit_wallet,
+                    },
+                    "message": {
+                        "wallet": deposit_wallet,
+                        "nonce": nonce,
+                        "deadline": deadline,
+                        "calls": calls,
+                    },
+                }
+            )
+            payload = {
+                "type": "WALLET",
+                "from": owner,
+                "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                "nonce": str(nonce),
+                "signature": signature,
+                "depositWalletParams": {
+                    "depositWallet": deposit_wallet,
+                    "deadline": str(deadline),
+                    "calls": [
+                        {
+                            "target": c["target"],
+                            "value": str(c["value"]),
+                            "data": c["data"],
+                        }
+                        for c in calls
+                    ],
                 },
             }
+            body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+            headers = await self._builder_headers("POST", "/submit", body)
+            submit_res = await self._relayer_http.post(
+                "/submit", content=body, headers=headers
+            )
+            if submit_res.is_success:
+                submitted = submit_res.json()
+                tx = await self._poll_relayer_tx(submitted["transactionID"])
+                return {
+                    "deposit_wallet": deposit_wallet,
+                    "tx_hash": tx["transactionHash"],
+                }
+            text = submit_res.text
+            transient = (
+                "wallet registry validation failed" in text
+                or "is not registered" in text
+            )
+            if not transient:
+                submit_res.raise_for_status()
+            last_error_text = text
+            if time.monotonic() >= retry_deadline:
+                break
+            await asyncio.sleep(0.25)
+        raise ValueError(
+            "Polymarket relayer hasn't registered this wallet yet — try again in a minute"
+            + (f" ({last_error_text})" if last_error_text else "")
         )
-        payload = {
-            "type": "WALLET",
-            "from": owner,
-            "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
-            "nonce": str(nonce),
-            "signature": signature,
-            "depositWalletParams": {
-                "depositWallet": deposit_wallet,
-                "deadline": str(deadline),
-                "calls": [
-                    {
-                        "target": c["target"],
-                        "value": str(c["value"]),
-                        "data": c["data"],
-                    }
-                    for c in calls
-                ],
-            },
-        }
-        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        headers = await self._builder_headers("POST", "/submit", body)
-        submit_res = await self._relayer_http.post(
-            "/submit", content=body, headers=headers
-        )
-        submit_res.raise_for_status()
-        submitted = submit_res.json()
-        tx = await self._poll_relayer_tx(submitted["transactionID"])
-        return {"deposit_wallet": deposit_wallet, "tx_hash": tx["transactionHash"]}
 
     async def fund_deposit_wallet(
         self, *, amount_raw: int
