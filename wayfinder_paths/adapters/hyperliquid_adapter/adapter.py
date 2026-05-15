@@ -178,6 +178,10 @@ class HyperliquidAdapter(BaseAdapter):
             sign_typed_data_callback
         )
 
+    @property
+    def sign_callback(self) -> Callable[..., Awaitable[Any]] | None:
+        return self._sign_callback
+
     async def _post_across_dexes(
         self,
         payload: dict[str, Any],

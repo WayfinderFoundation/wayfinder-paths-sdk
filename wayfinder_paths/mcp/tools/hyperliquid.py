@@ -18,6 +18,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     HYPERLIQUID_BRIDGE_ADDRESS,
     MARKET_SEARCH_ALIASES,
     MARKET_SEARCH_MIN_MATCH_SCORE,
+    MARKET_TYPE_HIP4,
     MIN_ORDER_USD_NOTIONAL,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
@@ -159,7 +160,7 @@ async def hyperliquid_deposit(
     )
     try:
         tx_hash = await send_transaction(
-            transaction, adapter._sign_callback, wait_for_receipt=True
+            transaction, adapter.sign_callback, wait_for_receipt=True
         )
         sent_ok = True
         sent_result: dict[str, Any] = {"txn_hash": tx_hash, "chain_id": 42161}
@@ -583,7 +584,7 @@ async def _resolve_perp_or_spot_size(
     return sz, sizing, px_for_sizing
 
 
-def _validate_sized_order(
+def _validate_size_and_notional(
     *,
     adapter: HyperliquidAdapter,
     asset_id: int,
@@ -675,7 +676,7 @@ async def hyperliquid_place_market_order(
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
-    if market_type == "hip4":
+    if market_type == MARKET_TYPE_HIP4:
         return err(
             "invalid_request",
             "Use hyperliquid_place_outcome_order for HIP-4 outcome markets.",
@@ -694,7 +695,7 @@ async def hyperliquid_place_market_order(
         px_for_sizing=None,
     )
     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
-    _validate_sized_order(
+    _validate_size_and_notional(
         adapter=adapter,
         asset_id=resolved_asset_id,
         size_requested=float(sz),
@@ -798,7 +799,7 @@ async def hyperliquid_place_limit_order(
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
-    if market_type == "hip4":
+    if market_type == MARKET_TYPE_HIP4:
         return err(
             "invalid_request",
             "Use hyperliquid_place_outcome_order for HIP-4 outcome markets.",
@@ -819,7 +820,7 @@ async def hyperliquid_place_limit_order(
         px_for_sizing=float(px),
     )
     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
-    _validate_sized_order(
+    _validate_size_and_notional(
         adapter=adapter,
         asset_id=resolved_asset_id,
         size_requested=float(sz),
@@ -921,7 +922,7 @@ async def hyperliquid_place_outcome_order(
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
-    if market_type != "hip4":
+    if market_type != MARKET_TYPE_HIP4:
         return err(
             "invalid_request",
             f"{asset_name!r} is not a HIP-4 outcome market. Use hyperliquid_place_market_order or _place_limit_order.",
@@ -931,22 +932,23 @@ async def hyperliquid_place_outcome_order(
         throw_if_none("price is required for limit orders", price)
 
     outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
+    asset_id = outcome_asset_id(outcome_id_v, side_v)
     if price is not None:
-        _validate_price(
-            adapter=adapter,
-            asset_id=outcome_asset_id(outcome_id_v, side_v),
-            price=float(price),
-        )
+        _validate_price(adapter=adapter, asset_id=asset_id, price=float(price))
 
+    size_i: int | None = None
     if size is not None:
-        if float(size) != int(size):
+        as_int = int(size)
+        if float(size) != as_int:
             raise ValueError(
                 f"size {size} must be an integer (HIP-4 outcomes use integer contracts). "
-                f"Try size={int(size)}."
+                f"Try size={as_int}."
             )
-        if int(size) <= 0:
+        if as_int <= 0:
             raise ValueError("size must be a positive integer")
-    size_i: int | None = None if size is None else int(size)
+        size_i = as_int
+
+    sizing: dict[str, Any] = {"source": "size", "market_type": MARKET_TYPE_HIP4}
     if size_i is None:
         throw_if_none("size or usd_amount is required for outcome orders", usd_amount)
         if order_type != "market":
@@ -960,6 +962,12 @@ async def hyperliquid_place_outcome_order(
         if mid is None or float(mid) <= 0:
             return err("price_error", f"Could not resolve mid price for {asset_name}")
         size_i = max(1, round(float(usd_amount) / float(mid)))
+        sizing = {
+            "source": "usd_amount",
+            "usd_amount": float(usd_amount),
+            "price_used": float(mid),
+            "market_type": MARKET_TYPE_HIP4,
+        }
 
     effects: list[dict[str, Any]] = []
     ok_order, res = await adapter.place_outcome_order(
@@ -984,6 +992,7 @@ async def hyperliquid_place_outcome_order(
         action="place_outcome_order",
         status=status,
         details={
+            "asset_id": asset_id,
             "asset_name": asset_name,
             "outcome_id": outcome_id_v,
             "side": side_v,
@@ -996,6 +1005,7 @@ async def hyperliquid_place_outcome_order(
             "status": status,
             "wallet_label": wallet_label,
             "address": sender,
+            "asset_id": asset_id,
             "asset_name": asset_name,
             "outcome_id": outcome_id_v,
             "side": side_v,
@@ -1007,6 +1017,7 @@ async def hyperliquid_place_outcome_order(
                 "slippage": float(slippage) if order_type == "market" else None,
                 "reduce_only": bool(reduce_only),
                 "cloid": cloid,
+                "sizing": sizing,
             },
             "effects": effects,
         }

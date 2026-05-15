@@ -12,6 +12,8 @@ from typing import Any
 # Add repo root to path for wayfinder_paths imports
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from wayfinder_hook_utils import load_payload, tool_input, tool_name
+
 from wayfinder_paths.mcp.preview import (
     build_hyperliquid_cancel_order_preview,
     build_hyperliquid_deposit_preview,
@@ -37,41 +39,16 @@ _BUILDERS: dict[str, _PreviewBuilder] = {
 }
 
 
-def _load_payload() -> dict[str, Any]:
-    try:
-        obj = json.load(sys.stdin)
-    except Exception:
-        return {}
-    return obj if isinstance(obj, dict) else {}
-
-
-def _tool_name(payload: dict[str, Any]) -> str | None:
-    name = payload.get("tool_name") or payload.get("name")
-    if isinstance(name, str) and name.strip():
-        return name.strip()
-    return None
-
-
-def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
-    ti = payload.get("tool_input") or payload.get("input") or {}
-    return ti if isinstance(ti, dict) else {}
-
-
-def _resolve_builder(name: str) -> _PreviewBuilder | None:
-    short = name.removeprefix("mcp__wayfinder__")
-    return _BUILDERS.get(short)
-
-
 async def main() -> None:
-    payload = _load_payload()
-    name = _tool_name(payload)
+    payload = load_payload()
+    name = tool_name(payload)
     if not name:
         return
-    builder = _resolve_builder(name)
+    builder = _BUILDERS.get(name.removeprefix("mcp__wayfinder__"))
     if builder is None:
         return
 
-    preview = await builder(_tool_input(payload))
+    preview = await builder(tool_input(payload))
     summary = str(preview.get("summary") or "").strip() or f"Review {name} request."
 
     out = {
