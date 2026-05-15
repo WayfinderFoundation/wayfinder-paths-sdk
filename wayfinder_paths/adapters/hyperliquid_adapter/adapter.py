@@ -173,14 +173,10 @@ class HyperliquidAdapter(BaseAdapter):
             or ZERO_ADDRESS
         )
 
-        self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
+        self.sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
         self._sign_typed_data_callback: Callable[..., Awaitable[Any]] | None = (
             sign_typed_data_callback
         )
-
-    @property
-    def sign_callback(self) -> Callable[..., Awaitable[Any]] | None:
-        return self._sign_callback
 
     async def _post_across_dexes(
         self,
@@ -1586,7 +1582,7 @@ class HyperliquidAdapter(BaseAdapter):
         *,
         address: str | None = None,
     ) -> tuple[bool, str]:
-        if not self._sign_callback:
+        if not self.sign_callback:
             return False, "sign_callback is required"
 
         sender = to_checksum_address(address or self.wallet_address)
@@ -1618,7 +1614,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             tx_hash = await send_transaction(
-                tx, self._sign_callback, wait_for_receipt=True
+                tx, self.sign_callback, wait_for_receipt=True
             )
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001

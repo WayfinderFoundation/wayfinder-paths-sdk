@@ -101,17 +101,19 @@ async def _ensure_builder_fee_approval(
         raise ValueError(f"Failed to approve Wayfinder builder fee: {appr}")
 
 
-async def _resolve_adapter_and_asset(
-    wallet_label: str,
-    asset_name: str,
-) -> tuple[HyperliquidAdapter, str, int, str]:
-    """Returns (adapter, sender, asset_id, market_type) or raises."""
+async def _make_hl_adapter(wallet_label: str) -> tuple[HyperliquidAdapter, str]:
     strategy_raw = CONFIG.get("strategy")
     strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
     adapter = await get_adapter(
         HyperliquidAdapter, wallet_label, config_overrides=dict(strategy_cfg)
     )
-    sender = adapter.wallet_address
+    return adapter, adapter.wallet_address
+
+
+async def _resolve_asset(
+    adapter: HyperliquidAdapter, asset_name: str
+) -> tuple[int, str]:
+    """Returns (asset_id, market_type) for a canonical HL asset_name or raises."""
     resolved_asset_id = await adapter.get_asset_id(asset_name)
     if resolved_asset_id is None:
         raise ValueError(
@@ -119,8 +121,7 @@ async def _resolve_adapter_and_asset(
             "'xyz:SP500' (HIP-3 perp), 'BTC/USDC' (spot), or '#40' (HIP-4 outcome). "
             "Call hyperliquid_search_market to look up the canonical name."
         )
-    market_type = adapter.get_market_type(asset_name)
-    return adapter, sender, resolved_asset_id, market_type
+    return resolved_asset_id, adapter.get_market_type(asset_name)
 
 
 @catch_errors
@@ -143,12 +144,7 @@ async def hyperliquid_deposit(
     if amt < 5:
         raise ValueError("amount_usdc must be >= 5 USDC (HL deposits below are lost)")
 
-    strategy_raw = CONFIG.get("strategy")
-    strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
-    adapter = await get_adapter(
-        HyperliquidAdapter, wallet_label, config_overrides=dict(strategy_cfg)
-    )
-    deposit_sender = adapter.wallet_address
+    adapter, deposit_sender = await _make_hl_adapter(wallet_label)
 
     effects: list[dict[str, Any]] = []
     transaction = await build_send_transaction(
@@ -223,12 +219,7 @@ async def hyperliquid_withdraw(
     if amt <= 0:
         raise ValueError("amount_usdc must be positive")
 
-    strategy_raw = CONFIG.get("strategy")
-    strategy_cfg = strategy_raw if isinstance(strategy_raw, dict) else {}
-    adapter = await get_adapter(
-        HyperliquidAdapter, wallet_label, config_overrides=dict(strategy_cfg)
-    )
-    sender = adapter.wallet_address
+    adapter, sender = await _make_hl_adapter(wallet_label)
 
     effects: list[dict[str, Any]] = []
     ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
@@ -289,9 +280,8 @@ async def hyperliquid_update_leverage(
         raise ValueError("leverage must be positive")
 
     try:
-        adapter, sender, resolved_asset_id, _ = await _resolve_adapter_and_asset(
-            wallet_label, asset_name
-        )
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        resolved_asset_id, _ = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
@@ -346,13 +336,12 @@ async def hyperliquid_cancel_order(
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
-    if not cancel_cloid and order_id is None:
-        raise ValueError("order_id or cancel_cloid is required")
+    if (cancel_cloid is None) == (order_id is None):
+        raise ValueError("Provide exactly one of order_id or cancel_cloid")
 
     try:
-        adapter, sender, resolved_asset_id, _ = await _resolve_adapter_and_asset(
-            wallet_label, asset_name
-        )
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        resolved_asset_id, _ = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
@@ -454,9 +443,8 @@ async def hyperliquid_place_trigger_order(
             raise ValueError("price must be positive")
 
     try:
-        adapter, sender, resolved_asset_id, _ = await _resolve_adapter_and_asset(
-            wallet_label, asset_name
-        )
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        resolved_asset_id, _ = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
@@ -465,7 +453,16 @@ async def hyperliquid_place_trigger_order(
 
     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
     if sz_valid <= 0:
-        raise ValueError("size is too small after lot-size rounding")
+        sz_decimals = adapter.get_sz_decimals(resolved_asset_id)
+        min_tick = float(Decimal(10) ** (-sz_decimals))
+        raise ValueError(
+            f"size {sz} rounds down to 0 — asset has szDecimals={sz_decimals} "
+            f"(lot size = {min_tick}). Try size={min_tick}."
+        )
+
+    if limit_px is not None:
+        _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=limit_px)
+    _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=tpx)
 
     ok_order, res = await adapter.place_trigger_order(
         resolved_asset_id,
@@ -667,12 +664,8 @@ async def hyperliquid_place_market_order(
         raise ValueError("slippage > 0.25 is too risky")
 
     try:
-        (
-            adapter,
-            sender,
-            resolved_asset_id,
-            market_type,
-        ) = await _resolve_adapter_and_asset(wallet_label, asset_name)
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        resolved_asset_id, market_type = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
@@ -790,12 +783,8 @@ async def hyperliquid_place_limit_order(
         raise ValueError("price must be positive")
 
     try:
-        (
-            adapter,
-            sender,
-            resolved_asset_id,
-            market_type,
-        ) = await _resolve_adapter_and_asset(wallet_label, asset_name)
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        resolved_asset_id, market_type = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
@@ -916,9 +905,8 @@ async def hyperliquid_place_outcome_order(
     throw_if_none("is_buy is required", is_buy)
 
     try:
-        adapter, sender, _, market_type = await _resolve_adapter_and_asset(
-            wallet_label, asset_name
-        )
+        adapter, sender = await _make_hl_adapter(wallet_label)
+        _, market_type = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
