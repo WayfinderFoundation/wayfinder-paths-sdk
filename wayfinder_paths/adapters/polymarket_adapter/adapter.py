@@ -29,6 +29,12 @@ from py_clob_client_v2.config import (  # type: ignore[import-untyped]
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.clients.PolymarketClient import (
+    POLYMARKET_CLIENT,
+    PolymarketMarket,
+    PolymarketSort,
+    PolymarketStatus,
+)
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
     MAX_UINT256,
@@ -236,90 +242,21 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def public_search(
+    async def search_markets(
         self,
         *,
-        q: str,
-        limit_per_type: int = 10,
-        page: int = 1,
-        keep_closed_markets: bool = False,
-        **kwargs: Any,
-    ) -> tuple[bool, dict[str, Any] | str]:
-        params: dict[str, Any] = {
-            "q": q,
-            "limit_per_type": limit_per_type,
-            "page": page,
-            "keep_closed_markets": "1" if keep_closed_markets else "0",
-        }
-        params.update({k: v for k, v in kwargs.items() if v is not None})
-
+        query: str | None = None,
+        limit: int = 20,
+        sort: PolymarketSort = "trending",
+        status: PolymarketStatus = "active",
+    ) -> tuple[bool, list[PolymarketMarket] | str]:
         try:
-            res = await self._gamma_http.get("/public-search", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /public-search response: {type(data).__name__}",
-                )
-            return True, data
+            rows = await POLYMARKET_CLIENT.search_markets(
+                query=query, limit=limit, sort=sort, status=status
+            )
+            return True, rows
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
-
-    async def search_markets_fuzzy(
-        self,
-        *,
-        query: str,
-        limit: int = 10,
-        page: int = 1,
-        keep_closed_markets: bool = False,
-        events_status: str | None = None,
-        end_date_min: str | None = None,
-        rerank: bool = True,
-    ) -> tuple[bool, list[dict[str, Any]] | str]:
-        ok, data = await self.public_search(
-            q=query,
-            limit_per_type=max(limit, 1),
-            page=page,
-            keep_closed_markets=keep_closed_markets,
-            events_status=events_status,
-        )
-        if not ok:
-            return False, str(data)
-
-        markets: list[dict[str, Any]] = []
-        for event in data.get("events") or []:
-            for market in event.get("markets") or []:
-                markets.append(
-                    {
-                        **self._normalize_market(market),
-                        "_event": {
-                            "id": event.get("id"),
-                            "slug": event.get("slug"),
-                            "title": event.get("title"),
-                        },
-                    }
-                )
-
-        if end_date_min:
-            markets = [
-                m
-                for m in markets
-                if (m.get("endDateIso") or m.get("endDate") or "") >= end_date_min
-            ]
-
-        if not rerank:
-            return True, markets[:limit]
-
-        def score(m: dict[str, Any]) -> float:
-            return max(
-                _fuzzy_score(query, str(m.get("question") or "")),
-                _fuzzy_score(query, str(m.get("slug") or "")),
-                _fuzzy_score(query, str((m.get("_event") or {}).get("title") or "")),
-            )
-
-        markets.sort(key=score, reverse=True)
-        return True, markets[:limit]
 
     async def get_market_by_condition_id(
         self, *, condition_id: str

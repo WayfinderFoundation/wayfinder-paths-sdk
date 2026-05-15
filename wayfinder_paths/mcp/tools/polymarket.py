@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
+from wayfinder_paths.core.clients.PolymarketClient import (
+    PolymarketSort,
+    PolymarketStatus,
+)
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID
 from wayfinder_paths.core.utils.wallets import (
@@ -226,12 +229,9 @@ async def polymarket_read(
     # search/trending
     query: str | None = None,
     limit: int = 10,
-    page: int = 1,
-    keep_closed_markets: bool = False,
-    rerank: bool = True,
+    sort: PolymarketSort = "trending",
+    status: PolymarketStatus = "active",
     offset: int = 0,
-    events_status: str | None = "active",
-    end_date_min: str | None = datetime.now(UTC).strftime("%Y-%m-%d"),
     # market/event
     market_slug: str | None = None,
     event_slug: str | None = None,
@@ -251,8 +251,10 @@ async def polymarket_read(
     For account state (positions / orders / activity / trades) call `polymarket_get_state`.
 
     Actions:
-      - `search`: fuzzy market search by `query`. `events_status` filters active/closed/archived;
-        `end_date_min` (YYYY-MM-DD) filters out resolved markets; `rerank` re-scores results.
+      - `search`: market search via vault-backend. Backend handles tag resolution, ticker
+        synonyms (BTC↔Bitcoin), duration intent ("5 min" → 5-minute markets), ranking by
+        relevance + activity + freshness. `sort`: trending|volume24h|liquidity|fresh.
+        `status`: active|closed|all.
       - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
       - `get_market` / `get_event`: fetch by `market_slug` / `event_slug`.
       - `quote`: market-order quote. BUY needs `amount_collateral` (USDC), SELL needs `shares`.
@@ -314,33 +316,15 @@ async def polymarket_read(
         match action:
             case "search":
                 q = throw_if_empty_str("query is required for search", query)
-                if events_status and events_status not in {
-                    "active",
-                    "closed",
-                    "archived",
-                }:
-                    raise ValueError(
-                        f"events_status must be one of: active, closed, archived (got {events_status!r})"
-                    )
-
-                ok_rows, rows = await adapter.search_markets_fuzzy(
+                ok_rows, rows = await adapter.search_markets(
                     query=q,
                     limit=int(limit),
-                    page=int(page),
-                    keep_closed_markets=bool(keep_closed_markets),
-                    events_status=events_status,
-                    end_date_min=end_date_min,
-                    rerank=bool(rerank),
+                    sort=sort,
+                    status=status,
                 )
                 if not ok_rows:
                     return err("error", str(rows))
-                return ok(
-                    {
-                        "action": action,
-                        "query": q,
-                        "markets": [_trim_market(m) for m in rows],
-                    }
-                )
+                return ok({"action": action, "query": q, "markets": rows})
 
             case "trending":
                 ok_rows, rows = await adapter.list_markets(

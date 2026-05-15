@@ -53,7 +53,7 @@ async def test_polymarket_search_uses_adapter_search():
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets_fuzzy",
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
             new=AsyncMock(return_value=(True, [{"slug": "m1"}])),
         ),
     ):

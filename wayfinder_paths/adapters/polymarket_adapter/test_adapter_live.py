@@ -25,27 +25,15 @@ async def live_adapter():
 class TestPolymarketLiveRead:
     @pytest.mark.asyncio
     async def test_search_and_market_data(self, live_adapter):
-        ok, markets = await live_adapter.search_markets_fuzzy(
-            query="super bowl", limit=10
-        )
+        ok, markets = await live_adapter.search_markets(query="super bowl", limit=10)
         assert ok
         assert isinstance(markets, list)
         assert len(markets) > 0
 
-        market = next(
-            (
-                m
-                for m in markets
-                if m.get("enableOrderBook")
-                and live_adapter._ensure_list(m.get("clobTokenIds"))
-            ),
-            markets[0],
-        )
+        market = next((m for m in markets if m.get("yesTokenId")), markets[0])
+        token_id = str(market["yesTokenId"])
+        assert token_id, "Expected yesTokenId on at least one market"
 
-        token_ids = live_adapter._ensure_list(market.get("clobTokenIds"))
-        assert token_ids, "Expected clobTokenIds on at least one market"
-
-        token_id = str(token_ids[0])
         ok, price = await live_adapter.get_price(token_id=token_id, side="BUY")
         assert ok
         assert isinstance(price, dict)
