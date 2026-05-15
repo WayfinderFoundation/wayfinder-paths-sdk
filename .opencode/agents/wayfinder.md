@@ -9,7 +9,7 @@ permission:
     wayfinder-visual: allow
     wayfinder-quant: allow
   wayfinder_research_*: deny
-  wayfinder_visual_*: deny
+  wayfinder_shells_*: deny
   wayfinder_*_execute*: ask
   wayfinder_contracts_deploy: ask
   wayfinder_core_run_strategy: ask

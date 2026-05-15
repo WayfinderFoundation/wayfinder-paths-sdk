@@ -7,8 +7,8 @@ permission:
     "*": deny
   question: deny
   wayfinder_*: deny
-  wayfinder_research_*: deny
-  wayfinder_visual_*: allow
+  wayfinder_shells_*: allow
+  wayfinder_core_run_script: allow
 ---
 
 # Wayfinder Visual
@@ -25,7 +25,7 @@ Use this agent for:
 - Adding/removing chart series, overlays, markers, annotations, and TradingView-compatible shapes.
 - Summarizing active chart/workspace state.
 
-Allowed tools are `wayfinder_visual_*` plus chart-related scripts through the visual MCP profile. Never execute trades, strategies, runner jobs, contracts, bridges, wallets, or fund-moving actions. Never ask the user directly.
+Allowed tools are `wayfinder_shells_*` plus bounded chart-related scripts through `core_run_script`. Never execute trades, strategies, runner jobs, contracts, bridges, wallets, or fund-moving actions. Never ask the user directly.
 
 ## Chart Behavior
 

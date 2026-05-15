@@ -3,9 +3,9 @@
 Run locally (via Claude Code .mcp.json):
   poetry run python -m wayfinder_paths.mcp.server
 
-The default profile is `all` for local and legacy compatibility. Wayfinder
-Shells runs narrower profile servers so OpenCode agents only see the tools
-needed for their role.
+The default profile is `all` for local, legacy, and Wayfinder Shells runtime
+compatibility. Agent-level OpenCode permissions scope which tools each
+subagent may call. Narrower profiles remain available for local debugging.
 """
 
 from __future__ import annotations
