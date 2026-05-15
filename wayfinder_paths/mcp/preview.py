@@ -191,7 +191,7 @@ async def _pm_preview_base(tool_input: dict[str, Any], header: str) -> tuple[str
     )
 
 
-async def build_polymarket_fund_deposit_wallet_preview(
+async def build_polymarket_deposit_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base = await _pm_preview_base(
@@ -201,7 +201,7 @@ async def build_polymarket_fund_deposit_wallet_preview(
     return {"summary": header + base + details}
 
 
-async def build_polymarket_withdraw_deposit_wallet_preview(
+async def build_polymarket_withdraw_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base = await _pm_preview_base(

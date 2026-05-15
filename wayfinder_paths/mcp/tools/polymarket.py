@@ -18,11 +18,11 @@ from wayfinder_paths.core.utils.wallets import (
 )
 from wayfinder_paths.mcp.preview import (
     build_polymarket_cancel_order_preview,
-    build_polymarket_fund_deposit_wallet_preview,
+    build_polymarket_deposit_preview,
     build_polymarket_place_limit_order_preview,
     build_polymarket_place_market_order_preview,
     build_polymarket_redeem_positions_preview,
-    build_polymarket_withdraw_deposit_wallet_preview,
+    build_polymarket_withdraw_preview,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -518,7 +518,7 @@ async def polymarket_read(
 
 
 @catch_errors
-async def polymarket_fund_deposit_wallet(
+async def polymarket_deposit(
     *,
     wallet_label: str,
     amount: float,
@@ -537,7 +537,7 @@ async def polymarket_fund_deposit_wallet(
     amt = throw_if_not_number("amount must be a number", amount)
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_fund_deposit_wallet_preview(
+        preview_obj = await build_polymarket_deposit_preview(
             {"wallet_label": wallet_label, "amount": amt}
         )
         ok_fund, res = await adapter.fund_deposit_wallet(
@@ -572,7 +572,7 @@ async def polymarket_fund_deposit_wallet(
 
 
 @catch_errors
-async def polymarket_withdraw_deposit_wallet(
+async def polymarket_withdraw(
     *,
     wallet_label: str,
     amount: float | None = None,
@@ -594,7 +594,7 @@ async def polymarket_withdraw_deposit_wallet(
     )
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        preview_obj = await build_polymarket_withdraw_deposit_wallet_preview(
+        preview_obj = await build_polymarket_withdraw_preview(
             {"wallet_label": wallet_label, "amount": amt}
         )
         ok_w, res = await adapter.withdraw_deposit_wallet(

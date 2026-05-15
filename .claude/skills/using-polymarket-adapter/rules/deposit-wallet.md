@@ -59,8 +59,8 @@ A full first-time flow looks like:
 
 ## MCP shortcuts (Claude Code)
 
-- Fund the deposit wallet: `mcp__wayfinder__polymarket_fund_deposit_wallet(wallet_label="main", amount=10)`
-- Withdraw from the deposit wallet (omit `amount` to drain): `mcp__wayfinder__polymarket_withdraw_deposit_wallet(wallet_label="main", amount=5)`
+- Fund the deposit wallet: `mcp__wayfinder__polymarket_deposit(wallet_label="main", amount=10)`
+- Withdraw from the deposit wallet (omit `amount` to drain): `mcp__wayfinder__polymarket_withdraw(wallet_label="main", amount=5)`
 - Inspect deposit wallet + balances: `mcp__wayfinder__polymarket_get_state(wallet_label="main")` (`deposit_wallet` is the trading address used by all positions/orders)
 
 ## Adapter methods

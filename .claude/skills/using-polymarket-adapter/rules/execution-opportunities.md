@@ -3,7 +3,7 @@
 ## MCP tools (Claude Code)
 
 - Read-only: `mcp__wayfinder__polymarket_read` (search, market metadata, prices/books/history) and `mcp__wayfinder__polymarket_get_state` (account state)
-- Writes — each action is its own tool: `mcp__wayfinder__polymarket_fund_deposit_wallet`, `polymarket_withdraw_deposit_wallet`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`
+- Writes — each action is its own tool: `mcp__wayfinder__polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`
 
 ## Preconditions (for write paths)
 
@@ -11,7 +11,7 @@
 - Wallet configured (local with `private_key_hex` or remote via Privy)
 - Have Polygon gas token (POL) on the **owner EOA** — funding the deposit wallet costs gas
 - Have **pUSD** ready on the owner EOA (see `rules/deposits-withdrawals.md` to prepare it from USDC/USDC.e)
-- **Deposit wallet funded** — orders execute from the per-user deposit wallet, not the owner EOA. Use `polymarket_fund_deposit_wallet(amount=...)` before trading. See `rules/deposit-wallet.md`.
+- **Deposit wallet funded** — orders execute from the per-user deposit wallet, not the owner EOA. Use `polymarket_deposit(amount=...)` before trading. See `rules/deposit-wallet.md`.
 
 ## Deposit wallet setup + API creds (automatic, cached)
 
