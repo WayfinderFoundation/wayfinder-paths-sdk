@@ -132,6 +132,16 @@ class TestPolymarketAdapter:
         adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
         adapter.ensure_trading_setup = AsyncMock(return_value=(True, {}))
         adapter.ensure_api_creds = AsyncMock(return_value=(True, {}))
+        adapter.quote_market_order = AsyncMock(
+            return_value=(
+                True,
+                {
+                    "fully_fillable": True,
+                    "worst_price": 0.55,
+                    "book_meta": {"tick_size": "0.01"},
+                },
+            )
+        )
 
         class FakeClobClient:
             def __init__(self):
@@ -160,8 +170,12 @@ class TestPolymarketAdapter:
         assert ok is True
         assert response["order_type"] == "FOK"
         assert response["post_only"] is False
+        # 0.55 * (1 + 2/100) = 0.561 → ceil to next 0.01 tick = 0.57
+        assert response["price_cap"] == pytest.approx(0.57)
+        assert response["max_slippage_pct"] == 2.0
         order_args = fake_clob_client.created_order
         assert isinstance(order_args, polymarket_adapter_module.MarketOrderArgs)
+        assert order_args.price == pytest.approx(0.57)
         assert (
             order_args.builder_code == polymarket_adapter_module.POLYMARKET_BUILDER_CODE
         )
@@ -526,6 +540,61 @@ class TestPolymarketAdapter:
         assert state["balances"]["pusd"]["amount_base_units"] == 7_890_000
         assert state["balances"]["usdc_e"]["amount_base_units"] == 1_230_000
         assert state["balances"]["usdc"]["amount_base_units"] == 4_560_000
+
+    @pytest.mark.asyncio
+    async def test_get_full_user_state_drops_zero_value_redeemable_losers(
+        self, adapter, monkeypatch
+    ):
+        sample_positions = [
+            {
+                "initialValue": 10,
+                "currentValue": 12,
+                "cashPnl": 2,
+                "realizedPnl": 0,
+                "curPrice": 0.6,
+                "redeemable": False,
+            },
+            {
+                "initialValue": 8,
+                "currentValue": 0,
+                "cashPnl": -8,
+                "realizedPnl": 0,
+                "curPrice": 0,
+                "redeemable": True,
+            },
+        ]
+
+        async def mock_get_positions(*_args, **_kwargs):
+            return True, sample_positions
+
+        mock_contract = MagicMock()
+        mock_contract.functions.balanceOf.return_value = MagicMock(
+            call=AsyncMock(side_effect=[0, 0, 0])
+        )
+        mock_web3 = MagicMock()
+        mock_web3.eth.contract.return_value = mock_contract
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        monkeypatch.setattr(adapter, "get_positions", mock_get_positions)
+        monkeypatch.setattr(
+            polymarket_adapter_module, "web3_from_chain_id", mock_web3_ctx
+        )
+
+        adapter.wallet_address = "0x" + "11" * 20
+        account = adapter.deposit_wallet_address()
+
+        ok, state = await adapter.get_full_user_state(
+            account=account, include_orders=False
+        )
+        assert ok is True
+        assert len(state["positions"]) == 1
+        assert state["positions"][0]["redeemable"] is False
+        assert state["positionsSummary"]["count"] == 1
+        assert state["pnl"]["totalInitialValue"] == pytest.approx(10.0)
+        assert state["pnl"]["totalCurrentValue"] == pytest.approx(12.0)
 
     @pytest.mark.asyncio
     async def test_bridge_deposit_prefers_brap_swap(self, adapter, monkeypatch):

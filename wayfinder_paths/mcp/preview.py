@@ -251,7 +251,8 @@ async def build_polymarket_execute_preview(
             f"token_id: {req.get('token_id')}\n"
             f"side: {req.get('side')}\n"
             f"amount_collateral: {req.get('amount_collateral')}\n"
-            f"shares: {req.get('shares')}"
+            f"shares: {req.get('shares')}\n"
+            f"max_slippage_pct: {req.get('max_slippage_pct')} (None = adapter default 2%)"
         )
         return {"summary": header + base + details, "recipient_mismatch": False}
 
