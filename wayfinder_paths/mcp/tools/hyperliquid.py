@@ -528,7 +528,7 @@ async def _place_order_impl(
     usd_amount: float | None,
     usd_amount_kind: Literal["notional", "margin"] | None,
     price: float | None,
-    slippage: float,
+    slippage: float | None,
     reduce_only: bool,
     cloid: str | None,
     leverage: int | None,
@@ -581,6 +581,7 @@ async def _place_order_impl(
         if px_for_sizing <= 0:
             raise ValueError("price must be positive")
     else:
+        throw_if_none("slippage is required for market orders", slippage)
         slip = throw_if_not_number("slippage must be a number", slippage)
         if slip < 0:
             raise ValueError("slippage must be >= 0")
@@ -750,7 +751,7 @@ async def _place_order_impl(
                 "size_requested": float(sz),
                 "size_valid": float(sz_valid),
                 "price": float(price) if price is not None else None,
-                "slippage": float(slippage),
+                "slippage": float(slippage) if slippage is not None else None,
                 "reduce_only": bool(reduce_only),
                 "cloid": cloid,
                 "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
@@ -772,7 +773,7 @@ async def _place_outcome_order(
     size: float | None,
     usd_amount: float | None,
     price: float | None,
-    slippage: float,
+    slippage: float | None,
     reduce_only: bool,
     cloid: str | None,
     effects: list[dict[str, Any]],
@@ -804,7 +805,7 @@ async def _place_outcome_order(
         is_buy=bool(is_buy),
         size=size_i,
         price=None if price is None else float(price),
-        slippage=float(slippage),
+        slippage=float(slippage) if slippage is not None else 0.0,
         tif="Ioc" if order_type == "market" else "Gtc",
         reduce_only=bool(reduce_only),
         cloid=cloid,
@@ -840,7 +841,7 @@ async def _place_outcome_order(
                 "is_buy": bool(is_buy),
                 "size": size_i,
                 "price": float(price) if price is not None else None,
-                "slippage": float(slippage),
+                "slippage": float(slippage) if slippage is not None else None,
                 "reduce_only": bool(reduce_only),
                 "cloid": cloid,
             },
@@ -949,7 +950,7 @@ async def hyperliquid_place_limit_order(
         usd_amount=usd_amount,
         usd_amount_kind=usd_amount_kind,
         price=price,
-        slippage=0.0,
+        slippage=None,
         reduce_only=reduce_only,
         cloid=cloid,
         leverage=leverage,
