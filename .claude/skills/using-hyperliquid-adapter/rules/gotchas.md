@@ -36,13 +36,7 @@ Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
 - `HYPE/USDC` is native and available
 - `PURR/USDC` is the OG spot pair (index 0)
 
-**Coin name resolution:** The MCP tool resolves `coin="HYPE"` to `HYPE/USDC`. If you need a different quote (e.g., `HYPE/USDH`), use `asset_id` directly.
-
-**`is_spot` must be explicit:** When using `hyperliquid_execute(action="place_order", ...)`:
-
-- `is_spot=True` for spot orders
-- `is_spot=False` for perp orders
-- Omitting `is_spot` returns an error
+**Asset-name resolution:** Always pass the canonical name from `hyperliquid_search_market` — `HYPE-USDC` (perp), `HYPE/USDC` (spot), `xyz:SP500` (HIP-3), `#200` (HIP-4). The tool reads the market type from the format; there's no `is_spot` flag.
 
 **Spot orders don't use leverage:**
 
@@ -121,7 +115,7 @@ When a user asks for “a **$X bet** at **Y× leverage**”, clarify whether `$X
 
 Claude Code MCP:
 
-- `hyperliquid_execute(action="place_order", usd_amount=..., usd_amount_kind="notional"|"margin", leverage=...)`
+- `hyperliquid_place_order(usd_amount=..., usd_amount_kind="notional"|"margin", leverage=...)`
 - If `usd_amount_kind="margin"`, `leverage` is required.
 - If you provide `size`, it is **coin units**, not USD.
 

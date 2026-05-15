@@ -54,13 +54,13 @@ This hard-codes:
 - Call: `HyperliquidAdapter.withdraw(amount, address)` (USDC withdraw to Arbitrum via executor)
 
 Claude Code shortcut:
-- Use `mcp__wayfinder__hyperliquid_execute(action="withdraw", wallet_label=..., amount_usdc=...)`
+- Use `mcp__wayfinder__hyperliquid_withdraw(wallet_label=..., amount_usdc=...)`
 
 ### Deposit monitoring (recommended)
 
 - Call: `HyperliquidAdapter.wait_for_deposit(address, expected_increase, timeout_s=..., poll_interval_s=...)`
 - Mechanism: polls `get_user_state(address)` and checks perp margin increase.
-- The `mcp__wayfinder__hyperliquid_execute(action="deposit", ...)` shortcut already waits for the perp clearinghouse credit before returning.
+- The `mcp__wayfinder__hyperliquid_deposit` shortcut already waits for the clearinghouse credit before returning.
 
 ### Withdrawal monitoring (best-effort)
 

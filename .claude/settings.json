@@ -16,7 +16,12 @@
     "ask": [
       "mcp__wayfinder__execute",
       "mcp__wayfinder__run_script",
-      "mcp__wayfinder__hyperliquid_execute",
+      "mcp__wayfinder__hyperliquid_place_order",
+      "mcp__wayfinder__hyperliquid_place_trigger_order",
+      "mcp__wayfinder__hyperliquid_cancel_order",
+      "mcp__wayfinder__hyperliquid_update_leverage",
+      "mcp__wayfinder__hyperliquid_deposit",
+      "mcp__wayfinder__hyperliquid_withdraw",
       "mcp__wayfinder__polymarket_execute",
       "mcp__wayfinder__run_strategy",
       "mcp__wayfinder__deploy_contract",
@@ -64,7 +69,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__hyperliquid_execute",
+        "matcher": "mcp__wayfinder__hyperliquid_(place_order|place_trigger_order|cancel_order|update_leverage|deposit|withdraw)",
         "hooks": [
           {
             "type": "command",
