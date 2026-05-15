@@ -213,7 +213,7 @@ When a user wants **immediate, one-off execution**:
   - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
   Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
-- **Hyperliquid perps/spot/outcomes:** use the per-action MCP tools — `hyperliquid_place_market_order` (IOC; perp/spot/HIP-4 outcomes), `hyperliquid_place_limit_order` (GTC), `hyperliquid_place_trigger_order` (TP/SL), `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit`, `hyperliquid_withdraw`. The market type is read from `asset_name` (`BTC-USDC` perp, `BTC/USDC` spot, `xyz:SP500` HIP-3, `#200` HIP-4). **Before your first Hyperliquid write in a session, invoke `/using-hyperliquid-adapter`** to load the required-parameter rules (`leverage`, `usd_amount_kind`, outcome encoding, etc.). The skill covers both the MCP tool interface and the Python adapter.
+- **Hyperliquid perps/spot/outcomes:** use the per-action MCP tools — `hyperliquid_place_market_order` (IOC, perp/spot), `hyperliquid_place_limit_order` (GTC, perp/spot), `hyperliquid_place_outcome_order` (HIP-4), `hyperliquid_place_trigger_order` (TP/SL), `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit`, `hyperliquid_withdraw`. `asset_name` selects perp (`BTC-USDC`) vs spot (`BTC/USDC`) vs HIP-3 (`xyz:SP500`); HIP-4 uses `#<encoding>` and routes to the dedicated outcome tool. Order tools don't take leverage — call `hyperliquid_update_leverage` first. **Before your first Hyperliquid write in a session, invoke `/using-hyperliquid-adapter`**.
 - **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + `mcp__wayfinder__polymarket_execute` (bridge USDC↔pUSD, buy/sell, limit orders, redeem). **Before your first Polymarket execution call in a session, invoke `/using-polymarket-adapter`** (pUSD collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__core_run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
@@ -257,7 +257,7 @@ Polymarket funding (pUSD collateral):
 - **Already have pUSD:** Trade immediately, skip routing.
 - **pUSD → any token/chain:** flip `from_token` / `to_token` in the same BRAP swap flow.
 
-Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin** (use `usd_amount_kind="notional"|"margin"` on `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order`).
+Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whether `$X` is **notional** or **margin**. The place-order tools take only `usd_amount` (always notional) — for margin sizing, compute `notional = margin × leverage` and pass that. Set leverage via `mcp__wayfinder__hyperliquid_update_leverage` first.
 
 ### MCP vs scripting — pick the right tool
 

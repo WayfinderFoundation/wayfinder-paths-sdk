@@ -56,8 +56,9 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
 - Writes — each action is its own tool:
-  - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 outcome
-  - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 outcome (see [outcomes.md](outcomes.md))
+  - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot
+  - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot
+  - `mcp__wayfinder__hyperliquid_place_outcome_order` — HIP-4 outcome markets (`#<encoding>` slugs), see [outcomes.md](outcomes.md)
   - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
   - `mcp__wayfinder__hyperliquid_cancel_order`
   - `mcp__wayfinder__hyperliquid_update_leverage`
@@ -131,7 +132,7 @@ The `place_market_order` / `place_limit_order` (and trigger) tools will:
 
 ### Spot vs perp orders
 
-The place-order tools read the market type from `asset_name` — no `is_spot` flag.
+The place-order tools read the market type from `asset_name` — no `is_spot` flag. HIP-4 outcome markets (`#<encoding>` slugs) route to `hyperliquid_place_outcome_order` — see [outcomes.md](outcomes.md).
 
 **Perp market order:**
 ```
@@ -140,7 +141,6 @@ hyperliquid_place_market_order(
     asset_name="HYPE-USDC",
     is_buy=True,
     usd_amount=20,
-    usd_amount_kind="notional",
 )
 ```
 
@@ -165,24 +165,16 @@ hyperliquid_place_limit_order(
 )
 ```
 
-Spot orders don't take `usd_amount_kind` (no leverage concept).
-
 ### USD sizing (avoid ambiguity)
 
-For perps:
 - Use `size` for **coin units** (e.g. ETH, HYPE).
-- Or use `usd_amount` + `usd_amount_kind`:
-  - `usd_amount_kind="notional"` — position size in USD
-  - `usd_amount_kind="margin"` — collateral in USD (requires `leverage`; notional = margin × leverage)
-
-For spot:
-- Use `size` for **coin units**, or
-- Use `usd_amount` directly (always treated as notional)
+- Or use `usd_amount` — always treated as **notional** (position size in USD).
+- For **margin sizing**, compute `notional = margin × leverage` yourself and pass that as `usd_amount`. Set the account leverage via `hyperliquid_update_leverage` first.
 
 ## Claude Code "execution mode" (one-off scripts)
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
-- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
+- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_outcome_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
 - `mcp__wayfinder__core_execute` for on-chain transfers (send/swap/deposit)
 
 ### `mcp__wayfinder__core_execute` examples

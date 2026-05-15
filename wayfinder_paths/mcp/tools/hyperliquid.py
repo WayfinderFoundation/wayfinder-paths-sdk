@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import difflib
 import re
+from decimal import Decimal
 from typing import Any, Literal
+
+from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import decode_outcome_encoding
@@ -518,22 +521,136 @@ async def hyperliquid_place_trigger_order(
     )
 
 
-async def _place_order_impl(
+async def _resolve_perp_or_spot_size(
+    *,
+    adapter: HyperliquidAdapter,
+    asset_name: str,
+    resolved_asset_id: int,
+    market_type: str,
+    size: float | None,
+    usd_amount: float | None,
+    px_for_sizing: float | None,
+) -> tuple[float, dict[str, Any], float | None]:
+    """Resolve a perp/spot order's raw asset-unit size from `size` or `usd_amount`.
+
+    `usd_amount` is always treated as USD notional. Returns the raw size,
+    a `sizing` audit dict for the response, and the resolved price used (mid or
+    the caller's limit price).
+    """
+    if size is not None and usd_amount is not None:
+        raise ValueError(
+            "Provide either size (asset units) or usd_amount (USD notional), not both"
+        )
+
+    if size is not None:
+        sz = throw_if_not_number("size must be a number", size)
+        if sz <= 0:
+            raise ValueError("size must be positive")
+        return float(sz), {"source": "size"}, px_for_sizing
+
+    throw_if_none("Provide either size (asset units) or usd_amount", usd_amount)
+    usd_amt = throw_if_not_number("usd_amount must be a number", usd_amount)
+    if usd_amt <= 0:
+        raise ValueError("usd_amount must be positive")
+
+    if px_for_sizing is None:
+        ok_mids, mids = await adapter.get_all_mid_prices()
+        if not ok_mids or not isinstance(mids, dict):
+            raise ValueError("Failed to fetch mid prices")
+        mid: float | None = None
+        for key in adapter.get_mid_price_key(asset_name, resolved_asset_id):
+            v = mids.get(key)
+            if v is None:
+                continue
+            try:
+                mid = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+        if mid is None or mid <= 0:
+            raise ValueError(f"Could not resolve mid price for {asset_name}")
+        px_for_sizing = mid
+
+    sz = float(usd_amt) / float(px_for_sizing)
+    sizing: dict[str, Any] = {
+        "source": "usd_amount",
+        "usd_amount": float(usd_amt),
+        "notional_usd": float(usd_amt),
+        "price_used": float(px_for_sizing),
+        "market_type": market_type,
+    }
+    return sz, sizing, px_for_sizing
+
+
+def _validate_sized_order(
+    *,
+    adapter: HyperliquidAdapter,
+    asset_id: int,
+    size_requested: float,
+    sz_valid: float,
+    sizing: dict[str, Any],
+    px_for_sizing: float | None,
+) -> None:
+    if sz_valid <= 0:
+        sz_decimals = adapter.get_sz_decimals(asset_id)
+        min_tick = float(Decimal(10) ** (-sz_decimals))
+        raise ValueError(
+            f"size {size_requested} rounds down to 0 — asset has szDecimals={sz_decimals} "
+            f"(lot size = {min_tick}). Try size={min_tick}."
+        )
+    if sizing["source"] == "usd_amount" and px_for_sizing is not None:
+        final_notional = float(sz_valid) * float(px_for_sizing)
+        if final_notional < MIN_ORDER_USD_NOTIONAL:
+            bump = MIN_ORDER_USD_NOTIONAL * float(sizing["usd_amount"]) / final_notional
+            raise ValueError(
+                f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
+                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Try usd_amount={bump:.2f}."
+            )
+
+
+def _validate_price(
+    *,
+    adapter: HyperliquidAdapter,
+    asset_id: int,
+    price: float,
+) -> None:
+    """Apply HL's price rounding (5 sig figs → max decimals) and reject divergence."""
+    price_decimals = adapter._get_price_decimals(asset_id)
+    rounded = round(float(f"{price:.5g}"), price_decimals)
+    if rounded != float(price):
+        raise ValueError(
+            f"price {price} is invalid — HL allows ≤ 5 sig figs and ≤ {price_decimals} decimals. "
+            f"Try price={rounded}."
+        )
+
+
+@catch_errors
+async def hyperliquid_place_market_order(
     *,
     wallet_label: str,
     asset_name: str,
     is_buy: bool,
-    order_type: Literal["market", "limit"],
-    size: float | None,
-    usd_amount: float | None,
-    usd_amount_kind: Literal["notional", "margin"] | None,
-    price: float | None,
-    slippage: float | None,
-    reduce_only: bool,
-    cloid: str | None,
-    leverage: int | None,
-    is_cross: bool,
+    size: float | None = None,
+    usd_amount: float | None = None,
+    slippage: float = 0.01,
+    reduce_only: bool = False,
+    cloid: str | None = None,
 ) -> dict[str, Any]:
+    """Place an IOC market order on a Hyperliquid perp or spot market.
+
+    For HIP-4 outcome markets (`#N` asset names), use `hyperliquid_place_outcome_order`.
+    For leverage / margin mode, call `hyperliquid_update_leverage` first.
+
+    Args:
+        wallet_label: Wallet placing the order.
+        asset_name: Canonical perp/spot identifier (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`).
+        is_buy: True to buy, False to sell.
+        size: Order size in asset units. Rounded to the asset's lot size.
+        usd_amount: USD notional alternative to `size`.
+        slippage: Slippage cap as a fraction (default 0.01 = 1%, max 0.25).
+        reduce_only: True to close-only (perp). Ignored for spot.
+        cloid: Client order id for later cancellation.
+    """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     throw_if_none("is_buy is required", is_buy)
@@ -548,192 +665,63 @@ async def _place_order_impl(
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
+    if market_type == "hip4":
+        return err(
+            "invalid_request",
+            "Use hyperliquid_place_outcome_order for HIP-4 outcome markets.",
+        )
+
+    slip = throw_if_not_number("slippage must be a number", slippage)
+    if slip < 0:
+        raise ValueError("slippage must be >= 0")
+    if slip > 0.25:
+        raise ValueError("slippage > 0.25 is too risky")
+
     effects: list[dict[str, Any]] = []
     await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
 
-    if market_type == "hip4":
-        return await _place_outcome_order(
-            adapter=adapter,
-            sender=sender,
-            wallet_label=wallet_label,
-            asset_name=asset_name,
-            order_type=order_type,
-            is_buy=is_buy,
-            size=size,
-            usd_amount=usd_amount,
-            price=price,
-            slippage=slippage,
-            reduce_only=reduce_only,
-            cloid=cloid,
-            effects=effects,
-        )
-
-    if size is not None and usd_amount is not None:
-        raise ValueError(
-            "Provide either size (asset units) or usd_amount (USD notional/margin), not both"
-        )
-    if usd_amount_kind is not None and usd_amount is None:
-        raise ValueError("usd_amount_kind is only valid when usd_amount is provided")
-
-    if order_type == "limit":
-        throw_if_none("price is required for limit orders", price)
-        px_for_sizing = throw_if_not_number("price must be a number", price)
-        if px_for_sizing <= 0:
-            raise ValueError("price must be positive")
-    else:
-        throw_if_none("slippage is required for market orders", slippage)
-        slip = throw_if_not_number("slippage must be a number", slippage)
-        if slip < 0:
-            raise ValueError("slippage must be >= 0")
-        if slip > 0.25:
-            raise ValueError("slippage > 0.25 is too risky")
-        px_for_sizing = None
-
-    sizing: dict[str, Any] = {"source": "size"}
-    if size is not None:
-        sz = throw_if_not_number("size must be a number", size)
-        if sz <= 0:
-            raise ValueError("size must be positive")
-    else:
-        throw_if_none(
-            "Provide either size (asset units) or usd_amount for place_order",
-            usd_amount,
-        )
-        usd_amt = throw_if_not_number("usd_amount must be a number", usd_amount)
-        if usd_amt <= 0:
-            raise ValueError("usd_amount must be positive")
-
-        if market_type == "spot":
-            notional_usd = usd_amt
-            margin_usd = None
-        elif usd_amount_kind is None:
-            raise ValueError(
-                "usd_amount_kind is required for perp: 'notional' or 'margin'"
-            )
-        elif usd_amount_kind == "margin":
-            throw_if_none(
-                "leverage is required when usd_amount_kind='margin'", leverage
-            )
-            lev = throw_if_not_int("leverage must be an int", leverage)
-            if lev <= 0:
-                raise ValueError("leverage must be positive")
-            notional_usd = usd_amt * float(lev)
-            margin_usd = usd_amt
-        else:
-            notional_usd = usd_amt
-            margin_usd = None
-            if leverage is not None:
-                lev = throw_if_not_int("leverage must be an int", leverage)
-                if lev > 0:
-                    margin_usd = notional_usd / float(lev)
-
-        if px_for_sizing is None:
-            ok_mids, mids = await adapter.get_all_mid_prices()
-            if not ok_mids or not isinstance(mids, dict):
-                return err("price_error", "Failed to fetch mid prices")
-            mid = None
-            for key in adapter.get_mid_price_key(asset_name, resolved_asset_id):
-                v = mids.get(key)
-                if v is None:
-                    continue
-                try:
-                    mid = float(v)
-                    break
-                except (TypeError, ValueError):
-                    continue
-            if mid is None or mid <= 0:
-                return err(
-                    "price_error", f"Could not resolve mid price for {asset_name}"
-                )
-            px_for_sizing = mid
-
-        sz = notional_usd / float(px_for_sizing)
-        sizing = {
-            "source": "usd_amount",
-            "usd_amount": float(usd_amt),
-            "usd_amount_kind": usd_amount_kind,
-            "notional_usd": float(notional_usd),
-            "margin_usd_estimate": float(margin_usd)
-            if margin_usd is not None
-            else None,
-            "price_used": float(px_for_sizing),
-        }
-
+    sz, sizing, px_for_sizing = await _resolve_perp_or_spot_size(
+        adapter=adapter,
+        asset_name=asset_name,
+        resolved_asset_id=resolved_asset_id,
+        market_type=market_type,
+        size=size,
+        usd_amount=usd_amount,
+        px_for_sizing=None,
+    )
     sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
-    if sz_valid <= 0:
-        raise ValueError("size is too small after lot-size rounding")
+    _validate_sized_order(
+        adapter=adapter,
+        asset_id=resolved_asset_id,
+        size_requested=float(sz),
+        sz_valid=sz_valid,
+        sizing=sizing,
+        px_for_sizing=px_for_sizing,
+    )
 
-    # HL rejects spot/perp orders below $10 notional. Lot-size rounding of
-    # `usd_amount`-derived sizes can dip just under that floor — surface the
-    # actual notional so the caller can bump usd_amount.
-    if sizing["source"] == "usd_amount" and px_for_sizing is not None:
-        final_notional = float(sz_valid) * float(px_for_sizing)
-        if final_notional < MIN_ORDER_USD_NOTIONAL:
-            raise ValueError(
-                f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
-                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Bump usd_amount or pass size directly."
-            )
-
-    if leverage is not None:
-        lev = throw_if_not_int("leverage must be an int", leverage)
-        if lev <= 0:
-            raise ValueError("leverage must be positive")
-        ok_lev, res = await adapter.update_leverage(
-            resolved_asset_id, lev, bool(is_cross), sender
-        )
-        effects.append(
-            {"type": "hl", "label": "update_leverage", "ok": ok_lev, "result": res}
-        )
-        if not ok_lev:
-            return ok(
-                {
-                    "status": "failed",
-                    "wallet_label": wallet_label,
-                    "address": sender,
-                    "asset_id": resolved_asset_id,
-                    "asset_name": asset_name,
-                    "effects": effects,
-                }
-            )
-
-    if order_type == "limit":
-        ok_order, res = await adapter.place_limit_order(
-            resolved_asset_id,
-            bool(is_buy),
-            float(price),
-            float(sz_valid),
-            sender,
-            reduce_only=bool(reduce_only),
-            builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
-        )
-        effects.append(
-            {"type": "hl", "label": "place_limit_order", "ok": ok_order, "result": res}
-        )
-    else:
-        ok_order, res = await adapter.place_market_order(
-            resolved_asset_id,
-            bool(is_buy),
-            float(slippage),
-            float(sz_valid),
-            sender,
-            reduce_only=bool(reduce_only),
-            cloid=cloid,
-            builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
-        )
-        effects.append(
-            {"type": "hl", "label": "place_market_order", "ok": ok_order, "result": res}
-        )
+    ok_order, res = await adapter.place_market_order(
+        resolved_asset_id,
+        bool(is_buy),
+        float(slip),
+        float(sz_valid),
+        sender,
+        reduce_only=bool(reduce_only),
+        cloid=cloid,
+        builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+    )
+    effects.append(
+        {"type": "hl", "label": "place_market_order", "ok": ok_order, "result": res}
+    )
 
     status = "confirmed" if all(e["ok"] for e in effects) else "failed"
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,
-        action="place_order",
+        action="place_market_order",
         status=status,
         details={
             "asset_id": resolved_asset_id,
             "asset_name": asset_name,
-            "order_type": order_type,
             "is_buy": bool(is_buy),
             "size": float(sz_valid),
         },
@@ -746,12 +734,11 @@ async def _place_order_impl(
             "asset_id": resolved_asset_id,
             "asset_name": asset_name,
             "order": {
-                "order_type": order_type,
+                "order_type": "market",
                 "is_buy": bool(is_buy),
                 "size_requested": float(sz),
                 "size_valid": float(sz_valid),
-                "price": float(price) if price is not None else None,
-                "slippage": float(slippage) if slippage is not None else None,
+                "slippage": float(slip),
                 "reduce_only": bool(reduce_only),
                 "cloid": cloid,
                 "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
@@ -762,28 +749,192 @@ async def _place_order_impl(
     )
 
 
-async def _place_outcome_order(
+@catch_errors
+async def hyperliquid_place_limit_order(
     *,
-    adapter: HyperliquidAdapter,
-    sender: str,
     wallet_label: str,
     asset_name: str,
-    order_type: Literal["market", "limit"],
     is_buy: bool,
-    size: float | None,
-    usd_amount: float | None,
-    price: float | None,
-    slippage: float | None,
-    reduce_only: bool,
-    cloid: str | None,
-    effects: list[dict[str, Any]],
+    price: float,
+    size: float | None = None,
+    usd_amount: float | None = None,
+    reduce_only: bool = False,
+    cloid: str | None = None,
 ) -> dict[str, Any]:
-    outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
+    """Place a GTC limit order on a Hyperliquid perp or spot market.
+
+    For HIP-4 outcome markets (`#N` asset names), use `hyperliquid_place_outcome_order`.
+    For leverage / margin mode, call `hyperliquid_update_leverage` first.
+
+    Args:
+        wallet_label: Wallet placing the order.
+        asset_name: Canonical perp/spot identifier (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`).
+        is_buy: True to buy, False to sell.
+        price: Limit price (positive).
+        size: Order size in asset units. Rounded to the asset's lot size.
+        usd_amount: USD notional alternative to `size`; converted to size at `price`.
+        reduce_only: True to close-only (perp). Ignored for spot.
+        cloid: Client order id for later cancellation.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    asset_name = throw_if_empty_str("asset_name is required", asset_name)
+    throw_if_none("is_buy is required", is_buy)
+    px = throw_if_not_number("price must be a number", price)
+    if px <= 0:
+        raise ValueError("price must be positive")
+
+    try:
+        (
+            adapter,
+            sender,
+            resolved_asset_id,
+            market_type,
+        ) = await _resolve_adapter_and_asset(wallet_label, asset_name)
+    except ValueError as exc:
+        return err("invalid_coin", str(exc))
+
+    if market_type == "hip4":
+        return err(
+            "invalid_request",
+            "Use hyperliquid_place_outcome_order for HIP-4 outcome markets.",
+        )
+
+    _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=float(px))
+
+    effects: list[dict[str, Any]] = []
+    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
+
+    sz, sizing, _ = await _resolve_perp_or_spot_size(
+        adapter=adapter,
+        asset_name=asset_name,
+        resolved_asset_id=resolved_asset_id,
+        market_type=market_type,
+        size=size,
+        usd_amount=usd_amount,
+        px_for_sizing=float(px),
+    )
+    sz_valid = adapter.get_valid_order_size(resolved_asset_id, sz)
+    _validate_sized_order(
+        adapter=adapter,
+        asset_id=resolved_asset_id,
+        size_requested=float(sz),
+        sz_valid=sz_valid,
+        sizing=sizing,
+        px_for_sizing=float(px),
+    )
+
+    ok_order, res = await adapter.place_limit_order(
+        resolved_asset_id,
+        bool(is_buy),
+        float(px),
+        float(sz_valid),
+        sender,
+        reduce_only=bool(reduce_only),
+        builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+    )
+    effects.append(
+        {"type": "hl", "label": "place_limit_order", "ok": ok_order, "result": res}
+    )
+
+    status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+    _annotate_hl_profile(
+        address=sender,
+        label=wallet_label,
+        action="place_limit_order",
+        status=status,
+        details={
+            "asset_id": resolved_asset_id,
+            "asset_name": asset_name,
+            "is_buy": bool(is_buy),
+            "price": float(px),
+            "size": float(sz_valid),
+        },
+    )
+    return ok(
+        {
+            "status": status,
+            "wallet_label": wallet_label,
+            "address": sender,
+            "asset_id": resolved_asset_id,
+            "asset_name": asset_name,
+            "order": {
+                "order_type": "limit",
+                "is_buy": bool(is_buy),
+                "size_requested": float(sz),
+                "size_valid": float(sz_valid),
+                "price": float(px),
+                "reduce_only": bool(reduce_only),
+                "cloid": cloid,
+                "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
+                "sizing": sizing,
+            },
+            "effects": effects,
+        }
+    )
+
+
+@catch_errors
+async def hyperliquid_place_outcome_order(
+    *,
+    wallet_label: str,
+    asset_name: str,
+    is_buy: bool,
+    order_type: Literal["market", "limit"] = "market",
+    size: int | None = None,
+    usd_amount: float | None = None,
+    price: float | None = None,
+    slippage: float = 0.01,
+    reduce_only: bool = False,
+    cloid: str | None = None,
+) -> dict[str, Any]:
+    """Place a market or limit order on a HIP-4 outcome market.
+
+    HIP-4 outcomes settle in USDH (token 360), use integer contracts, and are
+    zero-fee. The `#<encoding>` asset_name encodes outcome_id + side
+    (encoding = 10 * outcome_id + side).
+
+    Args:
+        wallet_label: Wallet placing the order.
+        asset_name: `#<encoding>` from `hyperliquid_search_market`.
+        is_buy: True to buy the side, False to sell.
+        order_type: `"market"` (IOC, default) or `"limit"` (GTC, requires `price`).
+        size: Integer contracts to trade.
+        usd_amount: USDH to spend; converted to integer contracts at mid (market only).
+        price: Limit price; required for `order_type="limit"`.
+        slippage: Market-order slippage cap (default 0.01 = 1%).
+        reduce_only: Close-only.
+        cloid: Client order id.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    asset_name = throw_if_empty_str("asset_name is required", asset_name)
+    throw_if_none("is_buy is required", is_buy)
+
+    try:
+        adapter, sender, _, market_type = await _resolve_adapter_and_asset(
+            wallet_label, asset_name
+        )
+    except ValueError as exc:
+        return err("invalid_coin", str(exc))
+
+    if market_type != "hip4":
+        return err(
+            "invalid_request",
+            f"{asset_name!r} is not a HIP-4 outcome market. Use hyperliquid_place_market_order or _place_limit_order.",
+        )
+
     if order_type == "limit":
         throw_if_none("price is required for limit orders", price)
 
-    # Outcomes are integer contracts (szDecimals=0) with no $10 floor; accept
-    # either explicit `size` or `usd_amount` for market orders.
+    outcome_id_v, side_v = decode_outcome_encoding(int(asset_name[1:]))
+    asset_id = OUTCOME_ASSET_OFFSET + (10 * outcome_id_v + side_v)
+    if price is not None:
+        _validate_price(adapter=adapter, asset_id=asset_id, price=float(price))
+
+    if size is not None and float(size) != int(size):
+        raise ValueError(
+            f"size {size} must be an integer (HIP-4 outcomes use integer contracts). "
+            f"Try size={int(size)}."
+        )
     size_i: int | None = None if size is None else int(size)
     if size_i is None:
         throw_if_none("size or usd_amount is required for outcome orders", usd_amount)
@@ -799,26 +950,27 @@ async def _place_outcome_order(
             return err("price_error", f"Could not resolve mid price for {asset_name}")
         size_i = max(1, round(float(usd_amount) / float(mid)))
 
+    effects: list[dict[str, Any]] = []
     ok_order, res = await adapter.place_outcome_order(
         outcome_id=outcome_id_v,
         side=side_v,
         is_buy=bool(is_buy),
         size=size_i,
         price=None if price is None else float(price),
-        slippage=float(slippage) if slippage is not None else 0.0,
+        slippage=float(slippage),
         tif="Ioc" if order_type == "market" else "Gtc",
         reduce_only=bool(reduce_only),
         cloid=cloid,
         address=sender,
     )
     effects.append(
-        {"type": "hl", "label": "place_order", "ok": ok_order, "result": res}
+        {"type": "hl", "label": "place_outcome_order", "ok": ok_order, "result": res}
     )
     status = "confirmed" if ok_order else "failed"
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,
-        action="place_order",
+        action="place_outcome_order",
         status=status,
         details={
             "asset_name": asset_name,
@@ -841,120 +993,12 @@ async def _place_outcome_order(
                 "is_buy": bool(is_buy),
                 "size": size_i,
                 "price": float(price) if price is not None else None,
-                "slippage": float(slippage) if slippage is not None else None,
+                "slippage": float(slippage) if order_type == "market" else None,
                 "reduce_only": bool(reduce_only),
                 "cloid": cloid,
             },
             "effects": effects,
         }
-    )
-
-
-@catch_errors
-async def hyperliquid_place_market_order(
-    *,
-    wallet_label: str,
-    asset_name: str,
-    is_buy: bool,
-    size: float | None = None,
-    usd_amount: float | None = None,
-    usd_amount_kind: Literal["notional", "margin"] | None = None,
-    slippage: float = 0.01,
-    reduce_only: bool = False,
-    cloid: str | None = None,
-    leverage: int | None = None,
-    is_cross: bool = True,
-) -> dict[str, Any]:
-    """Place an IOC market order on a Hyperliquid perp, spot, or HIP-4 outcome market.
-
-    HL rejects perp/spot orders below $10 notional. Provide exactly one of `size`
-    (asset units) or `usd_amount` (USD); for perps with `usd_amount`,
-    `usd_amount_kind` must be `"notional"` or `"margin"` (margin also requires
-    `leverage`). Outcome markets (`#N`) take integer contracts and skip the $10 floor.
-
-    Args:
-        wallet_label: Wallet placing the order.
-        asset_name: Canonical market identifier from `hyperliquid_search_market`
-            (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#40`).
-        is_buy: True to buy, False to sell.
-        size: Order size in asset units. Rounded to the asset's lot size.
-        usd_amount: Alternative to `size`, denominated in USD.
-        usd_amount_kind: For perps with `usd_amount`: `"notional"` (position size) or
-            `"margin"` (collateral; needs `leverage`). Ignored for spot.
-        slippage: Slippage cap as a fraction (default 0.01 = 1%, max 0.25).
-        reduce_only: True to close-only (perp). Ignored for spot.
-        leverage: Per-asset leverage; updated before the order when set.
-        is_cross: Cross margin (default) vs isolated. Only matters with `leverage`.
-        cloid: Client order id for later cancellation.
-    """
-    return await _place_order_impl(
-        wallet_label=wallet_label,
-        asset_name=asset_name,
-        is_buy=is_buy,
-        order_type="market",
-        size=size,
-        usd_amount=usd_amount,
-        usd_amount_kind=usd_amount_kind,
-        price=None,
-        slippage=slippage,
-        reduce_only=reduce_only,
-        cloid=cloid,
-        leverage=leverage,
-        is_cross=is_cross,
-    )
-
-
-@catch_errors
-async def hyperliquid_place_limit_order(
-    *,
-    wallet_label: str,
-    asset_name: str,
-    is_buy: bool,
-    price: float,
-    size: float | None = None,
-    usd_amount: float | None = None,
-    usd_amount_kind: Literal["notional", "margin"] | None = None,
-    reduce_only: bool = False,
-    cloid: str | None = None,
-    leverage: int | None = None,
-    is_cross: bool = True,
-) -> dict[str, Any]:
-    """Place a GTC limit order on a Hyperliquid perp, spot, or HIP-4 outcome market.
-
-    HL rejects perp/spot orders below $10 notional. Provide exactly one of `size`
-    (asset units) or `usd_amount` (USD); for perps with `usd_amount`,
-    `usd_amount_kind` must be `"notional"` or `"margin"` (margin also requires
-    `leverage`). Outcome markets (`#N`) take integer contracts and skip the $10 floor.
-
-    Args:
-        wallet_label: Wallet placing the order.
-        asset_name: Canonical market identifier from `hyperliquid_search_market`
-            (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#40`).
-        is_buy: True to buy, False to sell.
-        price: Limit price (positive).
-        size: Order size in asset units. Rounded to the asset's lot size.
-        usd_amount: Alternative to `size`, denominated in USD.
-        usd_amount_kind: For perps with `usd_amount`: `"notional"` (position size) or
-            `"margin"` (collateral; needs `leverage`). Ignored for spot.
-        reduce_only: True to close-only (perp). Ignored for spot.
-        leverage: Per-asset leverage; updated before the order when set.
-        is_cross: Cross margin (default) vs isolated. Only matters with `leverage`.
-        cloid: Client order id for later cancellation.
-    """
-    return await _place_order_impl(
-        wallet_label=wallet_label,
-        asset_name=asset_name,
-        is_buy=is_buy,
-        order_type="limit",
-        size=size,
-        usd_amount=usd_amount,
-        usd_amount_kind=usd_amount_kind,
-        price=price,
-        slippage=None,
-        reduce_only=reduce_only,
-        cloid=cloid,
-        leverage=leverage,
-        is_cross=is_cross,
     )
 
 
