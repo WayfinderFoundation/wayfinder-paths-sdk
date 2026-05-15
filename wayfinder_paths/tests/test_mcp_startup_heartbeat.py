@@ -73,14 +73,70 @@ def test_mcp_cli_main_skips_heartbeat_for_path_command(monkeypatch) -> None:
 
 def test_mcp_server_main_triggers_heartbeat_once(monkeypatch) -> None:
     calls: list[str] = []
+    runs: list[tuple[str, str, int, str]] = []
+
+    class FakeMCP:
+        def __init__(self, profile: str, host: str, port: int) -> None:
+            self.profile = profile
+            self.host = host
+            self.port = port
+
+        def run(self, *, transport: str) -> None:
+            runs.append((self.profile, self.host, self.port, transport))
 
     monkeypatch.setattr(
         mcp_server,
         "maybe_heartbeat_installed_paths",
         lambda **kwargs: calls.append(str(kwargs["trigger"])),
     )
-    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "build_mcp",
+        lambda profile, *, host, port: FakeMCP(profile, host, port),
+    )
 
-    mcp_server.main()
+    mcp_server.main([])
 
-    assert calls == ["mcp-server"]
+    assert calls == ["mcp-server:all"]
+    assert runs == [("all", "127.0.0.1", 8000, "stdio")]
+
+
+def test_mcp_server_main_accepts_profile_and_port(monkeypatch) -> None:
+    calls: list[str] = []
+    runs: list[tuple[str, str, int, str]] = []
+
+    class FakeMCP:
+        def __init__(self, profile: str, host: str, port: int) -> None:
+            self.profile = profile
+            self.host = host
+            self.port = port
+
+        def run(self, *, transport: str) -> None:
+            runs.append((self.profile, self.host, self.port, transport))
+
+    monkeypatch.setattr(
+        mcp_server,
+        "maybe_heartbeat_installed_paths",
+        lambda **kwargs: calls.append(str(kwargs["trigger"])),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "build_mcp",
+        lambda profile, *, host, port: FakeMCP(profile, host, port),
+    )
+
+    mcp_server.main(
+        [
+            "--profile",
+            "research",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8123",
+            "--transport",
+            "streamable-http",
+        ]
+    )
+
+    assert calls == ["mcp-server:research"]
+    assert runs == [("research", "0.0.0.0", 8123, "streamable-http")]
