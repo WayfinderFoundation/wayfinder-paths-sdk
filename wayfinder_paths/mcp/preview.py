@@ -5,10 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.core.constants.hyperliquid import HYPE_FEE_WALLET
-from wayfinder_paths.core.constants.polymarket import (
-    POLYGON_USDC_ADDRESS,
-    POLYGON_USDC_E_ADDRESS,
-)
 from wayfinder_paths.mcp.utils import (
     find_wallet_by_label,
     normalize_address,
@@ -201,47 +197,12 @@ async def build_polymarket_execute_preview(
     w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
 
-    recipient = None
-    if action == "bridge_deposit":
-        recipient = normalize_address(req.get("recipient_address"))
-    if action == "bridge_withdraw":
-        recipient = normalize_address(req.get("recipient_addr"))
-
-    mismatch = bool(sender and recipient and sender.lower() != recipient.lower())
-
     header = "POLYMARKET_EXECUTE\n"
     base = (
         f"action: {action or '(missing)'}\n"
         f"wallet_label: {wallet_label or '(missing)'}\n"
         f"address: {sender or '(unknown)'}"
     )
-
-    if action == "bridge_deposit":
-        details = (
-            "\n\nCONVERT (token → USDC.e)\n"
-            "route: BRAP swap preferred; Polymarket Bridge fallback\n"
-            f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
-            f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"
-            f"from_chain_id: {req.get('from_chain_id')}\n"
-            f"from_token_address: {req.get('from_token_address')}\n"
-            f"amount: {req.get('amount')}\n"
-            f"recipient_address: {req.get('recipient_address')}\n"
-            "note: If you already have USDC.e on Polygon, you can trade without running bridge_deposit."
-        )
-        return {"summary": header + base + details, "recipient_mismatch": mismatch}
-
-    if action == "bridge_withdraw":
-        details = (
-            "\n\nCONVERT (USDC.e → token)\n"
-            "route: BRAP swap preferred; Polymarket Bridge fallback\n"
-            f"polymarket_collateral_usdce: {POLYGON_USDC_E_ADDRESS}\n"
-            f"polygon_native_usdc: {POLYGON_USDC_ADDRESS}\n"
-            f"amount_pusd: {req.get('amount_pusd')}\n"
-            f"to_chain_id: {req.get('to_chain_id')}\n"
-            f"to_token_address: {req.get('to_token_address')}\n"
-            f"recipient_addr: {req.get('recipient_addr')}"
-        )
-        return {"summary": header + base + details, "recipient_mismatch": mismatch}
 
     if action == "place_market_order":
         details = (
@@ -275,7 +236,7 @@ async def build_polymarket_execute_preview(
         details = f"\n\nREDEEM\ncondition_id: {req.get('condition_id')}"
         return {"summary": header + base + details, "recipient_mismatch": False}
 
-    return {"summary": header + base, "recipient_mismatch": mismatch}
+    return {"summary": header + base, "recipient_mismatch": False}
 
 
 async def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:

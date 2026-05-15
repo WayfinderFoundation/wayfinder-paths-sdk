@@ -3,7 +3,8 @@
 ## Read vs write surfaces (MCP)
 
 - Use `mcp__wayfinder__polymarket_read` for reads (search/markets/history) and `mcp__wayfinder__polymarket_get_state` for account state (positions/orders/activity/trades).
-- Use `mcp__wayfinder__polymarket_execute` for writes (bridge, approvals, buy/sell, limit/cancel, redeem). It should always require a confirmation in Claude Code.
+- Use `mcp__wayfinder__polymarket_execute` for writes (fund/withdraw deposit wallet, buy/sell, limit/cancel, redeem). It should always require a confirmation in Claude Code.
+- For collateral routing in/out of pUSD, use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) — see `rules/deposits-withdrawals.md`.
 - Use `mcp__wayfinder__polymarket_read(action="quote", ...)` before a sized buy/sell when you need average execution from the current book.
 
 ## `price` is not `quote`
@@ -22,7 +23,7 @@
 
 - The Polymarket relayer (`relayer-v2.polymarket.com`) is a third-party sponsored-tx service. It pays POL gas for **deposit wallet creation, approvals, withdraws, and redemptions** on user-signed batches.
 - If the relayer is degraded / down, those operations block. The adapter has **no escape-hatch path** that bypasses it.
-- Operations that do NOT depend on the relayer: `fund_deposit_wallet` (owner-EOA direct transfer), `bridge_deposit` / `bridge_withdraw` (collateral conversion on owner EOA), and order placement itself (CLOB engine matches/settles).
+- Operations that do NOT depend on the relayer: `fund_deposit_wallet` (owner-EOA direct transfer), BRAP swaps that route into/out of pUSD on the owner EOA, and order placement itself (CLOB engine matches/settles).
 - See `rules/deposit-wallet.md` for the full gas-payer matrix.
 
 ## Trading wallet ≠ owner EOA (V2 deposit wallet)
