@@ -3,7 +3,7 @@
 ## Read vs write surfaces (MCP)
 
 - Use `mcp__wayfinder__polymarket_read` for reads (search/markets/history) and `mcp__wayfinder__polymarket_get_state` for account state (positions/orders/activity/trades).
-- Use `mcp__wayfinder__polymarket_execute` for writes (fund/withdraw deposit wallet, buy/sell, limit/cancel, redeem). It should always require a confirmation in Claude Code.
+- Use the per-action write tools (`polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). All gated by a confirmation prompt in Claude Code.
 - For collateral routing in/out of pUSD, use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) — see `rules/deposits-withdrawals.md`.
 - Use `mcp__wayfinder__polymarket_read(action="quote", ...)` before a sized buy/sell when you need average execution from the current book.
 
@@ -31,7 +31,7 @@
 - Orders execute from a per-user **deposit wallet** (smart contract derived from owner EOA), not the owner EOA itself.
 - Positions, pUSD collateral used for orders, and conditional shares all live on the deposit wallet — querying the owner EOA’s pUSD balance won’t reflect tradeable collateral.
 - Use `adapter.deposit_wallet_address()` to get the trading address. `get_full_user_state(wallet_label=...)` reads from it automatically.
-- Funding the deposit wallet is **explicit** — `polymarket_execute(action="fund_deposit_wallet", amount=...)`. Order placement does **not** auto-fund.
+- Funding the deposit wallet is **explicit** — `polymarket_deposit(amount=...)`. Order placement does **not** auto-fund.
 - See `rules/deposit-wallet.md` for the full pattern.
 
 ## Market is “found” but not tradable

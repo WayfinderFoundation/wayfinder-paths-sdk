@@ -55,62 +55,57 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 
 For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
-- Writes: `mcp__wayfinder__hyperliquid_execute`:
-  - `place_order` (perp and spot, with `is_spot` flag)
-  - `place_outcome_order` (HIP-4 outcome markets — see [outcomes.md](outcomes.md))
-  - `place_trigger_order` (stop-loss / take-profit, perp only — see below)
-  - `cancel_order`
-  - `update_leverage`
-  - `deposit`
-  - `withdraw`
+- Writes — each action is its own tool:
+  - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 (`#<encoding>`)
+  - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 (`#<encoding>`)
+  - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
+  - `mcp__wayfinder__hyperliquid_cancel_order`
+  - `mcp__wayfinder__hyperliquid_update_leverage`
+  - `mcp__wayfinder__hyperliquid_deposit`
+  - `mcp__wayfinder__hyperliquid_withdraw`
 
-### `place_trigger_order` via MCP
+### `hyperliquid_place_trigger_order` via MCP
 
-Place a stop-loss or take-profit on a perp position. Always `reduce_only` — it closes a position, never opens one.
+Place a stop-loss or take-profit on a perp position. Closes a position, never opens one — set `is_buy` to the side that closes (long → `False`, short → `True`).
 
 **Required params:**
-- `coin` or `asset_id` — perp market (e.g. `"ETH"`, `"BTC"`)
+- `asset_name` — perp market (`"ETH-USDC"`, `"xyz:SP500"`)
 - `tpsl` — `"sl"` for stop-loss, `"tp"` for take-profit
-- `is_buy` — direction of the trigger order, **opposite of your position**:
-  - Long position → `is_buy=False` (sell to close)
-  - Short position → `is_buy=True` (buy back to close)
-- `trigger_price` — price at which the order fires (float)
-- `size` — position size in coin units (float)
+- `is_buy` — opposite of your position's side
+- `trigger_price` — fires when mark price touches this
+- `size` — coin units
 
 **Optional params:**
-- `is_market_trigger` (default `True`) — `True` fires a market order on trigger; `False` fires a limit order (requires `price`)
-- `price` — limit price for the triggered order when `is_market_trigger=False`
+- `is_market_trigger` (default `True`) — market on touch; `False` needs `price`
+- `price` — limit price when `is_market_trigger=False`
 
 **Examples:**
 
 ```
 # Stop-loss on a long ETH position: close 0.5 ETH if price drops to 2800
-hyperliquid_execute(
-    action="place_trigger_order",
+hyperliquid_place_trigger_order(
     wallet_label="main",
-    coin="ETH",
+    asset_name="ETH-USDC",
     tpsl="sl",
-    is_buy=False,           # selling to close a long
+    is_buy=False,
     trigger_price=2800.0,
     size=0.5,
 )
 
 # Take-profit on a short BTC position: close 0.01 BTC if price drops to 85000
-hyperliquid_execute(
-    action="place_trigger_order",
+hyperliquid_place_trigger_order(
     wallet_label="main",
-    coin="BTC",
+    asset_name="BTC-USDC",
     tpsl="tp",
-    is_buy=True,            # buying back to close a short
+    is_buy=True,
     trigger_price=85000.0,
     size=0.01,
 )
 
 # Limit stop-loss (trigger at 2800, fill at 2790 to avoid slippage)
-hyperliquid_execute(
-    action="place_trigger_order",
+hyperliquid_place_trigger_order(
     wallet_label="main",
-    coin="ETH",
+    asset_name="ETH-USDC",
     tpsl="sl",
     is_buy=False,
     trigger_price=2800.0,
@@ -130,57 +125,55 @@ Builder attribution is **mandatory** in this repo:
 Set it in `config.json`:
 - `config.json["strategy"]["builder_fee"] = {"b": "0xaA1D89f333857eD78F8434CC4f896A9293EFE65c", "f": 30}`
 
-`mcp__wayfinder__hyperliquid_execute` will:
+The `place_market_order` / `place_limit_order` (and trigger) tools will:
 - attach the builder config to orders
 - auto-approve the builder fee (via `approve_builder_fee`) if needed
 
-### Spot vs perp orders (`is_spot`)
+### Spot vs perp orders
 
-For `action="place_order"`, you **must** set `is_spot` explicitly:
+The place-order tools read the market type from `asset_name` — no `is_spot` flag. HIP-4 outcome markets (`#<encoding>` slugs) dispatch inline through the same `hyperliquid_place_market_order` / `hyperliquid_place_limit_order` tools (integer contracts, no builder fee) — see [outcomes.md](outcomes.md).
 
-**Perp order:**
+**Perp market order:**
 ```
-hyperliquid_execute(
-    action="place_order",
+hyperliquid_place_market_order(
     wallet_label="main",
-    coin="HYPE",
-    is_spot=False,
+    asset_name="HYPE-USDC",
     is_buy=True,
     usd_amount=20,
-    usd_amount_kind="notional"
 )
 ```
 
-**Spot order:**
+**Spot market order:**
 ```
-hyperliquid_execute(
-    action="place_order",
+hyperliquid_place_market_order(
     wallet_label="main",
-    coin="HYPE",
-    is_spot=True,
+    asset_name="HYPE/USDC",
     is_buy=True,
-    usd_amount=11
+    usd_amount=11,
 )
 ```
 
-Note: Spot orders don't require `usd_amount_kind` (no leverage concept).
+**Perp limit order:**
+```
+hyperliquid_place_limit_order(
+    wallet_label="main",
+    asset_name="HYPE-USDC",
+    is_buy=True,
+    price=12.50,
+    size=10,
+)
+```
 
 ### USD sizing (avoid ambiguity)
 
-For perp `action="place_order"`:
 - Use `size` for **coin units** (e.g. ETH, HYPE).
-- Or use `usd_amount` + `usd_amount_kind`:
-  - `usd_amount_kind="notional"` means "position size in USD"
-  - `usd_amount_kind="margin"` means "collateral in USD" (requires `leverage`; notional = margin * leverage)
-
-For spot `action="place_order"`:
-- Use `size` for **coin units**, or
-- Use `usd_amount` directly (always treated as notional)
+- Or use `usd_amount` — always treated as **notional** (position size in USD).
+- For **margin sizing**, compute `notional = margin × leverage` yourself and pass that as `usd_amount`. Set the account leverage via `hyperliquid_update_leverage` first.
 
 ## Claude Code "execution mode" (one-off scripts)
 
-If the user wants **immediate execution** (not a reusable strategy), prefer using the MCP tools:
-- `mcp__wayfinder__hyperliquid_execute` for orders, leverage, and withdrawals
+If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
+- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
 - `mcp__wayfinder__core_execute` for on-chain transfers (send/swap/deposit)
 
 ### `mcp__wayfinder__core_execute` examples

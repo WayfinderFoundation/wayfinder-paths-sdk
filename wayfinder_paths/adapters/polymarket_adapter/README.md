@@ -241,7 +241,7 @@ Notes:
 - If the result has `method="brap_then_wrap"`, the adapter swapped Polygon USDC to USDC.e via BRAP, then wrapped USDC.e into pUSD.
 - If the result has `method="unwrap_then_brap"`, the adapter unwrapped pUSD into USDC.e, then swapped USDC.e to Polygon USDC via BRAP.
 - If the result has `method="polymarket_bridge"`, the flow is asynchronous and uses the Polymarket bridge deposit/withdraw path; use `bridge_status(address=...)` and/or poll balances.
-- `mcp__wayfinder__polymarket_execute(action="bridge_deposit", ...)` defaults `from_token_address` to native Polygon USDC (`0x3c499c...`). If your wallet only has USDC.e (`0x2791...`), override the token address or check balances first.
+- The MCP no longer exposes bridge-style actions; route collateral in/out of pUSD via the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", to_token="polygon_0xC011a7…")`).
 
 ### Option B: Polymarket Bridge conversion (fallback)
 

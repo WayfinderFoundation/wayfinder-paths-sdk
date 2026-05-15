@@ -1407,8 +1407,15 @@ class PolymarketAdapter(BaseAdapter):
         try:
             owner = self._require_wallet_address()
             deposit_wallet = self.deposit_wallet_address()
+            # block_identifier="latest" — the relayer simulates the batch against
+            # latest state. Reading "pending" can overstate the balance when an
+            # incoming pUSD credit is in the mempool but not yet mined, leading
+            # to transfer(owner, balance) reverting and the relayer returning 400.
             balance: int = await get_token_balance(
-                POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, deposit_wallet
+                POLYGON_P_USDC_PROXY_ADDRESS,
+                POLYGON_CHAIN_ID,
+                deposit_wallet,
+                block_identifier="latest",
             )
             if amount_raw is None:
                 amount_raw = balance

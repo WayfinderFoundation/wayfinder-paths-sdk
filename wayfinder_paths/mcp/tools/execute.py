@@ -233,7 +233,7 @@ async def core_execute(
     **Always quote before swapping** — call `onchain_quote_swap` first, confirm route + output
     with the user, then run this. The tool waits for the receipt and returns `status="confirmed"`
     only on `status=1`. For Hyperliquid bridge deposits use
-    `hyperliquid_execute(action="deposit", amount_usdc=...)`.
+    `hyperliquid_deposit(amount_usdc=...)`.
 
     Kinds:
       - `swap`: BRAP cross-chain/cross-DEX swap. Requires `from_token`, `to_token`, `amount`

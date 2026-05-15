@@ -48,23 +48,24 @@ Other reads:
 
 ## Writes
 
-### MCP — `hyperliquid_execute(action="place_outcome_order", ...)`
+### MCP — `hyperliquid_place_market_order` / `_place_limit_order` on a `#<encoding>` market
 
-**Required:** `wallet_label`, `outcome_id` (int), `side` (int), `is_buy` (bool), `size` (int contracts).
+Outcomes use the same market/limit tools as perp/spot — the tool dispatches the outcome path when `asset_name` starts with `#`.
 
-**Optional:** `order_type` (`"market"` default → IOC; `"limit"` → GTC), `price` (float, required for limit), `slippage` (default 0.01), `reduce_only`, `cloid`.
+**Market:** `wallet_label`, `asset_name` (e.g. `"#200"` for outcome_id=20, side=0), `is_buy`, `size` (int contracts) or `usd_amount`.
+**Limit:** `wallet_label`, `asset_name`, `is_buy`, `price`, `size` (no `usd_amount` for limit outcomes).
+
+**Optional:** `slippage` (market only, default 0.01), `reduce_only`, `cloid`.
 
 **Notes:**
-- `size` is **integer contracts** (`szDecimals=0`).
-- HIP-4 is **zero-fee** — no builder approval flow; the dispatcher omits builder for outcome orders.
-- No leverage, no `is_spot`, no `coin` — outcome resolution is purely `outcome_id` + `side`.
+- `size` is **integer contracts** (`szDecimals=0`). The tool rejects floats loudly with a suggested integer.
+- HIP-4 is **zero-fee** — no builder approval flow; the outcome dispatch path omits the builder field.
+- No leverage, no `is_spot` — outcome resolution comes from the `#<encoding>` asset name.
 
 ```python
-hyperliquid_execute(
-    action="place_outcome_order",
+hyperliquid_place_market_order(
     wallet_label="main",
-    outcome_id=20,
-    side=0,             # YES (verify via get_outcome_markets sideSpecs)
+    asset_name="#200",   # outcome_id=20, side=0 (YES — verify via get_outcome_markets sideSpecs)
     is_buy=True,
     size=5,
 )
@@ -72,15 +73,12 @@ hyperliquid_execute(
 
 ### MCP — cancel an outcome order
 
-Use the existing `cancel_order` action with the explicit asset id:
+Use `hyperliquid_cancel_order` with the same `#<encoding>` asset name:
 
 ```python
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import outcome_asset_id
-
-hyperliquid_execute(
-    action="cancel_order",
+hyperliquid_cancel_order(
     wallet_label="main",
-    asset_id=outcome_asset_id(20, 0),
+    asset_name="#200",
     order_id=123456,
 )
 ```

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -15,7 +16,6 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
-from wayfinder_paths.mcp.preview import build_polymarket_execute_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -123,11 +123,39 @@ def _annotate(
         label=label,
         protocol="polymarket",
         action=action,
-        tool="polymarket_execute",
+        tool=f"polymarket_{action}",
         status=status,
         chain_id=chain_id,
         details=details,
     )
+
+
+async def _make_polymarket_adapter(
+    wallet_label: str,
+) -> tuple[PolymarketAdapter, str]:
+    """Resolve signing callbacks + build a wallet-bound PolymarketAdapter."""
+    (
+        (sign_callback, sender),
+        (sign_hash_cb, _),
+        (sign_typed_data_cb, _),
+    ) = await asyncio.gather(
+        get_wallet_signing_callback(wallet_label),
+        get_wallet_sign_hash_callback(wallet_label),
+        get_wallet_sign_typed_data_callback(wallet_label),
+    )
+
+    cfg = dict(CONFIG)
+    cfg["main_wallet"] = {"address": sender}
+    cfg["strategy_wallet"] = {"address": sender}
+
+    adapter = PolymarketAdapter(
+        config=cfg,
+        sign_callback=sign_callback,
+        sign_hash_callback=sign_hash_cb,
+        sign_typed_data_callback=sign_typed_data_cb,
+        wallet_address=sender,
+    )
+    return adapter, sender
 
 
 @catch_errors
@@ -462,327 +490,396 @@ async def polymarket_read(
 
 
 @catch_errors
-async def polymarket_execute(
-    action: Literal[
-        "fund_deposit_wallet",
-        "withdraw_deposit_wallet",
-        "place_market_order",
-        "place_limit_order",
-        "cancel_order",
-        "redeem_positions",
-    ],
+async def polymarket_deposit(
     *,
     wallet_label: str,
-    # deposit-wallet move
+    amount: float,
+) -> dict[str, Any]:
+    """Move pUSD from the owner EOA into the derived Polymarket V2 deposit wallet.
+
+    Required before any trade — Polymarket settles from the deposit wallet, not the EOA.
+    Direct Polygon ERC20 transfer; owner pays POL gas.
+
+    Args:
+        wallet_label: Owner EOA wallet.
+        amount: pUSD to deposit, in human units (e.g. 10.5).
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    throw_if_none("amount is required", amount)
+    amt = throw_if_not_number("amount must be a number", amount)
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
+    try:
+        ok_fund, res = await adapter.fund_deposit_wallet(
+            amount_raw=int(Decimal(str(amt)) * Decimal(1_000_000))
+        )
+        effects = [
+            {
+                "type": "polymarket",
+                "label": "fund_deposit_wallet",
+                "ok": ok_fund,
+                "result": res,
+            }
+        ]
+        status = "confirmed" if ok_fund else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="fund_deposit_wallet",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={"amount": amt},
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "amount": amt,
+                "effects": effects,
+            }
+        )
+    finally:
+        await adapter.close()
+
+
+@catch_errors
+async def polymarket_withdraw(
+    *,
+    wallet_label: str,
     amount: float | None = None,
-    # trade
+) -> dict[str, Any]:
+    """Pull pUSD from the deposit wallet back to the owner EOA via the Polymarket relayer.
+
+    Relayer-mediated batch — the owner EOA pays no gas. Omit `amount` to drain the
+    full deposit-wallet pUSD balance.
+
+    Args:
+        wallet_label: Owner EOA wallet.
+        amount: pUSD to withdraw, in human units. Omit to drain.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    amt = (
+        throw_if_not_number("amount must be a number", amount)
+        if amount is not None
+        else None
+    )
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
+    try:
+        ok_w, res = await adapter.withdraw_deposit_wallet(
+            amount_raw=int(Decimal(str(amt)) * Decimal(1_000_000))
+            if amt is not None
+            else None
+        )
+        effects = [
+            {
+                "type": "polymarket",
+                "label": "withdraw_deposit_wallet",
+                "ok": ok_w,
+                "result": res,
+            }
+        ]
+        status = "confirmed" if ok_w else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="withdraw_deposit_wallet",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={"amount": amt},
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "amount": amt,
+                "effects": effects,
+            }
+        )
+    finally:
+        await adapter.close()
+
+
+@catch_errors
+async def polymarket_place_market_order(
+    *,
+    wallet_label: str,
+    side: Literal["BUY", "SELL"] = "BUY",
     market_slug: str | None = None,
     outcome: str | int = "YES",
     token_id: str | None = None,
     amount_collateral: float | None = None,
     shares: float | None = None,
-    # limit/cancel
-    side: Literal["BUY", "SELL"] = "BUY",
-    price: float | None = None,
-    size: float | None = None,
-    post_only: bool = False,
-    order_id: str | None = None,
-    # market-order slippage cap (percent). None = adapter default (2%).
     max_slippage_pct: float | None = None,
-    # redeem
-    condition_id: str | None = None,
 ) -> dict[str, Any]:
-    """Execute Polymarket trades on the owner EOA / deposit wallet.
+    """Place a Polymarket market order (FOK limit at a slippage-derived cap).
 
-    Polymarket V2 settles on Polygon in pUSD (`0xC011a7...`). This tool handles the
-    deposit-wallet + CLOB surface. For collateral routing in/out of pUSD, use the BRAP
-    swap MCP tools (see "Routing collateral" below).
-
-    Actions:
-      - `fund_deposit_wallet`: move `amount` pUSD from the owner EOA into the derived deposit
-        wallet (Polygon transfer). Required before trading.
-      - `withdraw_deposit_wallet`: pull pUSD from the deposit wallet back to the owner EOA
-        via the relayer. Omit `amount` to withdraw the full balance.
-      - `place_market_order`: market order. Specify `market_slug`+`outcome` OR `token_id`, with
-        `side="BUY"|"SELL"`. BUY needs `amount_collateral` (pUSD); SELL needs `shares`. Adapter
-        quotes the book and signs an FOK limit at `worst_price * (1 ± max_slippage_pct/100)`
-        (default 2%); order is killed if the book moves past the cap.
-      - `place_limit_order`: requires `token_id`, `side`, `price`, `size`. `post_only` = maker-only.
-      - `cancel_order`: by `order_id`.
-      - `redeem_positions`: claim winnings on a resolved market by `condition_id`. USDC.e
-        proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver through
-        the deposit wallet.
-
-    Routing collateral (in/out of pUSD): use `onchain_quote_swap` then
-    `core_execute(kind="swap", ...)` with `to_token` or `from_token` set to pUSD
-    (`polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`). BRAP picks the right solver
-    (`polymarket_bridge` for USDC.e ↔ pUSD 1:1 wraps; standard DEX routes for everything else)
-    and handles cross-chain. Works for any source token/chain; no Polymarket-specific call needed.
+    Provide `market_slug`+`outcome` OR `token_id`. BUY needs `amount_collateral` (pUSD);
+    SELL needs `shares`. The adapter quotes the book and signs an FOK limit at
+    `worst_price * (1 ± max_slippage_pct/100)` (default 2%) — order is killed if the
+    book moves past the cap.
 
     Args:
-        wallet_label: Required.
-        outcome: "YES"/"NO" or numeric index (default "YES").
-        side: "BUY" or "SELL" for limit orders.
-        Other args: see action-specific descriptions above.
+        wallet_label: Owner EOA wallet (deposit wallet must already be funded).
+        side: `"BUY"` or `"SELL"`.
+        market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
+        outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
+        token_id: Direct CLOB token id; alternative to market_slug + outcome.
+        amount_collateral: pUSD to spend (required for BUY).
+        shares: Shares to sell (required for SELL).
+        max_slippage_pct: Slippage cap as a percent (e.g. 2.0). None = adapter default (2%).
     """
-    sign_callback, sender = await get_wallet_signing_callback(wallet_label or "")
-    sign_hash_cb, _ = await get_wallet_sign_hash_callback(wallet_label or "")
-    sign_typed_data_cb, _ = await get_wallet_sign_typed_data_callback(
-        wallet_label or ""
-    )
-    want = wallet_label
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    if side == "BUY":
+        throw_if_none("amount_collateral is required for BUY", amount_collateral)
+    else:
+        throw_if_none("shares is required for SELL", shares)
 
-    tool_input = {
-        "action": action,
-        "wallet_label": want,
-        "amount": amount,
-        "market_slug": market_slug,
-        "outcome": outcome,
-        "token_id": token_id,
-        "amount_collateral": amount_collateral,
-        "shares": shares,
-        "side": side,
-        "price": price,
-        "size": size,
-        "post_only": post_only,
-        "order_id": order_id,
-        "max_slippage_pct": max_slippage_pct,
-        "condition_id": condition_id,
-    }
-    preview_obj = await build_polymarket_execute_preview(tool_input)
-    preview_text = str(preview_obj.get("summary") or "").strip()
-    if preview_obj.get("recipient_mismatch"):
-        preview_text = "⚠ RECIPIENT DIFFERS FROM SENDER\n" + preview_text
-
-    cfg = dict(CONFIG)
-    cfg["main_wallet"] = {"address": sender}
-    cfg["strategy_wallet"] = {"address": sender}
-
-    effects: list[dict[str, Any]] = []
-    adapter = PolymarketAdapter(
-        config=cfg,
-        sign_callback=sign_callback,
-        sign_hash_callback=sign_hash_cb,
-        sign_typed_data_callback=sign_typed_data_cb,
-        wallet_address=sender,
-    )
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-
-        def _done(status: str) -> dict[str, Any]:
-            return ok(
-                {
-                    "status": status,
-                    "action": action,
-                    "wallet_label": want,
-                    "address": sender,
-                    "preview": preview_text,
-                    "effects": effects,
-                }
+        if market_slug:
+            if side == "BUY":
+                ok_trade, res = await adapter.place_prediction(
+                    market_slug=str(market_slug),
+                    outcome=outcome,
+                    amount_collateral=float(amount_collateral),
+                    max_slippage_pct=max_slippage_pct,
+                )
+            else:
+                ok_trade, res = await adapter.cash_out_prediction(
+                    market_slug=str(market_slug),
+                    outcome=outcome,
+                    shares=float(shares),
+                    max_slippage_pct=max_slippage_pct,
+                )
+        else:
+            tid = throw_if_empty_str("token_id or market_slug is required", token_id)
+            ok_trade, res = await adapter.place_market_order(
+                token_id=tid,
+                side=side,
+                amount=float(amount_collateral if side == "BUY" else shares),
+                max_slippage_pct=max_slippage_pct,
             )
+        effects = [
+            {
+                "type": "polymarket",
+                "label": "place_market_order",
+                "ok": ok_trade,
+                "result": res,
+            }
+        ]
+        status = "confirmed" if ok_trade else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="place_market_order",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={
+                "market_slug": str(market_slug) if market_slug else None,
+                "token_id": str(token_id) if token_id else None,
+                "outcome": str(outcome),
+                "side": side,
+                "amount_collateral": float(amount_collateral)
+                if amount_collateral is not None
+                else None,
+                "shares": float(shares) if shares is not None else None,
+                "max_slippage_pct": float(max_slippage_pct)
+                if max_slippage_pct is not None
+                else None,
+            },
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "market_slug": str(market_slug) if market_slug else None,
+                "token_id": str(token_id) if token_id else None,
+                "outcome": str(outcome),
+                "side": side,
+                "amount_collateral": float(amount_collateral)
+                if amount_collateral is not None
+                else None,
+                "shares": float(shares) if shares is not None else None,
+                "max_slippage_pct": float(max_slippage_pct)
+                if max_slippage_pct is not None
+                else None,
+                "effects": effects,
+            }
+        )
+    finally:
+        await adapter.close()
 
-        match action:
-            case "fund_deposit_wallet":
-                throw_if_none("amount is required for fund_deposit_wallet", amount)
-                ok_fund, res = await adapter.fund_deposit_wallet(
-                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
-                )
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "fund_deposit_wallet",
-                        "ok": ok_fund,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_fund else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="fund_deposit_wallet",
-                    status=status,
-                    chain_id=POLYGON_CHAIN_ID,
-                    details={"amount": float(amount)},
-                )
-                return _done(status)
 
-            case "withdraw_deposit_wallet":
-                ok_w, res = await adapter.withdraw_deposit_wallet(
-                    amount_raw=int(Decimal(str(amount)) * Decimal(1_000_000))
-                    if amount is not None
-                    else None
-                )
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "withdraw_deposit_wallet",
-                        "ok": ok_w,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_w else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="withdraw_deposit_wallet",
-                    status=status,
-                    chain_id=POLYGON_CHAIN_ID,
-                    details={"amount": float(amount) if amount is not None else None},
-                )
-                return _done(status)
+@catch_errors
+async def polymarket_place_limit_order(
+    *,
+    wallet_label: str,
+    token_id: str,
+    side: Literal["BUY", "SELL"],
+    price: float,
+    size: float,
+    post_only: bool = False,
+) -> dict[str, Any]:
+    """Place a Polymarket limit order on a specific CLOB token id.
 
-            case "place_market_order":
-                if side == "BUY":
-                    throw_if_none(
-                        "amount_collateral is required for BUY", amount_collateral
-                    )
-                else:
-                    throw_if_none("shares is required for SELL", shares)
-                if market_slug:
-                    if side == "BUY":
-                        ok_trade, res = await adapter.place_prediction(
-                            market_slug=str(market_slug),
-                            outcome=outcome,
-                            amount_collateral=float(amount_collateral),
-                            max_slippage_pct=max_slippage_pct,
-                        )
-                    else:
-                        ok_trade, res = await adapter.cash_out_prediction(
-                            market_slug=str(market_slug),
-                            outcome=outcome,
-                            shares=float(shares),
-                            max_slippage_pct=max_slippage_pct,
-                        )
-                else:
-                    tid = throw_if_empty_str(
-                        "token_id or market_slug is required", token_id
-                    )
-                    ok_trade, res = await adapter.place_market_order(
-                        token_id=tid,
-                        side=side,
-                        amount=float(amount_collateral if side == "BUY" else shares),
-                        max_slippage_pct=max_slippage_pct,
-                    )
+    `post_only=True` enforces maker-only — the order is rejected if it would cross.
 
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "place_market_order",
-                        "ok": ok_trade,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_trade else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="place_market_order",
-                    status=status,
-                    chain_id=int(POLYGON_CHAIN_ID),
-                    details={
-                        "market_slug": str(market_slug) if market_slug else None,
-                        "token_id": str(token_id) if token_id else None,
-                        "outcome": str(outcome),
-                        "side": side,
-                        "amount_collateral": float(amount_collateral)
-                        if amount_collateral is not None
-                        else None,
-                        "shares": float(shares) if shares is not None else None,
-                        "max_slippage_pct": float(max_slippage_pct)
-                        if max_slippage_pct is not None
-                        else None,
-                    },
-                )
-                return _done(status)
+    Args:
+        wallet_label: Owner EOA wallet (deposit wallet must already be funded).
+        token_id: CLOB token id (from market.yesTokenId / .noTokenId).
+        side: `"BUY"` or `"SELL"`.
+        price: Limit price in [0, 1] (probability).
+        size: Shares.
+        post_only: Reject if order would cross the book.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    tid = throw_if_empty_str("token_id is required", token_id)
+    throw_if_none("price is required", price)
+    throw_if_none("size is required", size)
 
-            case "place_limit_order":
-                tid = throw_if_empty_str(
-                    "token_id is required for place_limit_order", token_id
-                )
-                throw_if_none("price is required for place_limit_order", price)
-                throw_if_none("size is required for place_limit_order", size)
-                ok_lo, res = await adapter.place_limit_order(
-                    token_id=tid,
-                    side=side,
-                    price=float(price),
-                    size=float(size),
-                    post_only=bool(post_only),
-                )
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "place_limit_order",
-                        "ok": ok_lo,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_lo else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="place_limit_order",
-                    status=status,
-                    chain_id=int(POLYGON_CHAIN_ID),
-                    details={
-                        "token_id": tid,
-                        "side": side,
-                        "price": float(price),
-                        "size": float(size),
-                        "post_only": bool(post_only),
-                    },
-                )
-                return _done(status)
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
+    try:
+        ok_lo, res = await adapter.place_limit_order(
+            token_id=tid,
+            side=side,
+            price=float(price),
+            size=float(size),
+            post_only=bool(post_only),
+        )
+        effects = [
+            {
+                "type": "polymarket",
+                "label": "place_limit_order",
+                "ok": ok_lo,
+                "result": res,
+            }
+        ]
+        status = "confirmed" if ok_lo else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="place_limit_order",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={
+                "token_id": tid,
+                "side": side,
+                "price": float(price),
+                "size": float(size),
+                "post_only": bool(post_only),
+            },
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "token_id": tid,
+                "side": side,
+                "price": float(price),
+                "size": float(size),
+                "post_only": bool(post_only),
+                "effects": effects,
+            }
+        )
+    finally:
+        await adapter.close()
 
-            case "cancel_order":
-                oid = throw_if_empty_str(
-                    "order_id is required for cancel_order", order_id
-                )
-                ok_c, res = await adapter.cancel_order(order_id=oid)
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "cancel_order",
-                        "ok": ok_c,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_c else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="cancel_order",
-                    status=status,
-                    chain_id=int(POLYGON_CHAIN_ID),
-                    details={"order_id": oid},
-                )
-                return _done(status)
 
-            case "redeem_positions":
-                cid = throw_if_empty_str(
-                    "condition_id is required for redeem_positions", condition_id
-                )
-                ok_r, res = await adapter.redeem_positions(condition_id=cid)
-                effects.append(
-                    {
-                        "type": "polymarket",
-                        "label": "redeem_positions",
-                        "ok": ok_r,
-                        "result": res,
-                    }
-                )
-                status = "confirmed" if ok_r else "failed"
-                _annotate(
-                    address=sender,
-                    label=want,
-                    action="redeem_positions",
-                    status=status,
-                    chain_id=int(POLYGON_CHAIN_ID),
-                    details={"condition_id": cid},
-                )
-                return _done(status)
+@catch_errors
+async def polymarket_cancel_order(
+    *,
+    wallet_label: str,
+    order_id: str,
+) -> dict[str, Any]:
+    """Cancel a resting Polymarket order by id.
 
-            case _:
-                return err(
-                    "invalid_request", f"Unknown polymarket_execute action: {action}"
-                )
+    Args:
+        wallet_label: Owner EOA wallet that placed the order.
+        order_id: CLOB order id returned at placement.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    oid = throw_if_empty_str("order_id is required", order_id)
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
+    try:
+        ok_c, res = await adapter.cancel_order(order_id=oid)
+        effects = [
+            {
+                "type": "polymarket",
+                "label": "cancel_order",
+                "ok": ok_c,
+                "result": res,
+            }
+        ]
+        status = "confirmed" if ok_c else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="cancel_order",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={"order_id": oid},
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "order_id": oid,
+                "effects": effects,
+            }
+        )
+    finally:
+        await adapter.close()
+
+
+@catch_errors
+async def polymarket_redeem_positions(
+    *,
+    wallet_label: str,
+    condition_id: str,
+) -> dict[str, Any]:
+    """Claim winnings on a resolved Polymarket market.
+
+    Any USDC.e proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver
+    inside the deposit wallet, so the agent ends up holding pUSD.
+
+    Args:
+        wallet_label: Owner EOA wallet that held the position.
+        condition_id: Market's CTF condition id (from Gamma).
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    cid = throw_if_empty_str("condition_id is required", condition_id)
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
+    try:
+        ok_r, res = await adapter.redeem_positions(condition_id=cid)
+        effects = [
+            {
+                "type": "polymarket",
+                "label": "redeem_positions",
+                "ok": ok_r,
+                "result": res,
+            }
+        ]
+        status = "confirmed" if ok_r else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="redeem_positions",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={"condition_id": cid},
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "condition_id": cid,
+                "effects": effects,
+            }
+        )
     finally:
         await adapter.close()

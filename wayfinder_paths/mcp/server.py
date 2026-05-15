@@ -64,10 +64,16 @@ from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_search,
 )
 from wayfinder_paths.mcp.tools.hyperliquid import (
-    hyperliquid_execute,
+    hyperliquid_cancel_order,
+    hyperliquid_deposit,
     hyperliquid_get_state,
+    hyperliquid_place_limit_order,
+    hyperliquid_place_market_order,
+    hyperliquid_place_trigger_order,
     hyperliquid_search_market,
     hyperliquid_search_mid_prices,
+    hyperliquid_update_leverage,
+    hyperliquid_withdraw,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_workspace_chart_annotation,
@@ -82,9 +88,14 @@ from wayfinder_paths.mcp.tools.instance_state import (
 )
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import (
-    polymarket_execute,
+    polymarket_cancel_order,
+    polymarket_deposit,
     polymarket_get_state,
+    polymarket_place_limit_order,
+    polymarket_place_market_order,
     polymarket_read,
+    polymarket_redeem_positions,
+    polymarket_withdraw,
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.research_gateway import (
@@ -148,7 +159,13 @@ mcp.tool()(research_goldsky_schema)
 
 # ─── hyperliquid_* ─────────────────────────────────────────────────────
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
-mcp.tool()(hyperliquid_execute)
+mcp.tool()(hyperliquid_place_market_order)
+mcp.tool()(hyperliquid_place_limit_order)
+mcp.tool()(hyperliquid_place_trigger_order)
+mcp.tool()(hyperliquid_cancel_order)
+mcp.tool()(hyperliquid_update_leverage)
+mcp.tool()(hyperliquid_deposit)
+mcp.tool()(hyperliquid_withdraw)
 mcp.tool()(hyperliquid_get_state)
 mcp.tool()(hyperliquid_search_market)
 mcp.tool()(hyperliquid_search_mid_prices)
@@ -163,7 +180,12 @@ mcp.tool()(onchain_quote_swap)
 # ─── polymarket_* ──────────────────────────────────────────────────────
 mcp.tool()(polymarket_read)
 mcp.tool()(polymarket_get_state)
-mcp.tool()(polymarket_execute)
+mcp.tool()(polymarket_deposit)
+mcp.tool()(polymarket_withdraw)
+mcp.tool()(polymarket_place_market_order)
+mcp.tool()(polymarket_place_limit_order)
+mcp.tool()(polymarket_cancel_order)
+mcp.tool()(polymarket_redeem_positions)
 
 # ─── contracts_* ───────────────────────────────────────────────────────
 mcp.tool()(contracts_list)
