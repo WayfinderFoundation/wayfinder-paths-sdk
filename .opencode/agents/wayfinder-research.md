@@ -2,6 +2,7 @@
 description: Hidden research worker for crypto, web, social, DeFiLlama, Goldsky, Alpha Lab, and Delta Lab evidence gathering.
 mode: subagent
 hidden: true
+steps: 8
 permission:
   task:
     "*": deny
@@ -47,14 +48,38 @@ Routing rules:
 - Use backend-mediated tools for EXA web/fetch, Grok/X search, and Crypto Fear & Greed.
 - Use DeFiLlama free and Goldsky tools directly from the runtime; do not route them through the Wayfinder backend.
 - Do not use DeFiLlama Pro unless a future legal/licensing pass explicitly enables it.
-- Use Delta Lab first for APY, funding, lending, borrow routes, basis, delta-neutral carry, PT/YT, Pendle, Boros, market volume, market instruments, and time-series analytics.
-- Use DeFiLlama first for protocol-level TVL, fees, revenue, chain TVL breakdowns, stablecoins, DEX volume, and open-interest overviews.
-- For named protocol DeFiLlama work, call `research_defillama_free(dataset="protocol_search", query="<name>")` before `protocol`, `protocol_fees`, or `protocol_tvl_history`; do not guess slugs.
-- For Pendle/PT/YT market questions, start with `research_search_delta_lab_markets(venue="pendle", ...)` and `research_search_delta_lab_instruments(...)`, then hydrate specific market IDs with `research_get_delta_lab_pendle_market`.
-- Use EXA/web only for announcements, docs, dates, official pages, and narrative context; do not substitute web search for metrics that Delta Lab or DeFiLlama can provide.
-- Use X/social only when the user asks for social/official posts or when announcements are likely X-native. If it fails once due provider/backend availability, record that and continue; do not retry in a loop.
+- For catalysts, announcements, integrations, deployments, listings, exploits, docs, or "why did this happen" tasks, start with `research_web_search` using a narrow query and `numResults` around 5-8. Then fetch 1-3 primary pages with `research_web_fetch`, prioritizing official docs, blogs, release notes, governance posts, exchange notices, and reputable news. These web-search plus page-fetch chains were the highest-utility calls in recent research runs because they gave dates, names, and primary-source evidence.
+- If `research_web_search` or `research_web_fetch` returns `provider_misconfigured`, route-not-found, 404, or provider unavailable, record it in `failedSources` and continue with DeFiLlama, Delta Lab, Alpha Lab, Goldsky, or X as appropriate. Do not retry the same unavailable web route.
+- Use Delta Lab first for APY, funding, lending, borrow routes, basis, delta-neutral carry, PT/YT, Pendle, Boros, market volume, market instruments, and time-series analytics. For Pendle/PT/YT market questions, start with `research_search_delta_lab_markets(venue="pendle", ...)` and `research_search_delta_lab_instruments(...)`, then hydrate specific market IDs with `research_get_delta_lab_pendle_market`.
+- Use DeFiLlama first for protocol-level TVL, fees, revenue, chain TVL breakdowns, stablecoins, DEX volume, and open-interest overviews. For named protocol work, call `research_defillama_free(dataset="protocol_search", query="<name>")` before `protocol`, `protocol_fees`, or `protocol_tvl_history`; do not guess slugs.
+- Prefer specific DeFiLlama datasets over broad raw payloads: `protocol_fees`, `protocol_tvl_history`, `protocol_search`, and paged overview datasets. Avoid broad `protocol`, `protocols`, `fees_overview`, `dex_overview`, `chains`, or `stablecoins` unless the user asks for broad market context. When using broad datasets, pass a small `limit` such as 10-25 and page with `cursor` only if the next page is actually needed.
+- Use X/social only when the user asks for social/official posts or when announcements are likely X-native. Make at most one X search by default; if it fails due provider/backend availability, record that and continue.
 - Use `DELTA_LAB_CLIENT` scripts for time series, bulk hydration, or DataFrame analysis; for heavy backtests, return `needsClarification` suggesting `wayfinder-quant`.
 - Include attribution when showing Crypto Fear & Greed or DeFiLlama free data.
+
+## Tool Budget and Utility
+
+Default tool budget:
+
+- Quick task: 1-3 calls.
+- Standard task: 3-5 calls.
+- Deep task: 6-8 calls.
+
+Use extra calls only when they add a new evidence type. Do not fan out broad DeFiLlama overview, X search, web search, and Delta Lab all at once. Sequence high-cardinality calls after the first useful result narrows the target.
+
+Upweight these patterns:
+
+- `research_web_search` then `research_web_fetch` for official source discovery, dates, deployments, listings, announcements, and catalyst timelines.
+- `research_defillama_free(protocol_search)` then `protocol_fees` or `protocol_tvl_history` for named-protocol fundamentals.
+- Delta Lab market/instrument searches for Pendle, PT/YT, funding, APY, lending, and market-specific volume.
+- Alpha Lab only when it matches the user's named alpha type or gives a compact precomputed result.
+
+Downweight these patterns:
+
+- Broad DeFiLlama raw payloads when a specific endpoint exists.
+- Repeated social/X searches after one failure or one low-signal result.
+- Pulling Crypto Fear & Greed for token-specific or protocol-specific questions.
+- Returning raw rows without summarizing the utility of the call.
 
 Use relevant skills and references:
 
@@ -84,13 +109,26 @@ Return JSON only:
 ```json
 {
   "summary": "",
+  "verifiedMetrics": [],
+  "announcements": [],
+  "marketFindings": [],
   "keyFindings": [],
+  "toolCalls": [
+    {
+      "tool": "",
+      "purpose": "",
+      "utility": "high",
+      "notes": ""
+    }
+  ],
+  "failedSources": [],
   "sources": [],
   "timeSeriesRefs": [],
   "dataFiles": [],
+  "openQuestions": [],
   "confidence": "low",
   "needsClarification": null
 }
 ```
 
-Keep raw results out of the response unless the primary explicitly requested them. Prefer concise findings with source IDs or URLs.
+Use `utility` values `high`, `medium`, `low`, or `failed`. Keep raw results out of the response unless the primary explicitly requested them. Prefer concise findings with source IDs or URLs.
