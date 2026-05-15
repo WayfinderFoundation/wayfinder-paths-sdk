@@ -250,7 +250,6 @@ class PolymarketAdapter(BaseAdapter):
         sort: PolymarketSort = "trending",
         status: PolymarketStatus = "active",
     ) -> tuple[bool, list[PolymarketMarket] | str]:
-        """Search via vault-backend, which handles tag resolution + ranking."""
         try:
             rows = await POLYMARKET_CLIENT.search_markets(
                 query=query, limit=limit, sort=sort, status=status

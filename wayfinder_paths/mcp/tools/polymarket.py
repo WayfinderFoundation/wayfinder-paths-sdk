@@ -4,6 +4,10 @@ from decimal import Decimal
 from typing import Any, Literal
 
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
+from wayfinder_paths.core.clients.PolymarketClient import (
+    PolymarketSort,
+    PolymarketStatus,
+)
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID
 from wayfinder_paths.core.utils.wallets import (
@@ -225,8 +229,8 @@ async def polymarket_read(
     # search/trending
     query: str | None = None,
     limit: int = 10,
-    sort: Literal["trending", "volume24h", "liquidity", "fresh"] = "trending",
-    status: Literal["active", "closed", "all"] = "active",
+    sort: PolymarketSort = "trending",
+    status: PolymarketStatus = "active",
     offset: int = 0,
     # market/event
     market_slug: str | None = None,

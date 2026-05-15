@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, Required, TypedDict
 
-from loguru import logger
-
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
 
@@ -45,13 +43,12 @@ class PolymarketClient(WayfinderClient):
         params: dict[str, Any] = {"limit": limit, "sort": sort, "status": status}
         if query:
             params["query"] = query
-        response = await self._authed_request("GET", url, params=params, headers={})
+        response = await self._authed_request("GET", url, params=params)
         data = response.json()
         if not isinstance(data, list):
-            logger.warning(
+            raise ValueError(
                 f"Unexpected polymarket markets response: {type(data).__name__}"
             )
-            return []
         return data
 
 
