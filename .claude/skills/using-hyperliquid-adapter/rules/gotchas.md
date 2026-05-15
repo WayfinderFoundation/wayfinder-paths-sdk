@@ -13,14 +13,12 @@ Constants available in `wayfinder_paths.core.constants.hyperliquid`:
 - `MIN_DEPOSIT_USD = 5.0`
 - `MIN_ORDER_USD_NOTIONAL = 10.0`
 
-## HIP-3 collateral via UnifiedAccount
+## UnifiedAccount mode is the default
 
-Trading on HIP-3 dexes (xyz, flx, vntl, hyna, km, etc.) requires **UnifiedAccount mode** enabled on the account. Without it, orders on non-default dexes fail with "Insufficient margin" or similar errors.
+All accounts touched by this adapter run in **UnifiedAccount mode**, where spot tokens and perp margin share collateral. The adapter auto-enables this before any order (`place_market_order`, `place_limit_order`, `place_tp_sl_order`, `place_outcome_order`) via `ensure_unified_account(address)` — one-time on-chain action per account, stays enabled afterward. As a consequence:
 
-- The adapter auto-enables this before `place_market_order`, `place_limit_order`, `place_tp_sl_order`, and `place_outcome_order` via `ensure_unified_account(address)`.
-- One-time on-chain action per account — once enabled, it stays enabled.
-- HIP-3 asset IDs use offsets: first builder dex starts at 110000, then 120000, 130000, etc.
-- HIP-3 coin names are prefixed: `xyz:NVDA`, `vntl:SPACEX`, `hyna:BTC`, etc.
+- Deposits land in the unified balance; no spot ↔ perp transfers needed.
+- HIP-3 dexes (xyz, flx, vntl, hyna, km, …) are unlocked. HIP-3 asset IDs use offsets (first builder dex starts at 110000, then 120000, 130000, …) and coin names are prefixed (`xyz:NVDA`, `vntl:SPACEX`, `hyna:BTC`, …).
 
 ## Asset ID conventions
 
@@ -50,8 +48,6 @@ Spot "index" is usually: `spot_index = spot_asset_id - 10000`.
 
 - `usd_amount` is always treated as notional (no `usd_amount_kind` required)
 - `leverage` and `reduce_only` are ignored for spot
-
-**Spot balance location:** Spot tokens live in your spot wallet, separate from perp margin.
 
 ## Spot L2 naming quirks
 
