@@ -149,27 +149,6 @@ async def build_hyperliquid_place_limit_order_preview(
     return {"summary": header + base + details}
 
 
-async def build_hyperliquid_place_outcome_order_preview(
-    tool_input: dict[str, Any],
-) -> dict[str, Any]:
-    header, base = await _hl_preview_base(
-        tool_input, "HYPERLIQUID_PLACE_OUTCOME_ORDER\n"
-    )
-    details = (
-        f"\n\nOUTCOME ORDER ({tool_input.get('order_type', 'market')})\n"
-        f"is_buy: {tool_input.get('is_buy')}\n"
-        f"size: {tool_input.get('size')}  (integer contracts)\n"
-        f"usd_amount: {tool_input.get('usd_amount')}\n"
-        f"price: {tool_input.get('price')}\n"
-        f"slippage: {tool_input.get('slippage')}\n"
-        f"reduce_only: {tool_input.get('reduce_only')}\n"
-        f"cloid: {tool_input.get('cloid')}\n"
-        "settle_token: USDH (token 360)\n"
-        "fees: zero (no builder)"
-    )
-    return {"summary": header + base + details}
-
-
 async def build_hyperliquid_place_trigger_order_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:

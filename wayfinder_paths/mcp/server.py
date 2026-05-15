@@ -69,7 +69,6 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_state,
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
-    hyperliquid_place_outcome_order,
     hyperliquid_place_trigger_order,
     hyperliquid_search_market,
     hyperliquid_search_mid_prices,
@@ -157,7 +156,6 @@ mcp.tool()(research_goldsky_schema)
 # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
 mcp.tool()(hyperliquid_place_market_order)
 mcp.tool()(hyperliquid_place_limit_order)
-mcp.tool()(hyperliquid_place_outcome_order)
 mcp.tool()(hyperliquid_place_trigger_order)
 mcp.tool()(hyperliquid_cancel_order)
 mcp.tool()(hyperliquid_update_leverage)

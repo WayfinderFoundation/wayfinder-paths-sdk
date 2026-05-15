@@ -56,9 +56,8 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 For interactive use in Claude Code, this repo exposes a small MCP surface:
 - Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
 - Writes — each action is its own tool:
-  - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot
-  - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot
-  - `mcp__wayfinder__hyperliquid_place_outcome_order` — HIP-4 outcome markets (`#<encoding>` slugs), see [outcomes.md](outcomes.md)
+  - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 (`#<encoding>`)
+  - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 (`#<encoding>`)
   - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
   - `mcp__wayfinder__hyperliquid_cancel_order`
   - `mcp__wayfinder__hyperliquid_update_leverage`
@@ -132,7 +131,7 @@ The `place_market_order` / `place_limit_order` (and trigger) tools will:
 
 ### Spot vs perp orders
 
-The place-order tools read the market type from `asset_name` — no `is_spot` flag. HIP-4 outcome markets (`#<encoding>` slugs) route to `hyperliquid_place_outcome_order` — see [outcomes.md](outcomes.md).
+The place-order tools read the market type from `asset_name` — no `is_spot` flag. HIP-4 outcome markets (`#<encoding>` slugs) dispatch inline through the same `hyperliquid_place_market_order` / `hyperliquid_place_limit_order` tools (integer contracts, no builder fee) — see [outcomes.md](outcomes.md).
 
 **Perp market order:**
 ```
@@ -174,7 +173,7 @@ hyperliquid_place_limit_order(
 ## Claude Code "execution mode" (one-off scripts)
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
-- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_outcome_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
+- `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
 - `mcp__wayfinder__core_execute` for on-chain transfers (send/swap/deposit)
 
 ### `mcp__wayfinder__core_execute` examples

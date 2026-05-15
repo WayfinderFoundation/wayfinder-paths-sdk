@@ -19,7 +19,6 @@ from wayfinder_paths.mcp.preview import (
     build_hyperliquid_deposit_preview,
     build_hyperliquid_place_limit_order_preview,
     build_hyperliquid_place_market_order_preview,
-    build_hyperliquid_place_outcome_order_preview,
     build_hyperliquid_place_trigger_order_preview,
     build_hyperliquid_update_leverage_preview,
     build_hyperliquid_withdraw_preview,
@@ -30,7 +29,6 @@ _PreviewBuilder = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 _BUILDERS: dict[str, _PreviewBuilder] = {
     "hyperliquid_place_market_order": build_hyperliquid_place_market_order_preview,
     "hyperliquid_place_limit_order": build_hyperliquid_place_limit_order_preview,
-    "hyperliquid_place_outcome_order": build_hyperliquid_place_outcome_order_preview,
     "hyperliquid_place_trigger_order": build_hyperliquid_place_trigger_order_preview,
     "hyperliquid_cancel_order": build_hyperliquid_cancel_order_preview,
     "hyperliquid_update_leverage": build_hyperliquid_update_leverage_preview,
