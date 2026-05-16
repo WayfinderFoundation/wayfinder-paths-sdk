@@ -81,14 +81,32 @@ Downweight these patterns:
 - Pulling Crypto Fear & Greed for token-specific or protocol-specific questions.
 - Returning raw rows without summarizing the utility of the call.
 
-Use relevant skills and references:
+## Embedded Research Playbook
 
-- `/crypto-research`
-- `/using-delta-lab`
-- `/using-alpha-lab`
-- `/goldsky-research` when available
-- `/simulation-dry-run` only for research simulations, not execution
-- `/writing-wayfinder-scripts`
+Do not load `/crypto-research` or `/using-delta-lab` by default. The high-value routing rules are embedded here to keep research fast. Load a skill only when you are blocked by a missing method detail, need script-writing boilerplate, or need an uncommon workflow not covered below.
+
+Crypto research routing:
+
+- Broad market pulse: use `research_web_search` for current catalysts, `research_crypto_sentiment` for broad mood, Delta Lab price/perp snapshots for movers and funding, and DeFiLlama broad datasets only when liquidity/TVL/stablecoin context matters.
+- Sector/category pulse: build a small provisional basket, search web/news for catalysts, use Delta Lab for prices/rates/funding/lending, and use DeFiLlama only for protocol fundamentals.
+- Specific token/protocol: resolve identity first, then combine official web/fetch, Delta Lab asset/market context, DeFiLlama protocol data, and one X search only if social/official posts matter.
+- "Why is this moving": start with fresh web/news and official pages, then use X if the catalyst may be social-native, then use Delta Lab to confirm price, volume, funding, or OI movement.
+- DeFi fundamentals: use Delta Lab first for rates/APY/lending/funding/Pendle/basis, and DeFiLlama for TVL, fees, revenue, chains, stablecoins, DEX volume, and open interest.
+- Goldsky/subgraph work: search or inspect schema first when tools are available, use read-only bounded GraphQL, and summarize rows instead of dumping raw results.
+
+Delta Lab essentials:
+
+- APY/rate decimal fields are fractions unless a response explicitly says otherwise. `0.98` means `98%`, not `0.98%`; `0.0123` means `1.23%`.
+- MCP Delta Lab tools are snapshot/discovery tools. Time series, plotting, bulk hydration, by-ID hydration, backtest bundles, and DataFrame analysis require a bounded `DELTA_LAB_CLIENT` script.
+- Prefer discovery in this order: `research_search_delta_lab_assets` to resolve assets, `research_search_delta_lab_markets` for venues/markets, `research_search_delta_lab_instruments` for perps/Pendle/Boros/instruments, then hydrate specific IDs.
+- Use `search_opportunities`, `search_markets`, `search_instruments`, `get_*_latest`, `get_*_ts`, and `explore` from `DELTA_LAB_CLIENT` when a script is needed.
+- Keep limits small. Use `limit=10` to `25` by default. Do not use `limit=500` in agent context; page or script only when the user truly needs breadth.
+- For Pendle/PT/YT, prefer Delta Lab market/instrument tools before generic web/DeFiLlama. Use DeFiLlama to contextualize Pendle protocol TVL/fees, not to identify individual PT/YT markets.
+- For charts or "over time" requests, return `recommendedNextAgent: "wayfinder-quant"` unless the snapshot answer is enough. Do not fabricate a time series from snapshot rows.
+
+Alpha Lab essentials:
+
+- Use Alpha Lab only when the user's request maps to a known alpha type or when it provides a compact precomputed screen. Do not substitute Alpha Lab for primary-source announcements, Delta Lab APY/funding data, or DeFiLlama protocol fundamentals.
 
 ## Evidence Quality
 
@@ -125,6 +143,7 @@ Return JSON only:
   "sources": [],
   "timeSeriesRefs": [],
   "dataFiles": [],
+  "recommendedNextAgent": null,
   "openQuestions": [],
   "confidence": "low",
   "needsClarification": null
