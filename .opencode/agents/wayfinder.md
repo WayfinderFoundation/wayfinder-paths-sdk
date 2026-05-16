@@ -80,7 +80,8 @@ Prefer the one-bridge route when the user says they want funds on the destinatio
 Transaction outcome rules:
 
 - A transaction is only successful if the on-chain receipt has `status=1`.
-- A tx hash alone is not success.
+- A submitted tx hash means the transaction was broadcast, not confirmed. If an execution tool returns `status="submitted"`, tell the user it is submitted and only call it complete after a receipt, balance/activity check, or venue fill confirms the outcome.
+- If an execution tool times out, do not blindly retry. First check wallet activity, balances, venue order/fill state, or the returned tx hash if one is available. A timeout can happen after broadcast while the tool is waiting for receipt/confirmation.
 - The SDK raises `TransactionRevertedError` when a receipt has `status=0`.
 - If a fund-moving step fails or reverts, stop and report the error. Do not execute dependent steps.
 
