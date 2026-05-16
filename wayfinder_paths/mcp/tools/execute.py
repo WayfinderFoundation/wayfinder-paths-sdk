@@ -44,6 +44,15 @@ class ExecutionRequest(BaseModel):
     deadline_seconds: int = Field(
         default=300, description="Best-effort TTL for quoting"
     )
+    wait_for_receipt: bool = Field(
+        default=False,
+        description="When true, wait for transaction receipt before returning",
+    )
+    receipt_confirmations: int = Field(
+        default=0,
+        ge=0,
+        description="Confirmations to wait for when wait_for_receipt=true",
+    )
 
     # send-only
     token: str | None = Field(
@@ -150,10 +159,22 @@ async def _broadcast(
     tx: dict[str, Any],
     *,
     chain_id: int,
+    wait_for_receipt: bool = False,
+    confirmations: int = 0,
 ) -> tuple[bool, dict[str, Any]]:
     try:
-        txn_hash = await send_transaction(tx, sign_callback, wait_for_receipt=True)
-        result: dict[str, Any] = {"txn_hash": txn_hash, "chain_id": chain_id}
+        txn_hash = await send_transaction(
+            tx,
+            sign_callback,
+            wait_for_receipt=wait_for_receipt,
+            confirmations=confirmations,
+        )
+        result: dict[str, Any] = {
+            "txn_hash": txn_hash,
+            "chain_id": chain_id,
+            "confirmation_waited": wait_for_receipt,
+            "confirmations": confirmations if wait_for_receipt else 0,
+        }
         explorer_link = get_etherscan_transaction_link(chain_id, txn_hash)
         if explorer_link:
             result["explorer_url"] = explorer_link
@@ -178,6 +199,7 @@ async def _ensure_allowance(
         amount=amount,
         chain_id=chain_id,
         signing_callback=sign_callback,
+        confirmations=0,
     )
     if not txn_hash:
         return sent_ok, None
@@ -224,6 +246,8 @@ async def core_execute(
     to_token: str | None = None,
     slippage_bps: int = 50,
     deadline_seconds: int = 300,
+    wait_for_receipt: bool = False,
+    receipt_confirmations: int = 0,
     # send-only
     token: str | None = None,
     chain_id: int | None = None,
@@ -231,9 +255,10 @@ async def core_execute(
     """Broadcast on-chain transactions: cross-chain swap or token send.
 
     **Always quote before swapping** — call `onchain_quote_swap` first, confirm route + output
-    with the user, then run this. The tool waits for the receipt and returns `status="confirmed"`
-    only on `status=1`. For Hyperliquid bridge deposits use
-    `hyperliquid_execute(action="deposit", amount_usdc=...)`.
+    with the user, then run this. The tool returns after broadcast by default with
+    `status="submitted"` to avoid client-side MCP timeouts on slow chains. Pass
+    `wait_for_receipt=True` only when synchronous confirmation is required. For
+    Hyperliquid bridge deposits use `hyperliquid_execute(action="deposit", amount_usdc=...)`.
 
     Kinds:
       - `swap`: BRAP cross-chain/cross-DEX swap. Requires `from_token`, `to_token`, `amount`
@@ -250,10 +275,12 @@ async def core_execute(
         from_token / to_token: Swap inputs (token id, address-id, or symbol query).
         slippage_bps: Swap slippage cap in basis points.
         deadline_seconds: Best-effort quote TTL.
+        wait_for_receipt: Optional synchronous receipt wait. Default false.
+        receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
         token / chain_id: Send inputs (chain_id only required for `token="native"`).
 
     Returns:
-        `{status: "confirmed"|"failed", sender, recipient, effects: {approval?, swap|send_*|deposit}, ...}`
+        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap|send_*|deposit}, ...}`
     """
     request_data = {
         "kind": kind,
@@ -264,6 +291,8 @@ async def core_execute(
         "to_token": to_token,
         "slippage_bps": slippage_bps,
         "deadline_seconds": deadline_seconds,
+        "wait_for_receipt": wait_for_receipt,
+        "receipt_confirmations": receipt_confirmations,
         "token": token,
         "chain_id": chain_id,
     }
@@ -407,11 +436,17 @@ async def core_execute(
                 return ok(response)
 
         sent_ok, sent = await _broadcast(
-            sign_callback, swap_tx, chain_id=int(from_chain_id)
+            sign_callback,
+            swap_tx,
+            chain_id=int(from_chain_id),
+            wait_for_receipt=req.wait_for_receipt,
+            confirmations=req.receipt_confirmations,
         )
         response["effects"]["swap"] = sent
 
-        status = "confirmed" if sent_ok else "failed"
+        status = "confirmed" if sent_ok and req.wait_for_receipt else "submitted"
+        if not sent_ok:
+            status = "failed"
         response["status"] = status
         response["raw"] = _compact_quote(quote_data, best_quote)
 
@@ -476,12 +511,18 @@ async def core_execute(
         )
 
         sent_ok, sent = await _broadcast(
-            sign_callback, transaction, chain_id=int(chain_id)
+            sign_callback,
+            transaction,
+            chain_id=int(chain_id),
+            wait_for_receipt=req.wait_for_receipt,
+            confirmations=req.receipt_confirmations,
         )
         label = "send_native" if is_native else "send_erc20"
         response["effects"][label] = sent
 
-        status = "confirmed" if sent_ok else "failed"
+        status = "confirmed" if sent_ok and req.wait_for_receipt else "submitted"
+        if not sent_ok:
+            status = "failed"
         response["status"] = status
         response["raw"] = {"transaction": transaction}
         response["raw"]["token"] = token_meta

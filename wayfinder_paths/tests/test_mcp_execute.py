@@ -172,6 +172,11 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             "wayfinder_paths.mcp.tools.execute.ensure_allowance",
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            new_callable=AsyncMock,
+            return_value="0xtx",
+        ) as send_transaction_mock,
     ):
         out1 = await core_execute(
             kind="swap",
@@ -184,3 +189,26 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         assert out1["ok"] is True
         assert out1["result"]["kind"] == "swap"
         assert "approval" in out1["result"]["effects"]
+        assert out1["result"]["status"] == "submitted"
+        assert out1["result"]["effects"]["swap"]["txn_hash"] == "0xtx"
+        send_transaction_mock.assert_awaited_once()
+        assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
+        assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
+
+        send_transaction_mock.reset_mock()
+
+        out2 = await core_execute(
+            kind="swap",
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+            slippage_bps=50,
+            wait_for_receipt=True,
+            receipt_confirmations=2,
+        )
+        assert out2["ok"] is True
+        assert out2["result"]["status"] == "confirmed"
+        send_transaction_mock.assert_awaited_once()
+        assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is True
+        assert send_transaction_mock.await_args.kwargs["confirmations"] == 2

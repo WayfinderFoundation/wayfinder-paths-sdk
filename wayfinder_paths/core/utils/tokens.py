@@ -299,6 +299,7 @@ async def ensure_allowance(
     chain_id: int,
     signing_callback: Callable,
     approval_amount: int | None = None,
+    confirmations: int | None = None,
 ) -> tuple[bool, Any]:
     allowance = await get_token_allowance(token_address, chain_id, owner, spender)
     if allowance >= amount:
@@ -315,7 +316,9 @@ async def ensure_allowance(
             spender_address=spender,
             amount=0,
         )
-        await send_transaction(clear_transaction, signing_callback)
+        await send_transaction(
+            clear_transaction, signing_callback, confirmations=confirmations
+        )
 
     approve_tx = await build_approve_transaction(
         from_address=owner,
@@ -324,5 +327,7 @@ async def ensure_allowance(
         spender_address=spender,
         amount=approval_amount if approval_amount is not None else amount,
     )
-    txn_hash = await send_transaction(approve_tx, signing_callback)
+    txn_hash = await send_transaction(
+        approve_tx, signing_callback, confirmations=confirmations
+    )
     return True, txn_hash
