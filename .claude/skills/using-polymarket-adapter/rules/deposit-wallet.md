@@ -28,7 +28,7 @@ The deposit wallet is a smart contract — no private key — so every state cha
 | `withdraw_deposit_wallet` | Relayer | `POST /submit` type=`WALLET`, owner signs Batch |
 | `redeem_positions` (+ NegRisk unwrap) | Relayer | Same — owner signs, relayer broadcasts |
 | `fund_deposit_wallet` | **Owner EOA** | Direct `pUSD.transfer` from owner; needs POL |
-| `bridge_deposit` / `bridge_withdraw` (collateral conversion) | **Owner EOA** | wrap/unwrap + BRAP swaps; needs POL |
+| Collateral routing (BRAP swap into/out of pUSD) | **Owner EOA** | `onchain_quote_swap` + `core_execute(kind="swap")`; needs POL |
 | Order placement (CLOB market/limit) | Polymarket CLOB engine | Order signed POLY_1271, matched off-chain, settled on-chain by Polymarket |
 
 Net: the owner EOA needs Polygon POL **only for `fund_deposit_wallet` and the upstream collateral-prep flows**. Everything that touches the deposit wallet contract itself is free.
@@ -41,15 +41,15 @@ Trading collateral lives in **two places**, and the adapter has **two distinct f
 
 | Flow | From → To | Asset | Method |
 | --- | --- | --- | --- |
-| **Collateral preparation** | Polygon USDC/USDC.e ↔ pUSD on **owner EOA** | USDC ↔ pUSD | `bridge_deposit` / `bridge_withdraw` (see `rules/deposits-withdrawals.md`) |
+| **Collateral routing** | any token/chain ↔ pUSD on **owner EOA** | any ↔ pUSD | BRAP swap MCP tools (see `rules/deposits-withdrawals.md`) |
 | **Deposit wallet funding** | owner EOA pUSD ↔ deposit wallet pUSD | pUSD only | `fund_deposit_wallet` / `withdraw_deposit_wallet` |
 
 A full first-time flow looks like:
-1. `bridge_deposit` — Polygon USDC → pUSD (on owner EOA)
+1. `onchain_quote_swap` + `core_execute(kind="swap")` — any token → pUSD (on owner EOA)
 2. `fund_deposit_wallet` — pUSD owner EOA → pUSD deposit wallet
 3. trade — `place_market_order` / `place_limit_order`
 4. (optional) `withdraw_deposit_wallet` — pUSD deposit wallet → pUSD owner EOA
-5. (optional) `bridge_withdraw` — pUSD → Polygon USDC
+5. (optional) `onchain_quote_swap` + `core_execute(kind="swap")` — pUSD → any token
 
 ## Operational expectations
 
@@ -59,8 +59,8 @@ A full first-time flow looks like:
 
 ## MCP shortcuts (Claude Code)
 
-- Fund the deposit wallet: `mcp__wayfinder__polymarket_execute(action="fund_deposit_wallet", wallet_label="main", amount=10)`
-- Withdraw from the deposit wallet (omit `amount` to drain): `mcp__wayfinder__polymarket_execute(action="withdraw_deposit_wallet", wallet_label="main", amount=5)`
+- Fund the deposit wallet: `mcp__wayfinder__polymarket_deposit(wallet_label="main", amount=10)`
+- Withdraw from the deposit wallet (omit `amount` to drain): `mcp__wayfinder__polymarket_withdraw(wallet_label="main", amount=5)`
 - Inspect deposit wallet + balances: `mcp__wayfinder__polymarket_get_state(wallet_label="main")` (`deposit_wallet` is the trading address used by all positions/orders)
 
 ## Adapter methods

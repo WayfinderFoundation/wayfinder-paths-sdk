@@ -29,6 +29,12 @@ from py_clob_client_v2.config import (  # type: ignore[import-untyped]
 from wayfinder_paths.adapters.brap_adapter.adapter import BRAPAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.clients.PolymarketClient import (
+    POLYMARKET_CLIENT,
+    PolymarketMarket,
+    PolymarketSort,
+    PolymarketStatus,
+)
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.constants.polymarket import (
     MAX_UINT256,
@@ -236,90 +242,21 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
-    async def public_search(
+    async def search_markets(
         self,
         *,
-        q: str,
-        limit_per_type: int = 10,
-        page: int = 1,
-        keep_closed_markets: bool = False,
-        **kwargs: Any,
-    ) -> tuple[bool, dict[str, Any] | str]:
-        params: dict[str, Any] = {
-            "q": q,
-            "limit_per_type": limit_per_type,
-            "page": page,
-            "keep_closed_markets": "1" if keep_closed_markets else "0",
-        }
-        params.update({k: v for k, v in kwargs.items() if v is not None})
-
+        query: str | None = None,
+        limit: int = 20,
+        sort: PolymarketSort = "trending",
+        status: PolymarketStatus = "active",
+    ) -> tuple[bool, list[PolymarketMarket] | str]:
         try:
-            res = await self._gamma_http.get("/public-search", params=params)
-            res.raise_for_status()
-            data = res.json()
-            if not isinstance(data, dict):
-                return (
-                    False,
-                    f"Unexpected /public-search response: {type(data).__name__}",
-                )
-            return True, data
+            rows = await POLYMARKET_CLIENT.search_markets(
+                query=query, limit=limit, sort=sort, status=status
+            )
+            return True, rows
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
-
-    async def search_markets_fuzzy(
-        self,
-        *,
-        query: str,
-        limit: int = 10,
-        page: int = 1,
-        keep_closed_markets: bool = False,
-        events_status: str | None = None,
-        end_date_min: str | None = None,
-        rerank: bool = True,
-    ) -> tuple[bool, list[dict[str, Any]] | str]:
-        ok, data = await self.public_search(
-            q=query,
-            limit_per_type=max(limit, 1),
-            page=page,
-            keep_closed_markets=keep_closed_markets,
-            events_status=events_status,
-        )
-        if not ok:
-            return False, str(data)
-
-        markets: list[dict[str, Any]] = []
-        for event in data.get("events") or []:
-            for market in event.get("markets") or []:
-                markets.append(
-                    {
-                        **self._normalize_market(market),
-                        "_event": {
-                            "id": event.get("id"),
-                            "slug": event.get("slug"),
-                            "title": event.get("title"),
-                        },
-                    }
-                )
-
-        if end_date_min:
-            markets = [
-                m
-                for m in markets
-                if (m.get("endDateIso") or m.get("endDate") or "") >= end_date_min
-            ]
-
-        if not rerank:
-            return True, markets[:limit]
-
-        def score(m: dict[str, Any]) -> float:
-            return max(
-                _fuzzy_score(query, str(m.get("question") or "")),
-                _fuzzy_score(query, str(m.get("slug") or "")),
-                _fuzzy_score(query, str((m.get("_event") or {}).get("title") or "")),
-            )
-
-        markets.sort(key=score, reverse=True)
-        return True, markets[:limit]
 
     async def get_market_by_condition_id(
         self, *, condition_id: str
@@ -1363,58 +1300,82 @@ class PolymarketAdapter(BaseAdapter):
     ) -> dict[str, Any]:
         owner = self._require_wallet_address()
         deposit_wallet = self.deposit_wallet_address()
-        nonce_res = await self._relayer_http.get(
-            "/nonce", params={"address": owner, "type": "WALLET"}
-        )
-        nonce_res.raise_for_status()
-        nonce: int = nonce_res.json()["nonce"]
-        deadline = int(time.time()) + 600
-        signature: str = await self.sign_typed_data_callback(
-            {
-                "primaryType": "Batch",
-                "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
-                "domain": {
-                    "name": "DepositWallet",
-                    "version": "1",
-                    "chainId": POLYGON_CHAIN_ID,
-                    "verifyingContract": deposit_wallet,
-                },
-                "message": {
-                    "wallet": deposit_wallet,
-                    "nonce": nonce,
-                    "deadline": deadline,
-                    "calls": calls,
+        # Retry the relayer's registry race: WALLET-CREATE → batch propagation
+        # can lag ~5-10s, so the batch 400s "wallet registry validation failed"
+        # in that window. 250ms interval, 15s total budget.
+        retry_deadline = time.monotonic() + 15.0
+        last_error_text: str | None = None
+        while True:
+            nonce_res = await self._relayer_http.get(
+                "/nonce", params={"address": owner, "type": "WALLET"}
+            )
+            nonce_res.raise_for_status()
+            nonce: int = nonce_res.json()["nonce"]
+            deadline = int(time.time()) + 600
+            signature: str = await self.sign_typed_data_callback(
+                {
+                    "primaryType": "Batch",
+                    "types": POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
+                    "domain": {
+                        "name": "DepositWallet",
+                        "version": "1",
+                        "chainId": POLYGON_CHAIN_ID,
+                        "verifyingContract": deposit_wallet,
+                    },
+                    "message": {
+                        "wallet": deposit_wallet,
+                        "nonce": nonce,
+                        "deadline": deadline,
+                        "calls": calls,
+                    },
+                }
+            )
+            payload = {
+                "type": "WALLET",
+                "from": owner,
+                "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+                "nonce": str(nonce),
+                "signature": signature,
+                "depositWalletParams": {
+                    "depositWallet": deposit_wallet,
+                    "deadline": str(deadline),
+                    "calls": [
+                        {
+                            "target": c["target"],
+                            "value": str(c["value"]),
+                            "data": c["data"],
+                        }
+                        for c in calls
+                    ],
                 },
             }
+            body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+            headers = await self._builder_headers("POST", "/submit", body)
+            submit_res = await self._relayer_http.post(
+                "/submit", content=body, headers=headers
+            )
+            if submit_res.is_success:
+                submitted = submit_res.json()
+                tx = await self._poll_relayer_tx(submitted["transactionID"])
+                return {
+                    "deposit_wallet": deposit_wallet,
+                    "tx_hash": tx["transactionHash"],
+                }
+            text = submit_res.text
+            transient = (
+                "wallet registry validation failed" in text
+                or "is not registered" in text
+            )
+            if not transient:
+                submit_res.raise_for_status()
+            last_error_text = text
+            if time.monotonic() >= retry_deadline:
+                break
+            await asyncio.sleep(0.25)
+        raise ValueError(
+            "Polymarket relayer hasn't registered this wallet yet — try again in a minute"
+            + (f" ({last_error_text})" if last_error_text else "")
         )
-        payload = {
-            "type": "WALLET",
-            "from": owner,
-            "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
-            "nonce": str(nonce),
-            "signature": signature,
-            "depositWalletParams": {
-                "depositWallet": deposit_wallet,
-                "deadline": str(deadline),
-                "calls": [
-                    {
-                        "target": c["target"],
-                        "value": str(c["value"]),
-                        "data": c["data"],
-                    }
-                    for c in calls
-                ],
-            },
-        }
-        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-        headers = await self._builder_headers("POST", "/submit", body)
-        submit_res = await self._relayer_http.post(
-            "/submit", content=body, headers=headers
-        )
-        submit_res.raise_for_status()
-        submitted = submit_res.json()
-        tx = await self._poll_relayer_tx(submitted["transactionID"])
-        return {"deposit_wallet": deposit_wallet, "tx_hash": tx["transactionHash"]}
 
     async def fund_deposit_wallet(
         self, *, amount_raw: int
@@ -1446,8 +1407,15 @@ class PolymarketAdapter(BaseAdapter):
         try:
             owner = self._require_wallet_address()
             deposit_wallet = self.deposit_wallet_address()
+            # block_identifier="latest" — the relayer simulates the batch against
+            # latest state. Reading "pending" can overstate the balance when an
+            # incoming pUSD credit is in the mempool but not yet mined, leading
+            # to transfer(owner, balance) reverting and the relayer returning 400.
             balance: int = await get_token_balance(
-                POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_CHAIN_ID, deposit_wallet
+                POLYGON_P_USDC_PROXY_ADDRESS,
+                POLYGON_CHAIN_ID,
+                deposit_wallet,
+                block_identifier="latest",
             )
             if amount_raw is None:
                 amount_raw = balance

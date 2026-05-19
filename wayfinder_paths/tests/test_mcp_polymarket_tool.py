@@ -7,8 +7,8 @@ import pytest
 
 from wayfinder_paths.core.constants.polymarket import derive_deposit_wallet
 from wayfinder_paths.mcp.tools.polymarket import (
-    polymarket_execute,
     polymarket_get_state,
+    polymarket_place_market_order,
     polymarket_read,
 )
 
@@ -53,7 +53,7 @@ async def test_polymarket_search_uses_adapter_search():
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
         patch(
-            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets_fuzzy",
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
             new=AsyncMock(return_value=(True, [{"slug": "m1"}])),
         ),
     ):
@@ -163,34 +163,7 @@ async def test_polymarket_quote_surfaces_adapter_failure():
 
 
 @pytest.mark.asyncio
-async def test_polymarket_execute_bridge_deposit(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
-
-    with (
-        patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
-        patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
-        patch(_GET_HASH_CB, AsyncMock(return_value=(_HASH_CB, _ADDR))),
-        patch(_GET_TYPED_CB, AsyncMock(return_value=(_TYPED_CB, _ADDR))),
-        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
-        patch(
-            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.bridge_deposit",
-            new=AsyncMock(return_value=(True, {"tx_hash": "0xabc"})),
-        ),
-    ):
-        out = await polymarket_execute(
-            "bridge_deposit",
-            wallet_label="main",
-            amount=1.0,
-        )
-        assert out["ok"] is True
-        assert out["result"]["status"] == "confirmed"
-        assert out["result"]["action"] == "bridge_deposit"
-        effects = out["result"]["effects"]
-        assert effects and effects[0]["label"] == "bridge_deposit"
-
-
-@pytest.mark.asyncio
-async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch):
+async def test_polymarket_place_market_order(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 
     with (
@@ -204,8 +177,7 @@ async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch
             new=AsyncMock(return_value=(True, {"status": "matched"})),
         ),
     ):
-        out = await polymarket_execute(
-            "place_market_order",
+        out = await polymarket_place_market_order(
             wallet_label="main",
             market_slug="bitcoin-above-70k-on-february-9",
             outcome="YES",
@@ -214,6 +186,5 @@ async def test_polymarket_execute_place_market_order(tmp_path: Path, monkeypatch
         )
         assert out["ok"] is True
         assert out["result"]["status"] == "confirmed"
-        assert out["result"]["action"] == "place_market_order"
         effects = out["result"]["effects"]
         assert effects and effects[0]["label"] == "place_market_order"

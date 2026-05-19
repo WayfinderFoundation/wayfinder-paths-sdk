@@ -152,10 +152,8 @@ Don't deviate on:
     set to wallet-appropriate values. Verify it loads:
     poetry run python -c "from wayfinder_paths.core.strategies.risk_limits import RiskLimits; print(RiskLimits.load_optional('wayfinder_paths/strategies/<name>'))"
 
-[ ] Wallet exists with label == strategy.name and has USDC in HL PERP
-    (not just spot). Use core_get_wallets(label="<name>") to verify both;
-    if spot-only, run hyperliquid_execute(action="spot_to_perp_transfer", ...)
-    before the first update.
+[ ] Wallet exists with label == strategy.name and holds USDC. Use
+    core_get_wallets(label="<name>") to verify.
 
 [ ] CLI status returns clean StatusDict (no risk_warning):
     poetry run python -m wayfinder_paths.run_strategy <name> --action status \

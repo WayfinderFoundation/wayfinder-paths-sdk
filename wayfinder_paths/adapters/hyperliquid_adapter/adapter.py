@@ -173,7 +173,7 @@ class HyperliquidAdapter(BaseAdapter):
             or ZERO_ADDRESS
         )
 
-        self._sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
+        self.sign_callback: Callable[..., Awaitable[Any]] | None = sign_callback
         self._sign_typed_data_callback: Callable[..., Awaitable[Any]] | None = (
             sign_typed_data_callback
         )
@@ -203,11 +203,15 @@ class HyperliquidAdapter(BaseAdapter):
         results = await asyncio.gather(*[_post_one(dex) for dex in get_perp_dexes()])
         return aggregator([r for r in results if r is not None])
 
-    def _get_price_decimals(self, asset_id: int) -> int:
+    def get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
         max_decimals = 6 if not is_spot else 8
+        # HIP-4 outcome prices live in (0, 1) with a fixed 0.00001 tick — the
+        # spot MAX_DECIMALS=8 over-allows and triggers "Price must be divisible
+        # by tick size" on the IOC slippage path (e.g. mid 0.01972 * 1.05 =
+        # 0.020706 has 6 decimals, rejected; rounding to 5 → 0.02071, accepted).
         if asset_id >= OUTCOME_ASSET_OFFSET:
-            max_decimals = 8
+            max_decimals = 5
         return max_decimals - self.get_sz_decimals(asset_id)
 
     def _sig_hex_to_hl_signature(self, sig_hex: str) -> dict[str, Any]:
@@ -622,6 +626,23 @@ class HyperliquidAdapter(BaseAdapter):
             case _:  # hip3, hip4 — already canonical
                 return [asset_name]
 
+    def canonical_from_mid_price_key(
+        self, raw_key: str, spot_index_to_pair: dict[str, str]
+    ) -> str:
+        """Inverse of `get_mid_price_key` — canonical asset name from a raw
+        `allMids` key.
+
+        Pass `spot_index_to_pair` built from `get_spot_assets()` (i.e.
+        `{f"@{aid-10000}": name}`). Spot indices not in the map (e.g. HIP-3-dex-
+        specific spot books) have no standard canonical name and are returned
+        unchanged.
+        """
+        if raw_key.startswith("@"):
+            return spot_index_to_pair.get(raw_key, raw_key)
+        if raw_key.startswith("#") or ":" in raw_key or "/" in raw_key:
+            return raw_key
+        return f"{raw_key}-USDC"
+
     def get_sz_decimals(self, asset_id: int) -> int:
         if asset_id >= OUTCOME_ASSET_OFFSET:
             return 0
@@ -655,6 +676,31 @@ class HyperliquidAdapter(BaseAdapter):
             rounding=ROUND_DOWN
         ) * step
         return float(quantized)
+
+    def get_valid_order_price(self, asset_id: int, price: float) -> float:
+        """Floor `price` to HL's nearest valid tick for `asset_id`.
+
+        HL accepts any integer price; otherwise the price must have ≤ 5
+        significant figures AND ≤ `get_price_decimals(asset_id)` decimal
+        places. Both caps are applied as ROUND_DOWN.
+        """
+        if price <= 0:
+            return 0.0
+        if float(price).is_integer():
+            return float(int(price))
+
+        decimals = self.get_price_decimals(asset_id)
+        decimal_step = Decimal(10) ** (-decimals)
+        p = (Decimal(str(price)) / decimal_step).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * decimal_step
+
+        if p > 0:
+            sig_step = Decimal(10) ** (p.adjusted() - 4)
+            if sig_step > decimal_step:
+                p = (p / sig_step).to_integral_value(rounding=ROUND_DOWN) * sig_step
+
+        return float(p)
 
     def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
         expected_builder = HYPE_FEE_WALLET.lower()
@@ -725,10 +771,7 @@ class HyperliquidAdapter(BaseAdapter):
             }
 
         price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
-        price = round(
-            float(f"{price:.5g}"),
-            self._get_price_decimals(asset_id),
-        )
+        price = self.get_valid_order_price(asset_id, price)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
             is_buy,
@@ -741,10 +784,11 @@ class HyperliquidAdapter(BaseAdapter):
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
         if success:
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            success = not any(isinstance(s, dict) and s.get("error") for s in statuses)
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
@@ -876,7 +920,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         # Clamp inside (0, 1); HL rejects 0/1.
         price = max(0.0001, min(0.9999, float(price)))
-        price = round(float(f"{price:.5g}"), self._get_price_decimals(asset_id))
+        price = self.get_valid_order_price(asset_id, price)
 
         order_actions = self._create_hypecore_order_actions(
             asset_id,
@@ -889,10 +933,11 @@ class HyperliquidAdapter(BaseAdapter):
             cloid,
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
         if success:
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            success = not any(isinstance(s, dict) and s.get("error") for s in statuses)
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def cancel_order(
@@ -1131,16 +1176,26 @@ class HyperliquidAdapter(BaseAdapter):
         await self.ensure_builder_fee_approved(address, builder_fee)
         builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
 
+        trigger_price = self.get_valid_order_price(asset_id, trigger_price)
         order_type: OrderType = {
             "trigger": {"triggerPx": trigger_price, "isMarket": is_market, "tpsl": tpsl}
         }
-        price = trigger_price if is_market else (limit_price or trigger_price)
+        if is_market:
+            price = trigger_price
+        else:
+            price = self.get_valid_order_price(
+                asset_id, limit_price if limit_price is not None else trigger_price
+            )
         order_actions = self._create_hypecore_order_actions(
             asset_id, is_buy, price, size, True, order_type, builder_info
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
+        if success:
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def place_stop_loss(
@@ -1392,6 +1447,7 @@ class HyperliquidAdapter(BaseAdapter):
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
         await self.ensure_builder_fee_approved(address, builder_fee)
+        price = self.get_valid_order_price(asset_id, price)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
             is_buy,
@@ -1404,7 +1460,11 @@ class HyperliquidAdapter(BaseAdapter):
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
+        if success:
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def wait_for_deposit(
@@ -1415,105 +1475,52 @@ class HyperliquidAdapter(BaseAdapter):
         timeout_s: int = 120,
         poll_interval_s: int = 5,
     ) -> tuple[bool, float]:
+        """Wait until unified USDC reflects a fresh Bridge2 deposit.
+
+        Returns `(True, post-credit_balance)` once spot USDC crosses
+        `initial + 0.95 * expected_increase`, or `(False, latest)` on timeout.
+
+        Polls the spot balance directly. We intentionally do NOT short-circuit
+        on `user_non_funding_ledger_updates` (the deposit ledger event) — HL
+        writes that record a few seconds before the unified balance reflects
+        the credit, so the returned balance would understate available funds.
+        """
         timeout_s = max(0, int(timeout_s))
         poll_interval_s = max(1, int(poll_interval_s))
-        iterations = int(timeout_s // poll_interval_s) + 1
 
-        success, initial_state = await self.get_user_state(address)
-        if not success:
-            self.logger.warning(f"Could not fetch initial state: {initial_state}")
-            initial_balance = 0.0
-        else:
-            initial_balance = self.get_perp_margin_amount(initial_state)
-
-        self.logger.info(
-            f"Waiting for Hyperliquid deposit. Initial balance: ${initial_balance:.2f}, "
-            f"expecting +${expected_increase:.2f}"
-        )
-
-        # Also check ledger in case deposit already credited before this call
-        started_ms = int(time.time() * 1000)
-        from_timestamp_ms = started_ms - (timeout_s * 1000)
-        expected_min = float(expected_increase) * 0.95
-
-        ok_ledger, deposits = await self.get_user_deposits(address, from_timestamp_ms)
-        if ok_ledger and any(float(v or 0) >= expected_min for v in deposits.values()):
-            self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
-            return True, float(initial_balance)
-
-        for i in range(iterations):
-            if i > 0:
-                await asyncio.sleep(poll_interval_s)
-
-            success, state = await self.get_user_state(address)
+        async def _spot_usdc() -> float:
+            success, state = await self.get_spot_user_state(address)
             if not success:
-                continue
+                return 0.0
+            for bal in state["balances"]:
+                if bal["coin"] == "USDC":
+                    return float(bal["total"])
+            return 0.0
 
-            current_balance = self.get_perp_margin_amount(state)
+        initial = await _spot_usdc()
+        target = initial + float(expected_increase) * 0.95
+        self.logger.info(
+            f"Waiting for Hyperliquid deposit. Initial USDC: ${initial:.2f}, "
+            f"target ≥ ${target:.2f} (expecting +${expected_increase:.2f})."
+        )
 
-            # Allow 5% tolerance for fees/slippage
-            if current_balance >= initial_balance + expected_min:
+        deadline = time.monotonic() + timeout_s
+        while True:
+            current = await _spot_usdc()
+            if current >= target:
                 self.logger.info(
-                    f"Hyperliquid deposit confirmed: ${current_balance - initial_balance:.2f} "
-                    f"(expected ${expected_increase:.2f})"
+                    f"Hyperliquid deposit confirmed: spot USDC ${current:.2f} "
+                    f"(+${current - initial:.2f}, expected +${expected_increase:.2f})"
                 )
-                return True, current_balance
-
-            ok_ledger, deposits = await self.get_user_deposits(
-                address, from_timestamp_ms
-            )
-            if ok_ledger and any(
-                float(v or 0) >= expected_min for v in deposits.values()
-            ):
-                self.logger.info("Hyperliquid deposit confirmed via ledger updates.")
-                return True, float(current_balance)
-
-            remaining_s = (iterations - i - 1) * poll_interval_s
-            self.logger.debug(
-                f"Waiting for deposit... current=${current_balance:.2f}, "
-                f"need=${initial_balance + expected_increase:.2f}, {remaining_s}s remaining"
-            )
-
-        self.logger.warning(
-            f"Hyperliquid deposit not confirmed after {timeout_s}s. "
-            "Deposits typically credit in < 1 minute (but can take longer)."
-        )
-        success, state = await self.get_user_state(address)
-        final_balance = (
-            self.get_perp_margin_amount(state) if success else initial_balance
-        )
-        return False, final_balance
-
-    async def get_user_deposits(
-        self,
-        address: str,
-        from_timestamp_ms: int,
-    ) -> tuple[bool, dict[str, float]]:
-        try:
-            data = get_info().user_non_funding_ledger_updates(
-                to_checksum_address(address), int(from_timestamp_ms)
-            )
-            result: dict[str, float] = {}
-            for update in sorted(data or [], key=lambda x: x.get("time", 0)):
-                delta = update.get("delta") or {}
-                if delta.get("type") == "deposit":
-                    tx_hash = (
-                        update.get("hash")
-                        or update.get("txHash")
-                        or update.get("tx_hash")
-                        or update.get("transactionHash")
-                    )
-                    usdc_amount = float(delta.get("usdc", 0))
-                    if not tx_hash:
-                        ts = int(update.get("time") or 0)
-                        tx_hash = f"deposit-{ts}-{len(result)}"
-                    result[str(tx_hash)] = usdc_amount
-
-            return True, result
-
-        except Exception as exc:
-            self.logger.error(f"Failed to get user deposits: {exc}")
-            return False, {}
+                return True, current
+            if time.monotonic() >= deadline:
+                self.logger.warning(
+                    f"Hyperliquid deposit not confirmed after {timeout_s}s "
+                    f"(spot USDC ${current:.2f}, target ${target:.2f}). "
+                    "Deposits typically credit in < 1 minute but can take longer."
+                )
+                return False, current
+            await asyncio.sleep(poll_interval_s)
 
     async def get_user_withdrawals(
         self,
@@ -1582,7 +1589,7 @@ class HyperliquidAdapter(BaseAdapter):
         *,
         address: str | None = None,
     ) -> tuple[bool, str]:
-        if not self._sign_callback:
+        if not self.sign_callback:
             return False, "sign_callback is required"
 
         sender = to_checksum_address(address or self.wallet_address)
@@ -1614,7 +1621,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             tx_hash = await send_transaction(
-                tx, self._sign_callback, wait_for_receipt=True
+                tx, self.sign_callback, wait_for_receipt=True
             )
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001

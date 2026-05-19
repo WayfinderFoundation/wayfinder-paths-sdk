@@ -58,6 +58,23 @@ async def test_search_kinetiq_resolves_to_kntq_spot():
 
 
 @pytest.mark.asyncio
+async def test_search_market_type_filter():
+    res_perp = await hyperliquid_search_market("bitcoin", limit=10, market_type="perp")
+    res_hip3 = await hyperliquid_search_market("bitcoin", limit=10, market_type="hip3")
+    res_hip4 = await hyperliquid_search_market("bitcoin", limit=10, market_type="hip4")
+
+    assert {"BTC-USDC"} <= _names(res_perp["result"]["perps"])
+    assert not any(":" in r["name"] for r in res_perp["result"]["perps"])
+    assert res_perp["result"]["spots"] == [] and res_perp["result"]["outcomes"] == []
+
+    assert {"flx:BTC"} <= _names(res_hip3["result"]["perps"])
+    assert all(":" in r["name"] for r in res_hip3["result"]["perps"])
+
+    assert res_hip4["result"]["perps"] == [] and res_hip4["result"]["spots"] == []
+    assert res_hip4["result"]["outcomes"]
+
+
+@pytest.mark.asyncio
 async def test_search_oil_futures():
     res = await hyperliquid_search_market("oil futures", limit=20)
     assert res["ok"]

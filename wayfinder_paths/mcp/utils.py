@@ -198,9 +198,12 @@ async def resolve_wallet_address(
 
     w = await find_wallet_by_label(want)
     if not w:
-        return None, None
+        # Preserve `want` so callers can distinguish "no label given" from
+        # "label not found" — the latter should surface as a 404 instead of
+        # the generic "account required" error.
+        return None, want
 
-    return normalize_address(w.get("address")), want
+    return normalize_address(w["address"]), want
 
 
 def parse_amount_to_raw(amount: str, decimals: int) -> int:

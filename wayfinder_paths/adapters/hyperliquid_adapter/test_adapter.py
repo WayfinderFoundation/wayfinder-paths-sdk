@@ -1,4 +1,3 @@
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -135,74 +134,20 @@ class TestHyperliquidAdapter:
             assert state["openOrders"] == [{"oid": 1}]
 
     @pytest.mark.asyncio
-    async def test_wait_for_deposit_confirms_via_ledger_if_already_credited(
-        self, adapter, mock_info, _patch_adapter
-    ):
-        address = "0x" + "11" * 20
-
-        def _post_side_effect(_path, payload):
-            req_type = payload.get("type", "")
-            if req_type == "clearinghouseState":
-                return {
-                    "marginSummary": {"accountValue": "100.0"},
-                    "assetPositions": [],
-                    "crossMarginSummary": {},
-                }
-            return []
-
-        mock_info.post.side_effect = _post_side_effect
-        mock_info.user_non_funding_ledger_updates.return_value = [
-            {
-                "time": int(time.time() * 1000),
-                "delta": {"type": "deposit", "usdc": "100.0"},
-            }
-        ]
-
-        p1, p2 = _patch_adapter()
-        with p1, p2:
-            with patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
-                new=AsyncMock(),
-            ) as sleep_mock:
-                ok, final_balance = await adapter.wait_for_deposit(
-                    address,
-                    expected_increase=100.0,
-                    timeout_s=60,
-                    poll_interval_s=5,
-                )
-
-            assert ok is True
-            assert final_balance == 100.0
-            sleep_mock.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_wait_for_deposit_confirms_on_margin_increase(
+    async def test_wait_for_deposit_confirms_on_balance_increase(
         self, adapter, mock_info, _patch_adapter
     ):
         address = "0x" + "22" * 20
-        mock_info.user_non_funding_ledger_updates.return_value = []
 
-        # Track call count to return different values on each post call
+        # Spot USDC starts at 0, then jumps to 100 on the 3rd read.
         call_count = {"n": 0}
 
-        def _post_side_effect(_path, payload):
-            req_type = payload.get("type", "")
-            if req_type == "clearinghouseState":
-                call_count["n"] += 1
-                if call_count["n"] <= 2:
-                    return {
-                        "marginSummary": {"accountValue": "0.0"},
-                        "assetPositions": [],
-                        "crossMarginSummary": {},
-                    }
-                return {
-                    "marginSummary": {"accountValue": "100.0"},
-                    "assetPositions": [],
-                    "crossMarginSummary": {},
-                }
-            return []
+        def _spot_state(_addr):
+            call_count["n"] += 1
+            total = "0.0" if call_count["n"] <= 2 else "100.0"
+            return {"balances": [{"coin": "USDC", "token": 0, "total": total}]}
 
-        mock_info.post.side_effect = _post_side_effect
+        mock_info.spot_user_state.side_effect = _spot_state
 
         p1, p2 = _patch_adapter()
         with p1, p2:
@@ -220,3 +165,30 @@ class TestHyperliquidAdapter:
             assert ok is True
             assert final_balance == 100.0
             assert sleep_mock.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_wait_for_deposit_returns_false_on_timeout(
+        self, adapter, mock_info, _patch_adapter
+    ):
+        address = "0x" + "33" * 20
+
+        # Spot USDC stays at the initial value — deposit never credits.
+        mock_info.spot_user_state.return_value = {
+            "balances": [{"coin": "USDC", "token": 0, "total": "0.0"}]
+        }
+
+        p1, p2 = _patch_adapter()
+        with p1, p2:
+            with patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+                new=AsyncMock(),
+            ):
+                ok, final_balance = await adapter.wait_for_deposit(
+                    address,
+                    expected_increase=100.0,
+                    timeout_s=5,
+                    poll_interval_s=1,
+                )
+
+        assert ok is False
+        assert final_balance == 0.0

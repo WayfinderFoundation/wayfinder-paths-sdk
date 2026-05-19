@@ -2,7 +2,7 @@
 
 HIP-4 is a hypercore-native prediction-contract surface. Phase 1 ships **binary daily markets** (e.g. "BTC > $78,213 by 06:00 UTC"); the protocol generalizes to multi-outcome later. Outcomes settle daily at **06:00 UTC**, after which the `outcome_id` rolls and old ids stop trading.
 
-**Collateral / quote: USDH** (Hyperliquid's stablecoin, spot token id 360). All currently-live HIP-4 outcomes settle in USDH — `outcomeMeta` doesn't expose a per-market quote field, so treat the whole surface as USDH-only until HL deploys outcomes against another token. Fund the spot wallet with USDH before placing orders; a USDC balance won't be debited for outcome trades.
+**Collateral / quote: USDH** (Hyperliquid's stablecoin, token id 360). All currently-live HIP-4 outcomes settle in USDH — `outcomeMeta` doesn't expose a per-market quote field, so treat the whole surface as USDH-only until HL deploys outcomes against another token. You need a USDH balance to place orders; a USDC balance won't be debited.
 
 ## Asset id encoding
 
@@ -48,23 +48,24 @@ Other reads:
 
 ## Writes
 
-### MCP — `hyperliquid_execute(action="place_outcome_order", ...)`
+### MCP — `hyperliquid_place_market_order` / `_place_limit_order` on a `#<encoding>` market
 
-**Required:** `wallet_label`, `outcome_id` (int), `side` (int), `is_buy` (bool), `size` (int contracts).
+Outcomes use the same market/limit tools as perp/spot — the tool dispatches the outcome path when `asset_name` starts with `#`.
 
-**Optional:** `order_type` (`"market"` default → IOC; `"limit"` → GTC), `price` (float, required for limit), `slippage` (default 0.01), `reduce_only`, `cloid`.
+**Market:** `wallet_label`, `asset_name` (e.g. `"#200"` for outcome_id=20, side=0), `is_buy`, `size` (int contracts) or `usd_amount`.
+**Limit:** `wallet_label`, `asset_name`, `is_buy`, `price`, `size` (no `usd_amount` for limit outcomes).
+
+**Optional:** `slippage` (market only, default 0.01), `reduce_only`, `cloid`.
 
 **Notes:**
-- `size` is **integer contracts** (`szDecimals=0`).
-- HIP-4 is **zero-fee** — no builder approval flow; the dispatcher omits builder for outcome orders.
-- No leverage, no `is_spot`, no `coin` — outcome resolution is purely `outcome_id` + `side`.
+- `size` is **integer contracts** (`szDecimals=0`). The tool rejects floats loudly with a suggested integer.
+- HIP-4 is **zero-fee** — no builder approval flow; the outcome dispatch path omits the builder field.
+- No leverage, no `is_spot` — outcome resolution comes from the `#<encoding>` asset name.
 
 ```python
-hyperliquid_execute(
-    action="place_outcome_order",
+hyperliquid_place_market_order(
     wallet_label="main",
-    outcome_id=20,
-    side=0,             # YES (verify via get_outcome_markets sideSpecs)
+    asset_name="#200",   # outcome_id=20, side=0 (YES — verify via get_outcome_markets sideSpecs)
     is_buy=True,
     size=5,
 )
@@ -72,15 +73,12 @@ hyperliquid_execute(
 
 ### MCP — cancel an outcome order
 
-Use the existing `cancel_order` action with the explicit asset id:
+Use `hyperliquid_cancel_order` with the same `#<encoding>` asset name:
 
 ```python
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import outcome_asset_id
-
-hyperliquid_execute(
-    action="cancel_order",
+hyperliquid_cancel_order(
     wallet_label="main",
-    asset_id=outcome_asset_id(20, 0),
+    asset_name="#200",
     order_id=123456,
 )
 ```
@@ -92,7 +90,7 @@ hyperliquid_execute(
 
 ## Gotchas
 
-- **Collateral is USDH, not USDC.** Outcome buys debit USDH (token 360) on the spot side. A USDC-only spot wallet will fail to place orders even with plenty of buying power. Use the existing spot pair `USDH/USDC` (or transfer in) to fund USDH first.
+- **Collateral is USDH, not USDC.** Outcome buys debit USDH (token 360). If you only hold USDC, orders fail even with plenty of buying power — swap USDC → USDH on the `USDH/USDC` spot pair first.
 - **Daily settlement rolls outcome ids.** A live `outcome_id=20` at 05:55 UTC may be expired by 06:05 UTC and a new id replaces it. Re-fetch `get_outcome_markets()` rather than caching ids across days.
 - **Sizes are integer contracts.** The adapter rejects non-integer `size` loudly; don't pass floats.
 - **Price decimals follow the spot rule** (`MAX_DECIMALS=8`, 5-sig-figs); for typical 0..1 outcome prices this means up to ~5 decimals.
