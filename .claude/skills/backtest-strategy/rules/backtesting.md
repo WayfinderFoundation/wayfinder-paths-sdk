@@ -2,7 +2,9 @@
 
 ## CRITICAL: Data Availability
 
-**Oldest available: ~August 2025** (Delta Lab + Hyperliquid retain ~7 months).
+Default `source="auto"` is retention-capped at ~7 months (Delta Lab + Hyperliquid). For older windows or multi-year backtests, pass `source="ccxt"` — Binance spot back to ~2017.
+
+Funding rates are still retention-capped regardless of price source. For multi-year runs, set `include_funding=False` or pre-fetch funding separately.
 
 ---
 
@@ -220,7 +222,7 @@ print(borrow_df.median())            # median is more robust than mean for spiky
 | CEX order book / microstructure | No order book history. Slippage and fill assumptions are rough estimates at best. |
 | Options / structured products | No options pricing history. |
 | Cross-chain bridge arbitrage | No bridge quote history or latency data. |
-| Strategies requiring sub-hourly data | All data is hourly. 1-minute or tick-level signals cannot be backtested. |
+| Strategies requiring sub-hourly data | Default sources are hourly. CCXT (`source="ccxt"`) supports 1m/5m/15m for Binance-listed symbols. |
 
 ---
 

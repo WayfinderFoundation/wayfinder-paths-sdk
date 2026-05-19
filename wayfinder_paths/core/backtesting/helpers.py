@@ -30,6 +30,7 @@ async def quick_backtest(
     leverage: float = 1.0,
     include_funding: bool = True,
     config: BacktestConfig | None = None,
+    source: str = "auto",
 ) -> BacktestResult:
     """
     Run a backtest with automatic data fetching.
@@ -54,6 +55,9 @@ async def quick_backtest(
         include_funding: Whether to fetch and apply funding rates
         config: Optional BacktestConfig. If provided, leverage and funding_rates will be overridden.
                 The periods_per_year will be set automatically based on interval.
+        source: Price source ("auto", "ccxt", "delta_lab", "hyperliquid"). "ccxt"
+                pulls Binance spot via CCXT and supports multi-year history
+                (~2017+ for majors), bypassing the 211-day retention check.
 
     Returns:
         BacktestResult object with equity_curve, returns, stats, trades, etc.
@@ -78,7 +82,7 @@ async def quick_backtest(
         ... )
         >>> print(f"Return: {result.stats['total_return']:.2%}")  # Format as percentage
     """
-    prices = await fetch_prices(symbols, start_date, end_date, interval)
+    prices = await fetch_prices(symbols, start_date, end_date, interval, source=source)
 
     funding = None
     if include_funding:
@@ -130,6 +134,7 @@ async def backtest_with_rates(
     leverage: float = 1.0,
     include_funding: bool = True,
     config: BacktestConfig | None = None,
+    source: str = "auto",
 ) -> BacktestResult:
     """
     Run a backtest where strategy function receives both prices and funding rates.
@@ -161,7 +166,7 @@ async def backtest_with_rates(
         ...     end_date="2025-02-01"
         ... )
     """
-    prices = await fetch_prices(symbols, start_date, end_date, interval)
+    prices = await fetch_prices(symbols, start_date, end_date, interval, source=source)
 
     funding = None
     if include_funding:
@@ -209,6 +214,7 @@ async def backtest_delta_neutral(
     leverage: float = 1.0,
     interval: str = "1h",
     config: BacktestConfig | None = None,
+    source: str = "auto",
 ) -> BacktestResult:
     """
     Delta-neutral basis carry: long spot + short perp, enter when funding is positive.
@@ -254,7 +260,9 @@ async def backtest_delta_neutral(
         >>> print(f"Funding income: {result.stats['total_funding']:.4f}")
         >>> print(f"Sharpe: {result.stats['sharpe']:.2f}")
     """
-    perp_prices = await fetch_prices(symbols, start_date, end_date, interval)
+    perp_prices = await fetch_prices(
+        symbols, start_date, end_date, interval, source=source
+    )
 
     perp_funding: pd.DataFrame | None = None
     try:

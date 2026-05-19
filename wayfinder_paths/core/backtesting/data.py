@@ -14,6 +14,7 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
+from wayfinder_paths.adapters.ccxt_adapter import CCXTAdapter
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
 
@@ -125,7 +126,7 @@ async def fetch_prices(
         start_date: Start date (ISO format: "2025-01-01")
         end_date: End date (ISO format: "2025-02-01")
         interval: Time interval ("1m", "5m", "15m", "1h", "4h", "1d")
-        source: Data source ("auto", "delta_lab", "hyperliquid")
+        source: Data source ("auto", "ccxt", "delta_lab", "hyperliquid")
 
     Returns:
         DataFrame with index=timestamps, columns=symbols, values=prices
@@ -137,10 +138,16 @@ async def fetch_prices(
         >>> prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01")
         >>> print(prices.head())
     """
-    # Validate date range
-    valid, error = validate_date_range(start_date, end_date)
-    if not valid:
-        raise ValueError(error)
+    # Validate date range (skip for CCXT — multi-year data available)
+    if source == "ccxt":
+        pass
+    else:
+        valid, error = validate_date_range(start_date, end_date)
+        if not valid:
+            if source == "auto":
+                source = "ccxt"
+            else:
+                raise ValueError(error)
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
@@ -152,7 +159,9 @@ async def fetch_prices(
     if source == "auto":
         source = "hyperliquid" if interval in _SUB_HOURLY else "delta_lab"
 
-    if source == "delta_lab":
+    if source == "ccxt":
+        return await _fetch_prices_ccxt(symbols, start, end, interval)
+    elif source == "delta_lab":
         if interval in _SUB_HOURLY:
             raise ValueError(
                 f"Delta Lab only provides hourly data; sub-hourly interval '{interval}' "
@@ -224,6 +233,58 @@ async def _fetch_prices_hyperliquid(
 
     result = pd.concat(all_prices, axis=1)
     return result.sort_index()
+
+
+async def _fetch_prices_ccxt(
+    symbols: list[str], start: datetime, end: datetime, interval: str
+) -> pd.DataFrame:
+    """Fetch prices from Binance spot via CCXT (multi-year history)."""
+    adapter = CCXTAdapter(exchanges={"binance": {}})
+    try:
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
+        interval_ms = {
+            "1m": 60_000,
+            "5m": 300_000,
+            "15m": 900_000,
+            "1h": 3_600_000,
+            "4h": 14_400_000,
+            "1d": 86_400_000,
+        }[interval]
+
+        series_map = {}
+        for sym in symbols:
+            pair = f"{sym}/USDT"
+            all_candles = []
+            cursor = start_ms
+            pages = 0
+            while cursor < end_ms and pages < 200:
+                batch = await adapter.binance.fetch_ohlcv(
+                    pair, interval, since=cursor, limit=1000
+                )
+                if not batch:
+                    break
+                all_candles.extend(batch)
+                last_ts = batch[-1][0]
+                if last_ts <= cursor:
+                    break
+                cursor = last_ts + interval_ms
+                pages += 1
+            if not all_candles:
+                continue
+            df = pd.DataFrame(all_candles, columns=["t", "o", "h", "l", "c", "v"])
+            df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+            df = df.drop_duplicates(subset=["t"]).set_index("t").sort_index()
+            df = df[df.index <= pd.Timestamp(end_ms, unit="ms", tz="UTC")]
+            series_map[sym] = df["c"].astype(float)
+
+        if not series_map:
+            raise ValueError("No price data fetched via CCXT")
+        result = pd.concat(series_map, axis=1)
+        result = result.ffill().dropna(how="any")
+        return result
+    finally:
+        await adapter.close()
 
 
 async def fetch_funding_rates(
