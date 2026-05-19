@@ -31,7 +31,7 @@ Probe `http://localhost:4096/global/health`. If it returns `{ "healthy": true, .
 | `core_get_wallets(label="X")`    | Single wallet by label, same shape                                                                      |
 | `onchain_get_wallet_activity(…)` | Recent on-chain activity (best-effort)                                                                  |
 
-- **Session wallet** (default, recommended for normal trading) — 1-hour TTL, refreshed while the user has the UI open.
+- **Session wallet** (default, recommended for normal trading) — 15-minute TTL, refreshed while the user has the UI open.
 - **Strategy wallet** — 7-day TTL, intended for longer-running scheduled automation that signs without a human in the loop.
 
 On a Wayfinder Shells Instance, always pass `remote=True` when creating wallets — local wallets are rejected.
