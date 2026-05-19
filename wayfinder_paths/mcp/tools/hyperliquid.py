@@ -19,7 +19,10 @@ from wayfinder_paths.core.constants.hyperliquid import (
     MARKET_SEARCH_ALIASES,
     MARKET_SEARCH_MIN_MATCH_SCORE,
     MARKET_TYPE_HIP4,
+    MARKET_TYPE_SPOT,
     MIN_ORDER_USD_NOTIONAL,
+    MIN_WITHDRAW_USD,
+    WITHDRAW_FEE_USD,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -432,21 +435,27 @@ async def hyperliquid_withdraw(
 ) -> dict[str, Any]:
     """Withdraw USDC from Hyperliquid back to Arbitrum.
 
-    The Bridge2 withdrawal fee is $1 USDC, deducted from the amount sent.
+    `amount_usdc` is the **net amount delivered to Arbitrum**. The Bridge2 $1
+    fee is added on top automatically, so the unified balance is debited
+    `amount_usdc + 1` USDC.
 
     Args:
         wallet_label: Wallet receiving the withdrawal on Arbitrum.
-        amount_usdc: USDC to withdraw (must be positive).
+        amount_usdc: Net USDC to receive on Arbitrum (must be >= 2, otherwise
+            the $1 bridge fee would eat too much of the withdrawal).
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     amt = throw_if_not_number("amount_usdc must be a number", amount_usdc)
-    if amt <= 0:
-        raise ValueError("amount_usdc must be positive")
+    if amt < MIN_WITHDRAW_USD:
+        raise ValueError(
+            f"amount_usdc must be >= {MIN_WITHDRAW_USD:g} USDC "
+            f"(Bridge2 charges a ${WITHDRAW_FEE_USD:g} fee)"
+        )
 
     adapter, sender = await _make_hl_adapter(wallet_label)
 
     effects: list[dict[str, Any]] = []
-    ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
+    ok_wd, res = await adapter.withdraw(amount=amt + WITHDRAW_FEE_USD, address=sender)
     effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
 
     if ok_wd:
@@ -631,12 +640,17 @@ async def hyperliquid_place_trigger_order(
 ) -> dict[str, Any]:
     """Place a perp take-profit / stop-loss trigger order.
 
+    Perp-only: spot and HIP-4 outcome markets are rejected up-front because
+    triggers close an existing perp position (always `reduce_only`), which
+    those markets don't have.
+
     Set `is_buy` to the side that **closes** your position (long → False, short → True).
     A market trigger fills at market on touch; a limit trigger needs `price`.
 
     Args:
         wallet_label: Wallet owning the position.
-        asset_name: Perp identifier (`BTC-USDC`, `xyz:SP500`). Spot has no trigger surface.
+        asset_name: Perp identifier (`BTC-USDC`, `xyz:SP500`). Spot (`BTC/USDC`)
+            and HIP-4 outcomes (`#N`) are rejected.
         tpsl: `"tp"` for take-profit, `"sl"` for stop-loss.
         trigger_price: Mark price at which the order activates. Positive.
         is_buy: Direction of the close — opposite of the open position's side.
@@ -668,9 +682,20 @@ async def hyperliquid_place_trigger_order(
 
     try:
         adapter, sender = await _make_hl_adapter(wallet_label)
-        resolved_asset_id, _ = await _resolve_asset(adapter, asset_name)
+        resolved_asset_id, market_type = await _resolve_asset(adapter, asset_name)
     except ValueError as exc:
         return err("invalid_coin", str(exc))
+
+    # Trigger orders close existing positions (always reduce_only). Spot has no
+    # positions to reduce, and HIP-4 outcomes are binary integer contracts with
+    # no TP/SL semantics — HL rejects both downstream, so guard up-front.
+    if market_type in (MARKET_TYPE_SPOT, MARKET_TYPE_HIP4):
+        return err(
+            "invalid_market",
+            f"Trigger (TP/SL) orders are perp-only; {asset_name!r} is a "
+            f"{market_type} market. Trigger orders close an existing perp "
+            "position, which spot and HIP-4 outcome markets don't have.",
+        )
 
     effects: list[dict[str, Any]] = []
     await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
@@ -968,6 +993,7 @@ async def hyperliquid_place_limit_order(
         float(sz_valid),
         sender,
         reduce_only=bool(reduce_only),
+        cloid=cloid,
         builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
     )
     effects.append(

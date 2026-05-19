@@ -116,6 +116,7 @@ chaining three or more, write a script.
 Hyperliquid minimums:
 
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
+- **Minimum withdraw: $2 USD net** — `hyperliquid_withdraw(amount_usdc=N)` delivers exactly `$N` to Arbitrum; the $1 Bridge2 fee is added on top automatically (debit = `N + 1`)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
 Hyperliquid UnifiedAccount mode (repo default):

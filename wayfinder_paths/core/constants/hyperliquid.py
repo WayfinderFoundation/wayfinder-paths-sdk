@@ -28,6 +28,8 @@ __all__ = [
     "MARKET_TYPE_SPOT",
     "MIN_DEPOSIT_USD",
     "MIN_ORDER_USD_NOTIONAL",
+    "MIN_WITHDRAW_USD",
+    "WITHDRAW_FEE_USD",
 ]
 
 ARBITRUM_USDC_TOKEN_ID: str = "usd-coin-arbitrum"
@@ -42,6 +44,13 @@ DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
 
 MIN_DEPOSIT_USD: float = 5.0
 MIN_ORDER_USD_NOTIONAL: float = 10.0
+
+# Bridge2 deducts a flat fee from the HL-side `amount` when withdrawing to
+# Arbitrum. To make `amount_usdc` the net delivered amount, the tool internally
+# requests `amount_usdc + WITHDRAW_FEE_USD` from HL.
+WITHDRAW_FEE_USD: float = 1.0
+# Anything under $2 net would be eaten by the fee before it lands.
+MIN_WITHDRAW_USD: float = 2.0
 
 MARKET_TYPE_PERP: str = "perp"
 MARKET_TYPE_HIP3: str = "hip3"
