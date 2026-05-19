@@ -127,25 +127,7 @@ MCP tools: `research_get_alpha_types()`, `research_search_alpha(query, scan_type
 
 ## Pack applets
 
-When creating a new Wayfinder pack/path, include a browser applet by default or
-explicitly ask the owner before omitting one.
-
-When creating or updating a Wayfinder pack with a browser applet:
-
-- browser applets must use the public Delta Lab browser-safe route:
-  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
-  - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
-- authenticated Delta Lab routes (`/api/v1/delta-lab/assets/...`) are for SDK/server-side use, not browser applets
-- take the base URL from the host bridge when available:
-  - prefer `wf:state.apiBase`
-  - otherwise use the `wf:hello` origin when embedded by the Strategies host
-  - do not probe both dev and prod from the same applet build
-- treat non-200 responses, especially `404`, as expected unavailability:
-  - show a clear "data unavailable" or "waiting for host API" state
-  - do not crash the applet on missing data
-- ensure every referenced static resource is present under `applet/dist/`
-- include explicit icon tags (`icon`, `shortcut icon`, `apple-touch-icon`) in the applet HTML to avoid implicit browser 404s for missing favicon resources
-- do not call `/api/v1/delta-lab/symbols/`; that route does not exist for pack applets
+When creating or updating a Wayfinder pack with a browser applet, load `/developing-wayfinder-paths` — see `rules/applet.md` for required files, the public Delta Lab endpoint, bridge protocol, and gotchas.
 
 ## Running strategies via MCP
 

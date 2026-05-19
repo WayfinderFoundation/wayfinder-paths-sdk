@@ -1,14 +1,16 @@
 # Applets (Static Path UI)
 
-An applet is an optional **static** web UI bundled inside your path zip.
+An applet is an optional **static** web UI bundled inside your path zip. When creating a new pack/path, **include an applet by default** — only omit one if the owner explicitly says so.
 
 ## Required files (MVP)
 
 - `wfpath.yaml` includes:
-  - `applet.build_dir`
+  - `applet.build_dir` (canonically `applet/dist/`)
   - `applet.manifest`
 - `applet.manifest.json` exists at the path you declare
 - `build_dir` contains the applet entry file (`index.html` by default)
+- Every referenced static resource (JS, CSS, images, fonts, etc.) is actually present under `build_dir`
+- The applet HTML includes explicit icon tags (`icon`, `shortcut icon`, `apple-touch-icon`) so browsers don't implicit-404 on missing favicons
 
 ## `applet.manifest.json` example
 
@@ -92,9 +94,20 @@ when the applet is served from the path page.
 ### Pattern
 
 1. Capture the API base from the host bridge: prefer `wf:state.apiBase`,
-   then the `wf:hello` event origin.
+   then the `wf:hello` event origin. **Do not probe both dev and prod from
+   the same applet build** — pick whichever the host hands you.
 2. Fetch: `${apiBase}/api/v1/delta-lab/public/assets/${SYMBOL}/timeseries/?series=price,funding,pendle&lookback_days=60&limit=2000`
-3. Treat non-200 as "data unavailable" — render a fallback UI, don't crash.
+3. Treat non-200 as "data unavailable" (especially `404`) — render a clear
+   "data unavailable" / "waiting for host API" state, don't crash.
+
+Host environments:
+- prod: `https://strategies.wayfinder.ai`
+- dev: `https://strategies-dev.wayfinder.ai`
+
+Authenticated Delta Lab routes (`/api/v1/delta-lab/assets/...`) are for
+SDK/server-side use and **will not work** from browser applets. The route
+`/api/v1/delta-lab/symbols/` does **not** exist for pack applets — don't
+call it.
 
 Available series: `price`, `funding`, `lending`, `yield`, `pendle`, `boros`.
 Not all series exist for all symbols. Degrade gracefully.
