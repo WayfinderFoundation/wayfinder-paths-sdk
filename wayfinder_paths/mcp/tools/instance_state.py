@@ -42,15 +42,10 @@ def _http_error_message(exc: httpx.HTTPStatusError) -> tuple[str, Any | None]:
     return f"HTTP {response.status_code}: {message}", details
 
 
-def _transform_type(transform: Any) -> str:
-    if not isinstance(transform, dict):
-        return ""
-    return str(transform.get("type") or "").strip().lower()
-
-
 def _normalizes_scale(transforms: list[Any]) -> bool:
     return any(
-        _transform_type(transform) in {"scale", "multiply"} for transform in transforms
+        isinstance(t, dict) and str(t.get("type") or "").strip().lower() in {"scale", "multiply"}
+        for t in transforms
     )
 
 
