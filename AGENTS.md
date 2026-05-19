@@ -41,7 +41,7 @@ If confused about wallet balances, fetch fresh balances. Users may modify wallet
 
 ## Wallets
 
-**On Wayfinder Shells Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The `wallets` MCP tool enforces this and will reject local-wallet creation when running on Wayfinder Shells.
+**On Wayfinder Shells Instances, ALL wallets MUST be remote. No local wallets — ever.** Remote wallets are managed for you and provide analytics, activity tracking, and session-aware policies. Local wallets are invisible to the rest of the platform and break those guarantees. The wallet MCP tools, including `core_wallets`, enforce this and reject local-wallet creation when running on Wayfinder Shells.
 
 **Always read wallets through the MCP tools below. Never grep `config.json` for `wallets[]` or read wallet files directly.** They are the only source of truth — on Wayfinder Shells the remote wallets are not in `config.json`, so reading the file misses them entirely.
 

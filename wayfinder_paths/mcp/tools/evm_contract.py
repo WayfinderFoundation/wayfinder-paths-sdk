@@ -507,7 +507,7 @@ async def contracts_execute(
 ) -> dict[str, Any]:
     """Execute a contract function by encoding calldata and broadcasting a tx.
 
-    Use this for state-changing writes. For view/pure reads, use `contract_call`.
+    Use this for state-changing writes. For view/pure reads, use `contracts_call`.
     """
     sign_callback, sender = await get_wallet_signing_callback(wallet_label)
 

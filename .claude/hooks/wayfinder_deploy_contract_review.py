@@ -30,7 +30,7 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     payload = _load_payload()
     name = _tool_name(payload)
-    if name not in {"mcp__wayfinder__deploy_contract", "deploy_contract"}:
+    if name not in {"mcp__wayfinder__contracts_deploy", "contracts_deploy"}:
         return
 
     ti = _tool_input(payload)

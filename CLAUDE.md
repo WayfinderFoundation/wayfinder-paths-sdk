@@ -153,7 +153,7 @@ When creating or updating a Wayfinder pack with a browser applet:
 
 When a user asks to run, check, or interact with a strategy:
 
-1. **Always discover first** - Use MCP resource `core_get_adapters_and_strategies()` to list available strategies before attempting to run one. Strategy names use `snake_case` (e.g., `boros_hype_strategy`, not `hype_boros_strategy`).
+1. **Always discover first** - Use MCP tool `core_get_adapters_and_strategies()` to list available strategies before attempting to run one. Strategy names use `snake_case` (e.g., `boros_hype_strategy`, not `hype_boros_strategy`).
 
 2. **Standard strategy interface** - All strategies implement these actions via `mcp__wayfinder__core_run_strategy`:
 

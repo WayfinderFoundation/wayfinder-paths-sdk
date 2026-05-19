@@ -47,7 +47,7 @@ Adapter: `wayfinder_paths/adapters/hyperliquid_adapter/adapter.py`
 
 Claude Code shortcut:
 
-- Use `mcp__wayfinder__core_execute(kind="hyperliquid_deposit", wallet_label="main", amount="8")`
+- Use `mcp__wayfinder__hyperliquid_deposit(wallet_label="main", amount_usdc=8)`
 
 This hard-codes:
 

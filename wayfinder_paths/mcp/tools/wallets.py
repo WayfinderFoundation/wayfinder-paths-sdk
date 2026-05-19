@@ -185,8 +185,8 @@ async def core_wallets(
 ) -> dict[str, Any]:
     """Create wallets, annotate wallet profiles, and discover cross-protocol portfolios.
 
-    Read wallets via `wayfinder://wallets` resources — don't grep `config.json`. On Wayfinder
-    Shells instances all wallets must be remote (`remote=True`); local wallets are rejected.
+    Read wallets via `core_get_wallets` — don't grep `config.json`. On Wayfinder Shells
+    instances all wallets must be remote (`remote=True`); local wallets are rejected.
 
     Actions:
       - `create`: provision a new wallet under `label`. On Shells set `remote=True` and pick

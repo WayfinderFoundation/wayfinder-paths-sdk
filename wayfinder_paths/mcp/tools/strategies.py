@@ -74,8 +74,9 @@ async def core_run_strategy(
 ) -> dict[str, Any]:
     """Run a lifecycle action against an installed strategy.
 
-    Strategies are discovered via `wayfinder://strategies`. Each one implements the same surface;
-    not every action is supported by every strategy (returns `not_supported` if missing).
+    Discover strategy names with `core_get_adapters_and_strategies`. Each one implements the
+    same surface; not every action is supported by every strategy (returns `not_supported`
+    if missing).
 
     Read-only actions:
       - `status`: current positions, balances, internal state

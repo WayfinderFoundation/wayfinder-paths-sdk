@@ -45,7 +45,7 @@ def main() -> None:
 
     payload = _load_payload()
     name = _tool_name(payload)
-    if name not in {"mcp__wayfinder__run_strategy", "run_strategy"}:
+    if name not in {"mcp__wayfinder__core_run_strategy", "core_run_strategy"}:
         return
 
     tool_input = _tool_input(payload)

@@ -22,7 +22,7 @@ Think of it as programmable DeFi infrastructure that connects your wallets to yi
 - `wayfinder_paths/core`: shared config, clients, constants, and utilities
 - `wayfinder_paths/adapters`: protocol integrations (Moonwell, Hyperliquid, etc.)
 - `wayfinder_paths/strategies`: strategy implementations and metadata
-- `wayfinder_paths/mcp`: MCP server, tools, and resources for Claude Code
+- `wayfinder_paths/mcp`: MCP server and tools for Claude Code/OpenCode
 - `scripts/`: setup, wallet generation, and scaffolding helpers
 - `tests/` and `wayfinder_paths/tests`: test suites
 
@@ -349,30 +349,18 @@ poetry run python -m wayfinder_paths.mcp.server
 
 | Tool | Description |
 | --- | --- |
-| `quote_swap` | Quote swaps without executing |
-| `execute` | Execute swaps, transfers, and Hyperliquid deposits |
-| `hyperliquid` | Read-only Hyperliquid market/user data |
+| `core_get_adapters_and_strategies` | Discover installed adapters and strategies |
+| `core_get_wallets` / `core_wallets` | Read wallets, wallet profiles, and protocol-tracked portfolios |
+| `onchain_quote_swap` / `core_execute` | Quote then execute on-chain swaps or sends |
+| `hyperliquid_get_state` / `_search_market` / `_search_mid_prices` | Read Hyperliquid account, market, and price data |
 | `hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw` | Per-action Hyperliquid writes |
-| `run_strategy` | Status, policy, and strategy actions |
-| `run_script` | Execute a local Python script inside `.wayfinder_runs/` |
-| `wallets` | Create or list local wallets |
-| `runner` | Control the local runner daemon (status/add jobs/pause/resume) |
+| `polymarket_read` / `polymarket_get_state` | Read Polymarket markets, prices, orders, and account state |
+| `polymarket_deposit` / `_withdraw` / `_place_market_order` / `_place_limit_order` / `_cancel_order` / `_redeem_positions` | Per-action Polymarket writes |
+| `contracts_list` / `_get` / `_compile` / `_call` / `_deploy` / `_execute` | Solidity contract artifact, read, deploy, and write tools |
+| `research_*` | Web, X, DeFiLlama, Goldsky, Alpha Lab, and Delta Lab research tools |
+| `core_run_script` / `core_run_strategy` / `core_runner` | Execute bounded scripts, strategy actions, and runner jobs |
 
-### MCP Resources (read-only)
-
-- `wayfinder://adapters` and `wayfinder://adapters/{name}`
-- `wayfinder://strategies` and `wayfinder://strategies/{name}`
-- `wayfinder://wallets` and `wayfinder://wallets/{label}`
-- `wayfinder://balances/{label}` and `wayfinder://activity/{label}`
-- `wayfinder://tokens/resolve/{query}`
-- `wayfinder://tokens/gas/{chain_code}`
-- `wayfinder://tokens/search/{chain_code}/{query}`
-- `wayfinder://hyperliquid/{label}/state`
-- `wayfinder://hyperliquid/{label}/spot`
-- `wayfinder://hyperliquid/prices` and `wayfinder://hyperliquid/prices/{coin}`
-- `wayfinder://hyperliquid/markets`
-- `wayfinder://hyperliquid/spot-assets`
-- `wayfinder://hyperliquid/book/{coin}`
+The server defaults to the `all` profile for compatibility. OpenCode scopes tool access per agent through `.opencode/agents/*.md`; local debugging can use `WAYFINDER_MCP_PROFILE=main|research|visual|all`.
 
 ## Scripts and Helpers
 

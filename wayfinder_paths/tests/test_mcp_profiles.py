@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
@@ -22,6 +23,10 @@ def _agent_permission(agent_name: str) -> dict:
     end = text.index("\n---", 4)
     frontmatter = yaml.safe_load(text[4:end]) or {}
     return frontmatter["permission"]
+
+
+def _claude_settings() -> dict:
+    return json.loads((SDK_ROOT / ".claude" / "settings.json").read_text())
 
 
 def test_main_profile_exposes_execution_surface_only() -> None:
@@ -130,3 +135,25 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert visual["wayfinder_*"] == "deny"
     assert visual["wayfinder_shells_*"] == "allow"
     assert visual["wayfinder_core_run_script"] == "allow"
+
+
+def test_claude_settings_reference_registered_tool_names() -> None:
+    registry_names = {
+        entry.name
+        for entry in tool_registry.tools_for_profile("all", include_opencode_only=True)
+    }
+    settings = _claude_settings()
+
+    permission_names = set()
+    for section in ("allow", "ask"):
+        for full_name in settings["permissions"][section]:
+            assert full_name.startswith("mcp__wayfinder__")
+            permission_names.add(full_name.removeprefix("mcp__wayfinder__"))
+
+    assert permission_names <= registry_names
+
+    pre_tool_hooks = settings["hooks"]["PreToolUse"]
+    for hook in pre_tool_hooks:
+        matcher = hook["matcher"]
+        if matcher.startswith("mcp__wayfinder__") and "(" not in matcher:
+            assert matcher.removeprefix("mcp__wayfinder__") in registry_names

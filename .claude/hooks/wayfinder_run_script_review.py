@@ -36,7 +36,7 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
 def main() -> None:
     payload = _load_payload()
     name = _tool_name(payload)
-    if name not in {"mcp__wayfinder__run_script", "run_script"}:
+    if name not in {"mcp__wayfinder__core_run_script", "core_run_script"}:
         return
 
     tool_input = _tool_input(payload)

@@ -34,7 +34,7 @@ Use `source_path` to point at a `.sol` file inside this repo (committed or under
 
 ## 7. Deploy compiles source as-is
 
-`deploy_contract` compiles and deploys your Solidity source exactly as provided — it does not inject helper functions or ownership patterns. If you need token rescue/sweep logic, implement it in your Solidity contract.
+`contracts_deploy` compiles and deploys your Solidity source exactly as provided — it does not inject helper functions or ownership patterns. If you need token rescue/sweep logic, implement it in your Solidity contract.
 
 ## 8. Ownable v5 requires an initial owner argument
 
@@ -60,5 +60,5 @@ When deploying to a Gorlami fork, always set `verify=False`. Etherscan can't ver
 
 ## 12. The compile MCP tool is read-only, deploy is fund-moving
 
-- `compile_contract` — auto-allowed (no confirmation)
-- `deploy_contract` — gated by safety review hook (shows wallet, chain, contract name)
+- `contracts_compile` — auto-allowed (no confirmation)
+- `contracts_deploy` — gated by safety review hook (shows wallet, chain, contract name)

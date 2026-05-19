@@ -174,7 +174,7 @@ hyperliquid_place_limit_order(
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
 - `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
-- `mcp__wayfinder__core_execute` for on-chain transfers (send/swap/deposit)
+- `mcp__wayfinder__core_execute` for on-chain sends and swaps
 
 ### `mcp__wayfinder__core_execute` examples
 
@@ -203,10 +203,9 @@ mcp__wayfinder__core_execute(
 
 **Hyperliquid deposit (Bridge2):**
 ```
-mcp__wayfinder__core_execute(
-    kind="hyperliquid_deposit",
+mcp__wayfinder__hyperliquid_deposit(
     wallet_label="main",
-    amount="8"
+    amount_usdc=8
 )
 ```
 This hard-codes Arbitrum USDC → `HYPERLIQUID_BRIDGE_ADDRESS`. Follow with `wait_for_deposit(...)` then place the perp order.

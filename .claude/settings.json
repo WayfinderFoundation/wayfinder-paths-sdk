@@ -1,21 +1,49 @@
 {
   "permissions": {
     "allow": [
-      "mcp__wayfinder__discover",
-      "mcp__wayfinder__describe",
-      "mcp__wayfinder__wallets",
-      "mcp__wayfinder__tokens",
-      "mcp__wayfinder__balances",
-      "mcp__wayfinder__quote_swap",
-      "mcp__wayfinder__hyperliquid",
-      "mcp__wayfinder__polymarket",
-      "mcp__wayfinder__compile_contract",
-      "mcp__wayfinder__contract_get_abi",
-      "mcp__wayfinder__contract_call"
+      "mcp__wayfinder__core_get_adapters_and_strategies",
+      "mcp__wayfinder__core_get_wallets",
+      "mcp__wayfinder__core_wallets",
+      "mcp__wayfinder__onchain_get_wallet_activity",
+      "mcp__wayfinder__onchain_resolve_token",
+      "mcp__wayfinder__onchain_get_gas_token",
+      "mcp__wayfinder__onchain_fuzzy_search_tokens",
+      "mcp__wayfinder__onchain_quote_swap",
+      "mcp__wayfinder__hyperliquid_get_state",
+      "mcp__wayfinder__hyperliquid_search_market",
+      "mcp__wayfinder__hyperliquid_search_mid_prices",
+      "mcp__wayfinder__polymarket_read",
+      "mcp__wayfinder__polymarket_get_state",
+      "mcp__wayfinder__contracts_list",
+      "mcp__wayfinder__contracts_get",
+      "mcp__wayfinder__contracts_compile",
+      "mcp__wayfinder__contracts_call",
+      "mcp__wayfinder__research_web_search",
+      "mcp__wayfinder__research_web_fetch",
+      "mcp__wayfinder__research_crypto_sentiment",
+      "mcp__wayfinder__research_social_x_search",
+      "mcp__wayfinder__research_defillama_free",
+      "mcp__wayfinder__research_goldsky_graphql",
+      "mcp__wayfinder__research_goldsky_search",
+      "mcp__wayfinder__research_goldsky_schema",
+      "mcp__wayfinder__research_get_alpha_types",
+      "mcp__wayfinder__research_search_alpha",
+      "mcp__wayfinder__research_get_basis_symbols",
+      "mcp__wayfinder__research_get_basis_apy_sources",
+      "mcp__wayfinder__research_get_top_apy",
+      "mcp__wayfinder__research_get_asset_basis_info",
+      "mcp__wayfinder__research_search_delta_lab_assets",
+      "mcp__wayfinder__research_search_delta_lab_markets",
+      "mcp__wayfinder__research_search_delta_lab_instruments",
+      "mcp__wayfinder__research_get_delta_lab_pendle_market",
+      "mcp__wayfinder__research_search_price",
+      "mcp__wayfinder__research_search_lending",
+      "mcp__wayfinder__research_search_perp",
+      "mcp__wayfinder__research_search_borrow_routes"
     ],
     "ask": [
-      "mcp__wayfinder__execute",
-      "mcp__wayfinder__run_script",
+      "mcp__wayfinder__core_execute",
+      "mcp__wayfinder__core_run_script",
       "mcp__wayfinder__hyperliquid_place_market_order",
       "mcp__wayfinder__hyperliquid_place_limit_order",
       "mcp__wayfinder__hyperliquid_place_trigger_order",
@@ -29,9 +57,10 @@
       "mcp__wayfinder__polymarket_place_limit_order",
       "mcp__wayfinder__polymarket_cancel_order",
       "mcp__wayfinder__polymarket_redeem_positions",
-      "mcp__wayfinder__run_strategy",
-      "mcp__wayfinder__deploy_contract",
-      "mcp__wayfinder__contract_execute"
+      "mcp__wayfinder__contracts_deploy",
+      "mcp__wayfinder__contracts_execute",
+      "mcp__wayfinder__core_run_strategy",
+      "mcp__wayfinder__core_runner"
     ]
   },
   "hooks": {
@@ -57,7 +86,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__execute",
+        "matcher": "mcp__wayfinder__core_execute",
         "hooks": [
           {
             "type": "command",
@@ -66,7 +95,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__run_script",
+        "matcher": "mcp__wayfinder__core_run_script",
         "hooks": [
           {
             "type": "command",
@@ -93,7 +122,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__run_strategy",
+        "matcher": "mcp__wayfinder__core_run_strategy",
         "hooks": [
           {
             "type": "command",
@@ -102,7 +131,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__deploy_contract",
+        "matcher": "mcp__wayfinder__contracts_deploy",
         "hooks": [
           {
             "type": "command",
@@ -111,7 +140,7 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__contract_execute",
+        "matcher": "mcp__wayfinder__contracts_execute",
         "hooks": [
           {
             "type": "command",
