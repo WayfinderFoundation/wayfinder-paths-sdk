@@ -19,6 +19,23 @@ async def test_resolve_wallet_address_prefers_explicit_address():
 
 
 @pytest.mark.asyncio
+async def test_resolve_wallet_address_unknown_label_preserves_label():
+    # An unknown label must come back as (None, label) so callers can emit a
+    # "Unknown wallet_label: X" 404 instead of a misleading generic error.
+    with patch("wayfinder_paths.mcp.utils.find_wallet_by_label", return_value=None):
+        addr, lbl = await resolve_wallet_address(wallet_label="not-a-real-label")
+    assert addr is None
+    assert lbl == "not-a-real-label"
+
+
+@pytest.mark.asyncio
+async def test_resolve_wallet_address_missing_label_returns_double_none():
+    addr, lbl = await resolve_wallet_address()
+    assert addr is None
+    assert lbl is None
+
+
+@pytest.mark.asyncio
 async def test_wallets_discover_portfolio_requires_confirmation_when_many_protocols():
     store = SimpleNamespace(
         get_protocols_for_wallet=lambda _addr: ["hyperliquid", "pendle", "moonwell"]
