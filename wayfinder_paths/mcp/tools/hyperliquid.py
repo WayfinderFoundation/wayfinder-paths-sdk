@@ -225,13 +225,14 @@ def _validate_price(
     asset_id: int,
     price: float,
 ) -> None:
-    """Apply HL's price rounding (5 sig figs → max decimals) and reject divergence."""
-    price_decimals = adapter.get_price_decimals(asset_id)
-    rounded = round(float(f"{price:.5g}"), price_decimals)
-    if rounded != float(price):
+    """Reject prices off HL's tick grid; suggest the floor."""
+    floored = adapter.get_valid_order_price(asset_id, float(price))
+    if floored != float(price):
+        price_decimals = adapter.get_price_decimals(asset_id)
+        tick = float(Decimal(10) ** (-price_decimals))
         raise ValueError(
-            f"price {price} is invalid — HL allows ≤ 5 sig figs and ≤ {price_decimals} decimals. "
-            f"Try price={rounded}."
+            f"price {price} invalid — HL requires ≤ 5 sig figs and ≤ "
+            f"{price_decimals} decimals (tick = {tick}). Try price={floored}."
         )
 
 

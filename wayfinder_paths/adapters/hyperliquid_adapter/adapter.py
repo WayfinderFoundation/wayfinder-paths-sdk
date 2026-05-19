@@ -677,6 +677,31 @@ class HyperliquidAdapter(BaseAdapter):
         ) * step
         return float(quantized)
 
+    def get_valid_order_price(self, asset_id: int, price: float) -> float:
+        """Floor `price` to HL's nearest valid tick for `asset_id`.
+
+        HL accepts any integer price; otherwise the price must have ≤ 5
+        significant figures AND ≤ `get_price_decimals(asset_id)` decimal
+        places. Both caps are applied as ROUND_DOWN.
+        """
+        if price <= 0:
+            return 0.0
+        if float(price).is_integer():
+            return float(int(price))
+
+        decimals = self.get_price_decimals(asset_id)
+        decimal_step = Decimal(10) ** (-decimals)
+        p = (Decimal(str(price)) / decimal_step).to_integral_value(
+            rounding=ROUND_DOWN
+        ) * decimal_step
+
+        if p > 0:
+            sig_step = Decimal(10) ** (p.adjusted() - 4)
+            if sig_step > decimal_step:
+                p = (p / sig_step).to_integral_value(rounding=ROUND_DOWN) * sig_step
+
+        return float(p)
+
     def _mandatory_builder_fee(self, builder: dict[str, Any] | None) -> dict[str, Any]:
         expected_builder = HYPE_FEE_WALLET.lower()
 
@@ -746,10 +771,7 @@ class HyperliquidAdapter(BaseAdapter):
             }
 
         price = midprice * ((1 + slippage) if is_buy else (1 - slippage))
-        price = round(
-            float(f"{price:.5g}"),
-            self.get_price_decimals(asset_id),
-        )
+        price = self.get_valid_order_price(asset_id, price)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
             is_buy,
@@ -762,10 +784,11 @@ class HyperliquidAdapter(BaseAdapter):
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
         if success:
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            success = not any(isinstance(s, dict) and s.get("error") for s in statuses)
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
@@ -897,7 +920,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         # Clamp inside (0, 1); HL rejects 0/1.
         price = max(0.0001, min(0.9999, float(price)))
-        price = round(float(f"{price:.5g}"), self.get_price_decimals(asset_id))
+        price = self.get_valid_order_price(asset_id, price)
 
         order_actions = self._create_hypecore_order_actions(
             asset_id,
@@ -910,10 +933,11 @@ class HyperliquidAdapter(BaseAdapter):
             cloid,
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
         if success:
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            success = not any(isinstance(s, dict) and s.get("error") for s in statuses)
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def cancel_order(
@@ -1152,16 +1176,26 @@ class HyperliquidAdapter(BaseAdapter):
         await self.ensure_builder_fee_approved(address, builder_fee)
         builder_info = BuilderInfo(b=builder_fee.get("b"), f=builder_fee.get("f"))
 
+        trigger_price = self.get_valid_order_price(asset_id, trigger_price)
         order_type: OrderType = {
             "trigger": {"triggerPx": trigger_price, "isMarket": is_market, "tpsl": tpsl}
         }
-        price = trigger_price if is_market else (limit_price or trigger_price)
+        if is_market:
+            price = trigger_price
+        else:
+            price = self.get_valid_order_price(
+                asset_id, limit_price if limit_price is not None else trigger_price
+            )
         order_actions = self._create_hypecore_order_actions(
             asset_id, is_buy, price, size, True, order_type, builder_info
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
+        if success:
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def place_stop_loss(
@@ -1413,6 +1447,7 @@ class HyperliquidAdapter(BaseAdapter):
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
         await self.ensure_builder_fee_approved(address, builder_fee)
+        price = self.get_valid_order_price(asset_id, price)
         order_actions = self._create_hypecore_order_actions(
             asset_id,
             is_buy,
@@ -1425,7 +1460,11 @@ class HyperliquidAdapter(BaseAdapter):
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
-        success = result.get("status") == "ok"
+        success = result["status"] == "ok"
+        if success:
+            success = not any(
+                "error" in s for s in result["response"]["data"]["statuses"]
+            )
         return success, result
 
     async def wait_for_deposit(
