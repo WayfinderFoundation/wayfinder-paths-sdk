@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final, Literal
 
 from wayfinder_paths.core.constants.contracts import (
     ARBITRUM_USDC as ARBITRUM_USDC_ADDRESS,
@@ -20,6 +20,7 @@ __all__ = [
     "HYPERLIQUID_BRIDGE_ADDRESS",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP",
     "DEFAULT_HYPERLIQUID_BUILDER_FEE",
+    "HyperliquidMarketType",
     "MARKET_SEARCH_ALIASES",
     "MARKET_SEARCH_MIN_MATCH_SCORE",
     "MARKET_TYPE_HIP3",
@@ -52,10 +53,13 @@ WITHDRAW_FEE_USD: float = 1.0
 # At least $2 gross so something lands on Arbitrum after the $1 fee.
 MIN_WITHDRAW_USD: float = 2.0
 
-MARKET_TYPE_PERP: str = "perp"
-MARKET_TYPE_HIP3: str = "hip3"
-MARKET_TYPE_SPOT: str = "spot"
-MARKET_TYPE_HIP4: str = "hip4"
+MARKET_TYPE_PERP: Final = "perp"
+MARKET_TYPE_HIP3: Final = "hip3"
+MARKET_TYPE_SPOT: Final = "spot"
+MARKET_TYPE_HIP4: Final = "hip4"
+HyperliquidMarketType = Literal[
+    MARKET_TYPE_PERP, MARKET_TYPE_HIP3, MARKET_TYPE_SPOT, MARKET_TYPE_HIP4
+]
 
 # Min `matches/min(len)` score for hyperliquid_search_market to keep a candidate.
 MARKET_SEARCH_MIN_MATCH_SCORE: float = 0.9

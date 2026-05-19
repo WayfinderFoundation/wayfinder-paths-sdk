@@ -24,6 +24,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     MIN_ORDER_USD_NOTIONAL,
     MIN_WITHDRAW_USD,
     WITHDRAW_FEE_USD,
+    HyperliquidMarketType,
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
@@ -1153,13 +1154,18 @@ async def hyperliquid_search_mid_prices(
 
 
 @catch_errors
-async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, Any]:
+async def hyperliquid_search_market(
+    query: str,
+    limit: int = 10,
+    market_type: HyperliquidMarketType | None = None,
+) -> dict[str, Any]:
     """
     Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
     query returns the first `limit` items from each bucket unfiltered.
 
     query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
-    limit: Max number of results to return per category
+    limit: Max number of results to return per category.
+    market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
 
     Returns a list of asset names to be used when executing Hyperliquid orders.
     """
@@ -1247,6 +1253,18 @@ async def hyperliquid_search_market(query: str, limit: int = 10) -> dict[str, An
         perp_hits = [{"name": p} for p in top(perps, lambda p: p)][:limit]
         spot_hits = [{"name": s} for s in top(spots, lambda s: s)][:limit]
         outcome_hits = top(outcome_data, outcome_text)[:limit]
+
+    match market_type:
+        case "perp":
+            perp_hits = [h for h in perp_hits if ":" not in h["name"]]
+            spot_hits, outcome_hits = [], []
+        case "hip3":
+            perp_hits = [h for h in perp_hits if ":" in h["name"]]
+            spot_hits, outcome_hits = [], []
+        case "spot":
+            perp_hits, outcome_hits = [], []
+        case "hip4":
+            perp_hits, spot_hits = [], []
 
     return ok(
         {
