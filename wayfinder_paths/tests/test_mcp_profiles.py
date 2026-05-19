@@ -16,21 +16,20 @@ def _tool_names(mcp: FastMCP) -> set[str]:
     return set(mcp._tool_manager._tools)
 
 
-def _agent_permission(agent_name: str) -> dict:
+def _agent_frontmatter(agent_name: str) -> dict:
     text = (SDK_ROOT / ".opencode" / "agents" / f"{agent_name}.md").read_text(
         encoding="utf-8"
     )
     end = text.index("\n---", 4)
-    frontmatter = yaml.safe_load(text[4:end]) or {}
-    return frontmatter["permission"]
+    return yaml.safe_load(text[4:end]) or {}
+
+
+def _agent_permission(agent_name: str) -> dict:
+    return _agent_frontmatter(agent_name)["permission"]
 
 
 def _claude_settings() -> dict:
     return json.loads((SDK_ROOT / ".claude" / "settings.json").read_text())
-
-
-def _opencode_settings() -> dict:
-    return json.loads((SDK_ROOT / ".opencode" / "opencode.json").read_text())
 
 
 def _claude_permission_names(section: str) -> set[str]:
@@ -117,16 +116,11 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
 
 
-def test_opencode_config_scopes_visible_wayfinder_tools_by_agent() -> None:
-    settings = _opencode_settings()
-
-    assert "tools" not in settings
-    assert settings["permission"]["wayfinder_core_run_script"] == "ask"
-    assert settings["permission"]["wayfinder_core_execute"] == "ask"
-    assert settings["permission"]["wayfinder_contracts_execute"] == "ask"
-
-    primary = settings["agent"]["wayfinder"]["permission"]
-    assert primary == {
+def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
+    primary = _agent_permission("wayfinder")
+    assert {
+        key: value for key, value in primary.items() if key.startswith("wayfinder_")
+    } == {
         "wayfinder_*": "deny",
         "wayfinder_core_*": "allow",
         "wayfinder_onchain_*": "allow",
@@ -155,8 +149,14 @@ def test_opencode_config_scopes_visible_wayfinder_tools_by_agent() -> None:
     _assert_rule_order(primary, "wayfinder_contracts_*", "wayfinder_contracts_deploy")
 
     for agent in ("wayfinder-research", "wayfinder-quant"):
-        permission = settings["agent"][agent]["permission"]
-        assert permission == {
+        frontmatter = _agent_frontmatter(agent)
+        assert "tools" not in frontmatter
+        permission = frontmatter["permission"]
+        assert {
+            key: value
+            for key, value in permission.items()
+            if key.startswith("wayfinder_")
+        } == {
             "wayfinder_*": "deny",
             "wayfinder_research_*": "allow",
             "wayfinder_core_get_adapters_and_strategies": "allow",
@@ -164,8 +164,12 @@ def test_opencode_config_scopes_visible_wayfinder_tools_by_agent() -> None:
         }
         _assert_rule_order(permission, "wayfinder_*", "wayfinder_research_*")
 
-    visual = settings["agent"]["wayfinder-visual"]["permission"]
-    assert visual == {
+    visual_frontmatter = _agent_frontmatter("wayfinder-visual")
+    assert "tools" not in visual_frontmatter
+    visual = visual_frontmatter["permission"]
+    assert {
+        key: value for key, value in visual.items() if key.startswith("wayfinder_")
+    } == {
         "wayfinder_*": "deny",
         "wayfinder_shells_*": "allow",
         "wayfinder_core_run_script": "ask",
