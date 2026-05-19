@@ -51,7 +51,14 @@ class TestAdapterMidPriceFetch:
             )
 
             async def _no_broadcast(action, address):
-                return {"status": "ok", "action": action}
+                return {
+                    "status": "ok",
+                    "response": {
+                        "type": "order",
+                        "data": {"statuses": [{"resting": {"oid": 1}}]},
+                    },
+                    "action": action,
+                }
 
             adapter._sign_and_broadcast_hypecore = _no_broadcast
 
