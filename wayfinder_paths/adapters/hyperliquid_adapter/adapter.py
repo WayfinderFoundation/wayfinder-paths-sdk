@@ -206,8 +206,12 @@ class HyperliquidAdapter(BaseAdapter):
     def get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000
         max_decimals = 6 if not is_spot else 8
+        # HIP-4 outcome prices live in (0, 1) with a fixed 0.00001 tick — the
+        # spot MAX_DECIMALS=8 over-allows and triggers "Price must be divisible
+        # by tick size" on the IOC slippage path (e.g. mid 0.01972 * 1.05 =
+        # 0.020706 has 6 decimals, rejected; rounding to 5 → 0.02071, accepted).
         if asset_id >= OUTCOME_ASSET_OFFSET:
-            max_decimals = 8
+            max_decimals = 5
         return max_decimals - self.get_sz_decimals(asset_id)
 
     def _sig_hex_to_hl_signature(self, sig_hex: str) -> dict[str, Any]:
