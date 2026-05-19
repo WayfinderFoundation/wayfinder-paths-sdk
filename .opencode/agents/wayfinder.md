@@ -8,9 +8,16 @@ permission:
     wayfinder-research: allow
     wayfinder-visual: allow
     wayfinder-quant: allow
-  wayfinder_research_*: deny
-  wayfinder_shells_*: deny
-  wayfinder_*_execute*: ask
+  wayfinder_*: deny
+  wayfinder_core_*: allow
+  wayfinder_onchain_*: allow
+  wayfinder_hyperliquid_*: allow
+  wayfinder_polymarket_*: allow
+  wayfinder_contracts_*: allow
+  wayfinder_core_execute: ask
+  wayfinder_core_run_script: ask
+  wayfinder_core_run_strategy: ask
+  wayfinder_core_runner: ask
   wayfinder_hyperliquid_place_*: ask
   wayfinder_hyperliquid_cancel_order: ask
   wayfinder_hyperliquid_update_leverage: ask
@@ -22,8 +29,7 @@ permission:
   wayfinder_polymarket_withdraw: ask
   wayfinder_polymarket_redeem_positions: ask
   wayfinder_contracts_deploy: ask
-  wayfinder_core_run_strategy: ask
-  wayfinder_core_runner: ask
+  wayfinder_contracts_execute: ask
 ---
 
 # Wayfinder

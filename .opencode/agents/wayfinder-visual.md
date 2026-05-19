@@ -8,7 +8,7 @@ permission:
   question: deny
   wayfinder_*: deny
   wayfinder_shells_*: allow
-  wayfinder_core_run_script: allow
+  wayfinder_core_run_script: ask
 ---
 
 # Wayfinder Visual

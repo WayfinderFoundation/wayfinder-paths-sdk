@@ -4,7 +4,7 @@ Run locally (via Claude Code .mcp.json):
   poetry run python -m wayfinder_paths.mcp.server
 
 The SDK exposes one MCP catalog. OpenCode scopes per-agent tool visibility with
-glob rules in config; permissions separately gate sensitive calls.
+permission wildcard rules in config; permissions separately gate sensitive calls.
 """
 
 from __future__ import annotations
