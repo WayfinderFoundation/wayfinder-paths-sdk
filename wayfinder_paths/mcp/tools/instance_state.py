@@ -44,7 +44,8 @@ def _http_error_message(exc: httpx.HTTPStatusError) -> tuple[str, Any | None]:
 
 def _normalizes_scale(transforms: list[Any]) -> bool:
     return any(
-        isinstance(t, dict) and str(t.get("type") or "").strip().lower() in {"scale", "multiply"}
+        isinstance(t, dict)
+        and str(t.get("type") or "").strip().lower() in {"scale", "multiply"}
         for t in transforms
     )
 
