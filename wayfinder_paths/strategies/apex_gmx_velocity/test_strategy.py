@@ -18,6 +18,7 @@ import httpx
 import pandas as pd
 import pytest
 
+from wayfinder_paths.core.backtesting.ref import load_ref
 from wayfinder_paths.core.strategies.active_perps_testing import (
     assert_active_perps_backtest_runs,
     assert_active_perps_reproduces_ref,
@@ -101,15 +102,34 @@ def test_signal_invariants():
 @pytest.mark.smoke
 def test_backtest_reproduces_ref():
     """Re-run the audit's 60d window and confirm Sharpe is within the
-    expected band declared in examples.json."""
+    expected band declared in examples.json.
+
+    This intentionally uses the frozen ref window instead of trailing-live 60d
+    data. The trailing 60d Sharpe is a market-performance check, not a stable
+    CI regression test.
+    """
     fixture = load_strategy_examples(Path(__file__))
     expected = fixture["expected_backtest_ranges"]
+    ref = load_ref(Path(__file__).parent)
 
     from wayfinder_paths.core.backtesting.backtester import run_backtest
     from wayfinder_paths.core.backtesting.types import BacktestConfig
 
-    prices = asyncio.run(_fetch_hl_prices(days=200))
-    cutoff = prices.index[-1] - pd.Timedelta(days=60)
+    ref_end = pd.Timestamp(ref.data.window.end)
+    ref_end = (
+        ref_end.tz_localize("UTC")
+        if ref_end.tzinfo is None
+        else ref_end.tz_convert("UTC")
+    )
+    fetch_end = ref_end + pd.Timedelta(days=1)
+    fetch_start = fetch_end - pd.Timedelta(days=200)
+    prices = asyncio.run(
+        _fetch_hl_prices(
+            start_ms=int(fetch_start.timestamp() * 1000),
+            end_ms=int(fetch_end.timestamp() * 1000),
+        )
+    )
+    cutoff = ref_end - pd.Timedelta(days=60)
     sub = prices[prices.index >= cutoff]
     sf = compute_signal(sub, None, ApexGmxVelocityStrategy.DEFAULT_PARAMS)
     cfg = BacktestConfig(

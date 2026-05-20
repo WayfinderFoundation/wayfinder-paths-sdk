@@ -115,6 +115,18 @@ async def core_runner(
       - `job_runs`: recent runs for a job (`name`, optional `limit`).
       - `run_report`: detailed log for a single run (`run_id`, optional `tail_bytes`).
 
+    Safety notes for monitors and mutations:
+      - If `add_job`, `delete_job`, `update_job`, or `run_once` times out at the
+        caller, treat the mutation result as unknown and inspect `status`,
+        `job_runs`, or `run_report` before retrying.
+      - Generated monitor scripts should keep durable state under the runner
+        directory or `.wayfinder_runs/state`, not `/tmp`.
+      - First/seed runs should not send external alerts unless explicitly
+        requested. Position-bound monitors should verify live side, size,
+        leverage/mode, and notional before alerting.
+      - Fetch or notify failures should exit nonzero or emit a
+        `WAYFINDER_JOB_RESULT` handoff rather than looking like a healthy run.
+
     Args:
         sock_path: Override the daemon socket (default: standard runner location).
         notify_session_on_success: Post successful runs into chat. Defaults false to keep

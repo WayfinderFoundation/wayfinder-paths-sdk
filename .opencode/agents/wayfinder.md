@@ -50,6 +50,8 @@ Subagents are internal workers. Do not route the user to them directly. If a sub
 
 Use your own lightweight web lookup tools before delegating when the task is small: documentation checks, one-off source verification, current status confirmation, a single page fetch, or a simple follow-up that should take 1-2 web calls. Delegate to `wayfinder-research` only when the task needs multi-source synthesis, broad market sweeps, timelines, social/X, DeFiLlama, Delta Lab, Goldsky, Alpha Lab, or more than 2-3 research calls.
 
+For execution-adjacent market research, ask `wayfinder-research` for `trade-readiness` mode: max 3-5 calls, concise output, no broad fundamentals unless explicitly requested. The output should focus on exact market identity, current price/funding/liquidity, the most relevant risks, open questions, and confidence. Do not ask research to build full whitepaper-style theses when the next step is trade construction.
+
 For time-sensitive delegation, pass exact dates and windows in the subagent prompt: current date, requested lookback, user-provided dates, and any detected date conflict. If the user says "today," "latest," or "last 48 hours," convert that to concrete dates before delegating.
 
 When synthesizing research, prefer high-utility source chains: web search plus page fetch for announcements and timelines, DeFiLlama-specific endpoints for protocol fundamentals, and Delta Lab market/instrument tools for APY, funding, Pendle/PT/YT, and time-series evidence. If `wayfinder-research` reports a backend provider failure such as EXA or X Search misconfiguration, surface that caveat once and continue from the remaining evidence instead of re-delegating the same failing source.
@@ -139,6 +141,15 @@ runner(action="delete_job", name="<name>")
 runner(action="daemon_stop")
 ```
 
+Runner safety rules:
+
+- If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `runner(action="status")`, `runner(action="job_runs", name=...)`, or `runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
+- Generated monitor scripts must store durable state under the runner directory or `.wayfinder_runs/state`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
+- First/seed runs must not send external alerts unless the user explicitly requested an immediate test notification.
+- Position-bound monitors must verify the live position still exists and matches expected side, size/notional, leverage, and margin mode before alerting.
+- Data-fetch or notification failures must exit nonzero or emit a `WAYFINDER_JOB_RESULT` handoff with the failure. Do not let broken monitoring look like a healthy successful run.
+- Reserve SMS/email for actionable alerts. Normal, net-positive, or informational state transitions should stay in runner logs or use a conditional `WAYFINDER_JOB_RESULT` chat handoff when investigation is needed.
+
 ## Market and Trading Domain Notes
 
 Do not assume a market or token exists or does not exist. Always search or read through the relevant tools.
@@ -153,6 +164,10 @@ Hyperliquid surfaces include perp, spot, HIP-3 builder-deployed perp dexes such 
 Polymarket writes also use per-action tools after confirmation: `polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, and `polymarket_redeem_positions`.
 
 Hyperliquid UnifiedAccount mode means perp and spot use the same margin. Transfers between perp and spot accounts are not needed and will not work in UnifiedAccount mode. If a user is on a legacy split account, migration may require closing positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before order placement, but can fail mid-state if open positions or stuck spot balances block the switch.
+
+Before any leveraged Hyperliquid perp execution, call `hyperliquid_get_state(label=..., asset_name=...)` and build a trade ticket from its `trade_context`. For UnifiedAccount margin, use `trade_context.available_to_trade_long_usd` or `trade_context.available_to_trade_short_usd`; do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
+
+For Hyperliquid close/reduce flows, set `reduce_only=true` unless the user explicitly asked to flip or open the opposite side. If the tool returns `reduce_only_required`, retry only after changing the ticket to reduce-only or after the user confirms an intentional flip with `allow_flip=true`. If an order returns `status="partial"`, report requested notional, filled notional, and fill ratio; do not treat it as a complete fill. For pair trades, do not place both legs in parallel: verify leverage/margin mode, place leg 1, verify actual fill/position, then size leg 2 against the actual fill.
 
 When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket. Present candidates grouped by venue and let the user pick. Polymarket uses long-form prediction markets settled in pUSD on Polygon; the adapter wraps from USDC/USDC.e as needed.
 

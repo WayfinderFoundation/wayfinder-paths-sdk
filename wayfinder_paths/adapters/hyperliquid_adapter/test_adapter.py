@@ -37,6 +37,13 @@ class TestHyperliquidAdapter:
                 ]
             if req_type == "allMids":
                 return {"BTC": "50000.0", "ETH": "3000.0"}
+            if req_type == "activeAssetData":
+                return {
+                    "availableToTrade": ["12.34", "56.78"],
+                    "leverage": {"type": "cross", "value": 5},
+                    "markPx": "50000.0",
+                    "maxTradeSzs": ["0.0012", "0.0056"],
+                }
             if req_type == "openOrders":
                 return [{"oid": 1}]
             if req_type == "frontendOpenOrders":
@@ -108,6 +115,24 @@ class TestHyperliquidAdapter:
             success, data = await adapter.get_user_state("0x1234")
             assert success
             assert "assetPositions" in data
+
+    @pytest.mark.asyncio
+    async def test_get_active_asset_data(self, adapter, mock_info, _patch_adapter):
+        p1, p2 = _patch_adapter()
+        with p1, p2:
+            success, data = await adapter.get_active_asset_data("0x1234", "BTC-USDC")
+            assert success
+            assert data["availableToTrade"] == ["12.34", "56.78"]
+            mock_info.post.assert_any_call(
+                "/info",
+                {"type": "activeAssetData", "user": "0x1234", "coin": "BTC"},
+            )
+
+    def test_active_asset_data_coin(self):
+        assert HyperliquidAdapter.active_asset_data_coin("BTC-USDC") == "BTC"
+        assert HyperliquidAdapter.active_asset_data_coin("xyz:NVDA") == "xyz:NVDA"
+        with pytest.raises(ValueError, match="activeAssetData"):
+            HyperliquidAdapter.active_asset_data_coin("BTC/USDC")
 
     def test_get_sz_decimals(self, adapter, mock_info, _patch_adapter):
         p1, p2 = _patch_adapter()

@@ -73,6 +73,14 @@ Default tool budget:
 
 Use extra calls only when they add a new evidence type. Do not fan out broad DeFiLlama overview, X search, web search, and Delta Lab all at once. Sequence high-cardinality calls after the first useful result narrows the target.
 
+Trade-readiness mode:
+
+- Use when the primary asks for execution-adjacent research, a quick market check before trade construction, or a narrowly bounded "is this market/trade sane?" answer.
+- Hard cap at 3-5 calls unless the primary explicitly asks for deeper research.
+- Return a concise trade-readiness summary, not broad fundamentals. Focus on exact market identity, current price/funding/liquidity, order book or spread if relevant, immediate catalyst/risk facts, open questions, and confidence.
+- Do not include long protocol background, multi-month narrative history, or unrelated baskets unless requested.
+- If the requested trade needs wallet, leverage, margin, or execution math, return `openQuestions` for the primary to resolve; never infer or propose exact user size from stale or missing account state.
+
 Upweight these patterns:
 
 - `research_web_search` then `research_web_fetch` for official source discovery, dates, deployments, listings, announcements, and catalyst timelines.

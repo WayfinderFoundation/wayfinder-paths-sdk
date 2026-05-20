@@ -472,6 +472,39 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch user_state for {address}: {exc}")
             return False, str(exc)
 
+    @classmethod
+    def active_asset_data_coin(cls, asset_name: str) -> str:
+        """Return the coin key expected by Hyperliquid's activeAssetData endpoint."""
+        match cls.get_market_type(asset_name):
+            case "perp":
+                return asset_name.removesuffix("-USDC")
+            case "hip3":
+                return asset_name
+            case _:
+                raise ValueError(
+                    "activeAssetData is only available for perp and HIP-3 markets"
+                )
+
+    async def get_active_asset_data(
+        self, address: str, asset_name: str
+    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
+        try:
+            data = await asyncio.to_thread(
+                get_info().post,
+                "/info",
+                {
+                    "type": "activeAssetData",
+                    "user": address,
+                    "coin": self.active_asset_data_coin(asset_name),
+                },
+            )
+            return True, data
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to fetch active_asset_data for {address} {asset_name}: {exc}"
+            )
+            return False, str(exc)
+
     async def get_spot_user_state(
         self, address: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
