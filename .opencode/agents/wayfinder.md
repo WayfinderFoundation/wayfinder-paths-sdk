@@ -99,6 +99,17 @@ Supported chain identifiers:
 
 Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tokens, HIP-3 builder deployed perp dexes (`xyz`, `flx`, `vntl`, `hyna`, `km`) (custom exchanges offering perpetuals) and HIP-4 outcome markets (prediction market).
 
+#### Asset-name conventions
+
+The separator in `asset_name` determines the market type the tool dispatches:
+
+| Market type | Format               | Example     | Notes                                                                                       |
+| ----------- | -------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| Perp        | `BASE-QUOTE` (dash)  | `HYPE-USDC` |                                                                                             |
+| Spot        | `BASE/QUOTE` (slash) | `HYPE/USDC` | No direct BTC/ETH spot — use `U`-wrapped variants `UBTC/USDC`, `UETH/USDC` ([unit.xyz](https://unit.xyz)). `PURR/USDC` is native. |
+| HIP-3       | `dex:BASE` (colon)   | `xyz:SP500` | Builder-deployed; one of `xyz`, `flx`, `vntl`, `hyna`, `km`.                                |
+| HIP-4       | `#<encoding>` (hash) | `#200`      | Outcome market; see HIP-4 section below.                                                    |
+
 Leveraged perp execution: before placing, call `hyperliquid_get_state(label=..., asset_name=...)` and build a trade ticket from its `trade_context`. For UnifiedAccount margin, use `trade_context.available_to_trade_long_usd` or `trade_context.available_to_trade_short_usd`; do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
 
 Close/reduce flows: set `reduce_only=true` unless the user explicitly asked to flip or open the opposite side. If the tool returns `reduce_only_required`, retry only after changing the ticket to reduce-only or after the user confirms an intentional flip with `allow_flip=true`. If an order returns `status="partial"`, report requested notional, filled notional, and fill ratio; do not treat it as a complete fill. For pair trades, do not place both legs in parallel: verify leverage/margin mode, place leg 1, verify actual fill/position, then size leg 2 against the actual fill.
@@ -141,6 +152,15 @@ Polymarket balances are separate from a user's EVM balances. To place transactio
 #### Cross-venue prediction markets
 
 When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket in parallel. Present candidates grouped by venue and let the user pick — the same theme can list on both with different sizes, expiries, and collateral.
+
+### BRAP (onchain swap router)
+
+BRAP is the cross-chain swap aggregator behind `onchain_quote_swap` and `core_execute(kind="swap", ...)`. Use it for any same-chain or cross-chain swap.
+
+Slippage is unit-sensitive — mixing them silently passes 100× too much:
+
+- Adapter / client code (`brap_adapter`, `BRAPClient`) takes slippage as a **decimal fraction** (`0.005` = 0.5%).
+- MCP helpers (`onchain_quote_swap`, `core_execute`) take slippage in **bps** (`50` = 0.5%).
 
 ## Execution Safety
 
