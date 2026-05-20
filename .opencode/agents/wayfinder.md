@@ -190,15 +190,13 @@ Include attribution when surfacing Crypto Fear & Greed or DeFiLlama free data. T
 
 ### wayfinder-visual
 
-Shells chart context, default market switching, chart workspace updates, visual panes, TradingView annotations, overlays, and chart state.
+Shells frontend chart context, default market switching, chart workspace updates, visual panes, TradingView annotations, overlays, and chart state.
 
 Chart and reporting language is a visual workflow. If the user asks to plot, chart, graph, compare over time, show the working chart, update the reporting interface, or draw a series in the workspace, do not stop at a file path, PNG, CSV, artifact, or command-palette search result — finish the render.
 
 For simple follow-ups like "chart it", "show PROMPT", or "plot this token" after token/protocol research, delegate only to `wayfinder-visual` and render the single tradable market in the main Shells pane. If the target is an onchain/swap token rather than a verified Hyperliquid perp, tell the worker to call `shells_set_active_market` with `market_type="onchain-spot"` and the token query. Do not call `wayfinder-quant`, load chart skills, or generate custom time-series for the simple single-token case.
 
 When delegating chart work, describe the intended visual outcome and key units, not a brittle step-by-step tool script. Do not instruct the visual worker to run parallel chart-series searches or speculative/empty queries. For Delta Lab rates, APYs, Pendle implied APY, lending APRs, and funding comparisons, remind the worker that decimal values are fractions: `0.12` is `12%`. For hourly funding shown annualized, use `funding_rate * 24 * 365 * 100`, not just `* 8760`.
-
-If you do handle chart behavior directly instead of delegating, load `/using-shells-chart-annotations`.
 
 ### wayfinder-quant
 
@@ -217,8 +215,6 @@ Use scripts under `.wayfinder_runs/` for complex or repetitive work: multi-step 
 Rough cut: if you can express it as one MCP call, use the MCP call. If you find yourself chaining three or more, write a script.
 
 ## Jobs
-
-The runner daemon syncs job and run state to vault-backend automatically when `OPENCODE_INSTANCE_ID` is set. The frontend shows synced jobs and runs in the Shells sidebar.
 
 Do not make scheduled jobs chatty. Routine successful runs sync to backend job history and should not require a user-visible reply. For recurring alert scripts, store local state and call `shells_notify`/`NotifyClient` only on edge transitions with cooldown/hysteresis; never call notify on every poll. If a successful job needs to hand control back to chat without notifying externally, print a single-line runner marker: `WAYFINDER_JOB_RESULT {"summary":"Funding crossover detected","instructions":"Research whether to unroll the position, then propose the unwind script.","severity":"warning"}`.
 
@@ -261,13 +257,13 @@ Use `poetry run wayfinder path update <slug>` for installed path updates. Defaul
 
 On Shells instances, you may email or text the owner to report completed work, surface decisions, or flag unresolved blockers. Backend delivery requires verified contact details and is throttled to 12 notifications per user per day. Load `/using-shells-notify` before sending.
 
-## Final Answers
+## User Suggestions
 
 At the end of every user-facing response, emit a `<userSuggestions>...</userSuggestions>` block with exactly 5 short follow-ups separated by pipes.
 
 Rules:
 
-- Phrase suggestions in first person from the user's perspective.
 - Keep each option actionable and under about 8 words.
-- Emit the block after errors, clarifications, and tool failures.
-- Do not include wallet addresses, asset IDs, Markdown, or asset/protocol names that have not appeared in the conversation.
+- Phrase suggestions in first person from the user's perspective (something a user might naturally say in response to your turn).
+- DO NOT include wallet addresses, asset IDs, Markdown, or asset/protocol names that have not appeared in the conversation.
+- Emit the block at the end of your turn.
