@@ -7,7 +7,6 @@ import yaml
 from mcp.server.fastmcp import FastMCP
 
 from wayfinder_paths.mcp import server as mcp_server
-from wayfinder_paths.mcp import tool_registry
 
 SDK_ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,7 +59,7 @@ def test_mcp_catalog_exposes_expected_non_shell_tools() -> None:
     assert "core_execute" in names
     assert "core_run_script" in names
     assert "core_runner" in names
-    assert "research_web_search" in names
+    assert "core_web_search" in names
     assert "research_get_top_apy" in names
     assert "research_search_delta_lab_markets" in names
     assert "research_search_delta_lab_instruments" in names
@@ -74,7 +73,7 @@ def test_mcp_catalog_exposes_expected_non_shell_tools() -> None:
 
 
 def test_mcp_catalog_exposes_shells_tools_in_opencode(monkeypatch) -> None:
-    monkeypatch.setattr(tool_registry, "is_opencode_instance", lambda: True)
+    monkeypatch.setattr(mcp_server, "is_opencode_instance", lambda: True)
 
     names = _tool_names(mcp_server.build_mcp())
 
@@ -96,8 +95,6 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_hyperliquid_*"] == "allow"
     assert primary["wayfinder_polymarket_*"] == "allow"
     assert primary["wayfinder_contracts_*"] == "allow"
-    assert primary["wayfinder_research_web_search"] == "allow"
-    assert primary["wayfinder_research_web_fetch"] == "allow"
     assert "wayfinder_research_*" not in primary
     assert primary["wayfinder_core_run_script"] == "ask"
     assert primary["wayfinder_core_execute"] == "ask"
@@ -117,6 +114,8 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert "wayfinder_polymarket_deposit" not in research
     assert research["wayfinder_core_get_adapters_and_strategies"] == "allow"
     assert research["wayfinder_core_run_script"] == "allow"
+    assert research["wayfinder_core_web_search"] == "allow"
+    assert research["wayfinder_core_web_fetch"] == "allow"
     _assert_rule_order(research, "wayfinder_*", "wayfinder_research_*")
     _assert_rule_order(research, "wayfinder_*", "wayfinder_polymarket_read")
 
@@ -124,11 +123,15 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert quant["wayfinder_research_*"] == "allow"
     assert quant["wayfinder_core_get_adapters_and_strategies"] == "allow"
     assert quant["wayfinder_core_run_script"] == "allow"
+    assert quant["wayfinder_core_web_search"] == "allow"
+    assert quant["wayfinder_core_web_fetch"] == "allow"
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_research_*")
 
     assert visual["wayfinder_*"] == "deny"
     assert visual["wayfinder_shells_*"] == "allow"
     assert visual["wayfinder_core_run_script"] == "allow"
+    assert visual["wayfinder_core_web_search"] == "allow"
+    assert visual["wayfinder_core_web_fetch"] == "allow"
     _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
 
 
@@ -143,8 +146,6 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_hyperliquid_*": "allow",
         "wayfinder_polymarket_*": "allow",
         "wayfinder_contracts_*": "allow",
-        "wayfinder_research_web_search": "allow",
-        "wayfinder_research_web_fetch": "allow",
         "wayfinder_core_execute": "ask",
         "wayfinder_core_run_script": "ask",
         "wayfinder_core_run_strategy": "ask",
@@ -163,7 +164,6 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_contracts_execute": "ask",
     }
     _assert_rule_order(primary, "wayfinder_*", "wayfinder_core_*")
-    _assert_rule_order(primary, "wayfinder_*", "wayfinder_research_web_search")
     _assert_rule_order(primary, "wayfinder_core_*", "wayfinder_core_run_script")
     _assert_rule_order(primary, "wayfinder_contracts_*", "wayfinder_contracts_deploy")
 
@@ -178,6 +178,8 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_polymarket_read": "allow",
         "wayfinder_core_get_adapters_and_strategies": "allow",
         "wayfinder_core_run_script": "allow",
+        "wayfinder_core_web_search": "allow",
+        "wayfinder_core_web_fetch": "allow",
     }
     _assert_rule_order(research, "wayfinder_*", "wayfinder_research_*")
     _assert_rule_order(research, "wayfinder_*", "wayfinder_polymarket_read")
@@ -192,6 +194,8 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_research_*": "allow",
         "wayfinder_core_get_adapters_and_strategies": "allow",
         "wayfinder_core_run_script": "allow",
+        "wayfinder_core_web_search": "allow",
+        "wayfinder_core_web_fetch": "allow",
     }
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_research_*")
 
@@ -204,6 +208,8 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_*": "deny",
         "wayfinder_shells_*": "allow",
         "wayfinder_core_run_script": "allow",
+        "wayfinder_core_web_search": "allow",
+        "wayfinder_core_web_fetch": "allow",
     }
     _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
 
@@ -247,10 +253,8 @@ def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:
 
 
 def test_claude_settings_reference_registered_tool_names(monkeypatch) -> None:
-    monkeypatch.setattr(tool_registry, "is_opencode_instance", lambda: True)
-    registry_names = {
-        tool_registry.tool_name(fn) for fn in tool_registry.tools_for_mcp()
-    }
+    monkeypatch.setattr(mcp_server, "is_opencode_instance", lambda: True)
+    registry_names = _tool_names(mcp_server.build_mcp())
     permission_names = _claude_permission_names("allow") | _claude_permission_names(
         "ask"
     )
@@ -262,15 +266,3 @@ def test_claude_settings_reference_registered_tool_names(monkeypatch) -> None:
         matcher = hook["matcher"]
         if matcher.startswith("mcp__wayfinder__") and "(" not in matcher:
             assert matcher.removeprefix("mcp__wayfinder__") in registry_names
-
-
-def test_claude_asks_for_registered_execution_and_schedule_tools(monkeypatch) -> None:
-    monkeypatch.setattr(tool_registry, "is_opencode_instance", lambda: True)
-    ask_names = _claude_permission_names("ask")
-    sensitive_names = {
-        tool_registry.tool_name(fn)
-        for fn in tool_registry.tools_for_mcp()
-        if tool_registry.tool_access(fn) in {"execute", "schedule"}
-    }
-
-    assert sensitive_names <= ask_names

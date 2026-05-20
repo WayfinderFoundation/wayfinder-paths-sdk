@@ -11,6 +11,8 @@ permission:
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
+  wayfinder_core_web_search: allow
+  wayfinder_core_web_fetch: allow
   # research_*
   wayfinder_research_*: allow
 ---

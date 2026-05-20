@@ -11,6 +11,8 @@ permission:
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
+  wayfinder_core_web_search: allow
+  wayfinder_core_web_fetch: allow
   # polymarket_*
   wayfinder_polymarket_read: allow
   # research_*
@@ -41,7 +43,7 @@ Never execute wallet, trade, bridge, contract, order, live strategy, runner, or 
 
 Research MCP surface:
 
-- Web/news: `research_web_search`, `research_web_fetch`.
+- Web/news: `core_web_search`, `core_web_fetch`.
 - Social/sentiment: `research_social_x_search`, `research_crypto_sentiment`.
 - Delta Lab snapshots: `research_get_top_apy`, `research_get_basis_apy_sources`, `research_get_basis_symbols`, `research_get_asset_basis_info`, `research_search_delta_lab_assets`, `research_search_delta_lab_markets`, `research_search_delta_lab_instruments`, `research_get_delta_lab_pendle_market`, `research_search_price`, `research_search_lending`, `research_search_perp`, `research_search_borrow_routes`.
 - Direct runtime sources: `research_defillama_free`, `research_goldsky_graphql`, `research_goldsky_search`, `research_goldsky_schema`.
@@ -56,8 +58,8 @@ Routing rules:
 - Do not use DeFiLlama Pro unless a future legal/licensing pass explicitly enables it.
 - For Polymarket or prediction-market research, use `polymarket_read` first. Search with `action="search"` or `action="trending"`, hydrate likely candidates with `get_market` or `get_event`, then fetch `order_book` and `price_history` for liquid markets where spread, depth, or price movement matters. Combine market data with web/X evidence for event facts and resolution context.
 - Do not curl raw Polymarket, Gamma, CLOB, or data-api endpoints unless `polymarket_read` fails or clearly lacks a needed read-only capability. If you use a raw endpoint fallback, keep it bounded and record why the MCP tool was insufficient.
-- For catalysts, announcements, integrations, deployments, listings, exploits, docs, or "why did this happen" tasks, start with `research_web_search` using a narrow query and `numResults` around 5-8. Then fetch 1-3 primary pages with `research_web_fetch`, prioritizing official docs, blogs, release notes, governance posts, exchange notices, and reputable news. These web-search plus page-fetch chains were the highest-utility calls in recent research runs because they gave dates, names, and primary-source evidence.
-- If `research_web_search` or `research_web_fetch` returns `provider_misconfigured`, route-not-found, 404, or provider unavailable, record it in `failedSources` and continue with DeFiLlama, Delta Lab, Alpha Lab, Goldsky, or X as appropriate. Do not retry the same unavailable web route.
+- For catalysts, announcements, integrations, deployments, listings, exploits, docs, or "why did this happen" tasks, start with `core_web_search` using a narrow query and `numResults` around 5-8. Then fetch 1-3 primary pages with `core_web_fetch`, prioritizing official docs, blogs, release notes, governance posts, exchange notices, and reputable news. These web-search plus page-fetch chains were the highest-utility calls in recent research runs because they gave dates, names, and primary-source evidence.
+- If `core_web_search` or `core_web_fetch` returns `provider_misconfigured`, route-not-found, 404, or provider unavailable, record it in `failedSources` and continue with DeFiLlama, Delta Lab, Alpha Lab, Goldsky, or X as appropriate. Do not retry the same unavailable web route.
 - After two failed attempts against the same source, endpoint shape, or provider pattern, stop retrying that path. Return partial findings, include the failed calls in `failedSources`, and state what would be needed to complete the answer.
 - Use Delta Lab first for APY, funding, lending, borrow routes, basis, delta-neutral carry, PT/YT, Pendle, Boros, market volume, market instruments, and time-series analytics. For Pendle/PT/YT market questions, start with `research_search_delta_lab_markets(venue="pendle", ...)` and `research_search_delta_lab_instruments(...)`, then hydrate specific market IDs with `research_get_delta_lab_pendle_market`.
 - Use DeFiLlama first for protocol-level TVL, fees, revenue, chain TVL breakdowns, stablecoins, DEX volume, and open-interest overviews. For named protocol work, call `research_defillama_free(dataset="protocol_search", query="<name>")` before `protocol`, `protocol_fees`, or `protocol_tvl_history`; do not guess slugs.
@@ -86,7 +88,7 @@ Trade-readiness mode:
 
 Upweight these patterns:
 
-- `research_web_search` then `research_web_fetch` for official source discovery, dates, deployments, listings, announcements, and catalyst timelines.
+- `core_web_search` then `core_web_fetch` for official source discovery, dates, deployments, listings, announcements, and catalyst timelines.
 - `research_defillama_free(protocol_search)` then `protocol_fees` or `protocol_tvl_history` for named-protocol fundamentals.
 - Delta Lab market/instrument searches for Pendle, PT/YT, funding, APY, lending, and market-specific volume.
 - Alpha Lab only when it matches the user's named alpha type or gives a compact precomputed result.
@@ -104,7 +106,7 @@ Do not load `/crypto-research` or `/using-delta-lab` by default. The high-value 
 
 Crypto research routing:
 
-- Broad market pulse: use `research_web_search` for current catalysts, `research_crypto_sentiment` for broad mood, Delta Lab price/perp snapshots for movers and funding, and DeFiLlama broad datasets only when liquidity/TVL/stablecoin context matters.
+- Broad market pulse: use `core_web_search` for current catalysts, `research_crypto_sentiment` for broad mood, Delta Lab price/perp snapshots for movers and funding, and DeFiLlama broad datasets only when liquidity/TVL/stablecoin context matters.
 - Sector/category pulse: build a small provisional basket, search web/news for catalysts, use Delta Lab for prices/rates/funding/lending, and use DeFiLlama only for protocol fundamentals.
 - Specific token/protocol: resolve identity first, then combine official web/fetch, Delta Lab asset/market context, DeFiLlama protocol data, and one X search only if social/official posts matter.
 - "Why is this moving": start with fresh web/news and official pages, then use X if the catalyst may be social-native, then use Delta Lab to confirm price, volume, funding, or OI movement.
