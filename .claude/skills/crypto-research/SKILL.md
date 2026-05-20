@@ -24,8 +24,8 @@ Do not use DeFiLlama Pro. Do not proxy DeFiLlama free or Goldsky through the Way
 
 Backend-mediated:
 
-- `research_web_search`: EXA public web/news search.
-- `research_web_fetch`: EXA page fetch/crawl for specific URLs.
+- `core_web_search`: EXA public web/news search.
+- `core_web_fetch`: EXA page fetch/crawl for specific URLs.
 - `research_social_x_search`: Grok/X social search.
 - `research_crypto_sentiment`: Alternative.me Crypto Fear & Greed.
 

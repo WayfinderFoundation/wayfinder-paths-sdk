@@ -58,12 +58,12 @@ async def test_mcp_metadata_ignores_extra_research_tool_args(monkeypatch) -> Non
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
-    metadata = func_metadata(research_gateway.research_web_search)
+    metadata = func_metadata(research_gateway.core_web_search)
     schema = metadata.arg_model.model_json_schema(by_alias=True)
 
     assert schema.get("additionalProperties") is not False
     result = await metadata.call_fn_with_arg_validation(
-        research_gateway.research_web_search,
+        research_gateway.core_web_search,
         fn_is_async=True,
         arguments_to_validate={
             "query": "ethena catalyst",

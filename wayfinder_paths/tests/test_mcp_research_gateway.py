@@ -8,7 +8,7 @@ from wayfinder_paths.mcp.tools import research_gateway
 
 
 @pytest.mark.asyncio
-async def test_research_web_search_converts_gateway_arguments(
+async def test_core_web_search_converts_gateway_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = type(
@@ -28,7 +28,7 @@ async def test_research_web_search_converts_gateway_arguments(
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
-    result = await research_gateway.research_web_search(
+    result = await research_gateway.core_web_search(
         query="goldsky subgraph docs",
         numResults="3",
         type="fast",
@@ -62,7 +62,7 @@ async def test_research_web_search_converts_gateway_arguments(
 
 
 @pytest.mark.asyncio
-async def test_research_web_search_allows_backend_context_default(
+async def test_core_web_search_allows_backend_context_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = type(
@@ -82,7 +82,7 @@ async def test_research_web_search_allows_backend_context_default(
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
-    result = await research_gateway.research_web_search(query="defillama api")
+    result = await research_gateway.core_web_search(query="defillama api")
 
     assert result["ok"] is True
     assert fake_client.search.await_args.kwargs["context_max_characters"] is None
@@ -90,7 +90,7 @@ async def test_research_web_search_allows_backend_context_default(
 
 
 @pytest.mark.asyncio
-async def test_research_web_search_accepts_int_num_results_and_news_type(
+async def test_core_web_search_accepts_int_num_results_and_news_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = type(
@@ -102,7 +102,7 @@ async def test_research_web_search_accepts_int_num_results_and_news_type(
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
-    result = await research_gateway.research_web_search(
+    result = await research_gateway.core_web_search(
         query="ethena catalyst",
         numResults=5,
         type="news",
@@ -117,8 +117,8 @@ async def test_research_web_search_accepts_int_num_results_and_news_type(
 
 
 @pytest.mark.asyncio
-async def test_research_web_search_returns_allowed_values_for_bad_type() -> None:
-    result = await research_gateway.research_web_search(
+async def test_core_web_search_returns_allowed_values_for_bad_type() -> None:
+    result = await research_gateway.core_web_search(
         query="ethena catalyst",
         type="bad-mode",
     )
@@ -130,8 +130,8 @@ async def test_research_web_search_returns_allowed_values_for_bad_type() -> None
 
 
 @pytest.mark.asyncio
-async def test_research_web_search_suggests_category_for_type_category() -> None:
-    result = await research_gateway.research_web_search(
+async def test_core_web_search_suggests_category_for_type_category() -> None:
+    result = await research_gateway.core_web_search(
         query="ethena catalyst",
         type="news",
         category="company",
@@ -146,7 +146,7 @@ async def test_research_web_search_suggests_category_for_type_category() -> None
 
 
 @pytest.mark.asyncio
-async def test_research_web_fetch_converts_gateway_arguments(
+async def test_core_web_fetch_converts_gateway_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = type(
@@ -167,7 +167,7 @@ async def test_research_web_fetch_converts_gateway_arguments(
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
-    result = await research_gateway.research_web_fetch(
+    result = await research_gateway.core_web_fetch(
         urls="https://example.com/a\nhttps://example.com/b",
         query="main facts",
         contentType="summary",
@@ -194,7 +194,7 @@ async def test_research_web_fetch_converts_gateway_arguments(
 
 
 @pytest.mark.asyncio
-async def test_research_web_fetch_accepts_list_urls_and_int_options(
+async def test_core_web_fetch_accepts_list_urls_and_int_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = type(
@@ -206,7 +206,7 @@ async def test_research_web_fetch_accepts_list_urls_and_int_options(
     )()
     monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
 
-    result = await research_gateway.research_web_fetch(
+    result = await research_gateway.core_web_fetch(
         urls=["https://example.com/a", "https://example.com/b"],
         maxAgeHours=24,
         subpages=2,

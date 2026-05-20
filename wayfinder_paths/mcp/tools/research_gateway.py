@@ -55,7 +55,7 @@ def _search_type_and_category(
 
 
 @catch_errors
-async def research_web_search(
+async def core_web_search(
     query: str,
     numResults: str | int = "8",
     type: str = "auto",
@@ -146,7 +146,7 @@ async def research_web_search(
 
 
 @catch_errors
-async def research_web_fetch(
+async def core_web_fetch(
     urls: str | list[str],
     query: str = "_",
     contentType: str = "text",
