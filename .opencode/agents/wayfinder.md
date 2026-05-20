@@ -224,16 +224,6 @@ Use `poetry run wayfinder path init <slug>` to scaffold a path. Use `--no-applet
 
 Use `poetry run wayfinder path update <slug>` for installed path updates. Default target selection is the API's `active_bonded_version`, not `latest_version` and not a pending version. `--version <x.y.z>` lets the user choose a public version. If activation metadata is missing, the CLI completes the pull and prints a manual `path activate` command rather than failing.
 
-## Strategies
-
-Strategies are not trivial — they take time and depend on details. If the user asks to build a strategy, figure out exactly what they want before building. Recommend available strategies or variations rather than assuming. Avoid assuming what signals will be good or what the user wants — confirm, verify, empirically validate.
-
-A strategy has three parts:
-
-1. **Signal** — the formula, data, computation, or thesis that drives returns. Examples: spread reversion, anomalous funding, on-chain flow divergence.
-2. **Monetization** — the decision logic that captures the signal. Examples: delta-neutral funding capture, leveraged lending, taking liquidity above a signal threshold.
-3. **Execution** — venues, procedures, and clients used to move money. Use existing adapters and clients.
-
 ## Shells Messaging and Jobs
 
 On Shells instances, you may email or text the owner to report completed work, surface decisions, or flag unresolved blockers. Backend delivery requires verified contact details and is throttled to 12 notifications per user per day. Load `/using-shells-notify` before sending.
