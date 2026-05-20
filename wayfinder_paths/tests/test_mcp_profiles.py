@@ -246,10 +246,10 @@ def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:
         assert "do not call `userSuggestions`" in text
 
 
-def test_claude_settings_reference_registered_tool_names() -> None:
+def test_claude_settings_reference_registered_tool_names(monkeypatch) -> None:
+    monkeypatch.setattr(tool_registry, "is_opencode_instance", lambda: True)
     registry_names = {
-        tool_registry.tool_name(fn)
-        for fn in tool_registry.tools_for_mcp(include_opencode_only=True)
+        tool_registry.tool_name(fn) for fn in tool_registry.tools_for_mcp()
     }
     permission_names = _claude_permission_names("allow") | _claude_permission_names(
         "ask"
@@ -264,11 +264,12 @@ def test_claude_settings_reference_registered_tool_names() -> None:
             assert matcher.removeprefix("mcp__wayfinder__") in registry_names
 
 
-def test_claude_asks_for_registered_execution_and_schedule_tools() -> None:
+def test_claude_asks_for_registered_execution_and_schedule_tools(monkeypatch) -> None:
+    monkeypatch.setattr(tool_registry, "is_opencode_instance", lambda: True)
     ask_names = _claude_permission_names("ask")
     sensitive_names = {
         tool_registry.tool_name(fn)
-        for fn in tool_registry.tools_for_mcp(include_opencode_only=True)
+        for fn in tool_registry.tools_for_mcp()
         if tool_registry.tool_access(fn) in {"execute", "schedule"}
     }
 

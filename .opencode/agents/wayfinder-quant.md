@@ -8,9 +8,11 @@ permission:
     "*": deny
   question: deny
   wayfinder_*: deny
-  wayfinder_research_*: allow
+  # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
+  # research_*
+  wayfinder_research_*: allow
 ---
 
 # Wayfinder Quant
