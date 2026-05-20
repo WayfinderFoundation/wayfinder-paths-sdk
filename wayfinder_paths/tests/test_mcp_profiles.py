@@ -142,7 +142,7 @@ def test_opencode_agents_allow_user_vault_script_inspection() -> None:
         "wayfinder-visual",
     ):
         permission = _agent_permission(agent_name)
-        assert permission["external_directory"]["/wf/user_vault/scripts/*"] == "allow"
+        assert permission["external_directory"]["*"] == "allow"
 
 
 def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:

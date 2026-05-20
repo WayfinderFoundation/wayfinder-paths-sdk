@@ -10,6 +10,7 @@ from wayfinder_paths.mcp.arg_validation import (
     MCPArgumentError,
     normalize_int,
     optional_int,
+    optional_str,
 )
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
@@ -19,10 +20,7 @@ _SKIP_VALUES = {"", "_", "all", "none", "null"}
 
 
 def _optional_text(value: str | int) -> str | None:
-    normalized = str(value).strip()
-    if normalized.lower() in _SKIP_VALUES:
-        return None
-    return normalized
+    return optional_str(value, skip_values=_SKIP_VALUES, max_length=None)
 
 
 def _chain_filter(value: str | int, *, field_name: str = "chain") -> int | None:
@@ -66,21 +64,7 @@ def _df_records(df) -> list[dict[str, Any]]:
 async def _resolve_basis_filter(
     symbol: str,
 ) -> tuple[str | None, list[int] | None]:
-    """Resolve an asset symbol into a screen-filter pair `(basis, asset_ids)`.
-
-    - If `symbol` belongs to a basis group, returns `(root_symbol, None)` so
-      the screen filters by basis (e.g. "USDC" -> ("USD", None),
-      "wstETH" -> ("ETH", None)).
-    - If the asset exists but isn't part of any basis group, returns
-      `(None, [asset_id])` so callers can still filter to that single asset.
-      In practice every Delta Lab asset is at minimum its own basis group, so
-      this branch is defensive — it guards against backend schema drift where
-      a known asset reports `basis: null`. Sending the raw symbol through
-      `basis=` in that case would 400 — the backend validates basis groups.
-    - Raises ValueError if the symbol doesn't resolve to anything in Delta
-      Lab. Silently dropping the filter would return every row as if no
-      filter had been requested — misleading to the caller.
-    """
+    """Resolve an asset symbol into Delta Lab screen filters."""
     try:
         result = await DELTA_LAB_CLIENT.get_asset_basis(symbol=symbol)
     except Exception as exc:
@@ -107,6 +91,13 @@ async def _resolve_basis_filter(
         f"Symbol {symbol!r} resolved without a basis group or asset_id; "
         "cannot apply a filter."
     )
+
+
+async def _screen_basis_filter(value: str) -> tuple[str | None, list[int] | None]:
+    basis = _optional_text(value)
+    if basis is None:
+        return None, None
+    return await _resolve_basis_filter(basis.upper())
 
 
 async def _resolve_basis_root(symbol: str) -> str:
@@ -192,7 +183,7 @@ async def research_search_delta_lab_assets(
         await DELTA_LAB_CLIENT.search_assets(
             query=query.strip(),
             chain_id=_chain_filter(chain),
-            limit=normalize_int(limit, field_name="limit", min_value=1),
+            limit=min(200, normalize_int(limit, field_name="limit", min_value=1)),
         )
     )
 
@@ -331,12 +322,7 @@ async def research_search_price(
         Dict with data (list of price feature rows) and count
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
-    basis_param: str | None = None
-    asset_ids_param: list[int] | None = None
-    if basis.strip().lower() != "all":
-        basis_param, asset_ids_param = await _resolve_basis_filter(
-            basis.strip().upper()
-        )
+    basis_param, asset_ids_param = await _screen_basis_filter(basis)
     return ok(
         await DELTA_LAB_CLIENT.screen_price(
             sort=sort.strip(),
@@ -371,12 +357,7 @@ async def research_search_lending(
         Dict with data (list of lending surface feature rows) and count
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
-    basis_param: str | None = None
-    asset_ids_param: list[int] | None = None
-    if basis.strip().lower() != "all":
-        basis_param, asset_ids_param = await _resolve_basis_filter(
-            basis.strip().upper()
-        )
+    basis_param, asset_ids_param = await _screen_basis_filter(basis)
     return ok(
         await DELTA_LAB_CLIENT.screen_lending(
             sort=sort.strip(),
@@ -412,12 +393,7 @@ async def research_search_perp(
         Dict with data (list of perp surface feature rows) and count
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
-    basis_param: str | None = None
-    asset_ids_param: list[int] | None = None
-    if basis.strip().lower() != "all":
-        basis_param, asset_ids_param = await _resolve_basis_filter(
-            basis.strip().upper()
-        )
+    basis_param, asset_ids_param = await _screen_basis_filter(basis)
     return ok(
         await DELTA_LAB_CLIENT.screen_perp(
             sort=sort.strip(),
@@ -454,18 +430,10 @@ async def research_search_borrow_routes(
         Dict with data (list of borrow route rows) and count
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
-    basis_param: str | None = None
-    asset_ids_param: list[int] | None = None
-    if basis.strip().lower() != "all":
-        basis_param, asset_ids_param = await _resolve_basis_filter(
-            basis.strip().upper()
-        )
-    borrow_basis_param: str | None = None
-    borrow_asset_ids_param: list[int] | None = None
-    if borrow_basis.strip().lower() != "all":
-        borrow_basis_param, borrow_asset_ids_param = await _resolve_basis_filter(
-            borrow_basis.strip().upper()
-        )
+    basis_param, asset_ids_param = await _screen_basis_filter(basis)
+    borrow_basis_param, borrow_asset_ids_param = await _screen_basis_filter(
+        borrow_basis
+    )
     return ok(
         await DELTA_LAB_CLIENT.screen_borrow_routes(
             sort=sort.strip(),

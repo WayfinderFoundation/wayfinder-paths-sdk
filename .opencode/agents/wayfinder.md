@@ -9,7 +9,7 @@ permission:
     wayfinder-visual: allow
     wayfinder-quant: allow
   external_directory:
-    /wf/user_vault/scripts/*: allow
+    "*": allow
   wayfinder_*: deny
   # contracts_*
   wayfinder_contracts_*: allow

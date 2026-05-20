@@ -7,7 +7,7 @@ permission:
     "*": deny
   question: deny
   external_directory:
-    /wf/user_vault/scripts/*: allow
+    "*": allow
   wayfinder_*: deny
   # core_*
   wayfinder_core_run_script: allow
