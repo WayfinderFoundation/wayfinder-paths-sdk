@@ -10,7 +10,7 @@ permission:
   wayfinder_*: deny
   wayfinder_research_*: allow
   wayfinder_core_get_adapters_and_strategies: allow
-  wayfinder_core_run_script: ask
+  wayfinder_core_run_script: allow
 ---
 
 # Wayfinder Quant
@@ -34,11 +34,11 @@ Allowed work:
 - Save data artifacts under `.wayfinder_runs/` when useful.
 - Return metrics, chart specs, data file paths, and caveats.
 
-Never execute live trades, swaps, bridges, live strategies, runner jobs, contract actions, wallet operations, or fund-moving actions. Never ask the user directly.
+Never execute live trades, swaps, bridges, live strategies, runner jobs, contract actions, wallet operations, or fund-moving actions. Never ask the user directly or trigger approval-gated actions. Hidden subagent approval prompts can strand the parent workflow.
 
 ## Data and Scripts
 
-Do not load `/using-delta-lab` by default. The required Delta Lab operating rules are embedded here. Load skills only when you need uncommon adapter details or script boilerplate:
+Do not load `/using-delta-lab` by default. The required Delta Lab operating rules are embedded here. Load skills only after a first direct tool/script attempt is blocked by missing details, or when you need uncommon adapter details or script boilerplate:
 
 - `/backtest-strategy`
 - `/using-ccxt-adapter`

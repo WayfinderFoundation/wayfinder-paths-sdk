@@ -107,12 +107,12 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
         assert permission["wayfinder_*"] == "deny"
         assert permission["wayfinder_research_*"] == "allow"
         assert permission["wayfinder_core_get_adapters_and_strategies"] == "allow"
-        assert permission["wayfinder_core_run_script"] == "ask"
+        assert permission["wayfinder_core_run_script"] == "allow"
         _assert_rule_order(permission, "wayfinder_*", "wayfinder_research_*")
 
     assert visual["wayfinder_*"] == "deny"
     assert visual["wayfinder_shells_*"] == "allow"
-    assert visual["wayfinder_core_run_script"] == "ask"
+    assert visual["wayfinder_core_run_script"] == "allow"
     _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
 
 
@@ -160,7 +160,7 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
             "wayfinder_*": "deny",
             "wayfinder_research_*": "allow",
             "wayfinder_core_get_adapters_and_strategies": "allow",
-            "wayfinder_core_run_script": "ask",
+            "wayfinder_core_run_script": "allow",
         }
         _assert_rule_order(permission, "wayfinder_*", "wayfinder_research_*")
 
@@ -172,7 +172,7 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
     } == {
         "wayfinder_*": "deny",
         "wayfinder_shells_*": "allow",
-        "wayfinder_core_run_script": "ask",
+        "wayfinder_core_run_script": "allow",
     }
     _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
 

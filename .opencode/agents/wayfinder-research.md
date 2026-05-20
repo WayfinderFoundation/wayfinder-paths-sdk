@@ -10,7 +10,7 @@ permission:
   wayfinder_*: deny
   wayfinder_research_*: allow
   wayfinder_core_get_adapters_and_strategies: allow
-  wayfinder_core_run_script: ask
+  wayfinder_core_run_script: allow
 ---
 
 # Wayfinder Research
@@ -30,7 +30,7 @@ Allowed work:
 - Run scripts only for research data gathering or light analysis.
 - Produce evidence summaries, source lists, and data references.
 
-Never execute wallet, trade, bridge, contract, order, live strategy, runner, or fund-moving actions. Never ask the user directly.
+Never execute wallet, trade, bridge, contract, order, live strategy, runner, or fund-moving actions. Never ask the user directly or trigger approval-gated actions. Hidden subagent approval prompts can strand the parent workflow.
 
 ## Tools and Sources
 
@@ -83,7 +83,7 @@ Downweight these patterns:
 
 ## Embedded Research Playbook
 
-Do not load `/crypto-research` or `/using-delta-lab` by default. The high-value routing rules are embedded here to keep research fast. Load a skill only when you are blocked by a missing method detail, need script-writing boilerplate, or need an uncommon workflow not covered below.
+Do not load `/crypto-research` or `/using-delta-lab` by default. The high-value routing rules are embedded here to keep research fast. Load a skill only when a tool/script attempt is blocked by a missing method detail, you need script-writing boilerplate, or you need an uncommon workflow not covered below.
 
 Crypto research routing:
 
