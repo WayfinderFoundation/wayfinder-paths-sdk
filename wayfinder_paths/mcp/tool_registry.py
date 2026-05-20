@@ -144,26 +144,25 @@ def is_opencode_only_tool(fn: Callable[..., Any]) -> bool:
 
 
 TOOL_REGISTRY: tuple[Callable[..., Any], ...] = (
-    # Main / operator / coding.
-    _tool(core_get_adapters_and_strategies),
-    _tool(core_get_wallets),
-    _tool(core_wallets),
-    _tool(onchain_get_wallet_activity),
-    _tool(onchain_resolve_token),
-    _tool(onchain_get_gas_token),
-    _tool(onchain_fuzzy_search_tokens),
-    _tool(onchain_quote_swap),
-    _tool(hyperliquid_get_state),
-    _tool(hyperliquid_search_market),
-    _tool(hyperliquid_search_mid_prices),
-    _tool(polymarket_read),
-    _tool(polymarket_get_state),
+    # contracts_*
     _tool(contracts_list),
     _tool(contracts_get),
     _tool(contracts_compile),
     _tool(contracts_call),
-    _tool(core_run_script, execution_tool),
+    _tool(contracts_deploy, execution_tool),
+    _tool(contracts_execute, execution_tool),
+    # core_*
+    _tool(core_get_adapters_and_strategies),
+    _tool(core_get_wallets),
+    _tool(core_wallets),
     _tool(core_execute, execution_tool),
+    _tool(core_run_script, execution_tool),
+    _tool(core_run_strategy, execution_tool),
+    _tool(core_runner, schedule_tool),
+    # hyperliquid_*
+    _tool(hyperliquid_get_state),
+    _tool(hyperliquid_search_market),
+    _tool(hyperliquid_search_mid_prices),
     _tool(hyperliquid_place_market_order, execution_tool),
     _tool(hyperliquid_place_limit_order, execution_tool),
     _tool(hyperliquid_place_trigger_order, execution_tool),
@@ -171,17 +170,22 @@ TOOL_REGISTRY: tuple[Callable[..., Any], ...] = (
     _tool(hyperliquid_update_leverage, execution_tool),
     _tool(hyperliquid_deposit, execution_tool),
     _tool(hyperliquid_withdraw, execution_tool),
-    _tool(polymarket_deposit, execution_tool),
-    _tool(polymarket_withdraw, execution_tool),
+    # onchain_*
+    _tool(onchain_get_wallet_activity),
+    _tool(onchain_resolve_token),
+    _tool(onchain_get_gas_token),
+    _tool(onchain_fuzzy_search_tokens),
+    _tool(onchain_quote_swap),
+    # polymarket_*
+    _tool(polymarket_read),
+    _tool(polymarket_get_state),
     _tool(polymarket_place_market_order, execution_tool),
     _tool(polymarket_place_limit_order, execution_tool),
     _tool(polymarket_cancel_order, execution_tool),
+    _tool(polymarket_deposit, execution_tool),
+    _tool(polymarket_withdraw, execution_tool),
     _tool(polymarket_redeem_positions, execution_tool),
-    _tool(contracts_deploy, execution_tool),
-    _tool(contracts_execute, execution_tool),
-    _tool(core_run_strategy, execution_tool),
-    _tool(core_runner, schedule_tool),
-    # Research + Delta Lab + quant data access.
+    # research_*
     _tool(research_web_search),
     _tool(research_web_fetch),
     _tool(research_crypto_sentiment),
@@ -204,7 +208,7 @@ TOOL_REGISTRY: tuple[Callable[..., Any], ...] = (
     _tool(research_search_lending),
     _tool(research_search_perp),
     _tool(research_search_borrow_routes),
-    # Visual / chart workspace.
+    # shells_* (opencode-only)
     _tool(shells_get_frontend_context, opencode_only),
     _tool(shells_search_chart_series, opencode_only),
     _tool(shells_set_active_market, opencode_only),
