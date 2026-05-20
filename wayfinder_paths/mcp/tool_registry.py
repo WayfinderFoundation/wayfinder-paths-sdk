@@ -222,15 +222,8 @@ TOOL_REGISTRY: tuple[Callable[..., Any], ...] = (
 )
 
 
-def tools_for_mcp(
-    *,
-    include_opencode_only: bool | None = None,
-) -> tuple[Callable[..., Any], ...]:
-    include_shells = (
-        is_opencode_instance()
-        if include_opencode_only is None
-        else include_opencode_only
-    )
+def tools_for_mcp() -> tuple[Callable[..., Any], ...]:
+    include_shells = is_opencode_instance()
     tools: list[Callable[..., Any]] = []
     seen: set[str] = set()
 
