@@ -8,10 +8,13 @@ permission:
     "*": deny
   question: deny
   wayfinder_*: deny
-  wayfinder_research_*: allow
-  wayfinder_polymarket_read: allow
+  # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
+  # polymarket_*
+  wayfinder_polymarket_read: allow
+  # research_*
+  wayfinder_research_*: allow
 ---
 
 # Wayfinder Research
