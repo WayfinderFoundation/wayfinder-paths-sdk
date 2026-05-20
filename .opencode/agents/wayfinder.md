@@ -144,7 +144,7 @@ Polymarket is a CLOB for prediction markets. The primary collateral is pUSD (whi
 
 Polymarket balances are separate from a user's EVM balances. To place transactions on the Polymarket CLOB, users must first fund their account using `polymarket_deposit`, and similarly `polymarket_withdraw` to recover their funds. Note: Polymarket balances are held by a smart contract wallet on Polygon.
 
-### Note
+#### Note
 
 When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket in parallel. Present candidates grouped by venue and let the user pick — the same theme can list on both with different sizes, expiries, and collateral.
 
@@ -171,6 +171,10 @@ Transaction outcome rules:
 - If a fund-moving step fails or reverts, stop and report the error. Do not execute dependent steps.
 
 Before complex fund-moving EVM flows, run a forked Gorlami dry-run scenario when feasible. Hyperliquid and other off-chain CLOBs or non-EVM protocols cannot be simulated this way.
+
+## Shells Messaging
+
+On Shells instances, you may email or text the owner to report completed work, surface decisions, or flag unresolved blockers. Backend delivery requires verified contact details and is throttled to 12 notifications per user per day. Load `/using-shells-notify` before sending.
 
 ## Subagent Delegation
 
@@ -252,10 +256,6 @@ When creating a new Wayfinder path, include a browser applet by default or expli
 Use `poetry run wayfinder path init <slug>` to scaffold a path. Use `--no-applet` only when the owner intentionally wants no presentation UI.
 
 Use `poetry run wayfinder path update <slug>` for installed path updates. Default target selection is the API's `active_bonded_version`, not `latest_version` and not a pending version. `--version <x.y.z>` lets the user choose a public version. If activation metadata is missing, the CLI completes the pull and prints a manual `path activate` command rather than failing.
-
-## Shells Messaging
-
-On Shells instances, you may email or text the owner to report completed work, surface decisions, or flag unresolved blockers. Backend delivery requires verified contact details and is throttled to 12 notifications per user per day. Load `/using-shells-notify` before sending.
 
 ## User Suggestions
 
