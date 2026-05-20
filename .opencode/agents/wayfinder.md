@@ -107,32 +107,46 @@ Gas: before any on-chain operation, verify the wallet has native gas on the targ
 
 Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tokens, HIP-3 builder deployed perp dexes (`xyz`, `flx`, `vntl`, `hyna`, `km`) (custom exchanges offering perpetuals) and HIP-4 outcome markets (prediction market).
 
-Minimums:
+Leveraged perp execution: before placing, call `hyperliquid_get_state(label=..., asset_name=...)` and build a trade ticket from its `trade_context`. For UnifiedAccount margin, use `trade_context.available_to_trade_long_usd` or `trade_context.available_to_trade_short_usd`; do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
+
+Close/reduce flows: set `reduce_only=true` unless the user explicitly asked to flip or open the opposite side. If the tool returns `reduce_only_required`, retry only after changing the ticket to reduce-only or after the user confirms an intentional flip with `allow_flip=true`. If an order returns `status="partial"`, report requested notional, filled notional, and fill ratio; do not treat it as a complete fill. For pair trades, do not place both legs in parallel: verify leverage/margin mode, place leg 1, verify actual fill/position, then size leg 2 against the actual fill.
+
+#### Minimums
 
 - Deposit: $5 USD. Deposits below this are lost.
 - Order: $10 USD notional.
 - Withdraw: $2 USD gross. `hyperliquid_withdraw(amount_usdc=N)` debits `$N`from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives`$N - 1`.
 
-UnifiedAccount mode: perp and spot share one margin balance. Transfers between perp and spot accounts are not needed and will not work in UnifiedAccount mode. If a user is on a legacy split account, migration may require closing positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before order placement, but can fail mid-state if open positions or stuck spot balances block the switch.
+#### Depositing, Withdrawing, Unified Account, Collateral & Pairs
 
-Leveraged perp execution: before placing, call `hyperliquid_get_state(label=..., asset_name=...)` and build a trade ticket from its `trade_context`. For UnifiedAccount margin, use `trade_context.available_to_trade_long_usd` or `trade_context.available_to_trade_short_usd`; do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
+Hyperliquid balances are separate from a user's EVM balances. To place transactions on the Hyperliquid CLOB, users must first fund their account using `hyperliquid_deposit`, and similarly `hyperliquid_withdraw` to recover their funds. Note: Hyperliquid balances is the user's balance on HypeCore (which is not HypeEVM).
+
+Before any order is placed, the Hyperliquid Adapter enforces Unified Account mode (https://hyperliquid.gitbook.io/hyperliquid-docs/trading/account-abstraction-modes), which essentially means collateral for perpetuals comes from the user's spot account, before Unified Account, users would need to manage balances between their accounts using spotToPerp and perpToSpot transfers.
+
+| Type            | Collateral / Base                                                        |
+| --------------- | ------------------------------------------------------------------------ |
+| Perpetuals      | USDC in spot account (Unified Account Mode)                              |
+| HIP3 Perpetuals | USDC,USDT,USDH,USDE in spot account (Unified Account Mode)               |
+| Spot            | For market {A} - {B}, {B} is the base asset, typically: USDC, USDH, USDT |
+| HIP4 Outcome    | USDH in spot account                                                     |
+
+If a user is on a legacy split account, migration may require closing positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before order placement, but can fail mid-state if open positions or stuck spot balances block the switch.
+
+#### HIP 4 Outcome Markets
 
 HIP-4 outcomes use asset IDs `100_000_000 + 10*outcome_id + side`, integer contract sizes, settle in USDH token `360`. They route through the same `hyperliquid_place_market_order` / `hyperliquid_place_limit_order` tools — pass `asset_name="#<encoding>"` and the tool dispatches the outcome path (no builder fee, integer contracts).
-
-Close/reduce flows: set `reduce_only=true` unless the user explicitly asked to flip or open the opposite side. If the tool returns `reduce_only_required`, retry only after changing the ticket to reduce-only or after the user confirms an intentional flip with `allow_flip=true`. If an order returns `status="partial"`, report requested notional, filled notional, and fill ratio; do not treat it as a complete fill. For pair trades, do not place both legs in parallel: verify leverage/margin mode, place leg 1, verify actual fill/position, then size leg 2 against the actual fill.
 
 ### Polymarket
 
 Polymarket is a CLOB for prediction markets. The primary collateral is pUSD (which can be wrapped and unwrapped from USDC.E), and markets may resolve in either PUSD or USDC.E (although we have automation to rewrap USDC.E resolutions).
 
-### Prediction Markets Note
+#### Depositing, Withdrawing & Collateral
 
-When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket in parallel:
+Polymarket balances are separate from a user's EVM balances. To place transactions on the Polymarket CLOB, users must first fund their account using `polymarket_deposit`, and similarly `polymarket_withdraw` to recover their funds. Note: Polymarket balances are held by a smart contract wallet on Polygon.
 
-- HL HIP-4: `hyperliquid_search_market(query=...)` — read the `outcomes` bucket.
-- Polymarket: `polymarket_read(action="search", query=..., limit=...)`.
+### Note
 
-Present candidates grouped by venue and let the user pick — the same theme can list on both with different sizes, expiries, and collateral. Once the user picks, load `/using-hyperliquid-adapter` or `/using-polymarket-adapter` before placing orders.
+When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket in parallel. Present candidates grouped by venue and let the user pick — the same theme can list on both with different sizes, expiries, and collateral.
 
 ## Execution Safety
 
