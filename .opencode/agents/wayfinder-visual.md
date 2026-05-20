@@ -9,8 +9,10 @@ permission:
   external_directory:
     /wf/user_vault/scripts/*: allow
   wayfinder_*: deny
-  wayfinder_shells_*: allow
+  # core_*
   wayfinder_core_run_script: allow
+  # shells_*
+  wayfinder_shells_*: allow
 ---
 
 # Wayfinder Visual

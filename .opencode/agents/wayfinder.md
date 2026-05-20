@@ -11,30 +11,36 @@ permission:
   external_directory:
     /wf/user_vault/scripts/*: allow
   wayfinder_*: deny
-  wayfinder_core_*: allow
-  wayfinder_onchain_*: allow
-  wayfinder_hyperliquid_*: allow
-  wayfinder_polymarket_*: allow
+  # contracts_*
   wayfinder_contracts_*: allow
-  wayfinder_research_web_search: allow
-  wayfinder_research_web_fetch: allow
+  wayfinder_contracts_deploy: ask
+  wayfinder_contracts_execute: ask
+  # core_*
+  wayfinder_core_*: allow
   wayfinder_core_execute: ask
   wayfinder_core_run_script: ask
   wayfinder_core_run_strategy: ask
   wayfinder_core_runner_status: allow
   wayfinder_core_runner: ask
+  # hyperliquid_*
+  wayfinder_hyperliquid_*: allow
   wayfinder_hyperliquid_place_*: ask
   wayfinder_hyperliquid_cancel_order: ask
   wayfinder_hyperliquid_update_leverage: ask
   wayfinder_hyperliquid_deposit: ask
   wayfinder_hyperliquid_withdraw: ask
+  # onchain_*
+  wayfinder_onchain_*: allow
+  # polymarket_*
+  wayfinder_polymarket_*: allow
   wayfinder_polymarket_place_*: ask
   wayfinder_polymarket_cancel_order: ask
   wayfinder_polymarket_deposit: ask
   wayfinder_polymarket_withdraw: ask
   wayfinder_polymarket_redeem_positions: ask
-  wayfinder_contracts_deploy: ask
-  wayfinder_contracts_execute: ask
+  # research_* (delegated to subagent; only narrow primary reads)
+  wayfinder_research_web_search: allow
+  wayfinder_research_web_fetch: allow
 ---
 
 # Wayfinder
