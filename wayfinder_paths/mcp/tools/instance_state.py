@@ -155,11 +155,13 @@ async def shells_set_active_market(
 ) -> dict[str, Any]:
     """Switch the default Shells chart and trading context to one market.
 
-    Use this for requests like "show AAVE", "switch to PENGU perp", or
-    "open this Polymarket market". This updates the live chart, order book,
-    trades, and trade ticket together. Prefer this over `shells_create_chart`
-    when the user wants a single tradable token, perp, spot, or prediction
-    market rather than a custom visual pane.
+    Use this for requests like "show AAVE", "switch to PENGU perp", "chart
+    PROMPT", or "open this Polymarket market". This updates the live chart,
+    order book, trades, and trade ticket together. Prefer this over
+    `shells_create_chart` when the user wants a single tradable token, perp,
+    spot, or prediction market rather than a custom visual pane. For onchain
+    swap-token charts, pass market_type="onchain-spot" instead of searching
+    chart-series candidates.
 
     Args:
       query: Natural search text, e.g. "AAVE perp" or "Timberwolves".
