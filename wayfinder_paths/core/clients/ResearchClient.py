@@ -174,6 +174,11 @@ class ResearchClient(WayfinderClient):
         )
         return await self._post_gateway("social/x-search", payload)
 
+    # Research endpoints fan out to upstream AI providers (Exa, Grok x_search)
+    # whose tail latency can exceed the 30s default. 120s covers deep-research
+    # / multi-keyword queries without locking up the agent forever on a bad day.
+    _GATEWAY_TIMEOUT_SECONDS = 120.0
+
     async def _post_gateway(
         self,
         path: str,
@@ -184,6 +189,7 @@ class ResearchClient(WayfinderClient):
                 "POST",
                 self._research_url(path),
                 json=payload,
+                timeout=self._GATEWAY_TIMEOUT_SECONDS,
             )
         except httpx.HTTPStatusError as exc:
             raise _gateway_error_from_response(exc.response) from exc
