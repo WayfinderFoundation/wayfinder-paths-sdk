@@ -816,6 +816,18 @@ async def _reject_unsafe_perp_order(
         )
 
     if requested_notional > capacity_notional + 1e-9:
+        if capacity_notional <= 1e-9:
+            dex = asset_name.split(":", 1)[0] if market_type == MARKET_TYPE_HIP3 else ""
+            collateral_coin = (await adapter.get_dex_collateral_mapping())[dex]
+            return err(
+                "insufficient_collateral",
+                f"You have 0 collateral for this market, you need {collateral_coin} to collateralize this position.",
+                details={
+                    "asset_name": asset_name,
+                    "market_type": market_type,
+                    "collateral_coin": collateral_coin,
+                },
+            )
         return err(
             "insufficient_hyperliquid_margin",
             "Requested Hyperliquid perp notional exceeds the side-specific available-to-trade capacity.",

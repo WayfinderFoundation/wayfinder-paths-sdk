@@ -503,6 +503,24 @@ class HyperliquidAdapter(BaseAdapter):
                     "activeAssetData is only available for perp and HIP-3 markets"
                 )
 
+    async def get_dex_collateral_mapping(self) -> dict[str, str]:
+        """`{dex_name: collateral_token_symbol}` indexed off `allPerpMetas.collateralToken`
+        and `spotMeta.tokens`. Core perp dex is the empty-string key."""
+        (metas_ok, metas), (spot_ok, spot_meta) = await asyncio.gather(
+            self.get_all_perp_metas(),
+            self.get_spot_meta(),
+        )
+        if not metas_ok:
+            raise ValueError(f"Failed to fetch all_perp_metas: {metas}")
+        if not spot_ok:
+            raise ValueError(f"Failed to fetch spot_meta: {spot_meta}")
+        token_names = {int(t["index"]): t["name"] for t in spot_meta["tokens"]}
+        dexes = get_perp_dexes()
+        return {
+            dexes[i]: token_names[int(meta["collateralToken"])]
+            for i, meta in enumerate(metas)
+        }
+
     async def get_active_asset_data(
         self, address: str, asset_name: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
