@@ -147,7 +147,7 @@ Polymarket balances are separate from a user's EVM balances. To place transactio
 
 When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket in parallel. Present candidates grouped by venue and let the user pick — the same theme can list on both with different sizes, expiries, and collateral.
 
-### BRAP
+### EVM Token Exchanges
 
 BRAP is a cross-chain swap aggregator capable of same-chain and cross-chain swaps.
 
