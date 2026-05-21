@@ -58,7 +58,7 @@ class WalletProfileStore:
             return None
         out = {"address": norm, **profile}
         if transactions_limit is not None:
-            out["transactions"] = (out.get("transactions") or [])[:transactions_limit]
+            out["transactions"] = out["transactions"][:transactions_limit]
         return out
 
     def list_profiles(self) -> list[dict[str, Any]]:
