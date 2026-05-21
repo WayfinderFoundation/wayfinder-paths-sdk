@@ -196,7 +196,7 @@ async def onchain_swap(
     on slow chains where the MCP client may time out.
 
     Args:
-        wallet_label: Required — config.json wallet label (e.g. "main").
+        wallet_label: Wallet label.
         from_token: Source token id, address-id, or symbol query.
         to_token: Destination token id, address-id, or symbol query.
         amount: Human-units string (e.g. "1000" or "0.5"), not wei.
@@ -376,7 +376,7 @@ async def onchain_send(
     client may time out.
 
     Args:
-        wallet_label: Required — config.json wallet label.
+        wallet_label: Wallet label.
         token: Token id, address-id, symbol query, or `"native"`.
         recipient: Destination address. Required.
         amount: Human-units string (e.g. "5" for 5 USDC), not wei.
