@@ -321,3 +321,5 @@ Rules:
 - Phrase suggestions in first person from the user's perspective (something a user might naturally say in response to your turn).
 - DO NOT include wallet addresses, asset IDs, Markdown, or asset/protocol names that have not appeared in the conversation.
 - Emit the block at the end of your turn.
+
+e.g. <userSuggestions>opt1|opt2|...|optn</userSuggestions>
