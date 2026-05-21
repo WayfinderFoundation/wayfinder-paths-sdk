@@ -57,3 +57,30 @@ The adapter accepts both forms:
 
 - `receiver` controls where output tokens go
 - If `receiver != signer`, treat as high-risk and require explicit user confirmation
+
+## Limit-order API paths
+
+- Core market/SDK APIs use `https://api-v2.pendle.finance/core`
+- Limit-order APIs use `https://api-v2.pendle.finance/limit-order`
+- Taker reads are under `/v1/takers/limit-orders`
+- Maker reads/create/generate are under `/v1/makers/...`
+- Do not use stale `/v1/limit-orders/...` paths in scripts
+- Do not hand-roll raw `urllib` calls. For ad-hoc endpoints without typed
+  methods, use `pendle_api_get()` / `pendle_api_post()` from
+  `wayfinder_paths.adapters.pendle_adapter`; they attach the adapter User-Agent,
+  decode responses, and preserve rate-limit metadata.
+
+## Taker fill sizing
+
+- `fetch_taker_limit_orders()` returns a wrapper-level `makingAmount`; use this
+  amount for the fill, not the original order's full `makingAmount`
+- `maxTaking` should be buffered from `netFromTaker`; 1% is Pendle's documented
+  recommendation
+- The taker pays `order.takingToken` and receives `order.makingToken`/SY
+
+## Maker order testing caveat
+
+Maker creation is not fully gorlami-fork testable through the production Pendle
+API because Pendle validates maker balance and allowance on the live chain. Use
+unit tests/mocked API for maker generation/sign/post, and use gorlami live-fork
+tests for taker fills against existing live signed orders.

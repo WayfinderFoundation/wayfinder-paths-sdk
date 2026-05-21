@@ -63,7 +63,7 @@ Use this method routing:
 - Time series: `get_asset_price_ts`, `get_asset_yield_ts`, `get_market_lending_ts`, `get_market_pendle_ts`, `get_market_boros_ts`, and `get_instrument_funding_ts`.
 - Bulk work: `bulk_latest_prices`, `bulk_latest_lending`, `bulk_prices`, `bulk_lending`, `bulk_funding`, and backtest bundle helpers.
 - Opportunity analysis: `search_opportunities` for trimmed scan rows, `get_basis_apy_sources` for enriched analytic APY/opportunity payloads, and `get_best_delta_neutral_pairs` for candidate hedges.
-- Pendle analysis: discover with market/instrument search, hydrate by market ID, use `get_market_pendle_ts` for historical implied APY, volume, liquidity, maturity, PT/YT context, and pair with funding/lending series for hedged net yield.
+- Pendle analysis: discover with instrument search first for PT/stablecoin yield questions, e.g. `venue="pendle"`, `basisRoot="USD"`, and chain filters; use broad market search only for venue-wide coverage. Hydrate by market ID, use `get_market_pendle_ts` for historical implied APY, volume, liquidity, maturity, PT/YT context, and pair with funding/lending series for hedged net yield.
 
 For different-unit comparisons such as BTC vs ETH, APY vs funding, or price vs rate, state the normalization used. Common defaults:
 

@@ -1,11 +1,22 @@
 {
   "list_markets": {
-    "description": "List active PT/YT markets across chains, sorted by implied APY (fixedApy proxy).",
-    "code": "from adapters.pendle_adapter.adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nrows = await adapter.list_active_pt_yt_markets(\n    chains=[\"arbitrum\", \"base\", \"hyperevm\"],\n    min_liquidity_usd=250_000,\n    min_volume_usd_24h=25_000,\n    min_days_to_expiry=7,\n    sort_by=\"fixed_apy\",\n    descending=True,\n)\n\nprint(rows[:3])"
+    "description": "List active PT/YT markets across chains via /v2/markets/all, sorted by implied APY (fixedApy proxy).",
+    "code": "from wayfinder_paths.adapters.pendle_adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nrows = await adapter.list_active_pt_yt_markets(\n    chains=[\"arbitrum\", \"base\", \"hyperevm\"],\n    min_liquidity_usd=250_000,\n    min_volume_usd_24h=25_000,\n    min_days_to_expiry=7,\n    sort_by=\"fixed_apy\",\n    descending=True,\n)\n\nfor row in rows[:3]:\n    print(row[\"marketName\"], f\"{row['fixedApy'] * 100:.2f}%\", row[\"expiry\"])"
+  },
+  "stablecoin_markets": {
+    "description": "Find active stablecoin PT markets on Arbitrum and display fixed APY as percent.",
+    "code": "from wayfinder_paths.adapters.pendle_adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nrows = await adapter.list_active_pt_yt_markets(\n    chains=[\"arbitrum\"],\n    min_liquidity_usd=250_000,\n    min_days_to_expiry=7,\n    sort_by=\"fixed_apy\",\n    descending=True,\n)\n\nstable_rows = [\n    row\n    for row in rows\n    if any(symbol in row[\"marketName\"].upper() for symbol in [\"USD\", \"DAI\", \"USDE\"])\n]\n\nfor row in stable_rows[:5]:\n    print(row[\"marketName\"], f\"{row['fixedApy'] * 100:.2f}%\", row[\"marketAddress\"], row[\"ptAddress\"])"
   },
   "best_pt_swap": {
     "description": "Build a Hosted-SDK swap payload (tx + approvals) for the best PT on a chain.",
-    "code": "from adapters.pendle_adapter.adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nbest = await adapter.build_best_pt_swap_tx(\n    chain=\"arbitrum\",\n    token_in=\"0xaf88d065e77c8cC2239327C5EDb3A432268e5831\",\n    amount_in=str(1000 * 10**6),\n    receiver=\"0xYourEOAHere\",\n    slippage=0.01,\n    enable_aggregator=True,\n    max_markets_to_quote=10,\n)\n\nif best[\"ok\"]:\n    print(best[\"selectedMarket\"], best[\"quote\"])\n    print(best[\"tx\"], best[\"tokenApprovals\"])"
+    "code": "from wayfinder_paths.adapters.pendle_adapter import PendleAdapter\n\nadapter = PendleAdapter()\n\nbest = await adapter.build_best_pt_swap_tx(\n    chain=\"arbitrum\",\n    token_in=\"0xaf88d065e77c8cC2239327C5EDb3A432268e5831\",\n    amount_in=str(1000 * 10**6),\n    receiver=\"0xYourEOAHere\",\n    slippage=0.01,\n    enable_aggregator=True,\n    max_markets_to_quote=10,\n)\n\nif best[\"ok\"]:\n    print(best[\"selectedMarket\"], best[\"quote\"])\n    print(best[\"tx\"], best[\"tokenApprovals\"])"
+  },
+  "fill_taker_limit_order": {
+    "description": "Fetch one signed Pendle taker limit order and fill it through LimitRouter with a 1% maxTaking buffer.",
+    "code": "from wayfinder_paths.mcp.scripting import get_adapter\nfrom wayfinder_paths.adapters.pendle_adapter import PendleAdapter\n\nadapter = await get_adapter(PendleAdapter, \"main\")\n\npage = await adapter.fetch_taker_limit_orders(\n    chain=\"arbitrum\",\n    yt=\"0xYourYTHere\",\n    order_type=\"TOKEN_FOR_PT\",\n    limit=1,\n)\n\nok, result = await adapter.execute_taker_limit_order_fill(\n    chain=\"arbitrum\",\n    limit_order_items=page[\"results\"][0],\n    max_taking_bps=100,\n)\nprint(ok, result)"
+  },
+  "create_maker_limit_order": {
+    "description": "Generate, sign, and post a Pendle maker limit order. Requires live-chain maker balance and allowance.",
+    "code": "from wayfinder_paths.mcp.scripting import get_adapter\nfrom wayfinder_paths.adapters.pendle_adapter import PendleAdapter\n\nadapter = await get_adapter(PendleAdapter, \"main\")\n\nok, result = await adapter.create_maker_limit_order(\n    chain=\"arbitrum\",\n    yt=\"0xYourYTHere\",\n    order_type=\"TOKEN_FOR_PT\",\n    token=\"0xaf88d065e77c8cC2239327C5EDb3A432268e5831\",\n    making_amount=str(100 * 10**6),\n    implied_apy=0.10,\n    expiry=str(1_893_456_000),\n)\nprint(ok, result)"
   }
 }
-

@@ -285,6 +285,9 @@ await DELTA_LAB_CLIENT.search_assets_v2(q="ETH", chain_id=1, limit=25)
 # equivalent: search_assets_v2(query="ETH", chain_id=1, limit=25)
 await DELTA_LAB_CLIENT.search_markets(venue="aave-bsc", market_type="LENDING")
 await DELTA_LAB_CLIENT.search_instruments(instrument_type="PERP", basis_root="ETH")
+await DELTA_LAB_CLIENT.search_instruments(
+    venue="pendle", chain_id=42161, basis_root="USD", instrument_type="PENDLE_PT"
+)
 await DELTA_LAB_CLIENT.search_opportunities(
     basis_root="ETH", side="LONG",
     venue="hyperliquid",          # filter opportunities to a specific venue
@@ -299,6 +302,10 @@ await DELTA_LAB_CLIENT.search_venues(venue_type="LENDING")
 rather than filtering the returned list, so the page window stays on the
 matching rows. Example: "top 10 LONG ETH opportunities on Hyperliquid" =
 `search_opportunities(basis_root="ETH", side="LONG", venue="hyperliquid", limit=10)`.
+
+For Pendle stablecoin/PT yield ranking, search instruments first with
+`venue="pendle"` and `basis_root="USD"`; broad market search can return sparse
+market IDs and should be reserved for venue-wide scans or fallback discovery.
 
 - `search_assets_v2` is **distinct** from the legacy `search_assets`
   (different endpoint: `/search/assets/` vs `/assets/search/`). Both

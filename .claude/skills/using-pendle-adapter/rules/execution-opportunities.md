@@ -133,6 +133,97 @@ adapter = await get_adapter(PendleAdapter, "main")
 adapter = await get_adapter(PendleAdapter)
 ```
 
+## Pendle limit orders
+
+Use the adapter methods instead of raw HTTP. They route to Pendle's current
+limit-order API, attach a User-Agent, and normalize order type names:
+
+- `TOKEN_FOR_PT` / `SY_FOR_PT` = `0`
+- `PT_FOR_TOKEN` / `PT_FOR_SY` = `1`
+- `TOKEN_FOR_YT` / `SY_FOR_YT` = `2`
+- `YT_FOR_TOKEN` / `YT_FOR_SY` = `3`
+
+For a Pendle endpoint that does not yet have a typed adapter method, use:
+
+```python
+from wayfinder_paths.adapters.pendle_adapter import pendle_api_get
+
+data = await pendle_api_get(
+    "/v1/takers/limit-orders",
+    api="limit_order",
+    params={"chainId": 42161, "yt": "0x...", "type": 0},
+)
+```
+
+### Read taker liquidity
+
+```python
+orders = await adapter.fetch_taker_limit_orders(
+    chain="arbitrum",
+    yt="0x...",
+    order_type="TOKEN_FOR_PT",
+    skip=0,
+    limit=10,
+)
+```
+
+The API requires `sortBy="Implied Rate"` and `sortOrder`; the adapter defaults
+these to `Implied Rate` and `asc`.
+
+### Fill a taker order
+
+```python
+adapter = await get_adapter(PendleAdapter, "main")
+
+page = await adapter.fetch_taker_limit_orders(
+    chain="plasma",
+    yt="0x...",
+    order_type="TOKEN_FOR_PT",
+    limit=1,
+)
+
+ok, result = await adapter.execute_taker_limit_order_fill(
+    chain="plasma",
+    limit_order_items=page["results"][0],
+    max_taking_bps=100,
+)
+```
+
+`execute_taker_limit_order_fill()`:
+- Uses `LimitRouter.fill(...)`
+- Uses the taker wrapper `makingAmount`, not stale full order size
+- Sets `maxTaking = netFromTaker * 1.01` by default
+- Checks taker input balance, approves the LimitRouter, sends the fill, and
+  returns pre/post balances for the input/output tokens
+
+### Create or cancel maker orders
+
+```python
+adapter = await get_adapter(PendleAdapter, "main")
+
+ok, result = await adapter.create_maker_limit_order(
+    chain="arbitrum",
+    yt="0x...",
+    order_type="TOKEN_FOR_PT",
+    token="0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    making_amount=str(100 * 10**6),
+    implied_apy=0.10,
+    expiry=str(1_893_456_000),
+)
+
+ok, cancel = await adapter.cancel_maker_limit_order(
+    chain="arbitrum",
+    limit_order_items=result["order"],
+)
+```
+
+Maker creation calls Pendle's generate endpoint, ensures allowance for the maker
+token, signs EIP-712 (`Pendle Limit Order Protocol`, version `1`, LimitRouter),
+and posts the signed order. The maker must have live-chain balance/allowance;
+gorlami fork balances are not visible to Pendle's backend. For `PT_FOR_TOKEN`,
+pass `approval_token=<PT address>` because Pendle's generate response includes
+YT but not PT.
+
 ## Redeem expired/matured PTs (convert PT → underlying)
 
 After a PT passes its maturity date, redeem it using `execute_convert` (the universal convert endpoint). This is **not** a swap — it's a direct redemption of PT for the underlying asset.

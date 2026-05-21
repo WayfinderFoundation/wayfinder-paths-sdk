@@ -15,8 +15,11 @@ capabilities:
   - "pendle.convert.execute"
   - "pendle.positions.database"
   - "pendle.limit_orders.taker.read"
+  - "pendle.limit_orders.taker.fill"
   - "pendle.limit_orders.maker.read"
   - "pendle.limit_orders.maker.write"
+  - "pendle.limit_orders.maker.cancel"
+  - "pendle.limit_orders.maker.nonce"
   - "pendle.deployments.read"
   - "pendle.router_static.rates"
 dependencies: []
