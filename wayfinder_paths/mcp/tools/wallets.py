@@ -457,11 +457,19 @@ async def _fetch_balances(address: str) -> dict[str, Any] | None:
 
 
 @catch_errors
-async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
+async def core_get_wallets(
+    label: str | None = None, transactions_limit: int = 5
+) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
     No args → every wallet. Pass `label` to filter to a single wallet (returns the same
     shape, list with one entry, or an `err(...)` response if not found).
+
+    Args:
+        label: Optional wallet label filter.
+        transactions_limit: Most-recent N entries to include in `profile.transactions`.
+            Defaults to 5 to keep the response compact (the store caps history at 100).
+            Bump higher for deeper audit; the agent should rarely need >20.
     """
     store = WalletProfileStore.default()
     if label is not None:
@@ -479,7 +487,9 @@ async def core_get_wallets(label: str | None = None) -> dict[str, Any]:
         addr = normalize_address(w.get("address"))
         if addr:
             view["protocols"] = store.get_protocols_for_wallet(addr.lower())
-            view["profile"] = store.get_profile(addr)
+            view["profile"] = store.get_profile(
+                addr, transactions_limit=transactions_limit
+            )
         else:
             view["protocols"] = []
         views.append(view)
