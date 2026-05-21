@@ -58,6 +58,8 @@ Use one of:
 - `spot.state.balances` — pure spot balances (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out into the `outcomes` bucket.
 - `outcomes.positions` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
 
+For selected perp/HIP-3 trade capacity, use `mcp__wayfinder__hyperliquid_get_trade_asset(label, asset_name)`. This reads Hyperliquid `activeAssetData` and returns side-specific available margin, max order notional, max base size, current leverage, max leverage, compatible margin modes, and the live position. Do not derive available-to-open capacity from spot USDC balance, withdrawable, account value, or `crossMarginSummary`.
+
 Adapter calls (raw, no filtering — both still expose outcome `+N` entries on the spot side):
 
 - Perp account state: `HyperliquidAdapter.get_user_state(address)`

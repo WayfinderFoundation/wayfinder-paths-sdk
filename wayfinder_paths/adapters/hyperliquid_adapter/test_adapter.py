@@ -44,6 +44,8 @@ class TestHyperliquidAdapter:
                     "markPx": "50000.0",
                     "maxTradeSzs": ["0.0012", "0.0056"],
                 }
+            if req_type == "userAbstraction":
+                return "unifiedAccount"
             if req_type == "openOrders":
                 return [{"oid": 1}]
             if req_type == "frontendOpenOrders":
@@ -126,6 +128,18 @@ class TestHyperliquidAdapter:
             mock_info.post.assert_any_call(
                 "/info",
                 {"type": "activeAssetData", "user": "0x1234", "coin": "BTC"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_user_abstraction(self, adapter, mock_info, _patch_adapter):
+        p1, p2 = _patch_adapter()
+        with p1, p2:
+            success, data = await adapter.get_user_abstraction("0x1234")
+            assert success
+            assert data == "unifiedAccount"
+            mock_info.post.assert_any_call(
+                "/info",
+                {"type": "userAbstraction", "user": "0x1234"},
             )
 
     def test_active_asset_data_coin(self):

@@ -7,6 +7,8 @@ permission:
   task:
     "*": deny
   question: deny
+  external_directory:
+    "*": allow
   wayfinder_*: deny
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow

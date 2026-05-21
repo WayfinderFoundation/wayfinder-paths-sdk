@@ -3,7 +3,20 @@ from __future__ import annotations
 from typing import Any
 
 from wayfinder_paths.core.clients.AlphaLabClient import ALPHA_LAB_CLIENT
+from wayfinder_paths.mcp.arg_validation import normalize_enum, normalize_int
 from wayfinder_paths.mcp.utils import catch_errors, ok
+
+SCAN_TYPES = {
+    "twitter_post",
+    "defi_llama_chain_flow",
+    "defi_llama_overview",
+    "defi_llama_protocol",
+    "delta_lab_top_apy",
+    "delta_lab_best_delta_neutral",
+    "all",
+    "_",
+    "",
+}
 
 
 @catch_errors
@@ -12,7 +25,7 @@ async def research_search_alpha(
     scan_type: str = "all",
     created_after: str = "_",
     created_before: str = "_",
-    limit: str = "20",
+    limit: str | int = "20",
 ) -> dict[str, Any]:
     """Search Alpha Lab insights. Sorted by insightfulness score (highest first).
 
@@ -27,10 +40,14 @@ async def research_search_alpha(
     """
     kwargs: dict[str, Any] = {
         "sort": "-insightfulness_score",
-        "limit": min(200, max(1, int(limit))),
+        "limit": min(200, normalize_int(limit, field_name="limit", min_value=1)),
     }
-    type_value = scan_type.strip().lower()
-    if type_value not in ("all", ""):
+    type_value = normalize_enum(
+        scan_type,
+        field_name="scan_type",
+        allowed_values=SCAN_TYPES,
+    )
+    if type_value not in ("all", "", "_"):
         kwargs["scan_type"] = type_value
     search_value = query.strip()
     if search_value and search_value != "_":

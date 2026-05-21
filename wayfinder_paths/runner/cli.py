@@ -133,7 +133,7 @@ def status_cmd() -> None:
     "timeout_seconds",
     type=int,
     default=None,
-    help="Per-run timeout seconds.",
+    help="Per-run timeout seconds (0 disables timeout).",
 )
 @click.option(
     "--env-json", default=None, help="JSON object of env vars for the worker."
@@ -260,6 +260,23 @@ def pause_cmd(name: str) -> None:
 def resume_cmd(name: str) -> None:
     paths = get_runner_paths()
     resp = _client(paths.sock_path).call("resume_job", {"name": str(name)})
+    _echo_json(resp)
+
+
+@runner_cli.command(name="stop-job", help="Stop a running job by name.")
+@click.argument("name")
+@click.option(
+    "--signal",
+    "sig",
+    type=click.Choice(["TERM", "INT", "KILL"], case_sensitive=False),
+    default="TERM",
+    show_default=True,
+)
+def stop_job_cmd(name: str, sig: str) -> None:
+    paths = get_runner_paths()
+    resp = _client(paths.sock_path).call(
+        "stop_job", {"name": str(name), "sig": str(sig).upper()}
+    )
     _echo_json(resp)
 
 

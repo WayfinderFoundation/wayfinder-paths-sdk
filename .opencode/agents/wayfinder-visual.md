@@ -6,6 +6,8 @@ permission:
   task:
     "*": deny
   question: deny
+  external_directory:
+    "*": allow
   wayfinder_*: deny
   # core_*
   wayfinder_core_run_script: allow

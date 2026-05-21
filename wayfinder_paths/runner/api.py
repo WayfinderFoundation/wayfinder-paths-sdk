@@ -40,6 +40,8 @@ def dispatch(daemon, *, method: str, params: dict[str, Any]) -> dict[str, Any]:
         return daemon.ctl_pause_job(name=params.get("name"))
     if method == "resume_job":
         return daemon.ctl_resume_job(name=params.get("name"))
+    if method == "stop_job":
+        return daemon.ctl_stop_job(name=params.get("name"), sig=params.get("sig"))
     if method == "run_once":
         return daemon.ctl_run_once(name=params.get("name"))
     if method == "delete_job":

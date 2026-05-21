@@ -353,6 +353,12 @@ def main():
     )
     p.add_argument("--debug", action="store_true")
     p.add_argument(
+        "--log-file",
+        dest="log_file",
+        default=None,
+        help="Optional log file path (adds a Loguru sink so you can tail it).",
+    )
+    p.add_argument(
         "--gorlami",
         action="store_true",
         help="Run against a Gorlami fork (dry run).",
@@ -388,6 +394,16 @@ def main():
 
     logger.remove()
     logger.add(sys.stderr, level="DEBUG" if args.debug else "INFO")
+    if args.log_file:
+        log_path = Path(str(args.log_file)).expanduser()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.add(
+            str(log_path),
+            level="DEBUG" if args.debug else "INFO",
+            rotation="10 MB",
+            retention="7 days",
+            enqueue=True,
+        )
 
     config_path = args.config or "config.json"
     try:

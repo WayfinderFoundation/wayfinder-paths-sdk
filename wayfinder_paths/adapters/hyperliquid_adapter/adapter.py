@@ -326,6 +326,24 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch meta_and_asset_ctxs: {exc}")
             return False, str(exc)
 
+    async def get_all_perp_metas(self) -> tuple[bool, Any]:
+        cache_key = "hl_all_perp_metas"
+        cached = await self._cache.get(cache_key)
+        if cached:
+            return True, cached
+
+        try:
+            data = await asyncio.to_thread(
+                get_info().post,
+                "/info",
+                {"type": "allPerpMetas"},
+            )
+            await self._cache.set(cache_key, data, ttl=60)
+            return True, data
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch all_perp_metas: {exc}")
+            return False, str(exc)
+
     async def get_spot_meta(self) -> tuple[bool, Any]:
         cache_key = "hl_spot_meta"
         cached = await self._cache.get(cache_key)
@@ -513,6 +531,20 @@ class HyperliquidAdapter(BaseAdapter):
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch spot_user_state for {address}: {exc}")
+            return False, str(exc)
+
+    async def get_user_abstraction(
+        self, address: str
+    ) -> tuple[Literal[True], Any] | tuple[Literal[False], str]:
+        try:
+            data = await asyncio.to_thread(
+                get_info().post,
+                "/info",
+                {"type": "userAbstraction", "user": address},
+            )
+            return True, data
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch user_abstraction for {address}: {exc}")
             return False, str(exc)
 
     async def get_full_user_state(

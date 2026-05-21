@@ -5,7 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from wayfinder_paths.mcp.tools.runner import core_runner
+from wayfinder_paths.mcp.tools.runner import core_runner, core_runner_status
 from wayfinder_paths.runner.control import RunnerControlServer
 
 
@@ -63,13 +63,21 @@ def test_mcp_runner_tool_status_roundtrip() -> None:
         assert out["ok"] is True
         assert out["result"]["hello"] == "world"
 
+        out = _run(core_runner_status(action="status", sock_path=str(sock)))
+        assert out["ok"] is True
+        assert out["result"]["hello"] == "world"
+
         out = _run(
-            core_runner(action="job_runs", sock_path=str(sock), name="job", limit=5)
+            core_runner_status(
+                action="job_runs", sock_path=str(sock), name="job", limit=5
+            )
         )
         assert out["ok"] is True
         assert out["result"]["runs"][0]["run_id"] == 1
 
-        out = _run(core_runner(action="run_report", sock_path=str(sock), run_id=1))
+        out = _run(
+            core_runner_status(action="run_report", sock_path=str(sock), run_id=1)
+        )
         assert out["ok"] is True
         assert out["result"]["run"]["run_id"] == 1
 

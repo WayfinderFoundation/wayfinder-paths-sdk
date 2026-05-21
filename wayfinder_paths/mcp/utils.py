@@ -20,6 +20,7 @@ from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     load_wallets,
     resolve_wallet,
 )
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
 
 getcontext().prec = 78
 
@@ -88,6 +89,12 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return await fn(*args, **kwargs)
+            except MCPArgumentError as exc:
+                return err(
+                    "invalid_argument",
+                    f"{prefix} {exc}".strip(),
+                    details=exc.details,
+                )
             except Exception as exc:
                 return err("error", f"{prefix} {exc}".strip())
 
@@ -97,6 +104,12 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return fn(*args, **kwargs)
+        except MCPArgumentError as exc:
+            return err(
+                "invalid_argument",
+                f"{prefix} {exc}".strip(),
+                details=exc.details,
+            )
         except Exception as exc:
             return err("error", f"{prefix} {exc}".strip())
 

@@ -54,7 +54,7 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 ## Claude Code MCP tools (minimal surface)
 
 For interactive use in Claude Code, this repo exposes a small MCP surface:
-- Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
+- Read-only: `mcp__wayfinder__hyperliquid_get_state` (account state), `mcp__wayfinder__hyperliquid_get_trade_asset` (selected perp/HIP-3 capacity), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
 - Writes — each action is its own tool:
   - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 (`#<encoding>`)
   - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 (`#<encoding>`)

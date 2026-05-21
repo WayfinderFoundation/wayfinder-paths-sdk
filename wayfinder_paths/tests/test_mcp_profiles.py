@@ -64,6 +64,7 @@ def test_mcp_catalog_exposes_expected_non_shell_tools() -> None:
     assert "research_search_delta_lab_markets" in names
     assert "research_search_delta_lab_instruments" in names
     assert "research_get_delta_lab_pendle_market" in names
+    assert "hyperliquid_get_trade_asset" in names
     assert "hyperliquid_place_market_order" in names
     assert "hyperliquid_deposit" in names
     assert "polymarket_place_market_order" in names

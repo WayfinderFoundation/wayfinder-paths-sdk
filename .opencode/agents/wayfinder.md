@@ -150,7 +150,7 @@ If a user is on a legacy split account, migration may require closing positions,
 
 #### Notes
 
-Leveraged perp execution: before placing, call `hyperliquid_get_state(label=..., asset_name=...)` and build a trade ticket from its `trade_context`. For UnifiedAccount margin, use `trade_context.available_to_trade_long_usd` or `trade_context.available_to_trade_short_usd`; do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
+Leveraged perp execution: before placing, call `hyperliquid_get_state(label=...)` for account state and `hyperliquid_get_trade_asset(label=..., asset_name=...)` for the selected perp/HIP-3 market. `label` is the configured wallet label; `asset_name` is the market path such as `ETH-USDC`, `HYPE-USDC`, or `xyz:NVDA`. For UnifiedAccount margin, size from the selected side in `hyperliquid_get_trade_asset` (`long.available_margin_usd`, `short.available_margin_usd`, `max_order_notional_usd`, `max_base_size`, current `leverage`, `max_leverage`, and `compatible_margin_modes`); do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
 
 Close/reduce flows: set `reduce_only=true` unless the user explicitly asked to flip or open the opposite side. If the tool returns `reduce_only_required`, retry only after changing the ticket to reduce-only or after the user confirms an intentional flip with `allow_flip=true`. If an order returns `status="partial"`, report requested notional, filled notional, and fill ratio; do not treat it as a complete fill. For pair trades, do not place both legs in parallel: verify leverage/margin mode, place leg 1, verify actual fill/position, then size leg 2 against the actual fill.
 
@@ -213,8 +213,8 @@ core_runner(action="daemon_stop")
 
 #### Safety
 
-- If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `core_runner(action="status")`, `core_runner(action="job_runs", name=...)`, or `core_runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
-- Generated monitor scripts must store durable state under the runner directory or `.wayfinder_runs/state`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
+- If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `runner(action="status")`, `runner(action="job_runs", name=...)`, or `runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
+- Generated monitor scripts must store durable state with `wayfinder_paths.runner.monitor_state`; it writes under `$WAYFINDER_RUNNER_DIR/job_state/$WAYFINDER_KV_NAMESPACE/`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
 #### Noise
 
