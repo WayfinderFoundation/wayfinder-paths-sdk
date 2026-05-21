@@ -133,26 +133,22 @@ Hyperliquid balances are separate from a user's EVM balances. To place transacti
 
 Before any order is placed, the Hyperliquid Adapter enforces [Unified Account mode](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/account-abstraction-modes): collateral for perpetuals comes from the user's spot account. Before Unified Account, users had to manage balances between accounts using spotToPerp and perpToSpot transfers.
 
-| Type             | Collateral / Quote                                                        |
-| ---------------- | ------------------------------------------------------------------------- |
-| Perpetuals       | USDC in spot account (Unified Account Mode)                               |
-| HIP-3 Perpetuals | Per-dex collateral pool, NOT unified with spot. See table below.          |
-| Spot             | For market {A} - {B}, {B} is the quote asset, typically: USDC, USDH, USDT |
-| HIP-4 Outcome    | USDH in spot account                                                      |
+| Type          | Collateral / Quote                                                        |
+| ------------- | ------------------------------------------------------------------------- |
+| Perpetuals    | USDC in spot account (Unified Account Mode)                               |
+| HIP-3 `xyz`   | USDC                                                                      |
+| HIP-3 `para`  | USDC                                                                      |
+| HIP-3 `flx`   | USDH                                                                      |
+| HIP-3 `vntl`  | USDH                                                                      |
+| HIP-3 `km`    | USDH                                                                      |
+| HIP-3 `cash`  | USDT                                                                      |
+| HIP-3 `hyna`  | USDE                                                                      |
+| Spot          | For market {A} - {B}, {B} is the quote asset, typically: USDC, USDH, USDT |
+| HIP-4 Outcome | USDH in spot account                                                      |
 
 If a user is on a legacy split account, migration may require closing positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before order placement, but can fail mid-state if open positions or stuck spot balances block the switch.
 
-HIP-3 builder dexes each have their own collateral pool separate from spot / unified balance. Deposits go into the dex's own ledger; you cannot fund cross-dex from unified spot. To trade on a builder dex, USDC/USDT/USDH/USDE must be transferred into that specific dex's user ledger first.
-
-| Builder dex | Collateral |
-| ----------- | ---------- |
-| `xyz`       | USDC       |
-| `para`      | USDC       |
-| `flx`       | USDH       |
-| `vntl`      | USDH       |
-| `km`        | USDH       |
-| `cash`      | USDT       |
-| `hyna`      | USDE       |
+HIP-3 builder dexes each have their own collateral pool separate from spot / unified balance. Deposits go into the dex's own ledger; you cannot fund cross-dex from unified spot.
 
 #### Notes
 
