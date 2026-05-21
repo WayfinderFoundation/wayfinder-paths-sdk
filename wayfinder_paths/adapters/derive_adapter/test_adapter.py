@@ -59,6 +59,23 @@ def _signed_order() -> dict[str, Any]:
     }
 
 
+def _unsigned_order() -> dict[str, Any]:
+    return {
+        "subaccount_id": 12345,
+        "instrument_name": "ETH-20260522-2500-C",
+        "direction": "BUY",
+        "amount": "0.1",
+        "limit_price": "20",
+        "max_fee": "2",
+        "order_type": "limit",
+        "time_in_force": "gtc",
+    }
+
+
+async def _fixed_signature(_hash_hex: str) -> str:
+    return "0x" + "33" * 65
+
+
 def test_adapter_type_and_config_defaults() -> None:
     adapter = DeriveAdapter(config={}, http_client=FakeAsyncClient([]))
 
@@ -268,6 +285,468 @@ async def test_private_read_requires_signing_callback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_account_with_secret_posts_public_payload() -> None:
+    http = FakeAsyncClient(
+        [{"id": "1", "result": {"status": "created", "wallet": "0xabc"}}]
+    )
+    adapter = DeriveAdapter(config={}, http_client=http)
+
+    ok, result = await adapter.create_account_with_secret(
+        secret="invite-secret",
+        wallet="0x1111111111111111111111111111111111111111",
+        scw_owner="0x2222222222222222222222222222222222222222",
+    )
+
+    assert ok is True
+    assert result == {"status": "created", "wallet": "0xabc"}
+    assert http.requests == [
+        {
+            "path": "/public/create_account_with_secret",
+            "json": {
+                "secret": "invite-secret",
+                "wallet": "0x1111111111111111111111111111111111111111",
+                "scw_owner": "0x2222222222222222222222222222222222222222",
+            },
+            "headers": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_account_uses_target_wallet_for_auth(monkeypatch) -> None:
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {
+                "id": "1",
+                "result": {
+                    "wallet": "0x2222222222222222222222222222222222222222",
+                    "subaccount_ids": [12345],
+                },
+            }
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={},
+        sign_hash_callback=_fixed_signature,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, result = await adapter.get_account(
+        wallet="0x2222222222222222222222222222222222222222"
+    )
+
+    assert ok is True
+    assert result["subaccount_ids"] == [12345]
+    assert http.requests[0]["path"] == "/private/get_account"
+    assert http.requests[0]["json"] == {
+        "wallet": "0x2222222222222222222222222222222222222222"
+    }
+    assert http.requests[0]["headers"]["X-LyraWallet"] == (
+        "0x2222222222222222222222222222222222222222"
+    )
+
+
+@pytest.mark.asyncio
+async def test_ensure_subaccount_returns_existing_preferred(monkeypatch) -> None:
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {
+                "id": "1",
+                "result": {
+                    "wallet": "0x1111111111111111111111111111111111111111",
+                    "subaccount_ids": [111, 222],
+                },
+            }
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={},
+        sign_hash_callback=_fixed_signature,
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, result = await adapter.ensure_subaccount(preferred_subaccount_id=222)
+
+    assert ok is True
+    assert result == {
+        "status": "exists",
+        "created": False,
+        "subaccount_id": 222,
+        "subaccount_ids": [111, 222],
+        "wallet": "0x1111111111111111111111111111111111111111",
+    }
+    assert len(http.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_subaccount_creates_empty_subaccount(monkeypatch) -> None:
+    captured_hashes: list[str] = []
+
+    async def sign_hash(hash_hex: str) -> str:
+        captured_hashes.append(hash_hex)
+        return "0x" + "44" * 65
+
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    monkeypatch.setattr(
+        "wayfinder_paths.adapters.derive_adapter.adapter.secrets.randbelow",
+        lambda _upper: 7,
+    )
+    http = FakeAsyncClient(
+        [
+            {
+                "id": "1",
+                "result": {
+                    "wallet": "0x1111111111111111111111111111111111111111",
+                    "subaccount_ids": [],
+                },
+            },
+            {
+                "id": "2",
+                "result": {
+                    "status": "requested",
+                    "transaction_id": "00000000-0000-0000-0000-000000000001",
+                },
+            },
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=sign_hash,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, result = await adapter.ensure_subaccount(
+        create_if_missing=True,
+        amount="0",
+        nonce=1779327000123007,
+        signature_expiry_sec=1779327600,
+    )
+
+    assert ok is True
+    assert result["status"] == "create_requested"
+    assert result["request"]["transaction_id"].endswith("1")
+    assert http.requests[1]["path"] == "/private/create_subaccount"
+    assert http.requests[1]["json"] == {
+        "amount": "0",
+        "asset_name": "USDC",
+        "margin_type": "SM",
+        "wallet": "0x1111111111111111111111111111111111111111",
+        "nonce": 1779327000123007,
+        "signature_expiry_sec": 1779327600,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "signature": "0x" + "44" * 65,
+    }
+    assert len(captured_hashes) == 3
+    assert all(item.startswith("0x") for item in captured_hashes)
+
+
+@pytest.mark.asyncio
+async def test_ensure_subaccount_can_create_account_then_subaccount(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {"id": "1", "error": {"code": -32000, "message": "account missing"}},
+            {
+                "id": "2",
+                "result": {
+                    "status": "created",
+                    "wallet": "0x1111111111111111111111111111111111111111",
+                },
+            },
+            {
+                "id": "3",
+                "result": {
+                    "wallet": "0x1111111111111111111111111111111111111111",
+                    "subaccount_ids": [],
+                },
+            },
+            {
+                "id": "4",
+                "result": {
+                    "status": "requested",
+                    "transaction_id": "00000000-0000-0000-0000-000000000005",
+                },
+            },
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=_fixed_signature,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, result = await adapter.ensure_subaccount(
+        create_account_if_missing=True,
+        account_secret="invite-secret",
+        scw_owner="0x2222222222222222222222222222222222222222",
+        create_if_missing=True,
+        amount="0",
+        nonce=1779327000123007,
+        signature_expiry_sec=1779327600,
+    )
+
+    assert ok is True
+    assert result["status"] == "create_requested"
+    assert result["account"] == {
+        "status": "created",
+        "wallet": "0x1111111111111111111111111111111111111111",
+    }
+    assert [request["path"] for request in http.requests] == [
+        "/private/get_subaccounts",
+        "/public/create_account_with_secret",
+        "/private/get_subaccounts",
+        "/private/create_subaccount",
+    ]
+    assert http.requests[1]["json"] == {
+        "secret": "invite-secret",
+        "wallet": "0x1111111111111111111111111111111111111111",
+        "scw_owner": "0x2222222222222222222222222222222222222222",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ensure_subaccount_requires_secret_for_account_creation(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [{"id": "1", "error": {"code": -32000, "message": "account missing"}}]
+    )
+    adapter = DeriveAdapter(
+        config={},
+        sign_hash_callback=_fixed_signature,
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, error = await adapter.ensure_subaccount(create_account_if_missing=True)
+
+    assert ok is False
+    assert "account_secret is required" in error
+    assert len(http.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_deposit_collateral_signs_action_payload(monkeypatch) -> None:
+    captured_hashes: list[str] = []
+
+    async def sign_hash(hash_hex: str) -> str:
+        captured_hashes.append(hash_hex)
+        return "0x" + "55" * 65
+
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {
+                "id": "1",
+                "result": {
+                    "status": "requested",
+                    "transaction_id": "00000000-0000-0000-0000-000000000002",
+                },
+            }
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=sign_hash,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x2222222222222222222222222222222222222222",
+        http_client=http,
+    )
+
+    ok, result = await adapter.deposit_collateral(
+        subaccount_id=12345,
+        amount="12.5",
+        nonce=1779327000123007,
+        signature_expiry_sec=1779327600,
+    )
+
+    assert ok is True
+    assert result["status"] == "requested"
+    assert http.requests[0]["path"] == "/private/deposit"
+    assert http.requests[0]["json"] == {
+        "amount": "12.5",
+        "asset_name": "USDC",
+        "subaccount_id": 12345,
+        "nonce": 1779327000123007,
+        "signature_expiry_sec": 1779327600,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "signature": "0x" + "55" * 65,
+    }
+    assert http.requests[0]["headers"]["X-LyraWallet"] == (
+        "0x2222222222222222222222222222222222222222"
+    )
+    assert len(captured_hashes) == 2
+
+
+@pytest.mark.asyncio
+async def test_withdraw_collateral_signs_action_payload(monkeypatch) -> None:
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {
+                "id": "1",
+                "result": {
+                    "status": "requested",
+                    "transaction_id": "00000000-0000-0000-0000-000000000003",
+                },
+            }
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=_fixed_signature,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, result = await adapter.withdraw_collateral(
+        subaccount_id=12345,
+        amount="1.25",
+        nonce=1779327000123008,
+        signature_expiry_sec=1779327600,
+        is_atomic_signing=True,
+    )
+
+    assert ok is True
+    assert result["transaction_id"].endswith("3")
+    assert http.requests[0]["path"] == "/private/withdraw"
+    assert http.requests[0]["json"] == {
+        "amount": "1.25",
+        "asset_name": "USDC",
+        "subaccount_id": 12345,
+        "nonce": 1779327000123008,
+        "signature_expiry_sec": 1779327600,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "signature": "0x" + "33" * 65,
+        "is_atomic_signing": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_action_requires_hash_callback() -> None:
+    adapter = DeriveAdapter(
+        config={},
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=FakeAsyncClient([]),
+    )
+
+    ok, error = await adapter.deposit_collateral(subaccount_id=12345, amount="1")
+
+    assert ok is False
+    assert "sign_hash_callback is required" in error
+
+
+@pytest.mark.asyncio
+async def test_deposit_and_withdrawal_history_payloads(monkeypatch) -> None:
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {"id": "1", "result": {"events": [{"tx_status": "settled"}]}},
+            {"id": "2", "result": {"events": [{"tx_status": "pending"}]}},
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={},
+        sign_hash_callback=_fixed_signature,
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, deposits = await adapter.get_deposit_history(
+        subaccount_id=12345,
+        start_timestamp=100,
+        end_timestamp=200,
+    )
+    assert ok is True
+    assert deposits["events"][0]["tx_status"] == "settled"
+
+    ok, withdrawals = await adapter.get_withdrawal_history(subaccount_id=12345)
+    assert ok is True
+    assert withdrawals["events"][0]["tx_status"] == "pending"
+    assert http.requests[0]["path"] == "/private/get_deposit_history"
+    assert http.requests[0]["json"] == {
+        "subaccount_id": 12345,
+        "start_timestamp": 100,
+        "end_timestamp": 200,
+    }
+    assert http.requests[1]["path"] == "/private/get_withdrawal_history"
+    assert http.requests[1]["json"] == {"subaccount_id": 12345}
+
+
+@pytest.mark.asyncio
+async def test_transfer_erc20_signs_sender_and_recipient(monkeypatch) -> None:
+    captured_hashes: list[str] = []
+
+    async def sign_hash(hash_hex: str) -> str:
+        captured_hashes.append(hash_hex)
+        return "0x" + str(len(captured_hashes)) * 130
+
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient(
+        [
+            {
+                "id": "1",
+                "result": {
+                    "status": "requested",
+                    "transaction_id": "00000000-0000-0000-0000-000000000004",
+                },
+            }
+        ]
+    )
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=sign_hash,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x1111111111111111111111111111111111111111",
+        http_client=http,
+    )
+
+    ok, result = await adapter.transfer_erc20(
+        subaccount_id=111,
+        recipient_subaccount_id=222,
+        amount="3.5",
+        nonce=1779327000123001,
+        recipient_nonce=1779327000123002,
+        signature_expiry_sec=1779327600,
+    )
+
+    assert ok is True
+    assert result["status"] == "requested"
+    assert http.requests[0]["path"] == "/private/transfer_erc20"
+    assert http.requests[0]["json"]["sender_details"] == {
+        "nonce": 1779327000123001,
+        "signature_expiry_sec": 1779327600,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "signature": "0x" + "1" * 130,
+    }
+    assert http.requests[0]["json"]["recipient_details"] == {
+        "nonce": 1779327000123002,
+        "signature_expiry_sec": 1779327600,
+        "signer": "0x1111111111111111111111111111111111111111",
+        "signature": "0x" + "2" * 130,
+    }
+    assert http.requests[0]["json"]["transfer"] == {
+        "address": "0x6caf294DaC985ff653d5aE75b4FF8E0A66025928",
+        "amount": "3.5",
+        "sub_id": 0,
+    }
+    assert len(captured_hashes) == 3
+
+
+@pytest.mark.asyncio
 async def test_rpc_error_returns_false() -> None:
     http = FakeAsyncClient(
         [
@@ -293,6 +772,77 @@ async def test_submit_order_rejects_missing_signed_fields() -> None:
 
     assert ok is False
     assert "missing signed Derive order fields" in error
+
+
+@pytest.mark.asyncio
+async def test_sign_order_uses_wallet_hash_callback(monkeypatch) -> None:
+    captured_hashes: list[str] = []
+
+    async def sign_hash(hash_hex: str) -> str:
+        captured_hashes.append(hash_hex)
+        return "0x" + "66" * 65
+
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=sign_hash,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x2222222222222222222222222222222222222222",
+        http_client=FakeAsyncClient([]),
+    )
+
+    ok, order = await adapter.sign_order(
+        _unsigned_order(),
+        asset_address="0xBcB494059969DAaB460E0B5d4f5c2366aab79aa1",
+        asset_sub_id=987654,
+        nonce=1779327000123009,
+        signature_expiry_sec=1779327600,
+    )
+
+    assert ok is True
+    assert order["direction"] == "buy"
+    assert order["signature"] == "0x" + "66" * 65
+    assert order["signer"] == "0x1111111111111111111111111111111111111111"
+    assert order["nonce"] == 1779327000123009
+    assert len(captured_hashes) == 1
+
+
+@pytest.mark.asyncio
+async def test_place_order_dry_run_signs_and_posts_order_debug(monkeypatch) -> None:
+    captured_hashes: list[str] = []
+
+    async def sign_hash(hash_hex: str) -> str:
+        captured_hashes.append(hash_hex)
+        return "0x" + "77" * 65
+
+    monkeypatch.setattr("time.time", lambda: 1779327000.123)
+    http = FakeAsyncClient([{"id": "1", "result": {"is_valid": True}}])
+    adapter = DeriveAdapter(
+        config={"derive": {"network": "testnet"}},
+        sign_hash_callback=sign_hash,
+        wallet_address="0x1111111111111111111111111111111111111111",
+        derive_wallet_address="0x2222222222222222222222222222222222222222",
+        http_client=http,
+    )
+
+    ok, result = await adapter.place_order(
+        _unsigned_order(),
+        asset_address="0xBcB494059969DAaB460E0B5d4f5c2366aab79aa1",
+        asset_sub_id=987654,
+        nonce=1779327000123010,
+        signature_expiry_sec=1779327600,
+        dry_run=True,
+    )
+
+    assert ok is True
+    assert result == {"is_valid": True}
+    assert http.requests[0]["path"] == "/private/order_debug"
+    assert http.requests[0]["json"]["signature"] == "0x" + "77" * 65
+    assert http.requests[0]["json"]["direction"] == "buy"
+    assert http.requests[0]["headers"]["X-LyraWallet"] == (
+        "0x2222222222222222222222222222222222222222"
+    )
+    assert len(captured_hashes) == 2
 
 
 @pytest.mark.asyncio

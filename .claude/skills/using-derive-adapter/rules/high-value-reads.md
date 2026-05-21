@@ -64,10 +64,33 @@ adapter = await get_adapter(
 )
 
 ok, subaccounts = await adapter.get_subaccounts()
+ok, account = await adapter.get_account()
 ok, subaccount = await adapter.get_subaccount(subaccount_id=12345)
 ok, positions = await adapter.get_positions(subaccount_id=12345)
 ok, orders = await adapter.get_open_orders(subaccount_id=12345)
 ok, margin = await adapter.get_margin(subaccount_id=12345)
 ```
 
+Useful account fields:
+
+- `subaccount_ids`: Derive subaccounts owned by the authenticated wallet.
+- `fee_info`: current fee configuration for options/perps/spot/RFQ.
+- `cancel_on_disconnect`: account-level cancellation behavior.
+- `websocket_*_tps`: current account WebSocket rate-limit tiers.
+
 For trade previews, prefer `get_margin(..., simulated_position_changes=[...])` before considering any order submission.
+
+## Deposit And Withdrawal History
+
+Use history reads after a lifecycle write returns `status="requested"` and a `transaction_id`.
+
+```python
+ok, deposits = await adapter.get_deposit_history(
+    subaccount_id=12345,
+    start_timestamp=0,
+)
+
+ok, withdrawals = await adapter.get_withdrawal_history(subaccount_id=12345)
+```
+
+Watch `tx_status` for `requested`, `pending`, `settled`, `reverted`, `ignored`, or `timed_out`. Check `error_log` before retrying a failed deposit or withdrawal.
