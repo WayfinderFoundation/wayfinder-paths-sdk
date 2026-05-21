@@ -9,11 +9,27 @@
 ## Primary data source
 
 - Adapter: `wayfinder_paths/adapters/uniswap_adapter/adapter.py`
+- Adapter README: `wayfinder_paths/adapters/uniswap_adapter/README.md`
 - Supported chains: Ethereum (1), Arbitrum (42161), Base (8453), Polygon (137), BSC (56), Avalanche (43114)
 - ABIs: `wayfinder_paths/core/constants/uniswap_v3_abi.py`
   - `NONFUNGIBLE_POSITION_MANAGER_ABI` — NPM (positions, mint, collect, etc.)
   - `UNISWAP_V3_POOL_ABI` — pool contract (`slot0`)
   - `UNISWAP_V3_FACTORY_ABI` — factory (`getPool`)
+
+## Unsupported surfaces
+
+Do not infer support from the wider Uniswap docs. The SDK adapter does **not**
+currently expose:
+
+- V2 pair/router reads
+- V3 swaps
+- Universal Router `execute(...)` command streams
+- Permit2 `SignatureTransfer` or `AllowanceTransfer`
+- V4 `PoolManager`, `StateView`, `Quoter`, hooks, native ETH pools, or
+  `PositionManager` action encoding
+
+If one of those surfaces is needed, design a separate adapter/helper instead of
+adding it to the V3 position abstraction.
 
 ## Ad-hoc read scripts
 

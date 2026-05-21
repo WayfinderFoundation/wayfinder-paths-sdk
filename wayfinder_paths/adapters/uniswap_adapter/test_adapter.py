@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import yaml
 
 from wayfinder_paths.adapters.uniswap_adapter.adapter import UniswapAdapter
 from wayfinder_paths.core.utils.uniswap_v3_math import tick_to_price, ticks_for_range
@@ -114,6 +116,29 @@ class TestConstruction:
     def test_missing_wallet(self):
         with pytest.raises(ValueError, match="wallet_address is required"):
             UniswapAdapter({"chain_id": 8453})
+
+
+class TestManifestScope:
+    def test_manifest_advertises_v3_position_capabilities_only(self):
+        manifest_path = Path(__file__).with_name("manifest.yaml")
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+        capabilities = set(manifest["capabilities"])
+        assert capabilities == {
+            "uniswap.liquidity.add",
+            "uniswap.liquidity.increase",
+            "uniswap.liquidity.remove",
+            "uniswap.fees.collect",
+            "uniswap.position.get",
+            "uniswap.positions.list",
+            "uniswap.fees.uncollected",
+            "uniswap.pool.get",
+        }
+        assert not any(
+            marker in capability
+            for capability in capabilities
+            for marker in (".swap", "router", "permit2", ".v2", ".v4")
+        )
 
 
 class TestAddLiquidity:
