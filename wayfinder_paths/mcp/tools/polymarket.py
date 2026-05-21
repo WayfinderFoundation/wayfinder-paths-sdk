@@ -10,7 +10,11 @@ from wayfinder_paths.core.clients.PolymarketClient import (
     PolymarketStatus,
 )
 from wayfinder_paths.core.config import CONFIG
-from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID
+from wayfinder_paths.core.constants.polymarket import (
+    POLYGON_CHAIN_ID,
+    POLYGON_P_USDC_PROXY_ADDRESS,
+)
+from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
     get_wallet_sign_typed_data_callback,
@@ -497,8 +501,7 @@ async def polymarket_deposit(
 ) -> dict[str, Any]:
     """Move pUSD from the owner EOA into the derived Polymarket V2 deposit wallet.
 
-    Required before any trade — Polymarket settles from the deposit wallet, not the EOA.
-    Direct Polygon ERC20 transfer; owner pays POL gas.
+    Required before any trade — Polymarket settles from the deposit wallet, not the EOA. Direct Polygon ERC20 transfer; owner pays POL gas.
 
     Args:
         wallet_label: Owner EOA wallet.
@@ -509,9 +512,26 @@ async def polymarket_deposit(
     amt = throw_if_not_number("amount must be a number", amount)
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        ok_fund, res = await adapter.fund_deposit_wallet(
-            amount_raw=int(Decimal(str(amt)) * Decimal(1_000_000))
+        amount_raw = int(Decimal(str(amt)) * Decimal(1_000_000))
+        pusd_balance = await get_token_balance(
+            POLYGON_P_USDC_PROXY_ADDRESS,
+            POLYGON_CHAIN_ID,
+            sender,
+            block_identifier="latest",
         )
+        if pusd_balance < amount_raw:
+            return err(
+                "insufficient_pusd",
+                f"Owner EOA has {pusd_balance / 1_000_000:.6f} pUSD, need "
+                f"{amt:.6f}. polymarket_deposit only transfers pUSD on Polygon "
+                "— wrap USDC.e / native USDC to pUSD first.",
+                {
+                    "owner": sender,
+                    "have_raw": pusd_balance,
+                    "need_raw": amount_raw,
+                },
+            )
+        ok_fund, res = await adapter.fund_deposit_wallet(amount_raw=amount_raw)
         effects = [
             {
                 "type": "polymarket",

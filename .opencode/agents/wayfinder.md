@@ -115,7 +115,7 @@ Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tok
 
 - Deposit: $5 USD. Deposits below this are lost.
 - Order: $10 USD notional.
-- Withdraw: $2 USD gross. `hyperliquid_withdraw(amount_usdc=N)` debits `$N` from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives `$N - 1`.
+- Withdraw: $2 USD gross. `hyperliquid_withdraw(amount_usdc=N)` debits `$N`from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives`$N - 1`.
 
 #### Deposits & Withdrawals
 
@@ -123,12 +123,12 @@ Hyperliquid balances are separate from a user's EVM balances. To place transacti
 
 #### Asset Names
 
-| Market type | Format        | Example     | Notes                                                                          |
-| ----------- | ------------- | ----------- | ------------------------------------------------------------------------------ |
-| Perp        | `BASE-QUOTE`  | `HYPE-USDC` |                                                                                |
-| HIP-3       | `dex:BASE`    | `xyz:SP500` | Builder-deployed; one of `xyz`, `para`, `flx`, `vntl`, `km`, `cash`, `hyna`.   |
+| Market type | Format        | Example     | Notes                                                                           |
+| ----------- | ------------- | ----------- | ------------------------------------------------------------------------------- |
+| Perp        | `BASE-QUOTE`  | `HYPE-USDC` |                                                                                 |
+| HIP-3       | `dex:BASE`    | `xyz:SP500` | Builder-deployed; one of `xyz`, `para`, `flx`, `vntl`, `km`, `cash`, `hyna`.    |
 | Spot        | `BASE/QUOTE`  | `HYPE/USDC` | Prefer Unit wrapper variants ([unit.xyz](https://unit.xyz)) (e.g. `UETH/USDC`). |
-| HIP-4       | `#<encoding>` | `#200`      | `#{100_000_000 + 10*outcome_id + side}`                                        |
+| HIP-4       | `#<encoding>` | `#200`      | `#{100_000_000 + 10*outcome_id + side}`                                         |
 
 #### Unified Account & Collateral
 
@@ -161,7 +161,7 @@ Polymarket is a CLOB for prediction markets. The primary collateral is pUSD (whi
 
 #### Depositing, Withdrawing & Collateral
 
-Polymarket balances are separate from a user's EVM balances. To place transactions on the Polymarket CLOB, users must first fund their account using `polymarket_deposit`, and similarly `polymarket_withdraw` to recover their funds. Note: Polymarket balances are held by a smart contract wallet on Polygon.
+Polymarket balances are separate from a user's EVM balances. To place transactions on the Polymarket CLOB, users must first fund their pUSD using `polymarket_deposit`, and similarly `polymarket_withdraw` to recover their funds. Note: Polymarket balances are held by a smart contract wallet on Polygon.
 
 #### Cross-venue prediction markets
 
