@@ -76,9 +76,37 @@ ERC4626_ABI = [
     {
         "type": "function",
         "stateMutability": "view",
+        "name": "previewMint",
+        "inputs": [{"name": "shares", "type": "uint256"}],
+        "outputs": [{"name": "assets", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "previewWithdraw",
+        "inputs": [{"name": "assets", "type": "uint256"}],
+        "outputs": [{"name": "shares", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
         "name": "previewRedeem",
         "inputs": [{"name": "shares", "type": "uint256"}],
         "outputs": [{"name": "assets", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "maxDeposit",
+        "inputs": [{"name": "receiver", "type": "address"}],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "maxMint",
+        "inputs": [{"name": "receiver", "type": "address"}],
+        "outputs": [{"name": "", "type": "uint256"}],
     },
     {
         "type": "function",
