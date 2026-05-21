@@ -562,14 +562,12 @@ async def test_hyperliquid_market_order_requires_reduce_only_for_opposite_positi
 @pytest.mark.asyncio
 async def test_hyperliquid_market_order_rejects_when_core_perp_has_zero_usdc():
     fake = _FakeExecutionAdapter(
-        clearinghouse_state={"marginSummary": {"accountValue": "0.0"}},
         active_asset_data={
-            "availableToTrade": ["10000", "10000"],
+            "availableToTrade": ["0", "0"],
             "leverage": {"type": "cross", "value": 5},
             "markPx": "100",
-            "maxTradeSzs": ["1000", "1000"],
+            "maxTradeSzs": ["0", "0"],
         },
-        place_order_succeeds=False,
     )
 
     with (
@@ -595,14 +593,12 @@ async def test_hyperliquid_market_order_rejects_when_core_perp_has_zero_usdc():
 @pytest.mark.asyncio
 async def test_hyperliquid_limit_order_rejects_when_hip3_dex_has_zero_collateral():
     fake = _FakeExecutionAdapter(
-        clearinghouse_state={"marginSummary": {"accountValue": "0.0"}},
         active_asset_data={
-            "availableToTrade": ["10000", "10000"],
+            "availableToTrade": ["0", "0"],
             "leverage": {"type": "cross", "value": 5},
             "markPx": "5000",
-            "maxTradeSzs": ["1000", "1000"],
+            "maxTradeSzs": ["0", "0"],
         },
-        place_order_succeeds=False,
     )
 
     with (
