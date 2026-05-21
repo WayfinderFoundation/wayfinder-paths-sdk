@@ -503,21 +503,6 @@ class HyperliquidAdapter(BaseAdapter):
                     "activeAssetData is only available for perp and HIP-3 markets"
                 )
 
-    async def get_clearinghouse_state_for_dex(
-        self, address: str, dex: str
-    ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
-        """Single-dex `clearinghouseState`. Use `dex=""` for core perps, `dex="<name>"` for HIP-3."""
-        try:
-            data = await asyncio.to_thread(
-                get_info().post,
-                "/info",
-                {"type": "clearinghouseState", "user": address, "dex": dex},
-            )
-            return True, data
-        except Exception as exc:
-            self.logger.error(f"Failed to fetch clearinghouseState dex={dex!r}: {exc}")
-            return False, str(exc)
-
     async def get_dex_collateral_mapping(self) -> dict[str, str]:
         """`{dex_name: collateral_token_symbol}` indexed off `allPerpMetas.collateralToken`
         and `spotMeta.tokens`. Core perp dex is the empty-string key."""
