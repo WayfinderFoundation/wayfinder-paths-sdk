@@ -340,11 +340,11 @@ async def onchain_swap(
         status = "failed"
 
     bridge_tracking = best_quote.get("bridge_tracking")
-    if sent_ok and wait_for_receipt and isinstance(bridge_tracking, dict):
+    if sent_ok and wait_for_receipt and bridge_tracking:
         try:
             bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
                 bridge_tracking=bridge_tracking,
-                tx_hash=sent.get("txn_hash") if isinstance(sent, dict) else None,
+                tx_hash=sent["txn_hash"],
             )
             response["effects"]["bridge"] = bridge_result
             if not bridge_result.get("is_success"):
@@ -354,6 +354,7 @@ async def onchain_swap(
                 "state": "pending",
                 "error": sanitize_for_json(str(exc)),
             }
+            status = "submitted"
 
     response["status"] = status
     response["raw"] = _compact_quote(quote_data, best_quote)
