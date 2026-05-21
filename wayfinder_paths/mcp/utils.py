@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import hashlib
 import inspect
@@ -11,6 +12,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.core.clients.MetricsClient import METRICS_CLIENT
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     find_wallet_by_label,
     get_local_sign_typed_data_callback,
@@ -88,32 +90,47 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
         @functools.wraps(fn)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
-                return await fn(*args, **kwargs)
+                result = await fn(*args, **kwargs)
             except MCPArgumentError as exc:
-                return err(
+                result = err(
                     "invalid_argument",
                     f"{prefix} {exc}".strip(),
                     details=exc.details,
                 )
             except Exception as exc:
-                return err("error", f"{prefix} {exc}".strip())
+                result = err("error", f"{prefix} {exc}".strip())
+            _report_tool_metric(fn.__name__, result)
+            return result
 
         return async_wrapper
 
     @functools.wraps(fn)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
         except MCPArgumentError as exc:
-            return err(
+            result = err(
                 "invalid_argument",
                 f"{prefix} {exc}".strip(),
                 details=exc.details,
             )
         except Exception as exc:
-            return err("error", f"{prefix} {exc}".strip())
+            result = err("error", f"{prefix} {exc}".strip())
+        _report_tool_metric(fn.__name__, result)
+        return result
 
     return sync_wrapper
+
+
+def _report_tool_metric(tool: str, result: dict[str, Any]) -> None:
+    """Fire-and-forget POST of the tool's ok/err outcome. Metrics never block the tool."""
+    success = result["ok"]
+    code = "ok" if success else result["error"]["code"]
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(METRICS_CLIENT.report_tool(tool=tool, success=success, code=code))
 
 
 def repo_root() -> Path:
