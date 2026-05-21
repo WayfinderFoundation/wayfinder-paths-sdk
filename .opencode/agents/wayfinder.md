@@ -110,7 +110,7 @@ Hyperliquid is a CLOB for: perpetuals (synthetic assets with leverage), spot tok
 
 - Deposit: $5 USD. Deposits below this are lost.
 - Order: $10 USD notional.
-- Withdraw: $2 USD gross. `hyperliquid_withdraw(amount_usdc=N)` debits `$N`from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives`$N - 1`.
+- Withdraw: $2 USD gross. `hyperliquid_withdraw(amount_usdc=N)` debits `$N` from the unified balance; Bridge2 takes a $1 fee, so Arbitrum receives `$N - 1`.
 
 #### Deposits & Withdrawals
 
@@ -118,12 +118,12 @@ Hyperliquid balances are separate from a user's EVM balances. To place transacti
 
 #### Asset Names
 
-| Market type | Format        | Example     | Notes                                                               |
-| ----------- | ------------- | ----------- | ------------------------------------------------------------------- | --- |
-| Perp        | `BASE-QUOTE`  | `HYPE-USDC` |
-| HIP-3       | `dex:BASE`    | `xyz:SP500` | Builder-deployed; one of `xyz`, `flx`, `vntl`, `hyna`, `km`.        |     |
-| Spot        | `BASE/QUOTE`  | `HYPE/USDC` | Prefer Unit wrapper variants (https://unit.xyz) (e.g. `UETH/USDC`). |
-| HIP-4       | `#<encoding>` | `#200`      | `#{100_000_000 + 10*outcome_id + side}`                             |
+| Market type | Format        | Example     | Notes                                                                          |
+| ----------- | ------------- | ----------- | ------------------------------------------------------------------------------ |
+| Perp        | `BASE-QUOTE`  | `HYPE-USDC` |                                                                                |
+| HIP-3       | `dex:BASE`    | `xyz:SP500` | Builder-deployed; one of `xyz`, `flx`, `vntl`, `hyna`, `km`.                   |
+| Spot        | `BASE/QUOTE`  | `HYPE/USDC` | Prefer Unit wrapper variants ([unit.xyz](https://unit.xyz)) (e.g. `UETH/USDC`). |
+| HIP-4       | `#<encoding>` | `#200`      | `#{100_000_000 + 10*outcome_id + side}`                                        |
 
 #### Unified Account & Collateral
 
@@ -204,7 +204,7 @@ core_runner(action="daemon_stop")
 #### Safety
 
 - If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `core_runner(action="status")`, `core_runner(action="job_runs", name=...)`, or `core_runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
-- Generated monitor scripts must store durable state under the runner directory or `.wayfinder_runs/state`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts. `WAYFINDER_JOB_RESULT` chat handoff when investigation is needed.
+- Generated monitor scripts must store durable state under the runner directory or `.wayfinder_runs/state`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
 #### Noise
 
@@ -213,11 +213,11 @@ core_runner(action="daemon_stop")
 - When a `job_result` does post into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
 - Position-bound monitors must verify the live position still exists and matches expected side, size/notional, leverage, and margin mode before alerting.
 - Data-fetch or notification failures must exit nonzero or emit a `WAYFINDER_JOB_RESULT` handoff with the failure. Do not let broken monitoring look like a healthy successful run.
-- Reserve SMS/email for actionable alerts. Normal, net-positive, or informational state transitions should stay in runner logs or use a conditional
+- Reserve SMS/email for actionable alerts. Normal, net-positive, or informational state transitions should stay in runner logs or use a conditional `WAYFINDER_JOB_RESULT` chat handoff when investigation is needed.
 
 ### Wayfinder Paths
 
-Wayfinder paths are user contributed and validated skills to extend your capabilities! On shells, we both consume paths and make new paths.
+Wayfinder paths are user-contributed and validated skills that extend your capabilities. On Shells, you both consume paths and create new ones.
 
 When creating a new Wayfinder path, include a browser applet by default or explicitly ask before omitting one. The manage page uses applet presence as a verification requirement.
 
@@ -291,13 +291,13 @@ Sanity-check quant APY and rate summaries before repeating them to the user. If 
 
 Shells frontend controller: chart context, default market switching, chart workspace updates, visual panes, TradingView annotations, overlays, and chart state.
 
-### Invocation Criteria
+#### Invocation Criteria
 
 - Describe the intended visual outcome and key units, not a brittle step-by-step tool script.
 - Do not instruct the visual worker to run parallel chart-series searches or speculative/empty queries. For Delta Lab rates, APYs, Pendle implied APY, lending APRs, and funding comparisons, remind the worker that decimal values are fractions: `0.12` is `12%`. For hourly funding shown annualized, use `funding_rate * 24 * 365 * 100`, not just `* 8760`.
 - For simple follow-ups like "chart it", "show PROMPT", or "plot this token" after token/protocol research, delegate only to `wayfinder-visual` and render the single tradable market in the main Shells pane. Do not call `wayfinder-quant` for a simple iteration.
 
-### Completion Criteria
+#### Completion Criteria
 
 If the user asks to plot, chart, graph, compare over time, show the working chart, update the reporting interface, or draw a series in the workspace, do not stop at a file path, PNG, CSV, artifact, or command-palette search result — always finish the render.
 
