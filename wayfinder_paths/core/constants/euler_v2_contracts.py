@@ -16,9 +16,7 @@ from eth_utils import to_checksum_address
 # - Perspective-based verified vault discovery is deprecated in Euler docs;
 #   retain addresses for on-chain compatibility and use euler-labels / V3 API
 #   for current off-chain discovery where possible.
-EULER_V2_REGISTRY_SOURCE_URL = (
-    "https://raw.githubusercontent.com/euler-xyz/euler-interfaces/master/EulerChains.json"
-)
+EULER_V2_REGISTRY_SOURCE_URL = "https://raw.githubusercontent.com/euler-xyz/euler-interfaces/master/EulerChains.json"
 
 
 def _cs(address: str) -> str:
@@ -57,23 +55,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0xb013be1D0D380C13B58e889f412895970A2Cf228"),
-            "euler_swap_v1_implementation": _cs("0xc35a0FDA69e9D71e68C0d9CBb541Adfd21D6B117"),
-            "euler_swap_v1_periphery": _cs("0x208fF5Eb543814789321DaA1B5Eb551881D16b06"),
+            "euler_swap_v1_implementation": _cs(
+                "0xc35a0FDA69e9D71e68C0d9CBb541Adfd21D6B117"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x208fF5Eb543814789321DaA1B5Eb551881D16b06"
+            ),
             "euler_swap_v2_factory": _cs("0xD05213331221fAB8a3C387F2affBb605Bb04DF5F"),
-            "euler_swap_v2_implementation": _cs("0x8B0E044E364F2cE913799d53b300e15A6974DC97"),
-            "euler_swap_v2_periphery": _cs("0xD3a349EE0A21eA0A7E9513ac236ae614b5FD513E"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x5171Aed04Fa9551DB484F07c853F252Bc6F53b63"),
+            "euler_swap_v2_implementation": _cs(
+                "0x8B0E044E364F2cE913799d53b300e15A6974DC97"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0xD3a349EE0A21eA0A7E9513ac236ae614b5FD513E"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x5171Aed04Fa9551DB484F07c853F252Bc6F53b63"
+            ),
             "euler_swap_v2_registry": _cs("0x5FcCB84363F020c0cADE052C9c654aABF932814A"),
         },
         "periphery": {
             "swapper": _cs("0x719F8b330CcA71cb6195D032A43194C7D3F9Fb45"),
             "swap_verifier": _cs("0x786c900d7D348662703C38B46f24c1cda2C582AB"),
-            "euler_earn_public_allocator": _cs("0x8fdCb80a2894F0dC052c8d52D22544DC90274800"),
-            "external_vault_registry": _cs("0xB3b30ffb54082CB861B17DfBE459370d1Cc219AC"),
+            "euler_earn_public_allocator": _cs(
+                "0x8fdCb80a2894F0dC052c8d52D22544DC90274800"
+            ),
+            "external_vault_registry": _cs(
+                "0xB3b30ffb54082CB861B17DfBE459370d1Cc219AC"
+            ),
             "fee_flow_controller": _cs("0xFcd3Db06EA814eB21C84304fC7F90798C00D1e32"),
-            "fee_flow_controller_util": _cs("0x653eD9b915c7e7C413e7b2a2B6d83dFe02dd36DF"),
+            "fee_flow_controller_util": _cs(
+                "0x653eD9b915c7e7C413e7b2a2B6d83dFe02dd36DF"
+            ),
             "irm_registry": _cs("0x0a64670763777E59898AE28d6ACb7f2062BF459C"),
-            "oracle_adapter_registry": _cs("0xA084A7F49723E3cc5722E052CF7fce910E7C5Fe6"),
+            "oracle_adapter_registry": _cs(
+                "0xA084A7F49723E3cc5722E052CF7fce910E7C5Fe6"
+            ),
             "oracle_router_factory": _cs("0x70B3f6F61b7Bf237DF04589DdAA842121072326A"),
         },
         "external_vault_registry": _cs("0xB3b30ffb54082CB861B17DfBE459370d1Cc219AC"),
@@ -109,23 +125,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0xf0CFe22d23699ff1B2CFe6B8f706A6DB63911262"),
-            "euler_swap_v1_implementation": _cs("0x3Ce63C16CB719a0c755DA25cd5dD35170A00424f"),
-            "euler_swap_v1_periphery": _cs("0x18e5F5C1ff5e905b32CE860576031AE90E1d1336"),
+            "euler_swap_v1_implementation": _cs(
+                "0x3Ce63C16CB719a0c755DA25cd5dD35170A00424f"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x18e5F5C1ff5e905b32CE860576031AE90E1d1336"
+            ),
             "euler_swap_v2_factory": _cs("0x6C5f4c239ceD289447737EAB8eEA64523bd9c05E"),
-            "euler_swap_v2_implementation": _cs("0x6F1C1a3eAFbB1b345AD5662b0374a9Bf0E4785af"),
-            "euler_swap_v2_periphery": _cs("0xA564dAe65eA7B1ce049AbACFC4Cb1A32C93e127c"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x78bCCFA312432cE84d0B818796eE33f9192A284d"),
+            "euler_swap_v2_implementation": _cs(
+                "0x6F1C1a3eAFbB1b345AD5662b0374a9Bf0E4785af"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0xA564dAe65eA7B1ce049AbACFC4Cb1A32C93e127c"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x78bCCFA312432cE84d0B818796eE33f9192A284d"
+            ),
             "euler_swap_v2_registry": _cs("0x35D410A5052c7362eCdD72cFb65651A71adFaf61"),
         },
         "periphery": {
             "swapper": _cs("0xd54d9Fc684169287f34DA6d57Aa002B424eEbC05"),
             "swap_verifier": _cs("0xF8B2d2BA412E24235eAaDa8d3050202898455455"),
-            "euler_earn_public_allocator": _cs("0x0dFFc3A53693bCd8e42FAd9be94fB8f1Fb64A8EE"),
-            "external_vault_registry": _cs("0x6A60B3E561F0a7d9587F3210426FeC882224dF2d"),
+            "euler_earn_public_allocator": _cs(
+                "0x0dFFc3A53693bCd8e42FAd9be94fB8f1Fb64A8EE"
+            ),
+            "external_vault_registry": _cs(
+                "0x6A60B3E561F0a7d9587F3210426FeC882224dF2d"
+            ),
             "fee_flow_controller": _cs("0xbF4906E2F20362c3d746F7eFfF54abB8282902ed"),
-            "fee_flow_controller_util": _cs("0xBb218B381dd403B4F5ED6D60BE0cf4134c35a29f"),
+            "fee_flow_controller_util": _cs(
+                "0xBb218B381dd403B4F5ED6D60BE0cf4134c35a29f"
+            ),
             "irm_registry": _cs("0x384926132a5E516Bc8f79e6d7cd4301B6a887DfC"),
-            "oracle_adapter_registry": _cs("0x3cD76476bB7933A99Fa5bAa05446e71e07CDe0ca"),
+            "oracle_adapter_registry": _cs(
+                "0x3cD76476bB7933A99Fa5bAa05446e71e07CDe0ca"
+            ),
             "oracle_router_factory": _cs("0xA9287853987B107969f181Cce5e25e0D09c1c116"),
         },
         "external_vault_registry": _cs("0x6A60B3E561F0a7d9587F3210426FeC882224dF2d"),
@@ -161,23 +195,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x976dd85654B3b2f9fb66280ACE30Cab7C81a2130"),
-            "euler_swap_v1_implementation": _cs("0x3620dAb0DB5595479a4D5408595D48FbE48CeA2A"),
-            "euler_swap_v1_periphery": _cs("0x34932C04c3d27c2BD7aCd0B5d203bfd65a17f481"),
+            "euler_swap_v1_implementation": _cs(
+                "0x3620dAb0DB5595479a4D5408595D48FbE48CeA2A"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x34932C04c3d27c2BD7aCd0B5d203bfd65a17f481"
+            ),
             "euler_swap_v2_factory": _cs("0x980cd01dB708C2B008cF8076aa856fcAeF60698c"),
-            "euler_swap_v2_implementation": _cs("0xCB72817170a9d0f136fcB764f55BEEC638C25acb"),
-            "euler_swap_v2_periphery": _cs("0x74F7726eF6D8107403a6c581B985D27ED0561f9D"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x6FB6C91e369fD151eB343de3BE76F3617FbFfDf2"),
+            "euler_swap_v2_implementation": _cs(
+                "0xCB72817170a9d0f136fcB764f55BEEC638C25acb"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x74F7726eF6D8107403a6c581B985D27ED0561f9D"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x6FB6C91e369fD151eB343de3BE76F3617FbFfDf2"
+            ),
             "euler_swap_v2_registry": _cs("0x3327428147E0cE4Cb185A82F756CaE0D429dbd2c"),
         },
         "periphery": {
             "swapper": _cs("0x7212F011bbB3d1a04F20a548b0048cEad4dA9f42"),
             "swap_verifier": _cs("0x605280f2F939255Ab36FaFdBC654dE3cfbD5c616"),
-            "euler_earn_public_allocator": _cs("0x0a13C9fc4613Cae202138F4E1C2b9125A20562E8"),
-            "external_vault_registry": _cs("0x575fcBb7a9f72F8550E578f8fEed6Ac40e0b3b5C"),
+            "euler_earn_public_allocator": _cs(
+                "0x0a13C9fc4613Cae202138F4E1C2b9125A20562E8"
+            ),
+            "external_vault_registry": _cs(
+                "0x575fcBb7a9f72F8550E578f8fEed6Ac40e0b3b5C"
+            ),
             "fee_flow_controller": _cs("0xA93Ff8C4CC2Ba56Ee182B70bb07F2C75DA249879"),
-            "fee_flow_controller_util": _cs("0x974417020092194d5f5119e5879Ef77B8F46B180"),
+            "fee_flow_controller_util": _cs(
+                "0x974417020092194d5f5119e5879Ef77B8F46B180"
+            ),
             "irm_registry": _cs("0x25fDdEae07949101fb4D060b95aB999fcAe547D5"),
-            "oracle_adapter_registry": _cs("0x049B9404B9cB8E0A02191e563faEFEAA8D87E619"),
+            "oracle_adapter_registry": _cs(
+                "0x049B9404B9cB8E0A02191e563faEFEAA8D87E619"
+            ),
             "oracle_router_factory": _cs("0x0135fC2605ff2C89E550C2d4C7d75068A4782B43"),
         },
         "external_vault_registry": _cs("0x575fcBb7a9f72F8550E578f8fEed6Ac40e0b3b5C"),
@@ -213,23 +265,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x94041db6deC15f79666B07846c13e6F7341b4a80"),
-            "euler_swap_v1_implementation": _cs("0x4D57F54582b333E4184A3cF40d1D61FE6D70c35D"),
-            "euler_swap_v1_periphery": _cs("0xb2237DC86B184e50Fc2F8b028B2b7AE192ef2566"),
+            "euler_swap_v1_implementation": _cs(
+                "0x4D57F54582b333E4184A3cF40d1D61FE6D70c35D"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0xb2237DC86B184e50Fc2F8b028B2b7AE192ef2566"
+            ),
             "euler_swap_v2_factory": _cs("0x46D23b2d948b159859A5BB9C96c3190F4b43Ebb6"),
-            "euler_swap_v2_implementation": _cs("0x1C266a986B6AfA7EbA68263c5323a0bF0fe4F2a4"),
-            "euler_swap_v2_periphery": _cs("0x4e4e524613d840D2D30B694F363b5b1931e82A75"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x8653d1B50AA6adaaD64Dc140588dBC8c11141581"),
+            "euler_swap_v2_implementation": _cs(
+                "0x1C266a986B6AfA7EbA68263c5323a0bF0fe4F2a4"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x4e4e524613d840D2D30B694F363b5b1931e82A75"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x8653d1B50AA6adaaD64Dc140588dBC8c11141581"
+            ),
             "euler_swap_v2_registry": _cs("0x0601a38324D3cde22EBD531c799Ad318a6B8CF93"),
         },
         "periphery": {
             "swapper": _cs("0x2cb79cdA6Bb09A901177D5227b4aA1584Dbcfc9B"),
             "swap_verifier": _cs("0x84354221A6C432a9907F4D0777d8e794646206da"),
-            "euler_earn_public_allocator": _cs("0x82b27b528DA0516E653e02e5f870853d22Cbc6Df"),
-            "external_vault_registry": _cs("0x650737Bf472588A04530494189c3c30eaF5f6C50"),
+            "euler_earn_public_allocator": _cs(
+                "0x82b27b528DA0516E653e02e5f870853d22Cbc6Df"
+            ),
+            "external_vault_registry": _cs(
+                "0x650737Bf472588A04530494189c3c30eaF5f6C50"
+            ),
             "fee_flow_controller": _cs("0xD3Cf3Ec3D7849F2C7Bb9Ff5a8662Ae36a177bEb8"),
-            "fee_flow_controller_util": _cs("0xa8bA1b304aDA6A7E4bcc8814071e905712f2E3AC"),
+            "fee_flow_controller_util": _cs(
+                "0xa8bA1b304aDA6A7E4bcc8814071e905712f2E3AC"
+            ),
             "irm_registry": _cs("0xeEF91153b27fabF42a2F88e753285D0aFb736d09"),
-            "oracle_adapter_registry": _cs("0x93Fd7A2b4E6BEa3c35D06468a7Bd7b0eA202d075"),
+            "oracle_adapter_registry": _cs(
+                "0x93Fd7A2b4E6BEa3c35D06468a7Bd7b0eA202d075"
+            ),
             "oracle_router_factory": _cs("0xc5b9B95a769C24c18c344c2659db61a0AdFB736E"),
         },
         "external_vault_registry": _cs("0x650737Bf472588A04530494189c3c30eaF5f6C50"),
@@ -265,23 +335,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0xE25B3cdA6fccAcbD794aEA64eE1B496d7b441644"),
-            "euler_swap_v1_implementation": _cs("0x334eac29ffAc27E6BC3484A738DAf520359698F0"),
-            "euler_swap_v1_periphery": _cs("0x199cC7C8606088bc22D82CDae2D7EE7F5F99ec9F"),
+            "euler_swap_v1_implementation": _cs(
+                "0x334eac29ffAc27E6BC3484A738DAf520359698F0"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x199cC7C8606088bc22D82CDae2D7EE7F5F99ec9F"
+            ),
             "euler_swap_v2_factory": _cs("0xa077991e2929d97f29fE39372E736FC118a4FAd3"),
-            "euler_swap_v2_implementation": _cs("0x90bd38E89726BdCf42E07D88B23c2A493cb3877a"),
-            "euler_swap_v2_periphery": _cs("0xaEAab95eE90196E20fD2a5348643cCa0EF2b038e"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x6e5dF960eccD2Bf8818526A88f6E7da99a5379d7"),
+            "euler_swap_v2_implementation": _cs(
+                "0x90bd38E89726BdCf42E07D88B23c2A493cb3877a"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0xaEAab95eE90196E20fD2a5348643cCa0EF2b038e"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x6e5dF960eccD2Bf8818526A88f6E7da99a5379d7"
+            ),
             "euler_swap_v2_registry": _cs("0xf33F4e20905801D55531b38749727954D0152d3D"),
         },
         "periphery": {
             "swapper": _cs("0xB5949BcaF4BC1bC0ef2D132A4A2Ec5cf4D5934CD"),
             "swap_verifier": _cs("0x5cb5C6F2c0147a337d476A71c2d2897f2B3A8f80"),
-            "euler_earn_public_allocator": _cs("0xB5Daee4a8AD1388B3D72C1367b8BA63DfB4AAbf5"),
-            "external_vault_registry": _cs("0x28029B4De813866A4F7F03AeE4445732F02B3B09"),
+            "euler_earn_public_allocator": _cs(
+                "0xB5Daee4a8AD1388B3D72C1367b8BA63DfB4AAbf5"
+            ),
+            "external_vault_registry": _cs(
+                "0x28029B4De813866A4F7F03AeE4445732F02B3B09"
+            ),
             "fee_flow_controller": _cs("0xcb3c0D131C64265099868F847face425499785A8"),
-            "fee_flow_controller_util": _cs("0x4DB5a802E5dc5BA51162393Ebb79CD814F48B7aD"),
+            "fee_flow_controller_util": _cs(
+                "0x4DB5a802E5dc5BA51162393Ebb79CD814F48B7aD"
+            ),
             "irm_registry": _cs("0x709B4e5B081dD64101ebf6Fd111b2d5B671d8c88"),
-            "oracle_adapter_registry": _cs("0xc57d019a9B57FbC9EE81019ef064960B0Dd6C741"),
+            "oracle_adapter_registry": _cs(
+                "0xc57d019a9B57FbC9EE81019ef064960B0Dd6C741"
+            ),
             "oracle_router_factory": _cs("0xEFCF1F2f09163e3813f5C16346A9F2Aa21ABA74d"),
         },
         "external_vault_registry": _cs("0x28029B4De813866A4F7F03AeE4445732F02B3B09"),
@@ -317,23 +405,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0xD14c95dc228E8851F63d9b83A0001F4D021B5DFf"),
-            "euler_swap_v1_implementation": _cs("0x0e05d236cb6c350935751A73e834A13111998e3c"),
-            "euler_swap_v1_periphery": _cs("0x46F951278f52f4798542C51BfB8Df1c165199150"),
+            "euler_swap_v1_implementation": _cs(
+                "0x0e05d236cb6c350935751A73e834A13111998e3c"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x46F951278f52f4798542C51BfB8Df1c165199150"
+            ),
             "euler_swap_v2_factory": _cs("0x1A4546b988Ee133F72b7E27a4890355b0a341554"),
-            "euler_swap_v2_implementation": _cs("0x9253a3EF2cE8875b7D15Bd2bcd3a405b62a7b0E7"),
-            "euler_swap_v2_periphery": _cs("0x5e044DB2Fd14fbB48334b239CfD8530C9b03150B"),
-            "euler_swap_v2_protocol_fee_config": _cs("0xAe26ca82da91a1157E3cC0B36a9A06f539f4DF24"),
+            "euler_swap_v2_implementation": _cs(
+                "0x9253a3EF2cE8875b7D15Bd2bcd3a405b62a7b0E7"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x5e044DB2Fd14fbB48334b239CfD8530C9b03150B"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0xAe26ca82da91a1157E3cC0B36a9A06f539f4DF24"
+            ),
             "euler_swap_v2_registry": _cs("0x8D8B81F0c1be01fa3636d2cD6DeF07474d75e1e9"),
         },
         "periphery": {
             "swapper": _cs("0x83Ee58fE951bb0133F4E30D61863988378CD665E"),
             "swap_verifier": _cs("0xE5cca51c93BF775cc176A45e28487026da777800"),
-            "euler_earn_public_allocator": _cs("0x4E7C059099496D56e8662570426991EA63C63C85"),
-            "external_vault_registry": _cs("0x73313Bc5aF05187466f42c53eaF4851816bd76CD"),
+            "euler_earn_public_allocator": _cs(
+                "0x4E7C059099496D56e8662570426991EA63C63C85"
+            ),
+            "external_vault_registry": _cs(
+                "0x73313Bc5aF05187466f42c53eaF4851816bd76CD"
+            ),
             "fee_flow_controller": _cs("0x5EAe58dc72E4E374F32eCA2751cC38b573dd82c9"),
-            "fee_flow_controller_util": _cs("0x3DB06879907a3311c4b95A19fDb80ead78Bd940d"),
+            "fee_flow_controller_util": _cs(
+                "0x3DB06879907a3311c4b95A19fDb80ead78Bd940d"
+            ),
             "irm_registry": _cs("0x5650d5384e86C512c5Ea730D19451D3991086c7D"),
-            "oracle_adapter_registry": _cs("0x50742B56E4c563d1cC3956AcBacd975d3f5309d2"),
+            "oracle_adapter_registry": _cs(
+                "0x50742B56E4c563d1cC3956AcBacd975d3f5309d2"
+            ),
             "oracle_router_factory": _cs("0x809aB347e6ECb46714917A7796E542c86f75FbF1"),
         },
         "external_vault_registry": _cs("0x73313Bc5aF05187466f42c53eaF4851816bd76CD"),
@@ -369,23 +475,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x8A1D3a4850ed7deeC9003680Cf41b8E75D27e440"),
-            "euler_swap_v1_implementation": _cs("0x4F4FDeE3568aC31C46634fb2Df3FF44A156Be351"),
-            "euler_swap_v1_periphery": _cs("0x31F34124a37f94efd17201A1B88d5008cD444c72"),
+            "euler_swap_v1_implementation": _cs(
+                "0x4F4FDeE3568aC31C46634fb2Df3FF44A156Be351"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x31F34124a37f94efd17201A1B88d5008cD444c72"
+            ),
             "euler_swap_v2_factory": _cs("0xd80e68B39e4408cb7D6c8E3343Bde46587013F62"),
-            "euler_swap_v2_implementation": _cs("0x2836825daeC3D5d8fD3ad71d61f72345bB868110"),
-            "euler_swap_v2_periphery": _cs("0x4fef2f7146c0b4e6C0b1433badC6B7a2E1E7ECDb"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x1C0e8b841DA677C685D2a8376773e8A872C1ce5C"),
+            "euler_swap_v2_implementation": _cs(
+                "0x2836825daeC3D5d8fD3ad71d61f72345bB868110"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x4fef2f7146c0b4e6C0b1433badC6B7a2E1E7ECDb"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x1C0e8b841DA677C685D2a8376773e8A872C1ce5C"
+            ),
             "euler_swap_v2_registry": _cs("0xF9f2dF8A5Cc71a0424dfA9EbdfdfF8A082C19184"),
         },
         "periphery": {
             "swapper": _cs("0x065D7B495D25436E492fE57116665894Bfe17157"),
             "swap_verifier": _cs("0x768B74A19115316c1A782fFa335FdfBb66278174"),
-            "euler_earn_public_allocator": _cs("0x2524762ddb853AB1e572B81E5E6377a8a1536aA5"),
-            "external_vault_registry": _cs("0xe41338Ccac8121fb472817c58c485776E77f3Eea"),
+            "euler_earn_public_allocator": _cs(
+                "0x2524762ddb853AB1e572B81E5E6377a8a1536aA5"
+            ),
+            "external_vault_registry": _cs(
+                "0xe41338Ccac8121fb472817c58c485776E77f3Eea"
+            ),
             "fee_flow_controller": _cs("0x95F21cD90057BBdC6fAc3f9b94D06b53C24B278c"),
-            "fee_flow_controller_util": _cs("0xBBd929f6c61b59248eD660213C0129a119d54306"),
+            "fee_flow_controller_util": _cs(
+                "0xBBd929f6c61b59248eD660213C0129a119d54306"
+            ),
             "irm_registry": _cs("0x9a05B935c2ABeD87b4d89c3E74dA253ffc49a2c1"),
-            "oracle_adapter_registry": _cs("0x0345D8a0Be83834B4611D7D20B661D0Bd2536928"),
+            "oracle_adapter_registry": _cs(
+                "0x0345D8a0Be83834B4611D7D20B661D0Bd2536928"
+            ),
             "oracle_router_factory": _cs("0x80528F014E84658e85D3C6D4896A29Fa933Be696"),
         },
         "external_vault_registry": _cs("0xe41338Ccac8121fb472817c58c485776E77f3Eea"),
@@ -421,23 +545,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x3e378e5E339DF5e0Da32964F9EEC2CDb90D28Cc7"),
-            "euler_swap_v1_implementation": _cs("0x16BCa43290b77409e6D1c92B929f7A09C0E4EE86"),
-            "euler_swap_v1_periphery": _cs("0xa8826Bb29f875Db4c4b482463961776390774525"),
+            "euler_swap_v1_implementation": _cs(
+                "0x16BCa43290b77409e6D1c92B929f7A09C0E4EE86"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0xa8826Bb29f875Db4c4b482463961776390774525"
+            ),
             "euler_swap_v2_factory": _cs("0xA1F83E3d1819C912122A1582B4B6D3d2a1E83bb7"),
-            "euler_swap_v2_implementation": _cs("0x90Cb0b67f189a3D914DA00f72070531152DBc85F"),
-            "euler_swap_v2_periphery": _cs("0x4258A34923CccFa29948881Cf6Aa8FdAD6338485"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x71dFB7138192B19CDc73487212bf6BB1Ffe3b9A1"),
+            "euler_swap_v2_implementation": _cs(
+                "0x90Cb0b67f189a3D914DA00f72070531152DBc85F"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x4258A34923CccFa29948881Cf6Aa8FdAD6338485"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x71dFB7138192B19CDc73487212bf6BB1Ffe3b9A1"
+            ),
             "euler_swap_v2_registry": _cs("0xBc0f4dd9B5A10b15e6fA65e939Dbb1f98E7B08B7"),
         },
         "periphery": {
             "swapper": _cs("0x8e39500a6672D701616ED4943a5Cc5C79Ab38643"),
             "swap_verifier": _cs("0xc0126DE6e1615479b357e2Fef6d423FB2FBEe502"),
-            "euler_earn_public_allocator": _cs("0xD561479477b03720bF485e91B76574374A646531"),
-            "external_vault_registry": _cs("0x74171139d712AE64faA8cEFA524e13fd52826c1b"),
+            "euler_earn_public_allocator": _cs(
+                "0xD561479477b03720bF485e91B76574374A646531"
+            ),
+            "external_vault_registry": _cs(
+                "0x74171139d712AE64faA8cEFA524e13fd52826c1b"
+            ),
             "fee_flow_controller": _cs("0xE7Ef8C7CcB6aa81e366f0A0ccd89A298d9893E83"),
-            "fee_flow_controller_util": _cs("0x20d7B41c7b00DeDBF8Eff88A3C3832B5cF299555"),
+            "fee_flow_controller_util": _cs(
+                "0x20d7B41c7b00DeDBF8Eff88A3C3832B5cF299555"
+            ),
             "irm_registry": _cs("0x69e47D24dE839423A94afcD01b88C1683BA4D1D0"),
-            "oracle_adapter_registry": _cs("0xd6238D3b8bEEd1C7f424eBF6fc1CcD7fe1b31665"),
+            "oracle_adapter_registry": _cs(
+                "0xd6238D3b8bEEd1C7f424eBF6fc1CcD7fe1b31665"
+            ),
             "oracle_router_factory": _cs("0xbe83f65e5e898D482FfAEA251B62647c411576F1"),
         },
         "external_vault_registry": _cs("0x74171139d712AE64faA8cEFA524e13fd52826c1b"),
@@ -473,23 +615,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x45b146BC07c9985589B52df651310e75C6BE066A"),
-            "euler_swap_v1_implementation": _cs("0xd91B0bfACA4691E6Aca7E0E83D9B7F8917989a03"),
-            "euler_swap_v1_periphery": _cs("0xdAAF468d84DD8945521Ea40297ce6c5EEfc7003a"),
+            "euler_swap_v1_implementation": _cs(
+                "0xd91B0bfACA4691E6Aca7E0E83D9B7F8917989a03"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0xdAAF468d84DD8945521Ea40297ce6c5EEfc7003a"
+            ),
             "euler_swap_v2_factory": _cs("0xf211d70Ed785f0e981E9F3188804Af43734502F1"),
-            "euler_swap_v2_implementation": _cs("0x144f1715c673dA83917B09A5B4C23E2d72c8D411"),
-            "euler_swap_v2_periphery": _cs("0xAD335516c6E17815d9DD543fBCDFE325F8563E13"),
-            "euler_swap_v2_protocol_fee_config": _cs("0xeA96Ed6896aB1F00e4Fc28C75D8e6655e56Cef85"),
+            "euler_swap_v2_implementation": _cs(
+                "0x144f1715c673dA83917B09A5B4C23E2d72c8D411"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0xAD335516c6E17815d9DD543fBCDFE325F8563E13"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0xeA96Ed6896aB1F00e4Fc28C75D8e6655e56Cef85"
+            ),
             "euler_swap_v2_registry": _cs("0x9D9ce1540b986eF77c02F8D40603193852D2E723"),
         },
         "periphery": {
             "swapper": _cs("0xDF3009390D10dC18a8f8B42402F1541c7235DfB4"),
             "swap_verifier": _cs("0xDAd370C74A9Fe7e6bfd55De69Baf81060e51eab4"),
-            "euler_earn_public_allocator": _cs("0x68a823a484a9D5A8daBB55c4d4d8006a45E557A9"),
-            "external_vault_registry": _cs("0xC0a8dFA92CB9FF9F503803D3bAE2CF19E9c15411"),
+            "euler_earn_public_allocator": _cs(
+                "0x68a823a484a9D5A8daBB55c4d4d8006a45E557A9"
+            ),
+            "external_vault_registry": _cs(
+                "0xC0a8dFA92CB9FF9F503803D3bAE2CF19E9c15411"
+            ),
             "fee_flow_controller": _cs("0x87BeecC6B609723B2Ef071c20AA756846969240C"),
-            "fee_flow_controller_util": _cs("0xfAfc7B37d6389919e5142c8b63203602Cb2a5a92"),
+            "fee_flow_controller_util": _cs(
+                "0xfAfc7B37d6389919e5142c8b63203602Cb2a5a92"
+            ),
             "irm_registry": _cs("0x01315b1fa7e8A58D641C2c7f538654Fa32E0341f"),
-            "oracle_adapter_registry": _cs("0xDc0D3E9119d4ccB7E186E699d1df5cDd7bCa5783"),
+            "oracle_adapter_registry": _cs(
+                "0xDc0D3E9119d4ccB7E186E699d1df5cDd7bCa5783"
+            ),
             "oracle_router_factory": _cs("0xE551288F0D82C10bBF517DBA66E15C60BF87FE8f"),
         },
         "external_vault_registry": _cs("0xC0a8dFA92CB9FF9F503803D3bAE2CF19E9c15411"),
@@ -525,23 +685,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x7949bE8B154D7B5ce6E75cBfc646AeF3a25970E2"),
-            "euler_swap_v1_implementation": _cs("0x04671F895c7d9EAbF33FF1dfF41269E6Fea835D1"),
-            "euler_swap_v1_periphery": _cs("0x804485f5B6c293f8d63f697E9662CD4a8765858A"),
+            "euler_swap_v1_implementation": _cs(
+                "0x04671F895c7d9EAbF33FF1dfF41269E6Fea835D1"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x804485f5B6c293f8d63f697E9662CD4a8765858A"
+            ),
             "euler_swap_v2_factory": _cs("0x138AB9B33741B25bb7BcDa466175c8B2E2b96dc4"),
-            "euler_swap_v2_implementation": _cs("0xAF6412D58024874b0Ffc4138FfF95fc73b372977"),
-            "euler_swap_v2_periphery": _cs("0x223c1a20A6992a0F1E7066eD924619c3156DDA15"),
-            "euler_swap_v2_protocol_fee_config": _cs("0xA6fCC47f8D930f096F8749C7C7D335871bc71C0D"),
+            "euler_swap_v2_implementation": _cs(
+                "0xAF6412D58024874b0Ffc4138FfF95fc73b372977"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x223c1a20A6992a0F1E7066eD924619c3156DDA15"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0xA6fCC47f8D930f096F8749C7C7D335871bc71C0D"
+            ),
             "euler_swap_v2_registry": _cs("0x99C341F07098ba70aC1130c479103Dc2366dbBD7"),
         },
         "periphery": {
             "swapper": _cs("0x4AaA129FaD81a65Dab41b1fa7e964CBB9B30C848"),
             "swap_verifier": _cs("0xcB4cbC3128b38d6Ca46b7676D2389fAfa6009c1f"),
-            "euler_earn_public_allocator": _cs("0x0161FE2CA6ED39b5D0811a94b87AC628677Ae020"),
-            "external_vault_registry": _cs("0xFB13aa1d7CFe1C85826f9D5e571589B13b785A6e"),
+            "euler_earn_public_allocator": _cs(
+                "0x0161FE2CA6ED39b5D0811a94b87AC628677Ae020"
+            ),
+            "external_vault_registry": _cs(
+                "0xFB13aa1d7CFe1C85826f9D5e571589B13b785A6e"
+            ),
             "fee_flow_controller": _cs("0xA1585dc7Cd4EF33f7a855fDE39771b37838B0bFE"),
-            "fee_flow_controller_util": _cs("0x181042fcaC5926CDC89Cecbcf293Bb3b3ee5eC48"),
+            "fee_flow_controller_util": _cs(
+                "0x181042fcaC5926CDC89Cecbcf293Bb3b3ee5eC48"
+            ),
             "irm_registry": _cs("0xC66887f15038db0379bb9Feb020Feab0F93D8f0E"),
-            "oracle_adapter_registry": _cs("0x3942A72f87Db5Ad9C22d8826FDe15E23b81b1cBf"),
+            "oracle_adapter_registry": _cs(
+                "0x3942A72f87Db5Ad9C22d8826FDe15E23b81b1cBf"
+            ),
             "oracle_router_factory": _cs("0x22d51Db42A59862D4F8c135C4406AEf9854ABFF3"),
         },
         "external_vault_registry": _cs("0xFB13aa1d7CFe1C85826f9D5e571589B13b785A6e"),
@@ -577,23 +755,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x6A72160963a562f21387B166aF31a92D154106fb"),
-            "euler_swap_v1_implementation": _cs("0xDFfaC13fC142Fc1d8E55226dB9c98f4b66371a3c"),
-            "euler_swap_v1_periphery": _cs("0xAF596563109C753b9c5e73DD596DD4bB247964cA"),
+            "euler_swap_v1_implementation": _cs(
+                "0xDFfaC13fC142Fc1d8E55226dB9c98f4b66371a3c"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0xAF596563109C753b9c5e73DD596DD4bB247964cA"
+            ),
             "euler_swap_v2_factory": _cs("0xb0b53c1A8046D92027B69D9f6D9C7cFC0f363933"),
-            "euler_swap_v2_implementation": _cs("0x32Da74f7bC1988c1c39adB561b6e9D2a6F33D404"),
-            "euler_swap_v2_periphery": _cs("0xD356C065777871B37Cb0D3C7761b8820c832BC57"),
-            "euler_swap_v2_protocol_fee_config": _cs("0xb7F14f649770fB7784A02A94946D14E80f79d660"),
+            "euler_swap_v2_implementation": _cs(
+                "0x32Da74f7bC1988c1c39adB561b6e9D2a6F33D404"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0xD356C065777871B37Cb0D3C7761b8820c832BC57"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0xb7F14f649770fB7784A02A94946D14E80f79d660"
+            ),
             "euler_swap_v2_registry": _cs("0xd3ee91128294Ca8231260891BEC6Da7d258De7B6"),
         },
         "periphery": {
             "swapper": _cs("0x9817C2CB138593639ae7C124893A1C1F75657B42"),
             "swap_verifier": _cs("0xD5115592F042a120cf94B506b23cac81994f677B"),
-            "euler_earn_public_allocator": _cs("0x4873ff8a70aA92443321Edb34a48f6aBfA7feB96"),
-            "external_vault_registry": _cs("0xCe790A1800a54Ff2c558E2de0aaaA72243B4eF6c"),
+            "euler_earn_public_allocator": _cs(
+                "0x4873ff8a70aA92443321Edb34a48f6aBfA7feB96"
+            ),
+            "external_vault_registry": _cs(
+                "0xCe790A1800a54Ff2c558E2de0aaaA72243B4eF6c"
+            ),
             "fee_flow_controller": _cs("0x9128754f3951a819528d110f3a92a2586D352463"),
-            "fee_flow_controller_util": _cs("0xb4b59CBD3052bA035540a42C049E7E305198534e"),
+            "fee_flow_controller_util": _cs(
+                "0xb4b59CBD3052bA035540a42C049E7E305198534e"
+            ),
             "irm_registry": _cs("0x71c4b9225Baaff7544a5bB29C9131365aD16Baa0"),
-            "oracle_adapter_registry": _cs("0xE5441e9F93A9068E9a3085A2CbD33E44De56F3e3"),
+            "oracle_adapter_registry": _cs(
+                "0xE5441e9F93A9068E9a3085A2CbD33E44De56F3e3"
+            ),
             "oracle_router_factory": _cs("0x0512F7cbc4Fd9d8BC47FfFa3aA0372bA2375158E"),
         },
         "external_vault_registry": _cs("0xCe790A1800a54Ff2c558E2de0aaaA72243B4eF6c"),
@@ -629,23 +825,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x970B065B572CC0118535Ad1101663CDBE7Db1e21"),
-            "euler_swap_v1_implementation": _cs("0x2b07caff83C15c5a70C4C0867DFE7A0BE01025B0"),
-            "euler_swap_v1_periphery": _cs("0x0de305aB93902914909951A00079ea1df3FD98eA"),
+            "euler_swap_v1_implementation": _cs(
+                "0x2b07caff83C15c5a70C4C0867DFE7A0BE01025B0"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x0de305aB93902914909951A00079ea1df3FD98eA"
+            ),
             "euler_swap_v2_factory": _cs("0xB0cc1D8e6fAc157c76d2c08B7D55Eca1573BcBDF"),
-            "euler_swap_v2_implementation": _cs("0x476A2ad4a7c5Ac4DF1CaA429Cb70db865A160c11"),
-            "euler_swap_v2_periphery": _cs("0x57729d78650cA751C9dB41f2536cA86da0032351"),
-            "euler_swap_v2_protocol_fee_config": _cs("0xe3ac3685D607308D4b4e26546EaDf675c37dd3dE"),
+            "euler_swap_v2_implementation": _cs(
+                "0x476A2ad4a7c5Ac4DF1CaA429Cb70db865A160c11"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x57729d78650cA751C9dB41f2536cA86da0032351"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0xe3ac3685D607308D4b4e26546EaDf675c37dd3dE"
+            ),
             "euler_swap_v2_registry": _cs("0xEA3050E8A25f56AD0dbc90C3dCf016d8f5EfFE25"),
         },
         "periphery": {
             "swapper": _cs("0x6dE68A54105451FE9e88d44659a32291dC3959F9"),
             "swap_verifier": _cs("0x9e1D192f39489f7230Fc71aB89151a8c5A031cF0"),
-            "euler_earn_public_allocator": _cs("0x4148f90e03facFF8D2d5EFb475E36F94b4Ab4994"),
-            "external_vault_registry": _cs("0x28aF9ba9152832A5B22f51510556801baDa96bBC"),
+            "euler_earn_public_allocator": _cs(
+                "0x4148f90e03facFF8D2d5EFb475E36F94b4Ab4994"
+            ),
+            "external_vault_registry": _cs(
+                "0x28aF9ba9152832A5B22f51510556801baDa96bBC"
+            ),
             "fee_flow_controller": _cs("0xbF939812A673CB088f466d610c4b120b13eA5fAB"),
-            "fee_flow_controller_util": _cs("0x79af541a66DDe9b177e76839344Ea9DC2ff746aB"),
+            "fee_flow_controller_util": _cs(
+                "0x79af541a66DDe9b177e76839344Ea9DC2ff746aB"
+            ),
             "irm_registry": _cs("0xe47732e6BAB2ae02D35879C061ac1751e7BE7aF9"),
-            "oracle_adapter_registry": _cs("0x5f81DdA3f9155c31f552ABC3eb4B47676ba09680"),
+            "oracle_adapter_registry": _cs(
+                "0x5f81DdA3f9155c31f552ABC3eb4B47676ba09680"
+            ),
             "oracle_router_factory": _cs("0xf0125F638c7134e6997e4F825b78c324CcF289aF"),
         },
         "external_vault_registry": _cs("0x28aF9ba9152832A5B22f51510556801baDa96bBC"),
@@ -681,23 +895,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v1_implementation": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v1_periphery": _cs("0x0000000000000000000000000000000000000000"),
+            "euler_swap_v1_implementation": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
             "euler_swap_v2_factory": _cs("0xFbF2a49CB0cc50F4ccd4eAc826eF1A76D99D29Eb"),
-            "euler_swap_v2_implementation": _cs("0xC00F0B7d7B4F7cA3d3f79f3892069f41C142dB84"),
-            "euler_swap_v2_periphery": _cs("0x61aFC386b47a11F8721b67Eb1607cFBd9ccE48B1"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x434b1072d96ea24967CDe289D3d4d81d2BAD4F30"),
+            "euler_swap_v2_implementation": _cs(
+                "0xC00F0B7d7B4F7cA3d3f79f3892069f41C142dB84"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x61aFC386b47a11F8721b67Eb1607cFBd9ccE48B1"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x434b1072d96ea24967CDe289D3d4d81d2BAD4F30"
+            ),
             "euler_swap_v2_registry": _cs("0x7E1Efb6A2009A1FDaDee1c5d6615260AD70c14Fb"),
         },
         "periphery": {
             "swapper": _cs("0xdb45C54E8100073DFB87d3D51F917A14fa565Fb0"),
             "swap_verifier": _cs("0x2F6e6Ea234a4dEcA25249252cd21D258Bb1651b8"),
-            "euler_earn_public_allocator": _cs("0xc00ae658ce425Bb668A5Ed96c8ECa9C988706939"),
-            "external_vault_registry": _cs("0xe09af00Dad8f1d2F056f08Ea1059aa6cA6397FEE"),
+            "euler_earn_public_allocator": _cs(
+                "0xc00ae658ce425Bb668A5Ed96c8ECa9C988706939"
+            ),
+            "external_vault_registry": _cs(
+                "0xe09af00Dad8f1d2F056f08Ea1059aa6cA6397FEE"
+            ),
             "fee_flow_controller": _cs("0x0000000000000000000000000000000000000000"),
-            "fee_flow_controller_util": _cs("0x0000000000000000000000000000000000000000"),
+            "fee_flow_controller_util": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
             "irm_registry": _cs("0x52930DC1b386348E9be3C9260659Dd910384A49d"),
-            "oracle_adapter_registry": _cs("0x66390e34511DA5DbFeD572Cc5B1337Fe57AD02E7"),
+            "oracle_adapter_registry": _cs(
+                "0x66390e34511DA5DbFeD572Cc5B1337Fe57AD02E7"
+            ),
             "oracle_router_factory": _cs("0x1CefA54ebBCb6c9Aa7347196B03364aFe9A89f7e"),
         },
         "external_vault_registry": _cs("0xe09af00Dad8f1d2F056f08Ea1059aa6cA6397FEE"),
@@ -733,23 +965,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0xD7aA03104c2CCaC58acB00CbE90865FA64BbE77D"),
-            "euler_swap_v1_implementation": _cs("0x7F6ff62e7ECED715a2f4E5Ebe14eC9d32a44EFDc"),
-            "euler_swap_v1_periphery": _cs("0x1472ebB000190275B5e28733e45a2614F1C3F41C"),
+            "euler_swap_v1_implementation": _cs(
+                "0x7F6ff62e7ECED715a2f4E5Ebe14eC9d32a44EFDc"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x1472ebB000190275B5e28733e45a2614F1C3F41C"
+            ),
             "euler_swap_v2_factory": _cs("0x29FAFDbf952e7b5c0A6Cd26957829334d54E872A"),
-            "euler_swap_v2_implementation": _cs("0xdAdBb7a06638e3345A341002e956324A46d1c28c"),
-            "euler_swap_v2_periphery": _cs("0x741Fc7A904c9F810cbc4a21DE7D07B51B5Da853C"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x8ec298B473D17e04F819453C72747c3d4d6B7848"),
+            "euler_swap_v2_implementation": _cs(
+                "0xdAdBb7a06638e3345A341002e956324A46d1c28c"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x741Fc7A904c9F810cbc4a21DE7D07B51B5Da853C"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x8ec298B473D17e04F819453C72747c3d4d6B7848"
+            ),
             "euler_swap_v2_registry": _cs("0x8D6A81Ec8f5680849dCFBa47c710Dd9DA02aDaea"),
         },
         "periphery": {
             "swapper": _cs("0x8B8Ce23C9BbB2c26BA322Ec1Aa266BAF6226ccc0"),
             "swap_verifier": _cs("0xcB80Af483ecA49e5ca7d4DBa2F24D01E9f0be289"),
-            "euler_earn_public_allocator": _cs("0x667aD135188d95a32A4E743Aebe5a5b503cb9038"),
-            "external_vault_registry": _cs("0xc92a47A62322914472eaCe515Cd1c5DAC31FCa37"),
+            "euler_earn_public_allocator": _cs(
+                "0x667aD135188d95a32A4E743Aebe5a5b503cb9038"
+            ),
+            "external_vault_registry": _cs(
+                "0xc92a47A62322914472eaCe515Cd1c5DAC31FCa37"
+            ),
             "fee_flow_controller": _cs("0xBCc714F3ce3F56aB4A85a10d593cF9C93ED6ED9e"),
-            "fee_flow_controller_util": _cs("0x730a68b4dfD36b804a6466678059B838632f1CF1"),
+            "fee_flow_controller_util": _cs(
+                "0x730a68b4dfD36b804a6466678059B838632f1CF1"
+            ),
             "irm_registry": _cs("0xe5F7889cA0cF16926eb73a523ea364B8539aaf87"),
-            "oracle_adapter_registry": _cs("0xe7581A54eBEcC02B42a9c0b4044abC9bb75A502D"),
+            "oracle_adapter_registry": _cs(
+                "0xe7581A54eBEcC02B42a9c0b4044abC9bb75A502D"
+            ),
             "oracle_router_factory": _cs("0x7e539159a06CFe0A9f855d22dD82aD95eDf8C2F1"),
         },
         "external_vault_registry": _cs("0xc92a47A62322914472eaCe515Cd1c5DAC31FCa37"),
@@ -785,23 +1035,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x34f8F028C6a446A464c10a135F44Fc6fB2CEe1A9"),
-            "euler_swap_v1_implementation": _cs("0xBFD5C7bb1C208FEc761284Af7dB6fF1F4314372c"),
-            "euler_swap_v1_periphery": _cs("0xd1F69cf959c1a3AAe7BEE5ec677222d259585B27"),
+            "euler_swap_v1_implementation": _cs(
+                "0xBFD5C7bb1C208FEc761284Af7dB6fF1F4314372c"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0xd1F69cf959c1a3AAe7BEE5ec677222d259585B27"
+            ),
             "euler_swap_v2_factory": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v2_implementation": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v2_periphery": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x0000000000000000000000000000000000000000"),
+            "euler_swap_v2_implementation": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
             "euler_swap_v2_registry": _cs("0x0000000000000000000000000000000000000000"),
         },
         "periphery": {
             "swapper": _cs("0x41B8Ec27c640DbD0299A0083fAc8fE0099648bdB"),
             "swap_verifier": _cs("0x392812023A2Ef4F20DE5AA9f7b7e2F02E9692Ba7"),
-            "euler_earn_public_allocator": _cs("0x65A66F24a25E8CF651C9e31D296623298C80F742"),
-            "external_vault_registry": _cs("0x62e9d884cbE9a6B59a6014c9751C06551B83943E"),
+            "euler_earn_public_allocator": _cs(
+                "0x65A66F24a25E8CF651C9e31D296623298C80F742"
+            ),
+            "external_vault_registry": _cs(
+                "0x62e9d884cbE9a6B59a6014c9751C06551B83943E"
+            ),
             "fee_flow_controller": _cs("0x9527062A472666410DC7193A966709105dF2f147"),
-            "fee_flow_controller_util": _cs("0x260fA2473c23F362344d733B56e64864a9Efe92c"),
+            "fee_flow_controller_util": _cs(
+                "0x260fA2473c23F362344d733B56e64864a9Efe92c"
+            ),
             "irm_registry": _cs("0xB402699Ab5B255b68b4A4cdD3E171a67A9124FC7"),
-            "oracle_adapter_registry": _cs("0xCC5EDE0Ea39f2F8c80C461B7e954FB4256773AFa"),
+            "oracle_adapter_registry": _cs(
+                "0xCC5EDE0Ea39f2F8c80C461B7e954FB4256773AFa"
+            ),
             "oracle_router_factory": _cs("0xdDA3cBC18e90606A83FBae6F798991af06dFA902"),
         },
         "external_vault_registry": _cs("0x62e9d884cbE9a6B59a6014c9751C06551B83943E"),
@@ -837,23 +1105,41 @@ EULER_V2_BY_CHAIN: dict[int, dict[str, Any]] = {
         },
         "swaps": {
             "euler_swap_v1_factory": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v1_implementation": _cs("0x0000000000000000000000000000000000000000"),
-            "euler_swap_v1_periphery": _cs("0x0000000000000000000000000000000000000000"),
+            "euler_swap_v1_implementation": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
+            "euler_swap_v1_periphery": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
             "euler_swap_v2_factory": _cs("0x5965230117acd46E88CA13e7D44E33cD166c1E44"),
-            "euler_swap_v2_implementation": _cs("0xDA4d6a51cdF37d93C84071192611B0544B4454d8"),
-            "euler_swap_v2_periphery": _cs("0x9C0689e034D5bfDCc190F062b70c364c4764EF35"),
-            "euler_swap_v2_protocol_fee_config": _cs("0x2348C3967F61b235501Ea74eE8e95F84D752dDeA"),
+            "euler_swap_v2_implementation": _cs(
+                "0xDA4d6a51cdF37d93C84071192611B0544B4454d8"
+            ),
+            "euler_swap_v2_periphery": _cs(
+                "0x9C0689e034D5bfDCc190F062b70c364c4764EF35"
+            ),
+            "euler_swap_v2_protocol_fee_config": _cs(
+                "0x2348C3967F61b235501Ea74eE8e95F84D752dDeA"
+            ),
             "euler_swap_v2_registry": _cs("0xce4Ef4F4c590FE00c213e1A458743d12e7301268"),
         },
         "periphery": {
             "swapper": _cs("0x57c1BEB600b79D1261be981ca52D801d44CEC8BB"),
             "swap_verifier": _cs("0xD38D4F982Ca00365e349dC128C833289be4774c9"),
-            "euler_earn_public_allocator": _cs("0x776043C581c7b30164b92358be317b16489C510b"),
-            "external_vault_registry": _cs("0x8B039605Bd79454E960a639083696fFFc97996E3"),
+            "euler_earn_public_allocator": _cs(
+                "0x776043C581c7b30164b92358be317b16489C510b"
+            ),
+            "external_vault_registry": _cs(
+                "0x8B039605Bd79454E960a639083696fFFc97996E3"
+            ),
             "fee_flow_controller": _cs("0x9DF2ea8c76439B5c37a2507578e4b3E9a137eC17"),
-            "fee_flow_controller_util": _cs("0x0000000000000000000000000000000000000000"),
+            "fee_flow_controller_util": _cs(
+                "0x0000000000000000000000000000000000000000"
+            ),
             "irm_registry": _cs("0xCE76B0E4ec11393aBdF6a46e38cD2EEa57Ec9d5f"),
-            "oracle_adapter_registry": _cs("0x290e12cc83D84DA4ec3F4DB1Ebc366E015af517D"),
+            "oracle_adapter_registry": _cs(
+                "0x290e12cc83D84DA4ec3F4DB1Ebc366E015af517D"
+            ),
             "oracle_router_factory": _cs("0x1e80949625ab6b09a5749f00a63d48887ba3B696"),
         },
         "external_vault_registry": _cs("0x8B039605Bd79454E960a639083696fFFc97996E3"),
