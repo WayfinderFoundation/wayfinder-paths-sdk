@@ -5,6 +5,7 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.euler_v2_adapter.adapter import EulerV2Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+from wayfinder_paths.core.constants.euler_v2_abi import EVAULT_ABI
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
@@ -22,6 +23,53 @@ def _headroom_amount(*, supply_cap: int, total_assets: int, desired: int) -> int
         return 0
     # Keep a cushion in case totals shift slightly between calls.
     return min(int(desired), max(1, headroom // 10))
+
+
+async def _user_positions(
+    adapter: EulerV2Adapter,
+    *,
+    chain_id: int,
+    account: str,
+    include_zero_positions: bool = True,
+) -> dict[str, dict]:
+    ok, state = await adapter.get_full_user_state(
+        chain_id=chain_id,
+        account=account,
+        include_zero_positions=include_zero_positions,
+    )
+    assert ok is True, state
+    return {
+        str(p.get("vault") or "").lower(): p for p in state.get("positions", []) or []
+    }
+
+
+async def _position(
+    adapter: EulerV2Adapter,
+    *,
+    chain_id: int,
+    account: str,
+    vault: str,
+    include_zero_positions: bool = True,
+) -> dict:
+    positions = await _user_positions(
+        adapter,
+        chain_id=chain_id,
+        account=account,
+        include_zero_positions=include_zero_positions,
+    )
+    return positions.get(str(vault).lower(), {})
+
+
+async def _vault_share_balance(*, chain_id: int, vault: str, account: str) -> int:
+    async with web3_utils.web3_from_chain_id(chain_id) as web3:
+        contract = web3.eth.contract(
+            address=web3.to_checksum_address(vault),
+            abi=EVAULT_ABI,
+        )
+        balance = await contract.functions.balanceOf(account).call(
+            block_identifier="latest"
+        )
+    return int(balance or 0)
 
 
 @pytest.mark.asyncio
@@ -133,32 +181,55 @@ async def test_gorlami_euler_v2_deposit_borrow_repay_withdraw(gorlami):
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
+    collateral_shares = await _vault_share_balance(
+        chain_id=chain_id, account=acct.address, vault=collateral_vault
+    )
+    assert collateral_shares > 0
+
     ok, tx = await adapter.set_collateral(chain_id=chain_id, vault=collateral_vault)
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
+    collateral_position = await _position(
+        adapter, chain_id=chain_id, account=acct.address, vault=collateral_vault
+    )
+    assert collateral_position.get("is_collateral") is True
+
+    ok, tx = await adapter.remove_collateral(chain_id=chain_id, vault=collateral_vault)
+    assert ok is True, tx
+    assert isinstance(tx, str) and tx.startswith("0x")
+
+    collateral_position = await _position(
+        adapter, chain_id=chain_id, account=acct.address, vault=collateral_vault
+    )
+    assert not collateral_position or collateral_position.get("is_collateral") is False
+    assert (
+        await _vault_share_balance(
+            chain_id=chain_id, account=acct.address, vault=collateral_vault
+        )
+        > 0
+    )
+
     ok, tx = await adapter.borrow(
-        chain_id=chain_id, vault=borrow_vault, amount=borrow_amount
+        chain_id=chain_id,
+        vault=borrow_vault,
+        amount=borrow_amount,
+        collateral_vaults=[collateral_vault],
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, state = await adapter.get_full_user_state(
-        chain_id=chain_id, account=acct.address, include_zero_positions=False
+    collateral_position = await _position(
+        adapter, chain_id=chain_id, account=acct.address, vault=collateral_vault
     )
-    assert ok is True, state
-    positions = state.get("positions") or []
+    borrow_position = await _position(
+        adapter, chain_id=chain_id, account=acct.address, vault=borrow_vault
+    )
 
-    assert any(
-        p.get("vault", "").lower() == str(collateral_vault).lower()
-        and int(p.get("assets") or 0) > 0
-        for p in positions
-    )
-    assert any(
-        p.get("vault", "").lower() == str(borrow_vault).lower()
-        and int(p.get("borrowed") or 0) > 0
-        for p in positions
-    )
+    assert int(collateral_position.get("assets") or 0) > 0
+    assert collateral_position.get("is_collateral") is True
+    assert int(borrow_position.get("borrowed") or 0) > 0
+    assert borrow_position.get("is_controller") is True
 
     ok, tx = await adapter.repay(
         chain_id=chain_id, vault=borrow_vault, amount=0, repay_full=True
@@ -166,25 +237,28 @@ async def test_gorlami_euler_v2_deposit_borrow_repay_withdraw(gorlami):
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
-    ok, state = await adapter.get_full_user_state(
-        chain_id=chain_id, account=acct.address, include_zero_positions=True
+    borrow_position = await _position(
+        adapter, chain_id=chain_id, account=acct.address, vault=borrow_vault
     )
-    assert ok is True, state
-    positions = state.get("positions") or []
-
-    assert all(
-        int(p.get("borrowed") or 0) == 0
-        for p in positions
-        if p.get("vault", "").lower() == str(borrow_vault).lower()
-    )
+    assert int(borrow_position.get("borrowed") or 0) == 0
 
     # Collateral removal should succeed once debt is repaid.
     ok, tx = await adapter.remove_collateral(chain_id=chain_id, vault=collateral_vault)
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
 
+    collateral_position = await _position(
+        adapter, chain_id=chain_id, account=acct.address, vault=collateral_vault
+    )
+    assert not collateral_position or collateral_position.get("is_collateral") is False
+
     ok, tx = await adapter.unlend(
         chain_id=chain_id, vault=collateral_vault, amount=0, withdraw_full=True
     )
     assert ok is True, tx
     assert isinstance(tx, str) and tx.startswith("0x")
+
+    collateral_shares = await _vault_share_balance(
+        chain_id=chain_id, account=acct.address, vault=collateral_vault
+    )
+    assert collateral_shares == 0

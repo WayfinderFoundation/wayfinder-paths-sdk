@@ -4,6 +4,11 @@
 
 `EulerV2Adapter` only supports chains listed in `wayfinder_paths/core/constants/euler_v2_contracts.py` (`EULER_V2_BY_CHAIN`). If you pass an unsupported `chain_id`, the adapter raises an error.
 
+The registry is refreshed from Euler's official `EulerChains.json` and includes
+current EVC/EVK/EulerEarn/EulerSwap/lens/periphery addresses. Use
+`get_protocol_contracts(chain_id=...)` instead of hardcoding these addresses in
+scripts.
+
 ## Vault addresses are the market (and the share token)
 
 Euler v2 markets are **vaults**:
@@ -15,6 +20,37 @@ Euler v2 markets are **vaults**:
 `get_verified_vaults(...)` and `get_all_markets(...)` read from a **Perspective** contract:
 - Default is `perspective="governed"` (recommended for most strategy discovery)
 - Other perspectives (e.g., `evk_factory`, `ungoverned_*`) can include riskier/unreviewed vaults
+
+Euler docs now mark governed Perspective discovery as deprecated for verified
+metadata. Use `get_labelled_vaults(...)` for current curated EVK/Earn vault
+addresses, and use Perspectives only when you specifically need an on-chain
+compatibility filter.
+
+## V3 API values use different units from lens reads
+
+Euler V3 API preview methods return:
+- APYs as percent values (`5.25` means 5.25%)
+- Raw on-chain amounts as strings
+- USD values as numbers
+
+The adapter mirrors normalized fields for strategy code:
+- `supply_apy_decimal`, `borrow_apy_decimal`, `apy_30d_decimal`, etc. are
+  decimal fractions converted from the API percent fields.
+- `total_assets_raw`, `total_borrows_raw`, and related `*_raw` fields are exact
+  Python int mirrors of bigint-string API fields.
+- `raw` keeps the original API envelope for debugging and schema drift checks.
+
+Lens-backed `get_all_markets(...)` returns supply/borrow APYs as decimal
+fractions (`0.0525` means 5.25%) and caps/totals as ints.
+
+## V3 API is indexed data, not transaction construction
+
+`get_indexed_vaults(...)`, `get_indexed_vault(...)`,
+`get_indexed_vault_collaterals(...)`, `get_indexed_vault_totals(...)`,
+`get_euler_earn_vaults(...)`, `get_euler_earn_vault(...)`,
+`resolve_vault(...)`, and `get_offchain_prices(...)` use Euler's indexed HTTP
+API. Use these for discovery, monitoring, and analytics. Use lens/contract reads
+when execution needs current on-chain state.
 
 ## Units are raw ints
 
@@ -33,6 +69,13 @@ For full exits, prefer:
 Depositing into a vault does **not** automatically enable it as collateral. You must:
 - call `set_collateral(..., use_as_collateral=True)`, or
 - pass the vault in `borrow(..., collateral_vaults=[...])` to enable in the same EVC batch.
+
+## Sub-accounts do not hold ERC20 tokens
+
+EVC sub-accounts are virtual accounts for EVK/EVC accounting. Do not transfer
+regular ERC20 tokens to sub-account addresses; most ERC20 contracts are not
+EVC-aware and those tokens can be lost. The current write helpers default to the
+strategy wallet main account and do not expose a general sub-account workflow.
 
 ## Controller must be enabled for borrows
 
@@ -55,6 +98,21 @@ If some vault lens calls fail, the adapter logs warnings and returns:
 ## `get_all_markets` is perspective-scoped
 
 `get_all_markets(...)` fetches the current `verifiedArray()` for the selected **Perspective**. It does not attempt to discover “all vaults on-chain”.
+
+For all indexed vaults, use `get_indexed_vaults(...)`. For current curated
+vaults, use `get_labelled_vaults(...)`.
+
+## EulerSwap is discovery-only here
+
+The contract map includes current EulerSwap/Swapper/SwapVerifier addresses, but
+the adapter does not construct Order Flow Router quotes or swap verification
+calldata. Do not use these addresses to hand-roll swap or multiply batches.
+
+## EulerEarn execution is not claimed here
+
+EulerEarn vaults are ERC-4626 vaults, but this adapter only exposes Earn
+indexed/label discovery. Do not call EVK `lend`/`unlend` methods with Earn vault
+addresses; they are meant for EVK/eVault lending markets.
 
 ## MCP `get_adapter(..., wallet_label=...)` doesn’t auto-wire this adapter
 
