@@ -7,7 +7,7 @@ permissions:
       (action.type == 'hyperliquid_order') OR
       (action.type == 'hyperliquid_cancel') OR
       (action.type == 'hyperliquid_transfer') OR
-      (action.type == 'hyperliquid_withdraw') OR
+      (action.type == 'hyperliquid_withdraw_usdc') OR
       # Allow USDC transfers to Hyperliquid bridge
       (action.type == 'erc20_transfer' AND action.to == '0x2Df1c51E09aECF9cacB7bc98cB1742757f163dF7') OR
       # Allow USDT transfers to Boros

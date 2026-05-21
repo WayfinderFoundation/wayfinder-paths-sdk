@@ -355,7 +355,7 @@ poetry run python -m wayfinder_paths.mcp.server
 | `hyperliquid_get_state` / `_search_market` / `_search_mid_prices` | Read Hyperliquid account, market, and price data |
 | `hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw` | Per-action Hyperliquid writes |
 | `polymarket_read` / `polymarket_get_state` | Read Polymarket markets, prices, orders, and account state |
-| `polymarket_deposit` / `_withdraw` / `_place_market_order` / `_place_limit_order` / `_cancel_order` / `_redeem_positions` | Per-action Polymarket writes |
+| `polymarket_deposit_pusd` / `_withdraw` / `_place_market_order` / `_place_limit_order` / `_cancel_order` / `_redeem_positions` | Per-action Polymarket writes |
 | `contracts_list` / `_get` / `_compile` / `_call` / `_deploy` / `_execute` | Solidity contract artifact, read, deploy, and write tools |
 | `research_*` | Web, X, DeFiLlama, Goldsky, Alpha Lab, and Delta Lab research tools |
 | `core_run_script` / `core_run_strategy` / `core_runner` | Execute bounded scripts, strategy actions, and runner jobs |

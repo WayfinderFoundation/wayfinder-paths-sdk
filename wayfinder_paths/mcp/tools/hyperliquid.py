@@ -1054,7 +1054,7 @@ async def _place_outcome_order(
 
 
 @catch_errors
-async def hyperliquid_deposit(
+async def hyperliquid_deposit_usdc(
     *,
     wallet_label: str,
     amount_usdc: float,
@@ -1130,7 +1130,7 @@ async def hyperliquid_deposit(
 
 
 @catch_errors
-async def hyperliquid_withdraw(
+async def hyperliquid_withdraw_usdc(
     *,
     wallet_label: str,
     amount_usdc: float,

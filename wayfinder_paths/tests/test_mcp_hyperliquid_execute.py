@@ -13,7 +13,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
-    hyperliquid_withdraw,
+    hyperliquid_withdraw_usdc,
 )
 
 
@@ -254,7 +254,7 @@ async def test_get_asset_id_returns_none_on_bad_input(asset_name):
 
 
 @pytest.mark.asyncio
-async def test_hyperliquid_withdraw(tmp_path: Path, monkeypatch):
+async def test_hyperliquid_withdraw_usdc(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 
@@ -278,7 +278,7 @@ async def test_hyperliquid_withdraw(tmp_path: Path, monkeypatch):
             new=AsyncMock(return_value=(True, {"status": "ok"})),
         ),
     ):
-        out1 = await hyperliquid_withdraw(wallet_label="main", amount_usdc=10)
+        out1 = await hyperliquid_withdraw_usdc(wallet_label="main", amount_usdc=10)
         assert out1["ok"] is True
 
 

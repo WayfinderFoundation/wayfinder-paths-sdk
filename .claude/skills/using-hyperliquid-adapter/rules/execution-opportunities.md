@@ -61,8 +61,8 @@ For interactive use in Claude Code, this repo exposes a small MCP surface:
   - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
   - `mcp__wayfinder__hyperliquid_cancel_order`
   - `mcp__wayfinder__hyperliquid_update_leverage`
-  - `mcp__wayfinder__hyperliquid_deposit`
-  - `mcp__wayfinder__hyperliquid_withdraw`
+  - `mcp__wayfinder__hyperliquid_deposit_usdc`
+  - `mcp__wayfinder__hyperliquid_withdraw_usdc`
 
 ### `hyperliquid_place_trigger_order` via MCP
 
@@ -201,7 +201,7 @@ mcp__wayfinder__onchain_swap(
 
 **Hyperliquid deposit (Bridge2):**
 ```
-mcp__wayfinder__hyperliquid_deposit(
+mcp__wayfinder__hyperliquid_deposit_usdc(
     wallet_label="main",
     amount_usdc=8
 )

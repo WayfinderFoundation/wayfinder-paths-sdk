@@ -67,9 +67,9 @@ def test_mcp_catalog_exposes_expected_non_shell_tools() -> None:
     assert "research_get_delta_lab_pendle_market" in names
     assert "hyperliquid_get_trade_asset" in names
     assert "hyperliquid_place_market_order" in names
-    assert "hyperliquid_deposit" in names
+    assert "hyperliquid_deposit_usdc" in names
     assert "polymarket_place_market_order" in names
-    assert "polymarket_deposit" in names
+    assert "polymarket_deposit_pusd" in names
     assert "contracts_deploy" in names
     assert "shells_create_chart" not in names
 
@@ -114,7 +114,7 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert research["wayfinder_research_*"] == "allow"
     assert research["wayfinder_polymarket_read"] == "allow"
     assert "wayfinder_polymarket_place_*" not in research
-    assert "wayfinder_polymarket_deposit" not in research
+    assert "wayfinder_polymarket_deposit_pusd" not in research
     assert research["wayfinder_core_get_adapters_and_strategies"] == "allow"
     assert research["wayfinder_core_run_script"] == "allow"
     assert research["wayfinder_core_web_search"] == "allow"
@@ -157,12 +157,12 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_hyperliquid_place_*": "ask",
         "wayfinder_hyperliquid_cancel_order": "ask",
         "wayfinder_hyperliquid_update_leverage": "ask",
-        "wayfinder_hyperliquid_deposit": "ask",
-        "wayfinder_hyperliquid_withdraw": "ask",
+        "wayfinder_hyperliquid_deposit_usdc": "ask",
+        "wayfinder_hyperliquid_withdraw_usdc": "ask",
         "wayfinder_polymarket_place_*": "ask",
         "wayfinder_polymarket_cancel_order": "ask",
-        "wayfinder_polymarket_deposit": "ask",
-        "wayfinder_polymarket_withdraw": "ask",
+        "wayfinder_polymarket_deposit_pusd": "ask",
+        "wayfinder_polymarket_withdraw_pusd": "ask",
         "wayfinder_polymarket_redeem_positions": "ask",
         "wayfinder_contracts_deploy": "ask",
         "wayfinder_contracts_execute": "ask",

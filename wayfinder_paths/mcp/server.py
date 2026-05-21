@@ -72,7 +72,7 @@ from wayfinder_paths.mcp.tools.goldsky_direct import (
 )
 from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_cancel_order,
-    hyperliquid_deposit,
+    hyperliquid_deposit_usdc,
     hyperliquid_get_state,
     hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
@@ -81,7 +81,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_search_market,
     hyperliquid_search_mid_prices,
     hyperliquid_update_leverage,
-    hyperliquid_withdraw,
+    hyperliquid_withdraw_usdc,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
     shells_add_workspace_chart_annotation,
@@ -97,13 +97,13 @@ from wayfinder_paths.mcp.tools.instance_state import (
 from wayfinder_paths.mcp.tools.notify import shells_notify
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
-    polymarket_deposit,
+    polymarket_deposit_pusd,
     polymarket_get_state,
     polymarket_place_limit_order,
     polymarket_place_market_order,
     polymarket_read,
     polymarket_redeem_positions,
-    polymarket_withdraw,
+    polymarket_withdraw_pusd,
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.research_gateway import (
@@ -167,8 +167,8 @@ def build_mcp(
     mcp.tool()(hyperliquid_place_trigger_order)
     mcp.tool()(hyperliquid_cancel_order)
     mcp.tool()(hyperliquid_update_leverage)
-    mcp.tool()(hyperliquid_deposit)
-    mcp.tool()(hyperliquid_withdraw)
+    mcp.tool()(hyperliquid_deposit_usdc)
+    mcp.tool()(hyperliquid_withdraw_usdc)
 
     # ─── onchain_* ─────────────────────────────────────────────────────
     mcp.tool()(onchain_get_wallet_activity)
@@ -185,8 +185,8 @@ def build_mcp(
     mcp.tool()(polymarket_place_market_order)
     mcp.tool()(polymarket_place_limit_order)
     mcp.tool()(polymarket_cancel_order)
-    mcp.tool()(polymarket_deposit)
-    mcp.tool()(polymarket_withdraw)
+    mcp.tool()(polymarket_deposit_pusd)
+    mcp.tool()(polymarket_withdraw_pusd)
     mcp.tool()(polymarket_redeem_positions)
 
     # ─── research_* ────────────────────────────────────────────────────

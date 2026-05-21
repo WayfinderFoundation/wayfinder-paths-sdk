@@ -16,12 +16,12 @@ from wayfinder_hook_utils import load_payload, tool_input, tool_name
 
 from wayfinder_paths.mcp.preview import (
     build_hyperliquid_cancel_order_preview,
-    build_hyperliquid_deposit_preview,
+    build_hyperliquid_deposit_usdc_preview,
     build_hyperliquid_place_limit_order_preview,
     build_hyperliquid_place_market_order_preview,
     build_hyperliquid_place_trigger_order_preview,
     build_hyperliquid_update_leverage_preview,
-    build_hyperliquid_withdraw_preview,
+    build_hyperliquid_withdraw_usdc_preview,
 )
 
 _PreviewBuilder = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -32,8 +32,8 @@ _BUILDERS: dict[str, _PreviewBuilder] = {
     "hyperliquid_place_trigger_order": build_hyperliquid_place_trigger_order_preview,
     "hyperliquid_cancel_order": build_hyperliquid_cancel_order_preview,
     "hyperliquid_update_leverage": build_hyperliquid_update_leverage_preview,
-    "hyperliquid_deposit": build_hyperliquid_deposit_preview,
-    "hyperliquid_withdraw": build_hyperliquid_withdraw_preview,
+    "hyperliquid_deposit_usdc": build_hyperliquid_deposit_usdc_preview,
+    "hyperliquid_withdraw_usdc": build_hyperliquid_withdraw_usdc_preview,
 }
 
 
