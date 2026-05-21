@@ -74,6 +74,37 @@ class _FakeExecutionAdapter:
                 }
             ],
         ]
+        self.all_perp_metas = [
+            {
+                "collateralToken": 0,
+                "universe": [
+                    {
+                        "name": "BTC",
+                        "szDecimals": 4,
+                        "maxLeverage": 25,
+                        "marginTableId": 55,
+                    }
+                ],
+            }
+        ]
+        self.spot_meta = {
+            "tokens": [
+                {
+                    "index": 0,
+                    "name": "USDC",
+                    "fullName": None,
+                    "tokenId": "0xusdc",
+                    "evmContract": {"address": "0xusdc_evm"},
+                },
+                {
+                    "index": 360,
+                    "name": "USDH",
+                    "fullName": "USDH",
+                    "tokenId": "0xusdh",
+                    "evmContract": {"address": "0xusdh_evm"},
+                },
+            ]
+        }
         self.filled_size = filled_size
         self.fill_price = fill_price
 
@@ -123,6 +154,12 @@ class _FakeExecutionAdapter:
 
     async def get_meta_and_asset_ctxs(self):
         return True, self.meta_and_asset_ctxs
+
+    async def get_all_perp_metas(self):
+        return True, self.all_perp_metas
+
+    async def get_spot_meta(self):
+        return True, self.spot_meta
 
     async def get_max_builder_fee(self, *, user: str, builder: str):
         return True, 100
@@ -329,25 +366,83 @@ async def test_hyperliquid_get_trade_asset_uses_active_asset_available_to_trade(
     assert result["market"]["funding_apr"] == pytest.approx(0.0876)
     assert result["market"]["open_interest"] == pytest.approx(123.45)
     assert result["market"]["day_notional_volume_usd"] == pytest.approx(98765.43)
+    assert result["collateral"]["token_index"] == 0
+    assert result["collateral"]["symbol"] == "USDC"
+    assert result["collateral"]["dex"] == {
+        "index": 0,
+        "name": "",
+        "kind": "validator",
+    }
+    assert result["market"]["collateral"]["symbol"] == "USDC"
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_get_trade_asset_reports_hip3_collateral_token():
+    fake = _FakeExecutionAdapter()
+    fake.all_perp_metas = [
+        {"collateralToken": 0, "universe": []},
+        {
+            "collateralToken": 360,
+            "universe": [
+                {
+                    "name": "flx:NVDA",
+                    "szDecimals": 2,
+                    "maxLeverage": 10,
+                    "marginTableId": 10,
+                }
+            ],
+        },
+    ]
+    fake.meta_and_asset_ctxs = [
+        {"universe": [{"name": "flx:NVDA"}]},
+        [{"funding": "0.0"}],
+    ]
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.resolve_wallet_address",
+            new=AsyncMock(return_value=("0x1234", None)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter",
+            return_value=fake,
+        ),
+    ):
+        out = await hyperliquid_get_trade_asset(label="main", asset_name="flx:NVDA")
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["market_type"] == "hip3"
+    assert result["collateral"]["token_index"] == 360
+    assert result["collateral"]["symbol"] == "USDH"
+    assert result["collateral"]["dex"] == {
+        "index": 1,
+        "name": "flx",
+        "kind": "hip3",
+    }
+    assert "activeAssetData.availableToTrade" in result["collateral"]["balance_source"]
 
 
 @pytest.mark.asyncio
 async def test_hyperliquid_get_trade_asset_reports_isolated_only_metadata():
     fake = _FakeExecutionAdapter()
-    fake.meta_and_asset_ctxs = [
+    isolated_market = {
+        "name": "BTC",
+        "szDecimals": 0,
+        "maxLeverage": 3,
+        "marginMode": "noCross",
+        "onlyIsolated": True,
+        "marginTableId": 53,
+        "isDelisted": True,
+    }
+    fake.all_perp_metas = [
         {
-            "universe": [
-                {
-                    "name": "BTC",
-                    "szDecimals": 0,
-                    "maxLeverage": 3,
-                    "marginMode": "noCross",
-                    "onlyIsolated": True,
-                    "marginTableId": 53,
-                    "isDelisted": True,
-                }
-            ]
-        },
+            "collateralToken": 0,
+            "universe": [isolated_market],
+        }
+    ]
+    fake.meta_and_asset_ctxs = [
+        {"universe": [isolated_market]},
         [{}],
     ]
 

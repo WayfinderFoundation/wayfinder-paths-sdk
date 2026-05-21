@@ -247,6 +247,15 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _position_for_coin(user_state: dict[str, Any], coin: str) -> dict[str, Any] | None:
     for entry in user_state.get("assetPositions", []):
         if not isinstance(entry, dict):
@@ -422,6 +431,89 @@ def _market_info_from_meta_and_asset_ctxs(
     return None, None
 
 
+def _market_info_from_all_perp_metas(
+    all_perp_metas: Any, coin: str
+) -> dict[str, Any] | None:
+    if not isinstance(all_perp_metas, list):
+        return None
+
+    for dex_index, meta in enumerate(all_perp_metas):
+        if not isinstance(meta, dict):
+            continue
+        universe = meta.get("universe")
+        if not isinstance(universe, list):
+            continue
+        for entry in universe:
+            if not isinstance(entry, dict) or entry.get("name") != coin:
+                continue
+            dex_name = coin.split(":", 1)[0] if ":" in coin else ""
+            return {
+                **entry,
+                "_perp_dex": {
+                    "index": dex_index,
+                    "name": dex_name,
+                    "kind": "hip3" if dex_name else "validator",
+                },
+                "_collateral_token_index": _int_or_none(meta.get("collateralToken")),
+            }
+    return None
+
+
+def _spot_token_by_index(
+    spot_meta: Any, token_index: int | None
+) -> dict[str, Any] | None:
+    if token_index is None or not isinstance(spot_meta, dict):
+        return None
+    tokens = spot_meta.get("tokens")
+    if not isinstance(tokens, list):
+        return None
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        if _int_or_none(token.get("index")) == token_index:
+            return token
+    return None
+
+
+def _collateral_payload(
+    *,
+    metadata: dict[str, Any] | None,
+    spot_meta: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    token_index = _int_or_none(metadata.get("_collateral_token_index"))
+    if token_index is None:
+        return None
+    token = _spot_token_by_index(spot_meta, token_index)
+    dex = (
+        metadata.get("_perp_dex")
+        if isinstance(metadata.get("_perp_dex"), dict)
+        else None
+    )
+    symbol = token.get("name") if isinstance(token, dict) else None
+
+    return {
+        "token_index": token_index,
+        "symbol": symbol,
+        "full_name": token.get("fullName") if isinstance(token, dict) else None,
+        "token_id": token.get("tokenId") if isinstance(token, dict) else None,
+        "evm_contract": token.get("evmContract") if isinstance(token, dict) else None,
+        "dex": dex,
+        "source": "allPerpMetas.collateralToken + spotMeta.tokens",
+        "balance_source": (
+            "For unified/portfolio accounts, use spotClearinghouseState for "
+            "balances and activeAssetData.availableToTrade for this market's "
+            "side-specific trade capacity."
+        ),
+        "requirement": (
+            f"Hold or route {symbol or 'the listed collateral token'} collateral "
+            "for this perp dex before opening new exposure."
+        ),
+    }
+
+
 def _compatible_margin_modes(metadata: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         return {
@@ -545,10 +637,25 @@ async def _build_trade_asset(
 
     metadata: dict[str, Any] | None = None
     asset_ctx: dict[str, Any] | None = None
+    spot_meta: Any = None
+    all_metas_ok, all_metas = await adapter.get_all_perp_metas()
+    if all_metas_ok:
+        metadata = _market_info_from_all_perp_metas(all_metas, coin)
+
     meta_ok, meta_and_ctxs = await adapter.get_meta_and_asset_ctxs()
     if meta_ok:
-        metadata, asset_ctx = _market_info_from_meta_and_asset_ctxs(meta_and_ctxs, coin)
+        fallback_metadata, asset_ctx = _market_info_from_meta_and_asset_ctxs(
+            meta_and_ctxs, coin
+        )
+        if metadata is None:
+            metadata = fallback_metadata
+    spot_ok, fetched_spot_meta = await adapter.get_spot_meta()
+    if spot_ok:
+        spot_meta = fetched_spot_meta
     market = _summarize_market_context(metadata, asset_ctx)
+    collateral = _collateral_payload(metadata=metadata, spot_meta=spot_meta)
+    if collateral is not None:
+        market["collateral"] = collateral
 
     position = None
     if isinstance(perp_state, dict):
@@ -563,6 +670,7 @@ async def _build_trade_asset(
             "position": _normalize_position(position),
             "market_type": adapter.get_market_type(asset_name),
             "market": market,
+            "collateral": collateral,
             "max_leverage": market["max_leverage"],
             "compatible_margin_modes": market["compatible_margin_modes"],
             "margin_mode_restriction": market["margin_mode_restriction"],
