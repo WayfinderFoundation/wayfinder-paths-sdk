@@ -269,7 +269,7 @@ Runner MCP tool: `mcp__wayfinder__core_runner(action=...)`.
 Safety note:
 
 - Runner executions are local automation and do **not** go through the Claude safety review prompt. Treat `update/deposit/withdraw/exit` as live fund-moving actions.
-- Generated monitor scripts must store durable state under the runner directory or `.wayfinder_runs/state`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
+- Generated monitor scripts must store durable state with `wayfinder_paths.runner.monitor_state`; it writes under `$WAYFINDER_RUNNER_DIR/job_state/$WAYFINDER_KV_NAMESPACE/`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
 Supported chains:
 

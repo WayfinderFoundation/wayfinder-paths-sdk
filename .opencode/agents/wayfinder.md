@@ -214,7 +214,7 @@ core_runner(action="daemon_stop")
 #### Safety
 
 - If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `runner(action="status")`, `runner(action="job_runs", name=...)`, or `runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
-- Generated monitor scripts must store durable state under the runner directory or `.wayfinder_runs/state`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
+- Generated monitor scripts must store durable state with `wayfinder_paths.runner.monitor_state`; it writes under `$WAYFINDER_RUNNER_DIR/job_state/$WAYFINDER_KV_NAMESPACE/`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
 #### Noise
 
