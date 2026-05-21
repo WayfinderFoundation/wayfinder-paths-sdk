@@ -185,15 +185,15 @@ async def onchain_swap(
     amount: str,
     slippage_bps: int = 50,
     recipient: str | None = None,
-    wait_for_receipt: bool = False,
+    wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
 ) -> dict[str, Any]:
     """Broadcast a cross-chain / cross-DEX swap via BRAP.
 
     **Always quote first** — call `onchain_quote_swap` and confirm route + output with the
-    user before running this. Returns after broadcast by default with `status="submitted"`
-    to avoid client-side MCP timeouts on slow chains. Pass `wait_for_receipt=True` only
-    when synchronous confirmation is required.
+    user before running this. Waits for the receipt by default and returns
+    `status="confirmed"`; pass `wait_for_receipt=False` for fire-and-forget broadcast
+    on slow chains where the MCP client may time out.
 
     Args:
         wallet_label: Required — config.json wallet label (e.g. "main").
@@ -202,7 +202,7 @@ async def onchain_swap(
         amount: Human-units string (e.g. "1000" or "0.5"), not wei.
         slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
         recipient: Destination address (defaults to sender).
-        wait_for_receipt: Optional synchronous receipt wait. Default false.
+        wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
 
     Returns:
@@ -366,13 +366,14 @@ async def onchain_send(
     recipient: str,
     amount: str,
     chain_id: int | None = None,
-    wait_for_receipt: bool = False,
+    wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
 ) -> dict[str, Any]:
     """Broadcast an ERC-20 or native token transfer.
 
-    Returns after broadcast by default with `status="submitted"`. Pass `wait_for_receipt=True`
-    only when synchronous confirmation is required.
+    Waits for the receipt by default and returns `status="confirmed"`; pass
+    `wait_for_receipt=False` for fire-and-forget broadcast on slow chains where the MCP
+    client may time out.
 
     Args:
         wallet_label: Required — config.json wallet label.
@@ -380,7 +381,7 @@ async def onchain_send(
         recipient: Destination address. Required.
         amount: Human-units string (e.g. "5" for 5 USDC), not wei.
         chain_id: Required when `token="native"`; ignored otherwise.
-        wait_for_receipt: Optional synchronous receipt wait. Default false.
+        wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
 
     Returns:

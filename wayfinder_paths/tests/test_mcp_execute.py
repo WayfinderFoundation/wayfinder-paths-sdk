@@ -187,10 +187,10 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         )
         assert out1["ok"] is True
         assert "approval" in out1["result"]["effects"]
-        assert out1["result"]["status"] == "submitted"
+        assert out1["result"]["status"] == "confirmed"
         assert out1["result"]["effects"]["swap"]["txn_hash"] == "0xtx"
         send_transaction_mock.assert_awaited_once()
-        assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
+        assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is True
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
 
         send_transaction_mock.reset_mock()
@@ -201,11 +201,10 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             to_token="to",
             amount="1.0",
             slippage_bps=50,
-            wait_for_receipt=True,
-            receipt_confirmations=2,
+            wait_for_receipt=False,
         )
         assert out2["ok"] is True
-        assert out2["result"]["status"] == "confirmed"
+        assert out2["result"]["status"] == "submitted"
         send_transaction_mock.assert_awaited_once()
-        assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is True
-        assert send_transaction_mock.await_args.kwargs["confirmations"] == 2
+        assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
+        assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
