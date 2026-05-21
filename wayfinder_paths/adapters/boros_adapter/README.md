@@ -13,6 +13,35 @@ from wayfinder_paths.adapters.boros_adapter import BorosAdapter
 adapter = BorosAdapter(config={})
 ```
 
+By default the client uses the current Boros Open API mount:
+
+- Open API: `https://api-boros.pendle.finance/apis/v1/...`
+- Legacy `/open-api/*` and `/core/*` mounts are deprecated by Pendle.
+- A custom `boros_adapter.base_url` and `boros_adapter.endpoints` can still be
+  supplied for tests or emergency compatibility.
+
+## Signing Boundaries
+
+Boros has two execution tracks:
+
+- Root-sensitive user calldata: deposits, withdrawal requests, agent approval, and
+  agent revocation. These are signed by the root wallet and submitted directly
+  on-chain. Adapter deposit/withdraw helpers can broadcast these when
+  `sign_callback` and `wallet_address` are configured.
+- Agent-executable calldata: place/cancel orders, cash transfers, enter/exit
+  markets, gas top-ups, and AMM liquidity actions. The current Boros API returns
+  `calls` for these flows. They must be signed by an approved Boros agent key
+  and submitted through `/v1/send-txs/dedicated/bulk-calls`; the adapter returns
+  `requires_agent_signature` instead of silently broadcasting them with the root
+  signer.
+
+Stop orders (TP/SL) are managed by the separate Stop Order service and are not
+wrapped by this adapter yet.
+
+Current simulation helpers are available for place-order, deposit, withdrawal,
+cash-transfer, add-liquidity, and remove-liquidity previews. Use them before any
+flow that would move funds or change positions.
+
 ## Query Markets
 
 ### get_all_markets
@@ -180,3 +209,6 @@ All methods return `(success: bool, data: Any)` tuples.
 ```bash
 poetry run pytest wayfinder_paths/adapters/boros_adapter/ -q
 ```
+
+Gorlami-backed simulation tests are skipped unless the environment provides the
+required Boros/Gorlami API configuration.

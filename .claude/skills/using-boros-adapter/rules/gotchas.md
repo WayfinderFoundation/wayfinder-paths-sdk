@@ -191,8 +191,9 @@ Practical implications:
 
 Two common sources of confusion (and wasted time):
 
-1) **`marketId` queries return lists, not a single market**
-   - `GET /core/v1/markets?marketId=51` returns `{ "results": [ ... ] }` (a list).
+1) **Single-market reads use the by-ids endpoint**
+   - Current API shape: `GET /apis/v1/markets/by-ids?marketIds=51`.
+   - The response is still list-shaped (`results`), so don’t assume raw API calls return a single object.
    - Don’t assume `get_market(51)` returns a single object unless you’re using the repo’s client helper.
    - In this repo:
      - Use `BorosAdapter.get_market(market_id)` (returns a single market dict)
@@ -204,7 +205,7 @@ Two common sources of confusion (and wasted time):
      - `BorosAdapter.list_tenor_quotes(underlying_symbol="HYPE", ...)`
      - `BorosAdapter.quote_markets_for_underlying("HYPE", ...)`
 
-Also: Boros enforces `limit <= 100` on `/markets`. Prefer `list_markets_all(page_size=100)` for discovery.
+Also: current `/apis/v1/markets` uses `resumeToken` cursor pagination and enforces `limit <= 200`. Prefer `list_markets_all(page_size=200)` for discovery.
 
 ## Tick math
 
@@ -215,7 +216,8 @@ Also: Boros enforces `limit <= 100` on `/markets`. Prefer `list_markets_all(page
 
 ## Calldata sequencing
 
-Boros API may return multi-tx payloads:
-- `{"calldatas": ["0x...", "0x..."]}` → must be executed sequentially to the Boros Router.
+Boros API may return one of two execution payload shapes:
+- User calldata such as `{"calldata": "0x..."}` or `{"calldatas": ["0x...", "0x..."]}` must be executed sequentially to the Boros Router by the root wallet.
+- Agent payloads such as `{"calls": [...], "executeParams": ...}` are not root-wallet transactions. They require an approved agent key and Send Txs submission.
 
-The adapter’s `_broadcast_calldata(...)` implements this sequencing; don’t “simplify” it away.
+The adapter’s `_broadcast_calldata(...)` implements root-calldata sequencing, and `_broadcast_user_or_return_agent_calldata(...)` prevents agent calls from being silently sent with the root signer. Don’t simplify either path away.

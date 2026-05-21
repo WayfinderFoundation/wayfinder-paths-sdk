@@ -54,6 +54,7 @@ from .types import (
 )
 from .utils import (
     BOROS_TICK_BASE,
+    build_market_acc_hex,
     cash_wei_to_float,
     market_id_from_market_acc,
 )
@@ -113,7 +114,7 @@ class BorosAdapter(BaseAdapter):
         self.account_id = boros_cfg.get("account_id", account_id)
 
         self.boros_client = BorosClient(
-            base_url=boros_cfg.get("base_url", "https://api.boros.finance"),
+            base_url=boros_cfg.get("base_url", "https://api-boros.pendle.finance/apis"),
             endpoints=boros_cfg.get("endpoints"),
             user_address=wallet_address,
             account_id=self.account_id,
@@ -426,7 +427,12 @@ class BorosAdapter(BaseAdapter):
         to_addr = tx_src.get("to") or calldata.get("to")
 
         # Handle v3 API format that returns {'calldatas': ['0x...']} without 'to' address
-        data_val = tx_src.get("data") or calldata.get("data")
+        data_val = (
+            tx_src.get("data")
+            or tx_src.get("calldata")
+            or calldata.get("data")
+            or calldata.get("calldata")
+        )
         if not data_val:
             calldatas = calldata.get("calldatas") or tx_src.get("calldatas")
             if isinstance(calldatas, list) and len(calldatas) > 0:
@@ -576,6 +582,40 @@ class BorosAdapter(BaseAdapter):
             "attempts": max_retries + 1,
         }
 
+    @staticmethod
+    def _is_agent_calldata(calldata: dict[str, Any]) -> bool:
+        return "calls" in calldata or "executeParams" in calldata
+
+    @staticmethod
+    def _agent_execution_required(
+        calldata: dict[str, Any],
+        *,
+        action: str,
+    ) -> dict[str, Any]:
+        calls = calldata.get("calls") or calldata.get("executeParams") or []
+        return {
+            "status": "requires_agent_signature",
+            "error": (
+                f"Boros {action} returned agent-executable calldata. "
+                "Sign each call with an approved Boros agent key and submit via "
+                "/v1/send-txs/dedicated/bulk-calls."
+            ),
+            "signing": "agent",
+            "send_txs_endpoint": "/v1/send-txs/dedicated/bulk-calls",
+            "calldata": calldata,
+            "calls": calls,
+        }
+
+    async def _broadcast_user_or_return_agent_calldata(
+        self,
+        calldata: dict[str, Any],
+        *,
+        action: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        if self._is_agent_calldata(calldata):
+            return False, self._agent_execution_required(calldata, action=action)
+        return await self._broadcast_calldata(calldata)
+
     # ------------------------------------------------------------------ #
     # Tick Math Utilities                                                  #
     # ------------------------------------------------------------------ #
@@ -635,12 +675,16 @@ class BorosAdapter(BaseAdapter):
         self,
         *,
         is_whitelisted: bool | None = True,
+        is_matured: bool | None = None,
         skip: int = 0,
         limit: int = 100,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             markets = await self.boros_client.list_markets(
-                is_whitelisted=is_whitelisted, skip=skip, limit=limit
+                is_whitelisted=is_whitelisted,
+                is_matured=is_matured,
+                skip=skip,
+                limit=limit,
             )
             return True, markets
         except Exception as e:
@@ -651,12 +695,13 @@ class BorosAdapter(BaseAdapter):
         self,
         *,
         is_whitelisted: bool | None = True,
+        is_matured: bool | None = None,
         page_size: int = 100,
         max_pages: int | None = None,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
-        """List all markets, automatically paginating `skip/limit`.
+        """List all markets, automatically paginating the Boros cursor API.
 
-        Boros enforces `limit <= 100`. This helper keeps requesting pages until:
+        Boros currently caps `limit` at 200. This helper keeps requesting pages until:
         - an empty page is returned
         - a short page is returned (< page_size)
         - max_pages is reached (if provided)
@@ -668,8 +713,8 @@ class BorosAdapter(BaseAdapter):
                 page_size = 100
             if page_size <= 0:
                 page_size = 100
-            if page_size > 100:
-                page_size = 100
+            if page_size > 200:
+                page_size = 200
 
             if max_pages is not None:
                 try:
@@ -685,6 +730,7 @@ class BorosAdapter(BaseAdapter):
             while True:
                 batch = await self.boros_client.list_markets(
                     is_whitelisted=is_whitelisted,
+                    is_matured=is_matured,
                     skip=skip,
                     limit=page_size,
                 )
@@ -2581,13 +2627,19 @@ class BorosAdapter(BaseAdapter):
             orders: list[BorosLimitOrder] = []
             for o in orders_raw:
                 try:
-                    tick = int(o.get("limitTick") or 0)
+                    tick = int(o.get("tick") or o.get("limitTick") or 0)
                     tick_step = int(o.get("tickStep") or 1)
-                    apr = self.rate_from_tick(tick, tick_step)
+                    apr = self.normalize_apr(o.get("impliedApr"))
+                    if apr is None:
+                        apr = self.rate_from_tick(tick, tick_step)
 
-                    size = float(o.get("size") or 0) / 1e18
-                    filled = float(o.get("filledSize") or 0) / 1e18
-                    remaining = size - filled
+                    size = float(o.get("placedSize") or o.get("size") or 0) / 1e18
+                    if "unfilledSize" in o:
+                        remaining = float(o.get("unfilledSize") or 0) / 1e18
+                        filled = max(0.0, size - remaining)
+                    else:
+                        filled = float(o.get("filledSize") or 0) / 1e18
+                        remaining = size - filled
 
                     orders.append(
                         BorosLimitOrder(
@@ -2599,7 +2651,7 @@ class BorosAdapter(BaseAdapter):
                             limit_apr=apr,
                             filled_size=filled,
                             remaining_size=remaining,
-                            status=o.get("status") or "open",
+                            status=str(o.get("status") or "open"),
                             raw=o,
                         )
                     )
@@ -2999,12 +3051,24 @@ class BorosAdapter(BaseAdapter):
             if int(amount_wei) <= 0:
                 return False, {"error": "Insufficient collateral balance for deposit"}
 
+            target_market_id = (
+                self.CROSS_MARGIN_MARKET_ID
+                if target_margin == "cross"
+                else int(market_id)
+            )
+            market_acc = build_market_acc_hex(
+                address=str(self.wallet_address),
+                account_id=int(self.account_id),
+                token_id=int(token_id),
+                market_id=target_market_id,
+            )
             calldata = await self.boros_client.build_deposit_calldata(
                 token_id=token_id,
                 amount_wei=amount_wei,
                 market_id=market_id,
                 user_address=self.wallet_address,
-                account_id=0,
+                account_id=self.account_id,
+                market_acc=market_acc,
             )
 
             if not self.sign_callback or not self.wallet_address:
@@ -3228,7 +3292,10 @@ class BorosAdapter(BaseAdapter):
             )
             logger.debug(f"Boros cash_transfer calldata response: {calldata}")
 
-            tx_ok, tx_res = await self._broadcast_calldata(calldata)
+            tx_ok, tx_res = await self._broadcast_user_or_return_agent_calldata(
+                calldata,
+                action="cash_transfer",
+            )
             logger.debug(f"Boros cash_transfer tx result: ok={tx_ok}, res={tx_res}")
             if not tx_ok:
                 return False, tx_res
@@ -3238,6 +3305,184 @@ class BorosAdapter(BaseAdapter):
         except Exception as e:
             logger.error(f"Failed to cash transfer: {e}")
             return False, {"error": str(e)}
+
+    async def get_gas_balance(self) -> tuple[bool, dict[str, Any] | str]:
+        """Read the Boros Send Txs gas balance for the configured root wallet."""
+        try:
+            return True, await self.boros_client.get_gas_balance(self.wallet_address)
+        except Exception as e:
+            logger.error(f"Failed to get Boros gas balance: {e}")
+            return False, str(e)
+
+    async def get_gas_consumption_history(
+        self,
+        *,
+        limit: int = 100,
+        resume_token: str | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Read cursor-paginated Send Txs gas usage history."""
+        try:
+            data = await self.boros_client.get_gas_consumption_history(
+                self.wallet_address,
+                limit=limit,
+                resume_token=resume_token,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to get Boros gas history: {e}")
+            return False, str(e)
+
+    async def simulate_place_order(
+        self,
+        *,
+        market_id: int,
+        token_id: int,
+        size_yu_wei: int,
+        side: str,
+        limit_tick: int | None = None,
+        rate: float | None = None,
+        tif: str = "GTC",
+        slippage: float | None = 0.005,
+        amm_id: int | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Preview margin/fee impact for a Boros order without broadcasting."""
+        try:
+            market_acc = await self._get_market_acc(token_id=token_id)
+            side_int = 0 if side.lower() in ("long", "buy") else 1
+            tif_int = {"GTC": 0, "IOC": 1, "FOK": 2, "ALO": 3, "SOFT_ALO": 4}.get(
+                tif.upper(),
+                0,
+            )
+            data = await self.boros_client.simulate_place_order(
+                market_acc=market_acc,
+                market_id=market_id,
+                side=side_int,
+                size_wei=size_yu_wei,
+                tif=tif_int,
+                limit_tick=limit_tick,
+                rate=rate,
+                slippage=slippage,
+                amm_id=amm_id,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to simulate Boros order: {e}")
+            return False, str(e)
+
+    async def simulate_deposit(
+        self,
+        *,
+        token_id: int,
+        amount_wei: int,
+        market_id: int | None = None,
+        target_margin: str = "cross",
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Preview a root-sensitive collateral deposit."""
+        try:
+            if not self.wallet_address:
+                return False, "user_address not configured"
+            target_market_id = (
+                self.CROSS_MARGIN_MARKET_ID
+                if target_margin == "cross"
+                else int(market_id or 0)
+            )
+            if target_margin != "cross" and not target_market_id:
+                return False, "market_id is required for isolated deposit simulation"
+            market_acc = build_market_acc_hex(
+                address=self.wallet_address,
+                account_id=int(self.account_id),
+                token_id=int(token_id),
+                market_id=target_market_id,
+            )
+            data = await self.boros_client.simulate_deposit(
+                market_acc=market_acc,
+                amount_wei=amount_wei,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to simulate Boros deposit: {e}")
+            return False, str(e)
+
+    async def simulate_withdrawal(
+        self,
+        *,
+        token_id: int,
+        amount_wei: int,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Preview a withdrawal request.
+
+        Boros simulation uses 1e18 cash units for `amount_wei`; the calldata
+        builder uses native token decimals.
+        """
+        try:
+            data = await self.boros_client.simulate_withdraw(
+                token_id=token_id,
+                amount_wei=amount_wei,
+                user_address=self.wallet_address,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to simulate Boros withdrawal: {e}")
+            return False, str(e)
+
+    async def simulate_cash_transfer(
+        self,
+        *,
+        market_id: int,
+        amount_wei: int,
+        is_deposit: bool = False,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Preview cross <-> isolated cash movement."""
+        try:
+            data = await self.boros_client.simulate_cash_transfer(
+                market_id=market_id,
+                amount_wei=amount_wei,
+                is_deposit=is_deposit,
+                user_address=self.wallet_address,
+                account_id=self.account_id,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to simulate Boros cash transfer: {e}")
+            return False, str(e)
+
+    async def simulate_add_liquidity(
+        self,
+        *,
+        market_id: int,
+        net_cash_in_wei: int,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Preview adding single-sided cash to a Boros AMM."""
+        try:
+            data = await self.boros_client.simulate_add_liquidity(
+                market_id=market_id,
+                net_cash_in_wei=net_cash_in_wei,
+                user_address=self.wallet_address,
+                account_id=self.account_id,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to simulate Boros AMM deposit: {e}")
+            return False, str(e)
+
+    async def simulate_remove_liquidity(
+        self,
+        *,
+        market_id: int,
+        lp_to_remove_wei: int,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        """Preview removing LP from a Boros AMM."""
+        try:
+            data = await self.boros_client.simulate_remove_liquidity(
+                market_id=market_id,
+                lp_to_remove_wei=lp_to_remove_wei,
+                user_address=self.wallet_address,
+                account_id=self.account_id,
+            )
+            return True, data
+        except Exception as e:
+            logger.error(f"Failed to simulate Boros AMM withdrawal: {e}")
+            return False, str(e)
 
     async def _get_amm_id_for_market(self, market_id: int) -> int | None:
         market_id = int(market_id)
@@ -4034,13 +4279,10 @@ class BorosAdapter(BaseAdapter):
                 slippage=slippage,
             )
 
-            if not self.sign_callback:
-                return False, {
-                    "error": "sign_callback not configured",
-                    "calldata": calldata,
-                }
-
-            tx_ok, tx_res = await self._broadcast_calldata(calldata)
+            tx_ok, tx_res = await self._broadcast_user_or_return_agent_calldata(
+                calldata,
+                action="place_rate_order",
+            )
             if not tx_ok:
                 return False, tx_res
             return True, tx_res
@@ -4096,13 +4338,10 @@ class BorosAdapter(BaseAdapter):
                 tif=1,  # IOC
             )
 
-            if not self.sign_callback:
-                return False, {
-                    "error": "sign_callback not configured",
-                    "calldata": calldata,
-                }
-
-            tx_ok, tx_res = await self._broadcast_calldata(calldata)
+            tx_ok, tx_res = await self._broadcast_user_or_return_agent_calldata(
+                calldata,
+                action="close_positions_market",
+            )
             if not tx_ok:
                 return False, tx_res
             return True, tx_res
@@ -4128,13 +4367,10 @@ class BorosAdapter(BaseAdapter):
                 cancel_all=cancel_all,
             )
 
-            if not self.sign_callback:
-                return False, {
-                    "error": "sign_callback not configured",
-                    "calldata": calldata,
-                }
-
-            tx_ok, tx_res = await self._broadcast_calldata(calldata)
+            tx_ok, tx_res = await self._broadcast_user_or_return_agent_calldata(
+                calldata,
+                action="cancel_orders",
+            )
             if not tx_ok:
                 return False, tx_res
             return True, tx_res
@@ -4256,18 +4492,12 @@ class BorosAdapter(BaseAdapter):
                 f"Failed to get marketAcc from API, falling back to local: {e}"
             )
 
-        # Fallback: build locally
-        # MarketAcc = address(20) | accountId(1) | tokenId(2) | marketId(3)
-        addr = (
-            self.wallet_address[2:]
-            if self.wallet_address.startswith("0x")
-            else self.wallet_address
+        market_acc = build_market_acc_hex(
+            address=self.wallet_address,
+            account_id=int(self.account_id),
+            token_id=int(token_id),
+            market_id=self.CROSS_MARGIN_MARKET_ID,
         )
-        account_hex = format(self.account_id, "02x")
-        token_hex = format(token_id, "04x")
-        market_hex = "ffffff"  # Cross margin marker
-
-        market_acc = f"0x{addr.lower()}{account_hex}{token_hex}{market_hex}"
         logger.debug(f"Built marketAcc locally: {market_acc}")
         return market_acc
 

@@ -166,6 +166,11 @@ size_yu_wei = int(size_yu * 1e18)  # Convert to wei
 All Boros execution in this repo is **on Arbitrum** (default `chain_id = 42161`).
 The HYPE OFT bridge helper runs on **HyperEVM**.
 
+Current Boros API split:
+- Root-sensitive user calldata: deposits, withdrawal requests, agent approval, and agent revocation. These can be signed by the root wallet when `wallet_address`, `web3_service`, and `sign_callback` are configured.
+- Agent-executable calldata: place/cancel orders, close positions, cash transfer, gas top-up, and AMM liquidity actions. Boros returns `calls`/`executeParams` for these flows; they must be signed with an approved agent key and sent through `/v1/send-txs/dedicated/bulk-calls`. The adapter returns `status="requires_agent_signature"` for these responses instead of broadcasting them with the root signer.
+- Stop orders (TP/SL) live on the separate Boros Stop Order service and are not wrapped by this adapter yet.
+
 Deposits/withdrawals:
 - `deposit_to_cross_margin(collateral_address, amount_wei, token_id, market_id)`
 - `deposit_to_isolated_margin(collateral_address, amount_wei, token_id, market_id)`
@@ -194,8 +199,24 @@ success, result = await adapter.place_rate_order(
 )
 ```
 
+`place_rate_order()` keeps the adapter's `limit_tick` surface for compatibility,
+but the current single-order Boros API builds from `rate`; the adapter converts
+the selected tick with the market's `tickStep` before calling `/v1/calldata-builder/agent/place-order`.
+
 On-chain reads (safety rails):
 - `get_cash_fee_data(token_id=...)` (reads `MarketHub.getCashFeeData`)
+- `get_gas_balance()`
+- `get_gas_consumption_history(limit=100)`
+
+Simulation helpers:
+- `simulate_place_order(market_id, token_id, size_yu_wei, side, ...)`
+- `simulate_deposit(token_id, amount_native|amount_wei, market_id, ...)`
+- `simulate_withdrawal(token_id, amount_native|amount_wei, ...)`
+- `simulate_cash_transfer(market_id, amount_wei, is_deposit)`
+- `simulate_add_liquidity(amm_id, net_cash_in_wei)`
+- `simulate_remove_liquidity(amm_id, lp_amount_wei)`
+
+Run the matching simulation before any fund-moving or position-changing flow when the API supports it.
 
 Cross-chain funding:
 - `bridge_hype_oft_hyperevm_to_arbitrum(amount_wei, ...)` (native HYPE → Arbitrum OFT HYPE)
@@ -218,10 +239,11 @@ Reference (MarketHub withdrawal status + cooldown mechanics):
 ## Safety rails you must apply
 
 - Ensure `web3_service` and `wallet_address` are configured before expecting broadcasts.
-- Treat any calldata returned by Boros API as untrusted input:
+- Treat any calldata or agent call returned by Boros API as untrusted input:
   - validate chain id
   - validate `to` address
   - validate the token/amount semantics you intended
+- Do not use a root-wallet signer to submit `calls` returned by agent endpoints. Use an approved agent key and the Send Txs API, or return the adapter's `requires_agent_signature` payload to the caller.
 
 ## Min cash + isolated/cross gotcha (read this once)
 

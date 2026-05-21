@@ -708,6 +708,111 @@ class TestBorosAdapter:
         assert orders[0].remaining_size == 0.5
 
     @pytest.mark.asyncio
+    async def test_get_open_limit_orders_parses_v2_fields(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.get_open_orders = AsyncMock(
+            return_value=[
+                {
+                    "orderId": "order-456",
+                    "marketId": 74,
+                    "side": 0,
+                    "placedSize": "3000000000000000000",
+                    "unfilledSize": "1000000000000000000",
+                    "tick": 410,
+                    "impliedApr": 0.041,
+                    "status": 0,
+                }
+            ]
+        )
+
+        success, orders = await adapter.get_open_limit_orders()
+
+        assert success is True
+        assert len(orders) == 1
+        assert orders[0].order_id == "order-456"
+        assert orders[0].market_id == 74
+        assert orders[0].side == "long"
+        assert orders[0].size == 3.0
+        assert orders[0].filled_size == 2.0
+        assert orders[0].remaining_size == 1.0
+        assert orders[0].limit_tick == 410
+        assert orders[0].limit_apr == 0.041
+
+    def test_build_tx_from_calldata_accepts_current_calldata_field(self, adapter):
+        tx = adapter._build_tx_from_calldata(
+            {
+                "from": adapter.wallet_address,
+                "to": "0x0000000000000000000000000000000000000002",
+                "calldata": "0xdeadbeef",
+                "value": "0",
+            },
+            from_address=adapter.wallet_address,
+        )
+
+        assert tx["data"] == "0xdeadbeef"
+        assert tx["to"] == "0x0000000000000000000000000000000000000002"
+
+    @pytest.mark.asyncio
+    async def test_agent_calldata_requires_agent_signature_not_root_broadcast(
+        self, adapter
+    ):
+        adapter.sign_callback = object()
+
+        ok, res = await adapter._broadcast_user_or_return_agent_calldata(
+            {"calls": [{"calldata": "0xabc", "accountId": 0}]},
+            action="place_rate_order",
+        )
+
+        assert ok is False
+        assert res["status"] == "requires_agent_signature"
+        assert res["signing"] == "agent"
+        assert res["calls"] == [{"calldata": "0xabc", "accountId": 0}]
+
+        ok, res = await adapter._broadcast_user_or_return_agent_calldata(
+            {"executeParams": {"calldata": "0xdef", "accountId": 0}},
+            action="cash_transfer",
+        )
+
+        assert ok is False
+        assert res["status"] == "requires_agent_signature"
+        assert res["calls"] == {"calldata": "0xdef", "accountId": 0}
+
+    @pytest.mark.asyncio
+    async def test_simulate_place_order_delegates_current_payload(
+        self, adapter, mock_boros_client
+    ):
+        mock_boros_client.simulate_place_order = AsyncMock(
+            return_value={"resolved": {"limitTick": 410}}
+        )
+        adapter._get_market_acc = AsyncMock(
+            return_value="0x1234567890123456789012345678901234567890000003ffffff"
+        )
+
+        ok, data = await adapter.simulate_place_order(
+            market_id=74,
+            token_id=3,
+            size_yu_wei=10**18,
+            side="short",
+            limit_tick=410,
+            tif="IOC",
+        )
+
+        assert ok is True
+        assert data == {"resolved": {"limitTick": 410}}
+        mock_boros_client.simulate_place_order.assert_awaited_once_with(
+            market_acc="0x1234567890123456789012345678901234567890000003ffffff",
+            market_id=74,
+            side=1,
+            size_wei=10**18,
+            tif=1,
+            limit_tick=410,
+            rate=None,
+            slippage=0.005,
+            amm_id=None,
+        )
+
+    @pytest.mark.asyncio
     async def test_get_full_user_state_success(self, adapter, mock_boros_client):
         market_acc = "0x" + ("0" * 58) + "000012"  # 0x12 == 18
         mock_boros_client.get_collaterals = AsyncMock(

@@ -10,42 +10,75 @@ from loguru import logger
 
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_HEADERS
 
-# Default Boros API endpoints
-# Open API endpoints (public, no auth required)
-OPEN_API_ENDPOINTS = {
-    "assets": "/open-api/v1/assets/all",
-    "markets_open": "/open-api/v1/markets",
-    "market_chart": "/open-api/v1/markets/chart",
-    "limit_orders_open": "/open-api/v1/accounts/limit-orders",
-}
+from .utils import (
+    account_id_from_market_acc,
+    build_market_acc_hex,
+    is_cross_market_acc,
+    market_id_from_market_acc,
+    rate_from_tick,
+    token_id_from_market_acc,
+)
 
-# Core API endpoints (authenticated/internal)
-CORE_API_ENDPOINTS = {
-    "markets": "/core/v1/markets",
-    "market": "/core/v1/markets",
-    "orderbook": "/core/v1/order-books",
-    "active_positions": "/core/v1/pnl/positions/active",
-    "closed_positions": "/core/v1/pnl/positions/closed",
-    "collaterals": "/core/v1/collaterals/summary",
-    "collateral_summary": "/core/v1/collaterals/summary",
-    "build_deposit_calldata": "/core/v2/calldata/deposit",
-    "build_withdraw_calldata": "/core/v1/calldata/withdraw/request",
-    "build_finalize_withdrawal_calldata": "/core/v1/calldata/withdraw/finalize",
-    "build_place_order_calldata": "/core/v4/calldata/place-order",
-    "build_close_position_calldata": "/core/v4/calldata/close-active-position",
-    "build_cancel_order_calldata": "/core/v3/calldata/cancel-order",
-    "build_cash_transfer_calldata": "/core/v3/calldata/cash-transfer",
-    "limit_orders": "/core/v1/pnl/limit-orders",
-    "amm_summary": "/core/v1/amm/summary",
-    "amm_info": "/core/v2/amm",
-    "amm_chart": "/core/v2/amm/chart",
-    "simulate_add_liquidity": "/core/v1/simulations/add-liquidity-single-cash",
-    "simulate_remove_liquidity": "/core/v1/simulations/remove-liquidity-single-cash",
-    "amm_rewards": "/core/v1/amm/rewards",
-    "amm_rewards_proof": "/core/v1/merkels/amm_lp_rewards/user",
-}
+DEFAULT_BASE_URL = "https://api-boros.pendle.finance/apis"
+DEFAULT_MARKETS_PAGE_SIZE = 100
+MAX_MARKETS_PAGE_SIZE = 200
+MAX_ACCOUNT_PAGE_SIZE = 2000
+MAX_TRANSFER_LOGS_PAGE_SIZE = 100
 
-DEFAULT_ENDPOINTS = {**OPEN_API_ENDPOINTS, **CORE_API_ENDPOINTS}
+# Current Boros Open API mount. The legacy `api.boros.finance/open-api` and
+# `/core` mounts are deprecated and scheduled for shutdown by Pendle.
+DEFAULT_ENDPOINTS = {
+    "assets": "/v1/assets",
+    "markets": "/v1/markets",
+    "market": "/v1/markets/by-ids",
+    "markets_by_ids": "/v1/markets/by-ids",
+    "market_chart": "/v1/markets/ohlcv",
+    "orderbook": "/v1/markets/order-book",
+    "active_positions": "/v1/accounts/active-positions",
+    "collaterals": "/v1/accounts/market-acc-infos-by-root",
+    "market_acc_infos": "/v1/accounts/market-acc-infos",
+    "market_acc_infos_by_root": "/v1/accounts/market-acc-infos-by-root",
+    "limit_orders": "/v1/accounts/orders",
+    "limit_orders_by_placed_time": "/v1/accounts/orders-by-placed-time",
+    "position_update_events": "/v1/accounts/position-update-events",
+    "settlement_events": "/v1/accounts/settlement-events",
+    "transfer_logs": "/v1/accounts/transfer-logs",
+    "gas_balance": "/v1/accounts/gas-balance",
+    "gas_consumption_history": "/v1/accounts/gas-consumption-history",
+    "agent_expiry_time": "/v1/agents/expiry-time",
+    "build_deposit_calldata": "/v1/calldata-builder/user/deposit",
+    "build_withdraw_calldata": "/v1/calldata-builder/user/request-withdrawal",
+    "build_cancel_withdrawal_calldata": "/v1/calldata-builder/user/cancel-withdrawal",
+    "build_finalize_withdrawal_calldata": "https://api.boros.finance/core/v1/calldata/withdraw/finalize",
+    "build_approve_agent_calldata": "/v1/calldata-builder/user/approve-agent",
+    "build_revoke_agent_calldata": "/v1/calldata-builder/user/revoke-agent",
+    "build_vault_pay_treasury_calldata": "/v1/calldata-builder/user/vault-pay-treasury",
+    "build_place_order_calldata": "/v1/calldata-builder/agent/place-order",
+    "build_place_orders_calldata": "/v1/calldata-builder/agent/place-orders",
+    "build_cancel_order_calldata": "/v1/calldata-builder/agent/cancel-orders",
+    "build_cash_transfer_calldata": "/v1/calldata-builder/agent/cash-transfer",
+    "build_enter_markets_calldata": "/v1/calldata-builder/agent/enter-markets",
+    "build_exit_markets_calldata": "/v1/calldata-builder/agent/exit-markets",
+    "build_pay_treasury_calldata": "/v1/calldata-builder/agent/pay-treasury",
+    "build_add_liquidity_calldata": "/v1/calldata-builder/agent/add-liquidity-to-amm",
+    "build_remove_liquidity_calldata": "/v1/calldata-builder/agent/remove-liquidity-from-amm",
+    "simulate_place_order": "/v1/simulations/place-order",
+    "simulate_deposit": "/v1/simulations/deposit",
+    "simulate_withdraw": "/v1/simulations/request-withdrawal",
+    "simulate_cash_transfer": "/v1/simulations/cash-transfer",
+    "simulate_add_liquidity": "/v1/simulations/add-liquidity-to-amm",
+    "simulate_remove_liquidity": "/v1/simulations/remove-liquidity-from-amm",
+    "send_txs_bulk_calls": "/v1/send-txs/bulk-calls",
+    "send_txs_dedicated_bulk_calls": "/v1/send-txs/dedicated/bulk-calls",
+    "send_txs_trace": "/v1/send-txs/trace",
+    "send_txs_tx_status": "/v1/send-txs/tx-status",
+    "send_txs_tx_status_with_events": "/v1/send-txs/tx-status-with-events",
+    # These legacy endpoints do not yet have a one-call replacement in the
+    # public OpenAPI. Keep them overrideable for existing vault/rewards flows.
+    "amm_summary": "https://api.boros.finance/core/v1/amm/summary",
+    "amm_rewards": "https://api.boros.finance/core/v1/amm/rewards",
+    "amm_rewards_proof": "https://api.boros.finance/core/v1/merkels/amm_lp_rewards/user",
+}
 
 
 class BorosClient:
@@ -56,7 +89,7 @@ class BorosClient:
 
     def __init__(
         self,
-        base_url: str = "https://api.boros.finance",
+        base_url: str = DEFAULT_BASE_URL,
         endpoints: dict[str, str] | None = None,
         user_address: str | None = None,
         account_id: int = 0,
@@ -99,7 +132,11 @@ class BorosClient:
         Returns:
             Parsed JSON response.
         """
-        url = f"{self.base_url}{path}"
+        url = (
+            path
+            if path.startswith(("http://", "https://"))
+            else f"{self.base_url}{path}"
+        )
         timeout_val = timeout or self.timeout
 
         async with aiohttp.ClientSession(headers=DEFAULT_HTTP_HEADERS) as session:
@@ -112,30 +149,74 @@ class BorosClient:
             ) as resp:
                 if resp.status >= 400:
                     body = await resp.text()
+                    message = f"{resp.reason}: {body}"
+                    try:
+                        err = await resp.json(content_type=None)
+                        if isinstance(err, dict):
+                            api_msg = err.get("message") or body
+                            code = err.get("errorCode") or err.get("statusCode")
+                            message = (
+                                f"{resp.reason}"
+                                f"{f' [{code}]' if code else ''}: {api_msg}"
+                            )
+                    except Exception:
+                        pass
                     raise aiohttp.ClientResponseError(
                         resp.request_info,
                         resp.history,
                         status=resp.status,
-                        message=f"{resp.reason}: {body}",
+                        message=message,
                     )
-                return await resp.json()
+                if resp.status == 204:
+                    return None
+                return await resp.json(content_type=None)
 
-    async def get_assets(self) -> list[dict[str, Any]]:
+    async def get_assets(
+        self, *, is_collateral: bool | None = None
+    ) -> list[dict[str, Any]]:
         """Get all Boros assets (collateral tokens with addresses).
 
         Returns:
             List of asset dicts with tokenId, address, symbol, decimals, isCollateral.
         """
-        cache_key = f"boros:assets:{self.base_url}"
+        cache_key = f"boros:assets:{self.base_url}:{is_collateral}"
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
 
         path = self.endpoints["assets"]
-        data = await self._http("GET", path)
-        assets: list[dict[str, Any]] = data.get("assets") or []
+        params = None
+        if is_collateral is not None:
+            params = {"isCollateral": "true" if is_collateral else "false"}
+        data = await self._http("GET", path, params=params)
+        assets: list[dict[str, Any]] = (
+            data.get("assets") or data.get("results") or data.get("data") or []
+        )
         await self._cache.set(cache_key, assets, ttl=3600)  # Cache for 1 hour
         return assets
+
+    async def list_markets_page(
+        self,
+        *,
+        is_whitelisted: bool | None = True,
+        is_matured: bool | None = None,
+        limit: int = DEFAULT_MARKETS_PAGE_SIZE,
+        resume_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch one cursor-paginated page from `/v1/markets`."""
+        limit = self._clamp_int(limit, DEFAULT_MARKETS_PAGE_SIZE, MAX_MARKETS_PAGE_SIZE)
+        params: dict[str, Any] = {"limit": limit}
+        if is_whitelisted is not None:
+            params["isUiWhitelisted"] = "true" if is_whitelisted else "false"
+        if is_matured is not None:
+            params["isMatured"] = "true" if is_matured else "false"
+        if resume_token:
+            params["resumeToken"] = resume_token
+
+        data = await self._http("GET", self.endpoints["markets"], params=params)
+        if isinstance(data, dict):
+            return data
+        return {"results": data if isinstance(data, list) else [], "resumeToken": None}
 
     async def list_markets(
         self,
@@ -143,6 +224,8 @@ class BorosClient:
         is_whitelisted: bool | None = True,
         skip: int = 0,
         limit: int = 100,
+        resume_token: str | None = None,
+        is_matured: bool | None = None,
     ) -> list[dict[str, Any]]:
         """List available Boros markets.
 
@@ -154,37 +237,45 @@ class BorosClient:
         Returns:
             List of market dictionaries.
         """
-        # Boros API enforces: 1 <= limit <= 100.
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 100
-        if limit <= 0:
-            limit = 100
-        if limit > 100:
-            limit = 100
-
-        try:
-            skip = int(skip)
-        except (TypeError, ValueError):
-            skip = 0
-        if skip < 0:
-            skip = 0
-
-        cache_key = f"boros:markets:{self.base_url}:{is_whitelisted}:{skip}:{limit}"
+        limit = self._clamp_int(limit, DEFAULT_MARKETS_PAGE_SIZE, MAX_MARKETS_PAGE_SIZE)
+        skip = max(0, self._coerce_int(skip, 0))
+        cache_key = (
+            "boros:markets:"
+            f"{self.base_url}:{is_whitelisted}:{is_matured}:{skip}:{limit}:{resume_token}"
+        )
         cached = await self._cache.get(cache_key)
         if cached:
             return cached
 
-        path = self.endpoints["markets"]
-        params: dict[str, Any] = {"skip": skip, "limit": limit}
-        if is_whitelisted is not None:
-            params["isWhitelisted"] = "true" if is_whitelisted else "false"
-
-        data = await self._http("GET", path, params=params)
-        markets: list[dict[str, Any]] = (
-            data.get("markets") or data.get("results") or data.get("data") or data
-        )
+        # `skip` is retained for older adapter callers. The current Boros API is
+        # cursor-based, so emulate offset pagination by walking pages and filling
+        # the requested limit from subsequent cursors when skip cuts through a page.
+        remaining_skip = skip
+        token = resume_token
+        markets: list[dict[str, Any]] = []
+        while len(markets) < limit:
+            page = await self.list_markets_page(
+                is_whitelisted=is_whitelisted,
+                is_matured=is_matured,
+                limit=limit,
+                resume_token=token,
+            )
+            token = page.get("resumeToken")
+            page_markets = (
+                page.get("markets") or page.get("results") or page.get("data") or []
+            )
+            if remaining_skip:
+                if remaining_skip >= len(page_markets):
+                    remaining_skip -= len(page_markets)
+                    if not token:
+                        break
+                    continue
+                page_markets = page_markets[remaining_skip:]
+                remaining_skip = 0
+            needed = limit - len(markets)
+            markets.extend(page_markets[:needed])
+            if len(markets) >= limit or not token or not page_markets:
+                break
         await self._cache.set(cache_key, markets, ttl=300)
         return markets
 
@@ -244,15 +335,17 @@ class BorosClient:
         if cached:
             return cached
 
-        path = self.endpoints["market"]
+        path = self.endpoints["markets_by_ids"]
         market: dict[str, Any] | None = None
         try:
-            payload = await self._http("GET", path, params={"marketId": market_id})
+            payload = await self._http(
+                "GET", path, params={"marketIds": str(int(market_id))}
+            )
             market = self._extract_market_from_payload(payload, market_id)
         except Exception:
             market = None
 
-        # Fallback: paginate markets (Boros enforces limit<=100).
+        # Fallback: paginate markets (Boros currently enforces limit<=200).
         if not market:
             skip = 0
             limit = 100
@@ -294,6 +387,7 @@ class BorosClient:
         market_id: int,
         *,
         tick_size: float = 0.001,
+        include_amm: bool = True,
     ) -> dict[str, Any]:
         """Get order book for a market.
 
@@ -304,8 +398,12 @@ class BorosClient:
         Returns:
             Order book with long/short sides.
         """
-        path = f"{self.endpoints['orderbook']}/{int(market_id)}"
-        params = {"tickSize": tick_size}
+        path = self.endpoints["orderbook"]
+        params = {
+            "marketId": int(market_id),
+            "tickSize": tick_size,
+            "includeAmm": "true" if include_amm else "false",
+        }
         return await self._http("GET", path, params=params)
 
     async def get_market_history(
@@ -349,7 +447,7 @@ class BorosClient:
         user_address: str | None = None,
         account_id: int | None = None,
     ) -> dict[str, Any]:
-        """Get collateral summary for user.
+        """Get a legacy-shaped collateral summary for user.
 
         Args:
             user_address: User wallet address (defaults to client's user_address).
@@ -358,12 +456,86 @@ class BorosClient:
         Returns:
             Collateral summary with positions.
         """
-        path = self.endpoints["collaterals"]
-        params = {
-            "userAddress": user_address or self.user_address,
-            "accountId": int(account_id if account_id is not None else self.account_id),
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+
+        data = await self.get_market_acc_infos_by_root(root=root)
+        return self._market_acc_infos_to_collaterals(
+            data,
+            account_id=int(account_id if account_id is not None else self.account_id),
+        )
+
+    async def get_market_acc_infos_by_root(self, *, root: str) -> dict[str, Any]:
+        """Get all market account infos for a root wallet."""
+        return await self._http(
+            "GET",
+            self.endpoints["market_acc_infos_by_root"],
+            params={"root": root},
+        )
+
+    async def get_market_acc_infos(self, market_accs: list[str]) -> dict[str, Any]:
+        """Get market account infos for up to 100 packed marketAcc values."""
+        if not market_accs:
+            return {"results": [], "syncStatus": None}
+        return await self._http(
+            "POST",
+            self.endpoints["market_acc_infos"],
+            json_body={"marketAccs": [str(acc) for acc in market_accs[:100]]},
+        )
+
+    async def get_active_positions(
+        self,
+        user_address: str | None = None,
+        account_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get active positions using the current `/v1/accounts/active-positions` endpoint."""
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        data = await self._http(
+            "GET",
+            self.endpoints["active_positions"],
+            params={
+                "root": root,
+                "accountId": int(
+                    account_id if account_id is not None else self.account_id
+                ),
+            },
+        )
+        if isinstance(data, dict):
+            return data.get("results") or data.get("positions") or []
+        return data if isinstance(data, list) else []
+
+    async def get_gas_balance(self, user_address: str | None = None) -> dict[str, Any]:
+        """Get current Send Txs Bot gas balance in USD."""
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        return await self._http(
+            "GET", self.endpoints["gas_balance"], params={"root": root}
+        )
+
+    async def get_gas_consumption_history(
+        self,
+        user_address: str | None = None,
+        *,
+        limit: int = 100,
+        resume_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Get cursor-paginated gas usage history."""
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        params: dict[str, Any] = {
+            "root": root,
+            "limit": self._clamp_int(limit, 100, MAX_TRANSFER_LOGS_PAGE_SIZE),
         }
-        return await self._http("GET", path, params=params)
+        if resume_token:
+            params["resumeToken"] = resume_token
+        return await self._http(
+            "GET", self.endpoints["gas_consumption_history"], params=params
+        )
 
     async def get_amm_summary(
         self,
@@ -399,6 +571,12 @@ class BorosClient:
         user_address: str | None = None,
         *,
         limit: int = 50,
+        account_id: int | None = None,
+        market_id: int | None = None,
+        resume_token: str | None = None,
+        is_active: bool | None = True,
+        order_type: int | list[int] | None = None,
+        by_placed_time: bool = False,
     ) -> list[dict[str, Any]]:
         """Get open limit orders.
 
@@ -409,11 +587,31 @@ class BorosClient:
         Returns:
             List of open orders.
         """
-        path = self.endpoints["limit_orders"]
-        params = {
-            "userAddress": user_address or self.user_address,
-            "limit": limit,
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+
+        path = (
+            self.endpoints["limit_orders_by_placed_time"]
+            if by_placed_time
+            else self.endpoints["limit_orders"]
+        )
+        params: dict[str, Any] = {
+            "root": root,
+            "accountId": int(account_id if account_id is not None else self.account_id),
+            "limit": self._clamp_int(limit, 50, MAX_ACCOUNT_PAGE_SIZE),
         }
+        if market_id is not None and not by_placed_time:
+            params["marketId"] = int(market_id)
+        if resume_token:
+            params["resumeToken"] = resume_token
+        if is_active is not None and not by_placed_time:
+            params["isActive"] = "true" if is_active else "false"
+        if order_type is not None and not by_placed_time:
+            if isinstance(order_type, list):
+                params["orderType"] = ",".join(str(int(v)) for v in order_type)
+            else:
+                params["orderType"] = int(order_type)
         try:
             data = await self._http("GET", path, params=params)
             return data.get("orders") or data.get("results") or []
@@ -429,6 +627,7 @@ class BorosClient:
         market_id: int,
         user_address: str | None = None,
         account_id: int | None = None,
+        market_acc: str | None = None,
     ) -> dict[str, Any]:
         """Build calldata for deposit.
 
@@ -443,16 +642,21 @@ class BorosClient:
         Returns:
             Calldata dictionary with 'to', 'data', 'value' fields.
         """
-        path = self.endpoints["build_deposit_calldata"]
+        root = user_address or self.user_address
+        if not root and not market_acc:
+            raise ValueError("user_address is required")
+        market_acc = market_acc or build_market_acc_hex(
+            address=str(root),
+            account_id=int(account_id if account_id is not None else self.account_id),
+            token_id=int(token_id),
+            market_id=int(market_id),
+        )
         return await self._http(
-            "GET",
-            path,
-            params={
-                "userAddress": user_address or self.user_address,
-                "accountId": account_id if account_id is not None else self.account_id,
-                "tokenId": int(token_id),
+            "POST",
+            self.endpoints["build_deposit_calldata"],
+            json_body={
+                "marketAcc": market_acc,
                 "amount": str(amount_wei),
-                "marketId": int(market_id),
             },
         )
 
@@ -476,15 +680,14 @@ class BorosClient:
         Returns:
             Calldata dictionary.
         """
-        path = self.endpoints["build_withdraw_calldata"]
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
         return await self._http(
-            "GET",
-            path,
-            params={
-                "userAddress": user_address or self.user_address,
-                "accountId": int(
-                    account_id if account_id is not None else self.account_id
-                ),
+            "POST",
+            self.endpoints["build_withdraw_calldata"],
+            json_body={
+                "root": root,
                 "tokenId": int(token_id),
                 "amount": str(int(amount_wei)),
             },
@@ -497,9 +700,11 @@ class BorosClient:
         market_id: int,
         side: int,
         size_wei: int,
-        limit_tick: int,
+        limit_tick: int | None = None,
         tif: int = 0,
         slippage: float = 0.05,
+        rate: float | None = None,
+        amm_id: int | None = None,
     ) -> dict[str, Any]:
         """Build calldata for placing an order.
 
@@ -515,19 +720,24 @@ class BorosClient:
         Returns:
             Calldata dictionary.
         """
-        path = self.endpoints["build_place_order_calldata"]
+        if rate is None and limit_tick is not None:
+            rate = await self._rate_for_limit_tick(market_id, limit_tick)
+        body: dict[str, Any] = {
+            "marketAcc": market_acc,
+            "marketId": int(market_id),
+            "side": int(side),
+            "size": str(size_wei),
+            "tif": int(tif),
+            "slippage": float(slippage),
+        }
+        if rate is not None:
+            body["rate"] = float(rate)
+        if amm_id is not None:
+            body["ammId"] = int(amm_id)
         return await self._http(
-            "GET",
-            path,
-            params={
-                "marketAcc": market_acc,
-                "marketId": market_id,
-                "side": side,
-                "size": str(size_wei),
-                "limitTick": int(limit_tick),
-                "tif": tif,
-                "slippage": slippage,
-            },
+            "POST",
+            self.endpoints["build_place_order_calldata"],
+            json_body=body,
         )
 
     async def build_close_position_calldata(
@@ -553,18 +763,13 @@ class BorosClient:
         Returns:
             Calldata dictionary.
         """
-        path = self.endpoints["build_close_position_calldata"]
-        return await self._http(
-            "GET",
-            path,
-            params={
-                "marketAcc": market_acc,
-                "marketId": int(market_id),
-                "side": int(side),
-                "size": str(size_wei),
-                "limitTick": int(limit_tick),
-                "tif": int(tif),
-            },
+        return await self.build_place_order_calldata(
+            market_acc=market_acc,
+            market_id=market_id,
+            side=side,
+            size_wei=size_wei,
+            limit_tick=limit_tick,
+            tif=tif,
         )
 
     async def build_cancel_order_calldata(
@@ -586,16 +791,21 @@ class BorosClient:
         Returns:
             Calldata dictionary.
         """
-        path = self.endpoints["build_cancel_order_calldata"]
-        params: dict[str, Any] = {
-            "marketAcc": market_acc,
-            "marketId": int(market_id),
-            "cancelAll": "true" if cancel_all else "false",
+        body: dict[str, Any] = {
+            "markets": [
+                {
+                    "marketAcc": market_acc,
+                    "marketId": int(market_id),
+                    "cancelAll": bool(cancel_all),
+                    "orderIds": [str(oid) for oid in (order_ids or [])],
+                }
+            ]
         }
-        if order_ids and not cancel_all:
-            params["orderIds"] = ",".join(str(oid) for oid in order_ids)
-
-        return await self._http("GET", path, params=params)
+        return await self._http(
+            "POST",
+            self.endpoints["build_cancel_order_calldata"],
+            json_body=body,
+        )
 
     async def build_cash_transfer_calldata(
         self,
@@ -621,14 +831,14 @@ class BorosClient:
         - Boros uses 1e18 internal "cash" units for this call.
         - This call does NOT send accountId, only userAddress.
         """
-        path = self.endpoints["build_cash_transfer_calldata"]
+        direction = "CROSS_TO_ISOLATED" if is_deposit else "ISOLATED_TO_CROSS"
         return await self._http(
-            "GET",
-            path,
-            params={
-                "userAddress": user_address or self.user_address,
+            "POST",
+            self.endpoints["build_cash_transfer_calldata"],
+            json_body={
+                "accountId": int(self.account_id),
                 "marketId": int(market_id),
-                "isDeposit": str(bool(is_deposit)).lower(),
+                "direction": direction,
                 "amount": str(int(amount_wei)),
             },
         )
@@ -660,3 +870,258 @@ class BorosClient:
                 "tokenId": int(token_id),
             },
         )
+
+    async def simulate_place_order(
+        self,
+        *,
+        market_acc: str,
+        market_id: int,
+        side: int,
+        size_wei: int,
+        tif: int,
+        limit_tick: int | None = None,
+        rate: float | None = None,
+        slippage: float | None = None,
+        amm_id: int | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "marketAcc": market_acc,
+            "marketId": int(market_id),
+            "side": int(side),
+            "size": str(int(size_wei)),
+            "tif": int(tif),
+        }
+        if rate is not None:
+            body["rate"] = float(rate)
+        elif limit_tick is not None:
+            body["rate"] = await self._rate_for_limit_tick(market_id, limit_tick)
+        if slippage is not None:
+            body["slippage"] = float(slippage)
+        if amm_id is not None:
+            body["ammId"] = int(amm_id)
+        return await self._http(
+            "POST", self.endpoints["simulate_place_order"], json_body=body
+        )
+
+    async def simulate_deposit(
+        self,
+        *,
+        market_acc: str,
+        amount_wei: int,
+    ) -> dict[str, Any]:
+        return await self._http(
+            "POST",
+            self.endpoints["simulate_deposit"],
+            json_body={"marketAcc": market_acc, "amount": str(int(amount_wei))},
+        )
+
+    async def simulate_withdraw(
+        self,
+        *,
+        token_id: int,
+        amount_wei: int,
+        user_address: str | None = None,
+    ) -> dict[str, Any]:
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        return await self._http(
+            "POST",
+            self.endpoints["simulate_withdraw"],
+            json_body={
+                "root": root,
+                "tokenId": int(token_id),
+                "amount": str(int(amount_wei)),
+            },
+        )
+
+    async def simulate_cash_transfer(
+        self,
+        *,
+        market_id: int,
+        amount_wei: int,
+        is_deposit: bool = False,
+        user_address: str | None = None,
+        account_id: int | None = None,
+    ) -> dict[str, Any]:
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        direction = "CROSS_TO_ISOLATED" if is_deposit else "ISOLATED_TO_CROSS"
+        return await self._http(
+            "POST",
+            self.endpoints["simulate_cash_transfer"],
+            json_body={
+                "root": root,
+                "accountId": int(
+                    account_id if account_id is not None else self.account_id
+                ),
+                "marketId": int(market_id),
+                "direction": direction,
+                "amount": str(int(amount_wei)),
+            },
+        )
+
+    async def simulate_add_liquidity(
+        self,
+        *,
+        market_id: int,
+        net_cash_in_wei: int,
+        user_address: str | None = None,
+        account_id: int | None = None,
+    ) -> dict[str, Any]:
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        return await self._http(
+            "POST",
+            self.endpoints["simulate_add_liquidity"],
+            json_body={
+                "root": root,
+                "accountId": int(
+                    account_id if account_id is not None else self.account_id
+                ),
+                "marketId": int(market_id),
+                "netCashIn": str(int(net_cash_in_wei)),
+            },
+        )
+
+    async def simulate_remove_liquidity(
+        self,
+        *,
+        market_id: int,
+        lp_to_remove_wei: int,
+        user_address: str | None = None,
+        account_id: int | None = None,
+    ) -> dict[str, Any]:
+        root = user_address or self.user_address
+        if not root:
+            raise ValueError("user_address is required")
+        return await self._http(
+            "POST",
+            self.endpoints["simulate_remove_liquidity"],
+            json_body={
+                "root": root,
+                "accountId": int(
+                    account_id if account_id is not None else self.account_id
+                ),
+                "marketId": int(market_id),
+                "lpToRemove": str(int(lp_to_remove_wei)),
+            },
+        )
+
+    async def submit_agent_calls(
+        self,
+        *,
+        datas: list[dict[str, Any]],
+        dedicated: bool = True,
+        require_success: bool = False,
+        simulate: bool = False,
+        skip_receipt: bool = False,
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """Submit already agent-signed calldata through Send Txs.
+
+        `datas` entries must include `agent`, `message`, `signature`, and
+        `calldata`. This client deliberately does not create agent signatures.
+        """
+        body: dict[str, Any] = {
+            "datas": datas,
+            "requireSuccess": bool(require_success),
+        }
+        if dedicated:
+            body["simulate"] = bool(simulate)
+            path = self.endpoints["send_txs_dedicated_bulk_calls"]
+        else:
+            body["skipReceipt"] = bool(skip_receipt)
+            path = self.endpoints["send_txs_bulk_calls"]
+        return await self._http("POST", path, json_body=body)
+
+    @staticmethod
+    def _coerce_int(value: Any, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    @classmethod
+    def _clamp_int(cls, value: Any, default: int, maximum: int) -> int:
+        coerced = cls._coerce_int(value, default)
+        if coerced <= 0:
+            return int(default)
+        return min(coerced, int(maximum))
+
+    async def _rate_for_limit_tick(self, market_id: int, limit_tick: int) -> float:
+        market = await self.get_market(int(market_id))
+        tick_step = (market.get("imData") or {}).get("tickStep") or market.get(
+            "tickStep"
+        )
+        return rate_from_tick(int(limit_tick), self._coerce_int(tick_step, 1))
+
+    @staticmethod
+    def _market_acc_infos_to_collaterals(
+        data: dict[str, Any],
+        *,
+        account_id: int,
+    ) -> dict[str, Any]:
+        """Normalize current marketAcc infos into the legacy adapter shape."""
+        grouped: dict[int, dict[str, Any]] = {}
+        for info in data.get("results") or []:
+            market_acc = str(info.get("marketAcc") or "")
+            token_id = token_id_from_market_acc(market_acc)
+            if token_id is None:
+                continue
+            if account_id_from_market_acc(market_acc) not in (None, int(account_id)):
+                continue
+
+            entry = grouped.setdefault(
+                token_id,
+                {
+                    "tokenId": token_id,
+                    "crossPosition": {},
+                    "isolatedPositions": [],
+                },
+            )
+            position = {
+                "marketAcc": market_acc,
+                "availableBalance": info.get("totalCash") or "0",
+                "netBalance": info.get("netBalance") or info.get("totalCash") or "0",
+                "marketPositions": [
+                    BorosClient._position_to_legacy(pos, token_id, market_acc)
+                    for pos in (info.get("positions") or [])
+                ],
+                "raw": info,
+            }
+            if is_cross_market_acc(market_acc):
+                entry["crossPosition"] = position
+            else:
+                entry["isolatedPositions"].append(position)
+
+        return {
+            "collaterals": list(grouped.values()),
+            "raw": data,
+            "syncStatus": data.get("syncStatus"),
+        }
+
+    @staticmethod
+    def _position_to_legacy(
+        position: dict[str, Any],
+        token_id: int | None,
+        market_acc: str,
+    ) -> dict[str, Any]:
+        signed_size = position.get("signedSize")
+        try:
+            size_wei = abs(int(signed_size or position.get("sizeWei") or 0))
+        except (TypeError, ValueError):
+            size_wei = 0
+        market_id = position.get("marketId") or market_id_from_market_acc(market_acc)
+        return {
+            **position,
+            "marketId": market_id,
+            "tokenId": token_id,
+            "sizeWei": str(size_wei),
+            "notionalSize": str(size_wei),
+            "pnl": {
+                "unrealisedPnl": position.get("unrealisedPnl") or 0,
+                "rateSettlementPnl": position.get("settlementPnl") or 0,
+            },
+        }
