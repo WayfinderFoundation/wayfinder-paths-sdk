@@ -62,4 +62,4 @@ Notes:
 
 1) Call `mcp__wayfinder__onchain_quote_swap(...)`
 2) Inspect `from_token` / `to_token` in the response to ensure the right asset + chain.
-3) Pass `suggested_execute_request` directly into `mcp__wayfinder__core_execute` (the only fund-moving tool).
+3) Pass `suggested_swap_request` directly into `mcp__wayfinder__onchain_swap` (the only fund-moving tool).

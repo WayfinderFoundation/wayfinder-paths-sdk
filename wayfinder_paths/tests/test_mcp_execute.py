@@ -7,7 +7,7 @@ import pytest
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
-from wayfinder_paths.mcp.tools.execute import core_execute
+from wayfinder_paths.mcp.tools.execute import onchain_swap
 
 
 @pytest.fixture(autouse=True)
@@ -94,12 +94,12 @@ async def test_resolve_token_meta_normal_erc20_unchanged():
 
 
 @pytest.mark.asyncio
-async def test_execute_validation_error_is_structured():
-    # swap requires from_token and to_token
-    out = await core_execute(kind="swap", wallet_label="main", amount="1.0")
+async def test_swap_missing_wallet_label_is_structured():
+    out = await onchain_swap(
+        wallet_label=" ", from_token="from", to_token="to", amount="1.0"
+    )
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
-    assert isinstance(out["error"]["details"], list)
 
 
 @pytest.mark.asyncio
@@ -178,8 +178,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             return_value="0xtx",
         ) as send_transaction_mock,
     ):
-        out1 = await core_execute(
-            kind="swap",
+        out1 = await onchain_swap(
             wallet_label="main",
             from_token="from",
             to_token="to",
@@ -187,7 +186,6 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             slippage_bps=50,
         )
         assert out1["ok"] is True
-        assert out1["result"]["kind"] == "swap"
         assert "approval" in out1["result"]["effects"]
         assert out1["result"]["status"] == "submitted"
         assert out1["result"]["effects"]["swap"]["txn_hash"] == "0xtx"
@@ -197,8 +195,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
 
         send_transaction_mock.reset_mock()
 
-        out2 = await core_execute(
-            kind="swap",
+        out2 = await onchain_swap(
             wallet_label="main",
             from_token="from",
             to_token="to",

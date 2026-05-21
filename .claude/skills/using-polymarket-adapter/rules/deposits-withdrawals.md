@@ -26,7 +26,7 @@ mcp__wayfinder__onchain_quote_swap(
     slippage_bps=50,
 )
 # inspect the preview, then:
-mcp__wayfinder__core_execute(request=<suggested_execute_request>)
+mcp__wayfinder__onchain_swap(**suggested_swap_request)
 ```
 
 **Out: pUSD → any token**

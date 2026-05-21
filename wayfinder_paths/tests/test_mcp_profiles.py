@@ -56,7 +56,8 @@ def _assert_rule_order(permission: dict, first: str, second: str) -> None:
 def test_mcp_catalog_exposes_expected_non_shell_tools() -> None:
     names = _tool_names(mcp_server.build_mcp())
 
-    assert "core_execute" in names
+    assert "onchain_swap" in names
+    assert "onchain_send" in names
     assert "core_run_script" in names
     assert "core_runner" in names
     assert "core_web_search" in names
@@ -97,7 +98,8 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_contracts_*"] == "allow"
     assert "wayfinder_research_*" not in primary
     assert primary["wayfinder_core_run_script"] == "ask"
-    assert primary["wayfinder_core_execute"] == "ask"
+    assert primary["wayfinder_onchain_swap"] == "ask"
+    assert primary["wayfinder_onchain_send"] == "ask"
     assert primary["wayfinder_contracts_execute"] == "ask"
     _assert_rule_order(primary, "wayfinder_*", "wayfinder_core_*")
     _assert_rule_order(primary, "wayfinder_core_*", "wayfinder_core_run_script")
@@ -146,10 +148,11 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_hyperliquid_*": "allow",
         "wayfinder_polymarket_*": "allow",
         "wayfinder_contracts_*": "allow",
-        "wayfinder_core_execute": "ask",
         "wayfinder_core_run_script": "ask",
         "wayfinder_core_run_strategy": "ask",
         "wayfinder_core_runner": "ask",
+        "wayfinder_onchain_swap": "ask",
+        "wayfinder_onchain_send": "ask",
         "wayfinder_hyperliquid_place_*": "ask",
         "wayfinder_hyperliquid_cancel_order": "ask",
         "wayfinder_hyperliquid_update_leverage": "ask",

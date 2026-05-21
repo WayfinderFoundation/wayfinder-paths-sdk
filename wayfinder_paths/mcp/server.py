@@ -16,11 +16,11 @@ Namespaces:
   - shells       instance ↔ frontend bridge (chart workspace, annotations, notify, ui ctx)
   - research     alpha-lab, delta-lab, backend-mediated web search/fetch
   - hyperliquid  HL perp/spot/HIP-3/HIP-4 reads + writes
-  - onchain      token resolution, swaps, wallet activity
+  - onchain      token resolution, swaps, sends, wallet activity
   - polymarket   prediction markets reads + writes
   - contracts    contract compile/deploy/call/abi
   - core         cross-persona tools every subagent should allowlist
-                 (discovery, wallet reads, run_script, execute, runner)
+                 (discovery, wallet reads, run_script, runner)
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_call,
     contracts_execute,
 )
-from wayfinder_paths.mcp.tools.execute import core_execute
+from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
 from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_graphql,
     research_goldsky_schema,
@@ -150,7 +150,6 @@ def build_mcp(
     mcp.tool()(core_wallets)
     mcp.tool()(core_web_search)
     mcp.tool()(core_web_fetch)
-    mcp.tool()(core_execute)
     mcp.tool()(core_run_script)
     mcp.tool()(core_run_strategy)
     mcp.tool()(core_runner)
@@ -174,6 +173,8 @@ def build_mcp(
     mcp.tool()(onchain_get_gas_token)
     mcp.tool()(onchain_fuzzy_search_tokens)
     mcp.tool()(onchain_quote_swap)
+    mcp.tool()(onchain_swap)
+    mcp.tool()(onchain_send)
 
     # ─── polymarket_* ──────────────────────────────────────────────────
     mcp.tool()(polymarket_read)

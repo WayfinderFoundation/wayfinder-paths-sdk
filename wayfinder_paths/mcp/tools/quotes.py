@@ -73,9 +73,9 @@ async def onchain_quote_swap(
 ) -> dict[str, Any]:
     """Quote a BRAP cross-chain/cross-DEX swap without broadcasting.
 
-    Mandatory before `core_execute(kind="swap", ...)`: verifies the resolved token symbols,
-    addresses, and chains match intent, surfaces the best route, output, and fees, and returns
-    a ready-to-use `suggested_execute_request` payload.
+    Mandatory before `onchain_swap`: verifies the resolved token symbols, addresses, and
+    chains match intent, surfaces the best route, output, and fees, and returns a
+    ready-to-use `suggested_swap_request` payload.
 
     Args:
         wallet_label: Sender wallet (config.json label).
@@ -89,7 +89,7 @@ async def onchain_quote_swap(
             payload small; only the `len` is reported when false).
 
     Returns:
-        `{preview, quote: {best_quote, quote_count, providers}, suggested_execute_request, ...}`.
+        `{preview, quote: {best_quote, quote_count, providers}, suggested_swap_request, ...}`.
         `preview` flags `⚠ RECIPIENT DIFFERS FROM SENDER` when applicable.
     """
     w = await find_wallet_by_label(wallet_label)
@@ -218,8 +218,7 @@ async def onchain_quote_swap(
         "to_token": to_meta.get("symbol"),
         "amount": str(amount),
         "slippage_bps": int(slippage_bps),
-        "suggested_execute_request": {
-            "kind": "swap",
+        "suggested_swap_request": {
             "wallet_label": wallet_label,
             "from_token": from_token_id,
             "to_token": to_token_id,

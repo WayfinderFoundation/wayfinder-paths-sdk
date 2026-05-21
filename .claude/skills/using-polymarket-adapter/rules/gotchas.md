@@ -4,7 +4,7 @@
 
 - Use `mcp__wayfinder__polymarket_read` for reads (search/markets/history) and `mcp__wayfinder__polymarket_get_state` for account state (positions/orders/activity/trades).
 - Use the per-action write tools (`polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). All gated by a confirmation prompt in Claude Code.
-- For collateral routing in/out of pUSD, use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) — see `rules/deposits-withdrawals.md`.
+- For collateral routing in/out of pUSD, use the BRAP swap MCP tools (`onchain_quote_swap` + `onchain_swap`) — see `rules/deposits-withdrawals.md`.
 - Use `mcp__wayfinder__polymarket_read(action="quote", ...)` before a sized buy/sell when you need average execution from the current book.
 
 ## `price` is not `quote`

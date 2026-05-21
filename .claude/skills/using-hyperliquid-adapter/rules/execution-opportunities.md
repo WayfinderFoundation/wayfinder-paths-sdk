@@ -174,14 +174,13 @@ hyperliquid_place_limit_order(
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
 - `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
-- `mcp__wayfinder__core_execute` for on-chain sends and swaps
+- `mcp__wayfinder__onchain_swap` / `mcp__wayfinder__onchain_send` for on-chain swaps and transfers
 
-### `mcp__wayfinder__core_execute` examples
+### `mcp__wayfinder__onchain_*` examples
 
 **Send tokens to another address:**
 ```
-mcp__wayfinder__core_execute(
-    kind="send",
+mcp__wayfinder__onchain_send(
     wallet_label="main",
     amount="25",
     token="usd-coin-arbitrum",
@@ -191,8 +190,7 @@ mcp__wayfinder__core_execute(
 
 **Swap tokens:**
 ```
-mcp__wayfinder__core_execute(
-    kind="swap",
+mcp__wayfinder__onchain_swap(
     wallet_label="main",
     amount="100",
     from_token="usd-coin-arbitrum",

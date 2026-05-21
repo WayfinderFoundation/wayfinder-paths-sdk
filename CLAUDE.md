@@ -50,9 +50,9 @@ Simulation / scenario testing (vnet only):
 
 Safety defaults:
 
-- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__core_execute(kind="swap")`, always call `mcp__wayfinder__onchain_quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
+- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__onchain_swap`, always call `mcp__wayfinder__onchain_quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `onchain_swap` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
 - **Route planning for non-trivial swaps:** Before quoting, assess whether a direct route is likely to exist between the two tokens. If the pair is illiquid, cross-chain, or involves a long-tail token, reason through candidate intermediate hops first (e.g. tokenA → USDC → tokenB, or tokenA → native gas token → tokenB). Quote the most promising paths and compare outputs before presenting to the user. Skip this planning step only for well-known liquid pairs on the same chain (e.g. ETH → USDC on Arbitrum).
-- On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
+- On-chain writes: use MCP `onchain_swap(...)` (BRAP swap) or `onchain_send(...)` (ERC-20 / native transfer). The hook shows a human-readable preview and asks for confirmation.
 - Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
   - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
   - To fetch an ABI directly (without making a call), use MCP `contract_get_abi(...)`.
@@ -187,7 +187,7 @@ When a user asks to run, check, or interact with a strategy:
 When a user wants **immediate, one-off execution**:
 
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
-- **On-chain:** use `mcp__wayfinder__core_execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
+- **On-chain:** use `mcp__wayfinder__onchain_swap` (cross-chain / cross-DEX swaps via BRAP) or `mcp__wayfinder__onchain_send` (ERC-20 / native transfers). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
 - **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
   - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
   - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
@@ -226,14 +226,14 @@ Polymarket quick flows:
 
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
 - Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
-- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<wei>", slippage_bps=50)`, then `mcp__wayfinder__core_execute(request=<suggested_execute_request>)`. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
+- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<wei>", slippage_bps=50)`, then `mcp__wayfinder__onchain_swap(**suggested_swap_request)`. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
 - Buy shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
 - Sell shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
 - Redeem after resolution: `mcp__wayfinder__polymarket_redeem_positions(wallet_label="main", condition_id="0x...")`
 
 Polymarket funding (pUSD collateral):
 
-- **Any token/chain → pUSD:** use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) with `to_token` = `polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`. Works for Polygon USDC, Polygon USDC.e, or any supported asset on any supported chain — BRAP picks the route.
+- **Any token/chain → pUSD:** use the BRAP swap MCP tools (`onchain_quote_swap` + `onchain_swap`) with `to_token` = `polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`. Works for Polygon USDC, Polygon USDC.e, or any supported asset on any supported chain — BRAP picks the route.
 - **Already have pUSD:** Trade immediately, skip routing.
 - **pUSD → any token/chain:** flip `from_token` / `to_token` in the same BRAP swap flow.
 
@@ -412,7 +412,7 @@ Wallet info is exposed through MCP tools (resources were removed — opencode do
 - `annotate` — record a protocol interaction (internal use).
 - `discover_portfolio` — query adapters for live positions.
 
-**Automatic tracking:** Profiles auto-update when you call `core_execute`, any `hyperliquid_*` write tool, or `core_run_script` with `wallet_label=...`.
+**Automatic tracking:** Profiles auto-update when you call `onchain_swap` / `onchain_send`, any `hyperliquid_*` write tool, or `core_run_script` with `wallet_label=...`.
 
 **Portfolio discovery:**
 
