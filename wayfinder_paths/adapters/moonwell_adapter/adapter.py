@@ -135,7 +135,7 @@ class MoonwellAdapter(BaseAdapter):
         return str(self._chain_entry(chain_id)["chain_name"])
 
     def _token_key(self, token: str, chain_id: int | None = None) -> str:
-        return f"{self._chain_name(chain_id)}_{to_checksum_address(str(token))}"
+        return f"{self._chain_name(chain_id)}_{str(token).lower()}"
 
     def _market_metadata(
         self, mtoken: str, chain_id: int | None = None
