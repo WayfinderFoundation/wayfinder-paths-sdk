@@ -48,13 +48,18 @@ class WalletProfileStore:
     def _normalize_address(self, address: str) -> str:
         return str(address).strip().lower()
 
-    def get_profile(self, address: str) -> dict[str, Any] | None:
+    def get_profile(
+        self, address: str, *, transactions_limit: int | None = None
+    ) -> dict[str, Any] | None:
         data = self._load()
         norm = self._normalize_address(address)
         profile = data["profiles"].get(norm)
-        if profile:
-            return {"address": norm, **profile}
-        return None
+        if not profile:
+            return None
+        out = {"address": norm, **profile}
+        if transactions_limit is not None:
+            out["transactions"] = out["transactions"][:transactions_limit]
+        return out
 
     def list_profiles(self) -> list[dict[str, Any]]:
         data = self._load()
