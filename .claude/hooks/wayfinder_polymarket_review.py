@@ -14,18 +14,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from wayfinder_paths.mcp.preview import (
     build_polymarket_cancel_order_preview,
-    build_polymarket_deposit_preview,
+    build_polymarket_deposit_pusd_preview,
     build_polymarket_place_limit_order_preview,
     build_polymarket_place_market_order_preview,
     build_polymarket_redeem_positions_preview,
-    build_polymarket_withdraw_preview,
+    build_polymarket_withdraw_pusd_preview,
 )
 
 _PreviewBuilder = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 _BUILDERS: dict[str, _PreviewBuilder] = {
-    "polymarket_deposit_pusd": build_polymarket_deposit_preview,
-    "polymarket_withdraw_pusd": build_polymarket_withdraw_preview,
+    "polymarket_deposit_pusd": build_polymarket_deposit_pusd_preview,
+    "polymarket_withdraw_pusd": build_polymarket_withdraw_pusd_preview,
     "polymarket_place_market_order": build_polymarket_place_market_order_preview,
     "polymarket_place_limit_order": build_polymarket_place_limit_order_preview,
     "polymarket_cancel_order": build_polymarket_cancel_order_preview,

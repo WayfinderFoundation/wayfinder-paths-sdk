@@ -194,7 +194,7 @@ async def build_hyperliquid_update_leverage_preview(
     return {"summary": header + base + details}
 
 
-async def build_hyperliquid_deposit_preview(
+async def build_hyperliquid_deposit_usdc_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_DEPOSIT\n")
@@ -202,7 +202,7 @@ async def build_hyperliquid_deposit_preview(
     return {"summary": header + base + details}
 
 
-async def build_hyperliquid_withdraw_preview(
+async def build_hyperliquid_withdraw_usdc_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base = await _hl_preview_base(tool_input, "HYPERLIQUID_WITHDRAW\n")
@@ -219,7 +219,7 @@ async def _pm_preview_base(tool_input: dict[str, Any], header: str) -> tuple[str
     )
 
 
-async def build_polymarket_deposit_preview(
+async def build_polymarket_deposit_pusd_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base = await _pm_preview_base(
@@ -229,7 +229,7 @@ async def build_polymarket_deposit_preview(
     return {"summary": header + base + details}
 
 
-async def build_polymarket_withdraw_preview(
+async def build_polymarket_withdraw_pusd_preview(
     tool_input: dict[str, Any],
 ) -> dict[str, Any]:
     header, base = await _pm_preview_base(
