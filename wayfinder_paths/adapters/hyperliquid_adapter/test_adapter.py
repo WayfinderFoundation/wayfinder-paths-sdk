@@ -75,7 +75,12 @@ class TestHyperliquidAdapter:
 
     @pytest.fixture
     def _patch_adapter(self, mock_info):
-        """Context manager that patches both get_info and get_perp_dexes."""
+        """Context manager that patches get_info, get_perp_dexes, and the
+        new HYPERLIQUID_INFO_CLIENT.post — all three route to mock_info.post."""
+
+        async def _info_client_post(payload):
+            return mock_info.post("/info", payload)
+
         return lambda: (
             patch(
                 "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
@@ -85,43 +90,47 @@ class TestHyperliquidAdapter:
                 "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
                 return_value=[""],
             ),
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_INFO_CLIENT.post",
+                new=AsyncMock(side_effect=_info_client_post),
+            ),
         )
 
     @pytest.mark.asyncio
     async def test_get_meta_and_asset_ctxs(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             success, data = await adapter.get_meta_and_asset_ctxs()
             assert success
             assert "universe" in data[0]
 
     @pytest.mark.asyncio
     async def test_get_spot_meta(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             success, data = await adapter.get_spot_meta()
             assert success
 
     @pytest.mark.asyncio
     async def test_get_l2_book(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             success, data = await adapter.get_l2_book("ETH")
             assert success
             assert "levels" in data
 
     @pytest.mark.asyncio
     async def test_get_user_state(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             success, data = await adapter.get_user_state("0x1234")
             assert success
             assert "assetPositions" in data
 
     @pytest.mark.asyncio
     async def test_get_active_asset_data(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             success, data = await adapter.get_active_asset_data("0x1234", "BTC-USDC")
             assert success
             assert data["availableToTrade"] == ["12.34", "56.78"]
@@ -132,8 +141,8 @@ class TestHyperliquidAdapter:
 
     @pytest.mark.asyncio
     async def test_get_user_abstraction(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             success, data = await adapter.get_user_abstraction("0x1234")
             assert success
             assert data == "unifiedAccount"
@@ -149,21 +158,21 @@ class TestHyperliquidAdapter:
             HyperliquidAdapter.active_asset_data_coin("BTC/USDC")
 
     def test_get_sz_decimals(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             decimals = adapter.get_sz_decimals(0)
             assert decimals == 4
 
     def test_get_sz_decimals_unknown_asset(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             with pytest.raises(ValueError, match="Unknown asset_id"):
                 adapter.get_sz_decimals(99999)
 
     @pytest.mark.asyncio
     async def test_get_full_user_state(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             ok, state = await adapter.get_full_user_state(account="0x1234")
             assert ok is True
             assert state["protocol"] == "hyperliquid"
@@ -188,8 +197,8 @@ class TestHyperliquidAdapter:
 
         mock_info.spot_user_state.side_effect = _spot_state
 
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             with patch(
                 "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
                 new=AsyncMock(),
@@ -216,8 +225,8 @@ class TestHyperliquidAdapter:
             "balances": [{"coin": "USDC", "token": 0, "total": "0.0"}]
         }
 
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        p1, p2, p3 = _patch_adapter()
+        with p1, p2, p3:
             with patch(
                 "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
                 new=AsyncMock(),

@@ -29,6 +29,7 @@ from loguru import logger
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import (
     HYPERCORE_SENTINEL_ADDRESS,
@@ -190,7 +191,7 @@ class HyperliquidAdapter(BaseAdapter):
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return await asyncio.to_thread(get_info().post, "/info", body)
+                    return await HYPERLIQUID_INFO_CLIENT.post(body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
@@ -333,11 +334,7 @@ class HyperliquidAdapter(BaseAdapter):
             return True, cached
 
         try:
-            data = await asyncio.to_thread(
-                get_info().post,
-                "/info",
-                {"type": "allPerpMetas"},
-            )
+            data = await HYPERLIQUID_INFO_CLIENT.post({"type": "allPerpMetas"})
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
         except Exception as exc:
@@ -525,14 +522,12 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str, asset_name: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = await asyncio.to_thread(
-                get_info().post,
-                "/info",
+            data = await HYPERLIQUID_INFO_CLIENT.post(
                 {
                     "type": "activeAssetData",
                     "user": address,
                     "coin": self.active_asset_data_coin(asset_name),
-                },
+                }
             )
             return True, data
         except Exception as exc:
@@ -555,10 +550,8 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str
     ) -> tuple[Literal[True], Any] | tuple[Literal[False], str]:
         try:
-            data = await asyncio.to_thread(
-                get_info().post,
-                "/info",
-                {"type": "userAbstraction", "user": address},
+            data = await HYPERLIQUID_INFO_CLIENT.post(
+                {"type": "userAbstraction", "user": address}
             )
             return True, data
         except Exception as exc:
@@ -621,10 +614,10 @@ class HyperliquidAdapter(BaseAdapter):
             # Hyperliquid expects `id` but older SDKs may use `marginTableId`
             body = {"type": "marginTable", "id": int(margin_table_id)}
             try:
-                data = get_info().post("/info", body)
+                data = await HYPERLIQUID_INFO_CLIENT.post(body)
             except Exception:  # noqa: BLE001
                 body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
-                data = get_info().post("/info", body)
+                data = await HYPERLIQUID_INFO_CLIENT.post(body)
             await self._cache.set(cache_key, data, ttl=86400)
             return True, data
         except Exception as exc:
@@ -1413,7 +1406,7 @@ class HyperliquidAdapter(BaseAdapter):
     ) -> tuple[bool, int]:
         try:
             body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = get_info().post("/info", body)
+            data = await HYPERLIQUID_INFO_CLIENT.post(body)
             # Response is just an integer (tenths of basis points)
             return True, int(data) if data is not None else 0
         except Exception as exc:
@@ -1807,9 +1800,8 @@ class HyperliquidAdapter(BaseAdapter):
         vault_address: str,
     ) -> tuple[bool, dict[str, float] | str]:
         try:
-            details = get_info().post(
-                "/info",
-                {"type": "vaultDetails", "vaultAddress": str(vault_address)},
+            details = await HYPERLIQUID_INFO_CLIENT.post(
+                {"type": "vaultDetails", "vaultAddress": str(vault_address)}
             )
             account_value = float(
                 details.get("accountValue") or details.get("vaultEquity") or 0.0
