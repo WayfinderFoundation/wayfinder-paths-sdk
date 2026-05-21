@@ -11,8 +11,10 @@ from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
+    get_token_balance,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -254,6 +256,22 @@ async def onchain_swap(
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
+    balance = await get_token_balance(from_token_addr, int(from_chain_id), sender)
+    if balance < amount_raw:
+        symbol = from_meta["symbol"] or "tokens"
+        return err(
+            "insufficient_balance",
+            f"Wallet has {from_erc20_raw(balance, decimals):.6f} {symbol}, "
+            f"need {from_erc20_raw(amount_raw, decimals):.6f}.",
+            {
+                "sender": sender,
+                "chain_id": int(from_chain_id),
+                "token_address": from_token_addr,
+                "have_raw": balance,
+                "need_raw": amount_raw,
+            },
+        )
+
     slippage = max(0.0, float(int(slippage_bps)) / 10_000.0)
     try:
         quote_data = await BRAP_CLIENT.get_quote(
@@ -445,6 +463,22 @@ async def onchain_send(
         amount_raw = parse_amount_to_raw(amount, decimals)
     except ValueError as exc:
         return err("invalid_amount", str(exc))
+
+    balance = await get_token_balance(token_address, int(resolved_chain_id), sender)
+    if balance < amount_raw:
+        symbol = token_meta["symbol"] or "tokens"
+        return err(
+            "insufficient_balance",
+            f"Wallet has {from_erc20_raw(balance, decimals):.6f} {symbol}, "
+            f"need {from_erc20_raw(amount_raw, decimals):.6f}.",
+            {
+                "sender": sender,
+                "chain_id": int(resolved_chain_id),
+                "token_address": token_address,
+                "have_raw": balance,
+                "need_raw": amount_raw,
+            },
+        )
 
     transaction = await build_send_transaction(
         from_address=sender,

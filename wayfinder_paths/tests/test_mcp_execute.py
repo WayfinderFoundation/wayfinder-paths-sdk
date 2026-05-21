@@ -177,6 +177,10 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             new_callable=AsyncMock,
             return_value="0xtx",
         ) as send_transaction_mock,
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_token_balance",
+            new=AsyncMock(return_value=10**18),
+        ),
     ):
         out1 = await onchain_swap(
             wallet_label="main",
@@ -287,6 +291,10 @@ async def test_execute_cross_chain_swap_waits_for_bridge(tmp_path: Path, monkeyp
             new_callable=AsyncMock,
             return_value="0xsrctx",
         ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_token_balance",
+            new=AsyncMock(return_value=10**18),
+        ),
     ):
         out = await onchain_swap(
             wallet_label="main",
@@ -377,6 +385,10 @@ async def test_execute_cross_chain_swap_failed_bridge_marks_failed(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
             new_callable=AsyncMock,
             return_value="0xsrctx",
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_token_balance",
+            new=AsyncMock(return_value=10**18),
         ),
     ):
         out = await onchain_swap(
