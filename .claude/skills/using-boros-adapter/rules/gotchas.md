@@ -117,9 +117,9 @@ Even when using “cross margin” deposit calldata, Boros can end up crediting 
 If you try to trade immediately, you may fail min-cash checks because your **cross** cash is still low.
 
 Mitigation:
-- Sweep isolated → cross via `cash_transfer(market_id=..., amount_wei=..., is_deposit=False)`.
-- In this repo: `BorosAdapter.deposit_to_cross_margin(...)` now sweeps isolated → cross for that `market_id`.
-- For cleanup / ad-hoc scripts: use `BorosAdapter.sweep_isolated_to_cross(token_id=..., market_id=...)`.
+- Prefer wallet-signed deposit/withdraw flows first.
+- Isolated → cross transfer uses `cash_transfer(market_id=..., amount_wei=..., is_deposit=False)`, but current Boros API exposes it as agent-key-only.
+- In this repo: `BorosAdapter.deposit_to_cross_margin(...)` does not auto-sweep by default. If isolated cleanup is needed, treat `BorosAdapter.sweep_isolated_to_cross(token_id=..., market_id=...)` as an advanced/non-default approved-agent flow.
 
 ## Getting HYPE for Boros (don’t overcomplicate it)
 
@@ -218,6 +218,6 @@ Also: current `/apis/v1/markets` uses `resumeToken` cursor pagination and enforc
 
 Boros API may return one of two execution payload shapes:
 - User calldata such as `{"calldata": "0x..."}` or `{"calldatas": ["0x...", "0x..."]}` must be executed sequentially to the Boros Router by the root wallet.
-- Agent payloads such as `{"calls": [...], "executeParams": ...}` are not root-wallet transactions. They require an approved agent key and Send Txs submission.
+- Agent payloads such as `{"calls": [...], "executeParams": ...}` are not root-wallet transactions. They require an approved agent key and Send Txs submission, so they are advanced/non-default in Wayfinder product flows.
 
-The adapter’s `_broadcast_calldata(...)` implements root-calldata sequencing, and `_broadcast_user_or_return_agent_calldata(...)` prevents agent calls from being silently sent with the root signer. Don’t simplify either path away.
+The adapter’s `_broadcast_calldata(...)` implements root-calldata sequencing, and `_broadcast_user_or_return_agent_calldata(...)` prevents agent calls from being silently sent with the root signer or returned as the default happy path. Don’t simplify either path away.

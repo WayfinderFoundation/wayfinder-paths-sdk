@@ -11,7 +11,8 @@ Use this skill when you are:
 - Discovering Boros markets and quoting APRs
 - Screening Boros vaults by APY, tenor, capacity, and collateral type
 - Building fixed-rate strategies (tenor curves, orderbook-driven pricing)
-- Executing Boros actions (deposit/withdraw, vault deposit, place/cancel, close positions)
+- Executing wallet-signed Boros actions (deposit/withdraw, vault deposit) and
+  identifying agent-key-only operations that are non-default
 - Checking simulations before fund-moving or position-changing flows
 - Distinguishing root-wallet calldata from agent-key calldata
 

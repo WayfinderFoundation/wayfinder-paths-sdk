@@ -22,18 +22,22 @@ By default the client uses the current Boros Open API mount:
 
 ## Signing Boundaries
 
-Boros has two execution tracks:
+The default Wayfinder product path for Boros is wallet-signed execution.
 
-- Root-sensitive user calldata: deposits, withdrawal requests, agent approval, and
-  agent revocation. These are signed by the root wallet and submitted directly
-  on-chain. Adapter deposit/withdraw helpers can broadcast these when
+- Wallet-signed user calldata: deposits, withdrawal requests, agent approval,
+  and agent revocation. These are signed by the root wallet and submitted
+  directly on-chain. Adapter deposit/withdraw helpers can broadcast these when
   `sign_callback` and `wallet_address` are configured.
-- Agent-executable calldata: place/cancel orders, cash transfers, enter/exit
-  markets, gas top-ups, and AMM liquidity actions. The current Boros API returns
-  `calls` for these flows. They must be signed by an approved Boros agent key
-  and submitted through `/v1/send-txs/dedicated/bulk-calls`; the adapter returns
-  `requires_agent_signature` instead of silently broadcasting them with the root
-  signer.
+- Agent-key-only calldata: current Boros place/cancel order, cash transfer,
+  enter/exit market, gas top-up, and AMM liquidity endpoints return `calls` or
+  `executeParams` for an approved Boros agent key. These are advanced/non-default
+  for Wayfinder. The adapter reports `agent_execution_not_default` instead of
+  broadcasting them with the root signer or returning raw agent payloads as the
+  happy path.
+
+The low-level client keeps Boros Send Txs helpers for protocol coverage, but
+they require pre-signed agent payloads and should not be treated as the normal
+agent execution path.
 
 Stop orders (TP/SL) are managed by the separate Stop Order service and are not
 wrapped by this adapter yet.
@@ -142,8 +146,13 @@ is_open = adapter.is_vault_open_for_deposit(
 
 Boros vault deposits are a two-step flow:
 
-1. Deposit collateral into the correct Boros margin bucket.
+1. Deposit collateral into the correct Boros margin bucket with the wallet.
 2. Convert that collateral amount into Boros scaled cash and add it to the vault.
+
+The adapter does not automatically perform isolated-to-cross cash transfer after
+deposit because the current Boros cash-transfer endpoint is agent-key-only.
+Treat cash transfer as an advanced/non-default operation unless a product flow
+explicitly supports approved agent signing.
 
 ### Cross-margin vault deposit
 

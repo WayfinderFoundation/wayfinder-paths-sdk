@@ -67,21 +67,28 @@ Operational notes:
 - `net_cash_in_wei` for `deposit_to_vault()` is Boros internal cash scaled to `1e18`.
 - `deposit_to_vault()` is the normal entry point; use `deposit_to_vault_direct()` only if you already have `amm_id`.
 
-## Order placement workflow (don't skip steps)
+## Order placement workflow (read/simulate by default)
 
-Before placing any Boros order, you **must** have the right collateral on Arbitrum and deposited to Boros:
+Current Boros place/cancel order endpoints are agent-key-only. In Wayfinder,
+the default product path is wallet-signed, so treat order placement as
+advanced/non-default unless an explicit approved-agent flow is available.
+
+Before drafting any Boros order, you **must** have the right collateral on
+Arbitrum and deposited to Boros:
 
 ```
 1. Run pre-trade checklist         →  get_active_positions(), get_account_balances(), get_collaterals()
 2. Check market's collateral type  →  market["tokenId"] (3=USDT, 5=HYPE)
 3. Acquire collateral on Arbitrum  →  swap via BRAP, or OFT bridge for HYPE
 4. Check Boros balance             →  get_account_balances(token_id=...)
-5. If insufficient, deposit        →  deposit_to_cross_margin(...)
-6. Sweep isolated → cross          →  (deposit_to_cross_margin does this automatically)
-7. Place order                     →  place_rate_order(...)
+5. If insufficient, deposit        →  deposit_to_cross_margin(...) or deposit_to_isolated_margin(...)
+6. Simulate intended order         →  simulate_place_order(...)
+7. If execution is required        →  escalate; do not assume root-wallet signing can place/cancel orders
 ```
 
-**Common mistake**: Jumping straight to `place_rate_order()` without checking state or depositing collateral first → order fails or creates duplicate positions.
+**Common mistake**: treating `place_rate_order()` as a normal wallet-signed
+execution path. The current Boros API returns agent-executable payloads for
+place/cancel, so the adapter reports `agent_execution_not_default`.
 
 ### Collateral types (token_id)
 
@@ -168,7 +175,7 @@ The HYPE OFT bridge helper runs on **HyperEVM**.
 
 Current Boros API split:
 - Root-sensitive user calldata: deposits, withdrawal requests, agent approval, and agent revocation. These can be signed by the root wallet when `wallet_address`, `web3_service`, and `sign_callback` are configured.
-- Agent-executable calldata: place/cancel orders, close positions, cash transfer, gas top-up, and AMM liquidity actions. Boros returns `calls`/`executeParams` for these flows; they must be signed with an approved agent key and sent through `/v1/send-txs/dedicated/bulk-calls`. The adapter returns `status="requires_agent_signature"` for these responses instead of broadcasting them with the root signer.
+- Agent-executable calldata: place/cancel orders, close positions, cash transfer, gas top-up, and AMM liquidity actions. Boros returns `calls`/`executeParams` for these flows; they must be signed with an approved agent key and sent through `/v1/send-txs/dedicated/bulk-calls`. In Wayfinder these are advanced/non-default: adapter methods return `status="agent_execution_not_default"` rather than broadcasting with the root signer or exposing raw agent payloads as the happy path.
 - Stop orders (TP/SL) live on the separate Boros Stop Order service and are not wrapped by this adapter yet.
 
 Deposits/withdrawals:
@@ -177,31 +184,22 @@ Deposits/withdrawals:
 - `deposit_to_vault(market_id, net_cash_in_wei, ...)`
 - `deposit_to_vault_direct(amm_id, net_cash_in_wei, ...)`
 - `withdraw_collateral(token_id, amount_native|amount_wei, account_id=None)`
-- `cash_transfer(market_id, amount_wei, is_deposit=False)`
-- `sweep_isolated_to_cross(token_id, market_id=None)`
+- `finalize_vault_withdrawal(token_id, ...)`
+- `cash_transfer(market_id, amount_wei, is_deposit=False)` is agent-key-only and non-default
+- `sweep_isolated_to_cross(token_id, market_id=None)` depends on agent-key-only cash transfer
 
-Orders/position management:
+Orders/position management (agent-key-only, non-default):
 - `place_rate_order(market_id, token_id, size_yu_wei, side, limit_tick=None, tif="GTC", slippage=0.05)`
 - `cancel_orders(market_id, order_ids=[...])`
 - `close_positions_market(market_id, size_yu_wei=None)`
 - `close_positions_except(keep_market_id, token_id=..., market_ids=None, best_effort=True)`
 - `ensure_position_size_yu(market_id, token_id, target_size_yu, ...)`
-- `finalize_vault_withdrawal(token_id, ...)`
-
-**Example `place_rate_order` call:**
-```python
-success, result = await adapter.place_rate_order(
-    market_id=47,
-    token_id=3,           # REQUIRED: collateral token (3=USDT, 5=HYPE)
-    size_yu_wei=int(70 * 1e18),  # 70 YU
-    side="long",          # "long" or "short"
-    limit_tick=None,      # Optional: auto-picks tick for fill if None
-)
-```
 
 `place_rate_order()` keeps the adapter's `limit_tick` surface for compatibility,
 but the current single-order Boros API builds from `rate`; the adapter converts
 the selected tick with the market's `tickStep` before calling `/v1/calldata-builder/agent/place-order`.
+Because that endpoint is agent-key-only, this is not a default wallet-signed
+Wayfinder execution flow.
 
 On-chain reads (safety rails):
 - `get_cash_fee_data(token_id=...)` (reads `MarketHub.getCashFeeData`)
@@ -243,9 +241,11 @@ Reference (MarketHub withdrawal status + cooldown mechanics):
   - validate chain id
   - validate `to` address
   - validate the token/amount semantics you intended
-- Do not use a root-wallet signer to submit `calls` returned by agent endpoints. Use an approved agent key and the Send Txs API, or return the adapter's `requires_agent_signature` payload to the caller.
+- Do not use a root-wallet signer to submit `calls` returned by agent endpoints. In normal Wayfinder product flows, report `agent_execution_not_default` and stop. Use the low-level Send Txs API only for an explicit advanced approved-agent flow.
 
 ## Min cash + isolated/cross gotcha (read this once)
 
 - Some Boros writes require a minimum amount of **cross cash** (see `get_cash_fee_data`).
-- Deposits can sometimes credit **isolated** cash for the market; sweep isolated → cross before trading.
+- Deposits can sometimes credit **isolated** cash for the market. Isolated-to-cross
+  transfer is agent-key-only in the current API, so do not make it an automatic
+  default step in wallet-signed deposit flows.

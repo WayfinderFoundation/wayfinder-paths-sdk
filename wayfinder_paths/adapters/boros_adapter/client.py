@@ -1021,6 +1021,9 @@ class BorosClient:
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """Submit already agent-signed calldata through Send Txs.
 
+        Advanced/non-default escape hatch only. The Wayfinder product execution
+        path should prefer wallet-signed Boros user endpoints wherever possible.
+
         `datas` entries must include `agent`, `message`, `signature`, and
         `calldata`. This client deliberately does not create agent signatures.
         """

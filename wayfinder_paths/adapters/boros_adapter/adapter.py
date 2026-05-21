@@ -354,6 +354,8 @@ class BorosAdapter(BaseAdapter):
 
         Boros deposits can sometimes show up as isolated cash for the target market;
         this helper moves that isolated cash back to cross margin using cash_transfer.
+        Current Boros cash transfer is agent-key-only, so this is advanced and
+        not part of the default wallet-signed product path.
 
         Notes:
         - Uses `get_account_balances()` (collaterals endpoint) to find isolated cash.
@@ -592,18 +594,23 @@ class BorosAdapter(BaseAdapter):
         *,
         action: str,
     ) -> dict[str, Any]:
-        calls = calldata.get("calls") or calldata.get("executeParams") or []
+        payload_keys = [key for key in ("calls", "executeParams") if key in calldata]
         return {
-            "status": "requires_agent_signature",
+            "status": "agent_execution_not_default",
             "error": (
-                f"Boros {action} returned agent-executable calldata. "
-                "Sign each call with an approved Boros agent key and submit via "
-                "/v1/send-txs/dedicated/bulk-calls."
+                f"Boros {action} is agent-key-only in the current Boros API and "
+                "is not a default Wayfinder product execution path."
             ),
             "signing": "agent",
+            "product_flow": "not_default",
+            "advanced": True,
+            "reason": (
+                "The current Boros OpenAPI returns agent-executable payloads for "
+                "this operation. A root wallet must not sign or broadcast those "
+                "payloads; use wallet-signed Boros user endpoints where available."
+            ),
+            "payload_keys": payload_keys,
             "send_txs_endpoint": "/v1/send-txs/dedicated/bulk-calls",
-            "calldata": calldata,
-            "calls": calls,
         }
 
     async def _broadcast_user_or_return_agent_calldata(
@@ -3122,64 +3129,21 @@ class BorosAdapter(BaseAdapter):
                     "tx": tx_res,
                 }
 
-            sweep_ok, sweep_res = await self.sweep_isolated_to_cross(
-                token_id=int(token_id),
-                market_id=int(market_id),
-            )
-            moved = sweep_res.get("moved") if isinstance(sweep_res, dict) else None
-            needs_direct_fallback = (not sweep_ok) or (
-                isinstance(moved, list) and len(moved) == 0
-            )
-            if needs_direct_fallback:
-                try:
-                    scaled_amount = await self.unscaled_to_scaled_cash_wei(
-                        int(token_id), int(amount_wei)
-                    )
-                    fallback_ok, fallback_res = await self.cash_transfer(
-                        market_id=int(market_id),
-                        amount_wei=int(scaled_amount),
-                        is_deposit=False,
-                    )
-                    if fallback_ok:
-                        sweep_ok, sweep_res = (
-                            True,
-                            {
-                                "status": "fallback_direct_transfer",
-                                "tx": fallback_res,
-                            },
-                        )
-                    elif not sweep_ok:
-                        sweep_res = {
-                            "status": "warning",
-                            "error": str(sweep_res),
-                            "fallback_error": fallback_res,
-                        }
-                    else:
-                        sweep_res = {
-                            "status": "warning",
-                            "moved": moved or [],
-                            "fallback_error": fallback_res,
-                        }
-                except Exception as exc:  # noqa: BLE001
-                    if not sweep_ok:
-                        sweep_res = {
-                            "status": "warning",
-                            "error": str(sweep_res),
-                            "fallback_error": str(exc),
-                        }
-                    else:
-                        sweep_res = {
-                            "status": "warning",
-                            "moved": moved or [],
-                            "fallback_error": str(exc),
-                        }
-
+            post_deposit_cash_transfer = {
+                "status": "not_attempted",
+                "reason": (
+                    "Boros cash-transfer is agent-key-only in the current API "
+                    "and is not part of the default wallet-signed deposit path."
+                ),
+                "advanced_operation": "cash_transfer",
+            }
             return True, {
                 "status": "ok",
                 "target_margin": target_margin,
                 "approve": approve_res,
                 "tx": tx_res,
-                "sweep": sweep_res,
+                "sweep": post_deposit_cash_transfer,
+                "post_deposit_cash_transfer": post_deposit_cash_transfer,
             }
         except Exception as e:
             logger.error(f"Failed to deposit collateral into Boros: {e}")
@@ -3283,6 +3247,8 @@ class BorosAdapter(BaseAdapter):
 
         Notes:
         - Boros uses 1e18 internal cash units for this call.
+        - Current Boros API exposes this as agent-key-only, so the default
+          adapter result is `agent_execution_not_default`.
         """
         try:
             calldata = await self.boros_client.build_cash_transfer_calldata(
@@ -4251,6 +4217,11 @@ class BorosAdapter(BaseAdapter):
         tif: str = "GTC",
         slippage: float = 0.05,
     ) -> tuple[bool, dict[str, Any]]:
+        """Build a Boros order request and report the agent-only execution limit.
+
+        Current Boros place-order calldata is agent-key-only. Wayfinder does not
+        treat it as a default wallet-signed execution path.
+        """
         try:
             market_acc = await self._get_market_acc(token_id=token_id)
 
@@ -4297,6 +4268,7 @@ class BorosAdapter(BaseAdapter):
         token_id: int = 3,
         size_yu_wei: int | None = None,
     ) -> tuple[bool, dict[str, Any]]:
+        """Close a Boros position via the current agent-key-only order flow."""
         try:
             success, positions = await self.get_active_positions(market_id=market_id)
             if not success or not positions:
@@ -4357,6 +4329,7 @@ class BorosAdapter(BaseAdapter):
         order_ids: list[str] | None = None,
         cancel_all: bool = False,
     ) -> tuple[bool, dict[str, Any]]:
+        """Cancel Boros orders via the current agent-key-only cancel flow."""
         try:
             market_acc = await self._get_market_acc(token_id=token_id)
 
