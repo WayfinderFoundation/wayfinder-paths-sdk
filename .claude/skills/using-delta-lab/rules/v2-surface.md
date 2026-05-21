@@ -304,8 +304,13 @@ matching rows. Example: "top 10 LONG ETH opportunities on Hyperliquid" =
 `search_opportunities(basis_root="ETH", side="LONG", venue="hyperliquid", limit=10)`.
 
 For Pendle stablecoin/PT yield ranking, search instruments first with
-`venue="pendle"` and `basis_root="USD"`; broad market search can return sparse
-market IDs and should be reserved for venue-wide scans or fallback discovery.
+`venue="pendle"` and `basis_root="USD"`; chain filters accept canonical text
+codes or numeric chain IDs as strings, for example `"arbitrum"`/`"42161"`,
+`"base"`/`"8453"`, `"plasma"`/`"9745"`, `"ethereum"`/`"1"`,
+`"hyperevm"`/`"999"`, and `"bsc"`/`"56"`. For Sonic, use numeric `"146"`
+unless `sonic` is added to the chain map. Do not use shorthand like `"arb"`.
+Broad market search can return sparse market IDs and should be reserved for
+venue-wide scans or fallback discovery.
 
 - `search_assets_v2` is **distinct** from the legacy `search_assets`
   (different endpoint: `/search/assets/` vs `/assets/search/`). Both
