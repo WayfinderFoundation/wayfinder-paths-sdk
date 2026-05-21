@@ -98,6 +98,10 @@ if __name__ == "__main__":
 
 ### Market history (time series)
 
+`fetch_market_history()` uses Pendle's current v3 market-history endpoint. It is
+backward-compatible with v2 and can request optional APY/fee breakdown payloads
+with `include_apy_breakdown=True` or `include_fee_breakdown=True`.
+
 ```python
 """Fetch historical data for a market."""
 import asyncio
