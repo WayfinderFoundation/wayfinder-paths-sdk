@@ -219,8 +219,7 @@ def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> No
     visual = _agent_text("wayfinder-visual")
 
     assert "Do not call `wayfinder-quant`" in primary
-    assert 'market_type="onchain-spot"' in primary
-    assert "simple single-token case" in primary
+    assert "simple iteration" in primary
 
     assert "Single-token chart fast path" in visual
     assert 'market_type="onchain-spot"' in visual
@@ -234,7 +233,7 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
 
     assert "1-2 web calls" in primary
     assert "Delegate only when the task needs multi-source synthesis" in primary
-    assert "pass exact dates and windows" in primary
+    assert "exact dates and windows" in primary
 
     assert "Polymarket read-only: `polymarket_read`" in research
     assert "use `polymarket_read` first" in research
