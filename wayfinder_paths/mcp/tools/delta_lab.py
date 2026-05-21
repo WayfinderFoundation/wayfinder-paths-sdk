@@ -17,6 +17,17 @@ from wayfinder_paths.mcp.utils import catch_errors, ok
 logger = logging.getLogger(__name__)
 
 _SKIP_VALUES = {"", "_", "all", "none", "null"}
+_INSTRUMENT_TYPE_ALIASES = {
+    "PT": "PENDLE_PT",
+}
+_KNOWN_INSTRUMENT_TYPES = {
+    "PERP",
+    "LENDING_SUPPLY",
+    "LENDING_BORROW",
+    "BOROS_MARKET",
+    "PENDLE_PT",
+    "YIELD_TOKEN",
+}
 
 
 def _optional_text(value: str | int) -> str | None:
@@ -41,6 +52,18 @@ def _chain_filter(value: str | int, *, field_name: str = "chain") -> int | None:
             ],
         )
     return chain_id
+
+
+def _instrument_type_filter(value: str) -> str | None:
+    normalized = _optional_text(value)
+    if normalized is None:
+        return None
+    upper = normalized.upper()
+    if upper in _INSTRUMENT_TYPE_ALIASES:
+        return _INSTRUMENT_TYPE_ALIASES[upper]
+    if upper in _KNOWN_INSTRUMENT_TYPES:
+        return upper
+    return normalized
 
 
 def _json_safe(value: Any) -> Any:
@@ -200,8 +223,14 @@ async def research_search_delta_lab_markets(
 ) -> dict[str, Any]:
     """Search Delta Lab markets by venue, chain, type, asset id, or basis root.
 
-    Use this before Pendle/PT/YT or market-volume analysis to discover the
-    exact market IDs needed for time-series calls.
+    Chain accepts "all", canonical chain codes, or numeric chain IDs as strings:
+    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745", "sonic"/"146",
+    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56".
+
+    For Pendle stablecoin/PT yield ranking, prefer
+    `research_search_delta_lab_instruments(venue="pendle", basisRoot="USD", ...)`
+    first. Pendle market search can return sparse market IDs and is better
+    after instrument/basis discovery or for all-market volume analysis.
     """
     return ok(
         await DELTA_LAB_CLIENT.search_markets(
@@ -228,10 +257,21 @@ async def research_search_delta_lab_instruments(
     limit: str | int = "25",
     offset: str | int = "0",
 ) -> dict[str, Any]:
-    """Search Delta Lab instruments, including Pendle PT/YT instruments."""
+    """Search Delta Lab instruments, including Pendle PT instruments.
+
+    Chain accepts "all", canonical chain codes, or numeric chain IDs as strings:
+    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745", "sonic"/"146",
+    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56".
+
+    For Pendle stablecoin yields, use `venue="pendle"`, the target `chain`,
+    and `basisRoot="USD"` first. Delta Lab models Pendle PTs as
+    `instrumentType="PENDLE_PT"`; bare `"PT"` is accepted as an alias.
+    Do not use bare `"YT"` unless backend docs or returned rows confirm a
+    matching instrument enum for the environment.
+    """
     return ok(
         await DELTA_LAB_CLIENT.search_instruments(
-            instrument_type=_optional_text(instrumentType),
+            instrument_type=_instrument_type_filter(instrumentType),
             basis_root=_optional_text(basisRoot.upper()),
             venue=_optional_text(venue),
             chain_id=_chain_filter(chain),

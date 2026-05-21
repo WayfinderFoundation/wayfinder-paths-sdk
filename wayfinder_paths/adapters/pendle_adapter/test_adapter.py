@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -9,13 +10,84 @@ import httpx
 import pytest
 from web3 import Web3
 
-from wayfinder_paths.adapters.pendle_adapter.adapter import PendleAdapter
+from wayfinder_paths.adapters.pendle_adapter.adapter import (
+    PendleAdapter,
+    pendle_api_get,
+    pendle_api_post,
+)
+
+
+def _sample_limit_order(**overrides: Any) -> dict[str, Any]:
+    order = {
+        "id": "0x" + "1" * 64,
+        "signature": "0x" + "2" * 130,
+        "chainId": 42161,
+        "salt": "12421",
+        "expiry": "1893456000",
+        "nonce": "0",
+        "type": 0,
+        "token": "0x" + "3" * 40,
+        "yt": "0x" + "4" * 40,
+        "maker": "0x" + "5" * 40,
+        "receiver": "0x" + "6" * 40,
+        "makingAmount": "1000",
+        "currentMakingAmount": "1000",
+        "lnImpliedRate": "95000000000000000",
+        "failSafeRate": "1000000000000000000",
+        "permit": "0x",
+        "takingToken": "0x" + "7" * 40,
+        "makingToken": "0x" + "8" * 40,
+        "sy": "0x" + "9" * 40,
+        "pt": "0x" + "a" * 40,
+    }
+    order.update(overrides)
+    return order
+
+
+def _sample_taker_limit_order_item(**order_overrides: Any) -> dict[str, Any]:
+    return {
+        "order": _sample_limit_order(**order_overrides),
+        "makingAmount": "1000",
+        "netFromTaker": "2000",
+        "netToTaker": "990",
+    }
 
 
 class TestPendleAdapter:
     def test_adapter_type(self):
         adapter = PendleAdapter(config={})
         assert adapter.adapter_type == "PENDLE"
+
+    @pytest.mark.asyncio
+    async def test_sonic_chain_code_maps_to_chain_id(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            return httpx.Response(
+                200,
+                json={
+                    "tx": {"to": "0xRouter", "data": "0xdeadbeef", "value": "0"},
+                    "tokenApprovals": [],
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        await adapter.sdk_swap_v2(
+            chain="sonic",
+            market_address="0xMarket",
+            receiver="0xReceiver",
+            slippage=0.01,
+            token_in="0xTokenIn",
+            token_out="0xTokenOut",
+            amount_in="1000",
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/core/v2/sdk/146/markets/0xMarket/swap"
 
     @pytest.mark.asyncio
     async def test_list_active_pt_yt_markets_filters_and_sort(self, monkeypatch):
@@ -90,10 +162,20 @@ class TestPendleAdapter:
             return {"markets": []}
 
         def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/core/v1/markets/all"
+            assert request.url.path == "/core/v2/markets/all"
+            assert request.headers["user-agent"] == "wayfinder-paths-sdk/pendle-adapter"
             chain_id = int(request.url.params.get("chainId", "0"))
             assert request.url.params.get("isActive") == "true"
-            return httpx.Response(200, json=markets_payload(chain_id))
+            markets = markets_payload(chain_id)["markets"]
+            return httpx.Response(
+                200,
+                json={
+                    "total": len(markets),
+                    "limit": 100,
+                    "skip": 0,
+                    "results": markets,
+                },
+            )
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         adapter = PendleAdapter(config={}, client=client)
@@ -114,6 +196,133 @@ class TestPendleAdapter:
         assert rows[0]["fixedApy"] == 0.12
         assert rows[0]["floatingApy"] == pytest.approx(0.03)
         assert rows[0]["underlyingAddress"] == "0xUSDC"
+
+    @pytest.mark.asyncio
+    async def test_fetch_markets_paginates_v2_results(self):
+        captured: list[dict[str, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(dict(request.url.params))
+            skip = int(request.url.params.get("skip", "0"))
+            limit = int(request.url.params.get("limit", "100"))
+            items = [
+                {"chainId": 42161, "name": "M1", "address": "42161-0x1"},
+                {"chainId": 42161, "name": "M2", "address": "42161-0x2"},
+                {"chainId": 42161, "name": "M3", "address": "42161-0x3"},
+            ][skip : skip + limit]
+            return httpx.Response(
+                200,
+                json={
+                    "total": 3,
+                    "limit": limit,
+                    "skip": skip,
+                    "results": items,
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        result = await adapter.fetch_markets(chain_id=42161, is_active=True)
+
+        await client.aclose()
+
+        assert [m["name"] for m in result["markets"]] == ["M1", "M2", "M3"]
+        assert result["total"] == 3
+        assert captured == [
+            {"chainId": "42161", "isActive": "true", "limit": "100", "skip": "0"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_fetch_markets_paginates_multiple_pages(self):
+        captured_skips: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            skip = int(request.url.params.get("skip", "0"))
+            captured_skips.append(str(skip))
+            if skip == 0:
+                results = [
+                    {"chainId": 42161, "name": f"M{i}", "address": f"42161-0x{i}"}
+                    for i in range(100)
+                ]
+            else:
+                results = [{"chainId": 42161, "name": "M100", "address": "42161-0x100"}]
+            return httpx.Response(
+                200,
+                json={
+                    "total": 101,
+                    "limit": 100,
+                    "skip": skip,
+                    "results": results,
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        result = await adapter.fetch_markets(chain_id=42161, is_active=True)
+
+        await client.aclose()
+
+        assert len(result["markets"]) == 101
+        assert result["markets"][-1]["name"] == "M100"
+        assert captured_skips == ["0", "100"]
+
+    @pytest.mark.asyncio
+    async def test_pendle_api_get_helper_sets_user_agent_and_rate_limit(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["headers"] = dict(request.headers)
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(
+                200,
+                json={"ok": True},
+                headers={"x-ratelimit-remaining": "17"},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        resp = await pendle_api_get(
+            "/v2/markets/all",
+            params={"chainId": 42161},
+            client=client,
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/core/v2/markets/all"
+        assert captured["headers"]["user-agent"] == "wayfinder-paths-sdk/pendle-adapter"
+        assert captured["params"] == {"chainId": "42161"}
+        assert resp["ok"] is True
+        assert resp["rateLimit"]["ratelimitRemaining"] == 17
+
+    @pytest.mark.asyncio
+    async def test_pendle_api_post_helper_can_call_limit_order_api(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["json"] = json.loads(request.content.decode())
+            captured["headers"] = dict(request.headers)
+            return httpx.Response(201, json={"created": True})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+        resp = await pendle_api_post(
+            "/v1/makers/limit-orders",
+            api="limit_order",
+            json={"chainId": 42161},
+            client=client,
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/limit-order/v1/makers/limit-orders"
+        assert captured["headers"]["user-agent"] == "wayfinder-paths-sdk/pendle-adapter"
+        assert captured["json"] == {"chainId": 42161}
+        assert resp["created"] is True
 
     @pytest.mark.asyncio
     async def test_sdk_swap_v2_builds_query_params(self):
@@ -164,6 +373,334 @@ class TestPendleAdapter:
         assert params["amountIn"] == "1000"
         assert params["additionalData"] == "impliedApy,effectiveApy"
         assert params["needScale"] == "true"
+
+    @pytest.mark.asyncio
+    async def test_fetch_taker_limit_orders_maps_doc_order_type_names(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(
+                200,
+                json={"total": 0, "limit": 5, "skip": 0, "results": []},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        resp = await adapter.fetch_taker_limit_orders(
+            chain="plasma",
+            yt="0x" + "1" * 40,
+            order_type="TOKEN_FOR_PT",
+            skip=0,
+            limit=5,
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/limit-order/v1/takers/limit-orders"
+        assert captured["params"] == {
+            "chainId": "9745",
+            "yt": "0x" + "1" * 40,
+            "type": "0",
+            "skip": "0",
+            "limit": "5",
+            "sortBy": "Implied Rate",
+            "sortOrder": "asc",
+        }
+        assert resp["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_fetch_maker_limit_orders_maps_contract_order_type_names(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(
+                200,
+                json={"total": 0, "limit": 10, "skip": 0, "results": []},
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        resp = await adapter.fetch_maker_limit_orders(
+            chain="arbitrum",
+            maker="0x" + "2" * 40,
+            yt="0x" + "3" * 40,
+            order_type="YT_FOR_SY",
+            is_active=True,
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/limit-order/v1/makers/limit-orders"
+        assert captured["params"] == {
+            "chainId": "42161",
+            "maker": "0x" + "2" * 40,
+            "yt": "0x" + "3" * 40,
+            "type": "3",
+            "isActive": "true",
+        }
+        assert resp["results"] == []
+
+    @pytest.mark.asyncio
+    async def test_generate_maker_limit_order_data_uses_limit_order_api(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["json"] = json.loads(request.content.decode())
+            return httpx.Response(
+                201,
+                json={
+                    "chainId": 42161,
+                    "YT": "0x" + "4" * 40,
+                    "salt": "12421",
+                    "expiry": "1893456000",
+                    "nonce": "0",
+                    "token": "0x" + "3" * 40,
+                    "orderType": 0,
+                    "failSafeRate": "1000000000000000000",
+                    "maker": "0x" + "5" * 40,
+                    "receiver": "0x" + "5" * 40,
+                    "makingAmount": "1000",
+                    "permit": "0x",
+                    "lnImpliedRate": "95000000000000000",
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        resp = await adapter.generate_maker_limit_order_data(
+            payload={
+                "chainId": 42161,
+                "YT": "0x" + "4" * 40,
+                "orderType": "TOKEN_FOR_PT",
+                "token": "0x" + "3" * 40,
+                "maker": "0x" + "5" * 40,
+                "makingAmount": "1000",
+                "impliedApy": 0.1,
+                "expiry": "1893456000",
+            }
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/limit-order/v1/makers/generate-limit-order-data"
+        assert captured["json"]["orderType"] == 0
+        assert resp["salt"] == "12421"
+
+    def test_build_limit_order_typed_data(self):
+        adapter = PendleAdapter(config={})
+
+        typed_data = adapter.build_limit_order_typed_data(
+            chain="arbitrum",
+            limit_order_data={
+                "salt": "12421",
+                "expiry": "1893456000",
+                "nonce": "0",
+                "orderType": "TOKEN_FOR_PT",
+                "token": "0x" + "3" * 40,
+                "YT": "0x" + "4" * 40,
+                "maker": "0x" + "5" * 40,
+                "receiver": "0x" + "6" * 40,
+                "makingAmount": "1000",
+                "lnImpliedRate": "95000000000000000",
+                "failSafeRate": "1000000000000000000",
+                "permit": "0x",
+            },
+            limit_router="0x000000000000C9B3e2C3ec88B1B4c0cD853f4321",
+        )
+
+        assert typed_data["primaryType"] == "Order"
+        assert typed_data["domain"] == {
+            "name": "Pendle Limit Order Protocol",
+            "version": "1",
+            "chainId": 42161,
+            "verifyingContract": "0x000000000000c9B3E2C3Ec88B1B4c0cD853f4321",
+        }
+        assert typed_data["message"]["orderType"] == 0
+        assert (
+            typed_data["message"]["YT"] == "0x4444444444444444444444444444444444444444"
+        )
+
+    @pytest.mark.asyncio
+    async def test_build_limit_order_fill_tx_encodes_fill(self, monkeypatch):
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield Web3()
+
+        monkeypatch.setattr(
+            "wayfinder_paths.adapters.pendle_adapter.adapter.web3_from_chain_id",
+            mock_web3_ctx,
+        )
+
+        adapter = PendleAdapter(
+            config={},
+            wallet_address="0x" + "a" * 40,
+        )
+        adapter._deployments_cache[42161] = {
+            "limitRouter": "0x000000000000C9B3e2C3ec88B1B4c0cD853f4321"
+        }
+
+        plan = await adapter.build_limit_order_fill_tx(
+            chain="arbitrum",
+            limit_order_items=_sample_taker_limit_order_item(),
+            max_taking_bps=100,
+        )
+
+        assert plan["chainId"] == 42161
+        assert plan["to"] == "0x000000000000c9B3E2C3Ec88B1B4c0cD853f4321"
+        assert plan["data"].startswith("0x6122b173")
+        assert plan["maxTaking"] == "2020"
+        assert plan["expected"][0]["makingAmount"] == "1000"
+
+    @pytest.mark.asyncio
+    async def test_execute_taker_limit_order_fill_approves_and_sends(self, monkeypatch):
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield Web3()
+
+        monkeypatch.setattr(
+            "wayfinder_paths.adapters.pendle_adapter.adapter.web3_from_chain_id",
+            mock_web3_ctx,
+        )
+
+        adapter = PendleAdapter(
+            config={},
+            wallet_address="0x" + "a" * 40,
+            sign_callback=AsyncMock(return_value=b"\x00" * 65),
+        )
+        adapter._deployments_cache[42161] = {
+            "limitRouter": "0x000000000000C9B3e2C3ec88B1B4c0cD853f4321"
+        }
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.pendle_adapter.adapter.get_token_balance",
+                new_callable=AsyncMock,
+                return_value=10_000,
+            ),
+            patch(
+                "wayfinder_paths.adapters.pendle_adapter.adapter.ensure_allowance",
+                new_callable=AsyncMock,
+                return_value=(True, "0xapprovehash"),
+            ) as mock_allowance,
+            patch.object(
+                adapter,
+                "_send_tx",
+                new_callable=AsyncMock,
+                return_value=(True, "0xfillhash"),
+            ) as mock_send,
+        ):
+            ok, result = await adapter.execute_taker_limit_order_fill(
+                chain="arbitrum",
+                limit_order_items=_sample_taker_limit_order_item(),
+            )
+
+        assert ok is True
+        assert result["tx_hash"] == "0xfillhash"
+        mock_allowance.assert_called_once()
+        mock_send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_create_maker_limit_order_signs_and_posts(self):
+        captured_posts: list[tuple[str, dict[str, Any]]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            captured_posts.append((request.url.path, body))
+            if request.url.path.endswith("/generate-limit-order-data"):
+                return httpx.Response(
+                    201,
+                    json={
+                        "chainId": 42161,
+                        "YT": body["YT"],
+                        "salt": "12421",
+                        "expiry": body["expiry"],
+                        "nonce": "0",
+                        "token": body["token"],
+                        "orderType": body["orderType"],
+                        "failSafeRate": "1000000000000000000",
+                        "maker": body["maker"],
+                        "receiver": body["maker"],
+                        "makingAmount": body["makingAmount"],
+                        "permit": "0x",
+                        "lnImpliedRate": "95000000000000000",
+                    },
+                )
+            return httpx.Response(201, json={"id": "0x" + "f" * 64, **body})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        sign_typed_data = AsyncMock(return_value="0x" + "2" * 130)
+        adapter = PendleAdapter(
+            config={},
+            client=client,
+            wallet_address="0x" + "5" * 40,
+            sign_callback=AsyncMock(return_value=b"\x00" * 65),
+            sign_typed_data_callback=sign_typed_data,
+        )
+        adapter._deployments_cache[42161] = {
+            "limitRouter": "0x000000000000C9B3e2C3ec88B1B4c0cD853f4321"
+        }
+
+        with patch(
+            "wayfinder_paths.adapters.pendle_adapter.adapter.ensure_allowance",
+            new_callable=AsyncMock,
+            return_value=(True, "0xapprovehash"),
+        ) as mock_allowance:
+            ok, result = await adapter.create_maker_limit_order(
+                chain="arbitrum",
+                yt="0x" + "4" * 40,
+                order_type="TOKEN_FOR_PT",
+                token="0x" + "3" * 40,
+                making_amount="1000",
+                implied_apy=0.1,
+                expiry="1893456000",
+            )
+
+        await client.aclose()
+
+        assert ok is True
+        assert result["signature"] == "0x" + "2" * 130
+        assert [path for path, _ in captured_posts] == [
+            "/limit-order/v1/makers/generate-limit-order-data",
+            "/limit-order/v1/makers/limit-orders",
+        ]
+        create_payload = captured_posts[1][1]
+        assert create_payload["type"] == 0
+        assert create_payload["yt"] == "0x4444444444444444444444444444444444444444"
+        sign_typed_data.assert_called_once()
+        mock_allowance.assert_called_once()
+        assert mock_allowance.call_args.kwargs["token_address"] == "0x" + "3" * 40
+
+    @pytest.mark.asyncio
+    async def test_build_cancel_maker_limit_order_tx(self, monkeypatch):
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield Web3()
+
+        monkeypatch.setattr(
+            "wayfinder_paths.adapters.pendle_adapter.adapter.web3_from_chain_id",
+            mock_web3_ctx,
+        )
+
+        adapter = PendleAdapter(config={}, wallet_address="0x" + "a" * 40)
+        adapter._deployments_cache[42161] = {
+            "limitRouter": "0x000000000000C9B3e2C3ec88B1B4c0cD853f4321"
+        }
+
+        plan = await adapter.build_cancel_maker_limit_order_tx(
+            chain="arbitrum",
+            limit_order_items=_sample_limit_order(),
+        )
+
+        assert plan["chainId"] == 42161
+        assert plan["data"].startswith("0x5413fba7")
 
     @pytest.mark.asyncio
     async def test_sdk_convert_v2_falls_back_to_get_and_builds_query_params(self):

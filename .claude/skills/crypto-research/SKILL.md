@@ -81,11 +81,12 @@ Label DeFiLlama outputs as DeFiLlama free API data.
 For Pendle deployments, fee explosions, PT/YT markets, or yield-trading volume:
 
 1. Use DeFiLlama protocol search to resolve `pendle`, then get protocol TVL history and protocol fees/revenue.
-2. Use `research_search_delta_lab_markets(venue="pendle", ...)` to discover exact Pendle market IDs, with chain filters when relevant.
-3. Use `research_search_delta_lab_instruments(venue="pendle", instrumentType="PT" | "YT" | "all", ...)` for PT/YT instruments and maturities.
+2. For stablecoin or PT yield ranking, start with `research_search_delta_lab_instruments(venue="pendle", chain="<chain>", basisRoot="USD", limit="25")`. `chain` accepts canonical text codes or numeric chain IDs as strings. Examples: `chain="arbitrum"` or `"42161"`, `chain="base"` or `"8453"`, `chain="plasma"` or `"9745"`, `chain="sonic"` or `"146"`, `chain="ethereum"` or `"1"`, `chain="hyperevm"` or `"999"`, `chain="bsc"` or `"56"`. Do not use shorthand like `"arb"` unless the tool docs list it.
+3. Use `research_search_delta_lab_instruments(venue="pendle", instrumentType="PENDLE_PT", ...)` for Pendle PT instruments and maturities. Bare `instrumentType="PT"` is accepted by current MCP as an alias; do not use bare `"YT"` unless backend docs or returned rows confirm a YT enum.
 4. Use `research_get_delta_lab_pendle_market(marketID="<id>", lookbackDays="30")` for specific market latest/series metrics such as implied APY, underlying APY, TVL, and volume when available.
-5. Use EXA/web fetch for official deployment announcements and docs.
-6. Use X only for official posts or social-native context.
+5. Use `research_search_delta_lab_markets(venue="pendle", ...)` only after instrument/basis discovery fails or when the user asks for all-market coverage.
+6. Use EXA/web fetch for official deployment announcements and docs.
+7. Use X only for official posts or social-native context.
 
 Do not answer Pendle market-volume or PT/YT questions from web search alone when Delta Lab tools are available.
 

@@ -1,6 +1,6 @@
 ---
 name: using-pendle-adapter
-description: How to use the Pendle adapter in Wayfinder Paths for PTs (Principal Tokens) and YTs (Yield Tokens): market discovery, historical data, and Hosted SDK swap tx building (inputs/outputs, chain IDs, unit handling, and approvals).
+description: How to use the Pendle adapter in Wayfinder Paths for PTs (Principal Tokens), YTs (Yield Tokens), and Pendle limit orders: market discovery, historical data, Hosted SDK swap tx building, taker fills, maker orders, inputs/outputs, chain IDs, unit handling, and approvals.
 metadata:
   tags: wayfinder, pendle, pt, yt, yield, swap, execution
 ---
@@ -11,6 +11,7 @@ Use this skill when you are:
 - Screening Pendle PTs and YTs across chains (fixed vs floating yield, liquidity/volume, expiry)
 - Pulling Pendle market time series (prices, APYs, TVL)
 - Building swap payloads (tx + approvals) to buy/sell PTs or YTs via Pendle Hosted SDK
+- Fetching, filling, creating, or cancelling Pendle limit orders
 
 ## How to use
 

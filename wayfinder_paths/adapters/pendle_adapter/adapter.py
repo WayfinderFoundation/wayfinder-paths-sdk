@@ -11,7 +11,10 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
-from wayfinder_paths.core.constants.pendle_abi import PENDLE_ROUTER_STATIC_ABI
+from wayfinder_paths.core.constants.pendle_abi import (
+    PENDLE_LIMIT_ROUTER_ABI,
+    PENDLE_ROUTER_STATIC_ABI,
+)
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -52,11 +55,12 @@ DEFAULT_HISTORY_FIELDS = (
 )
 
 # Convenience mapping for Pendle-supported chains in the Wayfinder SDK.
-# Pendle also supports Optimism (10), Sonic (146), Mantle (5000), Berachain (80094)
+# Pendle also supports Optimism (10), Mantle (5000), Berachain (80094)
 # but those are not yet in the SDK's supported-chains table.
 PENDLE_CHAIN_IDS: dict[str, int] = {
     "ethereum": 1,
     "bsc": 56,
+    "sonic": 146,
     "arbitrum": 42161,
     "base": 8453,
     "hyperevm": 999,
@@ -64,6 +68,36 @@ PENDLE_CHAIN_IDS: dict[str, int] = {
 }
 
 PENDLE_DEFAULT_DEPLOYMENTS_BASE_URL = "https://raw.githubusercontent.com/pendle-finance/pendle-core-v2-public/main/deployments"
+PENDLE_DEFAULT_LIMIT_ORDER_BASE_URL = "https://api-v2.pendle.finance/limit-order"
+PENDLE_DEFAULT_USER_AGENT = "wayfinder-paths-sdk/pendle-adapter"
+PENDLE_LIMIT_ORDER_TYPED_DATA_TYPES: dict[str, list[dict[str, str]]] = {
+    "Order": [
+        {"name": "salt", "type": "uint256"},
+        {"name": "expiry", "type": "uint256"},
+        {"name": "nonce", "type": "uint256"},
+        {"name": "orderType", "type": "uint8"},
+        {"name": "token", "type": "address"},
+        {"name": "YT", "type": "address"},
+        {"name": "maker", "type": "address"},
+        {"name": "receiver", "type": "address"},
+        {"name": "makingAmount", "type": "uint256"},
+        {"name": "lnImpliedRate", "type": "uint256"},
+        {"name": "failSafeRate", "type": "uint256"},
+        {"name": "permit", "type": "bytes"},
+    ],
+}
+PENDLE_LIMIT_ORDER_TYPE_IDS: dict[str, int] = {
+    # Pendle docs / SDK names.
+    "TOKEN_FOR_PT": 0,
+    "PT_FOR_TOKEN": 1,
+    "TOKEN_FOR_YT": 2,
+    "YT_FOR_TOKEN": 3,
+    # Contract-level names.
+    "SY_FOR_PT": 0,
+    "PT_FOR_SY": 1,
+    "SY_FOR_YT": 2,
+    "YT_FOR_SY": 3,
+}
 
 ChainLike = int | str
 
@@ -116,6 +150,77 @@ def _compact_params(params: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in params.items() if v is not None}
 
 
+def _limit_order_type_id(order_type: int | str) -> int:
+    if isinstance(order_type, str):
+        key = order_type.strip().upper()
+        if key in PENDLE_LIMIT_ORDER_TYPE_IDS:
+            return PENDLE_LIMIT_ORDER_TYPE_IDS[key]
+        try:
+            order_type = int(key)
+        except ValueError as exc:
+            raise ValueError(
+                "Unknown Pendle limit order type. Use 0..3 or one of "
+                f"{sorted(PENDLE_LIMIT_ORDER_TYPE_IDS)}"
+            ) from exc
+
+    order_type_i = int(order_type)
+    if order_type_i not in (0, 1, 2, 3):
+        raise ValueError("Pendle limit order type must be one of 0, 1, 2, 3")
+    return order_type_i
+
+
+def _hex_to_bytes(value: Any) -> bytes:
+    if value in (None, "", "0x"):
+        return b""
+    if isinstance(value, bytes):
+        return value
+    text = str(value)
+    if text.startswith("0x"):
+        text = text[2:]
+    return bytes.fromhex(text)
+
+
+def _order_field(order: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in order:
+            return order[key]
+    raise KeyError(f"Pendle limit order missing one of {keys}")
+
+
+def _limit_order_contract_tuple(order: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        int(str(_order_field(order, "salt"))),
+        int(str(_order_field(order, "expiry"))),
+        int(str(_order_field(order, "nonce"))),
+        _limit_order_type_id(_order_field(order, "type", "orderType")),
+        to_checksum_address(str(_order_field(order, "token"))),
+        to_checksum_address(str(_order_field(order, "yt", "YT"))),
+        to_checksum_address(str(_order_field(order, "maker"))),
+        to_checksum_address(str(_order_field(order, "receiver"))),
+        int(str(_order_field(order, "makingAmount"))),
+        int(str(_order_field(order, "lnImpliedRate"))),
+        int(str(_order_field(order, "failSafeRate"))),
+        _hex_to_bytes(order.get("permit")),
+    )
+
+
+def _limit_order_typed_data_message(order: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "salt": str(_order_field(order, "salt")),
+        "expiry": str(_order_field(order, "expiry")),
+        "nonce": str(_order_field(order, "nonce")),
+        "orderType": _limit_order_type_id(_order_field(order, "orderType", "type")),
+        "token": to_checksum_address(str(_order_field(order, "token"))),
+        "YT": to_checksum_address(str(_order_field(order, "YT", "yt"))),
+        "maker": to_checksum_address(str(_order_field(order, "maker"))),
+        "receiver": to_checksum_address(str(_order_field(order, "receiver"))),
+        "makingAmount": str(_order_field(order, "makingAmount")),
+        "lnImpliedRate": str(_order_field(order, "lnImpliedRate")),
+        "failSafeRate": str(_order_field(order, "failSafeRate")),
+        "permit": str(order.get("permit") or "0x"),
+    }
+
+
 async def _gather_limited(
     coro_factories: Sequence[Callable[[], Awaitable[Any]]],
     *,
@@ -150,6 +255,7 @@ class PendleAdapter(BaseAdapter):
         client: httpx.AsyncClient | None = None,
         timeout: float = 30.0,
         sign_callback: Callable | None = None,
+        sign_typed_data_callback: Callable[[dict | str], Awaitable[str]] | None = None,
         wallet_address: str | None = None,
     ) -> None:
         super().__init__("pendle_adapter", config)
@@ -164,6 +270,7 @@ class PendleAdapter(BaseAdapter):
 
         self._owns_client = False
         self.sign_callback = sign_callback
+        self.sign_typed_data_callback = sign_typed_data_callback
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
         )
@@ -175,6 +282,13 @@ class PendleAdapter(BaseAdapter):
             adapter_cfg.get("deployments_base_url")
             or PENDLE_DEFAULT_DEPLOYMENTS_BASE_URL
         ).rstrip("/")
+        self.limit_order_base_url = str(
+            adapter_cfg.get("limit_order_base_url")
+            or PENDLE_DEFAULT_LIMIT_ORDER_BASE_URL
+        ).rstrip("/")
+        self.user_agent = str(
+            adapter_cfg.get("user_agent") or PENDLE_DEFAULT_USER_AGENT
+        )
         self._deployments_cache: dict[int, dict[str, Any]] = {}
 
     async def close(self) -> None:
@@ -283,18 +397,21 @@ class PendleAdapter(BaseAdapter):
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        base_url: str | None = None,
     ) -> httpx.Response:
-        url = f"{self.base_url}{path}"
+        url = f"{(base_url or self.base_url).rstrip('/')}{path}"
         last_exc: Exception | None = None
 
         for attempt in range(1, max(1, self.max_retries) + 1):
             try:
+                headers = {"User-Agent": self.user_agent} if self.user_agent else None
                 if self.client is not None:
                     return await self.client.request(
                         method,
                         url,
                         params=params,
                         json=json,
+                        headers=headers,
                         timeout=self.timeout,
                     )
                 async with httpx.AsyncClient() as client:
@@ -303,6 +420,7 @@ class PendleAdapter(BaseAdapter):
                         url,
                         params=params,
                         json=json,
+                        headers=headers,
                         timeout=self.timeout,
                     )
             except httpx.RequestError as exc:
@@ -315,17 +433,39 @@ class PendleAdapter(BaseAdapter):
             raise last_exc
         raise RuntimeError("unreachable")
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        response = await self._request_raw("GET", path, params=params)
+    async def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        base_url: str | None = None,
+    ) -> Any:
+        response = await self._request_raw(
+            "GET", path, params=params, base_url=base_url
+        )
         response.raise_for_status()
         payload = self._decode_response_payload(response)
         return self._attach_meta(payload, response)
 
-    async def _post(self, path: str, json: dict[str, Any]) -> Any:
-        response = await self._request_raw("POST", path, json=json)
+    async def _post(
+        self,
+        path: str,
+        json: dict[str, Any],
+        *,
+        base_url: str | None = None,
+    ) -> Any:
+        response = await self._request_raw("POST", path, json=json, base_url=base_url)
         response.raise_for_status()
         payload = self._decode_response_payload(response)
         return self._attach_meta(payload, response)
+
+    async def _limit_order_get(
+        self, path: str, params: dict[str, Any] | None = None
+    ) -> Any:
+        return await self._get(path, params=params, base_url=self.limit_order_base_url)
+
+    async def _limit_order_post(self, path: str, json: dict[str, Any]) -> Any:
+        return await self._post(path, json=json, base_url=self.limit_order_base_url)
 
     # ---------------------------
     # Pendle API endpoints
@@ -340,8 +480,9 @@ class PendleAdapter(BaseAdapter):
         """
         Fetch whitelisted markets with metadata.
 
-        Endpoint: `{base_url}/v1/markets/all` (default `base_url` ends with `/core`)
-          { "markets": [ ... ] }
+        Endpoint: `{base_url}/v2/markets/all` (default `base_url` ends with `/core`)
+        returns paginated `{ "results": [ ... ] }`. This method normalizes
+        those pages back to `{ "markets": [ ... ] }` for adapter compatibility.
         """
         params: dict[str, Any] = {}
         if chain_id is not None:
@@ -350,8 +491,52 @@ class PendleAdapter(BaseAdapter):
             params["isActive"] = str(bool(is_active)).lower()
         if ids:
             params["ids"] = ",".join(ids)
-        data = await self._get("/v1/markets/all", params=params or None)
-        return data if isinstance(data, dict) else {"data": data}
+
+        limit = 100
+        skip = 0
+        markets: list[dict[str, Any]] = []
+        first_page: dict[str, Any] | None = None
+        last_rate_limit: Any = None
+
+        while True:
+            page_params = {**params, "limit": limit, "skip": skip}
+            data = await self._get("/v2/markets/all", params=page_params)
+            if not isinstance(data, dict):
+                return {"data": data}
+
+            if first_page is None:
+                first_page = data
+            last_rate_limit = data.get("rateLimit") or last_rate_limit
+
+            page_markets = data.get("results")
+            if page_markets is None:
+                # Be tolerant of docs/examples that still call the array `markets`.
+                page_markets = data.get("markets")
+            if page_markets is None:
+                return data
+            if not isinstance(page_markets, list):
+                return data
+
+            markets.extend(page_markets)
+
+            total_raw = data.get("total")
+            total = total_raw if isinstance(total_raw, int) else None
+            skip += len(page_markets)
+            if not page_markets or len(page_markets) < limit:
+                break
+            if total is not None and skip >= total:
+                break
+
+        normalized = {
+            key: value
+            for key, value in (first_page or {}).items()
+            if key not in {"results", "markets", "skip", "limit"}
+        }
+        normalized["markets"] = markets
+        normalized["total"] = len(markets)
+        if last_rate_limit is not None:
+            normalized["rateLimit"] = last_rate_limit
+        return normalized
 
     async def fetch_market_snapshot(
         self,
@@ -456,16 +641,16 @@ class PendleAdapter(BaseAdapter):
         *,
         chain: ChainLike,
         yt: str,
-        order_type: int,
+        order_type: int | str,
         skip: int | None = None,
         limit: int | None = None,
-        sort_by: str | None = None,
-        sort_order: Literal["asc", "desc"] | None = None,
+        sort_by: str | None = "Implied Rate",
+        sort_order: Literal["asc", "desc"] | None = "asc",
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "chainId": _as_chain_id(chain),
             "yt": yt,
-            "type": int(order_type),
+            "type": _limit_order_type_id(order_type),
         }
         if skip is not None:
             params["skip"] = int(skip)
@@ -476,7 +661,7 @@ class PendleAdapter(BaseAdapter):
         if sort_order is not None:
             params["sortOrder"] = sort_order
 
-        data = await self._get("/v1/limit-orders/takers/limit-orders", params=params)
+        data = await self._limit_order_get("/v1/takers/limit-orders", params=params)
         return data if isinstance(data, dict) else {"data": data}
 
     async def generate_maker_limit_order_data(
@@ -484,8 +669,11 @@ class PendleAdapter(BaseAdapter):
         *,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        data = await self._post(
-            "/v1/limit-orders/makers/generate-limit-order-data", json=payload
+        body = dict(payload)
+        if "orderType" in body:
+            body["orderType"] = _limit_order_type_id(body["orderType"])
+        data = await self._limit_order_post(
+            "/v1/makers/generate-limit-order-data", json=body
         )
         return data if isinstance(data, dict) else {"data": data}
 
@@ -494,7 +682,7 @@ class PendleAdapter(BaseAdapter):
         *,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        data = await self._post("/v1/limit-orders/makers/limit-orders", json=payload)
+        data = await self._limit_order_post("/v1/makers/limit-orders", json=payload)
         return data if isinstance(data, dict) else {"data": data}
 
     async def fetch_maker_limit_orders(
@@ -503,7 +691,7 @@ class PendleAdapter(BaseAdapter):
         chain: ChainLike,
         maker: str,
         yt: str | None = None,
-        order_type: int | None = None,
+        order_type: int | str | None = None,
         is_active: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
@@ -513,11 +701,439 @@ class PendleAdapter(BaseAdapter):
         if yt is not None:
             params["yt"] = yt
         if order_type is not None:
-            params["type"] = int(order_type)
+            params["type"] = _limit_order_type_id(order_type)
         if is_active is not None:
             params["isActive"] = self._bool_q(bool(is_active))
-        data = await self._get("/v1/limit-orders/makers/limit-orders", params=params)
+        data = await self._limit_order_get("/v1/makers/limit-orders", params=params)
         return data if isinstance(data, dict) else {"data": data}
+
+    async def build_limit_order_fill_tx(
+        self,
+        *,
+        chain: ChainLike,
+        limit_order_items: dict[str, Any] | Sequence[dict[str, Any]],
+        receiver: str | None = None,
+        max_taking_bps: int = 100,
+        making_amount: int | str | None = None,
+        max_taking: int | str | None = None,
+    ) -> dict[str, Any]:
+        chain_id = _as_chain_id(chain)
+        sender = self._strategy_address()
+        actual_receiver = to_checksum_address(receiver or sender)
+        limit_router = await self.get_limit_router_address(chain=chain_id)
+        items = (
+            [limit_order_items]
+            if isinstance(limit_order_items, dict)
+            else list(limit_order_items)
+        )
+        if not items:
+            raise ValueError("limit_order_items must contain at least one order")
+
+        fill_params: list[tuple[Any, ...]] = []
+        total_net_from_taker = 0
+        orders: list[dict[str, Any]] = []
+        expected: list[dict[str, Any]] = []
+
+        for item in items:
+            order = item.get("order") if isinstance(item.get("order"), dict) else item
+            order = dict(order)
+            amount = (
+                making_amount if len(items) == 1 and making_amount is not None else None
+            )
+            if amount is None:
+                amount = item.get("makingAmount") or order.get("currentMakingAmount")
+            if amount is None:
+                amount = order.get("makingAmount")
+            amount_i = int(str(amount))
+            signature = str(order.get("signature") or item.get("signature") or "0x")
+            fill_params.append(
+                (
+                    _limit_order_contract_tuple(order),
+                    _hex_to_bytes(signature),
+                    amount_i,
+                )
+            )
+            net_from = item.get("netFromTaker")
+            if net_from is not None:
+                total_net_from_taker += int(str(net_from))
+            orders.append(order)
+            expected.append(
+                {
+                    "orderId": order.get("id"),
+                    "makingAmount": str(amount_i),
+                    "netFromTaker": str(net_from) if net_from is not None else None,
+                    "netToTaker": item.get("netToTaker"),
+                    "takingToken": order.get("takingToken"),
+                    "makingToken": order.get("makingToken"),
+                    "sy": order.get("sy"),
+                    "pt": order.get("pt"),
+                    "yt": order.get("yt") or order.get("YT"),
+                    "type": _limit_order_type_id(
+                        order.get("type", order.get("orderType"))
+                    ),
+                }
+            )
+
+        if max_taking is None:
+            if total_net_from_taker <= 0:
+                raise ValueError(
+                    "max_taking is required when limit order items do not include netFromTaker"
+                )
+            max_taking_i = (
+                total_net_from_taker * (10_000 + int(max_taking_bps))
+            ) // 10_000
+        else:
+            max_taking_i = int(str(max_taking))
+
+        async with web3_from_chain_id(chain_id) as web3:
+            contract = web3.eth.contract(
+                address=to_checksum_address(limit_router),
+                abi=PENDLE_LIMIT_ROUTER_ABI,
+            )
+            data = contract.functions.fill(
+                fill_params,
+                actual_receiver,
+                max_taking_i,
+                b"",
+                b"",
+            )._encode_transaction_data()
+
+        return {
+            "chainId": chain_id,
+            "from": to_checksum_address(sender),
+            "to": to_checksum_address(limit_router),
+            "data": data,
+            "value": 0,
+            "receiver": actual_receiver,
+            "maxTaking": str(max_taking_i),
+            "maxTakingBps": int(max_taking_bps),
+            "orders": orders,
+            "expected": expected,
+        }
+
+    async def execute_taker_limit_order_fill(
+        self,
+        *,
+        chain: ChainLike,
+        limit_order_items: dict[str, Any] | Sequence[dict[str, Any]],
+        receiver: str | None = None,
+        max_taking_bps: int = 100,
+        making_amount: int | str | None = None,
+        max_taking: int | str | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        chain_id = _as_chain_id(chain)
+        sender = self._strategy_address()
+        if self.sign_callback is None:
+            return False, {
+                "stage": "preflight",
+                "error": "sign_callback is required",
+            }
+
+        try:
+            plan = await self.build_limit_order_fill_tx(
+                chain=chain_id,
+                limit_order_items=limit_order_items,
+                receiver=receiver,
+                max_taking_bps=max_taking_bps,
+                making_amount=making_amount,
+                max_taking=max_taking,
+            )
+            max_taking_i = int(plan["maxTaking"])
+            input_tokens = {
+                str(row["takingToken"])
+                for row in plan["expected"]
+                if isinstance(row.get("takingToken"), str)
+            }
+            output_tokens = {
+                str(token)
+                for row in plan["expected"]
+                for token in (row.get("makingToken"), row.get("sy"))
+                if isinstance(token, str)
+            }
+            pre_balances: dict[str, int] = {}
+            for token in sorted(input_tokens | output_tokens):
+                pre_balances[token] = int(
+                    await get_token_balance(token, chain_id, sender)
+                )
+
+            for token in sorted(input_tokens):
+                balance = pre_balances.get(token, 0)
+                if balance < max_taking_i:
+                    return False, {
+                        "stage": "preflight",
+                        "error": "Insufficient taker token balance",
+                        "token": token,
+                        "needAtMost": max_taking_i,
+                        "have": balance,
+                        "plan": plan,
+                    }
+                approved, result = await ensure_allowance(
+                    chain_id=chain_id,
+                    token_address=token,
+                    owner=sender,
+                    spender=plan["to"],
+                    amount=max_taking_i,
+                    signing_callback=self.sign_callback,
+                )
+                if not approved:
+                    return False, {
+                        "stage": "approval",
+                        "error": f"Approval failed for {token}",
+                        "details": result,
+                        "plan": plan,
+                    }
+
+            _, tx_hash = await self._send_tx(
+                {
+                    "chainId": chain_id,
+                    "from": plan["from"],
+                    "to": plan["to"],
+                    "data": plan["data"],
+                    "value": 0,
+                }
+            )
+
+            post_balances: dict[str, int] = {}
+            for token in sorted(input_tokens | output_tokens):
+                post_balances[token] = int(
+                    await get_token_balance(token, chain_id, sender)
+                )
+        except Exception as exc:  # noqa: BLE001
+            return False, {"stage": "fill", "error": str(exc)}
+
+        return True, {
+            "tx_hash": tx_hash,
+            "chainId": chain_id,
+            "limitRouter": plan["to"],
+            "receiver": plan["receiver"],
+            "maxTaking": plan["maxTaking"],
+            "expected": plan["expected"],
+            "balances": {"pre": pre_balances, "post": post_balances},
+        }
+
+    async def create_maker_limit_order(
+        self,
+        *,
+        chain: ChainLike,
+        yt: str,
+        order_type: int | str,
+        token: str,
+        making_amount: int | str,
+        implied_apy: float,
+        expiry: int | str,
+        maker: str | None = None,
+        approval_token: str | None = None,
+        ensure_token_allowance: bool = True,
+    ) -> tuple[bool, dict[str, Any]]:
+        chain_id = _as_chain_id(chain)
+        order_type_i = _limit_order_type_id(order_type)
+        maker_address = to_checksum_address(maker or self._strategy_address())
+        if self.sign_typed_data_callback is None:
+            return False, {
+                "stage": "sign",
+                "error": "sign_typed_data_callback is required",
+            }
+
+        try:
+            limit_router = await self.get_limit_router_address(chain=chain_id)
+            generated = await self.generate_maker_limit_order_data(
+                payload={
+                    "chainId": chain_id,
+                    "YT": to_checksum_address(yt),
+                    "orderType": order_type_i,
+                    "token": to_checksum_address(token),
+                    "maker": maker_address,
+                    "makingAmount": str(making_amount),
+                    "impliedApy": float(implied_apy),
+                    "expiry": str(expiry),
+                }
+            )
+
+            if ensure_token_allowance:
+                if self.sign_callback is None:
+                    return False, {
+                        "stage": "approval",
+                        "error": "sign_callback is required for maker allowance",
+                    }
+                resolved_approval_token = approval_token
+                if resolved_approval_token is None:
+                    if order_type_i in (0, 2):
+                        resolved_approval_token = token
+                    elif order_type_i == 3:
+                        resolved_approval_token = yt
+                    else:
+                        return False, {
+                            "stage": "approval",
+                            "error": (
+                                "approval_token is required for PT_FOR_TOKEN maker "
+                                "orders because Pendle's generate response does not "
+                                "include the PT address"
+                            ),
+                        }
+                approved, result = await ensure_allowance(
+                    chain_id=chain_id,
+                    token_address=resolved_approval_token,
+                    owner=maker_address,
+                    spender=limit_router,
+                    amount=int(str(generated["makingAmount"])),
+                    signing_callback=self.sign_callback,
+                )
+                if not approved:
+                    return False, {
+                        "stage": "approval",
+                        "error": f"Approval failed for {resolved_approval_token}",
+                        "details": result,
+                    }
+
+            typed_data = self.build_limit_order_typed_data(
+                chain=chain_id,
+                limit_order_data=generated,
+                limit_router=limit_router,
+            )
+            signature = await self.sign_typed_data_callback(typed_data)
+            create_payload = {
+                "chainId": chain_id,
+                "signature": signature,
+                "salt": str(generated["salt"]),
+                "expiry": str(generated["expiry"]),
+                "nonce": str(generated["nonce"]),
+                "type": _limit_order_type_id(generated["orderType"]),
+                "token": to_checksum_address(str(generated["token"])),
+                "yt": to_checksum_address(str(generated["YT"])),
+                "maker": maker_address,
+                "receiver": to_checksum_address(str(generated["receiver"])),
+                "makingAmount": str(generated["makingAmount"]),
+                "lnImpliedRate": str(generated["lnImpliedRate"]),
+                "failSafeRate": str(generated["failSafeRate"]),
+                "permit": str(generated.get("permit") or "0x"),
+            }
+            posted = await self.post_maker_limit_order(payload=create_payload)
+        except Exception as exc:  # noqa: BLE001
+            return False, {"stage": "create", "error": str(exc)}
+
+        return True, {
+            "chainId": chain_id,
+            "limitRouter": limit_router,
+            "generated": generated,
+            "typedData": typed_data,
+            "signature": signature,
+            "payload": create_payload,
+            "order": posted,
+        }
+
+    async def build_cancel_maker_limit_order_tx(
+        self,
+        *,
+        chain: ChainLike,
+        limit_order_items: dict[str, Any] | Sequence[dict[str, Any]],
+    ) -> dict[str, Any]:
+        chain_id = _as_chain_id(chain)
+        sender = self._strategy_address()
+        limit_router = await self.get_limit_router_address(chain=chain_id)
+        items = (
+            [limit_order_items]
+            if isinstance(limit_order_items, dict)
+            else list(limit_order_items)
+        )
+        if not items:
+            raise ValueError("limit_order_items must contain at least one order")
+
+        orders = [
+            item.get("order") if isinstance(item.get("order"), dict) else item
+            for item in items
+        ]
+        order_tuples = [_limit_order_contract_tuple(dict(order)) for order in orders]
+
+        async with web3_from_chain_id(chain_id) as web3:
+            contract = web3.eth.contract(
+                address=to_checksum_address(limit_router),
+                abi=PENDLE_LIMIT_ROUTER_ABI,
+            )
+            if len(order_tuples) == 1:
+                data = contract.functions.cancelSingle(
+                    order_tuples[0]
+                )._encode_transaction_data()
+            else:
+                data = contract.functions.cancelBatch(
+                    order_tuples
+                )._encode_transaction_data()
+
+        return {
+            "chainId": chain_id,
+            "from": to_checksum_address(sender),
+            "to": to_checksum_address(limit_router),
+            "data": data,
+            "value": 0,
+            "orders": orders,
+        }
+
+    async def cancel_maker_limit_order(
+        self,
+        *,
+        chain: ChainLike,
+        limit_order_items: dict[str, Any] | Sequence[dict[str, Any]],
+    ) -> tuple[bool, dict[str, Any]]:
+        if self.sign_callback is None:
+            return False, {
+                "stage": "preflight",
+                "error": "sign_callback is required",
+            }
+        try:
+            plan = await self.build_cancel_maker_limit_order_tx(
+                chain=chain,
+                limit_order_items=limit_order_items,
+            )
+            _, tx_hash = await self._send_tx(
+                {
+                    "chainId": plan["chainId"],
+                    "from": plan["from"],
+                    "to": plan["to"],
+                    "data": plan["data"],
+                    "value": 0,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, {"stage": "cancel", "error": str(exc)}
+
+        return True, {"tx_hash": tx_hash, "chainId": plan["chainId"], "plan": plan}
+
+    async def increase_maker_limit_order_nonce(
+        self,
+        *,
+        chain: ChainLike,
+    ) -> tuple[bool, dict[str, Any]]:
+        if self.sign_callback is None:
+            return False, {
+                "stage": "preflight",
+                "error": "sign_callback is required",
+            }
+        try:
+            chain_id = _as_chain_id(chain)
+            sender = self._strategy_address()
+            limit_router = await self.get_limit_router_address(chain=chain_id)
+            async with web3_from_chain_id(chain_id) as web3:
+                contract = web3.eth.contract(
+                    address=to_checksum_address(limit_router),
+                    abi=PENDLE_LIMIT_ROUTER_ABI,
+                )
+                data = contract.functions.increaseNonce()._encode_transaction_data()
+            _, tx_hash = await self._send_tx(
+                {
+                    "chainId": chain_id,
+                    "from": to_checksum_address(sender),
+                    "to": to_checksum_address(limit_router),
+                    "data": data,
+                    "value": 0,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            return False, {"stage": "increase_nonce", "error": str(exc)}
+
+        return True, {
+            "tx_hash": tx_hash,
+            "chainId": chain_id,
+            "limitRouter": limit_router,
+        }
 
     # ---------------------------------------
     # Deployments (address discovery)
@@ -534,8 +1150,9 @@ class PendleAdapter(BaseAdapter):
             return self._deployments_cache[chain_id]
 
         url = f"{self.deployments_base_url}/{chain_id}-core.json"
+        headers = {"User-Agent": self.user_agent} if self.user_agent else None
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url)
+            resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             data = self._decode_response_payload(resp)
 
@@ -558,6 +1175,25 @@ class PendleAdapter(BaseAdapter):
         if not isinstance(addr, str) or not addr:
             raise ValueError("limitRouter not found in Pendle deployments")
         return to_checksum_address(addr)
+
+    def build_limit_order_typed_data(
+        self,
+        *,
+        chain: ChainLike,
+        limit_order_data: dict[str, Any],
+        limit_router: str,
+    ) -> dict[str, Any]:
+        return {
+            "primaryType": "Order",
+            "types": PENDLE_LIMIT_ORDER_TYPED_DATA_TYPES,
+            "domain": {
+                "name": "Pendle Limit Order Protocol",
+                "version": "1",
+                "chainId": _as_chain_id(chain),
+                "verifyingContract": to_checksum_address(limit_router),
+            },
+            "message": _limit_order_typed_data_message(limit_order_data),
+        }
 
     # ---------------------------------------
     # RouterStatic (off-chain spot-rate checks)
@@ -913,7 +1549,7 @@ class PendleAdapter(BaseAdapter):
           - fixedApy (impliedApy), underlyingApy, floatingApy (underlyingApy - impliedApy)
           - liquidityUsd, volumeUsd24h, totalTvlUsd, expiry, daysToExpiry
 
-        NOTE: "fixed_apy" uses `impliedApy` from /v1/markets/all market.details.
+        NOTE: "fixed_apy" uses `impliedApy` from /v2/markets/all market.details.
         """
         if chain is not None and chains is not None:
             raise ValueError("Pass either chain=... or chains=[...], not both.")
@@ -1956,3 +2592,95 @@ class PendleAdapter(BaseAdapter):
             if isinstance(convert_resp, dict)
             else None,
         }
+
+
+async def pendle_api_request(
+    method: Literal["GET", "POST"],
+    path: str,
+    *,
+    api: Literal["core", "limit_order"] = "core",
+    base_url: str | None = None,
+    params: dict[str, Any] | None = None,
+    json: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    client: httpx.AsyncClient | None = None,
+    timeout: float = 30.0,
+    user_agent: str | None = None,
+) -> Any:
+    """
+    Make an ad-hoc Pendle API request with the SDK's User-Agent, retry,
+    decoding, and rate-limit metadata handling.
+
+    Prefer typed adapter methods when they exist. Use this for newly discovered
+    Pendle endpoints before adding a first-class adapter method.
+    """
+
+    cfg = dict(config or {})
+    adapter_cfg = dict(cfg.get("pendle_adapter") or {})
+    if user_agent is not None:
+        adapter_cfg["user_agent"] = user_agent
+    if adapter_cfg:
+        cfg["pendle_adapter"] = adapter_cfg
+
+    adapter = PendleAdapter(config=cfg, client=client, timeout=timeout)
+    resolved_base_url = base_url
+    if resolved_base_url is None:
+        resolved_base_url = (
+            adapter.limit_order_base_url if api == "limit_order" else adapter.base_url
+        )
+
+    if method == "GET":
+        return await adapter._get(path, params=params, base_url=resolved_base_url)
+    if method == "POST":
+        if json is None:
+            raise ValueError("json payload is required for POST requests")
+        return await adapter._post(path, json=json, base_url=resolved_base_url)
+    raise ValueError("method must be GET or POST")
+
+
+async def pendle_api_get(
+    path: str,
+    *,
+    api: Literal["core", "limit_order"] = "core",
+    base_url: str | None = None,
+    params: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    client: httpx.AsyncClient | None = None,
+    timeout: float = 30.0,
+    user_agent: str | None = None,
+) -> Any:
+    return await pendle_api_request(
+        "GET",
+        path,
+        api=api,
+        base_url=base_url,
+        params=params,
+        config=config,
+        client=client,
+        timeout=timeout,
+        user_agent=user_agent,
+    )
+
+
+async def pendle_api_post(
+    path: str,
+    *,
+    api: Literal["core", "limit_order"] = "core",
+    base_url: str | None = None,
+    json: dict[str, Any],
+    config: dict[str, Any] | None = None,
+    client: httpx.AsyncClient | None = None,
+    timeout: float = 30.0,
+    user_agent: str | None = None,
+) -> Any:
+    return await pendle_api_request(
+        "POST",
+        path,
+        api=api,
+        base_url=base_url,
+        json=json,
+        config=config,
+        client=client,
+        timeout=timeout,
+        user_agent=user_agent,
+    )

@@ -45,6 +45,53 @@ class TestSearchDeltaLabAssets:
         assert result["error"]["message"] == "unknown chain filter: 'unknown'"
 
 
+class TestSearchDeltaLabInstruments:
+    @pytest.mark.asyncio
+    async def test_pendle_pt_alias_is_normalized(self):
+        mock = AsyncMock(return_value={"items": [], "count": 0})
+        with patch.object(delta_lab.DELTA_LAB_CLIENT, "search_instruments", mock):
+            result = await delta_lab.research_search_delta_lab_instruments(
+                instrumentType="PT",
+                basisRoot="usd",
+                venue="pendle",
+                chain="arbitrum",
+                limit="10",
+            )
+
+        mock.assert_awaited_once_with(
+            instrument_type="PENDLE_PT",
+            basis_root="USD",
+            venue="pendle",
+            chain_id=42161,
+            quote_asset_id=None,
+            maturity_after=None,
+            maturity_before=None,
+            limit=10,
+            offset=0,
+        )
+        assert result == {"ok": True, "result": {"items": [], "count": 0}}
+
+    @pytest.mark.asyncio
+    async def test_sonic_chain_code_is_mapped_to_chain_id(self):
+        mock = AsyncMock(return_value={"items": [], "count": 0})
+        with patch.object(delta_lab.DELTA_LAB_CLIENT, "search_instruments", mock):
+            await delta_lab.research_search_delta_lab_instruments(
+                venue="pendle",
+                chain="sonic",
+                basisRoot="USD",
+            )
+
+        assert mock.await_args.kwargs["chain_id"] == 146
+
+    @pytest.mark.asyncio
+    async def test_known_instrument_type_is_uppercased(self):
+        mock = AsyncMock(return_value={"items": [], "count": 0})
+        with patch.object(delta_lab.DELTA_LAB_CLIENT, "search_instruments", mock):
+            await delta_lab.research_search_delta_lab_instruments(instrumentType="perp")
+
+        assert mock.await_args.kwargs["instrument_type"] == "PERP"
+
+
 class TestScreenBorrowRoutes:
     @pytest.mark.asyncio
     async def test_chain_code_is_mapped_to_chain_id(self):
