@@ -109,6 +109,7 @@ async def shells_get_frontend_context() -> dict[str, Any]:
         return err("state_http_error", f"HTTP {exc.response.status_code}")
 
 
+@catch_errors
 async def shells_search_chart_series(
     query: str,
     kind: str | None = None,
@@ -146,6 +147,7 @@ async def shells_search_chart_series(
         return err("chart_series_error", str(exc))
 
 
+@catch_errors
 async def shells_set_active_market(
     query: str | None = None,
     market_id: str | None = None,
@@ -191,6 +193,7 @@ async def shells_set_active_market(
         return err("active_market_error", str(exc))
 
 
+@catch_errors
 async def shells_create_chart(
     chart_id: str,
     title: str,
@@ -280,6 +283,7 @@ async def shells_create_chart(
         return err("chart_workspace_error", str(exc))
 
 
+@catch_errors
 async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
     """Focus an existing chart in the shell chart workspace."""
     if not is_opencode_instance():
@@ -296,6 +300,7 @@ async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
         return err("chart_workspace_error", str(exc))
 
 
+@catch_errors
 async def shells_add_workspace_chart_series(
     chart_id: str,
     series: dict[str, Any],
@@ -318,6 +323,7 @@ async def shells_add_workspace_chart_series(
         return err("chart_workspace_error", str(exc))
 
 
+@catch_errors
 async def shells_add_workspace_chart_annotation(
     chart_id: str,
     type: str,
@@ -358,6 +364,7 @@ async def shells_add_workspace_chart_annotation(
         return err("chart_workspace_error", str(exc))
 
 
+@catch_errors
 async def shells_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
@@ -375,6 +382,7 @@ async def shells_add_workspace_chart_overlay(
         return err("chart_workspace_error", str(exc))
 
 
+@catch_errors
 async def shells_clear_chart_workspace() -> dict[str, Any]:
     """Remove all agent-created workspace charts."""
     if not is_opencode_instance():
