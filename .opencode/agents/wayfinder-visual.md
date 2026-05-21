@@ -7,8 +7,12 @@ permission:
     "*": deny
   question: deny
   wayfinder_*: deny
-  wayfinder_shells_*: allow
+  # core_*
   wayfinder_core_run_script: allow
+  wayfinder_core_web_search: allow
+  wayfinder_core_web_fetch: allow
+  # shells_*
+  wayfinder_shells_*: allow
 ---
 
 # Wayfinder Visual

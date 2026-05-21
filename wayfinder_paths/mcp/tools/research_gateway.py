@@ -47,7 +47,7 @@ def _split_values(
 
 
 @catch_errors
-async def research_web_search(
+async def core_web_search(
     query: str,
     numResults: str = "8",
     type: str = "auto",
@@ -117,7 +117,7 @@ async def research_web_search(
 
 
 @catch_errors
-async def research_web_fetch(
+async def core_web_fetch(
     urls: str,
     query: str = "_",
     contentType: str = "text",
