@@ -7,6 +7,7 @@ capabilities:
   - "lending.repay"
   - "collateral.set"
   - "collateral.remove"
+  - "rewards.read"
   - "rewards.claim"
   - "position.read"
   - "market.list"

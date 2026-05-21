@@ -1,91 +1,85 @@
-# Moonwell gotchas
+# Moonwell Gotchas
 
-## Transaction receipts (broadcast ≠ success)
+## Core Versus Morpho
 
-- A tx hash / “broadcasted” log does **not** mean a Moonwell call succeeded.
-- The SDK waits for the receipt and raises `TransactionRevertedError` when `status=0` (often includes `gasUsed`/`gasLimit` and may indicate out-of-gas).
-- If a step reverts, stop and fix before proceeding (e.g., don’t borrow/repay assuming a prior lend/unlend worked).
+`MoonwellAdapter` owns Moonwell Core mToken markets only. Moonwell Morpho Vaults and
+isolated markets are Morpho contracts; use `MorphoAdapter` for those fund-moving
+flows.
 
-## mToken addresses (not underlying!)
+## Always Set The Chain
 
-All adapter methods take **mToken addresses**, not underlying token addresses:
+The adapter defaults to Base (`8453`). Pass `chain_id=` for OP Mainnet, Moonbeam,
+or Moonriver. Do not mix mToken and underlying addresses across chains.
 
-| Asset | mToken Address | Underlying Address |
-|-------|----------------|-------------------|
+| Network | chain_id | Reward claim support |
+|---------|----------|----------------------|
+| Base | `8453` | Yes |
+| OP Mainnet | `10` | Yes |
+| Moonbeam | `1284` | No Multi-Reward Distributor configured |
+| Moonriver | `1285` | No Multi-Reward Distributor configured |
+
+## mToken Addresses Are Required
+
+Write methods take mToken addresses. Passing an underlying token address as `mtoken`
+will target the wrong contract and revert.
+
+Base examples:
+
+| Asset | mToken | Underlying |
+|-------|--------|------------|
 | USDC | `0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22` | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 | WETH | `0x628ff693426583D9a7FB391E54366292F509D457` | `0x4200000000000000000000000000000000000006` |
 | wstETH | `0x627Fe393Bc6EdDA28e99AE648fD6fF362514304b` | `0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452` |
 
-**Wrong:** `adapter.lend("0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", amount)` (underlying)
-**Right:** `adapter.lend("0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22", amount)` (mToken)
+## Units Are Raw Integers
 
-## Units are raw ints
+All amount parameters are raw integers:
 
-All `amount` parameters are **raw int units** (not human-readable floats):
+| Token | Decimals | Example |
+|-------|----------|---------|
+| USDC | 6 | `10 * 10**6` for 10 USDC |
+| WETH | 18 | `10**16` for 0.01 WETH |
+| mTokens | 8 | Use `max_withdrawable_mtoken()["cTokens_raw"]` |
 
-| Token | Decimals | 1 unit | Example |
-|-------|----------|--------|---------|
-| USDC | 6 | `1_000_000` | 10 USDC = `10_000_000` |
-| WETH | 18 | `10**18` | 0.01 WETH = `10**16` |
-| mTokens | 8 | `10**8` | — |
+## Approvals
 
-## Two USDC markets
+- `lend()` approves the mToken to pull underlying before `mint()`.
+- `repay()` approves the mToken to pull underlying before `repayBorrow()`.
+- `repay_full=True` uses `MAX_UINT256` for the repay call; make sure the wallet has enough underlying for accrued interest.
+- Collateral and reward calls do not use ERC-20 approval, but they still broadcast transactions.
 
-Moonwell has **two USDC markets** on Base:
-- `0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22` - **Main market** (use this one)
-- `0x703843C3379b52F9FF486c9f5892218d2a065cC8` - Secondary market
+## Collateral Is Explicit
 
-## Collateral must be explicitly enabled
+Supplying does not enable collateral. Call `set_collateral()` and verify with
+`is_market_entered()` before borrowing.
 
-Supplying tokens does NOT automatically enable them as collateral:
+## Withdraw Amount Is mToken Amount
 
-```python
-# Supply doesn't enable collateral
-await adapter.lend(mtoken=USDC_MTOKEN, amount=1_000_000)
-
-# Must explicitly enable
-await adapter.set_collateral(mtoken=USDC_MTOKEN)
-```
-
-## Check before borrow
-
-Always check `get_borrowable_amount()` before borrowing to avoid reverts:
+`unlend()` calls `redeem()` and expects mToken units, not underlying units:
 
 ```python
-# get_borrowable_amount returns account liquidity in USD (no mtoken param)
-ok, liquidity_usd = await adapter.get_borrowable_amount()
-if liquidity_usd <= 0:
-    print("Insufficient collateral")
+ok, info = await adapter.max_withdrawable_mtoken(chain_id=8453, mtoken=M_USDC)
+ok, tx = await adapter.unlend(chain_id=8453, mtoken=M_USDC, amount=info["cTokens_raw"])
 ```
 
-## unlend() takes mToken amount, not underlying
+## Deprecated And Bad-Debt Markets
 
-The `unlend()` method calls `redeem()` which expects **mToken amount**, not underlying:
+The market list includes metadata from the official Moonwell SDK source:
 
-```python
-# WRONG - passing underlying amount
-await adapter.unlend(mtoken=USDC_MTOKEN, amount=5_000_000)  # 5 USDC? No!
+- Base has deprecated USDbC.
+- Moonbeam includes bad-debt and deprecated markets.
+- Moonriver Core markets are deprecated.
 
-# RIGHT - get mToken amount first
-ok, info = await adapter.max_withdrawable_mtoken(mtoken=USDC_MTOKEN)
-await adapter.unlend(mtoken=USDC_MTOKEN, amount=info['cTokens_raw'])
-```
+Inspect `deprecated` and `badDebt` before using a market for a new fund-moving flow.
 
-## Exchange rate scaling
+## Transaction Receipts
 
-When manually converting between mTokens and underlying:
-- `exchangeRate` from contract is scaled by 1e18
-- `underlying = mTokenBalance * exchangeRate / 1e18`
+A transaction hash only means a transaction was broadcast. The SDK waits for the
+receipt and raises on `status=0`. Stop a multi-step flow after any failed or
+reverted Moonwell transaction.
 
-## Script execution
+## Gorlami
 
-Always run scripts via MCP tool with wallet tracking:
-
-```
-mcp__wayfinder__core_run_script(
-    script_path=".wayfinder_runs/moonwell_lend.py",
-    wallet_label="main"
-)
-```
-
-This ensures the wallet profile tracks the Moonwell interaction for portfolio discovery.
+For fund-moving EVM flows, prefer a Gorlami fork dry run before live execution.
+`test_gorlami_simulation.py` exercises Base supply, collateral, borrow, repay,
+withdraw, and claim behavior when an API key is configured.

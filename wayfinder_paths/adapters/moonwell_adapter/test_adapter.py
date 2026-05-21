@@ -20,6 +20,12 @@ from wayfinder_paths.core.constants.contracts import (
     MOONWELL_VIEWS,
     MOONWELL_WELL_TOKEN,
 )
+from wayfinder_paths.core.constants.moonwell_contracts import (
+    CHAIN_ID_MOONBEAM,
+    CHAIN_ID_OPTIMISM,
+    MOONWELL_BY_CHAIN,
+    MOONWELL_CORE_MARKETS_BY_CHAIN,
+)
 
 
 class TestMoonwellAdapter:
@@ -35,6 +41,27 @@ class TestMoonwellAdapter:
 
     def test_chain_name(self):
         assert CHAIN_NAME == "base"
+
+    def test_constructor_accepts_supported_chain(self):
+        adapter = MoonwellAdapter(
+            config={"chain_id": CHAIN_ID_OPTIMISM},
+            wallet_address="0x1234567890123456789012345678901234567890",
+        )
+
+        assert adapter.chain_id == CHAIN_ID_OPTIMISM
+        assert adapter.chain_name == "optimism"
+        assert (
+            adapter.comptroller_address
+            == MOONWELL_BY_CHAIN[CHAIN_ID_OPTIMISM]["comptroller"]
+        )
+        assert (
+            adapter.reward_distributor_address
+            == MOONWELL_BY_CHAIN[CHAIN_ID_OPTIMISM]["reward_distributor"]
+        )
+
+    def test_constructor_rejects_unsupported_chain(self):
+        with pytest.raises(ValueError, match="Unsupported Moonwell chain_id"):
+            MoonwellAdapter(config={"chain_id": 1})
 
     @pytest.mark.asyncio
     async def test_get_full_user_state_basic(self, adapter):
@@ -87,7 +114,6 @@ class TestMoonwellAdapter:
         ):
             mock_multicall.side_effect = [stage1, stage2]
             ok, state = await adapter.get_full_user_state(
-                account="0x1234567890123456789012345678901234567890",
                 include_rewards=True,
                 include_usd=False,
                 include_apy=False,
@@ -96,6 +122,7 @@ class TestMoonwellAdapter:
         assert ok is True
         assert state["protocol"] == "moonwell"
         assert state["chainId"] == adapter.chain_id
+        assert state["account"] == adapter.wallet_address
         assert state["accountLiquidity"]["liquidity"] == 123
         assert len(state["positions"]) == 1
         assert state["positions"][0]["enteredAsCollateral"] is True
@@ -380,6 +407,84 @@ class TestMoonwellAdapter:
         assert len(markets) == 3
 
     @pytest.mark.asyncio
+    async def test_get_all_markets_uses_chain_override_and_metadata(self, adapter):
+        op_usdc = MOONWELL_CORE_MARKETS_BY_CHAIN[CHAIN_ID_OPTIMISM]["USDC"]
+        op_musdc = op_usdc["mtoken"]
+        markets_info = [
+            (
+                op_musdc,
+                True,
+                0,
+                0,
+                False,
+                False,
+                int(0.5 * MANTISSA),
+                1,
+                0,
+                0,
+                0,
+                0,
+                MANTISSA,
+                0,
+                0,
+                0,
+                0,
+                [],
+            )
+        ]
+
+        w3 = Web3()
+        mock_web3 = MagicMock()
+        mock_web3.codec = w3.codec
+        mock_web3.to_checksum_address = w3.to_checksum_address
+
+        mock_views = MagicMock()
+        mock_views.functions.getAllMarketsInfo = MagicMock(
+            return_value=MagicMock(call=AsyncMock(return_value=markets_info))
+        )
+
+        def contract_side_effect(*, address=None, abi=None, **_kwargs):
+            if (
+                address
+                and address.lower()
+                == MOONWELL_BY_CHAIN[CHAIN_ID_OPTIMISM]["views"].lower()
+            ):
+                return mock_views
+            c = MagicMock()
+            c.abi = abi or []
+            c.encode_abi = MagicMock(return_value="0x00")
+            return c
+
+        mock_web3.eth.contract = MagicMock(side_effect=contract_side_effect)
+
+        @asynccontextmanager
+        async def mock_web3_ctx(_chain_id):
+            yield mock_web3
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.web3_from_chain_id",
+                mock_web3_ctx,
+            ),
+            patch.object(
+                adapter, "_multicall_chunked", new_callable=AsyncMock
+            ) as mock_multicall,
+        ):
+            mock_multicall.return_value = [b"", b"", w3.codec.encode(["uint8"], [8])]
+            ok, markets = await adapter.get_all_markets(
+                chain_id=CHAIN_ID_OPTIMISM,
+                include_apy=False,
+                include_usd=False,
+            )
+
+        assert ok is True
+        assert markets[0]["chainId"] == CHAIN_ID_OPTIMISM
+        assert markets[0]["chainName"] == "optimism"
+        assert markets[0]["symbol"] == "mUSDC"
+        assert markets[0]["underlying"] == op_usdc["underlying"]
+        assert markets[0]["underlyingSymbol"] == "USDC"
+
+    @pytest.mark.asyncio
     async def test_lend(self, adapter):
         mock_tx_hash = {"tx_hash": "0xabc123", "status": "success"}
         with (
@@ -408,6 +513,39 @@ class TestMoonwellAdapter:
 
             assert success
             assert result == mock_tx_hash
+
+    @pytest.mark.asyncio
+    async def test_lend_uses_chain_override(self, adapter):
+        mock_tx_hash = {"tx_hash": "0xabc123", "status": "success"}
+        with (
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.ensure_allowance",
+                new_callable=AsyncMock,
+            ) as mock_allowance,
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            mock_allowance.return_value = (True, {})
+            mock_encode.return_value = {"data": "0x1234", "to": MOONWELL_M_USDC}
+            mock_send.return_value = mock_tx_hash
+
+            success, result = await adapter.lend(
+                mtoken=MOONWELL_M_USDC,
+                underlying_token=BASE_USDC,
+                amount=10**6,
+                chain_id=CHAIN_ID_OPTIMISM,
+            )
+
+        assert success
+        assert result == mock_tx_hash
+        assert mock_allowance.call_args.kwargs["chain_id"] == CHAIN_ID_OPTIMISM
+        assert mock_encode.call_args.kwargs["chain_id"] == CHAIN_ID_OPTIMISM
 
     @pytest.mark.asyncio
     async def test_lend_invalid_amount(self, adapter):
@@ -549,32 +687,39 @@ class TestMoonwellAdapter:
 
     @pytest.mark.asyncio
     async def test_claim_rewards(self, adapter):
-        # Mock contract for getting outstanding rewards
-        mock_reward_contract = MagicMock()
-        mock_reward_contract.functions.getOutstandingRewardsForUser = MagicMock(
-            return_value=MagicMock(call=AsyncMock(return_value=[]))
-        )
-
-        # Mock contract for claiming (on comptroller)
-        mock_comptroller = MagicMock()
-        mock_comptroller.functions.claimReward = MagicMock(
-            return_value=MagicMock(
-                build_transaction=AsyncMock(return_value={"data": "0x1234"})
-            )
-        )
-
-        def mock_contract(address, abi):
-            if address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
-                return mock_reward_contract
-            return mock_comptroller
-
-        mock_web3 = MagicMock()
-        mock_web3.eth.contract = MagicMock(side_effect=mock_contract)
-
-        success, result = await adapter.claim_rewards()
+        with patch.object(
+            adapter, "_get_outstanding_rewards", new_callable=AsyncMock
+        ) as mock_rewards:
+            mock_rewards.return_value = {}
+            success, result = await adapter.claim_rewards()
 
         assert success
         assert isinstance(result, dict)
+        mock_rewards.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_claim_rewards_no_distributor_chain_returns_empty(self):
+        adapter = MoonwellAdapter(
+            config={"chain_id": CHAIN_ID_MOONBEAM},
+            wallet_address="0x1234567890123456789012345678901234567890",
+        )
+
+        with (
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.encode_call",
+                new_callable=AsyncMock,
+            ) as mock_encode,
+            patch(
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                new_callable=AsyncMock,
+            ) as mock_send,
+        ):
+            success, result = await adapter.claim_rewards()
+
+        assert success is True
+        assert result == {}
+        mock_encode.assert_not_called()
+        mock_send.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_get_pos_success(self, adapter):
@@ -601,8 +746,8 @@ class TestMoonwellAdapter:
             return_value=MagicMock(call=AsyncMock(return_value=[]))
         )
 
-        def mock_contract(address, abi):
-            if address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
+        def mock_contract(address=None, abi=None, **_kwargs):
+            if address and address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
                 return mock_reward
             return mock_mtoken
 
@@ -753,8 +898,8 @@ class TestMoonwellAdapter:
             return_value=MagicMock(call=AsyncMock(return_value=[]))
         )
 
-        def mock_contract(address, abi):
-            if address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
+        def mock_contract(address=None, abi=None, **_kwargs):
+            if address and address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
                 return mock_reward
             return mock_mtoken
 
@@ -798,8 +943,8 @@ class TestMoonwellAdapter:
             return_value=MagicMock(call=AsyncMock(return_value=[]))
         )
 
-        def mock_contract(address, abi):
-            if address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
+        def mock_contract(address=None, abi=None, **_kwargs):
+            if address and address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
                 return mock_reward
             return mock_mtoken
 
@@ -865,8 +1010,8 @@ class TestMoonwellAdapter:
             return_value=MagicMock(call=AsyncMock(return_value=[well_config]))
         )
 
-        def mock_contract(address, abi):
-            if address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
+        def mock_contract(address=None, abi=None, **_kwargs):
+            if address and address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
                 return mock_reward
             return mock_mtoken
 
@@ -941,8 +1086,8 @@ class TestMoonwellAdapter:
             return_value=MagicMock(call=AsyncMock(return_value=[well_config]))
         )
 
-        def mock_contract(address, abi):
-            if address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
+        def mock_contract(address=None, abi=None, **_kwargs):
+            if address and address.lower() == MOONWELL_REWARD_DISTRIBUTOR.lower():
                 return mock_reward
             return mock_mtoken
 

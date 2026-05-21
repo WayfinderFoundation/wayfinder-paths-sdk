@@ -1,103 +1,112 @@
-# Moonwell reads (markets + positions)
+# Moonwell Reads
 
-## Data accuracy (no guessing)
+## Data Accuracy
 
-- Do **not** invent or estimate APYs, borrow rates, or collateral factors.
-- Only report values fetched from Moonwell contracts via the adapter.
-- If you can't fetch data (RPC failure), respond with "unavailable" and show the exact script needed.
+- Do not invent APYs, borrow rates, collateral factors, caps, or pause state.
+- Fetch values through the adapter or Moonwell contracts.
+- If RPC or dependencies are unavailable, say the value is unavailable and show the exact call needed.
 
-## Primary data source
+## Primary Sources
 
 - Adapter: `wayfinder_paths/adapters/moonwell_adapter/adapter.py`
-- Chain: Base (chain_id 8453)
-- Comptroller: `0xfbb21d0380bee3312b33c4353c8936a0f13ef26c`
+- Constants: `wayfinder_paths/core/constants/moonwell_contracts.py`
+- Official docs: `https://docs.moonwell.fi/`
+- Official contract docs: `https://docs.moonwell.fi/moonwell/protocol-information/contracts`
 
-## Ad-hoc read scripts
+## Supported Networks
 
-All read scripts go under `.wayfinder_runs/` and use `get_adapter()`:
+| Network | chain_id | Notes |
+|---------|----------|-------|
+| Base | `8453` | Default chain; rewards read/claim configured |
+| OP Mainnet | `10` | Rewards read/claim configured |
+| Moonbeam | `1284` | No Multi-Reward Distributor configured; some markets are bad-debt/deprecated |
+| Moonriver | `1285` | Official SDK marks all Core markets deprecated |
 
-### Get APY for a market
+Pass `chain_id=` on reads when you do not want the Base default.
 
-```python
-"""Fetch Moonwell APY for a market."""
-import asyncio
-from wayfinder_paths.mcp.scripting import get_adapter
-from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
-
-USDC_MTOKEN = "0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22"
-
-async def main():
-    adapter = await get_adapter(MoonwellAdapter)  # read-only, no wallet needed
-    ok, supply_apy = await adapter.get_apy(mtoken=USDC_MTOKEN, apy_type="supply", include_rewards=True)
-    ok, borrow_apy = await adapter.get_apy(mtoken=USDC_MTOKEN, apy_type="borrow", include_rewards=True)
-    print(f"Supply: {supply_apy:.2%}, Borrow: {borrow_apy:.2%}")
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-### Get all markets with rates
+## Market Discovery
 
 ```python
-"""Fetch all Moonwell markets with reward-inclusive APYs."""
 import asyncio
-from wayfinder_paths.mcp.scripting import get_adapter
+
 from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
+from wayfinder_paths.core.constants.moonwell_contracts import CHAIN_ID_OPTIMISM
+from wayfinder_paths.mcp.scripting import get_adapter
+
 
 async def main():
-    adapter = await get_adapter(MoonwellAdapter)  # read-only, no wallet needed
-    ok, markets = await adapter.get_all_markets()
+    adapter = await get_adapter(MoonwellAdapter)
+    ok, markets = await adapter.get_all_markets(
+        chain_id=CHAIN_ID_OPTIMISM,
+        include_apy=True,
+        include_rewards=True,
+        include_usd=False,
+    )
     if not ok:
-        raise RuntimeError(f"Failed to fetch markets: {markets}")
-    for m in markets:
+        raise RuntimeError(markets)
+    for market in markets:
         print(
-            f"{m.get('symbol', '')}: "
-            f"supply={m.get('supplyApy', 0.0):.2%} (base={m.get('baseSupplyApy', 0.0):.2%}, rewards={m.get('rewardSupplyApy', 0.0):.2%}) "
-            f"borrow={m.get('borrowApy', 0.0):.2%} (base={m.get('baseBorrowApy', 0.0):.2%}, rewards={m.get('rewardBorrowApy', 0.0):.2%})"
+            market["chainName"],
+            market.get("symbol"),
+            market.get("underlyingSymbol"),
+            market.get("supplyApy"),
+            market.get("borrowApy"),
+            market.get("deprecated"),
+            market.get("badDebt"),
         )
 
+
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-> **Note:** `get_all_markets(include_rewards=False)` skips reward incentives and returns base-only yields.
+`get_all_markets()` returns live contract state plus local metadata such as
+`chainId`, `chainName`, `underlyingSymbol`, `deprecated`, `badDebt`, and
+`nativeUnderlying`.
 
-### Get user position
+## Position Reads
 
 ```python
-"""Fetch user position on Moonwell."""
 import asyncio
-from wayfinder_paths.mcp.scripting import get_adapter
-from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
-USDC_MTOKEN = "0xEdc817A28E8B93B03976FBd4a3dDBc9f7D176c22"
+from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
+from wayfinder_paths.mcp.scripting import get_adapter
+
 
 async def main():
-    adapter = await get_adapter(MoonwellAdapter, "main")  # wallet needed for account lookup
+    adapter = await get_adapter(MoonwellAdapter, "main")
+    ok, state = await adapter.get_full_user_state(
+        chain_id=8453,
+        include_rewards=True,
+        include_apy=True,
+        include_usd=False,
+    )
+    if not ok:
+        raise RuntimeError(state)
+    print(state["accountLiquidity"])
+    for position in state.get("positions", []):
+        print(position["mtoken"], position["suppliedUnderlying"], position["borrowedUnderlying"])
 
-    # For all positions, use get_full_user_state()
-    ok, state = await adapter.get_full_user_state()
-    print(f"Liquidity: {state['accountLiquidity']}")
-    for p in state.get("positions", []):
-        print(f"  {p['mtoken'][:10]}... supplied={p['suppliedUnderlying']} borrowed={p['borrowedUnderlying']}")
-
-    # For single market position, use get_pos(mtoken=...)
-    ok, pos = await adapter.get_pos(mtoken=USDC_MTOKEN)
-    print(f"Supplied: {pos['underlying_balance'] / 1e6:.2f} USDC")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Key read methods
+## Key Read Methods
 
 | Method | Purpose | Wallet needed? |
 |--------|---------|----------------|
-| `get_all_markets(include_apy?, include_usd?, include_rewards?)` | All markets with symbols, rates, TVL | No |
-| `get_apy(mtoken, apy_type, include_rewards)` | Supply/borrow APY for single market | No |
-| `get_collateral_factor(mtoken)` | Collateral factor (e.g., 0.88) | No |
-| `get_pos(mtoken, account?, include_usd?)` | Single market position | Yes (or pass account) |
-| `get_full_user_state(account?, include_rewards?, include_usd?, include_apy?)` | All positions + rewards | Yes (or pass account) |
-| `is_market_entered(mtoken, account?)` | Check if collateral enabled | Yes (or pass account) |
-| `get_borrowable_amount(account?)` | Account liquidity (USD) | Yes (or pass account) |
-| `max_withdrawable_mtoken(mtoken, account?)` | Max withdraw without liquidation | Yes (or pass account) |
+| `get_all_markets(chain_id?, include_apy?, include_usd?, include_rewards?)` | All Core markets with rates and caps | No |
+| `get_apy(mtoken, chain_id?, apy_type?, include_rewards?)` | Supply or borrow APY for one Core market | No |
+| `get_collateral_factor(mtoken, chain_id?)` | Collateral factor | No |
+| `get_pos(mtoken, chain_id?, account?, include_usd?)` | One market position | Yes, unless `account` is passed |
+| `get_full_user_state(chain_id?, account?, include_rewards?, include_usd?, include_apy?)` | All positions, liquidity, and rewards | Yes, unless `account` is passed |
+| `is_market_entered(mtoken, chain_id?, account?)` | Whether collateral is enabled | Yes, unless `account` is passed |
+| `get_borrowable_amount(chain_id?, account?)` | Account liquidity | Yes, unless `account` is passed |
+| `max_withdrawable_mtoken(mtoken, chain_id?, account?)` | Max mToken redeem amount without shortfall | Yes, unless `account` is passed |
+
+## Vaults And Isolated Markets
+
+Moonwell Morpho Vaults and isolated markets are Morpho-based. Use `MorphoAdapter`
+for deposits, withdrawals, collateral, borrowing, and Morpho reward flows. Do not
+reimplement those flows inside `MoonwellAdapter`.
