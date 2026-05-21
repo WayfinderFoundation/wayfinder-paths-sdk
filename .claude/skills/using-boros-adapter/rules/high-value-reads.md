@@ -49,6 +49,12 @@ The adapter normalizes API responses to snake_case. Always use snake_case field 
 - Boros is deployed on **Arbitrum (chain_id = 42161)** in this repo’s default configuration.
 - Current Boros Open API mount: `https://api-boros.pendle.finance/apis/v1/...`
 - Legacy `https://api.boros.finance/open-api/*` and `/core/*` mounts are deprecated. Do not add new reads against them unless the code documents a specific compatibility fallback.
+- Some Boros docs still name legacy `/open-api/v2/*` routes. On the redesigned
+  mount, use the adapter-backed current routes instead: `/v1/markets/order-book`,
+  `/v1/accounts/orders`, `/v1/accounts/orders-by-placed-time`,
+  `/v1/accounts/transfer-logs`, and `/v1/accounts/gas-consumption-history`.
+  Latest settlements, account settings writes, stop orders, and direct
+  funding-rate history wrappers are not exposed as adapter helpers yet.
 
 ## High-value reads
 
@@ -68,6 +74,9 @@ Notes:
 
 - Call: `success, book = await adapter.get_orderbook(market_id, tick_size=0.001)`
 - Output: `(bool, dict)` — orderbook with `long`/`short` sides and tick arrays (schema-flexible).
+- Source route: current redesigned Open API `GET /v1/markets/order-book`. The
+  deprecated legacy docs also expose `GET /v2/markets/order-books`; do not switch
+  default adapter calls to the legacy mount without a compatibility reason.
 
 ### Quote a single market (APR summary)
 

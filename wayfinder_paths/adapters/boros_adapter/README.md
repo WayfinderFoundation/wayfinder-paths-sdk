@@ -20,6 +20,23 @@ By default the client uses the current Boros Open API mount:
 - A custom `boros_adapter.base_url` and `boros_adapter.endpoints` can still be
   supplied for tests or emergency compatibility.
 
+The public docs still reference some legacy `/open-api/v2/*` route names
+(`GET /v2/markets/order-books`, `/v2/accounts/limit-orders`,
+`/v2/accounts/all-limit-orders`, transfer logs, and gas history). On the
+redesigned mount, the same active SDK coverage uses:
+
+- `GET /v1/markets/order-book`
+- `GET /v1/accounts/orders`
+- `GET /v1/accounts/orders-by-placed-time`
+- `GET /v1/accounts/transfer-logs`
+- `GET /v1/accounts/gas-consumption-history`
+
+Do not add new default reads against the deprecated legacy mount unless the code
+documents a specific compatibility fallback. Latest settlements, account
+settings writes, stop orders, and direct funding-rate history wrappers are not
+wrapped by this adapter yet; use raw client overrides only with an explicit
+follow-up note.
+
 ## Signing Boundaries
 
 The default Wayfinder product path for Boros is wallet-signed execution.
