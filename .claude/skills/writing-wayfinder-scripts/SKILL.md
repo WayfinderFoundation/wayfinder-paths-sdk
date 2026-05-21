@@ -167,7 +167,7 @@ contract = w3.eth.contract(address=token, abi=ERC20_ABI)
 
 ### 6. Python `quote_swap` amounts are wei strings, not human-readable
 
-Note: This applies to the Python `quote_swap()` function in scripts. The MCP `core_execute(...)` tool takes **human-readable** amounts (e.g. `"5"` for 5 USDC).
+Note: This applies to the Python `quote_swap()` function in scripts. The MCP `onchain_swap(...)` / `onchain_send(...)` tools take **human-readable** amounts (e.g. `"5"` for 5 USDC).
 
 ```python
 # WRONG — "10.0" is not a valid wei amount

@@ -241,7 +241,7 @@ Notes:
 - If the result has `method="brap_then_wrap"`, the adapter swapped Polygon USDC to USDC.e via BRAP, then wrapped USDC.e into pUSD.
 - If the result has `method="unwrap_then_brap"`, the adapter unwrapped pUSD into USDC.e, then swapped USDC.e to Polygon USDC via BRAP.
 - If the result has `method="polymarket_bridge"`, the flow is asynchronous and uses the Polymarket bridge deposit/withdraw path; use `bridge_status(address=...)` and/or poll balances.
-- The MCP no longer exposes bridge-style actions; route collateral in/out of pUSD via the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", to_token="polygon_0xC011a7…")`).
+- The MCP no longer exposes bridge-style actions; route collateral in/out of pUSD via the BRAP swap MCP tools (`onchain_quote_swap` + `onchain_swap(to_token="polygon_0xC011a7…")`).
 
 ### Option B: Polymarket Bridge conversion (fallback)
 

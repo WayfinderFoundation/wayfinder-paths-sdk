@@ -15,7 +15,6 @@ permission:
   wayfinder_contracts_execute: ask
   # core_*
   wayfinder_core_*: allow
-  wayfinder_core_execute: ask
   wayfinder_core_run_script: ask
   wayfinder_core_run_strategy: ask
   wayfinder_core_runner: ask
@@ -28,6 +27,8 @@ permission:
   wayfinder_hyperliquid_withdraw: ask
   # onchain_*
   wayfinder_onchain_*: allow
+  wayfinder_onchain_swap: ask
+  wayfinder_onchain_send: ask
   # polymarket_*
   wayfinder_polymarket_*: allow
   wayfinder_polymarket_place_*: ask

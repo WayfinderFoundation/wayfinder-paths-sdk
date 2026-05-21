@@ -44,7 +44,8 @@
       "mcp__wayfinder__research_search_borrow_routes"
     ],
     "ask": [
-      "mcp__wayfinder__core_execute",
+      "mcp__wayfinder__onchain_swap",
+      "mcp__wayfinder__onchain_send",
       "mcp__wayfinder__core_run_script",
       "mcp__wayfinder__hyperliquid_place_market_order",
       "mcp__wayfinder__hyperliquid_place_limit_order",
@@ -88,11 +89,11 @@
         ]
       },
       {
-        "matcher": "mcp__wayfinder__core_execute",
+        "matcher": "mcp__wayfinder__onchain_(swap|send)",
         "hooks": [
           {
             "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_execute_review.py\""
+            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_onchain_review.py\""
           }
         ]
       },

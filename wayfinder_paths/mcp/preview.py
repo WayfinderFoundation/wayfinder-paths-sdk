@@ -13,47 +13,45 @@ from wayfinder_paths.mcp.utils import (
 )
 
 
-async def build_execution_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
-    req = tool_input.get("request") if isinstance(tool_input, dict) else None
-    if not isinstance(req, dict):
-        return {
-            "summary": "Execute request missing 'request' object.",
-            "recipient_mismatch": False,
-        }
-
-    kind = str(req.get("kind") or "").strip()
-    wallet_label = str(req.get("wallet_label") or "").strip()
+async def _onchain_preview_base(
+    tool_input: dict[str, Any], header: str
+) -> tuple[str, str, str | None]:
+    wallet_label = str(tool_input.get("wallet_label") or "").strip()
     w = await find_wallet_by_label(wallet_label) if wallet_label else None
     sender = normalize_address((w or {}).get("address")) if w else None
+    base = (
+        f"wallet_label: {wallet_label or '(missing)'}\nsender: {sender or '(unknown)'}"
+    )
+    return header, base, sender
 
-    recipient = normalize_address(req.get("recipient"))
-    if kind == "swap":
-        recipient = recipient or sender
-        summary = (
-            "EXECUTE swap\n"
-            f"wallet_label: {wallet_label}\n"
-            f"from_token: {req.get('from_token')}\n"
-            f"to_token: {req.get('to_token')}\n"
-            f"amount: {req.get('amount')}\n"
-            f"slippage_bps: {req.get('slippage_bps')}\n"
-            f"sender: {sender or '(unknown)'}\n"
-            f"recipient: {recipient or '(unknown)'}"
-        )
-    elif kind == "send":
-        summary = (
-            "EXECUTE send\n"
-            f"wallet_label: {wallet_label}\n"
-            f"token: {req.get('token')}\n"
-            f"amount: {req.get('amount')}\n"
-            f"chain_id: {req.get('chain_id')}\n"
-            f"sender: {sender or '(unknown)'}\n"
-            f"recipient: {recipient or '(missing)'}"
-        )
-    else:
-        summary = f"EXECUTE {kind or '(unknown kind)'}\nwallet_label: {wallet_label}"
 
+async def build_onchain_swap_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+    header, base, sender = await _onchain_preview_base(tool_input, "ONCHAIN_SWAP\n")
+    recipient = normalize_address(tool_input.get("recipient")) or sender
+    details = (
+        "\n\nSWAP\n"
+        f"from_token: {tool_input.get('from_token')}\n"
+        f"to_token: {tool_input.get('to_token')}\n"
+        f"amount: {tool_input.get('amount')}\n"
+        f"slippage_bps: {tool_input.get('slippage_bps')}\n"
+        f"recipient: {recipient or '(unknown)'}"
+    )
     mismatch = bool(sender and recipient and sender.lower() != recipient.lower())
-    return {"summary": summary, "recipient_mismatch": mismatch}
+    return {"summary": header + base + details, "recipient_mismatch": mismatch}
+
+
+async def build_onchain_send_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
+    header, base, sender = await _onchain_preview_base(tool_input, "ONCHAIN_SEND\n")
+    recipient = normalize_address(tool_input.get("recipient"))
+    details = (
+        "\n\nSEND\n"
+        f"token: {tool_input.get('token')}\n"
+        f"amount: {tool_input.get('amount')}\n"
+        f"chain_id: {tool_input.get('chain_id')}\n"
+        f"recipient: {recipient or '(missing)'}"
+    )
+    mismatch = bool(sender and recipient and sender.lower() != recipient.lower())
+    return {"summary": header + base + details, "recipient_mismatch": mismatch}
 
 
 def build_run_script_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
