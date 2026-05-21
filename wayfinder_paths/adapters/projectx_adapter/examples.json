@@ -1,2 +1,18 @@
-{}
-
+{
+  "pool_overview": {
+    "description": "Read live ProjectX pool metadata for the default thBILL/USDC pool on HyperEVM.",
+    "code": "from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter\nfrom wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL\n\nadapter = ProjectXLiquidityAdapter(\n    {\"pool_address\": THBILL_USDC_POOL},\n    wallet_address=\"0x0000000000000000000000000000000000000000\",\n)\n\nok, overview = await adapter.pool_overview()\nif not ok:\n    raise RuntimeError(overview)\n\nprint(overview[\"fee\"], overview[\"tick_spacing\"], overview[\"token0\"], overview[\"token1\"])"
+  },
+  "resolve_whype_usdc_pool": {
+    "description": "Resolve a native-like HYPE route by using WHYPE; ProjectX UI-native zero address is not accepted by the router helper.",
+    "code": "from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter\nfrom wayfinder_paths.core.constants.projectx import USDC_TOKEN, WHYPE_TOKEN\n\nadapter = ProjectXLiquidityAdapter(\n    {},\n    wallet_address=\"0x0000000000000000000000000000000000000000\",\n)\n\nok, pool = await adapter.find_pool_for_pair(WHYPE_TOKEN, USDC_TOKEN)\nif not ok:\n    raise RuntimeError(pool)\n\nprint(pool)"
+  },
+  "mint_from_balances": {
+    "description": "Mint a ProjectX LP position using the pool's live tick spacing instead of generic Uniswap fee-tier spacing.",
+    "code": "from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter\nfrom wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL\nfrom wayfinder_paths.core.utils.uniswap_v3_math import ticks_for_range\nfrom wayfinder_paths.mcp.scripting import get_adapter\n\nadapter = await get_adapter(\n    ProjectXLiquidityAdapter,\n    \"main\",\n    config_overrides={\"pool_address\": THBILL_USDC_POOL},\n)\n\nok, overview = await adapter.pool_overview()\nif not ok:\n    raise RuntimeError(overview)\n\ntick_lower, tick_upper = ticks_for_range(\n    int(overview[\"tick\"]),\n    bps=50,\n    spacing=int(overview[\"tick_spacing\"]),\n)\n\nok, result = await adapter.mint_from_balances(tick_lower, tick_upper, slippage_bps=50)\nprint(ok, result)"
+  },
+  "projectx_points": {
+    "description": "Fetch the current ProjectX points API response for a wallet.",
+    "code": "from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter\n\nwallet = \"0x0000000000000000000000000000000000000000\"\nok, points = await ProjectXLiquidityAdapter.fetch_prjx_points(wallet)\nif not ok:\n    raise RuntimeError(points)\n\nprint(points)"
+  }
+}

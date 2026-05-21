@@ -19,11 +19,12 @@ import asyncio
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
 from wayfinder_paths.mcp.scripting import get_adapter
 
+ACCOUNT = "0x0000000000000000000000000000000000000000"
 
 async def main():
     adapter = await get_adapter(ProjectXLiquidityAdapter, "main")
 
-    ok, state = await adapter.get_full_user_state()
+    ok, state = await adapter.get_full_user_state(account=ACCOUNT)
     print("ok:", ok)
     if ok:
         print("positions:", state["positions"])
@@ -41,6 +42,7 @@ from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityA
 from wayfinder_paths.core.constants.projectx import THBILL_USDC_POOL
 from wayfinder_paths.mcp.scripting import get_adapter
 
+ACCOUNT = "0x0000000000000000000000000000000000000000"
 
 async def main():
     adapter = await get_adapter(
@@ -49,7 +51,7 @@ async def main():
         config_overrides={"pool_address": THBILL_USDC_POOL},
     )
 
-    ok, state = await adapter.get_full_user_state()
+    ok, state = await adapter.get_full_user_state(account=ACCOUNT)
     print("ok:", ok)
     if ok:
         print("positions:", state["positions"])
@@ -70,18 +72,35 @@ Optional flags: `include_overview`, `include_balances`, `include_positions`, `in
   - Class: `ProjectXLiquidityAdapter` (pool-scoped)
 - Addresses:
   - `PRJX_NPM`, `PRJX_ROUTER`: `wayfinder_paths/core/constants/contracts.py`
-  - `PRJX_FACTORY`: `wayfinder_paths/core/constants/projectx.py`
+  - `PRJX_FACTORY`, `PRJX_QUOTER`, `PRJX_WNATIVE`, `PROJECTX_DEFAULT_FEE_TIERS`: `wayfinder_paths/core/constants/projectx.py`
 - ABIs:
   - `PROJECTX_POOL_ABI`, `PROJECTX_ROUTER_ABI`, `PROJECTX_FACTORY_ABI`: `wayfinder_paths/core/constants/projectx_abi.py`
   - `NONFUNGIBLE_POSITION_MANAGER_ABI`: `wayfinder_paths/core/constants/uniswap_v3_abi.py`
 - Pool constants (example pool + token addresses): `wayfinder_paths/core/constants/projectx.py`
 - Subgraph URL resolution: `get_prjx_subgraph_url(config)`
+- External verification:
+  - HyperEVM chain id/RPC/explorer: Hyperliquid docs
+  - ProjectX pool table: `https://prjcx.com/` app bundle
+  - Contract labels/source: Hyperevmscan address pages
+  - Current pool/router/NPM facts: live reads against `https://rpc.hyperliquid.xyz/evm`
 
 ## Required configuration
 
-- `config.json` must include RPC URLs for HyperEVM **chain id 999** under `rpcs["999"]`.
+- `config.json` must include RPC URLs for HyperEVM **chain id 999** under `strategy.rpc_urls["999"]`, or let the SDK proxy provide the chain if configured.
 - `pool_address` is optional. Pool-specific methods (`pool_overview`, `current_balances`, `list_positions`, `fetch_swaps`, `live_fee_snapshot`) require it; cross-pool reads (`get_full_user_state` without overview/balances, `_list_all_positions`, `fetch_prjx_points`) do not.
 - Accepts `pool_address`, `pool`, `projectx_pool_address`, `projectx_pool` in config (also checks nested `strategy` config).
+
+## Current address assumptions
+
+- Factory: `0xFf7B3e8C00e57ea31477c32A5B52a58Eea47b072`
+- Router: `0x1EbDFC75FfE3ba3de61E7138a3E8706aC841Af9B`
+- Nonfungible Position Manager: `0xeaD19AE861c29bBb2101E834922B2FEee69B9091`
+- Quoter: `0x239F11a7A3E08f2B8110D4CA9F6B95d4c8865258`
+- WHYPE / WETH9: `0x5555555555555555555555555555555555555555`
+
+The ProjectX app displays native HYPE with the zero address in pool rows. Adapter reads and swaps
+use WHYPE for HYPE-like routes because the ProjectX factory/router/NPM contracts point to WHYPE
+as `WETH9`.
 
 ## Ad-hoc read scripts
 
@@ -187,6 +206,9 @@ async def main():
 asyncio.run(main())
 ```
 
+The public points response currently preserves the API shape, for example `pointsTotal`
+and `rank`. Do not rename it to `points` except for the adapter's existing not-found fallback.
+
 ## Key read methods
 
 | Method | Purpose | Notes |
@@ -200,4 +222,3 @@ asyncio.run(main())
 | `get_position(token_id)` | Single position struct | Inherited from `UniswapV3BaseAdapter` |
 | `get_positions(owner=...)` | All NPM positions for an owner | Not pool-filtered |
 | `get_uncollected_fees(token_id)` | Pending fees (amount0/amount1) | Simulates `collect(...)` via `call()` |
-

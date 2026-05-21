@@ -30,6 +30,21 @@ Best practice:
 - Prefer `mint_from_balances()` / `increase_liquidity_balanced()` (they use the pool’s `tick_spacing`)
 - If calling `add_liquidity(...)` directly, pass `tick_spacing=...` explicitly
 
+## ProjectX fee tiers include non-standard V3 tiers
+
+The ProjectX app and live factory currently expose fee tiers:
+
+- `100` (0.01%)
+- `500` (0.05%)
+- `1000` (0.1%)
+- `2000` (0.2%)
+- `3000` (0.3%)
+- `10000` (1%)
+- `20000` (2%)
+
+Use `PROJECTX_DEFAULT_FEE_TIERS` for ProjectX route searches. Do not reuse a generic
+Uniswap fee list that omits `2000` or `20000`.
+
 ## `fetch_swaps()` is HTTP + subgraph (handle failures)
 
 Swap history reads can fail due to subgraph downtime or missing config.
@@ -43,6 +58,16 @@ immediately after activity, treat it as normal (not a strategy/adaptor bug).
 ## `swap_exact_in()` is ERC20-only
 
 `swap_exact_in()` rejects "native" token inputs/outputs. Use wrapped HYPE (WHYPE) for native-like swaps.
+
+The ProjectX app displays native HYPE as `0x0000000000000000000000000000000000000000`,
+but ProjectX V3 factory/router/NPM contracts use WHYPE (`0x5555555555555555555555555555555555555555`)
+as `WETH9`. Pass WHYPE to adapter methods. Native unwrap/refund flows are not implemented here.
+
+## `swap_exact_in()` is direct PRJX router support, not app aggregator routing
+
+The SDK helper builds PRJX router `exactInputSingle` transactions. The ProjectX web app also
+loads Reown/AppKit swap provider code for quote/calldata generation. Do not assume app UI
+routes, provider fees, or aggregator paths are reproduced by `swap_exact_in()`.
 
 ## `swap_exact_in()` routes through `_find_pool_for_pair` with liquidity checks
 
@@ -77,4 +102,11 @@ All amounts are raw base units (wei). Convert human → raw using token decimals
 
 If `web3_from_chain_id(999)` raises, add HyperEVM RPC URLs under `config.json`:
 
-- `rpcs["999"] = ["https://..."]`
+- `strategy.rpc_urls["999"] = ["https://..."]`
+
+For local smoke validation, set the chain 999 strategy RPC URL to the public HyperEVM RPC
+or run the env-gated smoke test:
+
+```bash
+PROJECTX_HYPEREVM_SMOKE=1 poetry run pytest -o addopts= wayfinder_paths/adapters/projectx_adapter/test_hyperevm_smoke.py -q
+```

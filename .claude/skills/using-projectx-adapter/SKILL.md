@@ -14,9 +14,13 @@ Use this skill when you are:
 - Swapping via the PRJX router (`swap_exact_in`)
 - Fetching ProjectX points (`fetch_prjx_points`) or subgraph swap data (`fetch_swaps`)
 
+Current ProjectX evidence points to V3-style concentrated-liquidity pools on
+HyperEVM. Keep ProjectX assumptions local to this adapter: do not route through
+Hyperliquid or Polymarket adapter paths, and do not treat the ProjectX app's
+native-HYPE zero address as a router token. Use WHYPE for native-like swaps.
+
 ## How to use
 
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Pool/positions/swaps/points reads (data in/out)
 - [rules/execution-opportunities.md](rules/execution-opportunities.md) - Mint/increase/remove/collect/burn/swap scripts
 - [rules/gotchas.md](rules/gotchas.md) - `pool_address` requirement, tuple returns, RPC/subgraph availability, units/ticks
-
