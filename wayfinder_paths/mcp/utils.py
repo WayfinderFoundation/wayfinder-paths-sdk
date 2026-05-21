@@ -5,6 +5,7 @@ import functools
 import hashlib
 import inspect
 import json
+import time
 from collections.abc import Callable
 from decimal import ROUND_DOWN, Decimal, InvalidOperation, getcontext
 from pathlib import Path
@@ -89,6 +90,7 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
 
         @functools.wraps(fn)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            start = time.perf_counter()
             try:
                 result = await fn(*args, **kwargs)
             except MCPArgumentError as exc:
@@ -99,13 +101,16 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
                 )
             except Exception as exc:
                 result = err("error", f"{prefix} {exc}".strip())
-            _report_tool_metric(fn.__name__, result)
+            _report_tool_metric(
+                fn.__name__, result, (time.perf_counter() - start) * 1000
+            )
             return result
 
         return async_wrapper
 
     @functools.wraps(fn)
     def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        start = time.perf_counter()
         try:
             result = fn(*args, **kwargs)
         except MCPArgumentError as exc:
@@ -116,13 +121,13 @@ def _wrap(fn: Callable, prefix: str) -> Callable:
             )
         except Exception as exc:
             result = err("error", f"{prefix} {exc}".strip())
-        _report_tool_metric(fn.__name__, result)
+        _report_tool_metric(fn.__name__, result, (time.perf_counter() - start) * 1000)
         return result
 
     return sync_wrapper
 
 
-def _report_tool_metric(tool: str, result: dict[str, Any]) -> None:
+def _report_tool_metric(tool: str, result: dict[str, Any], duration_ms: float) -> None:
     """Fire-and-forget POST of the tool's ok/err outcome. Metrics never block the tool."""
     success = result["ok"]
     code = "ok" if success else result["error"]["code"]
@@ -130,7 +135,11 @@ def _report_tool_metric(tool: str, result: dict[str, Any]) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(METRICS_CLIENT.report_tool(tool=tool, success=success, code=code))
+    loop.create_task(
+        METRICS_CLIENT.report_tool(
+            tool=tool, success=success, code=code, duration_ms=duration_ms
+        )
+    )
 
 
 def repo_root() -> Path:
