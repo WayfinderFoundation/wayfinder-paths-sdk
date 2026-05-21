@@ -117,5 +117,30 @@ class BRAPClient(WayfinderClient):
             logger.error(f"BRAP quote request failed after {elapsed:.2f}s: {e}")
             raise
 
+    async def wait_for_bridge_execution(
+        self,
+        *,
+        bridge_tracking: dict[str, Any],
+        tx_hash: str | None = None,
+        poll_interval_seconds: float = 5.0,
+        timeout_seconds: float = 600.0,
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/blockchain/braps/wait-bridge-execution/"
+        payload: dict[str, Any] = {
+            "bridge_tracking": bridge_tracking,
+            "poll_interval_seconds": poll_interval_seconds,
+            "timeout_seconds": timeout_seconds,
+        }
+        if tx_hash:
+            payload["tx_hash"] = tx_hash
+        response = await self._authed_request(
+            "POST",
+            url,
+            json=payload,
+            headers={},
+            timeout=timeout_seconds + 30.0,
+        )
+        return response.json()
+
 
 BRAP_CLIENT = BRAPClient()

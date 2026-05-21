@@ -208,3 +208,184 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         send_transaction_mock.assert_awaited_once()
         assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
+        fake_brap.wait_for_bridge_execution.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_execute_cross_chain_swap_waits_for_bridge(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+    from_meta = {
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": 1,
+        "address": "0x1111111111111111111111111111111111111111",
+    }
+    to_meta = {
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": 8453,
+        "address": "0x2222222222222222222222222222222222222222",
+    }
+    bridge_tracking = {
+        "provider": "lifi",
+        "requires_source_tx_hash": True,
+        "from_chain": 1,
+        "to_chain": 8453,
+        "bridge": "across",
+    }
+
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
+        return from_meta if query == "from" else to_meta
+
+    fake_brap = AsyncMock()
+    fake_brap.get_quote = AsyncMock(
+        return_value={
+            "quotes": [{"provider": "lifi"}],
+            "best_quote": {
+                "provider": "lifi",
+                "input_amount": "1000000",
+                "calldata": {
+                    "to": "0x" + "33" * 20,
+                    "data": "0xdeadbeef",
+                    "value": "0",
+                },
+                "bridge_tracking": bridge_tracking,
+            },
+        }
+    )
+    fake_brap.wait_for_bridge_execution = AsyncMock(
+        return_value={"is_success": True, "state": "completed"}
+    )
+
+    async def fake_ensure_allowance(**_kwargs):  # noqa: ANN003
+        return True, "0xapprove"
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=wallet,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            side_effect=fake_resolve,
+        ),
+        patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.ensure_allowance",
+            new=AsyncMock(side_effect=fake_ensure_allowance),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            new_callable=AsyncMock,
+            return_value="0xsrctx",
+        ),
+    ):
+        out = await onchain_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["status"] == "confirmed"
+    assert out["result"]["effects"]["bridge"]["is_success"] is True
+    fake_brap.wait_for_bridge_execution.assert_awaited_once()
+    call_kwargs = fake_brap.wait_for_bridge_execution.await_args.kwargs
+    assert call_kwargs["bridge_tracking"] == bridge_tracking
+    assert call_kwargs["tx_hash"] == "0xsrctx"
+
+
+@pytest.mark.asyncio
+async def test_execute_cross_chain_swap_failed_bridge_marks_failed(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+    from_meta = {
+        "decimals": 6,
+        "chain_id": 1,
+        "address": "0x1111111111111111111111111111111111111111",
+    }
+    to_meta = {
+        "decimals": 6,
+        "chain_id": 8453,
+        "address": "0x2222222222222222222222222222222222222222",
+    }
+
+    fake_brap = AsyncMock()
+    fake_brap.get_quote = AsyncMock(
+        return_value={
+            "quotes": [{"provider": "lifi"}],
+            "best_quote": {
+                "provider": "lifi",
+                "input_amount": "1000000",
+                "calldata": {
+                    "to": "0x" + "33" * 20,
+                    "data": "0xdeadbeef",
+                    "value": "0",
+                },
+                "bridge_tracking": {
+                    "provider": "lifi",
+                    "requires_source_tx_hash": True,
+                    "from_chain": 1,
+                    "to_chain": 8453,
+                },
+            },
+        }
+    )
+    fake_brap.wait_for_bridge_execution = AsyncMock(
+        return_value={"is_success": False, "state": "failed", "error": "reverted"}
+    )
+
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
+        return from_meta if query == "from" else to_meta
+
+    async def fake_ensure_allowance(**_kwargs):  # noqa: ANN003
+        return True, "0xapprove"
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=wallet,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            side_effect=fake_resolve,
+        ),
+        patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.ensure_allowance",
+            new=AsyncMock(side_effect=fake_ensure_allowance),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            new_callable=AsyncMock,
+            return_value="0xsrctx",
+        ),
+    ):
+        out = await onchain_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["status"] == "failed"
+    assert out["result"]["effects"]["bridge"]["is_success"] is False

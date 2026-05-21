@@ -191,9 +191,10 @@ async def onchain_swap(
     """Broadcast a cross-chain / cross-DEX swap via BRAP.
 
     **Always quote first** — call `onchain_quote_swap` and confirm route + output with the
-    user before running this. Waits for the receipt by default and returns
-    `status="confirmed"`; pass `wait_for_receipt=False` for fire-and-forget broadcast
-    on slow chains where the MCP client may time out.
+    user before running this. Same-chain swaps wait for the source receipt; cross-chain
+    swaps additionally wait for the destination bridge leg to settle (via the
+    BRAP wait-bridge-execution endpoint). Pass `wait_for_receipt=False` for
+    fire-and-forget broadcast (skips both waits).
 
     Args:
         wallet_label: Wallet label.
@@ -337,6 +338,23 @@ async def onchain_swap(
     status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
     if not sent_ok:
         status = "failed"
+
+    bridge_tracking = best_quote.get("bridge_tracking")
+    if sent_ok and wait_for_receipt and isinstance(bridge_tracking, dict):
+        try:
+            bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
+                bridge_tracking=bridge_tracking,
+                tx_hash=sent.get("txn_hash") if isinstance(sent, dict) else None,
+            )
+            response["effects"]["bridge"] = bridge_result
+            if not bridge_result.get("is_success"):
+                status = "failed"
+        except Exception as exc:  # noqa: BLE001
+            response["effects"]["bridge"] = {
+                "state": "pending",
+                "error": sanitize_for_json(str(exc)),
+            }
+
     response["status"] = status
     response["raw"] = _compact_quote(quote_data, best_quote)
 
