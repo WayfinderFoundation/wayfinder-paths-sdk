@@ -239,9 +239,8 @@ async def research_search_delta_lab_markets(
     """Search Delta Lab markets by venue, chain, type, asset id, or basis root.
 
     Chain accepts "all", canonical chain codes, or numeric chain IDs as strings:
-    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745",
-    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56". For Sonic, use
-    numeric "146" unless "sonic" is added to the chain map.
+    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745", "sonic"/"146",
+    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56".
 
     For Pendle stablecoin/PT yield ranking, prefer
     `research_search_delta_lab_instruments(venue="pendle", basisRoot="USD", ...)`
@@ -276,9 +275,8 @@ async def research_search_delta_lab_instruments(
     """Search Delta Lab instruments, including Pendle PT instruments.
 
     Chain accepts "all", canonical chain codes, or numeric chain IDs as strings:
-    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745",
-    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56". For Sonic, use
-    numeric "146" unless "sonic" is added to the chain map.
+    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745", "sonic"/"146",
+    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56".
 
     For Pendle stablecoin yields, use `venue="pendle"`, the target `chain`,
     and `basisRoot="USD"` first. Delta Lab models Pendle PTs as

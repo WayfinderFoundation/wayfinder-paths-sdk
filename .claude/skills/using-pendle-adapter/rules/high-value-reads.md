@@ -21,6 +21,7 @@
 - `bsc` → `56`
 - `arbitrum` → `42161`
 - `base` → `8453`
+- `sonic` → `146`
 - `hyperevm` → `999`
 - `plasma` → `9745`
 

@@ -7,6 +7,7 @@ from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_KATANA,
     CHAIN_ID_MEGAETH,
     CHAIN_ID_MONAD,
+    CHAIN_ID_SONIC,
     CHAIN_ID_TO_CODE,
     SUPPORTED_CHAINS,
 )
@@ -15,18 +16,21 @@ from wayfinder_paths.core.constants.chains import (
 
 
 def test_new_chain_id_values():
+    assert CHAIN_ID_SONIC == 146
     assert CHAIN_ID_KATANA == 747474
     assert CHAIN_ID_MONAD == 143
     assert CHAIN_ID_MEGAETH == 4326
 
 
 def test_chain_code_to_id_lookup():
+    assert CHAIN_CODE_TO_ID["sonic"] == 146
     assert CHAIN_CODE_TO_ID["katana"] == 747474
     assert CHAIN_CODE_TO_ID["monad"] == 143
     assert CHAIN_CODE_TO_ID["megaeth"] == 4326
 
 
 def test_chain_id_to_code_lookup():
+    assert CHAIN_ID_TO_CODE[146] == "sonic"
     assert CHAIN_ID_TO_CODE[747474] == "katana"
     assert CHAIN_ID_TO_CODE[143] == "monad"
     assert CHAIN_ID_TO_CODE[4326] == "megaeth"

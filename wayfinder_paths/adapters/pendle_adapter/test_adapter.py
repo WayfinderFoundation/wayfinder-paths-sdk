@@ -59,6 +59,37 @@ class TestPendleAdapter:
         assert adapter.adapter_type == "PENDLE"
 
     @pytest.mark.asyncio
+    async def test_sonic_chain_code_maps_to_chain_id(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            return httpx.Response(
+                200,
+                json={
+                    "tx": {"to": "0xRouter", "data": "0xdeadbeef", "value": "0"},
+                    "tokenApprovals": [],
+                },
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        await adapter.sdk_swap_v2(
+            chain="sonic",
+            market_address="0xMarket",
+            receiver="0xReceiver",
+            slippage=0.01,
+            token_in="0xTokenIn",
+            token_out="0xTokenOut",
+            amount_in="1000",
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/core/v2/sdk/146/markets/0xMarket/swap"
+
+    @pytest.mark.asyncio
     async def test_list_active_pt_yt_markets_filters_and_sort(self, monkeypatch):
         fixed_now = datetime(2026, 1, 1, tzinfo=UTC)
         monkeypatch.setattr(

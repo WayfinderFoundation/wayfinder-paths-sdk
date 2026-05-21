@@ -72,6 +72,18 @@ class TestSearchDeltaLabInstruments:
         assert result == {"ok": True, "result": {"items": [], "count": 0}}
 
     @pytest.mark.asyncio
+    async def test_sonic_chain_code_is_mapped_to_chain_id(self):
+        mock = AsyncMock(return_value={"items": [], "count": 0})
+        with patch.object(delta_lab.DELTA_LAB_CLIENT, "search_instruments", mock):
+            await delta_lab.research_search_delta_lab_instruments(
+                venue="pendle",
+                chain="sonic",
+                basisRoot="USD",
+            )
+
+        assert mock.await_args.kwargs["chain_id"] == 146
+
+    @pytest.mark.asyncio
     async def test_known_instrument_type_is_uppercased(self):
         mock = AsyncMock(return_value={"items": [], "count": 0})
         with patch.object(delta_lab.DELTA_LAB_CLIENT, "search_instruments", mock):

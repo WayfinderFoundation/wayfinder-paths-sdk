@@ -102,7 +102,7 @@ from wayfinder_paths.adapters.pendle_adapter import PendleAdapter
 adapter = PendleAdapter()
 
 rows = await adapter.list_active_pt_yt_markets(
-    chains=["ethereum", "arbitrum", "base", "hyperevm", "plasma"],
+    chains=["ethereum", "arbitrum", "base", "sonic", "hyperevm", "plasma"],
     min_liquidity_usd=250_000,
     min_volume_usd_24h=25_000,
     min_days_to_expiry=7,

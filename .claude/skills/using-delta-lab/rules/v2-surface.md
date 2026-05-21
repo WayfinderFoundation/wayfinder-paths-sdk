@@ -306,9 +306,9 @@ matching rows. Example: "top 10 LONG ETH opportunities on Hyperliquid" =
 For Pendle stablecoin/PT yield ranking, search instruments first with
 `venue="pendle"` and `basis_root="USD"`; chain filters accept canonical text
 codes or numeric chain IDs as strings, for example `"arbitrum"`/`"42161"`,
-`"base"`/`"8453"`, `"plasma"`/`"9745"`, `"ethereum"`/`"1"`,
-`"hyperevm"`/`"999"`, and `"bsc"`/`"56"`. For Sonic, use numeric `"146"`
-unless `sonic` is added to the chain map. Do not use shorthand like `"arb"`.
+`"base"`/`"8453"`, `"plasma"`/`"9745"`, `"sonic"`/`"146"`,
+`"ethereum"`/`"1"`, `"hyperevm"`/`"999"`, and `"bsc"`/`"56"`.
+Do not use shorthand like `"arb"`.
 Broad market search can return sparse market IDs and should be reserved for
 venue-wide scans or fallback discovery.
 
