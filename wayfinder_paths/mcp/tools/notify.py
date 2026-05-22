@@ -13,7 +13,7 @@ MESSAGE_MAX = 20_000
 
 
 @catch_errors
-async def notification_email(title: str, message: str, delivery: str = "email") -> dict:
+async def notification_send(title: str, message: str, delivery: str = "email") -> dict:
     """Notify the OpenCode instance owner by email or SMS.
 
     Email requires a verified email address and renders Markdown into a themed

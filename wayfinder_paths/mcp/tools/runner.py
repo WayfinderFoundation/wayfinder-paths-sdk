@@ -136,7 +136,7 @@ async def core_runner(
     Args:
         sock_path: Override the daemon socket (default: standard runner location).
         notify_session_on_success: Post successful runs into chat. Defaults false to keep
-            routine scheduled checks quiet; use script-level `notification_email`/`NotifyClient`
+            routine scheduled checks quiet; use script-level `notification_send`/`NotifyClient`
             for owner alerts or print `WAYFINDER_JOB_RESULT {"summary": "...",
             "instructions": "..."}` for conditional chat callbacks.
         debug: Verbose response payload for troubleshooting.

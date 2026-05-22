@@ -94,7 +94,7 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_set_active_chart,
     visual_set_active_market,
 )
-from wayfinder_paths.mcp.tools.notify import notification_email
+from wayfinder_paths.mcp.tools.notify import notification_send
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
     polymarket_deposit_pusd,
@@ -213,7 +213,7 @@ def build_mcp(
     mcp.tool()(research_search_perp)
     mcp.tool()(research_search_borrow_routes)
 
-    # ─── visual_* + notification_email (opencode-only) ─────────────────
+    # ─── visual_* + notification_send (opencode-only) ─────────────────
     if is_opencode_instance():
         mcp.tool()(visual_get_frontend_context)
         mcp.tool()(visual_search_chart_series)
@@ -224,7 +224,7 @@ def build_mcp(
         mcp.tool()(visual_add_workspace_chart_annotation)
         mcp.tool()(visual_add_workspace_chart_overlay)
         mcp.tool()(visual_clear_chart_workspace)
-        mcp.tool()(notification_email)
+        mcp.tool()(notification_send)
 
     return mcp
 

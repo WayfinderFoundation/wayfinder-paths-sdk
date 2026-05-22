@@ -82,7 +82,7 @@ def test_mcp_catalog_exposes_shells_tools_in_opencode(monkeypatch) -> None:
     assert "visual_get_frontend_context" in names
     assert "visual_set_active_market" in names
     assert "visual_create_chart" in names
-    assert "notification_email" in names
+    assert "notification_send" in names
 
 
 def test_opencode_agents_scope_single_mcp_tool_names() -> None:
@@ -98,7 +98,7 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_polymarket_*"] == "allow"
     assert primary["wayfinder_contracts_*"] == "allow"
     assert primary["wayfinder_visual_*"] == "deny"
-    assert primary["wayfinder_notification_email"] == "allow"
+    assert primary["wayfinder_notification_send"] == "allow"
     assert primary["wayfinder_research_*"] == "deny"
     assert primary["wayfinder_core_run_script"] == "ask"
     assert primary["wayfinder_onchain_swap"] == "ask"
@@ -152,7 +152,7 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_polymarket_*": "allow",
         "wayfinder_contracts_*": "allow",
         "wayfinder_visual_*": "deny",
-        "wayfinder_notification_email": "allow",
+        "wayfinder_notification_send": "allow",
         "wayfinder_research_*": "deny",
         "wayfinder_core_run_script": "ask",
         "wayfinder_core_run_strategy": "ask",

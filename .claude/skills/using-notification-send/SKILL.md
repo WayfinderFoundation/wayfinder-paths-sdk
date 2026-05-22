@@ -1,5 +1,5 @@
 ---
-name: using-notification-email
+name: using-notification-send
 description: How to email or text the Wayfinder Shells instance owner from agents/scripts via the notify MCP tool or NotifyClient (Markdown body rendered to themed HTML for email, throttled).
 metadata:
   tags: wayfinder, shells, notify, email, opencode
@@ -12,7 +12,7 @@ Notify the user who owns this Wayfinder Shells instance. Email renders Markdown 
 **MCP tool (preferred from agents):**
 
 ```
-notification_email(
+notification_send(
   title="Rebalance complete",
   message="Moved **50 USDC** from Aave → Morpho.\n\n- tx: 0x…\n- new APY: 7.4%",
 )
