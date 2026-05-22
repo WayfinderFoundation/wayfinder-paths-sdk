@@ -185,6 +185,8 @@ Use `marketFindings` for any market-specific research, including prediction-mark
 
 Every factual claim in `summary`, `keyFindings`, `marketFindings`, `verifiedMetrics`, and `announcements` must cite at least one source. Cite inline with `[sN]` matching `sources[].id` (e.g. "TVL is $2.1B [s1]").
 
-Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params). Prefer primary sources — official docs, blogs, governance posts, exchange notices, X posts from verified protocol accounts. One canonical URL per source; don't pad with mirrors or aggregators. For tool-derived data (Delta Lab, DeFiLlama, Goldsky), use the tool name + dataset as `title` and the tool's documentation URL as `url` when no per-row link exists.
+Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params). 
+
+Prefer primary sources — official docs, blogs, governance posts, exchange notices, X posts from verified protocol accounts.
 
 The primary agent renders these as Markdown hyperlinks to the user, so titles must be human-readable and URLs must resolve.
