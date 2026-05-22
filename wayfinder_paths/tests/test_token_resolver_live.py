@@ -5,6 +5,7 @@ import os
 
 import pytest
 
+from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
@@ -188,6 +189,63 @@ class TestCoingeckoIdQueries:
         meta = await TokenResolver.resolve_token_meta("WETH-ethereum")
         assert meta["chain_id"] == CHAIN_CODE_TO_ID["ethereum"]
         assert meta["address"].lower() != ZERO_ADDRESS.lower()
+
+
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
+    reason="Live token resolver tests — local only",
+)
+class TestLenientTokenQueries:
+    expected_polygon_usdc = "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359"
+
+    @staticmethod
+    def _assert_polygon_usdc(meta: dict):
+        assert meta["symbol"].lower() == "usdc"
+        assert meta["decimals"] == 6
+        assert meta["address"].lower() == TestLenientTokenQueries.expected_polygon_usdc
+        chain = meta.get("chain") or {}
+        assert (
+            int(meta.get("chain_id") or chain.get("id")) == CHAIN_CODE_TO_ID["polygon"]
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "usdc-polygon",
+            "polygon_usdc",
+            "polygon-usdc",
+            "polygon:usdc",
+            "polygon usdc",
+        ],
+    )
+    async def test_token_detail_resolves_chain_scoped_symbol_shorthands(self, query):
+        meta = await TOKEN_CLIENT.get_token_details(query)
+        self._assert_polygon_usdc(meta)
+
+    @pytest.mark.asyncio
+    async def test_token_detail_resolves_symbol_with_chain_id(self):
+        meta = await TOKEN_CLIENT.get_token_details(
+            "usdc", chain_id=CHAIN_CODE_TO_ID["polygon"]
+        )
+        self._assert_polygon_usdc(meta)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "query",
+        [
+            f"polygon_{expected_polygon_usdc}",
+            f"polygon-{expected_polygon_usdc}",
+            f"polygon:{expected_polygon_usdc}",
+            f"polygon {expected_polygon_usdc}",
+            f"{expected_polygon_usdc}-polygon",
+            f"{expected_polygon_usdc}:polygon",
+            f"{expected_polygon_usdc} polygon",
+        ],
+    )
+    async def test_token_detail_resolves_chain_address_near_misses(self, query):
+        meta = await TOKEN_CLIENT.get_token_details(query)
+        self._assert_polygon_usdc(meta)
 
 
 @pytest.mark.skipif(
