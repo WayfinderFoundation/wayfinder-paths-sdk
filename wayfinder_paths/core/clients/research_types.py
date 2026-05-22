@@ -165,12 +165,23 @@ class ResearchSocialXSearchRequest(TypedDict):
     toDate: NotRequired[str]
 
 
+class ResearchSocialXSearchQuery(TypedDict):
+    query: str
+    allowedXHandles: list[str] | None
+    excludedXHandles: list[str] | None
+    fromDate: str | None
+    toDate: str | None
+
+
+class ResearchSocialXSearchResult(TypedDict):
+    content: str
+    citations: list[Any]
+    inlineCitations: list[Any]
+
+
 class ResearchSocialXSearchResponse(TypedDict):
-    query: dict[str, Any]
-    result: dict[str, Any]
-    provider: dict[str, Any]
-    usage: ResearchWebSearchUsage
-    context: dict[str, Any]
+    query: ResearchSocialXSearchQuery
+    result: ResearchSocialXSearchResult
 
 
 class ResearchGatewayErrorBody(TypedDict, total=False):
