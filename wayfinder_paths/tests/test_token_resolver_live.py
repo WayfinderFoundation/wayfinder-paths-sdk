@@ -250,6 +250,35 @@ class TestLenientTokenQueries:
 
 @pytest.mark.skipif(
     os.environ.get("CI") == "true",
+    reason="Live token classification tests — local only",
+)
+class TestFuzzyTokenClassificationAccuracy:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("query", "chain", "expected_symbol", "expected_chain"),
+        [
+            ("usdc", "polygon", "USDC", "polygon"),
+            ("usdc", "base", "USDC", "base"),
+            ("weth", "arbitrum", "WETH", "arbitrum"),
+            ("weth", "base", "WETH", "base"),
+            ("usdt", "ethereum", "USDT", "ethereum"),
+            ("hype", "hyperevm", "HYPE", "hyperevm"),
+        ],
+    )
+    async def test_fuzzy_search_top_result_matches_expected_chain_asset(
+        self, query, chain, expected_symbol, expected_chain
+    ):
+        result = await TOKEN_CLIENT.fuzzy_search(query, chain=chain)
+        tokens = result.get("tokens", [])
+
+        assert tokens, f"Expected at least one fuzzy result for {query} on {chain}"
+        top = tokens[0]
+        assert (top.get("symbol") or "").lower() == expected_symbol.lower()
+        assert (top.get("chain") or "").lower() == expected_chain.lower()
+
+
+@pytest.mark.skipif(
+    os.environ.get("CI") == "true",
     reason="Live onchain_quote_swap test — local only",
 )
 class TestQuoteSwapLive:
