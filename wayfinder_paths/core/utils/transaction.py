@@ -15,6 +15,7 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
+    MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
@@ -151,10 +152,16 @@ async def gas_price_transaction(transaction: dict):
 
             transaction["maxFeePerGas"] = int(
                 base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                + priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+                + max(
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
+                )
             )
             transaction["maxPriorityFeePerGas"] = int(
-                priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+                max(
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
+                )
             )
 
     return transaction
