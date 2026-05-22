@@ -37,6 +37,10 @@ permission:
   wayfinder_polymarket_deposit_pusd: ask
   wayfinder_polymarket_withdraw_pusd: ask
   wayfinder_polymarket_redeem_positions: ask
+  # shells_*
+  wayfinder_shells_*: allow
+  # research_* — delegated to wayfinder-research subagent
+  wayfinder_research_*: deny
 ---
 
 # Wayfinder
