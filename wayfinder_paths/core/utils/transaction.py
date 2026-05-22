@@ -190,10 +190,13 @@ async def gas_limit_transaction(transaction: dict):
         # Fallback if block gasLimit isn't available.
         return 3_000_000
 
+    rpc_errors: list[str] = []
+
     async def _estimate_gas(web3: AsyncWeb3, transaction: dict) -> int:
         try:
             return await web3.eth.estimate_gas(transaction, block_identifier="latest")
         except Exception as e:
+            rpc_errors.append(f"{web3.provider.endpoint_uri}: {e}")
             logger.info(
                 f"Failed to estimate gas using {web3.provider.endpoint_uri}. Error: {e}"
             )
@@ -217,8 +220,9 @@ async def gas_limit_transaction(transaction: dict):
                 transaction["gas"] = fallback_gas
                 return transaction
 
-            logger.error("Gas estimation failed on all RPCs")
-            raise Exception("Gas estimation failed on all RPCs")
+            detail = "; ".join(rpc_errors) if rpc_errors else "no errors captured"
+            logger.error(f"Gas estimation failed on all RPCs: {detail}")
+            raise Exception(f"Gas estimation failed on all RPCs: {detail}")
 
         # Add a defensive buffer. Some transactions (especially swaps) can use more gas
         # at execution time than at estimation time due to state changes between
