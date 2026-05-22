@@ -150,16 +150,19 @@ async def gas_price_transaction(transaction: dict):
             base_fee = max(base_fees)
             priority_fee = max(priority_fees)
 
-            suggested_priority_fee = int(
-                priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
-            )
-            min_priority_fee = MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0)
-            final_priority_fee = max(suggested_priority_fee, min_priority_fee)
-
             transaction["maxFeePerGas"] = int(
-                base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER + final_priority_fee
+                base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
+                + max(
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
+                )
             )
-            transaction["maxPriorityFeePerGas"] = final_priority_fee
+            transaction["maxPriorityFeePerGas"] = int(
+                max(
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
+                )
+            )
 
     return transaction
 
