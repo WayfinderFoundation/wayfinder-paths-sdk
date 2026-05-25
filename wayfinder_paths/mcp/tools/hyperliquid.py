@@ -979,8 +979,9 @@ async def _place_outcome_order(
         mid = mids.get(asset_name)
         if mid is None or float(mid) <= 0:
             return err("price_error", f"Could not resolve mid price for {asset_name}")
-        # HL validates outcome minimum as size * mid >= 10 USDC
-        min_size = math.ceil(10 / float(mid))
+        # HL validates outcome minimum as size * mid >= 10 USDC;
+        # mid can drift between fetch and validation so pad by +1
+        min_size = math.ceil(10 / float(mid)) + 1
         size_i = max(min_size, math.ceil(float(usd_amount) / float(mid)))
         sizing = {
             "source": "usd_amount",
