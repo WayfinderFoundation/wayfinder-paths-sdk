@@ -999,13 +999,6 @@ async def _place_outcome_order(
         cloid=cloid,
         address=sender,
     )
-    if not ok_order and res["status"] == "ok":
-        for s in res["response"]["data"]["statuses"]:
-            if "error" in s and "Insufficient spot balance" in s["error"]:
-                s["error"] += (
-                    " — Outcome markets are purchased using USDC, "
-                    "ensure you have sufficient USDC balance."
-                )
     effects.append(
         {"type": "hl", "label": "place_outcome_order", "ok": ok_order, "result": res}
     )
