@@ -490,7 +490,12 @@ async def visual_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
 ) -> dict[str, Any]:
-    """Append a raw overlay or event marker set to a workspace or default chart."""
+    """Append a raw overlay or event marker set to a workspace or default chart.
+
+    For event marker sets, use overlay = {"type": "event_markers", "data": [...]}
+    with each event using {time, price?, label?/text?, color?}. The legacy
+    key "markers" is accepted and normalized to "data".
+    """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
     try:

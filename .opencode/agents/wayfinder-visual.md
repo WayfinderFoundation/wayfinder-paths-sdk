@@ -45,6 +45,7 @@ Use `visual_set_active_market` for a single tradable market request such as "sho
 Single-token chart fast path:
 
 - If the primary asks to chart/show/plot one token or market, prefer the main pane via `visual_set_active_market`; do not create a workspace chart.
+- `visual_set_active_market` queues a frontend switch request. It is not proof that the screen has already changed. If the returned `frontend_context.chart.market_id` is still different from the requested `active_market_request.market_id`, report the switch as requested/pending instead of claiming the market is visible.
 - If the token is an onchain/swap asset rather than a verified Hyperliquid perp, call `visual_set_active_market` with `market_type="onchain-spot"` and the token query or exact onchain market id.
 - Do not call `visual_search_chart_series`, `visual_create_chart`, `core_run_script`, or quant-style data generation for a simple single-token main-pane chart.
 - If `visual_set_active_market` cannot resolve the market, report the failure in `failedSeries`/`needsClarification` with the query used; do not substitute a speculative perp or funding series.
@@ -74,6 +75,8 @@ Other minimal source examples:
 
 Do not invent IDs. If exact IDs are not provided, find them with `visual_search_chart_series` and copy the returned `source` object. Use inline points only for a small derived series or when no registry/source-backed series exists.
 
+If the primary agent passes exact source objects or exact `dataset_id`/`params`/`y_field` values, do not search for the same series again. Create or update the workspace chart directly with those sources unless validation fails.
+
 For Delta Lab, APY, funding, lending, Pendle, borrow-route, basis, and time-series charts:
 
 - Call `visual_search_chart_series` before creating the chart, but use it only for discovery. A successful search is not a rendered chart. If the task asks to plot, chart, show, draw, or update the workspace, complete the render by creating/updating a workspace chart in the main chart pane.
@@ -96,6 +99,7 @@ Relative performance:
 - Search or use exact price sources for each asset.
 - Create a line workspace chart with one series per asset.
 - Apply `{"type":"rebase","base":100}` to each price series.
+- Use visibly distinct colors. Do not put two comparison assets in near-identical brand colors (for example ZEC orange and BTC orange); keep the first natural color if useful, then choose contrasting green/blue/yellow/red/purple for the rest.
 - State the shared lookback and base timestamp in `viewSummary`.
 
 VIRTUAL APY/funding/net:
@@ -113,7 +117,19 @@ Keep artifact specs compact. Prefer source references inside the spec; do not wr
 
 Use TradingView annotations when applying markers or labels to a live/default chart. Use workspace charts when the requested visualization is derived, multi-series, or not a single tradable instrument.
 
+Live/default chart annotations:
+
+- Call `visual_get_frontend_context()` immediately before annotating and use the exact returned `frontend_context.chart.id` as `chart_id`, for example `hl-perp-zec`. Do not use bare symbols like `ZEC`, feed ids, or display symbols like `ZEC-USDC` when the exact chart id is available.
+- Use `vertical_line` for date-only catalysts and `text_label` only when you have a chart-relevant price anchor. Prefer a few high-signal annotations over dense labels.
+- Prefer ISO-8601 timestamps such as `"2026-05-21T06:00:00Z"` in annotation configs and event markers. Do not hand-compute Unix seconds.
+- For bulk catalyst markers, use `visual_add_workspace_chart_overlay` with `overlay={"type":"event_markers","id":"...","data":[...]}`. Each event needs `time` plus `label` or `text`, with optional `price`, `color`, and `shape`. Do not use a top-level `markers` key unless you are repairing legacy state.
+- After adding annotations, inspect the returned `chart_workspace.defaultAnnotations[chart_id]` and verify the expected annotation ids or count are present. If they are missing, report the failure instead of saying the chart is annotated.
+
 Use `visual_create_chart` for a new visual pane, `visual_set_active_chart` before modifying a specific existing pane, `visual_add_workspace_chart_series` for additional series, and annotation/overlay tools only after the target chart is known.
+
+After creating or importing a workspace chart, verify the returned workspace state includes the expected chart id as `activeChartId` before claiming success. If the saved workspace state is missing the expected chart, return the failure in `failedSeries` or `needsClarification` instead of saying the chart is visible.
+
+Describe workspace navigation accurately: workspace charts render as chart cards in the main chart area, not inside the command/search palette. When at least one workspace chart exists, the chart header shows a small chart-mode icon toggle; from the live market it opens the saved workspace charts, and from workspace mode it returns to the live market. If no workspace charts exist, there is no toggle.
 
 If data is missing, a tool call stalls/fails, or a series fails to render, report the failed series/source in `viewSummary` or `needsClarification` rather than claiming success. If you did not call `visual_create_chart` or update an existing workspace chart, the chart is not done. Do not return a chart-series availability report as the final result for a charting task.
 

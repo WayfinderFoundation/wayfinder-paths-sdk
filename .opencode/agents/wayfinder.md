@@ -37,11 +37,14 @@ permission:
   wayfinder_polymarket_deposit_pusd: ask
   wayfinder_polymarket_withdraw_pusd: ask
   wayfinder_polymarket_redeem_positions: ask
-  # visual_* — primary can inspect/switch/search; workspace mutations delegate
+  # visual_* — primary can inspect/switch/search and annotate the live chart;
+  # workspace chart creation/series mutations delegate
   wayfinder_visual_*: deny
   wayfinder_visual_get_frontend_context: allow
   wayfinder_visual_set_active_market: allow
   wayfinder_visual_search_chart_series: allow
+  wayfinder_visual_add_workspace_chart_annotation: allow
+  wayfinder_visual_add_workspace_chart_overlay: allow
   # notification_send — main agent owns user-facing notifications
   wayfinder_notification_send: allow
   # research_* — delegated to wayfinder-research subagent
@@ -298,8 +301,10 @@ Use direct visual tools for cheap chart orchestration before involving subagents
 
 - Use `visual_get_frontend_context` to understand the current chart/market when the user says "this", "it", "current chart", or asks to modify an existing view.
 - Use `visual_set_active_market` for a single tradable market request such as "show BTC", "chart PROMPT", or "switch to ETH perp". Prefer `market_type="onchain-spot"` for swap/onchain assets that are not confirmed Hyperliquid perps.
+- `visual_set_active_market` can return an `active_market_request` before the browser has applied it. Do not say the chart switched unless the returned/current `frontend_context.chart.market_id` matches the requested market. Otherwise say the switch was requested and may apply on the next frontend poll.
 - Use `visual_search_chart_series` only to look up backend-supported series/source references for a chart request. A search result is not a rendered chart.
-- Delegate workspace chart creation/mutation to `wayfinder-visual`: comparisons, relative performance, APY/funding/lending/basis charts, annotations, overlays, and derived/multi-series panes.
+- Use `visual_add_workspace_chart_annotation` or `visual_add_workspace_chart_overlay` directly for simple live/current chart annotations after reading `visual_get_frontend_context`; pass the exact `frontend_context.chart.id`, use ISO timestamps, use `event_markers.data` for bulk events, and verify `chart_workspace.defaultAnnotations[chart_id]` contains the expected annotations before claiming completion.
+- Delegate workspace chart creation/mutation to `wayfinder-visual`: comparisons, relative performance, APY/funding/lending/basis charts, and derived/multi-series panes.
 - Do not call `wayfinder-quant` for simple iteration, single-token chart routing, or source-backed chart comparisons the visual tools can render.
 
 When delegating chart work, pass the exact user request, current chart context if relevant, exact series/source IDs you already found, desired lookback/window, and units/formulas. Do not ask the visual agent to rediscover data you already resolved.
@@ -339,6 +344,10 @@ Shells frontend controller: chart context, default market switching, chart works
 #### Completion Criteria
 
 If the user asks to plot, chart, graph, compare over time, show the working chart, update the reporting interface, or draw a series in the workspace, do not stop at a file path, PNG, CSV, artifact, or command-palette search result — always finish the render.
+
+Only tell the user a workspace chart is visible after `wayfinder-visual` returns a persisted `workspaceState.activeChartId` and the expected chart id. If the visual worker returns only search results, file paths, or a failure/empty workspace state, say the chart was not rendered and report the specific blocker.
+
+Workspace charts render in the main chart pane. The command/search palette is for finding markets and creating chart datasets, not for showing finished charts. When workspace charts exist, users can switch between the live market chart and saved workspace charts with the chart header's small chart-mode icon toggle.
 
 ## User Suggestions
 
