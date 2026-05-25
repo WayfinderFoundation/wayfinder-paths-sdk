@@ -37,6 +37,12 @@ permission:
   wayfinder_polymarket_deposit_pusd: ask
   wayfinder_polymarket_withdraw_pusd: ask
   wayfinder_polymarket_redeem_positions: ask
+  # visual_* — delegated to wayfinder-visual subagent
+  wayfinder_visual_*: deny
+  # notification_send — main agent owns user-facing notifications
+  wayfinder_notification_send: allow
+  # research_* — delegated to wayfinder-research subagent
+  wayfinder_research_*: deny
 ---
 
 # Wayfinder
@@ -146,7 +152,7 @@ Before any order is placed, the Hyperliquid Adapter enforces [Unified Account mo
 | HIP-3 `cash`  | USDT                                                                      |
 | HIP-3 `hyna`  | USDE                                                                      |
 | Spot          | For market {A} - {B}, {B} is the quote asset, typically: USDC, USDH, USDT |
-| HIP-4 Outcome | USDH in spot account                                                      |
+| HIP-4 Outcome | USDC in spot account                                                      |
 
 If a user is on a legacy split account, migration may require closing positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before order placement, but can fail mid-state if open positions or stuck spot balances block the switch.
 
@@ -220,7 +226,7 @@ core_runner(action="daemon_stop")
 
 #### Noise
 
-- For recurring alert scripts, store local state and call `shells_notify`/`NotifyClient` only on edge transitions with cooldown/hysteresis; never call notify on every poll.
+- For recurring alert scripts, store local state and call `notification_send`/`NotifyClient` only on edge transitions with cooldown/hysteresis; never call notify on every poll.
 - If a successful job needs to hand control back to chat without notifying externally, print a single-line runner marker: `WAYFINDER_JOB_RESULT {"summary":"Funding crossover detected","instructions":"Research whether to unroll the position, then propose the unwind script.","severity":"warning"}`.
 - When a `job_result` does post into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
 - Position-bound monitors must verify the live position still exists and matches expected side, size/notional, leverage, and margin mode before alerting.

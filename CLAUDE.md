@@ -189,7 +189,7 @@ When a user wants **immediate, one-off execution**:
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
 - **On-chain:** use `mcp__wayfinder__onchain_swap` (cross-chain / cross-DEX swaps via BRAP) or `mcp__wayfinder__onchain_send` (ERC-20 / native transfers). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
 - **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
-  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
+  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDC on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
   - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
   Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
@@ -220,7 +220,7 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDH**, not USDC), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
+HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDC**), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
 Polymarket quick flows:
 

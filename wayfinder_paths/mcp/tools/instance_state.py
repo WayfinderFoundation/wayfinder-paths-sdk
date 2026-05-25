@@ -95,7 +95,7 @@ def _normalize_chart_series_for_display(
 
 
 @catch_errors
-async def shells_get_frontend_context() -> dict[str, Any]:
+async def visual_get_frontend_context() -> dict[str, Any]:
     """Read the current frontend UI state.
 
     Returns what the user is currently viewing plus any chart workspace
@@ -110,7 +110,7 @@ async def shells_get_frontend_context() -> dict[str, Any]:
 
 
 @catch_errors
-async def shells_search_chart_series(
+async def visual_search_chart_series(
     query: str,
     kind: str | None = None,
     venue: str | None = None,
@@ -148,7 +148,7 @@ async def shells_search_chart_series(
 
 
 @catch_errors
-async def shells_set_active_market(
+async def visual_set_active_market(
     query: str | None = None,
     market_id: str | None = None,
     market_type: str | None = None,
@@ -160,7 +160,7 @@ async def shells_set_active_market(
     Use this for requests like "show AAVE", "switch to PENGU perp", "chart
     PROMPT", or "open this Polymarket market". This updates the live chart,
     order book, trades, and trade ticket together. Prefer this over
-    `shells_create_chart` when the user wants a single tradable token, perp,
+    `visual_create_chart` when the user wants a single tradable token, perp,
     spot, or prediction market rather than a custom visual pane. For onchain
     swap-token charts, pass market_type="onchain-spot" instead of searching
     chart-series candidates.
@@ -194,7 +194,7 @@ async def shells_set_active_market(
 
 
 @catch_errors
-async def shells_create_chart(
+async def visual_create_chart(
     chart_id: str,
     title: str,
     kind: str,
@@ -217,14 +217,14 @@ async def shells_create_chart(
     Supported chart kinds:
       - price_candle: primary market price chart. Use source type
         {"type": "market_price", "market_id": "..."} or a dataset_series
-        returned by `shells_search_chart_series` for Hyperliquid perp prices.
+        returned by `visual_search_chart_series` for Hyperliquid perp prices.
       - line: one or more time series.
       - bar: ranked/latest categorical values.
       - table: tabular data.
 
     Supported source types:
       - market_price: {"type": "market_price", "market_id": "hl-perp-btc"}
-      - dataset_series: use `shells_search_chart_series` and copy the returned
+      - dataset_series: use `visual_search_chart_series` and copy the returned
         source object. Preferred for assets, funding, APYs, Delta Lab registry
         series, DeFiLlama snapshots, and CoinGecko fallback prices.
       - delta_lab_asset: {"type": "delta_lab_asset", "symbol": "USDC",
@@ -284,7 +284,7 @@ async def shells_create_chart(
 
 
 @catch_errors
-async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
+async def visual_set_active_chart(chart_id: str) -> dict[str, Any]:
     """Focus an existing chart in the shell chart workspace."""
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -301,7 +301,7 @@ async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
 
 
 @catch_errors
-async def shells_add_workspace_chart_series(
+async def visual_add_workspace_chart_series(
     chart_id: str,
     series: dict[str, Any],
 ) -> dict[str, Any]:
@@ -324,7 +324,7 @@ async def shells_add_workspace_chart_series(
 
 
 @catch_errors
-async def shells_add_workspace_chart_annotation(
+async def visual_add_workspace_chart_annotation(
     chart_id: str,
     type: str,
     config: dict[str, Any],
@@ -332,7 +332,7 @@ async def shells_add_workspace_chart_annotation(
 ) -> dict[str, Any]:
     """Add a TradingView annotation to a workspace or default Shells chart.
 
-    Use `shells_get_frontend_context()` to read the current default chart id,
+    Use `visual_get_frontend_context()` to read the current default chart id,
     then pass that chart_id here. If chart_id matches an agent-created
     workspace chart, the annotation attaches there. Otherwise it attaches to
     the default live chart for that id.
@@ -365,7 +365,7 @@ async def shells_add_workspace_chart_annotation(
 
 
 @catch_errors
-async def shells_add_workspace_chart_overlay(
+async def visual_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
 ) -> dict[str, Any]:
@@ -383,7 +383,7 @@ async def shells_add_workspace_chart_overlay(
 
 
 @catch_errors
-async def shells_clear_chart_workspace() -> dict[str, Any]:
+async def visual_clear_chart_workspace() -> dict[str, Any]:
     """Remove all agent-created workspace charts."""
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)

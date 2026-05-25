@@ -6,7 +6,7 @@ from wayfinder_paths.mcp.tools import instance_state
 
 
 @pytest.mark.asyncio
-async def test_shells_create_chart_normalizes_delta_lab_rate_fields(
+async def test_visual_create_chart_normalizes_delta_lab_rate_fields(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
@@ -23,7 +23,7 @@ async def test_shells_create_chart_normalizes_delta_lab_rate_fields(
         fake_upsert,
     )
 
-    result = await instance_state.shells_create_chart(
+    result = await instance_state.visual_create_chart(
         chart_id="ena-yield",
         title="ENA yield",
         kind="line",
@@ -56,7 +56,7 @@ async def test_shells_create_chart_normalizes_delta_lab_rate_fields(
 
 
 @pytest.mark.asyncio
-async def test_shells_create_chart_annualizes_funding_to_percent(monkeypatch) -> None:
+async def test_visual_create_chart_annualizes_funding_to_percent(monkeypatch) -> None:
     monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
 
     captured: dict[str, object] = {}
@@ -71,7 +71,7 @@ async def test_shells_create_chart_annualizes_funding_to_percent(monkeypatch) ->
         fake_upsert,
     )
 
-    await instance_state.shells_create_chart(
+    await instance_state.visual_create_chart(
         chart_id="ena-funding",
         title="ENA funding",
         kind="line",

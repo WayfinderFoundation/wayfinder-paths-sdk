@@ -71,7 +71,7 @@ def test_mcp_catalog_exposes_expected_non_shell_tools() -> None:
     assert "polymarket_place_market_order" in names
     assert "polymarket_deposit_pusd" in names
     assert "contracts_deploy" in names
-    assert "shells_create_chart" not in names
+    assert "visual_create_chart" not in names
 
 
 def test_mcp_catalog_exposes_shells_tools_in_opencode(monkeypatch) -> None:
@@ -79,10 +79,10 @@ def test_mcp_catalog_exposes_shells_tools_in_opencode(monkeypatch) -> None:
 
     names = _tool_names(mcp_server.build_mcp())
 
-    assert "shells_get_frontend_context" in names
-    assert "shells_set_active_market" in names
-    assert "shells_create_chart" in names
-    assert "shells_notify" in names
+    assert "visual_get_frontend_context" in names
+    assert "visual_set_active_market" in names
+    assert "visual_create_chart" in names
+    assert "notification_send" in names
 
 
 def test_opencode_agents_scope_single_mcp_tool_names() -> None:
@@ -97,7 +97,9 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_hyperliquid_*"] == "allow"
     assert primary["wayfinder_polymarket_*"] == "allow"
     assert primary["wayfinder_contracts_*"] == "allow"
-    assert "wayfinder_research_*" not in primary
+    assert primary["wayfinder_visual_*"] == "deny"
+    assert primary["wayfinder_notification_send"] == "allow"
+    assert primary["wayfinder_research_*"] == "deny"
     assert primary["wayfinder_core_run_script"] == "ask"
     assert primary["wayfinder_onchain_swap"] == "ask"
     assert primary["wayfinder_onchain_send"] == "ask"
@@ -131,11 +133,11 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_research_*")
 
     assert visual["wayfinder_*"] == "deny"
-    assert visual["wayfinder_shells_*"] == "allow"
+    assert visual["wayfinder_visual_*"] == "allow"
     assert visual["wayfinder_core_run_script"] == "allow"
     assert visual["wayfinder_core_web_search"] == "allow"
     assert visual["wayfinder_core_web_fetch"] == "allow"
-    _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
+    _assert_rule_order(visual, "wayfinder_*", "wayfinder_visual_*")
 
 
 def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
@@ -149,6 +151,9 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_hyperliquid_*": "allow",
         "wayfinder_polymarket_*": "allow",
         "wayfinder_contracts_*": "allow",
+        "wayfinder_visual_*": "deny",
+        "wayfinder_notification_send": "allow",
+        "wayfinder_research_*": "deny",
         "wayfinder_core_run_script": "ask",
         "wayfinder_core_run_strategy": "ask",
         "wayfinder_core_runner": "ask",
@@ -210,12 +215,12 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         key: value for key, value in visual.items() if key.startswith("wayfinder_")
     } == {
         "wayfinder_*": "deny",
-        "wayfinder_shells_*": "allow",
+        "wayfinder_visual_*": "allow",
         "wayfinder_core_run_script": "allow",
         "wayfinder_core_web_search": "allow",
         "wayfinder_core_web_fetch": "allow",
     }
-    _assert_rule_order(visual, "wayfinder_*", "wayfinder_shells_*")
+    _assert_rule_order(visual, "wayfinder_*", "wayfinder_visual_*")
 
 
 def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> None:
@@ -227,7 +232,7 @@ def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> No
 
     assert "Single-token chart fast path" in visual
     assert 'market_type="onchain-spot"' in visual
-    assert "Do not call `shells_search_chart_series`" in visual
+    assert "Do not call `visual_search_chart_series`" in visual
     assert "do not substitute a speculative perp or funding series" in visual
 
 

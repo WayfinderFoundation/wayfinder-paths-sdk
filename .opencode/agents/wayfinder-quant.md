@@ -82,7 +82,7 @@ If the requested analysis needs a visual workspace update, return chart-ready da
 
 Chart handoff rules:
 
-- Prefer registry/source IDs or Delta Lab identifiers that the visual agent can search with `shells_search_chart_series`.
+- Prefer registry/source IDs or Delta Lab identifiers that the visual agent can search with `visual_search_chart_series`.
 - If no registry series exists, include a bounded inline series suitable for workspace rendering, not a giant raw DataFrame.
 - Include units, y-axis labels, lookback, frequency, transforms, and whether APY values are already percentages or decimals.
 - For `visualSpec`, either emit percent-scaled values (`0.12` becomes `12`) with unit `%`, or explicitly include scale transforms for the visual worker. Never hand off raw Delta Lab decimal APY/rate values while labeling them as `%`.
