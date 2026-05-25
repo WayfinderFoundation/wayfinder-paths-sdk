@@ -41,8 +41,10 @@ def test_paths_api_client_defaults_avoid_slow_ipv6_fallback(monkeypatch):
     client_kwargs = captured["client_kwargs"]
     timeout = client_kwargs["timeout"]
     assert client.base_url == "https://paths.example"
-    assert timeout.connect == 2.0
+    assert timeout.connect == 10.0
     assert timeout.read == 60.0
+    assert timeout.write == 300.0
+    assert timeout.pool == 5.0
     assert client_kwargs["transport"] is transport
     assert captured["transport_kwargs"] == {"local_address": "0.0.0.0"}
 
