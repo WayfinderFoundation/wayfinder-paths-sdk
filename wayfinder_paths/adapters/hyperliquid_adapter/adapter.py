@@ -53,7 +53,7 @@ MAINNET = "Mainnet"
 # ships sideSpecs=[Yes, No] for the binary daily, so 0=YES and 1=NO —
 # but multi-outcome contracts may reorder, so always read sideSpecs[side].name
 # instead of hardcoding a YES/NO convention.
-# Collateral: outcomes settle in USDC (migrated from USDH as of May 2026).
+# Collateral: outcomes settle in USDC.
 
 
 def outcome_encoding(outcome_id: int, side: int) -> int:
