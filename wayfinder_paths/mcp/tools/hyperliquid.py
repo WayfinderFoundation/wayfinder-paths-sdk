@@ -982,7 +982,15 @@ async def _place_outcome_order(
         # HL validates outcome minimum as size * mid >= 10 USDC;
         # mid can drift between fetch and validation so pad by +1
         min_size = math.ceil(10 / float(mid)) + 1
-        size_i = max(min_size, math.ceil(float(usd_amount) / float(mid)))
+        size_i = math.ceil(float(usd_amount) / float(mid))
+        if size_i < min_size:
+            min_usd = round(min_size * float(mid), 2)
+            return err(
+                "min_size",
+                f"Minimum order for this market is ~${min_usd} USDC "
+                f"({min_size} contracts at mid {float(mid):.5f}). "
+                f"Requested ${float(usd_amount)}.",
+            )
         sizing = {
             "source": "usd_amount",
             "usd_amount": float(usd_amount),
