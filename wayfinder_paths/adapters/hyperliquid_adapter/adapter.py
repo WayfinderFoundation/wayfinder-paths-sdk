@@ -866,11 +866,11 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
-        """HIP-4 outcome markets. priceBinary outcomes are flat entries;
-        priceBucket questions group their named outcomes (Yes-side only —
-        the No leg is redundant since exactly one named outcome settles
-        Yes). The fallback outcome is dropped from the response.
-        Unknown classes are skipped."""
+        """HIP-4 outcome markets. Three classes:
+        - priceBinary: flat binary above/below contracts.
+        - priceBucket: grouped price-range questions (BTC range buckets).
+        - named: free-form questions with named outcomes (e.g. CPI).
+        Fallback outcomes are dropped from the response."""
         meta = await asyncio.to_thread(get_info().outcome_meta)
         outcomes_by_id = {
             int(outcome["outcome"]): outcome for outcome in meta["outcomes"]
@@ -880,36 +880,61 @@ class HyperliquidAdapter(BaseAdapter):
 
         for question in meta["questions"]:
             spec = parse_outcome_description(question["description"])
-            if spec.get("class") != "priceBucket":
-                continue
-            named: list[dict[str, Any]] = []
-            for named_id in question["namedOutcomes"]:
-                outcome = outcomes_by_id[int(named_id)]
-                grouped.add(int(outcome["outcome"]))
-                bucket_index = parse_outcome_description(outcome["description"])[
-                    "index"
-                ]
-                named.append(
+            if spec.get("class") == "priceBucket":
+                named: list[dict[str, Any]] = []
+                for named_id in question["namedOutcomes"]:
+                    outcome = outcomes_by_id[int(named_id)]
+                    grouped.add(int(outcome["outcome"]))
+                    bucket_index = parse_outcome_description(outcome["description"])[
+                        "index"
+                    ]
+                    named.append(
+                        {
+                            "bucket_index": bucket_index,
+                            "sides": _outcome_sides(
+                                outcome,
+                                _bucket_named_side_descriptions(spec, bucket_index),
+                            ),
+                        }
+                    )
+                grouped.add(int(question["fallbackOutcome"]))
+                markets.append(
                     {
-                        "bucket_index": bucket_index,
-                        "sides": _outcome_sides(
-                            outcome,
-                            _bucket_named_side_descriptions(spec, bucket_index),
-                        ),
+                        "class": "priceBucket",
+                        "description": question["description"],
+                        "underlying": spec["underlying"],
+                        "price_thresholds": spec["priceThresholds"],
+                        "expiry": spec["expiry"],
+                        "period": spec["period"],
+                        "outcomes": named,
                     }
                 )
-            grouped.add(int(question["fallbackOutcome"]))
-            markets.append(
-                {
-                    "class": "priceBucket",
-                    "description": question["description"],
-                    "underlying": spec["underlying"],
-                    "price_thresholds": spec["priceThresholds"],
-                    "expiry": spec["expiry"],
-                    "period": spec["period"],
-                    "outcomes": named,
-                }
-            )
+            elif not spec:
+                named_outcomes: list[dict[str, Any]] = []
+                for named_id in question["namedOutcomes"]:
+                    outcome = outcomes_by_id[int(named_id)]
+                    grouped.add(int(outcome["outcome"]))
+                    named_outcomes.append(
+                        {
+                            "name": outcome["name"],
+                            "sides": _outcome_sides(
+                                outcome,
+                                [
+                                    f"{outcome['name']}: Yes",
+                                    f"{outcome['name']}: No",
+                                ],
+                            ),
+                        }
+                    )
+                grouped.add(int(question["fallbackOutcome"]))
+                markets.append(
+                    {
+                        "class": "named",
+                        "name": question["name"],
+                        "description": question["description"],
+                        "outcomes": named_outcomes,
+                    }
+                )
 
         for outcome in meta["outcomes"]:
             if int(outcome["outcome"]) in grouped:

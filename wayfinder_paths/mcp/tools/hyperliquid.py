@@ -1992,7 +1992,11 @@ async def hyperliquid_search_market(
                 if market["class"] == "priceBinary"
                 else [s for o in market["outcomes"] for s in o["sides"]]
             )
-            text = " ".join(side["description"] for side in sides)
+            text = (
+                market.get("name", "")
+                + " "
+                + " ".join(side["description"] for side in sides)
+            )
             # Side descriptions use math operators (>=, <, <=); the candidate
             # tokenizer strips non-alphanumerics so those would be invisible
             # to MARKET_SEARCH_ALIASES. Rewrite to natural-language words so

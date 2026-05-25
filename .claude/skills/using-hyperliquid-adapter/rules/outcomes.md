@@ -1,6 +1,12 @@
 # HIP-4 outcome markets (binary / multi-outcome prediction contracts)
 
-HIP-4 is a hypercore-native prediction-contract surface. Phase 1 ships **binary daily markets** (e.g. "BTC > $78,213 by 06:00 UTC"); the protocol generalizes to multi-outcome later. Outcomes settle daily at **06:00 UTC**, after which the `outcome_id` rolls and old ids stop trading.
+HIP-4 is a hypercore-native prediction-contract surface. Three market classes:
+
+- **priceBinary** — daily above/below contracts (e.g. "BTC > $78,213 by 06:00 UTC").
+- **priceBucket** — grouped price-range questions (e.g. "BTC price range on May 26").
+- **named** — free-form questions with named outcomes (e.g. "May CPI year-over-year" with Below/Exactly/Above buckets).
+
+Outcomes settle daily at **06:00 UTC**, after which the `outcome_id` rolls and old ids stop trading.
 
 **Collateral / quote: USDC.** HIP-4 outcomes settle in USDC.
 
