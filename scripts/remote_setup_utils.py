@@ -82,7 +82,7 @@ def ensure_config(
         system = {}
     if api_key:
         system["api_key"] = api_key
-    system.setdefault("api_base_url", "https://strategies.wayfinder.ai/api/v1")
+    system.setdefault("api_base_url", "https://wayfinder.ai/api/v1")
     config["system"] = system
 
     if "strategy" not in config:
