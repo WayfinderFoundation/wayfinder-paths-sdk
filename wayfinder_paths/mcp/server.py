@@ -90,6 +90,7 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_clear_chart_workspace,
     visual_create_chart,
     visual_get_frontend_context,
+    visual_import_chart_spec,
     visual_search_chart_series,
     visual_set_active_chart,
     visual_set_active_market,
@@ -219,6 +220,7 @@ def build_mcp(
         mcp.tool()(visual_search_chart_series)
         mcp.tool()(visual_set_active_market)
         mcp.tool()(visual_create_chart)
+        mcp.tool()(visual_import_chart_spec)
         mcp.tool()(visual_set_active_chart)
         mcp.tool()(visual_add_workspace_chart_series)
         mcp.tool()(visual_add_workspace_chart_annotation)

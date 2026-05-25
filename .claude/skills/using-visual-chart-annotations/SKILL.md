@@ -18,7 +18,7 @@ Read the current Shells chart id, then write chart changes through the chart wor
 3. visual_add_workspace_chart_annotation(
      chart_id=chart_id,
      type="marker",
-     config={"time": 1760000000, "price": 0.035, "shape": "flag", "color": "#22c55e"}
+     config={"time": "2026-05-21T06:00:00Z", "price": 0.035, "shape": "flag", "color": "#22c55e"}
    )
 ```
 
@@ -56,7 +56,7 @@ Read the current Shells chart id, then write chart changes through the chart wor
 4. visual_add_workspace_chart_annotation(
      chart_id="btc-eth-relative",
      type="text_label",
-     config={"time": 1760000000, "price": 120, "text": "Relative breakout"}
+     config={"time": "2026-05-21T06:00:00Z", "price": 120, "text": "Relative breakout"}
    )
 ```
 
@@ -185,11 +185,34 @@ Registry results include:
 | `text_label` | `time`, `price`, `text`, `color?` |
 | `trend` | `from: {time, price}`, `to: {time, price}`, `color?`, `label?` |
 
+For bulk catalyst markers on the live/default chart, prefer a single event marker
+overlay:
+
+```json
+{
+  "type": "event_markers",
+  "id": "zec-catalysts",
+  "data": [
+    {
+      "time": "2026-05-21T06:00:00Z",
+      "price": 690,
+      "label": "ZEC hits $690",
+      "color": "#ef4444",
+      "shape": "flag"
+    }
+  ]
+}
+```
+
+Use `data` as the canonical event array. Legacy `markers` is accepted, but new
+calls should not use it.
+
 ## Gotchas
 
 - `marker` does not accept `label`. Use `text_label` for annotated points.
-- All `time` values are unix seconds.
+- Use ISO-8601 strings for `time` values when possible. The renderer also accepts unix seconds, but do not hand-compute timestamps.
 - For default chart annotations, use the exact `frontend_context.chart.id`.
 - For workspace charts, use the `chart_id` passed to `visual_create_chart`.
 - Default chart annotations are stored in `chart_workspace.defaultAnnotations`; workspace chart annotations are stored in the chart's `overlays`.
+- After writing default chart overlays, verify `chart_workspace.defaultAnnotations[chart_id]` contains the expected overlay and, for event markers, that its `data` array has the expected count.
 - Chart workspace state is scoped to the current Shells instance, not the user vault.
