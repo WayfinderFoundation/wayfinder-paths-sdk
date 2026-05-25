@@ -159,7 +159,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         basis_symbol: str,
         lookback_days: int = 7,
-        limit: int = 500,
+        limit: int = 25,
         as_of: datetime | None = None,
     ) -> dict[str, Any]:
         """
@@ -168,7 +168,9 @@ class DeltaLabClient(WayfinderClient):
         Args:
             basis_symbol: Basis symbol (e.g., "BTC", "ETH")
             lookback_days: Number of days to look back (default: 7, min: 1)
-            limit: Maximum number of opportunities (default: 500, max: 1000)
+            limit: Maximum number of opportunities (default: 25, max: 1000).
+                Keep this low — high limits (e.g. 500) frequently trigger
+                upstream 500s on this endpoint.
             as_of: Query timestamp (default: now)
 
         Returns:
