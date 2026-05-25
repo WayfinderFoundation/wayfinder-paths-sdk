@@ -82,6 +82,7 @@ def test_mcp_catalog_exposes_shells_tools_in_opencode(monkeypatch) -> None:
     assert "visual_get_frontend_context" in names
     assert "visual_set_active_market" in names
     assert "visual_create_chart" in names
+    assert "visual_import_chart_spec" in names
     assert "notification_send" in names
 
 
@@ -98,6 +99,13 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_polymarket_*"] == "allow"
     assert primary["wayfinder_contracts_*"] == "allow"
     assert primary["wayfinder_visual_*"] == "deny"
+    assert primary["wayfinder_visual_get_frontend_context"] == "allow"
+    assert primary["wayfinder_visual_set_active_market"] == "allow"
+    assert primary["wayfinder_visual_search_chart_series"] == "allow"
+    assert primary["wayfinder_visual_add_workspace_chart_annotation"] == "allow"
+    assert primary["wayfinder_visual_add_workspace_chart_overlay"] == "allow"
+    assert "wayfinder_visual_create_chart" not in primary
+    assert "wayfinder_visual_import_chart_spec" not in primary
     assert primary["wayfinder_notification_send"] == "allow"
     assert primary["wayfinder_research_*"] == "deny"
     assert primary["wayfinder_core_run_script"] == "ask"
@@ -106,6 +114,11 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_contracts_execute"] == "ask"
     _assert_rule_order(primary, "wayfinder_*", "wayfinder_core_*")
     _assert_rule_order(primary, "wayfinder_core_*", "wayfinder_core_run_script")
+    _assert_rule_order(
+        primary,
+        "wayfinder_visual_*",
+        "wayfinder_visual_get_frontend_context",
+    )
     _assert_rule_order(
         primary,
         "wayfinder_hyperliquid_*",
@@ -152,6 +165,11 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_polymarket_*": "allow",
         "wayfinder_contracts_*": "allow",
         "wayfinder_visual_*": "deny",
+        "wayfinder_visual_get_frontend_context": "allow",
+        "wayfinder_visual_set_active_market": "allow",
+        "wayfinder_visual_search_chart_series": "allow",
+        "wayfinder_visual_add_workspace_chart_annotation": "allow",
+        "wayfinder_visual_add_workspace_chart_overlay": "allow",
         "wayfinder_notification_send": "allow",
         "wayfinder_research_*": "deny",
         "wayfinder_core_run_script": "ask",
@@ -175,6 +193,11 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
     _assert_rule_order(primary, "wayfinder_*", "wayfinder_core_*")
     _assert_rule_order(primary, "wayfinder_core_*", "wayfinder_core_run_script")
     _assert_rule_order(primary, "wayfinder_contracts_*", "wayfinder_contracts_deploy")
+    _assert_rule_order(
+        primary,
+        "wayfinder_visual_*",
+        "wayfinder_visual_search_chart_series",
+    )
 
     research_frontmatter = _agent_frontmatter("wayfinder-research")
     assert "tools" not in research_frontmatter
@@ -227,6 +250,10 @@ def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> No
     primary = _agent_text("wayfinder")
     visual = _agent_text("wayfinder-visual")
 
+    assert "Chart Fast Path" in primary
+    assert "visual_get_frontend_context" in primary
+    assert "visual_set_active_market" in primary
+    assert "visual_search_chart_series" in primary
     assert "Do not call `wayfinder-quant`" in primary
     assert "simple iteration" in primary
 
@@ -234,6 +261,23 @@ def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> No
     assert 'market_type="onchain-spot"' in visual
     assert "Do not call `visual_search_chart_series`" in visual
     assert "do not substitute a speculative perp or funding series" in visual
+
+
+def test_visual_agent_prefers_source_refs_and_importable_specs() -> None:
+    visual = _agent_text("wayfinder-visual")
+    quant = _agent_text("wayfinder-quant")
+
+    assert "Source References First" in visual
+    assert "delta_lab.asset.lending" in visual
+    assert '"market_id":17694' in visual
+    assert '"asset_id":163' in visual
+    assert "delta_lab.asset.funding" in visual
+    assert '"instrument_id":163' in visual
+    assert "visual_import_chart_spec" in visual
+    assert ".wayfinder_runs/visual_specs" in visual
+    assert "Empty task results are forbidden" in visual
+
+    assert "Do not take over normal source-backed charting" in quant
 
 
 def test_opencode_agents_route_research_and_polymarket_tasks() -> None:

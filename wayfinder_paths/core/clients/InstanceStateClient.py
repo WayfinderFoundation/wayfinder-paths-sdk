@@ -111,11 +111,14 @@ class InstanceStateClient(WayfinderClient):
     async def add_workspace_chart_overlay(
         self, chart_id: str, overlay: dict[str, Any]
     ) -> dict[str, Any]:
-        workspace = await self._get_workspace()
+        state = await self.get_state()
+        workspace = self._workspace_from_state(state)
+        overlay = self._normalize_overlay(overlay)
         chart = self._find_workspace_chart(workspace, chart_id)
         if chart is not None:
             chart.setdefault("overlays", []).append(overlay)
         else:
+            chart_id = self._resolve_default_chart_id(state, chart_id)
             workspace.setdefault("defaultAnnotations", {}).setdefault(
                 chart_id, []
             ).append(overlay)
@@ -143,6 +146,10 @@ class InstanceStateClient(WayfinderClient):
 
     async def _get_workspace(self) -> dict[str, Any]:
         state = await self.get_state()
+        return self._workspace_from_state(state)
+
+    @staticmethod
+    def _workspace_from_state(state: dict[str, Any]) -> dict[str, Any]:
         workspace = state.get("chart_workspace")
         if not isinstance(workspace, dict):
             return {
@@ -154,6 +161,53 @@ class InstanceStateClient(WayfinderClient):
         workspace.setdefault("charts", [])
         workspace.setdefault("defaultAnnotations", {})
         return workspace
+
+    @classmethod
+    def _resolve_default_chart_id(cls, state: dict[str, Any], chart_id: str) -> str:
+        frontend_context = state.get("frontend_context")
+        if not isinstance(frontend_context, dict):
+            return chart_id
+        chart = frontend_context.get("chart")
+        if not isinstance(chart, dict):
+            return chart_id
+        current_chart_id = str(chart.get("id") or "").strip()
+        if not current_chart_id:
+            return chart_id
+
+        requested = cls._normalize_chart_ref(chart_id)
+        aliases = {
+            cls._normalize_chart_ref(value)
+            for value in (
+                current_chart_id,
+                chart.get("market_id"),
+                chart.get("symbol"),
+                chart.get("feed_id"),
+            )
+            if value
+        }
+        symbol = str(chart.get("symbol") or "").strip()
+        if symbol:
+            aliases.add(cls._normalize_chart_ref(symbol.split("-", 1)[0]))
+            aliases.add(cls._normalize_chart_ref(symbol.split("/", 1)[0]))
+
+        return current_chart_id if requested in aliases else chart_id
+
+    @staticmethod
+    def _normalize_chart_ref(value: Any) -> str:
+        return str(value or "").strip().lower().replace("_", "-").replace("/", "-")
+
+    @staticmethod
+    def _normalize_overlay(overlay: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(overlay, dict):
+            return overlay
+        if overlay.get("type") != "event_markers":
+            return overlay
+
+        normalized = dict(overlay)
+        markers = normalized.pop("markers", None)
+        if not isinstance(normalized.get("data"), list) and isinstance(markers, list):
+            normalized["data"] = markers
+        return normalized
 
     @staticmethod
     def _find_workspace_chart(

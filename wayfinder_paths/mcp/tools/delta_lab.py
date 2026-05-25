@@ -138,14 +138,14 @@ async def _resolve_basis_root(symbol: str) -> str:
 
 @catch_errors
 async def research_get_basis_apy_sources(
-    basis_symbol: str, lookback_days: str | int = "7", limit: str | int = "10"
+    basis_symbol: str, lookback_days: str | int = "7", limit: str | int = "25"
 ) -> dict[str, Any]:
     """Get top yield opportunities for a given asset across protocols.
 
     Args:
         basis_symbol: Root symbol (e.g., "BTC", "ETH", "HYPE")
         lookback_days: Days to look back for averaging (default: "7", min: "1")
-        limit: Max opportunities to return (default: "10", max: "1000")
+        limit: Max opportunities to return (default: "25", max: "1000")
 
     Returns:
         Dict with basis info, opportunities grouped by LONG/SHORT, summary stats
