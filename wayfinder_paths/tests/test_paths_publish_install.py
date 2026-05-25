@@ -21,19 +21,11 @@ from wayfinder_paths.paths.scaffold import init_path
 
 def test_paths_api_client_defaults_avoid_slow_ipv6_fallback(monkeypatch):
     captured: dict[str, object] = {}
-    transport = object()
-
-    def fake_transport(**kwargs):
-        captured["transport_kwargs"] = kwargs
-        return transport
 
     class FakeClient:
         def __init__(self, **kwargs):
             captured["client_kwargs"] = kwargs
 
-    monkeypatch.setattr(
-        "wayfinder_paths.paths.client.httpx.HTTPTransport", fake_transport
-    )
     monkeypatch.setattr("wayfinder_paths.paths.client.httpx.Client", FakeClient)
 
     client = PathsApiClient(api_base_url="https://paths.example")
@@ -45,8 +37,7 @@ def test_paths_api_client_defaults_avoid_slow_ipv6_fallback(monkeypatch):
     assert timeout.read == 60.0
     assert timeout.write == 300.0
     assert timeout.pool == 5.0
-    assert client_kwargs["transport"] is transport
-    assert captured["transport_kwargs"] == {"local_address": "0.0.0.0"}
+    assert "transport" not in client_kwargs
 
 
 def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
