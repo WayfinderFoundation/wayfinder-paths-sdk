@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.core.engine.strategy_loader import strategy_bases
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -47,11 +48,29 @@ async def core_get_adapters_and_strategies(name: str | None = None) -> dict[str,
     """
     root = repo_root()
     adapters_base = root / "wayfinder_paths" / "adapters"
-    strategies_base = root / "wayfinder_paths" / "strategies"
+    s_bases = strategy_bases()
+
+    def _strategy_first_hit(n: str) -> dict[str, Any] | None:
+        for base in s_bases:
+            hit = _describe_dir(base, n)
+            if hit:
+                return hit
+        return None
+
+    def _strategies_all() -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        items: list[dict[str, Any]] = []
+        for base in s_bases:
+            for entry in _describe_all(base):
+                if entry["name"] in seen:
+                    continue
+                seen.add(entry["name"])
+                items.append(entry)
+        return items
 
     if name:
         adapter = _describe_dir(adapters_base, name)
-        strategy = _describe_dir(strategies_base, name)
+        strategy = _strategy_first_hit(name)
         if not adapter and not strategy:
             return err("not_found", f"Unknown adapter or strategy: {name}")
         return ok(
@@ -64,6 +83,6 @@ async def core_get_adapters_and_strategies(name: str | None = None) -> dict[str,
     return ok(
         {
             "adapters": _describe_all(adapters_base),
-            "strategies": _describe_all(strategies_base),
+            "strategies": _strategies_all(),
         }
     )

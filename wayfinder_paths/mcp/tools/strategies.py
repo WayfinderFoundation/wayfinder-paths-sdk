@@ -1,37 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
-from pathlib import Path
 from typing import Any, Literal
 
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
+from wayfinder_paths.core.engine.strategy_loader import load_strategy_module
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
     ok,
-    repo_root,
     throw_if_empty_str,
     throw_if_none,
 )
 
 
-def _strategy_dir(name: str) -> Path:
-    return repo_root() / "wayfinder_paths" / "strategies" / name
-
-
 def _load_strategy_class(strategy_name: str) -> tuple[type[Strategy], str]:
     """Load strategy class and return (class, status)."""
-    manifest_path = _strategy_dir(strategy_name) / "manifest.yaml"
-    if not manifest_path.exists():
-        raise FileNotFoundError(f"Missing manifest.yaml for strategy: {strategy_name}")
-    manifest = load_strategy_manifest(str(manifest_path))
-    module_path, class_name = manifest.entrypoint.rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    module = importlib.reload(module)
+    module, strat_dir = load_strategy_module(strategy_name)
+    manifest = load_strategy_manifest(str(strat_dir / "manifest.yaml"))
+    _, class_name = manifest.entrypoint.rsplit(".", 1)
     return getattr(module, class_name), manifest.status
 
 
