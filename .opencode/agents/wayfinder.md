@@ -293,7 +293,9 @@ Ask `wayfinder-research` for Prediction Market Forecast Mode when a task needs P
 
 Ask `wayfinder-research` for Token/Perp Research Mode when a task needs token/perp thesis work. It must return `perpSide`, `positionIntent`, `thesisPieces`, lens scores, and explicit open questions for leverage, margin mode, sizing, close/reduce/flip intent, or execution math.
 
-Use `.wayfinder_runs/market_intel_log.jsonl` only as an audit/calibration log for durable forecast cases, token/perp theses, quant validations, final decisions, and outcome updates. Do not treat logged market facts as live; rehydrate price, order book, funding, OI, liquidity, and news before any action.
+For quote/snapshot updates on an existing forecast or thesis, reuse prior posterior/view only when the user asks to continue prior work or a run ID references it. Rehydrate current quote/order book or market snapshot, recompute edge or changed-fields effect, and do not regenerate a new thesis unless there is new evidence.
+
+Use `.wayfinder_runs/market_intel_log.jsonl` only as an audit/calibration log for durable forecast cases, token/perp theses, quote updates, evidence updates, quant validations, final decisions, and outcome updates. Do not treat logged market facts as live; rehydrate price, order book, funding, OI, liquidity, and news before any action. Stale entries are `audit_only`.
 
 #### Invocation Criteria
 

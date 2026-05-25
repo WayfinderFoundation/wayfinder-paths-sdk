@@ -49,6 +49,9 @@ def append_log(entry: dict[str, Any], path: str | Path | None = None) -> dict[st
     persisted.setdefault("createdAt", _utc_now())
     persisted.setdefault("safeToReuseWithoutRehydration", False)
     persisted.setdefault("mustRehydrate", [])
+    persisted.setdefault("artifactRefs", [])
+    persisted.setdefault("sources", [])
+    persisted.setdefault("outcome", None)
 
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(persisted, sort_keys=True, separators=(",", ":")))
@@ -92,6 +95,16 @@ def search_log(
     return list(reversed(matches[-capped_limit:]))
 
 
+def latest_for_subject(
+    subject: dict[str, Any],
+    kind: str | None = None,
+    path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    """Return the newest entry matching a subject and optional kind."""
+    matches = search_log(subject=subject, kind=kind, limit=1, path=path)
+    return matches[0] if matches else None
+
+
 def update_outcome(
     entry_id: str,
     outcome: dict[str, Any],
@@ -124,13 +137,14 @@ def freshness_check(
     """Return freshness metadata for a log entry."""
     checked_at = now or datetime.now(UTC)
     expires_at = _parse_time(entry.get("expiresAt"))
-    expired = expires_at is not None and expires_at <= checked_at
+    expired = expires_at is None or expires_at <= checked_at
     safe_without_rehydration = bool(entry.get("safeToReuseWithoutRehydration"))
     return {
         "isFresh": not expired,
         "expired": expired,
         "safeToReuseWithoutRehydration": safe_without_rehydration and not expired,
         "mustRehydrate": list(entry.get("mustRehydrate") or []),
+        "reuseMode": "audit_only" if expired else "assumption_seed",
         "checkedAt": checked_at.replace(microsecond=0)
         .isoformat()
         .replace("+00:00", "Z"),

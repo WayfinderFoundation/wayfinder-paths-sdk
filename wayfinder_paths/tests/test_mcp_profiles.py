@@ -301,11 +301,18 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
     assert "priorSource" in research
     assert "normalized_order_book" in research
     assert "log_odds_update" in research
+    assert "log_odds_evidence_update" in research
+    assert "Build evidence cards" in research
     assert "evidenceDeltas" in research
+    assert "evidenceCards" in research
+    assert "conservative EV" in research
+    assert "quote_update" in research
     assert "Token/Perp Research Mode" in research
     assert "perpSide" in research
     assert "positionIntent" in research
     assert "thesisPieces" in research
+    assert "changedFields" in research
+    assert "effectOnThesis" in research
 
 
 def test_market_intelligence_agent_prompt_contracts() -> None:
@@ -318,16 +325,20 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
 
     assert "executable market/order-book distribution as the prior" in primary
     assert "Market Intelligence Modes" in primary
+    assert "quote/snapshot updates" in primary
+    assert "audit_only" in primary
     assert "exact tool inputs" in primary
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research
+    assert "stale log entries" in research
     assert "Market intelligence log" in research
     assert "logRefs" in research
     assert "artifactRefs" in research
 
     assert "Market Quant Mode" in quant
     assert "wayfinder_paths.quant.polymarket_edge" in quant
+    assert "hypothesis seeds only" in quant
     assert "RESEARCH_ONLY" in quant
     assert "DO_NOT_TRADE" in quant
 

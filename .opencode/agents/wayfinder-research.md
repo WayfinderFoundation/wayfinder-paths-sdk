@@ -96,11 +96,14 @@ Prediction Market Forecast Mode:
 - Freeze an `observedAt` timestamp and identify the market/event/condition/token IDs, outcomes, status, close date, and resolution source/rules before scoring an edge.
 - Use the executable market/order-book distribution as the prior. Do not use last trade as the entry or prior. Prefer target-size quote/order-book sweep; use midpoint only when bid/ask are current and target size is small.
 - Record `priorSource` as `mid`, `normalized_order_book`, `quote`, or `fallback`. If both executable YES and NO entries are available, normalize them to estimate the market-implied prior and separately keep raw executable entry prices for EV.
-- Use a structured Bayesian update from market prior to posterior. Prefer `posteriorMethod: "log_odds_update"`. Evidence deltas must state bucket, direction, probability or log-odds effect, rationale, and source refs.
+- Build evidence cards before moving the probability. Each card must include claim, direction (`for_yes`, `against_yes`, or `neutral`), strength, source quality, freshness, independence, already-priced assessment, resolution relevance, rationale, and source refs.
+- Use a structured Bayesian update from market prior to posterior. Prefer `posteriorMethod: "log_odds_evidence_update"`; use `log_odds_update` only for simple explicit deltas. Evidence cards should map into capped log-odds moves using `wayfinder_paths.quant.polymarket_edge`; do not freehand large probability jumps from one article.
 - Evidence buckets: resolution terms, current-state evidence, catalyst/timing evidence, disconfirming evidence, and market-structure evidence.
 - Output `pLow`, `pBase`, `pHigh`, what moved probability away from the market prior, `evYes`, `evNo`, and decision. If evidence does not justify moving away from prior, say the market looks roughly fair.
+- Gate `BUY_YES` and `BUY_NO` decisions on conservative EV (`pLow` for YES, `pHigh` for NO), not base-case EV alone.
 - If current executable pricing cannot be fetched, return `WATCH` or `SKIP`; do not return `BUY_YES`, `BUY_NO`, or `ARBITRAGE_CANDIDATE`.
-- Use `core_run_script` with `wayfinder_paths.quant.polymarket_edge` only for bounded EV, sweep, Kelly, or log-odds math that would otherwise be error-prone.
+- For a quote update, do not redo the whole thesis unless there is new evidence. Load the referenced/latest log only when the user asks to continue or a run ID references it, rehydrate quote/order book, keep posterior unchanged, recompute EV/decision, and append a `quote_update` entry.
+- Use `core_run_script` with `wayfinder_paths.quant.polymarket_edge` only for bounded prior, EV, sweep, Kelly, evidence-card, posterior-band, or trade-gate math that would otherwise be error-prone.
 
 Token/Perp Research Mode:
 
@@ -112,12 +115,14 @@ Token/Perp Research Mode:
 - Return `thesisPieces` with catalyst, fundamentals, technical/momentum, funding/OI/positioning, liquidity/capacity, disconfirming evidence, risks, invalidation, timing, and required quant checks.
 - Score lenses from `-2` to `+2`: catalyst, fundamental, technical, perp positioning, liquidity, regime, and risk.
 - Valid views are `LONG_BIAS`, `SHORT_BIAS`, `MARKET_NEUTRAL_RELATIVE_VALUE`, `WATCH`, or `SKIP`.
+- For a token/perp quote or snapshot update, state exactly what changed: price, funding, OI, liquidity, catalyst, invalidation, or regime. Only change the view if the changed field improves, worsens, or invalidates the thesis.
 - Recommend `wayfinder-quant` only when the view depends on time series, cross-asset ranking, backtesting, hedged/net returns, sizing, capacity, liquidation risk, or automation.
 
 Market intelligence log:
 
-- Use `.wayfinder_runs/market_intel_log.jsonl` only for durable forecast cases, token/perp theses, quant validations, final decisions, or outcome updates.
+- Use `.wayfinder_runs/market_intel_log.jsonl` only for durable forecast cases, token/perp theses, quote updates, evidence updates, quant validations, final decisions, or outcome updates.
 - Do not log every tool call and do not treat the log as live fact memory. Any logged market fact must be rehydrated before trading.
+- Treat stale log entries as `audit_only`. They can seed assumptions or calibration, but never execution.
 - If logging is useful, run a bounded script that imports `wayfinder_paths.core.market_intel_log` and include returned IDs in `logRefs`.
 
 Upweight these patterns:
@@ -210,6 +215,6 @@ Return JSON only:
 
 Use `utility` values `high`, `medium`, `low`, or `failed`. Keep raw results out of the response unless the primary explicitly requested them. Prefer concise findings with source IDs or URLs.
 
-Use `marketFindings` for any market-specific research, including prediction-market probability, liquidity/spread, order-book depth, price movement, resolution criteria, and evidence-backed thesis notes. Put structured forecast fields inside each relevant market finding: `priorSource`, `marketPrior`, `entryYes`, `entryNo`, `spreadCost`, `evidenceDeltas`, `posteriorMethod`, `pLow`, `pBase`, `pHigh`, `evYes`, `evNo`, `decision`, and `mustRehydrate`.
+Use `marketFindings` for any market-specific research, including prediction-market probability, liquidity/spread, order-book depth, price movement, resolution criteria, and evidence-backed thesis notes. Put structured forecast fields inside each relevant market finding: `priorSource`, `marketPrior`, `entryYes`, `entryNo`, `spreadCost`, `evidenceCards`, `evidenceDeltas`, `posteriorMethod`, `pLow`, `pBase`, `pHigh`, `evYes`, `evNo`, `decision`, and `mustRehydrate`.
 
-For token/perp findings, put structured trade-research fields inside each relevant market finding: `assetIdentity`, `marketSnapshot`, `perpSide`, `positionIntent`, `thesisPieces`, `lensScores`, `view`, and `mustRehydrate`.
+For token/perp findings, put structured trade-research fields inside each relevant market finding: `assetIdentity`, `marketSnapshot`, `perpSide`, `positionIntent`, `thesisPieces`, `lensScores`, `view`, `changedFields`, `effectOnThesis`, and `mustRehydrate`.
