@@ -40,6 +40,7 @@ from wayfinder_paths.paths.renderer import (
     render_skill_exports,
 )
 from wayfinder_paths.paths.scaffold import PathScaffoldError, init_path, slugify
+from wayfinder_paths.paths.shells_sync import sync_shells_inventory
 
 _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
@@ -1597,6 +1598,7 @@ def activate_cmd(
             activation_recorded = True
 
     result["activation_recorded"] = activation_recorded
+    _fire_shells_sync(trigger="activate")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2446,7 +2448,17 @@ def install_cmd(
         include_dependencies=include_dependencies,
         api_url=api_url,
     )
+    _fire_shells_sync(trigger="install")
     _echo_json({"ok": True, "result": result})
+
+
+def _fire_shells_sync(*, trigger: str) -> None:
+    """Self-gated; no-op outside an OpenCode instance. Best-effort —
+    never surfaces an error to the CLI caller."""
+    try:
+        sync_shells_inventory(trigger=trigger)
+    except Exception:  # noqa: BLE001 - best-effort
+        pass
 
 
 @path_cli.command(
@@ -2482,6 +2494,7 @@ def pull_cmd(
         no_verify=no_verify,
         api_url=api_url,
     )
+    _fire_shells_sync(trigger="pull")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2605,6 +2618,7 @@ def update_cmd(
         result["manual_activate_command"] = _manual_activate_command(
             path_dir=installed_path
         )
+        _fire_shells_sync(trigger="update")
         _echo_json({"ok": True, "result": result})
         return
 
@@ -2681,6 +2695,7 @@ def update_cmd(
     result["activated"] = True
     result["activation_source"] = activation_target.source
     result["activation"] = activation_result
+    _fire_shells_sync(trigger="update")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2717,6 +2732,7 @@ def remove_cmd(
         host=host,
         scope=scope,
     )
+    _fire_shells_sync(trigger="remove")
     _echo_json({"ok": True, "result": result})
 
 
