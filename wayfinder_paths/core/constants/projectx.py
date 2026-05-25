@@ -19,10 +19,22 @@ PRJX_QUOTER = to_checksum_address("0x239F11a7A3E08f2B8110D4CA9F6B95d4c8865258")
 PRJX_WNATIVE = HYPEREVM_WHYPE
 
 PROJECTX_CHAIN_ID = CHAIN_ID_HYPEREVM
+PROJECTX_DEFAULT_FEE_TIERS: tuple[int, ...] = (
+    100,
+    500,
+    1000,
+    2000,
+    3000,
+    10000,
+    20000,
+)
 
 THBILL_USDC_POOL = to_checksum_address("0x49dfe4bbBD4c664E921aA2Cde7bA1fC553959bF5")
+THBILL_USDT0_POOL = to_checksum_address("0xAF4BF7Bd1Cd226741B3B5beE3C8027CEfd3d9345")
+WHYPE_USDC_POOL = to_checksum_address("0x6c9A33E3b592C0d65B3Ba59355d5Be0d38259285")
 THBILL_TOKEN = to_checksum_address("0xfDD22Ce6D1F66bc0Ec89b20BF16CcB6670F55A5a")
 USDC_TOKEN = to_checksum_address("0xb88339CB7199b77E23DB6E890353E22632Ba630f")
+USDT0_TOKEN = to_checksum_address("0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb")
 WHYPE_TOKEN = PRJX_WNATIVE
 
 # Strategy metadata for THBILL<>USDC pool
@@ -42,6 +54,7 @@ THBILL_USDC_METADATA: dict[str, Any] = {
 # Token-id helpers (used for strategy display and token adapter lookups)
 ADDRESS_TO_TOKEN_ID: dict[str, str] = {
     USDC_TOKEN: "usd-coin-hyperevm",
+    USDT0_TOKEN: "usdt0-hyperevm",
     THBILL_TOKEN: "theo-short-duration-us-treasury-fund-hyperevm",
     WHYPE_TOKEN: "wrapped-hype-hyperevm",
 }

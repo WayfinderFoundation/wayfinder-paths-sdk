@@ -18,6 +18,7 @@ from wayfinder_paths.core.constants.projectx import (
     PRJX_FACTORY,
     PRJX_POINTS_API_URL,
     PROJECTX_CHAIN_ID,
+    PROJECTX_DEFAULT_FEE_TIERS,
     get_prjx_subgraph_url,
 )
 from wayfinder_paths.core.constants.projectx_abi import (
@@ -761,9 +762,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 pool_tokens = {meta["token0"].lower(), meta["token1"].lower()}
                 if {token_in.lower(), token_out.lower()} == pool_tokens:
                     prefer_fees = [int(meta["fee"])] + [
-                        f
-                        for f in (100, 500, 1000, 3000, 10000)
-                        if f != int(meta["fee"])
+                        f for f in PROJECTX_DEFAULT_FEE_TIERS if f != int(meta["fee"])
                     ]
             selected_fee, pool_address = await self._find_pool_for_pair(
                 token_in, token_out, prefer_fees=prefer_fees
@@ -1372,7 +1371,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
     async def _find_pool_for_pair(
         self, token_a: str, token_b: str, *, prefer_fees: Sequence[int] | None = None
     ) -> tuple[int, str]:
-        fees = list(prefer_fees or [100, 500, 1000, 3000, 10000])
+        fees = list(prefer_fees or PROJECTX_DEFAULT_FEE_TIERS)
         async with web3_from_chain_id(PROJECTX_CHAIN_ID) as web3:
             factory = web3.eth.contract(
                 address=self.factory_address,

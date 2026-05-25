@@ -2,13 +2,18 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 import wayfinder_paths.adapters.projectx_adapter.adapter as projectx_adapter_module
 import wayfinder_paths.adapters.uniswap_adapter.base as uniswap_base_module
 from wayfinder_paths.adapters.projectx_adapter.adapter import ProjectXLiquidityAdapter
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.projectx import PRJX_FACTORY, THBILL_USDC_POOL
+from wayfinder_paths.core.constants.projectx import (
+    PRJX_FACTORY,
+    PROJECTX_DEFAULT_FEE_TIERS,
+    THBILL_USDC_POOL,
+)
 
 
 def test_init_requires_strategy_wallet():
@@ -126,6 +131,69 @@ async def test_find_pool_for_pair_picks_first_nonzero_fee(monkeypatch):
     assert ok is True
     assert out["fee"] == 1000
     assert out["pool"].lower() == "0x2222222222222222222222222222222222222222"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("fee", "pool_address"),
+    [
+        (2000, "0x2222222222222222222222222222222222222222"),
+        (20000, "0x4444444444444444444444444444444444444444"),
+    ],
+)
+async def test_find_pool_for_pair_default_fees_include_projectx_tiers(
+    monkeypatch, fee, pool_address
+):
+    assert fee in PROJECTX_DEFAULT_FEE_TIERS
+    fake_web3 = _FakeWeb3(_FakeFactoryContract({fee: pool_address}))
+    monkeypatch.setattr(
+        projectx_adapter_module,
+        "web3_from_chain_id",
+        lambda _cid: _DummyAsyncContext(fake_web3),
+    )
+
+    adapter = ProjectXLiquidityAdapter(
+        {"pool_address": THBILL_USDC_POOL},
+        wallet_address="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    )
+    ok, out = await adapter.find_pool_for_pair(
+        "0x1111111111111111111111111111111111111111",
+        "0x3333333333333333333333333333333333333333",
+    )
+    assert ok is True
+    assert out["fee"] == fee
+    assert out["pool"].lower() == pool_address.lower()
+
+
+@pytest.mark.asyncio
+async def test_fetch_prjx_points_preserves_current_api_shape(monkeypatch):
+    wallet = "0x0000000000000000000000000000000000000000"
+    async_client_cls = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["walletAddress"] == wallet
+        return httpx.Response(
+            200,
+            json={
+                "walletAddress": wallet,
+                "pointsTotal": 234.93,
+                "rank": 31746,
+            },
+        )
+
+    def make_client(**kwargs):
+        kwargs.pop("timeout", None)
+        return async_client_cls(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(projectx_adapter_module.httpx, "AsyncClient", make_client)
+
+    ok, points = await ProjectXLiquidityAdapter.fetch_prjx_points(wallet)
+    assert ok is True
+    assert points == {
+        "walletAddress": wallet,
+        "pointsTotal": 234.93,
+        "rank": 31746,
+    }
 
 
 class _FakeNpmContract:

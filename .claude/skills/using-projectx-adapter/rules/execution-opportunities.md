@@ -98,11 +98,19 @@ asyncio.run(main())
 
 ## Swap exact in
 
-`swap_exact_in()` only supports ERC20 addresses (use wrapped HYPE for "native").
+`swap_exact_in()` only supports ERC20 addresses. Use wrapped HYPE (WHYPE,
+`0x5555555555555555555555555555555555555555`) for native-like swaps. The ProjectX
+app may render HYPE as the zero address, but that is a UI sentinel rather than a
+token address for this adapter.
 
 Pool routing is automatic: `swap_exact_in` calls `_find_pool_for_pair` which checks on-chain
 `liquidity()` and picks the deepest pool. When the swap tokens match the configured pool's pair,
 its fee tier is tried first. Use `prefer_fees=[fee1, fee2, ...]` to override the search order.
+The default ProjectX search order includes `100`, `500`, `1000`, `2000`, `3000`,
+`10000`, and `20000`.
+
+This helper builds direct PRJX router `exactInputSingle` transactions. It does not mirror
+the ProjectX app's Reown/AppKit quote provider or aggregator routing.
 
 ```python
 import asyncio
@@ -122,4 +130,3 @@ async def main():
 
 asyncio.run(main())
 ```
-
