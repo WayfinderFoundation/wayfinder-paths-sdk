@@ -8,6 +8,12 @@ capabilities:
   - "lending.borrow"
   - "lending.repay"
   - "collateral.toggle"
+  - "emode.read"
+  - "emode.set"
   - "rewards.claim"
+  - "vault.read"
+  - "vault.deposit"
+  - "vault.withdraw"
+  - "vault.mint"
+  - "vault.redeem"
 dependencies: []
-

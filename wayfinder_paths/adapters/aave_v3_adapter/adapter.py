@@ -6,17 +6,25 @@ from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.constants.aave_v3_abi import (
+    AAVE_EARN_VAULT_ABI,
     POOL_ABI,
     REWARDS_CONTROLLER_ABI,
     UI_INCENTIVE_DATA_PROVIDER_V3_ABI,
     UI_POOL_DATA_PROVIDER_ABI,
+    UI_POOL_DATA_PROVIDER_LEGACY_ABI,
+    UI_POOL_DATA_PROVIDER_ORIGIN_ABI,
     UI_POOL_RESERVE_KEYS,
+    UI_POOL_RESERVE_KEYS_LEGACY,
+    UI_POOL_RESERVE_KEYS_ORIGIN,
+    UI_POOL_USER_RESERVE_KEYS,
+    UI_POOL_USER_RESERVE_KEYS_LEGACY,
     WETH_ABI,
     WRAPPED_TOKEN_GATEWAY_V3_ABI,
 )
 from wayfinder_paths.core.constants.aave_v3_contracts import AAVE_V3_BY_CHAIN
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
+from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils import web3 as web3_utils
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
@@ -79,6 +87,72 @@ def _base_currency_to_ref(base_currency: Any) -> tuple[int, float]:
         else float(ref_usd_raw)
     )
     return (ref_unit, float(ref_usd))
+
+
+def _account_data_to_dict(account_data: Any) -> dict[str, int]:
+    keys = [
+        "total_collateral_base",
+        "total_debt_base",
+        "available_borrows_base",
+        "current_liquidation_threshold_bps",
+        "ltv_bps",
+        "health_factor",
+    ]
+    if isinstance(account_data, dict):
+        raw = {
+            "total_collateral_base": account_data.get("totalCollateralBase"),
+            "total_debt_base": account_data.get("totalDebtBase"),
+            "available_borrows_base": account_data.get("availableBorrowsBase"),
+            "current_liquidation_threshold_bps": account_data.get(
+                "currentLiquidationThreshold"
+            ),
+            "ltv_bps": account_data.get("ltv"),
+            "health_factor": account_data.get("healthFactor"),
+        }
+        return {k: int(v or 0) for k, v in raw.items()}
+    return {k: int(v or 0) for k, v in zip(keys, account_data or (), strict=False)}
+
+
+def _emode_category_to_dict(category: Any) -> dict[str, Any] | None:
+    if isinstance(category, dict):
+        category_id = int(category.get("id") or 0)
+        emode = category.get("eMode") or category.get("emode") or {}
+    else:
+        try:
+            category_id = int(category[0] or 0)
+            emode = category[1]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    if isinstance(emode, dict):
+        ltv = emode.get("ltv")
+        liquidation_threshold = emode.get("liquidationThreshold")
+        liquidation_bonus = emode.get("liquidationBonus")
+        collateral_bitmap = emode.get("collateralBitmap")
+        label = emode.get("label")
+        borrowable_bitmap = emode.get("borrowableBitmap")
+    else:
+        try:
+            (
+                ltv,
+                liquidation_threshold,
+                liquidation_bonus,
+                collateral_bitmap,
+                label,
+                borrowable_bitmap,
+            ) = emode
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "id": int(category_id),
+        "ltv_bps": int(ltv or 0),
+        "liquidation_threshold_bps": int(liquidation_threshold or 0),
+        "liquidation_bonus_bps": int(liquidation_bonus or 0),
+        "collateral_bitmap": int(collateral_bitmap or 0),
+        "borrowable_bitmap": int(borrowable_bitmap or 0),
+        "label": str(label or ""),
+    }
 
 
 def _reward_rows(rewards_info: Any) -> list[Any]:
@@ -228,6 +302,107 @@ class AaveV3Adapter(BaseAdapter):
             f"could not resolve variable debt token for asset={asset} on chain_id={chain_id}"
         )
 
+    async def _read_emode_categories(
+        self, ui_pool: Any, provider_addr: str
+    ) -> list[dict[str, Any]]:
+        rows = await ui_pool.functions.getEModes(provider_addr).call(
+            block_identifier="pending"
+        )
+        categories: list[dict[str, Any]] = []
+        for row in rows or []:
+            category = _emode_category_to_dict(row)
+            if category is not None:
+                categories.append(category)
+        return categories
+
+    async def _read_reserves_data(
+        self, web3: Any, ui_pool_addr: str, provider_addr: str
+    ) -> tuple[Any, list[str], list[str], Any, Any]:
+        last_error: Exception | None = None
+        variants = (
+            (
+                UI_POOL_DATA_PROVIDER_ABI,
+                UI_POOL_RESERVE_KEYS,
+                UI_POOL_USER_RESERVE_KEYS,
+            ),
+            (
+                UI_POOL_DATA_PROVIDER_ORIGIN_ABI,
+                UI_POOL_RESERVE_KEYS_ORIGIN,
+                UI_POOL_USER_RESERVE_KEYS,
+            ),
+            (
+                UI_POOL_DATA_PROVIDER_LEGACY_ABI,
+                UI_POOL_RESERVE_KEYS_LEGACY,
+                UI_POOL_USER_RESERVE_KEYS_LEGACY,
+            ),
+        )
+
+        for abi, reserve_keys, user_reserve_keys in variants:
+            ui_pool = web3.eth.contract(address=ui_pool_addr, abi=abi)
+            try:
+                reserves, base_currency = await ui_pool.functions.getReservesData(
+                    provider_addr
+                ).call(block_identifier="pending")
+                return (
+                    ui_pool,
+                    reserve_keys,
+                    user_reserve_keys,
+                    reserves,
+                    base_currency,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+
+        if last_error:
+            raise last_error
+        raise ValueError("no UiPoolDataProvider ABI variants configured")
+
+    async def get_emode_categories(
+        self, *, chain_id: int
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        try:
+            entry = self._entry(int(chain_id))
+            async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
+                ui_pool = web3.eth.contract(
+                    address=entry["ui_pool_data_provider"],
+                    abi=UI_POOL_DATA_PROVIDER_ABI,
+                )
+                categories = await self._read_emode_categories(
+                    ui_pool, entry["pool_addresses_provider"]
+                )
+            return True, categories
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def _a_token_for_underlying(
+        self, *, chain_id: int, underlying_token: str
+    ) -> str:
+        asset = to_checksum_address(underlying_token)
+        ok, markets = await self.get_all_markets(
+            chain_id=int(chain_id), include_rewards=False
+        )
+        if not ok or not isinstance(markets, list):
+            raise ValueError(f"failed to resolve reserves for chain_id={chain_id}")
+
+        for market in markets:
+            if str(market.get("underlying") or "").lower() == asset.lower():
+                a_token = str(market.get("a_token") or "")
+                if a_token:
+                    return to_checksum_address(a_token)
+
+        raise ValueError(
+            f"could not resolve aToken for asset={asset} on chain_id={chain_id}"
+        )
+
+    async def _earn_vault_asset(self, *, chain_id: int, vault_address: str) -> str:
+        async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
+            vault = web3.eth.contract(
+                address=to_checksum_address(str(vault_address)),
+                abi=AAVE_EARN_VAULT_ABI,
+            )
+            asset = await vault.functions.asset().call(block_identifier="pending")
+            return to_checksum_address(str(asset))
+
     async def get_all_markets(
         self,
         *,
@@ -261,16 +436,16 @@ class AaveV3Adapter(BaseAdapter):
                     except Exception:  # noqa: BLE001
                         reserves_incentives = {}
 
-                ui_pool = web3.eth.contract(
-                    address=ui_pool_addr, abi=UI_POOL_DATA_PROVIDER_ABI
-                )
-                reserves, base_currency = await ui_pool.functions.getReservesData(
-                    provider_addr
-                ).call(block_identifier="pending")
+                (
+                    _ui_pool,
+                    reserve_keys,
+                    _user_reserve_keys,
+                    reserves,
+                    base_currency,
+                ) = await self._read_reserves_data(web3, ui_pool_addr, provider_addr)
 
                 ref_unit, ref_usd = _base_currency_to_ref(base_currency)
 
-                reserve_keys = UI_POOL_RESERVE_KEYS
                 markets: list[dict[str, Any]] = []
 
                 for reserve in reserves or []:
@@ -339,6 +514,53 @@ class AaveV3Adapter(BaseAdapter):
                         "liquidation_threshold_bps": int(
                             r.get("reserveLiquidationThreshold") or 0
                         ),
+                        "liquidation_bonus_bps": int(
+                            r.get("reserveLiquidationBonus") or 0
+                        ),
+                        "reserve_factor_bps": int(r.get("reserveFactor") or 0),
+                        "emode_category_id": int(r.get("eModeCategoryId") or 0),
+                        "emode_ltv_bps": int(r.get("eModeLtv") or 0),
+                        "emode_liquidation_threshold_bps": int(
+                            r.get("eModeLiquidationThreshold") or 0
+                        ),
+                        "emode_liquidation_bonus_bps": int(
+                            r.get("eModeLiquidationBonus") or 0
+                        ),
+                        "emode_label": str(r.get("eModeLabel") or ""),
+                        "emode_price_source": to_checksum_address(
+                            str(r.get("eModePriceSource"))
+                        )
+                        if r.get("eModePriceSource")
+                        else None,
+                        "borrowable_in_isolation": bool(r.get("borrowableInIsolation")),
+                        "debt_ceiling": int(r.get("debtCeiling") or 0),
+                        "debt_ceiling_decimals": int(r.get("debtCeilingDecimals") or 0),
+                        "isolation_mode_total_debt": int(
+                            r.get("isolationModeTotalDebt") or 0
+                        ),
+                        "flash_loan_enabled": bool(r.get("flashLoanEnabled")),
+                        "virtual_accounting_active": bool(r.get("virtualAccActive")),
+                        "virtual_underlying_balance": int(
+                            r.get("virtualUnderlyingBalance") or 0
+                        ),
+                        "accrued_to_treasury": int(r.get("accruedToTreasury") or 0),
+                        "unbacked": int(r.get("unbacked") or 0),
+                        "deficit": int(r.get("deficit") or 0),
+                        "last_update_timestamp": int(r.get("lastUpdateTimestamp") or 0),
+                        "price_oracle": to_checksum_address(str(r.get("priceOracle")))
+                        if r.get("priceOracle")
+                        else None,
+                        "interest_rate_strategy": to_checksum_address(
+                            str(r.get("interestRateStrategyAddress"))
+                        )
+                        if r.get("interestRateStrategyAddress")
+                        else None,
+                        "variable_rate_slope1": int(r.get("variableRateSlope1") or 0),
+                        "variable_rate_slope2": int(r.get("variableRateSlope2") or 0),
+                        "base_variable_borrow_rate": int(
+                            r.get("baseVariableBorrowRate") or 0
+                        ),
+                        "optimal_usage_ratio": int(r.get("optimalUsageRatio") or 0),
                         "price_usd": float(price_usd),
                         "supply_apr": float(supply_apr),
                         "supply_apy": float(base_supply_apy),
@@ -437,6 +659,10 @@ class AaveV3Adapter(BaseAdapter):
                         "chain_id": cid,
                         "pool": chain_data.get("pool"),
                         "userEmodeCategoryId": chain_data.get("userEmodeCategoryId", 0),
+                        "user_emode_category_id": chain_data.get(
+                            "user_emode_category_id", 0
+                        ),
+                        "account_data": chain_data.get("account_data"),
                     }
                 )
             else:
@@ -469,19 +695,41 @@ class AaveV3Adapter(BaseAdapter):
             account = to_checksum_address(account)
 
             async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
-                ui_pool = web3.eth.contract(
-                    address=ui_pool_addr, abi=UI_POOL_DATA_PROVIDER_ABI
-                )
-                reserves, base_currency = await ui_pool.functions.getReservesData(
-                    provider_addr
-                ).call(block_identifier="pending")
+                (
+                    ui_pool,
+                    reserve_keys,
+                    user_reserve_keys,
+                    reserves,
+                    base_currency,
+                ) = await self._read_reserves_data(web3, ui_pool_addr, provider_addr)
                 user_reserves, user_emode = await ui_pool.functions.getUserReservesData(
                     provider_addr, account
                 ).call(block_identifier="pending")
 
                 ref_unit, ref_usd = _base_currency_to_ref(base_currency)
+                account_data: dict[str, int] | None = None
+                account_data_error: str | None = None
+                try:
+                    pool_contract = web3.eth.contract(
+                        address=entry["pool"], abi=POOL_ABI
+                    )
+                    account_data = _account_data_to_dict(
+                        await pool_contract.functions.getUserAccountData(account).call(
+                            block_identifier="pending"
+                        )
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    account_data_error = str(exc)
 
-                reserve_keys = UI_POOL_RESERVE_KEYS
+                emode_categories: list[dict[str, Any]] = []
+                emode_categories_error: str | None = None
+                try:
+                    emode_categories = await self._read_emode_categories(
+                        ui_pool, provider_addr
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    emode_categories_error = str(exc)
+
                 by_underlying: dict[str, dict[str, Any]] = {}
                 for reserve in reserves or []:
                     r = _reserve_to_dict(reserve, reserve_keys)
@@ -566,8 +814,11 @@ class AaveV3Adapter(BaseAdapter):
 
             positions: list[dict[str, Any]] = []
             for row in user_reserves or []:
+                user_reserve = _reserve_to_dict(row, user_reserve_keys)
                 try:
-                    underlying = to_checksum_address(str(row[0]))
+                    underlying = to_checksum_address(
+                        str(user_reserve.get("underlyingAsset"))
+                    )
                 except Exception:  # noqa: BLE001
                     continue
 
@@ -581,10 +832,10 @@ class AaveV3Adapter(BaseAdapter):
                 liquidity_index = int(reserve.get("liquidityIndex") or 0)
                 variable_borrow_index = int(reserve.get("variableBorrowIndex") or 0)
 
-                scaled_supply = int(row[1] or 0)
-                scaled_var_debt = int(row[3] or 0)
-                stable_debt = 0
-                is_collateral = bool(row[2])
+                scaled_supply = int(user_reserve.get("scaledATokenBalance") or 0)
+                scaled_var_debt = int(user_reserve.get("scaledVariableDebt") or 0)
+                stable_debt = int(user_reserve.get("principalStableDebt") or 0)
+                is_collateral = bool(user_reserve.get("usageAsCollateralEnabledOnUser"))
 
                 supply_raw = (
                     (scaled_supply * liquidity_index) // RAY if scaled_supply else 0
@@ -690,6 +941,39 @@ class AaveV3Adapter(BaseAdapter):
                             str(reserve.get("variableDebtTokenAddress"))
                         ),
                         "usage_as_collateral": is_collateral,
+                        "usage_as_collateral_enabled": bool(
+                            reserve.get("usageAsCollateralEnabled")
+                        ),
+                        "is_frozen": bool(reserve.get("isFrozen")),
+                        "is_paused": bool(reserve.get("isPaused")),
+                        "is_siloed_borrowing": bool(reserve.get("isSiloedBorrowing")),
+                        "borrowable_in_isolation": bool(
+                            reserve.get("borrowableInIsolation")
+                        ),
+                        "ltv_bps": int(reserve.get("baseLTVasCollateral") or 0),
+                        "liquidation_threshold_bps": int(
+                            reserve.get("reserveLiquidationThreshold") or 0
+                        ),
+                        "liquidation_bonus_bps": int(
+                            reserve.get("reserveLiquidationBonus") or 0
+                        ),
+                        "emode_category_id": int(reserve.get("eModeCategoryId") or 0),
+                        "emode_ltv_bps": int(reserve.get("eModeLtv") or 0),
+                        "emode_liquidation_threshold_bps": int(
+                            reserve.get("eModeLiquidationThreshold") or 0
+                        ),
+                        "emode_liquidation_bonus_bps": int(
+                            reserve.get("eModeLiquidationBonus") or 0
+                        ),
+                        "emode_label": str(reserve.get("eModeLabel") or ""),
+                        "debt_ceiling": int(reserve.get("debtCeiling") or 0),
+                        "debt_ceiling_decimals": int(
+                            reserve.get("debtCeilingDecimals") or 0
+                        ),
+                        "isolation_mode_total_debt": int(
+                            reserve.get("isolationModeTotalDebt") or 0
+                        ),
+                        "deficit": int(reserve.get("deficit") or 0),
                         "supply_raw": int(supply_raw),
                         "variable_borrow_raw": int(variable_debt_raw),
                         "stable_borrow_raw": int(stable_debt),
@@ -709,14 +993,23 @@ class AaveV3Adapter(BaseAdapter):
                     }
                 )
 
-            return True, {
+            state: dict[str, Any] = {
                 "protocol": "aave_v3",
                 "chain_id": int(chain_id),
                 "pool": entry["pool"],
                 "account": account,
                 "userEmodeCategoryId": int(user_emode or 0),
+                "user_emode_category_id": int(user_emode or 0),
+                "emode_categories": emode_categories,
+                "account_data": account_data,
                 "positions": positions,
             }
+            if account_data_error:
+                state["account_data_error"] = account_data_error
+            if emode_categories_error:
+                state["emode_categories_error"] = emode_categories_error
+
+            return True, state
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
@@ -1102,6 +1395,38 @@ class AaveV3Adapter(BaseAdapter):
             use_as_collateral=False,
         )
 
+    async def set_emode(
+        self,
+        *,
+        chain_id: int,
+        category_id: int,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+
+        category_id = int(category_id)
+        if category_id < 0 or category_id > 255:
+            return False, "category_id must be between 0 and 255"
+
+        try:
+            pool = self._entry(int(chain_id))["pool"]
+            tx = await encode_call(
+                target=pool,
+                abi=POOL_ABI,
+                fn_name="setUserEMode",
+                args=[category_id],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def disable_emode(self, *, chain_id: int) -> tuple[bool, Any]:
+        return await self.set_emode(chain_id=int(chain_id), category_id=0)
+
     async def claim_all_rewards(
         self,
         *,
@@ -1153,6 +1478,477 @@ class AaveV3Adapter(BaseAdapter):
                 abi=REWARDS_CONTROLLER_ABI,
                 fn_name="claimAllRewards",
                 args=[[to_checksum_address(a) for a in assets], to_addr],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def get_earn_vault_state(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        account: str | None = None,
+    ) -> tuple[bool, dict[str, Any] | str]:
+        try:
+            vault_addr = to_checksum_address(str(vault_address))
+            acct = to_checksum_address(account) if account else None
+
+            async with web3_utils.web3_from_chain_id(int(chain_id)) as web3:
+                vault = web3.eth.contract(
+                    address=vault_addr,
+                    abi=AAVE_EARN_VAULT_ABI,
+                )
+                asset = to_checksum_address(
+                    str(await vault.functions.asset().call(block_identifier="pending"))
+                )
+                asset_token = web3.eth.contract(address=asset, abi=ERC20_ABI)
+                name = str(
+                    await vault.functions.name().call(block_identifier="pending") or ""
+                )
+                symbol = str(
+                    await vault.functions.symbol().call(block_identifier="pending")
+                    or ""
+                )
+                decimals = int(
+                    await vault.functions.decimals().call(block_identifier="pending")
+                    or 18
+                )
+                asset_decimals = int(
+                    await asset_token.functions.decimals().call(
+                        block_identifier="pending"
+                    )
+                    or decimals
+                )
+                total_supply = int(
+                    await vault.functions.totalSupply().call(block_identifier="pending")
+                    or 0
+                )
+                total_assets = int(
+                    await vault.functions.totalAssets().call(block_identifier="pending")
+                    or 0
+                )
+                unit_shares = 10 ** max(0, decimals)
+                unit_assets = 10 ** max(0, asset_decimals)
+                assets_per_share_unit = int(
+                    await vault.functions.convertToAssets(unit_shares).call(
+                        block_identifier="pending"
+                    )
+                    or 0
+                )
+                shares_per_asset_unit = int(
+                    await vault.functions.convertToShares(unit_assets).call(
+                        block_identifier="pending"
+                    )
+                    or 0
+                )
+                max_deposit = int(
+                    await vault.functions.maxDeposit(acct or ZERO_ADDRESS).call(
+                        block_identifier="pending"
+                    )
+                    or 0
+                )
+                max_mint = int(
+                    await vault.functions.maxMint(acct or ZERO_ADDRESS).call(
+                        block_identifier="pending"
+                    )
+                    or 0
+                )
+
+                fee_raw: int | None = None
+                claimable_fees_raw: int | None = None
+                last_vault_balance_raw: int | None = None
+                try:
+                    fee_raw = int(
+                        await vault.functions.getFee().call(block_identifier="pending")
+                        or 0
+                    )
+                    claimable_fees_raw = int(
+                        await vault.functions.getClaimableFees().call(
+                            block_identifier="pending"
+                        )
+                        or 0
+                    )
+                    last_vault_balance_raw = int(
+                        await vault.functions.getLastVaultBalance().call(
+                            block_identifier="pending"
+                        )
+                        or 0
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+                user: dict[str, Any] | None = None
+                if acct:
+                    shares = int(
+                        await vault.functions.balanceOf(acct).call(
+                            block_identifier="pending"
+                        )
+                        or 0
+                    )
+                    assets = int(
+                        await vault.functions.convertToAssets(shares).call(
+                            block_identifier="pending"
+                        )
+                        or 0
+                    )
+                    max_withdraw = int(
+                        await vault.functions.maxWithdraw(acct).call(
+                            block_identifier="pending"
+                        )
+                        or 0
+                    )
+                    max_redeem = int(
+                        await vault.functions.maxRedeem(acct).call(
+                            block_identifier="pending"
+                        )
+                        or 0
+                    )
+                    user = {
+                        "account": acct,
+                        "shares_raw": shares,
+                        "assets_raw": assets,
+                        "max_withdraw_raw": max_withdraw,
+                        "max_redeem_raw": max_redeem,
+                    }
+
+            return True, {
+                "protocol": "aave_v3",
+                "type": "earn_vault",
+                "chain_id": int(chain_id),
+                "vault": vault_addr,
+                "asset": asset,
+                "name": name,
+                "symbol": symbol,
+                "decimals": decimals,
+                "asset_decimals": asset_decimals,
+                "total_supply_raw": total_supply,
+                "total_assets_raw": total_assets,
+                "assets_per_share_unit_raw": assets_per_share_unit,
+                "shares_per_asset_unit_raw": shares_per_asset_unit,
+                "max_deposit_raw": max_deposit,
+                "max_mint_raw": max_mint,
+                "fee_raw": fee_raw,
+                "claimable_fees_raw": claimable_fees_raw,
+                "last_vault_balance_raw": last_vault_balance_raw,
+                "user": user,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_deposit(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        assets: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        assets = int(assets)
+        if assets <= 0:
+            return False, "assets must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            asset = await self._earn_vault_asset(
+                chain_id=int(chain_id), vault_address=vault
+            )
+
+            approved = await ensure_allowance(
+                token_address=asset,
+                owner=strategy,
+                spender=vault,
+                amount=assets,
+                chain_id=int(chain_id),
+                signing_callback=self.sign_callback,
+                approval_amount=MAX_UINT256,
+            )
+            if not approved[0]:
+                return approved
+
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="deposit",
+                args=[assets, recv],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_deposit_atokens(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        assets: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        assets = int(assets)
+        if assets <= 0:
+            return False, "assets must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            asset = await self._earn_vault_asset(
+                chain_id=int(chain_id), vault_address=vault
+            )
+            a_token = await self._a_token_for_underlying(
+                chain_id=int(chain_id), underlying_token=asset
+            )
+
+            approved = await ensure_allowance(
+                token_address=a_token,
+                owner=strategy,
+                spender=vault,
+                amount=assets,
+                chain_id=int(chain_id),
+                signing_callback=self.sign_callback,
+                approval_amount=MAX_UINT256,
+            )
+            if not approved[0]:
+                return approved
+
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="depositATokens",
+                args=[assets, recv],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_mint(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        shares: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        shares = int(shares)
+        if shares <= 0:
+            return False, "shares must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            asset = await self._earn_vault_asset(
+                chain_id=int(chain_id), vault_address=vault
+            )
+
+            approved = await ensure_allowance(
+                token_address=asset,
+                owner=strategy,
+                spender=vault,
+                amount=MAX_UINT256,
+                chain_id=int(chain_id),
+                signing_callback=self.sign_callback,
+                approval_amount=MAX_UINT256,
+            )
+            if not approved[0]:
+                return approved
+
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="mint",
+                args=[shares, recv],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_withdraw(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        assets: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        assets = int(assets)
+        if assets <= 0:
+            return False, "assets must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="withdraw",
+                args=[assets, recv, strategy],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_mint_with_atokens(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        shares: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        shares = int(shares)
+        if shares <= 0:
+            return False, "shares must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            asset = await self._earn_vault_asset(
+                chain_id=int(chain_id), vault_address=vault
+            )
+            a_token = await self._a_token_for_underlying(
+                chain_id=int(chain_id), underlying_token=asset
+            )
+
+            approved = await ensure_allowance(
+                token_address=a_token,
+                owner=strategy,
+                spender=vault,
+                amount=MAX_UINT256,
+                chain_id=int(chain_id),
+                signing_callback=self.sign_callback,
+                approval_amount=MAX_UINT256,
+            )
+            if not approved[0]:
+                return approved
+
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="mintWithATokens",
+                args=[shares, recv],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_withdraw_atokens(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        assets: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        assets = int(assets)
+        if assets <= 0:
+            return False, "assets must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="withdrawATokens",
+                args=[assets, recv, strategy],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_redeem(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        shares: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        shares = int(shares)
+        if shares <= 0:
+            return False, "shares must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="redeem",
+                args=[shares, recv, strategy],
+                from_address=strategy,
+                chain_id=int(chain_id),
+            )
+            txn_hash = await send_transaction(tx, self.sign_callback)
+            return True, txn_hash
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def earn_vault_redeem_as_atokens(
+        self,
+        *,
+        chain_id: int,
+        vault_address: str,
+        shares: int,
+        receiver: str | None = None,
+    ) -> tuple[bool, Any]:
+        strategy = self.wallet_address
+        if not strategy:
+            return False, "strategy wallet address not configured"
+        shares = int(shares)
+        if shares <= 0:
+            return False, "shares must be positive"
+
+        try:
+            vault = to_checksum_address(str(vault_address))
+            recv = to_checksum_address(receiver) if receiver else strategy
+            tx = await encode_call(
+                target=vault,
+                abi=AAVE_EARN_VAULT_ABI,
+                fn_name="redeemAsATokens",
+                args=[shares, recv, strategy],
                 from_address=strategy,
                 chain_id=int(chain_id),
             )

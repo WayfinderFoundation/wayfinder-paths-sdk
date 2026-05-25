@@ -1,4 +1,4 @@
-# Aave V3 execution (supply/withdraw/borrow/repay/collateral/rewards)
+# Aave V3 execution (supply/withdraw/borrow/repay/collateral/eMode/Earn/rewards)
 
 ## Safety
 
@@ -50,4 +50,55 @@ ok, tx = await adapter.unlend(chain_id=CHAIN_ID_ARBITRUM, underlying_token=ARBIT
 ```python
 # If assets is omitted, the adapter derives incentivized aToken/debt-token addresses via UiIncentiveDataProviderV3.
 ok, tx = await adapter.claim_all_rewards(chain_id=CHAIN_ID_ARBITRUM)
+```
+
+### Set or disable eMode
+
+```python
+ok, categories = await adapter.get_emode_categories(chain_id=CHAIN_ID_ARBITRUM)
+if not ok:
+    raise RuntimeError(categories)
+
+# category_id=0 disables eMode. Non-zero IDs must be valid for the market and
+# compatible with the user's collateral/debt, or Aave will revert.
+ok, tx = await adapter.set_emode(chain_id=CHAIN_ID_ARBITRUM, category_id=1)
+ok, tx = await adapter.disable_emode(chain_id=CHAIN_ID_ARBITRUM)
+```
+
+### Use Aave Earn vaults
+
+```python
+VAULT = "0x..."
+
+# Read first; confirm the underlying reserve is active and not paused/frozen.
+ok, vault = await adapter.get_earn_vault_state(
+    chain_id=CHAIN_ID_ARBITRUM,
+    vault_address=VAULT,
+)
+if not ok:
+    raise RuntimeError(vault)
+
+# Underlying token deposit / share mint.
+ok, tx = await adapter.earn_vault_deposit(
+    chain_id=CHAIN_ID_ARBITRUM,
+    vault_address=VAULT,
+    assets=1_000_000,
+)
+ok, tx = await adapter.earn_vault_mint(
+    chain_id=CHAIN_ID_ARBITRUM,
+    vault_address=VAULT,
+    shares=1_000_000,
+)
+
+# aToken variants avoid unwrapping an existing Aave supply position.
+ok, tx = await adapter.earn_vault_deposit_atokens(
+    chain_id=CHAIN_ID_ARBITRUM,
+    vault_address=VAULT,
+    assets=1_000_000,
+)
+ok, tx = await adapter.earn_vault_redeem_as_atokens(
+    chain_id=CHAIN_ID_ARBITRUM,
+    vault_address=VAULT,
+    shares=1_000_000,
+)
 ```
