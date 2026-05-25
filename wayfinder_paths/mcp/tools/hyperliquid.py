@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import math
 import re
 from decimal import Decimal
 from typing import Any, Literal
@@ -978,7 +979,18 @@ async def _place_outcome_order(
         mid = mids.get(asset_name)
         if mid is None or float(mid) <= 0:
             return err("price_error", f"Could not resolve mid price for {asset_name}")
-        size_i = max(1, round(float(usd_amount) / float(mid)))
+        # HL validates outcome minimum as size * mid >= 10 USDC;
+        # mid can drift between fetch and validation so pad by +1
+        min_size = math.ceil(10 / float(mid)) + 1
+        size_i = math.ceil(float(usd_amount) / float(mid))
+        if size_i < min_size:
+            min_usd = round(min_size * float(mid), 2)
+            return err(
+                "min_size",
+                f"Minimum order for this market is ~${min_usd} USDC "
+                f"({min_size} contracts at mid {float(mid):.5f}). "
+                f"Requested ${float(usd_amount)}.",
+            )
         sizing = {
             "source": "usd_amount",
             "usd_amount": float(usd_amount),
