@@ -78,7 +78,8 @@ def main() -> None:
                 "Scratch is auto-deleted on SessionEnd. "
                 f"Promote keepers into `{library_display}` (env: WAYFINDER_LIBRARY_DIR), "
                 "organized by protocol (e.g. `hyperliquid/`, `moonwell/`). "
-                "Avoid hardcoding RPC URLs; use `web3_from_chain_id(...)` + `strategy.rpc_urls` from config.json."
+                "Avoid hardcoding RPC URLs; use `web3_from_chain_id(...)`. "
+                "Keep `strategy.rpc_urls` empty unless intentionally overriding for a fork or local provider."
             ),
         }
     }

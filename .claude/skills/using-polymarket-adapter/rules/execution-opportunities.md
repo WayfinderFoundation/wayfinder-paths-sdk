@@ -7,7 +7,9 @@
 
 ## Preconditions (for write paths)
 
-- Polygon RPC configured (`strategy.rpc_urls["137"]`)
+- Polygon RPC access via the SDK's Wayfinder RPC proxy. Keep `strategy.rpc_urls`
+  empty in normal Shell usage; only set `strategy.rpc_urls["137"]` for an
+  explicit local/fork override.
 - Wallet configured (local with `private_key_hex` or remote via Privy)
 - Have Polygon gas token (POL) on the **owner EOA** — funding the deposit wallet costs gas
 - Have **pUSD** ready on the owner EOA (see `rules/deposits-withdrawals.md` to prepare it from USDC/USDC.e)

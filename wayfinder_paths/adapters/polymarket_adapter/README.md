@@ -59,13 +59,15 @@ await adapter.close()
 
 Most methods return `(ok: bool, data_or_error: Any | str)`.
 
-### Trading / bridging / redemption (wallet + Polygon RPC needed)
+### Trading / bridging / redemption (wallet + Polygon RPC access needed)
 
 You need:
 
 - A configured wallet. Trading uses the Polymarket deposit wallet derived from the
   owner wallet and signs through wallet callbacks.
-- A Polygon RPC URL (`strategy.rpc_urls["137"]`)
+- Polygon RPC access. In Wayfinder Shells, leave `strategy.rpc_urls` empty so the
+  SDK uses the authenticated Wayfinder RPC proxy for chain `137`. Only set
+  `strategy.rpc_urls["137"]` for an explicit local/fork override.
 - Some native Polygon gas token for owner-wallet transactions such as pUSD funding
 
 Convenient pattern used by repo scripts:
