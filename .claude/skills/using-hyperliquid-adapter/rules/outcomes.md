@@ -2,7 +2,7 @@
 
 HIP-4 is a hypercore-native prediction-contract surface. Phase 1 ships **binary daily markets** (e.g. "BTC > $78,213 by 06:00 UTC"); the protocol generalizes to multi-outcome later. Outcomes settle daily at **06:00 UTC**, after which the `outcome_id` rolls and old ids stop trading.
 
-**Collateral / quote: USDH** (Hyperliquid's stablecoin, token id 360). All currently-live HIP-4 outcomes settle in USDH — `outcomeMeta` doesn't expose a per-market quote field, so treat the whole surface as USDH-only until HL deploys outcomes against another token. You need a USDH balance to place orders; a USDC balance won't be debited.
+**Collateral / quote: USDC.** HIP-4 outcomes settle in USDC (migrated from USDH as of May 2026). You need a USDC balance to place orders.
 
 ## Asset id encoding
 
@@ -90,7 +90,7 @@ hyperliquid_cancel_order(
 
 ## Gotchas
 
-- **Collateral is USDH, not USDC.** Outcome buys debit USDH (token 360). If you only hold USDC, orders fail even with plenty of buying power — swap USDC → USDH on the `USDH/USDC` spot pair first.
+- **Collateral is USDC.** Outcome buys debit USDC from your spot account.
 - **Daily settlement rolls outcome ids.** A live `outcome_id=20` at 05:55 UTC may be expired by 06:05 UTC and a new id replaces it. Re-fetch `get_outcome_markets()` rather than caching ids across days.
 - **Sizes are integer contracts.** The adapter rejects non-integer `size` loudly; don't pass floats.
 - **Price decimals follow the spot rule** (`MAX_DECIMALS=8`, 5-sig-figs); for typical 0..1 outcome prices this means up to ~5 decimals.

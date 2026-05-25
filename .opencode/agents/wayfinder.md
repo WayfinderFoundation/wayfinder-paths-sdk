@@ -152,7 +152,7 @@ Before any order is placed, the Hyperliquid Adapter enforces [Unified Account mo
 | HIP-3 `cash`  | USDT                                                                      |
 | HIP-3 `hyna`  | USDE                                                                      |
 | Spot          | For market {A} - {B}, {B} is the quote asset, typically: USDC, USDH, USDT |
-| HIP-4 Outcome | USDH in spot account                                                      |
+| HIP-4 Outcome | USDC in spot account                                                      |
 
 If a user is on a legacy split account, migration may require closing positions, moving balances to spot, then enabling UnifiedAccountMode. `ensure_unified_account` runs before order placement, but can fail mid-state if open positions or stuck spot balances block the switch.
 

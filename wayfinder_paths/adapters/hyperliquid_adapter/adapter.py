@@ -53,9 +53,7 @@ MAINNET = "Mainnet"
 # ships sideSpecs=[Yes, No] for the binary daily, so 0=YES and 1=NO —
 # but multi-outcome contracts may reorder, so always read sideSpecs[side].name
 # instead of hardcoding a YES/NO convention.
-# Collateral: outcomes settle in USDH (spot token 360), not USDC. The spot
-# wallet must hold USDH before placing orders; outcomeMeta has no per-market
-# quote field, so the whole surface is treated as USDH-only.
+# Collateral: outcomes settle in USDC (migrated from USDH as of May 2026).
 
 
 def outcome_encoding(outcome_id: int, side: int) -> int:
