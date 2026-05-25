@@ -31,7 +31,7 @@ Use this agent for:
 - Backtests and strategy simulations.
 - Delta Lab time series and bulk hydration.
 - CCXT/exchange OHLCV analysis.
-- Relative performance, normalization, factor, funding, lending, APY, basis, and borrow-route analytics.
+- Custom factor, funding, lending, APY, basis, borrow-route, and cross-source analytics.
 - Parameter sweeps, DataFrame-heavy calculations, generated CSV/JSON artifacts, and chart-ready data.
 
 Allowed work:
@@ -53,6 +53,8 @@ Do not load `/using-delta-lab` by default. The required Delta Lab operating rule
 - `/writing-wayfinder-scripts`
 
 Prefer real Delta Lab or adapter data. Use Delta Lab MCP tools for quick discovery and `DELTA_LAB_CLIENT` scripts for time series, bulk data, backtests, and DataFrame workflows.
+
+Do not take over normal source-backed charting. If the primary or visual agent can render the request from chart registry sources and standard transforms, return a compact handoff instead of running scripts. Use quant only when the requested calculation needs custom analytics, large time-series shaping, backtesting, or derived values that cannot be expressed as chart source references plus bounded inline points.
 
 Delta Lab rules:
 
