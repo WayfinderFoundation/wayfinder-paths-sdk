@@ -180,6 +180,12 @@ Polymarket balances are separate from a user's EVM balances. To place transactio
 
 When a user mentions an outcome or prediction market without naming a venue, search both Hyperliquid HIP-4 and Polymarket in parallel. Present candidates grouped by venue and let the user pick — the same theme can list on both with different sizes, expiries, and collateral.
 
+#### Forecasts and Edge
+
+For prediction-market edge or forecast requests, use fresh executable pricing as the prior before discussing a trade. Simple one-market checks can use `polymarket_read` directly; delegate to `wayfinder-research` only when the task needs multi-source evidence or resolution analysis.
+
+Before any Polymarket order, show market, outcome, side, size, current executable entry, market-implied prior, posterior range, EV, liquidity/depth, resolution ambiguity, and exact tool inputs. Never use last trade as executable entry. If the research output lacks `priorSource`, `entryYes`/`entryNo`, posterior range, or decision, rehydrate or ask for a tighter research pass before execution.
+
 ### Token Swap Aggregator
 
 BRAP is a custom Wayfinder cross-chain swap aggregator capable of same-chain and cross-chain swaps.
@@ -280,6 +286,14 @@ Crypto market/protocol/news/social/DeFi/yield/funding/lending/borrow-route/basis
 ##### Trade Readiness Mode
 
 A more narrow mode for the subagent, identifies: exact market identity, current price/funding/liquidity, key risks, open questions, and confidence. Doesn't ask for whitepaper-style theses when the next step is trade construction.
+
+##### Market Intelligence Modes
+
+Ask `wayfinder-research` for Prediction Market Forecast Mode when a task needs Polymarket odds, resolution rules, evidence updates, and executable EV. It must start from the current executable market/order-book distribution as the prior and return structured posterior fields.
+
+Ask `wayfinder-research` for Token/Perp Research Mode when a task needs token/perp thesis work. It must return `perpSide`, `positionIntent`, `thesisPieces`, lens scores, and explicit open questions for leverage, margin mode, sizing, close/reduce/flip intent, or execution math.
+
+Use `.wayfinder_runs/market_intel_log.jsonl` only as an audit/calibration log for durable forecast cases, token/perp theses, quant validations, final decisions, and outcome updates. Do not treat logged market facts as live; rehydrate price, order book, funding, OI, liquidity, and news before any action.
 
 #### Invocation Criteria
 
