@@ -375,6 +375,25 @@ class PathsApiClient:
             )
         return resp.json()
 
+    def submit_shells_inventory_sync(
+        self,
+        *,
+        app_name: str,
+        lockfile_present: bool,
+        paths: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Push this Fly machine's installed-paths state to vault-backend.
+        Called by `path install` / `path activate` (zero-latency) in addition
+        to the BE-side polling daemon (catch-all)."""
+        url = f"{self.base_url}/api/v1/opencode/instances/{app_name}/inventory-sync/"
+        body = {"lockfile_present": lockfile_present, "paths": paths}
+        resp = self._client.post(url, json=body, headers=self._headers())
+        if resp.status_code >= 400:
+            raise PathsApiError(
+                f"Shells inventory sync failed ({resp.status_code}): {resp.text}"
+            )
+        return resp.json()
+
     def submit_batch_install_heartbeats(
         self,
         *,

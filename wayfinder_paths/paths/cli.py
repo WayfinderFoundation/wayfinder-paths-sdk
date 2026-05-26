@@ -40,6 +40,7 @@ from wayfinder_paths.paths.renderer import (
     render_skill_exports,
 )
 from wayfinder_paths.paths.scaffold import PathScaffoldError, init_path, slugify
+from wayfinder_paths.paths.shells_sync import sync_shells_inventory
 
 _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
@@ -1597,6 +1598,7 @@ def activate_cmd(
             activation_recorded = True
 
     result["activation_recorded"] = activation_recorded
+    sync_shells_inventory(trigger="activate")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2446,6 +2448,7 @@ def install_cmd(
         include_dependencies=include_dependencies,
         api_url=api_url,
     )
+    sync_shells_inventory(trigger="install")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2482,6 +2485,7 @@ def pull_cmd(
         no_verify=no_verify,
         api_url=api_url,
     )
+    sync_shells_inventory(trigger="pull")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2605,6 +2609,7 @@ def update_cmd(
         result["manual_activate_command"] = _manual_activate_command(
             path_dir=installed_path
         )
+        sync_shells_inventory(trigger="update")
         _echo_json({"ok": True, "result": result})
         return
 
@@ -2681,6 +2686,7 @@ def update_cmd(
     result["activated"] = True
     result["activation_source"] = activation_target.source
     result["activation"] = activation_result
+    sync_shells_inventory(trigger="update")
     _echo_json({"ok": True, "result": result})
 
 
@@ -2717,6 +2723,7 @@ def remove_cmd(
         host=host,
         scope=scope,
     )
+    sync_shells_inventory(trigger="remove")
     _echo_json({"ok": True, "result": result})
 
 
