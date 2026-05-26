@@ -13,5 +13,5 @@
 ## RPC requirements
 
 All on-chain execution requires RPC URLs to be resolvable:
-- via `config.json` under `strategy.rpc_urls`
-- or via env vars (fallback `RPC_URL`)
+- by default, via the SDK's authenticated Wayfinder RPC proxy
+- only use `config.json` `strategy.rpc_urls` for explicit local/fork overrides

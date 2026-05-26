@@ -73,8 +73,8 @@ Do **not** treat the tuple like a list/dict; that causes classic bugs like acces
 
 All amounts are raw base units (wei). Convert human → raw using token decimals.
 
-## RPC for chain 999 must be configured
+## RPC for chain 999
 
-If `web3_from_chain_id(999)` raises, add HyperEVM RPC URLs under `config.json`:
-
-- `rpcs["999"] = ["https://..."]`
+Use `web3_from_chain_id(999)` and leave `strategy.rpc_urls` empty in normal
+Shell usage so the SDK uses the Wayfinder RPC proxy. Only set
+`strategy.rpc_urls["999"]` for an explicit local/fork override.

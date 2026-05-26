@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import math
 import re
 from decimal import Decimal
 from typing import Any, Literal
@@ -939,8 +940,8 @@ async def _place_outcome_order(
 ) -> dict[str, Any]:
     """HIP-4 outcome leg of hyperliquid_place_{market,limit}_order.
 
-    Outcomes settle in USDH (token 360), trade as integer contracts, and have
-    a $10 USDH minimum order value. The standard Wayfinder builder code is
+    Outcomes settle in USDC, trade as integer contracts, and have
+    a $10 USDC minimum order value. The standard Wayfinder builder code is
     attached on every outcome order (HL accrues the fee on the sell side per
     the HIP-4 spec). `usd_amount` sizing is market-only — limit outcome
     orders require explicit integer `size`.
@@ -978,7 +979,18 @@ async def _place_outcome_order(
         mid = mids.get(asset_name)
         if mid is None or float(mid) <= 0:
             return err("price_error", f"Could not resolve mid price for {asset_name}")
-        size_i = max(1, round(float(usd_amount) / float(mid)))
+        # HL validates outcome minimum as size * mid >= 10 USDC;
+        # mid can drift between fetch and validation so pad by +1
+        min_size = math.ceil(10 / float(mid)) + 1
+        size_i = math.ceil(float(usd_amount) / float(mid))
+        if size_i < min_size:
+            min_usd = round(min_size * float(mid), 2)
+            return err(
+                "min_size",
+                f"Minimum order for this market is ~${min_usd} USDC "
+                f"({min_size} contracts at mid {float(mid):.5f}). "
+                f"Requested ${float(usd_amount)}.",
+            )
         sizing = {
             "source": "usd_amount",
             "usd_amount": float(usd_amount),
@@ -999,18 +1011,6 @@ async def _place_outcome_order(
         cloid=cloid,
         address=sender,
     )
-    # Outcome orders settle in USDH. When the wallet lacks USDH, HL just says
-    # "Insufficient spot balance asset=N" — append a funding hint so agents
-    # know how to recover. Only the inner-status-error shape carries this
-    # message; outer-status errors (res["status"]=="err") use a different
-    # response schema and are skipped here.
-    if not ok_order and res["status"] == "ok":
-        for s in res["response"]["data"]["statuses"]:
-            if "error" in s and "Insufficient spot balance" in s["error"]:
-                s["error"] += (
-                    " — Outcome markets are purchased using USDH, please "
-                    "swap into sufficient USDH using the USDH/USDC spot pair."
-                )
     effects.append(
         {"type": "hl", "label": "place_outcome_order", "ok": ok_order, "result": res}
     )
@@ -1499,7 +1499,7 @@ async def hyperliquid_place_market_order(
     """Place an IOC market order on a Hyperliquid perp / spot / HIP-4 market.
 
     HIP-4 outcome markets (`#N` asset names) trade as integer contracts and
-    require a $10 USDH minimum order value — `usd_amount` is converted to
+    require a $10 USDC minimum order value — `usd_amount` is converted to
     contracts at mid.
 
     `usd_amount` is converted to asset units at the mid price, then **rounded
@@ -1658,7 +1658,7 @@ async def hyperliquid_place_limit_order(
     """Place a GTC limit order on a Hyperliquid perp / spot / HIP-4 market.
 
     HIP-4 outcome markets (`#N` asset names) trade as integer contracts and
-    require a $10 USDH minimum order value. `usd_amount` sizing is not
+    require a $10 USDC minimum order value. `usd_amount` sizing is not
     supported for limit outcomes — pass an integer `size`.
 
     For leverage / margin mode, call `hyperliquid_update_leverage` first.
@@ -2004,7 +2004,11 @@ async def hyperliquid_search_market(
                 if market["class"] == "priceBinary"
                 else [s for o in market["outcomes"] for s in o["sides"]]
             )
-            text = " ".join(side["description"] for side in sides)
+            text = (
+                market.get("name", "")
+                + " "
+                + " ".join(side["description"] for side in sides)
+            )
             # Side descriptions use math operators (>=, <, <=); the candidate
             # tokenizer strips non-alphanumerics so those would be invisible
             # to MARKET_SEARCH_ALIASES. Rewrite to natural-language words so

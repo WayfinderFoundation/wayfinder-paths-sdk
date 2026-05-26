@@ -7,12 +7,15 @@
 
 ## MCP shortcuts (Claude Code)
 
-- Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin daily", limit=10)`
-- Trending markets: `mcp__wayfinder__polymarket_read(action="trending", limit=25)`
-- Market metadata by slug: `mcp__wayfinder__polymarket_read(action="get_market", market_slug="...")`
-- Book-based trade quote: `mcp__wayfinder__polymarket_read(action="quote", market_slug="...", outcome="YES", side="BUY", amount_collateral=100)`
+- Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin daily", limit=10)` (compact `candidates` by default)
+- Trending markets: `mcp__wayfinder__polymarket_read(action="trending", limit=25)` (compact `candidates` by default)
+- Event candidates: `mcp__wayfinder__polymarket_read(action="get_event", event_slug="...", candidate_limit=5)`
+- Market metadata by slug: `mcp__wayfinder__polymarket_read(action="get_market", market_slug="...")` (bounded rules/description by default)
+- Book-based trade quote: `mcp__wayfinder__polymarket_read(action="quote", market_slug="...", outcome="YES", side="BUY", buy_amount_pusd=100)`
 - Price history (token_id): `mcp__wayfinder__polymarket_read(action="price_history", token_id="...", interval="1d", fidelity=5)`
 - Full user status: `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
+
+Use `summary=False` only when debugging raw Gamma/backend behavior or when a needed field is missing from the compact response.
 
 ## Primary sources (in this repo)
 
@@ -28,15 +31,13 @@
 
 ## Recommended market discovery flow
 
-1) Start with fuzzy search:
-   - `search_markets_fuzzy(query=..., limit=...)` (Gamma `public-search` + local rerank)
-2) Filter to tradable markets (every time):
-   - `enableOrderBook == True`
-   - `clobTokenIds` present/non-empty
-   - `acceptingOrders == True`
-   - `active == True` and `closed != True`
-3) If search results aren’t tradable, fall back to “trending”:
-   - `list_markets(closed=False, order="volume24hr", ascending=False, limit=50)`
+1) Start with compact MCP discovery:
+   - `polymarket_read(action="search", query=..., limit=10)`
+   - or `polymarket_read(action="get_event", event_slug=..., candidate_limit=5)` when you already know the event slug.
+2) Pick the candidate by `slug`, `question`, outcome labels/token IDs, `resolvesAt`, liquidity, spread, and tradability flags. The compact `outcomes[]` shape handles binary and multi-outcome markets.
+3) Hydrate the selected market:
+   - `polymarket_read(action="get_market", market_slug=...)`
+4) Only then fetch book/quote/history for the selected outcome token. Avoid raw event payloads in normal agent context; use `summary=False` only for debugging or missing-field investigation.
 
 Practical note: Gamma often returns `outcomes`, `outcomePrices`, and `clobTokenIds` as JSON-encoded strings. The adapter normalizes these into Python lists.
 
@@ -51,8 +52,9 @@ If you’re analyzing a market by slug, use `get_market_prices_history(market_sl
 
 ## Book-based quote vs price
 
-- Use `quote_market_order(token_id=..., side="BUY" | "SELL", amount=...)` when you need average execution from the current book.
-- `BUY amount` is pUSD to spend; `SELL amount` is shares to sell.
+- Use `quote_market_order(token_id=..., side="BUY" | "SELL", amount=...)` in scripts when you need average execution from the current book.
+- In MCP, use `buy_amount_pusd` for BUY quotes and `sell_amount_shares` for SELL quotes.
+- BUY amount is pUSD spend; SELL amount is shares to sell. Do not describe a BUY as "N shares @ price" unless the share count comes from `executionSummary.sharesFilled`.
 - Quote returns weighted-average price, worst fill, partial-fill status, and per-level fills.
 - `get_price(...)` is not a substitute for this; it does not tell you the weighted average execution price for a sized trade.
 
@@ -82,7 +84,7 @@ asyncio.run(main())
 
 ### “Mover” scan across an event (compute deltas from time series)
 
-Use `get_event_by_slug(event_slug)` to get a coherent set (e.g. MVP candidates), then pull per-outcome history. Limit concurrency to avoid 429s.
+For MCP/context-light work, start with `polymarket_read(action="get_event", event_slug=..., candidate_limit=...)` and hydrate only selected candidates. Use adapter `get_event_by_slug(event_slug)` only inside bounded scripts that truly need the full market set, then pull per-outcome history with limited concurrency to avoid 429s.
 
 ```python
 import asyncio, time

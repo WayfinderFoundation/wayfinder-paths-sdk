@@ -15,6 +15,7 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
+    MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.web3 import (
@@ -151,10 +152,16 @@ async def gas_price_transaction(transaction: dict):
 
             transaction["maxFeePerGas"] = int(
                 base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                + priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+                + max(
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
+                )
             )
             transaction["maxPriorityFeePerGas"] = int(
-                priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER
+                max(
+                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
+                )
             )
 
     return transaction
@@ -183,10 +190,13 @@ async def gas_limit_transaction(transaction: dict):
         # Fallback if block gasLimit isn't available.
         return 3_000_000
 
+    rpc_errors: list[str] = []
+
     async def _estimate_gas(web3: AsyncWeb3, transaction: dict) -> int:
         try:
             return await web3.eth.estimate_gas(transaction, block_identifier="latest")
         except Exception as e:
+            rpc_errors.append(f"{web3.provider.endpoint_uri}: {e}")
             logger.info(
                 f"Failed to estimate gas using {web3.provider.endpoint_uri}. Error: {e}"
             )
@@ -210,8 +220,9 @@ async def gas_limit_transaction(transaction: dict):
                 transaction["gas"] = fallback_gas
                 return transaction
 
-            logger.error("Gas estimation failed on all RPCs")
-            raise Exception("Gas estimation failed on all RPCs")
+            detail = "; ".join(rpc_errors) if rpc_errors else "no errors captured"
+            logger.error(f"Gas estimation failed on all RPCs: {detail}")
+            raise Exception(f"Gas estimation failed on all RPCs: {detail}")
 
         # Add a defensive buffer. Some transactions (especially swaps) can use more gas
         # at execution time than at estimation time due to state changes between

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -20,6 +21,13 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
+from wayfinder_paths.mcp.polymarket_order import (
+    as_float,
+    first_present,
+    normalize_pm_execution_summary,
+    normalize_pm_side,
+    validate_pm_market_order_size,
+)
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -32,85 +40,204 @@ from wayfinder_paths.mcp.utils import (
     throw_if_not_number,
 )
 
-_TRIM_MARKET_FIELDS: set[str] = {
-    "id",
-    "questionID",
-    "image",
-    "icon",
-    "resolutionSource",
-    "startDate",
-    "startDateIso",
-    "createdAt",
-    "updatedAt",
-    "marketMakerAddress",
-    "new",
-    "featured",
-    "submitted_by",
-    "archived",
-    "resolvedBy",
-    "restricted",
-    "groupItemThreshold",
-    "enableOrderBook",
-    "hasReviewedDates",
-    "volumeNum",
-    "liquidityNum",
-    "volume1wk",
-    "volume1mo",
-    "volume1yr",
-    "volume24hrClob",
-    "volume1wkClob",
-    "volume1moClob",
-    "volume1yrClob",
-    "volumeClob",
-    "liquidityClob",
-    "umaBond",
-    "umaReward",
-    "umaResolutionStatus",
-    "umaResolutionStatuses",
-    "customLiveness",
-    "negRisk",
-    "negRiskMarketID",
-    "negRiskRequestID",
-    "ready",
-    "funded",
-    "acceptingOrdersTimestamp",
-    "cyom",
-    "competitive",
-    "pagerDutyNotificationEnabled",
-    "approved",
-    "clobRewards",
-    "rewardsMinSize",
-    "rewardsMaxSpread",
-    "automaticallyActive",
-    "clearBookOnStart",
-    "seriesColor",
-    "showGmpSeries",
-    "showGmpOutcome",
-    "manualActivation",
-    "negRiskOther",
-    "pendingDeployment",
-    "deploying",
-    "deployingTimestamp",
-    "rfqEnabled",
-    "holdingRewardsEnabled",
-    "feesEnabled",
-    "requiresTranslation",
-    "oneWeekPriceChange",
-    "oneMonthPriceChange",
-    "oneHourPriceChange",
-}
+
+def _compact_truncation(total: int, returned: int) -> dict[str, Any]:
+    return {
+        "totalAvailable": total,
+        "returnedCandidates": returned,
+        "truncated": total > returned,
+        "rawAvailableWithSummaryFalse": True,
+    }
 
 
-def _trim_market(m: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in m.items() if k not in _TRIM_MARKET_FIELDS}
-    desc = out.get("description") or ""
-    if len(desc) > 300:
-        out["description"] = desc[:300] + "…"
-    if "events" in out:
-        evt = out.pop("events")
-        if evt:
-            out["_event"] = {"slug": evt[0].get("slug"), "title": evt[0].get("title")}
-    return out
+def _compact_text(value: Any, *, max_chars: int = 700) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+
+
+def _maybe_json_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return [value]
+        return decoded if isinstance(decoded, list) else [decoded]
+    return [value]
+
+
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    return None
+
+
+def _event_slug(market: dict[str, Any]) -> str | None:
+    direct = first_present(market, "eventSlug", "event_slug")
+    if direct:
+        return str(direct)
+    event = market.get("_event")
+    if isinstance(event, dict) and event.get("slug"):
+        return str(event["slug"])
+    events = market.get("events")
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        slug = events[0].get("slug")
+        return str(slug) if slug else None
+    return None
+
+
+def _compact_outcomes(market: dict[str, Any]) -> list[dict[str, Any]]:
+    if market.get("yesTokenId") or market.get("noTokenId"):
+        return [
+            {
+                "label": str(market.get("yesLabel") or "Yes"),
+                "price": as_float(market.get("yesPrice")),
+                "tokenId": market.get("yesTokenId"),
+            },
+            {
+                "label": str(market.get("noLabel") or "No"),
+                "price": as_float(market.get("noPrice")),
+                "tokenId": market.get("noTokenId"),
+            },
+        ]
+
+    labels = _maybe_json_list(market.get("outcomes"))
+    prices = _maybe_json_list(market.get("outcomePrices"))
+    token_ids = _maybe_json_list(market.get("clobTokenIds"))
+    count = max(len(labels), len(prices), len(token_ids))
+    outcomes: list[dict[str, Any]] = []
+    for idx in range(count):
+        label = labels[idx] if idx < len(labels) else idx
+        outcomes.append(
+            {
+                "label": str(label),
+                "price": as_float(prices[idx] if idx < len(prices) else None),
+                "tokenId": token_ids[idx] if idx < len(token_ids) else None,
+            }
+        )
+    return outcomes
+
+
+def _compact_market_candidate(
+    market: dict[str, Any], *, event_slug: str | None = None
+) -> dict[str, Any]:
+    outcomes = _compact_outcomes(market)
+    best_bid = as_float(first_present(market, "bestBid", "bid", "yesBid"))
+    best_ask = as_float(first_present(market, "bestAsk", "ask", "yesAsk"))
+    spread = as_float(market.get("spread"))
+    if spread is None and best_bid is not None and best_ask is not None:
+        spread = best_ask - best_bid
+    active = _as_bool(market.get("active"))
+    accepting_orders = _as_bool(market.get("acceptingOrders"))
+    closed = _as_bool(market.get("closed"))
+    order_book_enabled = _as_bool(market.get("enableOrderBook"))
+    has_token_ids = any(o.get("tokenId") for o in outcomes)
+    tradable = (
+        has_token_ids
+        and order_book_enabled is not False
+        and accepting_orders is not False
+        and active is not False
+        and closed is not True
+    )
+    return {
+        "slug": first_present(market, "slug", "marketSlug"),
+        "eventSlug": _event_slug(market) or event_slug,
+        "question": first_present(market, "question", "title", "symbol"),
+        "outcomes": outcomes,
+        "bestBid": best_bid,
+        "bestAsk": best_ask,
+        "spread": spread,
+        "liquidity": as_float(
+            first_present(market, "liquidity", "liquidityNum", "liquidityClob")
+        ),
+        "volume24h": as_float(
+            first_present(market, "volume24h", "volume24hr", "volume24hrClob")
+        ),
+        "resolvesAt": first_present(
+            market, "resolvesAt", "endDateIso", "endDate", "resolutionDate"
+        ),
+        "conditionId": first_present(market, "conditionId", "condition_id"),
+        "tradable": bool(tradable),
+        "active": active,
+        "acceptingOrders": accepting_orders,
+        "closed": closed,
+    }
+
+
+def _compact_candidates(
+    markets: list[dict[str, Any]],
+    candidate_limit: int,
+    *,
+    event_slug: str | None = None,
+    sort_open_first: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    limit = max(0, int(candidate_limit))
+    candidates = [_compact_market_candidate(m, event_slug=event_slug) for m in markets]
+    if sort_open_first:
+        candidates.sort(
+            key=lambda c: (
+                c.get("active") is not True,
+                c.get("closed") is True,
+                c.get("acceptingOrders") is not True,
+                c.get("tradable") is not True,
+                -float(c.get("volume24h") or 0),
+                -float(c.get("liquidity") or 0),
+            )
+        )
+    candidates = candidates[:limit]
+    return candidates, _compact_truncation(len(markets), len(candidates))
+
+
+def _compact_market_detail(market: dict[str, Any]) -> dict[str, Any]:
+    detail = _compact_market_candidate(market)
+    detail.update(
+        {
+            "description": _compact_text(market.get("description"), max_chars=900),
+            "resolutionSource": _compact_text(
+                market.get("resolutionSource"), max_chars=500
+            ),
+            "rules": _compact_text(
+                first_present(
+                    market,
+                    "rules",
+                    "resolutionRules",
+                    "resolutionCriteria",
+                    "groupItemTitle",
+                ),
+                max_chars=900,
+            ),
+        }
+    )
+    return detail
+
+
+def _compact_event(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "slug": event.get("slug"),
+        "title": event.get("title"),
+        "description": _compact_text(event.get("description"), max_chars=900),
+        "startDate": first_present(event, "startDateIso", "startDate"),
+        "endDate": first_present(event, "endDateIso", "endDate"),
+        "active": _as_bool(event.get("active")),
+        "closed": _as_bool(event.get("closed")),
+    }
 
 
 def _annotate(
@@ -264,6 +391,8 @@ async def polymarket_read(
     sort: PolymarketSort = "trending",
     status: PolymarketStatus = "active",
     offset: int = 0,
+    summary: bool = True,
+    candidate_limit: int = 5,
     # market/event
     market_slug: str | None = None,
     event_slug: str | None = None,
@@ -271,8 +400,8 @@ async def polymarket_read(
     # clob data
     token_id: str | None = None,
     side: Literal["BUY", "SELL"] = "BUY",
-    amount_collateral: float | None = None,
-    shares: float | None = None,
+    buy_amount_pusd: float | None = None,
+    sell_amount_shares: float | None = None,
     interval: str | None = "1d",
     start_ts: int | None = None,
     end_ts: int | None = None,
@@ -289,7 +418,10 @@ async def polymarket_read(
         `status`: active|closed|all.
       - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
       - `get_market` / `get_event`: fetch by `market_slug` / `event_slug`.
-      - `quote`: market-order quote. BUY needs `amount_collateral` (USDC), SELL needs `shares`.
+        These discovery actions return compact candidates by default; pass
+        `summary=False` only when debugging raw Gamma/backend payloads.
+      - `quote`: market-order quote. BUY needs `buy_amount_pusd`; SELL needs
+        `sell_amount_shares`. Results include a normalized execution summary.
         Provide `market_slug`+`outcome` OR `token_id`.
       - `price`: best `BUY`/`SELL` price for a `token_id`.
       - `order_book`: full book for a `token_id`.
@@ -356,6 +488,17 @@ async def polymarket_read(
                 )
                 if not ok_rows:
                     return err("error", str(rows))
+                if summary:
+                    candidates, truncation = _compact_candidates(rows, candidate_limit)
+                    return ok(
+                        {
+                            "action": action,
+                            "query": q,
+                            "summaryMode": True,
+                            "candidates": candidates,
+                            "truncation": truncation,
+                        }
+                    )
                 return ok({"action": action, "query": q, "markets": rows})
 
             case "trending":
@@ -368,15 +511,32 @@ async def polymarket_read(
                 )
                 if not ok_rows:
                     return err("error", str(rows))
-                return ok(
-                    {"action": action, "markets": [_trim_market(m) for m in rows]}
-                )
+                if summary:
+                    candidates, truncation = _compact_candidates(rows, candidate_limit)
+                    return ok(
+                        {
+                            "action": action,
+                            "summaryMode": True,
+                            "candidates": candidates,
+                            "truncation": truncation,
+                        }
+                    )
+                return ok({"action": action, "markets": rows})
 
             case "get_market":
                 slug = throw_if_empty_str("market_slug is required", market_slug)
                 ok_m, m = await adapter.get_market_by_slug(slug)
                 if not ok_m:
                     return err("error", str(m))
+                if summary:
+                    return ok(
+                        {
+                            "action": action,
+                            "summaryMode": True,
+                            "market": _compact_market_detail(m),
+                            "truncation": _compact_truncation(1, 1),
+                        }
+                    )
                 return ok({"action": action, "market": m})
 
             case "get_event":
@@ -384,24 +544,32 @@ async def polymarket_read(
                 ok_e, e = await adapter.get_event_by_slug(slug)
                 if not ok_e:
                     return err("error", str(e))
+                if summary:
+                    markets = [m for m in e.get("markets", []) if isinstance(m, dict)]
+                    candidates, truncation = _compact_candidates(
+                        markets,
+                        candidate_limit,
+                        event_slug=slug,
+                        sort_open_first=True,
+                    )
+                    return ok(
+                        {
+                            "action": action,
+                            "summaryMode": True,
+                            "event": _compact_event(e),
+                            "candidates": candidates,
+                            "truncation": truncation,
+                        }
+                    )
                 return ok({"action": action, "event": e})
 
             case "quote":
-                if side == "BUY":
-                    throw_if_none(
-                        "amount_collateral is required for BUY quote", amount_collateral
-                    )
-                    quote_amount = throw_if_not_number(
-                        "amount_collateral must be a number", amount_collateral
-                    )
-                else:
-                    throw_if_none("shares is required for SELL quote", shares)
-                    quote_amount = throw_if_not_number(
-                        "shares must be a number", shares
-                    )
-
-                if quote_amount <= 0:
-                    raise ValueError("quote amount must be positive")
+                side = normalize_pm_side(side)
+                sizing = validate_pm_market_order_size(
+                    side=side,
+                    buy_amount_pusd=buy_amount_pusd,
+                    sell_amount_shares=sell_amount_shares,
+                )
 
                 slug = str(market_slug or "").strip()
                 if slug:
@@ -409,7 +577,7 @@ async def polymarket_read(
                         market_slug=slug,
                         outcome=outcome,
                         side=side,
-                        amount=quote_amount,
+                        amount=sizing["adapter_amount"],
                     )
                 else:
                     tid = str(token_id or "").strip()
@@ -418,16 +586,25 @@ async def polymarket_read(
                     ok_q, q = await adapter.quote_market_order(
                         token_id=tid,
                         side=side,
-                        amount=quote_amount,
+                        amount=sizing["adapter_amount"],
                     )
 
                 if not ok_q:
                     return err("error", str(q))
+                execution_summary = normalize_pm_execution_summary(
+                    side=side,
+                    sizing=sizing,
+                    quote=q if isinstance(q, dict) else None,
+                )
                 return ok(
                     {
                         "action": action,
                         "token_id": q["token_id"],
                         "side": side,
+                        "sizing_kind": sizing["sizing_kind"],
+                        "buy_amount_pusd": sizing["buy_amount_pusd"],
+                        "sell_amount_shares": sizing["sell_amount_shares"],
+                        "executionSummary": execution_summary,
                         "quote": q,
                     }
                 )
@@ -628,14 +805,14 @@ async def polymarket_place_market_order(
     market_slug: str | None = None,
     outcome: str | int = "YES",
     token_id: str | None = None,
-    amount_collateral: float | None = None,
-    shares: float | None = None,
+    buy_amount_pusd: float | None = None,
+    sell_amount_shares: float | None = None,
     max_slippage_pct: float | None = None,
 ) -> dict[str, Any]:
     """Place a Polymarket market order (FOK limit at a slippage-derived cap).
 
-    Provide `market_slug`+`outcome` OR `token_id`. BUY needs `amount_collateral` (pUSD);
-    SELL needs `shares`. The adapter quotes the book and signs an FOK limit at
+    Provide `market_slug`+`outcome` OR `token_id`. BUY needs `buy_amount_pusd`;
+    SELL needs `sell_amount_shares`. The adapter quotes the book and signs an FOK limit at
     `worst_price * (1 ± max_slippage_pct/100)` (default 2%) — order is killed if the
     book moves past the cap.
 
@@ -645,15 +822,17 @@ async def polymarket_place_market_order(
         market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
         outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
         token_id: Direct CLOB token id; alternative to market_slug + outcome.
-        amount_collateral: pUSD to spend (required for BUY).
-        shares: Shares to sell (required for SELL).
+        buy_amount_pusd: pUSD to spend (required for BUY).
+        sell_amount_shares: Shares to sell (required for SELL).
         max_slippage_pct: Slippage cap as a percent (e.g. 2.0). None = adapter default (2%).
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
-    if side == "BUY":
-        throw_if_none("amount_collateral is required for BUY", amount_collateral)
-    else:
-        throw_if_none("shares is required for SELL", shares)
+    side = normalize_pm_side(side)
+    sizing = validate_pm_market_order_size(
+        side=side,
+        buy_amount_pusd=buy_amount_pusd,
+        sell_amount_shares=sell_amount_shares,
+    )
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
@@ -662,14 +841,14 @@ async def polymarket_place_market_order(
                 ok_trade, res = await adapter.place_prediction(
                     market_slug=str(market_slug),
                     outcome=outcome,
-                    amount_collateral=float(amount_collateral),
+                    amount_collateral=sizing["adapter_amount"],
                     max_slippage_pct=max_slippage_pct,
                 )
             else:
                 ok_trade, res = await adapter.cash_out_prediction(
                     market_slug=str(market_slug),
                     outcome=outcome,
-                    shares=float(shares),
+                    shares=sizing["adapter_amount"],
                     max_slippage_pct=max_slippage_pct,
                 )
         else:
@@ -677,9 +856,18 @@ async def polymarket_place_market_order(
             ok_trade, res = await adapter.place_market_order(
                 token_id=tid,
                 side=side,
-                amount=float(amount_collateral if side == "BUY" else shares),
+                amount=sizing["adapter_amount"],
                 max_slippage_pct=max_slippage_pct,
             )
+        raw = res if isinstance(res, dict) else {"result": res}
+        raw_quote = raw.get("quote") if isinstance(raw.get("quote"), dict) else None
+        execution_summary = normalize_pm_execution_summary(
+            side=side,
+            sizing=sizing,
+            quote=raw_quote,
+            raw=raw,
+            failed=not ok_trade and raw_quote is None,
+        )
         effects = [
             {
                 "type": "polymarket",
@@ -700,10 +888,9 @@ async def polymarket_place_market_order(
                 "token_id": str(token_id) if token_id else None,
                 "outcome": str(outcome),
                 "side": side,
-                "amount_collateral": float(amount_collateral)
-                if amount_collateral is not None
-                else None,
-                "shares": float(shares) if shares is not None else None,
+                "sizing_kind": sizing["sizing_kind"],
+                "buy_amount_pusd": sizing["buy_amount_pusd"],
+                "sell_amount_shares": sizing["sell_amount_shares"],
                 "max_slippage_pct": float(max_slippage_pct)
                 if max_slippage_pct is not None
                 else None,
@@ -718,14 +905,15 @@ async def polymarket_place_market_order(
                 "token_id": str(token_id) if token_id else None,
                 "outcome": str(outcome),
                 "side": side,
-                "amount_collateral": float(amount_collateral)
-                if amount_collateral is not None
-                else None,
-                "shares": float(shares) if shares is not None else None,
+                "sizing_kind": sizing["sizing_kind"],
+                "buy_amount_pusd": sizing["buy_amount_pusd"],
+                "sell_amount_shares": sizing["sell_amount_shares"],
                 "max_slippage_pct": float(max_slippage_pct)
                 if max_slippage_pct is not None
                 else None,
+                "executionSummary": execution_summary,
                 "effects": effects,
+                "raw": raw,
             }
         )
     finally:

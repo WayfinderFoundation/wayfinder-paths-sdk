@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
-from wayfinder_paths.mcp.utils import catch_errors, err, ok
+from wayfinder_paths.mcp.utils import catch_errors, err, ok, repo_root
 
 _NOT_OPENCODE_ERR = ("not_opencode_instance", "Not running on an OpenCode instance")
+_VISUAL_SPEC_DIR = Path(".wayfinder_runs") / "visual_specs"
 _RATE_PERCENT_FIELDS = {
     "implied_apy",
     "underlying_apy",
@@ -94,8 +96,73 @@ def _normalize_chart_series_for_display(
     return normalized
 
 
+def _resolve_visual_spec_path(path_raw: str) -> tuple[Path, str] | dict[str, Any]:
+    raw = str(path_raw or "").strip()
+    if not raw:
+        return err("invalid_chart_spec_path", "path is required")
+
+    root = repo_root().resolve(strict=False)
+    allowed_dir = (root / _VISUAL_SPEC_DIR).resolve(strict=False)
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.resolve(strict=False)
+
+    try:
+        display_path = str(resolved.relative_to(root))
+        resolved.relative_to(allowed_dir)
+    except ValueError:
+        return err(
+            "invalid_chart_spec_path",
+            "path must be under .wayfinder_runs/visual_specs",
+            {"path": str(resolved), "allowed_dir": str(allowed_dir)},
+        )
+
+    if resolved.suffix.lower() != ".json":
+        return err(
+            "invalid_chart_spec_path",
+            "chart spec path must end in .json",
+            {"path": display_path},
+        )
+    if not resolved.exists():
+        return err("not_found", "Chart spec not found", {"path": display_path})
+
+    return resolved, display_path
+
+
+def _compact_chart_import_result(
+    *,
+    path: str,
+    chart: dict[str, Any],
+    response: dict[str, Any],
+) -> dict[str, Any]:
+    workspace = response.get("chart_workspace") if isinstance(response, dict) else {}
+    if not isinstance(workspace, dict):
+        workspace = {}
+
+    series = chart.get("series")
+    return {
+        "chart": {
+            "id": chart.get("id"),
+            "title": chart.get("title"),
+            "kind": chart.get("kind"),
+            "path": path,
+            "series_count": len(series) if isinstance(series, list) else 0,
+            "lookback_days": chart.get("lookback_days"),
+            "limit": chart.get("limit"),
+        },
+        "chart_workspace": {
+            "activeChartId": workspace.get("activeChartId"),
+            "version": workspace.get("version"),
+        },
+        "chart_validation": response.get("chart_validation")
+        if isinstance(response, dict)
+        else None,
+    }
+
+
 @catch_errors
-async def shells_get_frontend_context() -> dict[str, Any]:
+async def visual_get_frontend_context() -> dict[str, Any]:
     """Read the current frontend UI state.
 
     Returns what the user is currently viewing plus any chart workspace
@@ -110,7 +177,7 @@ async def shells_get_frontend_context() -> dict[str, Any]:
 
 
 @catch_errors
-async def shells_search_chart_series(
+async def visual_search_chart_series(
     query: str,
     kind: str | None = None,
     venue: str | None = None,
@@ -148,7 +215,7 @@ async def shells_search_chart_series(
 
 
 @catch_errors
-async def shells_set_active_market(
+async def visual_set_active_market(
     query: str | None = None,
     market_id: str | None = None,
     market_type: str | None = None,
@@ -160,7 +227,7 @@ async def shells_set_active_market(
     Use this for requests like "show AAVE", "switch to PENGU perp", "chart
     PROMPT", or "open this Polymarket market". This updates the live chart,
     order book, trades, and trade ticket together. Prefer this over
-    `shells_create_chart` when the user wants a single tradable token, perp,
+    `visual_create_chart` when the user wants a single tradable token, perp,
     spot, or prediction market rather than a custom visual pane. For onchain
     swap-token charts, pass market_type="onchain-spot" instead of searching
     chart-series candidates.
@@ -194,7 +261,7 @@ async def shells_set_active_market(
 
 
 @catch_errors
-async def shells_create_chart(
+async def visual_create_chart(
     chart_id: str,
     title: str,
     kind: str,
@@ -217,14 +284,14 @@ async def shells_create_chart(
     Supported chart kinds:
       - price_candle: primary market price chart. Use source type
         {"type": "market_price", "market_id": "..."} or a dataset_series
-        returned by `shells_search_chart_series` for Hyperliquid perp prices.
+        returned by `visual_search_chart_series` for Hyperliquid perp prices.
       - line: one or more time series.
       - bar: ranked/latest categorical values.
       - table: tabular data.
 
     Supported source types:
       - market_price: {"type": "market_price", "market_id": "hl-perp-btc"}
-      - dataset_series: use `shells_search_chart_series` and copy the returned
+      - dataset_series: use `visual_search_chart_series` and copy the returned
         source object. Preferred for assets, funding, APYs, Delta Lab registry
         series, DeFiLlama snapshots, and CoinGecko fallback prices.
       - delta_lab_asset: {"type": "delta_lab_asset", "symbol": "USDC",
@@ -284,7 +351,61 @@ async def shells_create_chart(
 
 
 @catch_errors
-async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
+async def visual_import_chart_spec(path: str) -> dict[str, Any]:
+    """Import a Shells workspace chart object from a local JSON artifact.
+
+    The artifact must live under `.wayfinder_runs/visual_specs/*.json` and must
+    contain a single chart object matching the `visual_create_chart` workspace
+    schema. This is for visual-agent scripts that generate renderable chart
+    specs without sending large JSON payloads through the model context.
+    """
+    if not is_opencode_instance():
+        return err(*_NOT_OPENCODE_ERR)
+
+    resolved = _resolve_visual_spec_path(path)
+    if isinstance(resolved, dict):
+        return resolved
+    spec_path, display_path = resolved
+
+    try:
+        payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return err(
+            "invalid_chart_spec_json",
+            f"Invalid JSON: {exc.msg}",
+            {"path": display_path, "line": exc.lineno, "column": exc.colno},
+        )
+
+    if not isinstance(payload, dict):
+        return err(
+            "invalid_chart_spec",
+            "Chart spec JSON must be an object",
+            {"path": display_path},
+        )
+
+    chart = dict(payload)
+    series = chart.get("series")
+    if isinstance(series, list):
+        chart["series"] = _normalize_chart_series_for_display(series)
+
+    try:
+        response = await INSTANCE_STATE_CLIENT.upsert_workspace_chart(chart)
+        return ok(
+            _compact_chart_import_result(
+                path=display_path,
+                chart=chart,
+                response=response,
+            )
+        )
+    except httpx.HTTPStatusError as exc:
+        message, details = _http_error_message(exc)
+        return err("chart_workspace_http_error", message, details)
+    except Exception as exc:  # noqa: BLE001
+        return err("chart_workspace_error", str(exc))
+
+
+@catch_errors
+async def visual_set_active_chart(chart_id: str) -> dict[str, Any]:
     """Focus an existing chart in the shell chart workspace."""
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -301,7 +422,7 @@ async def shells_set_active_chart(chart_id: str) -> dict[str, Any]:
 
 
 @catch_errors
-async def shells_add_workspace_chart_series(
+async def visual_add_workspace_chart_series(
     chart_id: str,
     series: dict[str, Any],
 ) -> dict[str, Any]:
@@ -324,7 +445,7 @@ async def shells_add_workspace_chart_series(
 
 
 @catch_errors
-async def shells_add_workspace_chart_annotation(
+async def visual_add_workspace_chart_annotation(
     chart_id: str,
     type: str,
     config: dict[str, Any],
@@ -332,7 +453,7 @@ async def shells_add_workspace_chart_annotation(
 ) -> dict[str, Any]:
     """Add a TradingView annotation to a workspace or default Shells chart.
 
-    Use `shells_get_frontend_context()` to read the current default chart id,
+    Use `visual_get_frontend_context()` to read the current default chart id,
     then pass that chart_id here. If chart_id matches an agent-created
     workspace chart, the annotation attaches there. Otherwise it attaches to
     the default live chart for that id.
@@ -365,11 +486,16 @@ async def shells_add_workspace_chart_annotation(
 
 
 @catch_errors
-async def shells_add_workspace_chart_overlay(
+async def visual_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
 ) -> dict[str, Any]:
-    """Append a raw overlay or event marker set to a workspace or default chart."""
+    """Append a raw overlay or event marker set to a workspace or default chart.
+
+    For event marker sets, use overlay = {"type": "event_markers", "data": [...]}
+    with each event using {time, price?, label?/text?, color?}. The legacy
+    key "markers" is accepted and normalized to "data".
+    """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
     try:
@@ -383,7 +509,7 @@ async def shells_add_workspace_chart_overlay(
 
 
 @catch_errors
-async def shells_clear_chart_workspace() -> dict[str, Any]:
+async def visual_clear_chart_workspace() -> dict[str, Any]:
     """Remove all agent-created workspace charts."""
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)

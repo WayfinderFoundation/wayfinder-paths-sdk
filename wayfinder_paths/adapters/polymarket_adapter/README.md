@@ -59,13 +59,15 @@ await adapter.close()
 
 Most methods return `(ok: bool, data_or_error: Any | str)`.
 
-### Trading / bridging / redemption (wallet + Polygon RPC needed)
+### Trading / bridging / redemption (wallet + Polygon RPC access needed)
 
 You need:
 
 - A configured wallet. Trading uses the Polymarket deposit wallet derived from the
   owner wallet and signs through wallet callbacks.
-- A Polygon RPC URL (`strategy.rpc_urls["137"]`)
+- Polygon RPC access. In Wayfinder Shells, leave `strategy.rpc_urls` empty so the
+  SDK uses the authenticated Wayfinder RPC proxy for chain `137`. Only set
+  `strategy.rpc_urls["137"]` for an explicit local/fork override.
 - Some native Polygon gas token for owner-wallet transactions such as pUSD funding
 
 Convenient pattern used by repo scripts:
@@ -297,6 +299,11 @@ Or use the lower-level market order method (BUY uses collateral amount; SELL use
 ```python
 ok, res = await adapter.place_market_order(token_id=token_id, side="BUY", amount=2.0)
 ```
+
+The lower-level adapter keeps native CLOB semantics where `amount` is overloaded:
+BUY `amount` is collateral spend, while SELL `amount` is shares. Agent-facing MCP
+tools avoid this ambiguity: use `buy_amount_pusd` for BUY and
+`sell_amount_shares` for SELL, then read the normalized `executionSummary`.
 
 ### 3) Cash out (sell shares)
 

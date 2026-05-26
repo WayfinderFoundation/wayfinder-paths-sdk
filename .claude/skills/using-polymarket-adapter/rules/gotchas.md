@@ -11,7 +11,7 @@
 
 - `get_price(...)` / `mcp__wayfinder__polymarket_read(action="price", ...)` returns the current quoted price.
 - `quote_market_order(...)` / `mcp__wayfinder__polymarket_read(action="quote", ...)` walks the live book and returns weighted-average execution, worst fill, and partial-fill status.
-- For quote requests: `BUY` uses pUSD, `SELL` uses shares.
+- For MCP quote/order requests: `BUY` uses `buy_amount_pusd` (pUSD spend), `SELL` uses `sell_amount_shares` (shares to sell). Do not reuse BUY spend as a share count; read `executionSummary.sharesFilled`.
 
 ## pUSD vs USDC / USDC.e (collateral mismatch)
 

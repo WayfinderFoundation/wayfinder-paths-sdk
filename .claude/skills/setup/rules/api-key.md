@@ -2,7 +2,7 @@
 
 ## Getting an API Key
 
-1. Go to https://strategies.wayfinder.ai
+1. Go to https://wayfinder.ai
 2. Create an account or sign in
 3. Navigate to Settings > API Keys
 4. Generate a new key (starts with `wk_`)
@@ -45,6 +45,6 @@ poetry run python -c "from wayfinder_paths.core.clients.WayfinderClient import W
 - Re-run setup: `python3 scripts/setup.py`
 
 ### Key not working
-- Verify the key is active at https://strategies.wayfinder.ai
+- Verify the key is active at https://wayfinder.ai
 - Check for typos (copy-paste the key directly)
 - Ensure no extra whitespace around the key value

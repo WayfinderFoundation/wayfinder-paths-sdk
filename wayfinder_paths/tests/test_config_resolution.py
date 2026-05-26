@@ -60,15 +60,16 @@ def test_missing_explicit_config_does_not_clear_loaded_config(
     assert config.get_api_base_url() == "https://strategies-dev.wayfinder.ai/api/v1"
 
 
-def test_api_base_url_defaults_to_strategies_api(restore_global_config: None) -> None:
+def test_api_base_url_defaults_to_wayfinder_api(restore_global_config: None) -> None:
     config.set_config({})
 
-    assert config.get_api_base_url() == "https://strategies.wayfinder.ai/api/v1"
+    assert config.get_api_base_url() == "https://wayfinder.ai/api/v1"
 
 
 @pytest.mark.asyncio
 async def test_web3s_fallback_to_rpc_proxy(
     restore_global_config: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config.set_config(
         {
@@ -80,8 +81,11 @@ async def test_web3s_fallback_to_rpc_proxy(
         }
     )
 
+    import wayfinder_paths.core.utils.web3 as web3_utils
     from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE, CHAIN_ID_HYPEREVM
     from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+
+    monkeypatch.setattr(web3_utils, "_fetch_pool_size", lambda _chain_id: 0)
 
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
         uri = web3s[0].provider.endpoint_uri
@@ -96,7 +100,10 @@ async def test_web3s_fallback_to_rpc_proxy(
 
 
 @pytest.mark.asyncio
-async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
+async def test_user_rpcs_override_proxy(
+    restore_global_config: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config.set_config(
         {
             "system": {
@@ -107,8 +114,11 @@ async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
         }
     )
 
+    import wayfinder_paths.core.utils.web3 as web3_utils
     from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM, CHAIN_ID_BASE
     from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+
+    monkeypatch.setattr(web3_utils, "_fetch_pool_size", lambda _chain_id: 0)
 
     async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
         assert web3s[0].provider.endpoint_uri == "https://custom-rpc.example.com"
@@ -117,6 +127,35 @@ async def test_user_rpcs_override_proxy(restore_global_config: None) -> None:
     async with web3s_from_chain_id(CHAIN_ID_ARBITRUM) as web3s:
         uri = web3s[0].provider.endpoint_uri
         assert uri == "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/42161/"
+        assert web3s[0].provider._request_kwargs["headers"]["X-API-KEY"] == "wk_test"
+
+
+@pytest.mark.asyncio
+async def test_web3s_uses_indexed_rpc_proxy_pool(
+    restore_global_config: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config.set_config(
+        {
+            "system": {
+                "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+                "api_key": "wk_test",
+            },
+            "strategy": {"rpc_urls": {}},
+        }
+    )
+
+    import wayfinder_paths.core.utils.web3 as web3_utils
+    from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
+    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+
+    monkeypatch.setattr(web3_utils, "_fetch_pool_size", lambda _chain_id: 2)
+
+    async with web3s_from_chain_id(CHAIN_ID_BASE) as web3s:
+        assert [w3.provider.endpoint_uri for w3 in web3s] == [
+            "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/8453/0/",
+            "https://strategies.wayfinder.ai/api/v1/blockchain/rpc/8453/1/",
+        ]
         assert web3s[0].provider._request_kwargs["headers"]["X-API-KEY"] == "wk_test"
 
 

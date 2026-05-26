@@ -65,9 +65,9 @@ A full first-time flow looks like:
 
 ## Adapter methods
 
-- `adapter.deposit_wallet_address()` — derived address (cheap, no RPC)
-- `adapter.fund_deposit_wallet(amount_raw=int)` — pUSD owner → deposit wallet. **`amount_raw` is in base units (6 decimals).** Returns `(ok, {"deposit_wallet", "amount_raw", "tx_hash"})`.
-- `adapter.withdraw_deposit_wallet(amount_raw=int | None)` — pUSD deposit wallet → owner. `None` drains the full balance. Returns `(ok, {"deposit_wallet", "tx_hash", "amount_raw", "recipient"})`.
+- `adapter.deposit_wallet_address()` — **sync** derived address (cheap, no RPC). Do not `await` it.
+- `await adapter.fund_deposit_wallet(amount_raw=int)` — **async** pUSD owner → deposit wallet. **`amount_raw` is in base units (6 decimals).** Returns `(ok, {"deposit_wallet", "amount_raw", "tx_hash"})`.
+- `await adapter.withdraw_deposit_wallet(amount_raw=int | None)` — **async** pUSD deposit wallet → owner. `None` drains the full balance. Returns `(ok, {"deposit_wallet", "tx_hash", "amount_raw", "recipient"})`.
 - `adapter.ensure_trading_setup(token_id=...)` — idempotent (cached); deploy + approvals + CLOB creds + balance allowance. Order placement calls this automatically.
 
 ## Common pitfalls

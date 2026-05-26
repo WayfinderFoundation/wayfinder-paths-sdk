@@ -5,7 +5,7 @@ from typing import Any
 
 _CONFIG_ENV_KEYS = ("WAYFINDER_CONFIG_PATH", "WAYFINDER_CONFIG")
 _DEFAULT_CONFIG_FILENAME = "config.json"
-_DEFAULT_API_BASE_URL = "https://strategies.wayfinder.ai/api/v1"
+_DEFAULT_API_BASE_URL = "https://wayfinder.ai/api/v1"
 _WALLET_MNEMONIC_KEY = "wallet_mnemonic"
 
 

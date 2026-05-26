@@ -84,17 +84,18 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_withdraw_usdc,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
-    shells_add_workspace_chart_annotation,
-    shells_add_workspace_chart_overlay,
-    shells_add_workspace_chart_series,
-    shells_clear_chart_workspace,
-    shells_create_chart,
-    shells_get_frontend_context,
-    shells_search_chart_series,
-    shells_set_active_chart,
-    shells_set_active_market,
+    visual_add_workspace_chart_annotation,
+    visual_add_workspace_chart_overlay,
+    visual_add_workspace_chart_series,
+    visual_clear_chart_workspace,
+    visual_create_chart,
+    visual_get_frontend_context,
+    visual_import_chart_spec,
+    visual_search_chart_series,
+    visual_set_active_chart,
+    visual_set_active_market,
 )
-from wayfinder_paths.mcp.tools.notify import shells_notify
+from wayfinder_paths.mcp.tools.notify import notification_send
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
     polymarket_deposit_pusd,
@@ -213,18 +214,19 @@ def build_mcp(
     mcp.tool()(research_search_perp)
     mcp.tool()(research_search_borrow_routes)
 
-    # ─── shells_* (opencode-only) ──────────────────────────────────────
+    # ─── visual_* + notification_send (opencode-only) ─────────────────
     if is_opencode_instance():
-        mcp.tool()(shells_get_frontend_context)
-        mcp.tool()(shells_search_chart_series)
-        mcp.tool()(shells_set_active_market)
-        mcp.tool()(shells_create_chart)
-        mcp.tool()(shells_set_active_chart)
-        mcp.tool()(shells_add_workspace_chart_series)
-        mcp.tool()(shells_add_workspace_chart_annotation)
-        mcp.tool()(shells_add_workspace_chart_overlay)
-        mcp.tool()(shells_clear_chart_workspace)
-        mcp.tool()(shells_notify)
+        mcp.tool()(visual_get_frontend_context)
+        mcp.tool()(visual_search_chart_series)
+        mcp.tool()(visual_set_active_market)
+        mcp.tool()(visual_create_chart)
+        mcp.tool()(visual_import_chart_spec)
+        mcp.tool()(visual_set_active_chart)
+        mcp.tool()(visual_add_workspace_chart_series)
+        mcp.tool()(visual_add_workspace_chart_annotation)
+        mcp.tool()(visual_add_workspace_chart_overlay)
+        mcp.tool()(visual_clear_chart_workspace)
+        mcp.tool()(notification_send)
 
     return mcp
 

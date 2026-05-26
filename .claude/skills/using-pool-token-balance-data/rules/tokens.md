@@ -27,15 +27,19 @@ Best practice:
 The first part is the **coingecko_id** (NOT the symbol). Common examples:
 - `ethereum-arbitrum` — ETH on Arbitrum (coingecko_id is `ethereum`)
 - `usd-coin-base` — USDC on Base (coingecko_id is `usd-coin`, NOT `usdc`)
+- `usd-coin-polygon` — USDC on Polygon (coingecko_id is `usd-coin`, NOT `usdc`)
 - `usdt0-arbitrum` — USDT on Arbitrum
 - `hyperliquid-hyperevm` — HYPE on HyperEVM
 
-**Important:** Do NOT use symbol-chain like `usdc-base` — this will fail. Use `usd-coin-base` instead.
+**Important:** Do NOT use symbol-chain like `usdc-base`/`usdc-polygon` or chain-symbol like `polygon_usdc` in scripts, quotes, or execution tickets. `onchain_resolve_token` may tolerate these as a user-input fallback via fuzzy search, but you should immediately convert to the returned canonical id/address. Use `usd-coin-base`, `usd-coin-polygon`, or an exact address id instead.
+
+Swap and quote amounts are human-unit strings. For full-balance actions, use the exact `amount_decimal` string from `get_wallets`; do not pass raw wei or rounded floats.
 
 When you need a specific ERC20 and you know the contract:
 - Use a chain-scoped address id: `<chain_code>_<address>`
   - Example: `base_0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (USDC on Base)
   - Example: `arbitrum_0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9` (USDT on Arbitrum)
+- `onchain_resolve_token` may normalize near-miss address forms like `base-0x...` or `base:0x...`, but scripts and execution tickets should use the returned canonical `<chain_code>_<address>` id.
 - This avoids cross-chain ambiguity for contracts deployed on multiple chains.
 - If the lookup resolves to a different contract address than you specified, treat it as ambiguous and switch to the coingecko format or use the exact address.
 

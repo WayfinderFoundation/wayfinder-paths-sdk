@@ -9,7 +9,6 @@ if __name__ == "__main__" and __package__ is None:
 
 import argparse
 import asyncio
-import importlib
 import inspect
 import json
 import sys
@@ -19,6 +18,7 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.config import CONFIG, load_config
+from wayfinder_paths.core.engine.strategy_loader import load_strategy_module
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
 from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
@@ -147,9 +147,7 @@ async def run_strategy(strategy_name: str, action: str = "status", **kw):
     main_cb, _ = await get_wallet_signing_callback(main_wallet_label or "main")
     strat_cb, _ = await get_wallet_signing_callback(wallet_label or strategy_name)
 
-    module = importlib.import_module(
-        f"wayfinder_paths.strategies.{strategy_name}.strategy"
-    )
+    module, _ = load_strategy_module(strategy_name)
     strategy_cls = find_strategy_class(module)
 
     async def _run() -> Any:

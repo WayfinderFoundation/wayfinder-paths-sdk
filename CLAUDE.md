@@ -13,13 +13,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - The script may skip the API key prompt in non-interactive terminals - that's OK
    - After setup completes, ask the user: "Do you have a Wayfinder API key?"
      - If yes: Use the Edit tool to add it to `config.json` under `system.api_key`
-     - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
+     - If no: Direct them to **https://wayfinder.ai** to create an account and get one
    - After config is complete, tell the user: **"Please restart Claude Code to load the MCP server, then we can continue."**
 
 3. If `config.json` exists but `system.api_key` is empty/missing:
    - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
    - If yes: Help them add it to `config.json` under `system.api_key`
-   - If no: Direct them to **https://strategies.wayfinder.ai** to get one
+   - If no: Direct them to **https://wayfinder.ai** to get one
 
 4. If everything is configured, proceed normally
 
@@ -189,7 +189,7 @@ When a user wants **immediate, one-off execution**:
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
 - **On-chain:** use `mcp__wayfinder__onchain_swap` (cross-chain / cross-DEX swaps via BRAP) or `mcp__wayfinder__onchain_send` (ERC-20 / native transfers). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
 - **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
-  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
+  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDC on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
   - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
   Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
@@ -220,15 +220,15 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDH**, not USDC), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
+HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDC**), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
 Polymarket quick flows:
 
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
 - Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
-- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<wei>", slippage_bps=50)`, then `mcp__wayfinder__onchain_swap(**suggested_swap_request)`. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
-- Buy shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
-- Sell shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
+- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<human amount>", slippage_bps=50)`, then `mcp__wayfinder__onchain_swap(**suggested_swap_request)`. Use exact `amount_decimal` strings from `get_wallets` for full-balance swaps; do not pass raw wei or floats. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
+- Buy shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", buy_amount_pusd=2)`; BUY size is pUSD spend, and returned `executionSummary.sharesFilled` is the share count.
+- Sell shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", sell_amount_shares=10)`; SELL size is shares to sell, usually from `polymarket_get_state`.
 - Redeem after resolution: `mcp__wayfinder__polymarket_redeem_positions(wallet_label="main", condition_id="0x...")`
 
 Polymarket funding (pUSD collateral):
@@ -294,7 +294,7 @@ Gas requirements (critical — assets get stuck without gas):
 
 Token identifiers (important for quoting/execution/lookups):
 
-- Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
+- Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Examples: `usd-coin-polygon`, `ethereum-arbitrum`, `polygon_0x2791...`. Do not invent symbol shorthands like `polygon_usdc` or `usdc-polygon` for quotes/execution; resolve user-provided shorthands first with `onchain_resolve_token` or `onchain_fuzzy_search_tokens`, then use the returned canonical id. Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
 
 ### Path updates
 
