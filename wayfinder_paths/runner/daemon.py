@@ -31,8 +31,8 @@ from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
-LOCK_TIMEOUT_SECONDS = 3
-LOCK_BUSY_MSG = (
+JOB_LOCK_TIMEOUT_SECONDS = 3
+JOB_LOCK_BUSY_MSG = (
     "Runner Daemon lock is busy, no operations were completed, please try again later"
 )
 SESSION_ENV_KEYS = (
@@ -132,13 +132,20 @@ class RunnerDaemon:
         self._started_at = int(time.time())
         self._last_tick_at: int | None = None
 
-        self._lock = threading.Lock()
+        self._job_locks: dict[int, threading.Lock] = {}
         self._shutdown = threading.Event()
         self._running: dict[int, RunningProcess] = {}
         self._running_by_job: dict[int, int] = {}
 
         self._control = None
         self._daemon_log_sink_id: int | None = None
+
+    def _lock_for_job(self, job_id: int) -> threading.Lock:
+        lock = self._job_locks.get(job_id)
+        if lock is None:
+            lock = threading.Lock()
+            self._job_locks[job_id] = lock
+        return lock
 
     def start(self) -> None:
         self._paths.runner_dir.mkdir(parents=True, exist_ok=True)
@@ -181,9 +188,8 @@ class RunnerDaemon:
         finally:
             self._shutdown.set()
             self._control.stop()
-            with self._lock:
-                for rp in self._running.values():
-                    _kill_process_group(rp.popen.pid, sig=signal.SIGTERM)
+            for rp in self._running.values():
+                _kill_process_group(rp.popen.pid, sig=signal.SIGTERM)
             self._db._conn.close()
             if self._daemon_log_sink_id is not None:
                 try:
@@ -204,11 +210,10 @@ class RunnerDaemon:
     def tick(self) -> None:
         try:
             now = int(time.time())
-            with self._lock:
-                self._last_tick_at = now
-                self._reap(now=now)
-                for job in self._db.due_jobs(now=now):
-                    self._maybe_start_job(job=job, now=now, reason="schedule")
+            self._last_tick_at = now
+            self._reap(now=now)
+            for job in self._db.due_jobs(now=now):
+                self._maybe_start_job(job=job, now=now, reason="schedule")
         except Exception:  # noqa: BLE001
             logger.exception("Runner tick error")
 
@@ -255,32 +260,33 @@ class RunnerDaemon:
         exit_code: int | None,
         error_text: str | None,
     ) -> None:
-        self._db.finish_run(
-            run_id=rp.run_id,
-            finished_at=finished_at,
-            status=status,
-            exit_code=exit_code,
-            summary={"error": error_text} if error_text else None,
-        )
-
-        if status == RunStatus.OK:
-            self._db.record_job_success(job_id=rp.job_id, ok_at=finished_at)
-        else:
-            msg = error_text or status
-            failures, job_status = self._db.record_job_failure(
-                job_id=rp.job_id,
-                error_text=msg,
-                max_failures=self._max_failures,
+        with self._lock_for_job(rp.job_id):
+            self._db.finish_run(
+                run_id=rp.run_id,
+                finished_at=finished_at,
+                status=status,
+                exit_code=exit_code,
+                summary={"error": error_text} if error_text else None,
             )
-            if job_status != JobStatus.ACTIVE:
-                logger.error(
-                    f"Job {rp.job_name} entered {job_status} after {failures} failures"
-                )
 
-        self._running.pop(rp.run_id, None)
-        self._running_by_job[rp.job_id] = max(
-            0, self._running_by_job.get(rp.job_id, 1) - 1
-        )
+            if status == RunStatus.OK:
+                self._db.record_job_success(job_id=rp.job_id, ok_at=finished_at)
+            else:
+                msg = error_text or status
+                failures, job_status = self._db.record_job_failure(
+                    job_id=rp.job_id,
+                    error_text=msg,
+                    max_failures=self._max_failures,
+                )
+                if job_status != JobStatus.ACTIVE:
+                    logger.error(
+                        f"Job {rp.job_name} entered {job_status} after {failures} failures"
+                    )
+
+            self._running.pop(rp.run_id, None)
+            self._running_by_job[rp.job_id] = max(
+                0, self._running_by_job.get(rp.job_id, 1) - 1
+            )
 
         self._run_side_effect(
             f"notify-session-{rp.job_name}",
@@ -426,10 +432,12 @@ class RunnerDaemon:
     ) -> int | None:
         if len(self._running) >= self._max_workers:
             return None
-        job_id = int(job["id"])
-        job_name = str(job["name"])
-        if self._running_by_job.get(job_id, 0) >= 1:
-            return None
+        job_id = job["id"]
+        job_name = job["name"]
+        with self._lock_for_job(job_id):
+            if self._running_by_job.get(job_id, 0) >= 1:
+                return None
+            self._running_by_job[job_id] = self._running_by_job.get(job_id, 0) + 1
 
         interval = int(job.get("interval_seconds") or 0)
         next_run_at = now + max(1, interval)
@@ -496,6 +504,10 @@ class RunnerDaemon:
                 error_text=err_text,
                 max_failures=self._max_failures,
             )
+            with self._lock_for_job(job_id):
+                self._running_by_job[job_id] = max(
+                    0, self._running_by_job.get(job_id, 1) - 1
+                )
             return None
         logger.info(f"Starting job {job_name} (run_id={run_id})")
 
@@ -528,6 +540,10 @@ class RunnerDaemon:
                 error_text=err_text,
                 max_failures=self._max_failures,
             )
+            with self._lock_for_job(job_id):
+                self._running_by_job[job_id] = max(
+                    0, self._running_by_job.get(job_id, 1) - 1
+                )
             return None
 
         self._db.update_run_pid(run_id=run_id, pid=int(popen.pid))
@@ -541,7 +557,6 @@ class RunnerDaemon:
             popen=popen,
             log_path=log_path,
         )
-        self._running_by_job[job_id] = self._running_by_job.get(job_id, 0) + 1
         return run_id
 
     def _build_worker_cmd(self, *, job: dict[str, Any]) -> list[str]:
@@ -589,34 +604,25 @@ class RunnerDaemon:
 
     # Control-plane methods (called by runnerctl over the local socket)
     def ctl_status(self) -> dict[str, Any]:
-        if not self._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
-            return {
-                "ok": False,
-                "error": LOCK_BUSY_MSG,
-            }
-        try:
-            result = {
-                "ok": True,
-                "result": {
-                    "version": __version__,
-                    "pid": os.getpid(),
-                    "ppid": os.getppid(),
-                    "started_at": self._started_at,
-                    "uptime_s": max(0, int(time.time()) - self._started_at),
-                    "last_tick_at": self._last_tick_at,
-                    "repo_root": str(self._paths.repo_root),
-                    "runner_dir": str(self._paths.runner_dir),
-                    "db_path": str(self._paths.db_path),
-                    "sock_path": str(self._paths.sock_path),
-                    "running_workers": len(self._running),
-                    "max_workers": self._max_workers,
-                    "jobs": self._db.list_jobs(),
-                    "recent_runs": self._db.last_runs(limit=20),
-                },
-            }
-        finally:
-            self._lock.release()
-        return result
+        return {
+            "ok": True,
+            "result": {
+                "version": __version__,
+                "pid": os.getpid(),
+                "ppid": os.getppid(),
+                "started_at": self._started_at,
+                "uptime_s": max(0, int(time.time()) - self._started_at),
+                "last_tick_at": self._last_tick_at,
+                "repo_root": str(self._paths.repo_root),
+                "runner_dir": str(self._paths.runner_dir),
+                "db_path": str(self._paths.db_path),
+                "sock_path": str(self._paths.sock_path),
+                "running_workers": len(self._running),
+                "max_workers": self._max_workers,
+                "jobs": self._db.list_jobs(),
+                "recent_runs": self._db.last_runs(limit=20),
+            },
+        }
 
     def ctl_shutdown(self) -> dict[str, Any]:
         self.stop()
@@ -793,11 +799,9 @@ class RunnerDaemon:
             return {"ok": False, "error": f"Job not found: {name}"}
         job, _ = result
 
-        if not self._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
-            return {
-                "ok": False,
-                "error": LOCK_BUSY_MSG,
-            }
+        lock = self._lock_for_job(job.id)
+        if not lock.acquire(timeout=JOB_LOCK_TIMEOUT_SECONDS):
+            return {"ok": False, "error": JOB_LOCK_BUSY_MSG}
         killed: list[dict[str, Any]] = []
         try:
             for run_id, rp in list(self._running.items()):
@@ -806,7 +810,7 @@ class RunnerDaemon:
                 _kill_process_group(rp.popen.pid, sig=sig_val)
                 killed.append({"run_id": run_id, "pid": rp.popen.pid})
         finally:
-            self._lock.release()
+            lock.release()
 
         if not killed:
             return {"ok": False, "error": "job is not currently running"}
@@ -832,15 +836,7 @@ class RunnerDaemon:
             "payload": job.payload,
             "interval_seconds": job.interval_seconds,
         }
-        if not self._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
-            return {
-                "ok": False,
-                "error": LOCK_BUSY_MSG,
-            }
-        try:
-            run_id = self._maybe_start_job(job=job_dict, now=now, reason="run_once")
-        finally:
-            self._lock.release()
+        run_id = self._maybe_start_job(job=job_dict, now=now, reason="run_once")
         if run_id is None:
             return {
                 "ok": False,
@@ -854,18 +850,17 @@ class RunnerDaemon:
             return {"ok": False, "error": f"Job not found: {name}"}
         job, _ = result
 
-        if not self._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
-            return {
-                "ok": False,
-                "error": LOCK_BUSY_MSG,
-            }
+        lock = self._lock_for_job(job.id)
+        if not lock.acquire(timeout=JOB_LOCK_TIMEOUT_SECONDS):
+            return {"ok": False, "error": JOB_LOCK_BUSY_MSG}
         try:
             if self._running_by_job.get(job.id, 0) >= 1:
                 return {"ok": False, "error": "job is currently running"}
             self._db.delete_job(name=name)
             self._running_by_job.pop(job.id, None)
+            self._job_locks.pop(job.id, None)
         finally:
-            self._lock.release()
+            lock.release()
 
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name, "deleted": True}}
