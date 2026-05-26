@@ -14,6 +14,8 @@ from wayfinder_paths.mcp.tools.polymarket import (
 )
 
 _FIND_WALLET = "wayfinder_paths.mcp.utils.find_wallet_by_label"
+_PREVIEW_FIND_WALLET = "wayfinder_paths.mcp.preview.find_wallet_by_label"
+_PREVIEW_GET_TOKEN_BALANCE = "wayfinder_paths.mcp.preview.get_token_balance"
 _GET_SIGN_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_signing_callback"
 _GET_HASH_CB = "wayfinder_paths.mcp.tools.polymarket.get_wallet_sign_hash_callback"
 _GET_TYPED_CB = (
@@ -550,3 +552,178 @@ async def test_polymarket_place_market_order_preview_uses_side_specific_size():
     )
     assert "SELL size: 77 shares" in sell["summary"]
     assert "amount_collateral" not in sell["summary"]
+
+
+@pytest.mark.asyncio
+async def test_polymarket_place_market_order_preview_hydrates_buy_quote():
+    quote_market_order = AsyncMock(
+        return_value=(
+            True,
+            {
+                "token_id": "tok_yes",
+                "side": "BUY",
+                "fully_fillable": True,
+                "average_price": 0.052,
+                "best_price": 0.051,
+                "worst_price": 0.053,
+                "shares": 76.923,
+                "notional_usdc": 4.0,
+                "levels_consumed": 2,
+                "price_impact_bps": 12.3,
+            },
+        )
+    )
+    with (
+        patch(_PREVIEW_FIND_WALLET, AsyncMock(return_value=_WALLET)),
+        patch(_PREVIEW_GET_TOKEN_BALANCE, AsyncMock(return_value=12_340_000)),
+        patch(
+            "wayfinder_paths.mcp.preview.PolymarketAdapter.get_market_by_slug",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "slug": "market",
+                        "question": "Will it happen?",
+                        "outcomes": ["Yes", "No"],
+                        "clobTokenIds": ["tok_yes", "tok_no"],
+                    },
+                )
+            ),
+        ),
+        patch(
+            "wayfinder_paths.mcp.preview.PolymarketAdapter.quote_market_order",
+            new=quote_market_order,
+        ),
+    ):
+        preview = await build_polymarket_place_market_order_preview(
+            {
+                "wallet_label": "main",
+                "market_slug": "market",
+                "outcome": "YES",
+                "side": "BUY",
+                "buy_amount_pusd": 4,
+            }
+        )
+
+    summary = preview["summary"]
+    assert "market: Will it happen?" in summary
+    assert "resolved token_id: tok_yes" in summary
+    assert f"deposit wallet: {derive_deposit_wallet(_ADDR)}" in summary
+    assert "deposit pUSD balance: 12.34 pUSD" in summary
+    assert "expected pUSD spent: 4 pUSD" in summary
+    assert "expected shares: 76.923" in summary
+    assert "avg price: 0.052" in summary
+    assert "depth: fully fillable, levels consumed: 2" in summary
+    assert "slippage cap: 2.0%" in summary
+    assert quote_market_order.await_args.kwargs == {
+        "token_id": "tok_yes",
+        "side": "BUY",
+        "amount": 4.0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_polymarket_place_market_order_preview_hydrates_direct_token_sell():
+    quote_market_order = AsyncMock(
+        return_value=(
+            True,
+            {
+                "token_id": "tok_yes",
+                "side": "SELL",
+                "fully_fillable": True,
+                "average_price": 0.052,
+                "best_price": 0.053,
+                "worst_price": 0.052,
+                "shares": 10.0,
+                "notional_usdc": 0.52,
+                "levels_consumed": 1,
+                "price_impact_bps": 0,
+            },
+        )
+    )
+    with (
+        patch(_PREVIEW_FIND_WALLET, AsyncMock(return_value=_WALLET)),
+        patch(_PREVIEW_GET_TOKEN_BALANCE, AsyncMock(return_value=9_000_000)),
+        patch(
+            "wayfinder_paths.mcp.preview.PolymarketAdapter.quote_market_order",
+            new=quote_market_order,
+        ),
+    ):
+        preview = await build_polymarket_place_market_order_preview(
+            {
+                "wallet_label": "main",
+                "token_id": "tok_yes",
+                "side": "SELL",
+                "sell_amount_shares": 10,
+                "max_slippage_pct": 1.5,
+            }
+        )
+
+    summary = preview["summary"]
+    assert "market: not hydrated (token_id provided directly)" in summary
+    assert "SELL size: 10 shares" in summary
+    assert "shares to sell: 10" in summary
+    assert "expected pUSD received: 0.52 pUSD" in summary
+    assert "slippage cap: 1.5%" in summary
+    assert quote_market_order.await_args.kwargs["amount"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_polymarket_place_market_order_preview_warns_on_market_resolution_failure():
+    with (
+        patch(_PREVIEW_FIND_WALLET, AsyncMock(return_value=_WALLET)),
+        patch(_PREVIEW_GET_TOKEN_BALANCE, AsyncMock(return_value=0)),
+        patch(
+            "wayfinder_paths.mcp.preview.PolymarketAdapter.get_market_by_slug",
+            new=AsyncMock(return_value=(False, "not found")),
+        ),
+    ):
+        preview = await build_polymarket_place_market_order_preview(
+            {
+                "wallet_label": "main",
+                "market_slug": "missing",
+                "outcome": "YES",
+                "side": "BUY",
+                "buy_amount_pusd": 4,
+            }
+        )
+
+    assert "MARKET RESOLUTION FAILED: not found" in preview["summary"]
+    assert "QUOTE UNAVAILABLE: no resolved token_id" in preview["summary"]
+
+
+@pytest.mark.asyncio
+async def test_polymarket_place_market_order_preview_warns_on_partial_depth():
+    with (
+        patch(_PREVIEW_FIND_WALLET, AsyncMock(return_value=_WALLET)),
+        patch(_PREVIEW_GET_TOKEN_BALANCE, AsyncMock(return_value=5_000_000)),
+        patch(
+            "wayfinder_paths.mcp.preview.PolymarketAdapter.quote_market_order",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    {
+                        "token_id": "tok_yes",
+                        "side": "BUY",
+                        "fully_fillable": False,
+                        "average_price": 0.05,
+                        "shares": 50,
+                        "notional_usdc": 2.5,
+                        "levels_consumed": 1,
+                    },
+                )
+            ),
+        ),
+    ):
+        preview = await build_polymarket_place_market_order_preview(
+            {
+                "wallet_label": "main",
+                "token_id": "tok_yes",
+                "side": "BUY",
+                "buy_amount_pusd": 5,
+            }
+        )
+
+    assert "INSUFFICIENT DEPTH / PARTIAL FILL" in preview["summary"]
+    assert "fillRatio=0.5" in preview["summary"]
+    assert "depth: partial" in preview["summary"]
