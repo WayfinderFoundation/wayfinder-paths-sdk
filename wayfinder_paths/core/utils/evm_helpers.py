@@ -36,7 +36,10 @@ def resolve_rpc_url(
             if isinstance(by_str, list):
                 return str(by_str[0])
             return str(by_str)
-    raise ValueError("RPC URL not provided. Set strategy.rpc_urls in config.json.")
+    raise ValueError(
+        "RPC URL not provided. Prefer web3_from_chain_id(chain_id) for "
+        "Wayfinder RPC proxy fallback; only set strategy.rpc_urls for explicit overrides."
+    )
 
 
 async def _get_abi(chain_id: int, address: str) -> str | None:

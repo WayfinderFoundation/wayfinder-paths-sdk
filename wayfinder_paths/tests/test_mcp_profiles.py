@@ -143,7 +143,10 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert quant["wayfinder_core_run_script"] == "allow"
     assert quant["wayfinder_core_web_search"] == "allow"
     assert quant["wayfinder_core_web_fetch"] == "allow"
+    assert quant["wayfinder_polymarket_read"] == "allow"
+    assert "wayfinder_polymarket_place_*" not in quant
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_research_*")
+    _assert_rule_order(quant, "wayfinder_*", "wayfinder_polymarket_read")
 
     assert visual["wayfinder_*"] == "deny"
     assert visual["wayfinder_visual_*"] == "allow"
@@ -228,8 +231,10 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_core_run_script": "allow",
         "wayfinder_core_web_search": "allow",
         "wayfinder_core_web_fetch": "allow",
+        "wayfinder_polymarket_read": "allow",
     }
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_research_*")
+    _assert_rule_order(quant, "wayfinder_*", "wayfinder_polymarket_read")
 
     visual_frontmatter = _agent_frontmatter("wayfinder-visual")
     assert "tools" not in visual_frontmatter
@@ -292,7 +297,64 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
     assert "use `polymarket_read` first" in research
     assert "After two failed attempts" in research
     assert "Prediction-market research" in research
-    assert 'Do not create a separate schema for "edge" analysis' in research
+    assert "Prediction Market Forecast Mode" in research
+    assert "priorSource" in research
+    assert "Last trade is context-only" in research
+    assert "bid_ask_mid" in research
+    assert "normalized_binary_prices" in research
+    assert "order_book_sweep" in research
+    assert "last_trade_context_only" in research
+    assert "log_odds_update" in research
+    assert "log_odds_evidence_update" in research
+    assert "Build evidence cards" in research
+    assert "evidenceDeltas" in research
+    assert "evidenceCards" in research
+    assert "conservative EV" in research
+    assert "quote_update" in research
+    assert "parentId" in research
+    assert "relatedLogIds" in research
+    assert "Market Research / Thesis Mode" in research
+    assert "quick lookups" in research
+    assert "do not force a thesis" in research
+    assert "snapshot checks" in research
+    assert "DeFi protocols" in research
+    assert "yield routes" in research
+    assert "perpSide" in research
+    assert "positionIntent" in research
+    assert "Only include `perpSide` and `positionIntent`" in research
+    assert "changedFields" in research
+    assert "effectOnThesis" in research
+
+
+def test_market_intelligence_agent_prompt_contracts() -> None:
+    primary = _agent_text("wayfinder")
+    research = _agent_text("wayfinder-research")
+    quant = _agent_text("wayfinder-quant")
+
+    assert _agent_frontmatter("wayfinder-research")["temperature"] == 0.1
+    assert _agent_frontmatter("wayfinder-quant")["temperature"] == 0.1
+
+    assert "executable market/order-book distribution as the prior" in primary
+    assert "Market Intelligence Modes" in primary
+    assert "quote/snapshot updates" in primary
+    assert "audit_only" in primary
+    assert "relatedLogIds" in primary
+    assert "exact tool inputs" in primary
+
+    assert "Prediction Market Forecast Mode" in research
+    assert "Use the executable market/order-book distribution as the prior" in research
+    assert "stale log entries" in research
+    assert "Market intelligence log" in research
+    assert "Do not log every tool call" in research
+    assert "logRefs" in research
+    assert "artifactRefs" in research
+
+    assert "Market Quant Mode" in quant
+    assert "wayfinder_paths.quant.polymarket_edge" in quant
+    assert "hypothesis seeds only" in quant
+    assert "positive funding means longs pay shorts" in quant
+    assert "RESEARCH_ONLY" in quant
+    assert "DO_NOT_TRADE" in quant
 
 
 def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:

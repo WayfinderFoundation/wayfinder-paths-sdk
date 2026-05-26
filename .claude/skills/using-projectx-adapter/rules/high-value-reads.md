@@ -79,7 +79,9 @@ Optional flags: `include_overview`, `include_balances`, `include_positions`, `in
 
 ## Required configuration
 
-- `config.json` must include RPC URLs for HyperEVM **chain id 999** under `rpcs["999"]`.
+- HyperEVM RPC access is provided by the SDK's Wayfinder RPC proxy for chain id
+  `999`. Keep `strategy.rpc_urls` empty in normal Shell usage; only set it for
+  explicit local/fork overrides.
 - `pool_address` is optional. Pool-specific methods (`pool_overview`, `current_balances`, `list_positions`, `fetch_swaps`, `live_fee_snapshot`) require it; cross-pool reads (`get_full_user_state` without overview/balances, `_list_all_positions`, `fetch_prjx_points`) do not.
 - Accepts `pool_address`, `pool`, `projectx_pool_address`, `projectx_pool` in config (also checks nested `strategy` config).
 
@@ -200,4 +202,3 @@ asyncio.run(main())
 | `get_position(token_id)` | Single position struct | Inherited from `UniswapV3BaseAdapter` |
 | `get_positions(owner=...)` | All NPM positions for an owner | Not pool-filtered |
 | `get_uncollected_fees(token_id)` | Pending fees (amount0/amount1) | Simulates `collect(...)` via `call()` |
-
