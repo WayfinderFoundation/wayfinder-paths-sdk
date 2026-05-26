@@ -404,9 +404,9 @@ class RunnerDaemon:
         if not session_id or not OPENCODE_CLIENT.healthy():
             return
         event = _extract_job_result_event(running_process.log_path)
-        should_post_success = job.payload.get("notify_session_on_success") is True or (
-            event is not None
-        )
+        should_post_success = job.payload.get(
+            "always_notify_session_on_job_completion"
+        ) is True or (event is not None)
         if status == RunStatus.OK and not should_post_success:
             return
         message = _tail_text(running_process.log_path, max_bytes=4000) or "(no output)"
