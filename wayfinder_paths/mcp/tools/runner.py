@@ -89,14 +89,13 @@ async def core_runner(
     always_notify_session_on_job_completion: bool = False,
     debug: bool = False,
 ) -> dict[str, Any]:
-    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs.
-
-    All scheduled/recurring tasks MUST go through this tool. Don't use cron, systemd timers,
+    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs. All scheduled/recurring tasks MUST go through this tool. Don't use cron, systemd timers,
     or background loops. The daemon owns persistence, failure tracking, timeouts, and (on
-    Wayfinder Shells) backend job/run sync. Routine successful scheduled runs sync to the
-    backend but do not post chat `job_result` messages unless
-    `always_notify_session_on_job_completion` is explicitly true or the script emits a
-    `WAYFINDER_JOB_RESULT {...}` marker; failures still post to the session.
+    Wayfinder Shells) backend job/run sync.
+
+    To minimize conversation noise, use always_notify_session_on_job_completion=False. By default, failures always post to the chat session. Successes are silent unless
+    `always_notify_session_on_job_completion` is true or the script emits a
+    `WAYFINDER_JOB_RESULT {...}` line.
 
     Lifecycle actions:
       - `daemon_status`: lightweight probe — has the socket, is anyone listening.
@@ -135,11 +134,7 @@ async def core_runner(
 
     Args:
         sock_path: Override the daemon socket (default: standard runner location).
-        always_notify_session_on_job_completion: Post all completed runs into chat. Defaults
-            false to keep routine scheduled checks quiet; use script-level
-            `notification_send`/`NotifyClient` for owner alerts or print
-            `WAYFINDER_JOB_RESULT {"summary": "...", "instructions": "..."}` for conditional
-            chat callbacks.
+        always_notify_session_on_job_completion: Additionally, all successful runs are sent into chat. Defaults false to keep routine scheduled checks quiet.
         debug: Verbose response payload for troubleshooting.
     """
 

@@ -240,14 +240,23 @@ core_runner(action="daemon_stop")
 - If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `runner(action="status")`, `runner(action="job_runs", name=...)`, or `runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
 - Generated monitor scripts must store durable state with `wayfinder_paths.runner.monitor_state`; it writes under `$WAYFINDER_RUNNER_DIR/job_state/$WAYFINDER_KV_NAMESPACE/`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
-#### Noise
+#### Conversation Noise
 
-- For recurring alert scripts, store local state and call `notification_send`/`NotifyClient` only on edge transitions with cooldown/hysteresis; never call notify on every poll.
-- If a successful job needs to hand control back to chat without notifying externally, print a single-line runner marker: `WAYFINDER_JOB_RESULT {"summary":"Funding crossover detected","instructions":"Research whether to unroll the position, then propose the unwind script.","severity":"warning"}`.
+By default failing jobs, timed out jobs, and stdout with WAYFINDER_JOB_RESULT will emit a chat message under the user back to the chat - this EXCLUDES successful job run results by default. If you wish to have successful job run logs entering the main conversation please set always_notify_session_on_job_completion=True.
+
+WAYFINDER_JOB_RESULT should be used for exceptions, bad arguments OR significant events:
+
+- e.g. `WAYFINDER_JOB_RESULT {"summary":"Funding crossover detected","instructions":"Research whether to unroll the position, then propose the unwind script.","severity":"warning"}`.
+- e.g. `WAYFINDER_JOB_RESULT {"summary":"Exception" ,"instructions":"Please remediate","severity":"warning"}`.
+
+Note:
+This conversation noise is different than sms/email noise. Please reserve sms/email for important events that you must notify the user of. Please dump async messages into the conversation, the user will see them when they come back.
+
+Handling:
+
 - When a `job_result` does post into the conversation, treat it as an event you must respond to — read the result, decide whether action is needed, and reply (act, escalate via `notify`, or acknowledge). Never skip past it silently or fold it into an unrelated turn.
+- For recurring alert scripts, store local state and call `notification_send`/`NotifyClient` only on edge transitions with cooldown/hysteresis; never call notify on every poll.
 - Position-bound monitors must verify the live position still exists and matches expected side, size/notional, leverage, and margin mode before alerting.
-- Data-fetch or notification failures must exit nonzero or emit a `WAYFINDER_JOB_RESULT` handoff with the failure. Do not let broken monitoring look like a healthy successful run.
-- Reserve SMS/email for actionable alerts. Normal, net-positive, or informational state transitions should stay in runner logs or use a conditional `WAYFINDER_JOB_RESULT` chat handoff when investigation is needed.
 
 ### Wayfinder Paths
 
