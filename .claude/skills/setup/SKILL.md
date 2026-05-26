@@ -24,7 +24,7 @@ python3 scripts/setup.py
 This will:
 1. Ensure Python 3.12 and Poetry are installed
 2. Install all dependencies
-3. Prompt for your Wayfinder API key (get one at https://strategies.wayfinder.ai)
+3. Prompt for your Wayfinder API key (get one at https://wayfinder.ai)
 4. Create `config.json` from the template
 5. Generate local development wallets
 6. Configure the MCP server
@@ -44,7 +44,7 @@ If you see "api_key not set":
 - Edit `config.json` and add your key under `system.api_key`
 - Or re-run setup: `python3 scripts/setup.py`
 
-Get your API key at: **https://strategies.wayfinder.ai**
+Get your API key at: **https://wayfinder.ai**
 
 ## Rules
 

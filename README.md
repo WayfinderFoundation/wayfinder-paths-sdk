@@ -76,7 +76,7 @@ Use `config.example.json` as a template. The SDK reads `config.json` by default.
 Key fields:
 
 - `system.api_key`: Wayfinder API key (or set `WAYFINDER_API_KEY` env var)
-- `system.api_base_url`: API base URL (defaults to `https://strategies.wayfinder.ai/api/v1` if omitted)
+- `system.api_base_url`: API base URL (defaults to `https://wayfinder.ai/api/v1` if omitted)
 - `strategy.rpc_urls`: *(optional)* chain ID -> RPC URL(s) (string or list). If omitted for a chain, reads default to the Wayfinder proxy RPC at `${system.api_base_url}/blockchain/rpc/<chain_id>/`.
 - `wallets`: local wallets with `label`, `address`, and `private_key_hex`. Remote wallets (Privy server wallets) are auto-fetched when `system.api_key` is configured.
 
@@ -85,7 +85,7 @@ Example:
 ```json
 {
   "system": {
-    "api_base_url": "https://strategies.wayfinder.ai/api/v1",
+    "api_base_url": "https://wayfinder.ai/api/v1",
     "api_key": "wk_your_api_key_here"
   },
   "strategy": {
@@ -320,9 +320,9 @@ If you are automating path publication:
 
 Use two different Delta Lab access patterns depending on what is running:
 
-- SDK scripts, MCP tools, and agent-side Python should use `DELTA_LAB_CLIENT` with `system.api_base_url`, for example `https://strategies.wayfinder.ai/api/v1/delta-lab/...`
+- SDK scripts, MCP tools, and agent-side Python should use `DELTA_LAB_CLIENT` with `system.api_base_url`, for example `https://wayfinder.ai/api/v1/delta-lab/...`
 - presentation applets shown on the public path page should use the public browser-safe timeseries endpoint:
-  - prod: `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
+  - prod: `https://wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
   - dev: `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`
 
 For applet authors and agents:

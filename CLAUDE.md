@@ -13,13 +13,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - The script may skip the API key prompt in non-interactive terminals - that's OK
    - After setup completes, ask the user: "Do you have a Wayfinder API key?"
      - If yes: Use the Edit tool to add it to `config.json` under `system.api_key`
-     - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
+     - If no: Direct them to **https://wayfinder.ai** to create an account and get one
    - After config is complete, tell the user: **"Please restart Claude Code to load the MCP server, then we can continue."**
 
 3. If `config.json` exists but `system.api_key` is empty/missing:
    - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
    - If yes: Help them add it to `config.json` under `system.api_key`
-   - If no: Direct them to **https://strategies.wayfinder.ai** to get one
+   - If no: Direct them to **https://wayfinder.ai** to get one
 
 4. If everything is configured, proceed normally
 
