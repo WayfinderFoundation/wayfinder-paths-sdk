@@ -83,7 +83,7 @@ def test_bulk_sync_noop_when_not_opencode(
 
     monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "bulk_sync", _fail)
 
-    daemon._start_sync_loop()
+    daemon._sync_to_backend_async()
 
     assert not called
 

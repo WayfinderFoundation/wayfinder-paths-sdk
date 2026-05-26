@@ -106,7 +106,7 @@ def test_daemon_add_job_uses_runtime_session_without_opencode_scan(
         "find_runner_session",
         lambda: (_ for _ in ()).throw(AssertionError("should not scan")),
     )
-    monkeypatch.setattr(daemon, "_start_sync_loop", lambda: None)
+    monkeypatch.setattr(daemon, "_sync_to_backend_async", lambda: None)
 
     resp = daemon.ctl_add_job(
         name="script-job",
@@ -132,7 +132,7 @@ def test_daemon_add_job_defers_session_scan_when_session_unknown(
     daemon = RunnerDaemon(paths=p)
     monkeypatch.delenv("OPENCODE_SESSION_ID", raising=False)
     monkeypatch.delenv("OPENCODE_SESSIONID", raising=False)
-    monkeypatch.setattr(daemon, "_start_sync_loop", lambda: None)
+    monkeypatch.setattr(daemon, "_sync_to_backend_async", lambda: None)
     bound: list[str] = []
     monkeypatch.setattr(daemon, "_bind_runner_session_async", bound.append)
 
