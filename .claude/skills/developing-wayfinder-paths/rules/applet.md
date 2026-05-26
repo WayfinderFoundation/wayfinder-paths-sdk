@@ -101,7 +101,7 @@ when the applet is served from the path page.
    "data unavailable" / "waiting for host API" state, don't crash.
 
 Host environments:
-- prod: `https://strategies.wayfinder.ai`
+- prod: `https://wayfinder.ai`
 - dev: `https://strategies-dev.wayfinder.ai`
 
 Authenticated Delta Lab routes (`/api/v1/delta-lab/assets/...`) are for
