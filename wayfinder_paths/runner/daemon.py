@@ -206,7 +206,7 @@ class RunnerDaemon:
             self._shutdown.set()
             self._stop_control()
             self._shutdown_running_processes()
-            self._db.close()
+            self._db._conn.close()
             if self._daemon_log_sink_id is not None:
                 try:
                     logger.remove(self._daemon_log_sink_id)
