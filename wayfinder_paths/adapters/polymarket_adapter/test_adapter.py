@@ -2,6 +2,7 @@ import inspect
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
@@ -11,6 +12,14 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
 )
+
+
+def _gamma_response(status_code: int, endpoint: str, text: str = "") -> httpx.Response:
+    return httpx.Response(
+        status_code,
+        request=httpx.Request("GET", f"https://gamma-api.polymarket.com{endpoint}"),
+        text=text,
+    )
 
 
 class TestPolymarketAdapter:
@@ -254,6 +263,120 @@ class TestPolymarketAdapter:
         assert ok is True
         assert isinstance(data, list)
         assert data[0]["slug"] == "test-market"
+
+    def test_normalize_market_accepts_json_strings_and_parsed_lists(self):
+        parsed = PolymarketAdapter._normalize_market(
+            {
+                "slug": "parsed-market",
+                "outcomes": ["Yes", "No"],
+                "outcomePrices": [0.4, 0.6],
+                "clobTokenIds": ["tok_yes", "tok_no"],
+            }
+        )
+        encoded = PolymarketAdapter._normalize_market(
+            {
+                "slug": "encoded-market",
+                "outcomes": '["Yes","No"]',
+                "outcomePrices": "[0.4,0.6]",
+                "clobTokenIds": '["tok_yes","tok_no"]',
+            }
+        )
+
+        assert parsed["outcomes"] == ["Yes", "No"]
+        assert parsed["outcomePrices"] == [0.4, 0.6]
+        assert parsed["clobTokenIds"] == ["tok_yes", "tok_no"]
+        assert encoded["outcomes"] == ["Yes", "No"]
+        assert encoded["outcomePrices"] == [0.4, 0.6]
+        assert encoded["clobTokenIds"] == ["tok_yes", "tok_no"]
+
+    @pytest.mark.asyncio
+    async def test_get_market_by_slug_returns_structured_event_slug_hint(
+        self, adapter, monkeypatch
+    ):
+        endpoint = "/markets/slug/world-cup-winner"
+
+        async def mock_get(*_args, **_kwargs):
+            return _gamma_response(404, endpoint, "not found")
+
+        monkeypatch.setattr(adapter._gamma_http, "get", mock_get)
+
+        ok, error = await adapter.get_market_by_slug("world-cup-winner")
+
+        assert ok is False
+        assert isinstance(error, dict)
+        assert error["code"] == "gamma_http_error"
+        assert error["statusCode"] == 404
+        assert error["endpoint"] == endpoint
+        assert error["slug"] == "world-cup-winner"
+        assert "get_event_by_slug" in error["hint"]
+
+    @pytest.mark.asyncio
+    async def test_get_event_by_slug_returns_structured_market_slug_hint(
+        self, adapter, monkeypatch
+    ):
+        endpoint = "/events/slug/btc-above-100k"
+
+        async def mock_get(*_args, **_kwargs):
+            return _gamma_response(404, endpoint, "not found")
+
+        monkeypatch.setattr(adapter._gamma_http, "get", mock_get)
+
+        ok, error = await adapter.get_event_by_slug("btc-above-100k")
+
+        assert ok is False
+        assert isinstance(error, dict)
+        assert error["code"] == "gamma_http_error"
+        assert error["statusCode"] == 404
+        assert error["endpoint"] == endpoint
+        assert error["slug"] == "btc-above-100k"
+        assert "get_market_by_slug" in error["hint"]
+
+    @pytest.mark.asyncio
+    async def test_list_markets_returns_structured_rate_limit_hint(
+        self, adapter, monkeypatch
+    ):
+        async def mock_get(*_args, **_kwargs):
+            return _gamma_response(429, "/markets", "rate limited")
+
+        monkeypatch.setattr(adapter._gamma_http, "get", mock_get)
+
+        ok, error = await adapter.list_markets(limit=1)
+
+        assert ok is False
+        assert isinstance(error, dict)
+        assert error["code"] == "gamma_http_error"
+        assert error["statusCode"] == 429
+        assert error["endpoint"] == "/markets"
+        assert "rate limited" in error["hint"]
+
+    @pytest.mark.asyncio
+    async def test_get_event_by_slug_normalizes_contained_markets(
+        self, adapter, monkeypatch
+    ):
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {
+            "slug": "event",
+            "markets": [
+                {
+                    "slug": "market",
+                    "outcomes": '["Yes","No"]',
+                    "outcomePrices": "[0.4,0.6]",
+                    "clobTokenIds": '["tok_yes","tok_no"]',
+                }
+            ],
+        }
+
+        async def mock_get(*_args, **_kwargs):
+            return mock_resp
+
+        monkeypatch.setattr(adapter._gamma_http, "get", mock_get)
+
+        ok, event = await adapter.get_event_by_slug("event")
+
+        assert ok is True
+        assert event["markets"][0]["outcomes"] == ["Yes", "No"]
+        assert event["markets"][0]["clobTokenIds"] == ["tok_yes", "tok_no"]
 
     @pytest.mark.asyncio
     async def test_search_markets_delegates_to_polymarket_client(
