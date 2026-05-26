@@ -39,6 +39,8 @@ Use `summary=False` only when debugging raw Gamma/backend behavior or when a nee
    - `polymarket_read(action="get_market", market_slug=...)`
 4) Only then fetch book/quote/history for the selected outcome token. Avoid raw event payloads in normal agent context; use `summary=False` only for debugging or missing-field investigation.
 
+Slug rule: Polymarket event pages and market pages use different Gamma endpoints. If the slug came from an event page, call `get_event` first and select a contained market/outcome. Only call `get_market` once you have confirmed the slug is a tradeable market slug.
+
 Practical note: Gamma often returns `outcomes`, `outcomePrices`, and `clobTokenIds` as JSON-encoded strings. The adapter normalizes these into Python lists.
 
 ## Time series (CLOB `prices-history`)
@@ -72,7 +74,7 @@ def is_tradable(m: dict) -> bool:
 
 async def main():
     a = await get_adapter(PolymarketAdapter)
-    ok, rows = await a.search_markets_fuzzy(query="super bowl mvp", limit=25)
+    ok, rows = await a.search_markets(query="super bowl mvp", limit=25)
     assert ok, rows
     tradable = [m for m in rows if is_tradable(m)]
     for m in tradable[:10]:
@@ -137,7 +139,7 @@ asyncio.run(main())
 
 | Method | Returns | Best for |
 | --- | --- | --- |
-| `search_markets_fuzzy(query, ...)` | list | Fuzzy discovery by text |
+| `search_markets(query, ...)` | list | Backend-normalized text discovery |
 | `list_markets(...)` | list | Trending / filtered scans |
 | `get_market_by_slug(slug)` | dict | Market metadata + IDs |
 | `get_event_by_slug(slug)` | dict | Market sets (MVP, brackets, etc.) |

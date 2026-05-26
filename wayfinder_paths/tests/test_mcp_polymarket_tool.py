@@ -246,6 +246,31 @@ async def test_polymarket_get_market_summary_and_raw_modes():
 
 
 @pytest.mark.asyncio
+async def test_polymarket_get_market_preserves_structured_gamma_error():
+    gamma_error = {
+        "code": "gamma_http_error",
+        "message": "Gamma returned HTTP 404 for /markets/slug/event-slug",
+        "statusCode": 404,
+        "endpoint": "/markets/slug/event-slug",
+        "slug": "event-slug",
+        "hint": "No market found for this slug. Call get_event_by_slug().",
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_market_by_slug",
+            new=AsyncMock(return_value=(False, gamma_error)),
+        ),
+    ):
+        out = await polymarket_read("get_market", market_slug="event-slug")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "gamma_http_error"
+    assert out["error"]["message"] == gamma_error["message"]
+    assert out["error"]["details"] == gamma_error
+
+
+@pytest.mark.asyncio
 async def test_polymarket_quote_uses_adapter_quote_by_token_id():
     quote_market_order = AsyncMock(
         return_value=(

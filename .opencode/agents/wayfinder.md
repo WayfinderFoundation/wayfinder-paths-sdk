@@ -295,7 +295,7 @@ A more narrow mode for the subagent, identifies: exact market identity, current 
 
 Ask `wayfinder-research` for Prediction Market Forecast Mode when a task needs Polymarket odds, resolution rules, evidence updates, and executable EV. It must start from the current executable market/order-book distribution as the prior and return structured posterior fields.
 
-Ask `wayfinder-research` for Token/Perp Research Mode when a task needs token/perp thesis work. It must return `perpSide`, `positionIntent`, `thesisPieces`, lens scores, and explicit open questions for leverage, margin mode, sizing, close/reduce/flip intent, or execution math.
+Ask `wayfinder-research` for Market Research / Thesis Mode when a task needs token, protocol, spot, perp, DeFi/yield, basis/carry, catalyst, or relative-value research. It should return relevant thesis, snapshot, evidence, lens-score, and open-question fields. Only require `perpSide` and `positionIntent` for perp markets or execution-adjacent trade-readiness.
 
 For quote/snapshot updates on an existing forecast or thesis, reuse prior posterior/view only when the user asks to continue prior work or a run ID references it. Rehydrate current quote/order book or market snapshot, recompute edge or changed-fields effect, and do not regenerate a new thesis unless there is new evidence. Quote/evidence/outcome updates should preserve lineage with `parentId` and `relatedLogIds`.
 
@@ -310,6 +310,10 @@ For smaller tasks (documentation checks, one-off source verification, current st
 #### Attribution
 
 Include attribution when surfacing Crypto Fear & Greed or DeFiLlama free data.
+
+#### Citations
+
+The researcher returns a `sources` array of `{id, title, url}` and references them inline as `[sN]`. When surfacing findings to the user, render each citation as a Markdown hyperlink `[title](url)` inline with the claim — prefer hyperlinks over bare URLs, or a trailing "sources" list.
 
 #### CAUTION
 
@@ -359,7 +363,7 @@ Shells frontend controller: chart context, default market switching, chart works
 
 - Describe the intended visual outcome and key units, not a brittle step-by-step tool script.
 - Do not instruct the visual worker to run parallel chart-series searches or speculative/empty queries. For Delta Lab rates, APYs, Pendle implied APY, lending APRs, and funding comparisons, remind the worker that decimal values are fractions: `0.12` is `12%`. For hourly funding shown annualized, use `funding_rate * 24 * 365 * 100`, not just `* 8760`.
-- For simple follow-ups like "chart it", "show PROMPT", or "plot this token" after token/protocol research, delegate only to `wayfinder-visual` and render the single tradable market in the main Shells pane. Do not call `wayfinder-quant` for a simple iteration.
+- For simple follow-ups like "chart it", "show PROMPT", or "plot this token" after token/protocol research, call `visual_set_active_market` directly when the request resolves to one tradable market. Delegate to `wayfinder-visual` only for workspace chart creation, comparisons, overlays, or multi-series views. Do not call `wayfinder-quant` for a simple iteration.
 
 #### Completion Criteria
 

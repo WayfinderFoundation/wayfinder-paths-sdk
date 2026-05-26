@@ -261,6 +261,8 @@ def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> No
     assert "visual_search_chart_series" in primary
     assert "Do not call `wayfinder-quant`" in primary
     assert "simple iteration" in primary
+    assert "call `visual_set_active_market` directly" in primary
+    assert "Delegate to `wayfinder-visual` only for workspace chart creation" in primary
 
     assert "Single-token chart fast path" in visual
     assert 'market_type="onchain-spot"' in visual
@@ -313,6 +315,15 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
     assert "quote_update" in research
     assert "parentId" in research
     assert "relatedLogIds" in research
+    assert "Identity guard" in research
+    assert "exact venue symbol or market" in research
+    assert "chain-scoped contract/token metadata" in research
+    assert "Delta Lab asset/market result" in research
+    assert "supporting-only" in research
+    assert "openQuestions" in research
+    assert "Standard task: 6-8 calls" in research
+    assert "Deep task: 8-12 calls" in research
+    assert "Hard cap at 6-8 calls" in research
     assert "Evidence-quality iteration gate" in research
     assert "partial_early_stop" in research
     assert "stoppedEarlyReason" in research
@@ -354,6 +365,11 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "buy_amount_pusd" in primary
     assert "sell_amount_shares" in primary
     assert "executionSummary.sharesFilled" in primary
+    assert "Market Research / Thesis Mode" in primary
+    assert "DeFi/yield, basis/carry" in primary
+    assert "Only require `perpSide` and `positionIntent`" in primary
+    assert "Token/Perp Research Mode" not in primary
+    assert "thesisPieces" not in primary
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research

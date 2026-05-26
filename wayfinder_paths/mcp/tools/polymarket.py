@@ -50,6 +50,13 @@ def _compact_truncation(total: int, returned: int) -> dict[str, Any]:
     }
 
 
+def _adapter_error(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or payload.get("error") or payload)
+        return err(str(payload.get("code") or "error"), message, payload)
+    return err("error", str(payload))
+
+
 def _compact_text(value: Any, *, max_chars: int = 700) -> str | None:
     if value is None:
         return None
@@ -487,7 +494,7 @@ async def polymarket_read(
                     status=status,
                 )
                 if not ok_rows:
-                    return err("error", str(rows))
+                    return _adapter_error(rows)
                 if summary:
                     candidates, truncation = _compact_candidates(rows, candidate_limit)
                     return ok(
@@ -510,7 +517,7 @@ async def polymarket_read(
                     ascending=False,
                 )
                 if not ok_rows:
-                    return err("error", str(rows))
+                    return _adapter_error(rows)
                 if summary:
                     candidates, truncation = _compact_candidates(rows, candidate_limit)
                     return ok(
@@ -527,7 +534,7 @@ async def polymarket_read(
                 slug = throw_if_empty_str("market_slug is required", market_slug)
                 ok_m, m = await adapter.get_market_by_slug(slug)
                 if not ok_m:
-                    return err("error", str(m))
+                    return _adapter_error(m)
                 if summary:
                     return ok(
                         {
@@ -543,7 +550,7 @@ async def polymarket_read(
                 slug = throw_if_empty_str("event_slug is required", event_slug)
                 ok_e, e = await adapter.get_event_by_slug(slug)
                 if not ok_e:
-                    return err("error", str(e))
+                    return _adapter_error(e)
                 if summary:
                     markets = [m for m in e.get("markets", []) if isinstance(m, dict)]
                     candidates, truncation = _compact_candidates(
@@ -590,7 +597,7 @@ async def polymarket_read(
                     )
 
                 if not ok_q:
-                    return err("error", str(q))
+                    return _adapter_error(q)
                 execution_summary = normalize_pm_execution_summary(
                     side=side,
                     sizing=sizing,
@@ -613,14 +620,14 @@ async def polymarket_read(
                 tid = throw_if_empty_str("token_id is required", token_id)
                 ok_p, p = await adapter.get_price(token_id=tid, side=side)
                 if not ok_p:
-                    return err("error", str(p))
+                    return _adapter_error(p)
                 return ok({"action": action, "token_id": tid, "side": side, "price": p})
 
             case "order_book":
                 tid = throw_if_empty_str("token_id is required", token_id)
                 ok_b, b = await adapter.get_order_book(token_id=tid)
                 if not ok_b:
-                    return err("error", str(b))
+                    return _adapter_error(b)
                 return ok({"action": action, "token_id": tid, "book": b})
 
             case "price_history":
@@ -633,13 +640,13 @@ async def polymarket_read(
                     fidelity=fidelity,
                 )
                 if not ok_h:
-                    return err("error", str(h))
+                    return _adapter_error(h)
                 return ok({"action": action, "token_id": tid, "history": h})
 
             case "bridge_status":
                 ok_s, s = await adapter.bridge_status(address=str(acct))
                 if not ok_s:
-                    return err("error", str(s))
+                    return _adapter_error(s)
                 return ok({"action": action, "account": acct, "status": s})
 
             case "open_orders":
@@ -654,7 +661,7 @@ async def polymarket_read(
                 # Open orders require Level-2 auth and the signing wallet in config.
                 ok_o, orders = await adapter.list_open_orders(token_id=token_id)
                 if not ok_o:
-                    return err("error", str(orders))
+                    return _adapter_error(orders)
                 return ok(
                     {
                         "action": action,
