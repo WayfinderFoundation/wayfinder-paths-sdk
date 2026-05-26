@@ -37,10 +37,6 @@ SESSION_ENV_KEYS = (
 )
 
 
-def _utc_epoch_s() -> int:
-    return int(time.time())
-
-
 def _safe_job_dirname(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
     return cleaned.strip("_") or "job"
@@ -90,37 +86,13 @@ def _extract_job_result_event(
     return None
 
 
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
 def _kill_process_group(pid: int, *, sig: int) -> None:
     try:
-        os.killpg(int(pid), sig)
+        os.killpg(pid, sig)
     except ProcessLookupError:
         return
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"Failed to kill process group {pid}: {exc}")
-
-
-def _clamp_int(value: Any, *, min_value: int, max_value: int, default: int) -> int:
-    try:
-        i = int(value)
-    except (TypeError, ValueError):
-        return int(default)
-    return max(int(min_value), min(int(max_value), i))
-
-
-def _with_repo_pythonpath(env: dict[str, str], *, repo_root: Path) -> dict[str, str]:
-    root = str(repo_root)
-    cur = env.get("PYTHONPATH", "").strip()
-    env_out = dict(env)
-    env_out["PYTHONPATH"] = f"{root}{os.pathsep}{cur}" if cur else root
-    return env_out
 
 
 @dataclass
@@ -153,7 +125,7 @@ class RunnerDaemon:
         self._log_level = str(log_level).upper()
 
         self._db = RunnerDB(paths.db_path)
-        self._started_at = _utc_epoch_s()
+        self._started_at = int(time.time())
         self._last_tick_at: int | None = None
 
         self._lock = threading.Lock()
@@ -163,10 +135,6 @@ class RunnerDaemon:
 
         self._control = None
         self._daemon_log_sink_id: int | None = None
-
-    @property
-    def paths(self) -> RunnerPaths:
-        return self._paths
 
     def start(self) -> None:
         self._paths.runner_dir.mkdir(parents=True, exist_ok=True)
@@ -199,13 +167,17 @@ class RunnerDaemon:
             f"Runner daemon v{__version__} listening on {self._paths.sock_path}"
         )
 
-        self._install_signal_handlers()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: self.stop())
         try:
             self._loop()
         finally:
             self._shutdown.set()
-            self._stop_control()
-            self._shutdown_running_processes()
+            if self._control is not None:
+                self._control.stop()
+            with self._lock:
+                for rp in self._running.values():
+                    _kill_process_group(rp.popen.pid, sig=signal.SIGTERM)
             self._db._conn.close()
             if self._daemon_log_sink_id is not None:
                 try:
@@ -216,41 +188,23 @@ class RunnerDaemon:
     def stop(self) -> None:
         self._shutdown.set()
 
-    def _install_signal_handlers(self) -> None:
-        def _handle(sig, _frame):  # type: ignore[no-untyped-def]
-            logger.info(f"Received signal {sig}; shutting down")
-            self.stop()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                signal.signal(sig, _handle)
-            except Exception:  # noqa: BLE001
-                continue
-
-    def _stop_control(self) -> None:
-        if self._control is not None:
-            self._control.stop()
-            self._control = None
-
     def _loop(self) -> None:
         while not self._shutdown.is_set():
             tick_started = time.monotonic()
-            try:
-                self.tick()
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(f"Runner tick error: {exc}")
+            self.tick()
             elapsed = time.monotonic() - tick_started
-            sleep_s = max(0.0, self._tick_seconds - elapsed)
-            time.sleep(sleep_s)
+            time.sleep(max(0.0, self._tick_seconds - elapsed))
 
     def tick(self) -> None:
-        now = _utc_epoch_s()
-        with self._lock:
-            self._last_tick_at = now
-            self._reap(now=now)
-
-            for job in self._db.due_jobs(now=now):
-                self._maybe_start_job(job=job, now=now, reason="schedule")
+        try:
+            now = int(time.time())
+            with self._lock:
+                self._last_tick_at = now
+                self._reap(now=now)
+                for job in self._db.due_jobs(now=now):
+                    self._maybe_start_job(job=job, now=now, reason="schedule")
+        except Exception:  # noqa: BLE001
+            logger.exception("Runner tick error")
 
     def _reap(self, *, now: int) -> None:
         for run_id, rp in list(self._running.items()):
@@ -262,17 +216,9 @@ class RunnerDaemon:
                     and now - rp.started_at > rp.timeout_seconds
                 ):
                     logger.warning(
-                        f"Run {run_id} timed out after {rp.timeout_seconds}s; killing process group"
+                        f"Run {run_id} timed out after {rp.timeout_seconds}s; killing"
                     )
-                    _kill_process_group(proc.pid, sig=signal.SIGTERM)
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        _kill_process_group(proc.pid, sig=signal.SIGKILL)
-                        try:
-                            proc.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            pass
+                    _kill_process_group(proc.pid, sig=signal.SIGKILL)
                     self._finish_run(
                         rp,
                         finished_at=now,
@@ -282,7 +228,7 @@ class RunnerDaemon:
                     )
                 continue
 
-            status = RunStatus.OK if int(exit_code) == 0 else RunStatus.FAILED
+            status = RunStatus.OK if exit_code == 0 else RunStatus.FAILED
             error_text = None
             if status != RunStatus.OK:
                 error_text = _tail_text(rp.log_path) or f"exit_code={exit_code}"
@@ -290,7 +236,7 @@ class RunnerDaemon:
                 rp,
                 finished_at=now,
                 status=status,
-                exit_code=int(exit_code),
+                exit_code=exit_code,
                 error_text=error_text,
             )
 
@@ -376,7 +322,7 @@ class RunnerDaemon:
         SCHEDULED_JOBS_CLIENT.report_run(
             rp.job_name,
             {
-                "run_id": str(rp.run_id),
+                "run_id": rp.run_id,
                 "status": status,
                 "started_at": datetime.fromtimestamp(rp.started_at, tz=UTC).isoformat(),
                 "finished_at": datetime.fromtimestamp(finished_at, tz=UTC).isoformat(),
@@ -393,10 +339,10 @@ class RunnerDaemon:
             session_id = OPENCODE_CLIENT.find_runner_session()
             if not session_id:
                 return
-            try:
-                job, _ = self._db.get_job(name=name)
-            except KeyError:
+            result = self._db.get_job(name=name)
+            if not result:
                 return
+            job, _ = result
             payload = dict(job.payload or {})
             if payload.get("notify_session_id"):
                 return
@@ -413,10 +359,10 @@ class RunnerDaemon:
         def _sync() -> None:
             jobs = []
             for j in self._db.list_jobs():
-                try:
-                    job, state = self._db.get_job(name=j["name"])
-                except KeyError:
+                result = self._db.get_job(name=j["name"])
+                if not result:
                     continue
+                job, state = result
                 jobs.append(
                     {
                         "job_name": job.name,
@@ -437,13 +383,16 @@ class RunnerDaemon:
         status: str,
         error_text: str | None,
     ) -> None:
-        job, _ = self._db.get_job(name=running_process.job_name)
+        result = self._db.get_job(name=running_process.job_name)
+        if not result:
+            return
+        job, _ = result
         session_id = job.payload.get("notify_session_id")
 
-        if session_id is None or not OPENCODE_CLIENT.healthy():
+        if not session_id or not OPENCODE_CLIENT.healthy():
             return
         event = _extract_job_result_event(running_process.log_path)
-        should_post_success = _truthy(job.payload.get("notify_session_on_success")) or (
+        should_post_success = job.payload.get("notify_session_on_success") is True or (
             event is not None
         )
         if status == RunStatus.OK and not should_post_success:
@@ -465,18 +414,6 @@ class RunnerDaemon:
             payload["event"] = event
         notification = json.dumps(payload)
         OPENCODE_CLIENT.send_message(session_id, notification)
-
-    def _shutdown_running_processes(self) -> None:
-        with self._lock:
-            running = list(self._running.values())
-        if not running:
-            return
-        logger.info(f"Shutting down {len(running)} running worker(s)")
-        for rp in running:
-            try:
-                _kill_process_group(rp.popen.pid, sig=signal.SIGTERM)
-            except Exception:  # noqa: BLE001
-                continue
 
     def _maybe_start_job(
         self, *, job: dict[str, Any], now: int, reason: str
@@ -530,7 +467,9 @@ class RunnerDaemon:
             env.update({str(k): str(v) for k, v in payload_env.items()})
         if payload.get("wallet_label"):
             env["WAYFINDER_WALLET_LABEL"] = str(payload.get("wallet_label"))
-        env = _with_repo_pythonpath(env, repo_root=self._paths.repo_root)
+        root = str(self._paths.repo_root)
+        cur = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{root}{os.pathsep}{cur}" if cur else root
 
         try:
             cmd = self._build_worker_cmd(job=job)
@@ -657,7 +596,7 @@ class RunnerDaemon:
                     "pid": os.getpid(),
                     "ppid": os.getppid(),
                     "started_at": self._started_at,
-                    "uptime_s": max(0, _utc_epoch_s() - self._started_at),
+                    "uptime_s": max(0, int(time.time()) - self._started_at),
                     "last_tick_at": self._last_tick_at,
                     "repo_root": str(self._paths.repo_root),
                     "runner_dir": str(self._paths.runner_dir),
@@ -675,17 +614,16 @@ class RunnerDaemon:
         return {"ok": True, "result": {"shutdown": True}}
 
     def ctl_job_runs(self, *, name: str, limit: int | None = None) -> dict[str, Any]:
-        if name is None:
-            return {"ok": False, "error": "name is required"}
-        name = str(name).strip()
         if not name:
             return {"ok": False, "error": "name is required"}
 
-        lim = _clamp_int(limit, min_value=1, max_value=500, default=50)
-        try:
-            job, _ = self._db.get_job(name=name)
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        lim = limit or 50
+        if lim < 1 or lim > 500:
+            return {"ok": False, "error": "limit must be between 1 and 500"}
+        result = self._db.get_job(name=name)
+        if not result:
+            return {"ok": False, "error": f"Job not found: {name}"}
+        job, _ = result
 
         runs = self._db.runs_for_job(job_id=job.id, limit=lim)
         return {
@@ -701,7 +639,9 @@ class RunnerDaemon:
         except (TypeError, ValueError):
             return {"ok": False, "error": "run_id must be an integer"}
 
-        tbytes = _clamp_int(tail_bytes, min_value=200, max_value=200_000, default=4000)
+        tbytes = tail_bytes or 4000
+        if tbytes < 200 or tbytes > 200_000:
+            return {"ok": False, "error": "tail_bytes must be between 200 and 200000"}
 
         run = self._db.get_run(run_id=rid)
         if run is None:
@@ -740,29 +680,14 @@ class RunnerDaemon:
         payload: dict[str, Any],
         interval_seconds: int,
     ) -> dict[str, Any]:
-        if name is None:
-            return {"ok": False, "error": "name is required"}
-        name = str(name).strip()
         if not name:
             return {"ok": False, "error": "name is required"}
 
-        if interval_seconds is None:
-            return {"ok": False, "error": "interval_seconds is required"}
-        try:
-            interval_i = int(interval_seconds)
-        except (TypeError, ValueError):
-            return {"ok": False, "error": "interval_seconds must be an integer"}
-        if interval_i <= 0:
+        if not interval_seconds or interval_seconds <= 0:
             return {"ok": False, "error": "interval_seconds must be > 0"}
 
-        if job_type is None:
-            return {"ok": False, "error": "type is required"}
-        job_type = str(job_type).strip()
         if job_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
             return {"ok": False, "error": f"unsupported job type: {job_type}"}
-
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "payload must be an object"}
 
         payload_norm: dict[str, Any] = dict(payload)
         if job_type == JOB_TYPE_STRATEGY:
@@ -806,9 +731,9 @@ class RunnerDaemon:
                 name=name,
                 job_type=job_type,
                 payload=payload_norm,
-                interval_seconds=interval_i,
+                interval_seconds=interval_seconds,
                 status=JobStatus.ACTIVE,
-                next_run_at=_utc_epoch_s(),
+                next_run_at=int(time.time()),
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
@@ -820,39 +745,28 @@ class RunnerDaemon:
     def ctl_update_job(
         self, *, name: str, payload: dict[str, Any] | None, interval_seconds: int | None
     ) -> dict[str, Any]:
-        if payload is not None and not isinstance(payload, dict):
-            return {"ok": False, "error": "payload must be an object"}
-        try:
-            self._db.update_job(
-                name=name, payload=payload, interval_seconds=interval_seconds
-            )
-            self._sync_to_backend_async()
-            return {"ok": True, "result": {"name": name}}
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        self._db.update_job(
+            name=name, payload=payload, interval_seconds=interval_seconds
+        )
+        self._sync_to_backend_async()
+        return {"ok": True, "result": {"name": name}}
 
     def ctl_pause_job(self, *, name: str) -> dict[str, Any]:
-        try:
-            self._db.set_job_status(name=name, status=JobStatus.PAUSED)
-            self._sync_to_backend_async()
-            return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        self._db.set_job_status(name=name, status=JobStatus.PAUSED)
+        self._sync_to_backend_async()
+        return {"ok": True, "result": {"name": name, "status": JobStatus.PAUSED}}
 
     def ctl_resume_job(self, *, name: str) -> dict[str, Any]:
-        try:
-            job, _ = self._db.get_job(name=name)
-            self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
-            self._db.set_next_run_at(job_id=job.id, next_run_at=_utc_epoch_s())
-            self._sync_to_backend_async()
-            return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        result = self._db.get_job(name=name)
+        if not result:
+            return {"ok": False, "error": f"Job not found: {name}"}
+        job, _ = result
+        self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
+        self._db.set_next_run_at(job_id=job.id, next_run_at=int(time.time()))
+        self._sync_to_backend_async()
+        return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
 
     def ctl_stop_job(self, *, name: str, sig: str | None = None) -> dict[str, Any]:
-        if name is None:
-            return {"ok": False, "error": "name is required"}
-        name = str(name).strip()
         if not name:
             return {"ok": False, "error": "name is required"}
 
@@ -865,18 +779,18 @@ class RunnerDaemon:
         elif sig_name != "TERM":
             return {"ok": False, "error": "sig must be one of: TERM, INT, KILL"}
 
-        try:
-            job, _ = self._db.get_job(name=name)
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        result = self._db.get_job(name=name)
+        if not result:
+            return {"ok": False, "error": f"Job not found: {name}"}
+        job, _ = result
 
         killed: list[dict[str, Any]] = []
         with self._lock:
             for run_id, rp in list(self._running.items()):
-                if int(rp.job_id) != int(job.id):
+                if rp.job_id != job.id:
                     continue
                 _kill_process_group(rp.popen.pid, sig=sig_val)
-                killed.append({"run_id": int(run_id), "pid": int(rp.popen.pid)})
+                killed.append({"run_id": run_id, "pid": rp.popen.pid})
 
         if not killed:
             return {"ok": False, "error": "job is not currently running"}
@@ -887,11 +801,11 @@ class RunnerDaemon:
         }
 
     def ctl_run_once(self, *, name: str) -> dict[str, Any]:
-        now = _utc_epoch_s()
-        try:
-            job, state = self._db.get_job(name=name)
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        now = int(time.time())
+        result = self._db.get_job(name=name)
+        if not result:
+            return {"ok": False, "error": f"Job not found: {name}"}
+        job, state = result
         if state.status != JobStatus.ACTIVE:
             return {"ok": False, "error": f"job is not ACTIVE (status={state.status})"}
 
@@ -912,20 +826,16 @@ class RunnerDaemon:
         return {"ok": True, "result": {"name": name, "run_id": run_id}}
 
     def ctl_delete_job(self, *, name: str) -> dict[str, Any]:
-        try:
-            job, _ = self._db.get_job(name=name)
-        except KeyError as exc:
-            return {"ok": False, "error": str(exc)}
+        result = self._db.get_job(name=name)
+        if not result:
+            return {"ok": False, "error": f"Job not found: {name}"}
+        job, _ = result
 
-        job_id = int(job.id)
         with self._lock:
-            if self._running_by_job.get(job_id, 0) >= 1:
+            if self._running_by_job.get(job.id, 0) >= 1:
                 return {"ok": False, "error": "job is currently running"}
-            try:
-                self._db.delete_job(name=str(name))
-            except KeyError as exc:
-                return {"ok": False, "error": str(exc)}
-            self._running_by_job.pop(job_id, None)
+            self._db.delete_job(name=name)
+            self._running_by_job.pop(job.id, None)
 
         self._sync_to_backend_async()
-        return {"ok": True, "result": {"name": str(name), "deleted": True}}
+        return {"ok": True, "result": {"name": name, "deleted": True}}

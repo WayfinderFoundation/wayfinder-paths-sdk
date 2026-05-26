@@ -174,7 +174,7 @@ class RunnerDB:
         if cur.rowcount == 0:
             raise KeyError(f"Job not found: {name}")
 
-    def get_job(self, *, name: str) -> tuple[JobRow, JobStateRow]:
+    def get_job(self, *, name: str) -> tuple[JobRow, JobStateRow] | None:
         cur = self._conn.cursor()
         cur.execute(
             """
@@ -188,7 +188,7 @@ class RunnerDB:
         )
         row = cur.fetchone()
         if row is None:
-            raise KeyError(f"Job not found: {name}")
+            return None
         job = JobRow(
             id=row["id"],
             name=row["name"],
