@@ -295,7 +295,7 @@ A more narrow mode for the subagent, identifies: exact market identity, current 
 
 Ask `wayfinder-research` for Prediction Market Forecast Mode when a task needs Polymarket odds, resolution rules, evidence updates, and executable EV. It must start from the current executable market/order-book distribution as the prior and return structured posterior fields.
 
-Ask `wayfinder-research` for Token/Perp Research Mode when a task needs token/perp thesis work. It must return `perpSide`, `positionIntent`, `thesisPieces`, lens scores, and explicit open questions for leverage, margin mode, sizing, close/reduce/flip intent, or execution math.
+Ask `wayfinder-research` for Market Research / Thesis Mode when a task needs token, protocol, spot, perp, DeFi/yield, basis/carry, catalyst, or relative-value research. It should return relevant thesis, snapshot, evidence, lens-score, and open-question fields. Only require `perpSide` and `positionIntent` for perp markets or execution-adjacent trade-readiness.
 
 For quote/snapshot updates on an existing forecast or thesis, reuse prior posterior/view only when the user asks to continue prior work or a run ID references it. Rehydrate current quote/order book or market snapshot, recompute edge or changed-fields effect, and do not regenerate a new thesis unless there is new evidence. Quote/evidence/outcome updates should preserve lineage with `parentId` and `relatedLogIds`.
 

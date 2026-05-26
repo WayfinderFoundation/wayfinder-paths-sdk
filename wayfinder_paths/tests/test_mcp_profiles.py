@@ -363,6 +363,11 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "buy_amount_pusd" in primary
     assert "sell_amount_shares" in primary
     assert "executionSummary.sharesFilled" in primary
+    assert "Market Research / Thesis Mode" in primary
+    assert "DeFi/yield, basis/carry" in primary
+    assert "Only require `perpSide` and `positionIntent`" in primary
+    assert "Token/Perp Research Mode" not in primary
+    assert "thesisPieces" not in primary
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research
