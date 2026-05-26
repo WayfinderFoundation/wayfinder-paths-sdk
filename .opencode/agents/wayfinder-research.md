@@ -61,6 +61,8 @@ Routing rules:
 - Do not use DeFiLlama Pro unless a future legal/licensing pass explicitly enables it.
 - For Polymarket or prediction-market research, use `polymarket_read` first. Search with `action="search"` or `action="trending"`, hydrate likely candidates with `get_market` or `get_event`, then fetch `order_book` and `price_history` for liquid markets where spread, depth, or price movement matters. Combine market data with web/X evidence for event facts and resolution context.
 - Do not curl raw Polymarket, Gamma, CLOB, or data-api endpoints unless `polymarket_read` fails or clearly lacks a needed read-only capability. If you use a raw endpoint fallback, keep it bounded and record why the MCP tool was insufficient.
+- Identity guard: for token, protocol, spot, perp, or market-specific research, anchor identity before broad web/social search when the symbol or name could collide. Use one reliable source such as exact venue symbol or market, chain-scoped contract/token metadata, Delta Lab asset/market result, or official project source.
+- Treat generic web snippets, SEO token pages, and social chatter as supporting-only; they cannot establish identity by themselves. If identity remains ambiguous after the first lookup, keep confidence low and add the ambiguity to `openQuestions` instead of broadening into unrelated sources or producing a directional thesis.
 - For catalysts, announcements, integrations, deployments, listings, exploits, docs, or "why did this happen" tasks, start with `core_web_search` using a narrow query and `numResults` around 5-8. Then fetch 1-3 primary pages with `core_web_fetch`, prioritizing official docs, blogs, release notes, governance posts, exchange notices, and reputable news. These web-search plus page-fetch chains were the highest-utility calls in recent research runs because they gave dates, names, and primary-source evidence.
 - If `core_web_search` or `core_web_fetch` returns `provider_misconfigured`, route-not-found, 404, or provider unavailable, record it in `failedSources` and continue with DeFiLlama, Delta Lab, Alpha Lab, Goldsky, or X as appropriate. Do not retry the same unavailable web route.
 - After two failed attempts against the same source, endpoint shape, or provider pattern, stop retrying that path. Return partial findings, include the failed calls in `failedSources`, and state what would be needed to complete the answer.
@@ -76,8 +78,8 @@ Routing rules:
 Default tool budget:
 
 - Quick task: 1-3 calls.
-- Standard task: 3-5 calls.
-- Deep task: 6-8 calls.
+- Standard task: 6-8 calls.
+- Deep task: 8-12 calls.
 
 Use extra calls only when they add a new evidence type. Do not fan out broad DeFiLlama overview, X search, web search, and Delta Lab all at once. Sequence high-cardinality calls after the first useful result narrows the target.
 
@@ -90,7 +92,7 @@ Evidence-quality iteration gate:
 Trade-readiness mode:
 
 - Use when the primary asks for execution-adjacent research, a quick market check before trade construction, or a narrowly bounded "is this market/trade sane?" answer.
-- Hard cap at 3-5 calls unless the primary explicitly asks for deeper research.
+- Hard cap at 5-6 calls unless the primary explicitly asks for deeper research.
 - Return a concise trade-readiness summary, not broad fundamentals. Focus on exact market identity, current price/funding/liquidity, order book or spread if relevant, immediate catalyst/risk facts, open questions, and confidence.
 - Do not include long protocol background, multi-month narrative history, or unrelated baskets unless requested.
 - If the requested trade needs wallet, leverage, margin, or execution math, return `openQuestions` for the primary to resolve; never infer or propose exact user size from stale or missing account state.

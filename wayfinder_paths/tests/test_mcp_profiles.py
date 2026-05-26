@@ -313,6 +313,15 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
     assert "quote_update" in research
     assert "parentId" in research
     assert "relatedLogIds" in research
+    assert "Identity guard" in research
+    assert "exact venue symbol or market" in research
+    assert "chain-scoped contract/token metadata" in research
+    assert "Delta Lab asset/market result" in research
+    assert "supporting-only" in research
+    assert "openQuestions" in research
+    assert "Standard task: 6-8 calls" in research
+    assert "Deep task: 8-12 calls" in research
+    assert "Hard cap at 5-6 calls" in research
     assert "Evidence-quality iteration gate" in research
     assert "partial_early_stop" in research
     assert "stoppedEarlyReason" in research
