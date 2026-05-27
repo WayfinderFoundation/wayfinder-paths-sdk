@@ -30,6 +30,9 @@ from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
+from wayfinder_paths.core.clients.HyperliquidQuicknodeInfoClient import (
+    HYPERLIQUID_QUICKNODE_INFO_CLIENT,
+)
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import (
     HYPERCORE_SENTINEL_ADDRESS,
@@ -182,14 +185,17 @@ class HyperliquidAdapter(BaseAdapter):
         payload: dict[str, Any],
         aggregator: Callable[[list[Any]], Any],
         *,
+        post_fn: Callable[..., Awaitable[Any]] | None = None,
         max_retries: int = 3,
     ) -> Any:
+        _post = post_fn or HYPERLIQUID_INFO_CLIENT.post
+
         async def _post_one(dex: str) -> Any:
             body = {**payload, "dex": dex}
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return await HYPERLIQUID_INFO_CLIENT.post(body)
+                    return await _post(body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
@@ -478,7 +484,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "clearinghouseState", "user": address}, _aggregate
+                {"type": "clearinghouseState", "user": address},
+                _aggregate,
+                post_fn=HYPERLIQUID_QUICKNODE_INFO_CLIENT.post,
             )
             return True, data
         except Exception as exc:
@@ -520,7 +528,7 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str, asset_name: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = await HYPERLIQUID_INFO_CLIENT.post(
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
                 {
                     "type": "activeAssetData",
                     "user": address,
@@ -538,7 +546,9 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = get_info().spot_user_state(address)
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+                {"type": "spotClearinghouseState", "user": address}
+            )
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch spot_user_state for {address}: {exc}")
@@ -1378,7 +1388,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "frontendOpenOrders", "user": address}, _aggregate
+                {"type": "frontendOpenOrders", "user": address},
+                _aggregate,
+                post_fn=HYPERLIQUID_QUICKNODE_INFO_CLIENT.post,
             )
             return True, data
         except Exception as exc:
@@ -1428,8 +1440,9 @@ class HyperliquidAdapter(BaseAdapter):
         builder: str,
     ) -> tuple[bool, int]:
         try:
-            body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = await HYPERLIQUID_INFO_CLIENT.post(body)
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+                {"type": "maxBuilderFee", "user": user, "builder": builder}
+            )
             # Response is just an integer (tenths of basis points)
             return True, int(data) if data is not None else 0
         except Exception as exc:
