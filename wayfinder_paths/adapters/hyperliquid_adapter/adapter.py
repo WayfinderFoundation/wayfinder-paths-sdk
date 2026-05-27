@@ -185,7 +185,6 @@ class HyperliquidAdapter(BaseAdapter):
         payload: dict[str, Any],
         aggregator: Callable[[list[Any]], Any],
         *,
-        client=HYPERLIQUID_INFO_CLIENT,
         max_retries: int = 3,
     ) -> Any:
         async def _post_one(dex: str) -> Any:
@@ -193,7 +192,7 @@ class HyperliquidAdapter(BaseAdapter):
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return await client.post(body)
+                    return await HYPERLIQUID_INFO_CLIENT.post(body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
@@ -482,9 +481,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "clearinghouseState", "user": address},
-                _aggregate,
-                client=HYPERLIQUID_QUICKNODE_INFO_CLIENT,
+                {"type": "clearinghouseState", "user": address}, _aggregate
             )
             return True, data
         except Exception as exc:
@@ -1386,9 +1383,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "frontendOpenOrders", "user": address},
-                _aggregate,
-                client=HYPERLIQUID_QUICKNODE_INFO_CLIENT,
+                {"type": "frontendOpenOrders", "user": address}, _aggregate
             )
             return True, data
         except Exception as exc:
