@@ -31,6 +31,8 @@ def _max_bytes() -> int:
 
 
 def _shape(value: Any) -> Any:
+    if isinstance(value, str):
+        return {"type": "str", "len": len(value), "lines": value.count("\n") + 1}
     if isinstance(value, list):
         return {"type": "list", "len": len(value)}
     if isinstance(value, dict):
@@ -38,10 +40,23 @@ def _shape(value: Any) -> Any:
             "type": "dict",
             "keys": list(value.keys())[:40],
             "collection_sizes": {
-                k: len(v) for k, v in value.items() if isinstance(v, (list, dict))
+                k: len(v) for k, v in value.items() if isinstance(v, (list, dict, str))
             },
         }
     return {"type": type(value).__name__}
+
+
+def _slice_string(
+    s: str, head: int = STRING_HEAD_CHARS, tail: int = STRING_TAIL_CHARS
+) -> Any:
+    if len(s) <= head + tail:
+        return s
+    return {
+        "_str_truncated": True,
+        "len": len(s),
+        "head": s[:head],
+        "tail": s[-tail:],
+    }
 
 
 def _slice_collection(value: Any, head: int) -> Any:
@@ -63,9 +78,17 @@ def _slice_collection(value: Any, head: int) -> Any:
     return value
 
 
+def _preview_scalar(v: Any) -> Any:
+    if isinstance(v, str) and len(v) > STRING_INLINE_LIMIT:
+        return _slice_string(v)
+    return v
+
+
 def _truncate_for_preview(value: Any, head: int) -> Any:
-    """Shallow-preview: keep top-level scalars, slice large lists/dicts, recurse one level."""
-    if isinstance(value, (list, dict)) and not isinstance(value, dict):
+    """Shallow-preview: slice large strings/lists/dicts, recurse one level into dicts."""
+    if isinstance(value, str):
+        return _slice_string(value)
+    if isinstance(value, list):
         return _slice_collection(value, head)
     if isinstance(value, dict):
         out: dict[str, Any] = {}
@@ -74,11 +97,16 @@ def _truncate_for_preview(value: Any, head: int) -> Any:
                 sliced = _slice_collection(v, head)
                 # Recurse one level into dict children for nested heavy fields (e.g. state.positions)
                 if isinstance(v, dict) and sliced is v:
-                    out[k] = {sk: _slice_collection(sv, head) for sk, sv in v.items()}
+                    out[k] = {
+                        sk: _preview_scalar(sv)
+                        if not isinstance(sv, (list, dict))
+                        else _slice_collection(sv, head)
+                        for sk, sv in v.items()
+                    }
                 else:
                     out[k] = sliced
             else:
-                out[k] = v
+                out[k] = _preview_scalar(v)
         return out
     return value
 
@@ -96,6 +124,26 @@ def guard_payload(
     programmatically. The envelope shape is: {_truncated, artifact, bytes, shape, head, hint}.
     """
     limit = max_bytes if max_bytes is not None else _max_bytes()
+
+    # Big plain text: spill as .txt, no JSON quoting.
+    if isinstance(payload, str):
+        if len(payload) <= limit:
+            return payload
+        artifact = _scratch_dir() / f"{name}-{uuid.uuid4().hex[:8]}.txt"
+        artifact.write_text(payload)
+        return {
+            "_truncated": True,
+            "reason": f"output > {limit} bytes",
+            "artifact": str(artifact),
+            "bytes": len(payload),
+            "shape": _shape(payload),
+            "head": _slice_string(payload),
+            "hint": (
+                f"Full text at {artifact}. Read selectively: "
+                f"`head -n 50 {artifact}` or `sed -n '100,200p' {artifact}`."
+            ),
+        }
+
     try:
         serialized = json.dumps(payload, default=str)
     except (TypeError, ValueError):
