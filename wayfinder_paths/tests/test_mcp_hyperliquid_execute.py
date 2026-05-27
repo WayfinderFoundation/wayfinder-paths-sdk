@@ -147,6 +147,17 @@ class _FakeExecutionAdapter:
             return OUTCOME_ASSET_OFFSET + int(asset_name[1:])
         return _FAKE_ASSET_IDS.get(asset_name)
 
+    async def get_portfolio_state(self, _address: str):
+        return True, {
+            "clearinghouseState": self.user_state,
+            "spotClearinghouseState": self.spot_state,
+            "userAbstraction": "unifiedAccount",
+        }
+
+    @staticmethod
+    def _aggregate_clearinghouse_from_portfolio(portfolio):
+        return portfolio["clearinghouseState"]
+
     async def get_user_state(self, _address: str):
         return True, self.user_state
 
