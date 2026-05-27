@@ -30,7 +30,6 @@ from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.HyperliquidQuicknodeInfoClient import (
-    HYPERLIQUID_QUICKNODE_CLIENT,
     HYPERLIQUID_QUICKNODE_INFO_CLIENT,
 )
 from wayfinder_paths.core.constants import ZERO_ADDRESS
@@ -457,39 +456,38 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_user_state(
         self, address: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
+        def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
+            if not results:
+                return {}
+            base = results[0]
+            for other in results[1:]:
+                base_positions = base.get("assetPositions", [])
+                other_positions = other.get("assetPositions", [])
+                base["assetPositions"] = base_positions + other_positions
+
+                for summary_key in ("marginSummary", "crossMarginSummary"):
+                    base_summary = base.get(summary_key, {})
+                    other_summary = other.get(summary_key, {})
+                    for field in (
+                        "accountValue",
+                        "totalNtlPos",
+                        "totalRawUsd",
+                        "totalMarginUsed",
+                    ):
+                        base_val = float(base_summary.get(field, 0))
+                        other_val = float(other_summary.get(field, 0))
+                        base_summary[field] = str(base_val + other_val)
+                    base[summary_key] = base_summary
+            return base
+
         try:
-            portfolio = await HYPERLIQUID_QUICKNODE_CLIENT.portfolio_state(address)
+            data = await self._post_across_dexes(
+                {"type": "clearinghouseState", "user": address}, _aggregate
+            )
+            return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch user_state for {address}: {exc}")
             return False, str(exc)
-
-        states: list[dict[str, Any]] = []
-        for dex in get_perp_dexes():
-            if dex == "":
-                states.append(portfolio["clearinghouseState"])
-            elif dex in portfolio:
-                states.append(portfolio[dex]["clearinghouseState"])
-        if not states:
-            return True, {}
-        base = states[0]
-        for other in states[1:]:
-            base["assetPositions"] = base.get("assetPositions", []) + other.get(
-                "assetPositions", []
-            )
-            for summary_key in ("marginSummary", "crossMarginSummary"):
-                base_summary = base.get(summary_key, {})
-                other_summary = other.get(summary_key, {})
-                for field in (
-                    "accountValue",
-                    "totalNtlPos",
-                    "totalRawUsd",
-                    "totalMarginUsed",
-                ):
-                    base_val = float(base_summary.get(field, 0))
-                    other_val = float(other_summary.get(field, 0))
-                    base_summary[field] = str(base_val + other_val)
-                base[summary_key] = base_summary
-        return True, base
 
     @classmethod
     def active_asset_data_coin(cls, asset_name: str) -> str:
