@@ -49,7 +49,7 @@ class TestAdapterMidPriceFetch:
                 return_value=[""],
             ),
             patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_QUICKNODE_INFO_CLIENT.post",
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_INFO_CLIENT.post",
                 new=AsyncMock(side_effect=_info_client_post),
             ),
         ):

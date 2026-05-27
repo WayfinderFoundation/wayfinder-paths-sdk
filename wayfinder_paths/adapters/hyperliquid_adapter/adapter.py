@@ -29,6 +29,7 @@ from loguru import logger
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
 from wayfinder_paths.core.clients.HyperliquidQuicknodeInfoClient import (
     HYPERLIQUID_QUICKNODE_INFO_CLIENT,
 )
@@ -184,14 +185,17 @@ class HyperliquidAdapter(BaseAdapter):
         payload: dict[str, Any],
         aggregator: Callable[[list[Any]], Any],
         *,
+        client: Any = None,
         max_retries: int = 3,
     ) -> Any:
+        _client = client or HYPERLIQUID_INFO_CLIENT
+
         async def _post_one(dex: str) -> Any:
             body = {**payload, "dex": dex}
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(body)
+                    return await _client.post(body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
@@ -334,9 +338,7 @@ class HyperliquidAdapter(BaseAdapter):
             return True, cached
 
         try:
-            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
-                {"type": "allPerpMetas"}
-            )
+            data = await HYPERLIQUID_INFO_CLIENT.post({"type": "allPerpMetas"})
             await self._cache.set(cache_key, data, ttl=60)
             return True, data
         except Exception as exc:
@@ -482,7 +484,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "clearinghouseState", "user": address}, _aggregate
+                {"type": "clearinghouseState", "user": address},
+                _aggregate,
+                client=HYPERLIQUID_QUICKNODE_INFO_CLIENT,
             )
             return True, data
         except Exception as exc:
@@ -554,7 +558,7 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str
     ) -> tuple[Literal[True], Any] | tuple[Literal[False], str]:
         try:
-            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+            data = await HYPERLIQUID_INFO_CLIENT.post(
                 {"type": "userAbstraction", "user": address}
             )
             return True, data
@@ -618,10 +622,10 @@ class HyperliquidAdapter(BaseAdapter):
             # Hyperliquid expects `id` but older SDKs may use `marginTableId`
             body = {"type": "marginTable", "id": int(margin_table_id)}
             try:
-                data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(body)
+                data = await HYPERLIQUID_INFO_CLIENT.post(body)
             except Exception:  # noqa: BLE001
                 body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
-                data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(body)
+                data = await HYPERLIQUID_INFO_CLIENT.post(body)
             await self._cache.set(cache_key, data, ttl=86400)
             return True, data
         except Exception as exc:
@@ -1384,7 +1388,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "frontendOpenOrders", "user": address}, _aggregate
+                {"type": "frontendOpenOrders", "user": address},
+                _aggregate,
+                client=HYPERLIQUID_QUICKNODE_INFO_CLIENT,
             )
             return True, data
         except Exception as exc:
@@ -1829,7 +1835,7 @@ class HyperliquidAdapter(BaseAdapter):
         vault_address: str,
     ) -> tuple[bool, dict[str, float] | str]:
         try:
-            details = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+            details = await HYPERLIQUID_INFO_CLIENT.post(
                 {"type": "vaultDetails", "vaultAddress": str(vault_address)}
             )
             account_value = float(
