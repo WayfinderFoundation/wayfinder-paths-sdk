@@ -30,7 +30,6 @@ _DEFAULT_IGNORE_DIRS = {
     "__pycache__",
     "node_modules",
     ".wayfinder",
-    "tests",
 }
 
 _DEFAULT_SOURCE_IGNORE_DIRS = {
