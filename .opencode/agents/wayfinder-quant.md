@@ -105,6 +105,7 @@ Required checks:
 - Include benchmark comparison, fees, spread, slippage, funding, borrow, turnover, capacity, drawdown, hit rate, Sharpe/Sortino, and parameter sensitivity when relevant.
 - Use walk-forward or out-of-sample validation before making strategy claims.
 - Return one strategy state: `RESEARCH_ONLY`, `PAPER_TRADE`, `MONITOR`, or `DO_NOT_TRADE`.
+- Default to `RESEARCH_ONLY` when results are weak. A result is weak when any of these hold: thin trade sample, headline metrics dominated by a handful of bars, drawdown that would wipe out the account at the assumed leverage, benchmark numbers that don't make internal sense (e.g. Sharpe sign disagreeing with return sign), no out-of-sample or walk-forward validation, or undisclosed/invented assumptions (leverage, stops, fees, thresholds, sizing). Do not promote to `PAPER_TRADE`/`MONITOR`/`DO_NOT_TRADE` just because the topline number looks good — promotion requires the result to survive these checks, not just exceed a return threshold.
 
 Polymarket quant:
 
