@@ -58,6 +58,8 @@ Prefer real Delta Lab or adapter data. Use Delta Lab MCP tools for quick discove
 
 Do not take over normal source-backed charting. If the primary or visual agent can render the request from chart registry sources and standard transforms, return a compact handoff instead of running scripts. Use quant only when the requested calculation needs custom analytics, large time-series shaping, backtesting, or derived values that cannot be expressed as chart source references plus bounded inline points.
 
+If the task includes a `Known Context` block with event, market, token, asset, perp, pool, instrument, source, or data-file IDs, rehydrate those IDs first. Do not rediscover markets or assets from natural language when exact IDs are already provided. Return any reusable IDs, source refs, data-file refs, and selected market/asset context in `contextForNextAgent` for the primary or visual agent.
+
 Delta Lab rules:
 
 - APY/rate decimal fields are fractions unless the response explicitly says otherwise. `0.98` means `98%`, not `0.98%`; `0.0123` means `1.23%`.
@@ -140,6 +142,7 @@ Return JSON only:
   "dataFiles": [],
   "artifactRefs": [],
   "logRefs": [],
+  "contextForNextAgent": {},
   "visualSpec": null,
   "decision": "RESEARCH_ONLY",
   "confidence": "low",

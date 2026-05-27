@@ -323,10 +323,16 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
     assert "openQuestions" in research
     assert "Standard task: 6-8 calls" in research
     assert "Deep task: 8-12 calls" in research
-    assert "Hard cap at 6-8 calls" in research
+    assert "Target 6-8 high-utility calls" in research
     assert "Evidence-quality iteration gate" in research
     assert "partial_early_stop" in research
     assert "stoppedEarlyReason" in research
+    assert "Known Context" in research
+    assert "candidate_limit=20" in research
+    assert "eventGroups" in research
+    assert "nextSuggestedCalls" in research
+    assert "Do not call `read` on `polymarket_edge.py`" in research
+    assert "contextForNextAgent" in research
     assert "Market Research / Thesis Mode" in research
     assert "quick lookups" in research
     assert "do not force a thesis" in research
@@ -370,6 +376,10 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "Only require `perpSide` and `positionIntent`" in primary
     assert "Token/Perp Research Mode" not in primary
     assert "thesisPieces" not in primary
+    assert "Known Context Handoffs" in primary
+    assert "contextForNextAgent" in primary
+    assert "Do not drop known Polymarket event slugs" in primary
+    assert "candidate_limit=20" in primary
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research
@@ -383,6 +393,7 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "buy_amount_pusd" in research
     assert "sell_amount_shares" in research
     assert "executionSummary" in research
+    assert "contextForNextAgent" in research
 
     assert "Market Quant Mode" in quant
     assert "wayfinder_paths.quant.polymarket_edge" in quant
@@ -390,6 +401,12 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "positive funding means longs pay shorts" in quant
     assert "RESEARCH_ONLY" in quant
     assert "DO_NOT_TRADE" in quant
+    assert "Known Context" in quant
+    assert "contextForNextAgent" in quant
+
+    visual = _agent_text("wayfinder-visual")
+    assert "Known Context" in visual
+    assert "contextForNextAgent" in visual
 
 
 def test_polymarket_deposit_wallet_skill_documents_async_boundaries() -> None:

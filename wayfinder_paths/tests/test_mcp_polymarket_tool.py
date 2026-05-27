@@ -96,6 +96,53 @@ async def test_polymarket_search_uses_adapter_search():
 
 
 @pytest.mark.asyncio
+async def test_polymarket_search_suggests_event_hydration_for_grouped_results():
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=AsyncMock(
+                return_value=(
+                    True,
+                    [
+                        {
+                            "slug": f"event-market-{idx}",
+                            "eventSlug": "event-ladder",
+                            "question": f"Event by day {idx}?",
+                            "yesPrice": 0.1 * idx,
+                            "noPrice": 1 - (0.1 * idx),
+                            "yesTokenId": f"tok_yes_{idx}",
+                            "noTokenId": f"tok_no_{idx}",
+                            "liquidity": 100 * idx,
+                            "volume24h": 200 * idx,
+                        }
+                        for idx in range(1, 12)
+                    ],
+                )
+            ),
+        ),
+    ):
+        out = await polymarket_read("search", query="event ladder", limit=11)
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert len(result["candidates"]) == 10
+    assert result["truncation"] == {
+        "totalAvailable": 11,
+        "returnedCandidates": 10,
+        "truncated": True,
+        "rawAvailableWithSummaryFalse": True,
+    }
+    assert result["eventGroups"][0]["eventSlug"] == "event-ladder"
+    assert result["eventGroups"][0]["candidatesInSearch"] == 11
+    assert result["nextSuggestedCalls"][0]["call"] == {
+        "action": "get_event",
+        "event_slug": "event-ladder",
+        "candidate_limit": 20,
+    }
+
+
+@pytest.mark.asyncio
 async def test_polymarket_search_summary_false_preserves_raw_markets():
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
@@ -199,6 +246,50 @@ async def test_polymarket_get_event_summary_returns_compact_candidates():
 
 
 @pytest.mark.asyncio
+async def test_polymarket_get_event_default_returns_ten_candidates_and_suggests_more():
+    event = {
+        "slug": "date-ladder",
+        "markets": [
+            {
+                "slug": f"date-ladder-{idx}",
+                "question": f"Date ladder by day {idx}?",
+                "outcomes": ["Yes", "No"],
+                "outcomePrices": [0.1, 0.9],
+                "clobTokenIds": [f"yes_{idx}", f"no_{idx}"],
+                "enableOrderBook": True,
+                "acceptingOrders": True,
+                "active": True,
+                "closed": False,
+            }
+            for idx in range(12)
+        ],
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=AsyncMock(return_value=(True, event)),
+        ),
+    ):
+        out = await polymarket_read("get_event", event_slug="date-ladder")
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert len(result["candidates"]) == 10
+    assert result["truncation"]["truncated"] is True
+    assert result["nextSuggestedCalls"] == [
+        {
+            "reason": "event candidates truncated",
+            "call": {
+                "action": "get_event",
+                "event_slug": "date-ladder",
+                "candidate_limit": 20,
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_polymarket_get_event_summary_false_preserves_raw_event():
     event = {"slug": "event", "markets": [{"slug": "m1", "raw": True}]}
     with (
@@ -268,6 +359,58 @@ async def test_polymarket_get_market_preserves_structured_gamma_error():
     assert out["error"]["code"] == "gamma_http_error"
     assert out["error"]["message"] == gamma_error["message"]
     assert out["error"]["details"] == gamma_error
+
+
+@pytest.mark.asyncio
+async def test_polymarket_order_book_summary_is_compact_by_default():
+    book = {
+        "market": "0xmarket",
+        "asset_id": "tok_yes",
+        "timestamp": "123",
+        "bids": [
+            {"price": "0.03", "size": "100"},
+            {"price": "0.01", "size": "1000"},
+            {"price": "0.02", "size": "500"},
+            {"price": "0.025", "size": "50"},
+        ],
+        "asks": [
+            {"price": "0.05", "size": "100"},
+            {"price": "0.04", "size": "200"},
+            {"price": "0.06", "size": "50"},
+            {"price": "0.045", "size": "300"},
+        ],
+    }
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_order_book",
+            new=AsyncMock(return_value=(True, book)),
+        ),
+    ):
+        summary = await polymarket_read("order_book", token_id="tok_yes")
+        raw = await polymarket_read("order_book", token_id="tok_yes", summary=False)
+
+    assert summary["ok"] is True
+    result = summary["result"]
+    assert result["summaryMode"] is True
+    assert result["book"]["bestBid"] == 0.03
+    assert result["book"]["bestAsk"] == 0.04
+    assert result["book"]["spread"] == pytest.approx(0.01)
+    assert result["book"]["bidLevels"] == 4
+    assert result["book"]["askLevels"] == 4
+    assert [level["price"] for level in result["book"]["topBids"]] == [
+        0.03,
+        0.025,
+        0.02,
+    ]
+    assert [level["price"] for level in result["book"]["topAsks"]] == [
+        0.04,
+        0.045,
+        0.05,
+    ]
+    assert "bids" not in result["book"]
+    assert raw["ok"] is True
+    assert raw["result"]["book"] == book
 
 
 @pytest.mark.asyncio
