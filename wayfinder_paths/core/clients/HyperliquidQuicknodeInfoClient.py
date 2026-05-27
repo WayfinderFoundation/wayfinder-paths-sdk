@@ -43,12 +43,8 @@ QUICKNODE_PROXIED_TYPES = frozenset(
 
 class HyperliquidQuicknodeInfoClient(WayfinderClient):
     async def post(self, body: dict[str, Any]) -> Any:
-        req_type = body["type"]
-        if req_type not in QUICKNODE_PROXIED_TYPES:
-            raise ValueError(
-                f"'{req_type}' is not a QuickNode-supported info type. "
-                f"Use HYPERLIQUID_INFO_CLIENT for public endpoints."
-            )
+        if body["type"] not in QUICKNODE_PROXIED_TYPES:
+            raise ValueError(f"'{body['type']}' is not a QuickNode-supported info type")
         url = f"{get_api_base_url()}/blockchain/hyperliquid/qn-info/"
         resp = await self._authed_request("POST", url, json=body)
         return resp.json()
