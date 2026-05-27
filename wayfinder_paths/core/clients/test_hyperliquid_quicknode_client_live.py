@@ -53,7 +53,9 @@ def test_whitelist_covers_critical_methods() -> None:
 
 @needs_api_key
 @pytest.mark.asyncio
-async def test_quicknode_clearinghouse_state(client: HyperliquidQuicknodeInfoClient) -> None:
+async def test_quicknode_clearinghouse_state(
+    client: HyperliquidQuicknodeInfoClient,
+) -> None:
     r = await client.post({"type": "clearinghouseState", "user": TEST_USER})
     assert "marginSummary" in r
     assert "assetPositions" in r
@@ -61,7 +63,9 @@ async def test_quicknode_clearinghouse_state(client: HyperliquidQuicknodeInfoCli
 
 @needs_api_key
 @pytest.mark.asyncio
-async def test_quicknode_spot_clearinghouse_state(client: HyperliquidQuicknodeInfoClient) -> None:
+async def test_quicknode_spot_clearinghouse_state(
+    client: HyperliquidQuicknodeInfoClient,
+) -> None:
     r = await client.post({"type": "spotClearinghouseState", "user": TEST_USER})
     assert "balances" in r
     assert isinstance(r["balances"], list)
@@ -99,7 +103,9 @@ async def test_quicknode_perp_dexes(client: HyperliquidQuicknodeInfoClient) -> N
 
 @needs_api_key
 @pytest.mark.asyncio
-async def test_quicknode_max_builder_fee(client: HyperliquidQuicknodeInfoClient) -> None:
+async def test_quicknode_max_builder_fee(
+    client: HyperliquidQuicknodeInfoClient,
+) -> None:
     r = await client.post(
         {"type": "maxBuilderFee", "user": TEST_USER, "builder": TEST_BUILDER}
     )
@@ -109,14 +115,18 @@ async def test_quicknode_max_builder_fee(client: HyperliquidQuicknodeInfoClient)
 
 @needs_api_key
 @pytest.mark.asyncio
-async def test_quicknode_frontend_open_orders(client: HyperliquidQuicknodeInfoClient) -> None:
+async def test_quicknode_frontend_open_orders(
+    client: HyperliquidQuicknodeInfoClient,
+) -> None:
     r = await client.post({"type": "frontendOpenOrders", "user": TEST_USER})
     assert isinstance(r, list)
 
 
 @needs_api_key
 @pytest.mark.asyncio
-async def test_quicknode_portfolio_state(client: HyperliquidQuicknodeInfoClient) -> None:
+async def test_quicknode_portfolio_state(
+    client: HyperliquidQuicknodeInfoClient,
+) -> None:
     r = await client.portfolio_state(TEST_USER)
     assert "clearinghouseState" in r
     assert "spotClearinghouseState" in r
