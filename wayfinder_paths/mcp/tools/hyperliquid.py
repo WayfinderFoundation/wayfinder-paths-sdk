@@ -30,6 +30,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.mcp.arg_validation import optional_int
+from wayfinder_paths.mcp.context_guard import guard_payload
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -1916,7 +1917,12 @@ async def hyperliquid_search_mid_prices(
         adapter.canonical_from_mid_price_key(key, spot_index_to_pair): mid
         for key, mid in prices.items()
     }
-    return ok({"success": success, "prices": canonical})
+    return ok(
+        guard_payload(
+            {"success": success, "prices": canonical},
+            name="hyperliquid_search_mid_prices",
+        )
+    )
 
 
 @catch_errors

@@ -17,6 +17,7 @@ from wayfinder_paths.core.utils.wallets import (
     make_local_wallet,
     write_wallet_to_json,
 )
+from wayfinder_paths.mcp.context_guard import guard_payload
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -501,7 +502,7 @@ async def core_get_wallets(
     for view, bal in zip(views, balances, strict=True):
         view["balances"] = bal
 
-    return ok({"wallets": views})
+    return ok(guard_payload({"wallets": views}, name="core_get_wallets"))
 
 
 @catch_errors

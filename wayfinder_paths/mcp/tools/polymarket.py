@@ -20,6 +20,7 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
+from wayfinder_paths.mcp.context_guard import guard_payload
 from wayfinder_paths.mcp.polymarket_order import (
     normalize_pm_execution_summary,
     normalize_pm_side,
@@ -171,12 +172,15 @@ async def polymarket_get_state(
             max_positions_pages=int(max_positions_pages),
         )
         return ok(
-            {
-                "wallet_label": want,
-                "account": acct,
-                "ok": bool(ok_state),
-                "state": state,
-            }
+            guard_payload(
+                {
+                    "wallet_label": want,
+                    "account": acct,
+                    "ok": bool(ok_state),
+                    "state": state,
+                },
+                name="polymarket_get_state",
+            )
         )
     finally:
         await adapter.close()

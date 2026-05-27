@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.core.engine.strategy_loader import strategy_bases
+from wayfinder_paths.mcp.context_guard import guard_payload
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -81,8 +82,11 @@ async def core_get_adapters_and_strategies(name: str | None = None) -> dict[str,
         )
 
     return ok(
-        {
-            "adapters": _describe_all(adapters_base),
-            "strategies": _strategies_all(),
-        }
+        guard_payload(
+            {
+                "adapters": _describe_all(adapters_base),
+                "strategies": _strategies_all(),
+            },
+            name="core_get_adapters_and_strategies",
+        )
     )
