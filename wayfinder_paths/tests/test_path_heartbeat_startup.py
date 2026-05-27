@@ -50,6 +50,7 @@ def test_maybe_heartbeat_installed_paths_sends_and_writes_state(
 ) -> None:
     _write_lockfile(tmp_path)
     monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
 
     class FakeClient:
         calls: list[dict[str, object]] = []
@@ -94,6 +95,7 @@ def test_maybe_heartbeat_installed_paths_reads_legacy_lockfile_and_rewrites_stat
 ) -> None:
     _write_legacy_lockfile(tmp_path)
     monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
 
     class FakeClient:
         calls: list[dict[str, object]] = []
@@ -134,6 +136,7 @@ def test_maybe_heartbeat_installed_paths_respects_cooldown(
 ) -> None:
     _write_lockfile(tmp_path)
     monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
     state_path = tmp_path / ".wayfinder" / "paths-heartbeat.json"
     state_path.write_text(
         json.dumps(
@@ -167,6 +170,7 @@ def test_maybe_heartbeat_installed_paths_reads_legacy_cooldown_state(
 ) -> None:
     _write_legacy_lockfile(tmp_path)
     monkeypatch.setenv("WAYFINDER_PATHS_API_URL", "https://paths.example")
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-instance")
     legacy_state_path = tmp_path / ".wayfinder" / "packs-heartbeat.json"
     legacy_state_path.write_text(
         json.dumps(
