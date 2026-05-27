@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from functools import cache
 from typing import Any
 
 from hyperliquid.info import Info
@@ -45,32 +44,22 @@ QUICKNODE_PROXIED_TYPES = frozenset(
     }
 )
 
-
-@cache
-def _public_info() -> Info:
-    return Info(constants.MAINNET_API_URL, skip_ws=True)
+_PUBLIC_INFO = Info(constants.MAINNET_API_URL, skip_ws=True)
 
 
 class HyperliquidQuicknodeInfoClient(WayfinderClient):
-    def __init__(self) -> None:
-        super().__init__()
-        base = get_api_base_url()
-        self._quicknode_proxy_url = f"{base}/blockchain/hyperliquid/qn-info/"
-        self._portfolio_state_url = f"{base}/blockchain/hyperliquid/portfolio-state/"
-
     async def post(self, body: dict[str, Any]) -> Any:
-        if body.get("type") in QUICKNODE_PROXIED_TYPES:
-            resp = await self._authed_request(
-                "POST", self._quicknode_proxy_url, json=body
-            )
+        if body["type"] in QUICKNODE_PROXIED_TYPES:
+            url = f"{get_api_base_url()}/blockchain/hyperliquid/qn-info/"
+            resp = await self._authed_request("POST", url, json=body)
             return resp.json()
-        return await asyncio.to_thread(_public_info().post, "/info", body)
+        return await asyncio.to_thread(_PUBLIC_INFO.post, "/info", body)
 
     async def portfolio_state(self, user: str) -> dict[str, Any]:
-        resp = await self._authed_request(
-            "GET", self._portfolio_state_url, params={"user": user}
-        )
+        url = f"{get_api_base_url()}/blockchain/hyperliquid/portfolio-state/"
+        resp = await self._authed_request("GET", url, params={"user": user})
         return resp.json()
 
 
 HYPERLIQUID_QUICKNODE_INFO_CLIENT = HyperliquidQuicknodeInfoClient()
+HYPERLIQUID_QUICKNODE_CLIENT = HYPERLIQUID_QUICKNODE_INFO_CLIENT
