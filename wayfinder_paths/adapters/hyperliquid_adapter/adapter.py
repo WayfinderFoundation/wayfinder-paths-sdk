@@ -1433,8 +1433,9 @@ class HyperliquidAdapter(BaseAdapter):
         builder: str,
     ) -> tuple[bool, int]:
         try:
-            body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(body)
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+                {"type": "maxBuilderFee", "user": user, "builder": builder}
+            )
             # Response is just an integer (tenths of basis points)
             return True, int(data) if data is not None else 0
         except Exception as exc:
