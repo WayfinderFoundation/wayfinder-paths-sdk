@@ -9,13 +9,13 @@
 
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin daily", limit=10)` (compact `candidates` by default)
 - Trending markets: `mcp__wayfinder__polymarket_read(action="trending", limit=25)` (compact `candidates` by default)
-- Event candidates: `mcp__wayfinder__polymarket_read(action="get_event", event_slug="...", candidate_limit=5)`
+- Event candidates: `mcp__wayfinder__polymarket_read(action="get_event", event_slug="...", candidate_limit=10)`; for date/event ladders use `candidate_limit=20`
 - Market metadata by slug: `mcp__wayfinder__polymarket_read(action="get_market", market_slug="...")` (bounded rules/description by default)
 - Book-based trade quote: `mcp__wayfinder__polymarket_read(action="quote", market_slug="...", outcome="YES", side="BUY", buy_amount_pusd=100)`
 - Price history (token_id): `mcp__wayfinder__polymarket_read(action="price_history", token_id="...", interval="1d", fidelity=5)`
 - Full user status: `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
 
-Use `summary=False` only when debugging raw Gamma/backend behavior or when a needed field is missing from the compact response.
+Use `summary=False` only when debugging raw Gamma/backend behavior or when a needed field is missing from the compact response. Normal market discovery and order-book reads are compact by default.
 
 ## Primary sources (in this repo)
 
@@ -33,7 +33,8 @@ Use `summary=False` only when debugging raw Gamma/backend behavior or when a nee
 
 1) Start with compact MCP discovery:
    - `polymarket_read(action="search", query=..., limit=10)`
-   - or `polymarket_read(action="get_event", event_slug=..., candidate_limit=5)` when you already know the event slug.
+   - or `polymarket_read(action="get_event", event_slug=..., candidate_limit=10)` when you already know the event slug.
+   - for date/event ladders, call `polymarket_read(action="get_event", event_slug=..., candidate_limit=20)` instead of searching each date.
 2) Pick the candidate by `slug`, `question`, outcome labels/token IDs, `resolvesAt`, liquidity, spread, and tradability flags. The compact `outcomes[]` shape handles binary and multi-outcome markets.
 3) Hydrate the selected market:
    - `polymarket_read(action="get_market", market_slug=...)`
@@ -86,7 +87,7 @@ asyncio.run(main())
 
 ### “Mover” scan across an event (compute deltas from time series)
 
-For MCP/context-light work, start with `polymarket_read(action="get_event", event_slug=..., candidate_limit=...)` and hydrate only selected candidates. Use adapter `get_event_by_slug(event_slug)` only inside bounded scripts that truly need the full market set, then pull per-outcome history with limited concurrency to avoid 429s.
+For MCP/context-light work, start with `polymarket_read(action="get_event", event_slug=..., candidate_limit=20)` and hydrate only selected candidates. Use adapter `get_event_by_slug(event_slug)` only inside bounded scripts that truly need the full market set, then pull per-outcome history with limited concurrency to avoid 429s.
 
 ```python
 import asyncio, time
