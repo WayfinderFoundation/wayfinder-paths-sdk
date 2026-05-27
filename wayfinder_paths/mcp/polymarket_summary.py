@@ -310,7 +310,9 @@ def compact_book_side(
     return compact
 
 
-def compact_order_book(book: dict[str, Any], *, depth_levels: int = 3) -> dict[str, Any]:
+def compact_order_book(
+    book: dict[str, Any], *, depth_levels: int = 3
+) -> dict[str, Any]:
     bids = compact_book_side(book.get("bids"), side="bids")
     asks = compact_book_side(book.get("asks"), side="asks")
     best_bid = bids[0]["price"] if bids else None
