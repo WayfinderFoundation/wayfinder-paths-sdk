@@ -223,6 +223,10 @@ async def test_get_all_markets_happy_path(adapter):
     assert market["total_assets"] == 1_000_000_000
     assert market["total_supply"] == 950_000_000
     assert market["tvl"] == 1_000_000_000
+    assert market["total_assets_usdc"] == 1_000.0
+    assert market["total_supply_shares"] == 950.0
+    assert market["share_price_usdc"] == 0.52
+    assert market["tvl_usdc"] == 1_000.0
 
 
 @pytest.mark.asyncio
@@ -354,3 +358,4 @@ async def test_get_all_markets_share_price(adapter):
     assert ok is True
     assert len(markets) == 1
     assert markets[0]["share_price"] == 1_040_000
+    assert markets[0]["share_price_usdc"] == 1.04

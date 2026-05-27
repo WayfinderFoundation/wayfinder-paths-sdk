@@ -19,6 +19,15 @@ adapter = AaveV3Adapter(config={})
 ok, markets = await adapter.get_all_markets(chain_id=42161, include_rewards=True)
 ```
 
+Each market preserves raw base-unit fields such as `available_liquidity`, `total_variable_debt`, `tvl`, and `supply_cap_headroom`, and also includes human-readable normalized fields:
+
+- `available_liquidity_tokens`, `available_liquidity_usd`
+- `total_variable_debt_tokens`, `total_variable_debt_usd`
+- `tvl_tokens`, `tvl_usd`
+- `supply_cap_headroom_tokens`, `supply_cap_headroom_usd`
+
+Use normalized fields for reporting. Raw integer fields are kept for execution/debugging.
+
 ### get_full_user_state (all chains)
 
 Queries all supported Aave V3 chains and merges positions into a single result.

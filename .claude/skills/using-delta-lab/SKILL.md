@@ -33,6 +33,7 @@ from wayfinder_paths.core.clients.delta_lab_types import DeltaLabAPIError
 - Two "opportunity" shapes: `search_opportunities` = trimmed discovery (~14 fields, scan); `get_basis_apy_sources` = enriched analytic (apy/risk/summary, decide). Don't mix them up.
 - `*_latest(...)` returns `None` on sparse-data 404 (not an error). Use `DeltaLabAPIError` for real failures.
 - Default `limit=25` on search/list/opportunity calls keeps agent context under 10 KB. `get_basis_apy_sources(limit=500)` is 1.3 MB — cap low.
+- For stable yield: use `research_search_lending(..., basis="USD")` for lending-only; use `research_get_basis_apy_sources(basis_symbol="USD", limit="100")` for broad cross-instrument APY and bucket by `instrument_type`.
 
 ## When to use
 

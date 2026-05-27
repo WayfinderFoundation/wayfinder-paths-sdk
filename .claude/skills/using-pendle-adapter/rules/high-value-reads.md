@@ -4,6 +4,7 @@
 
 - Do **not** invent APYs/TVL/price series. Fetch from Pendle endpoints via the adapter.
 - If calls fail (network/auth), respond "unavailable" and include the exact script needed.
+- For stablecoin/PT yield ranking, use Delta Lab instrument discovery first: `research_search_delta_lab_instruments(venue="pendle", basisRoot="USD", chain="<chain>", limit="25")`. Use this adapter after selecting a candidate market for executable details, history, or swap/order construction.
 
 ## Primary data source
 

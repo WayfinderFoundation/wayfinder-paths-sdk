@@ -50,7 +50,9 @@ Common mappings: USDC/USDT/DAI → `USD`, wstETH/cbETH → `ETH`, cbBTC/WBTC →
 - Use `screen_lending(basis="USD")` for a cross-venue snapshot
 - Use `get_asset_timeseries(symbol="USDC", series="lending", venue="moonwell")` for historical data from one venue
 
-**If you need all instrument types:** use a large limit (e.g. 500) with `get_basis_apy_sources()`.
+**If you need all instrument types:** use a larger but bounded limit with `get_basis_apy_sources()`; `limit=100` is the normal stable-yield default, and `limit=250` is for explicit broad sweeps.
+
+`YIELD_TOKEN` rows are vault/LP/receipt-token yields, not simple lending markets. Before comparing them with lending rates, identify the underlying exposure, TVL/liquidity, lockup or maturity, and non-lending risks.
 
 ## 0c. One Method for All Timeseries
 
