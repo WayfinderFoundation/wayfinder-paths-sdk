@@ -8,6 +8,9 @@ from typing import Any
 
 DEFAULT_MAX_BYTES = 10_000
 HEAD_ITEMS = 20
+STRING_HEAD_CHARS = 400
+STRING_TAIL_CHARS = 200
+STRING_INLINE_LIMIT = 1024  # nested strings under this size pass through unsliced
 
 
 def _scratch_dir() -> Path:
@@ -106,13 +109,12 @@ def guard_payload(
 
     return {
         "_truncated": True,
-        "reason": f"output {len(serialized)} bytes exceeds {limit} (WF_MAX_CONTEXT_BYTES)",
+        "reason": f"output > {limit} bytes",
         "artifact": str(artifact),
         "bytes": len(serialized),
         "shape": _shape(payload),
         "head": _truncate_for_preview(payload, head),
         "hint": (
-            f"Full payload at {artifact}. Read selectively: "
             f"`jq '.<field>[0:50]' {artifact}` or `json.load(open('{artifact}'))`."
         ),
     }
