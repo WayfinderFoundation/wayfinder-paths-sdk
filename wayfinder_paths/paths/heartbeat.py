@@ -9,7 +9,7 @@ from typing import Any
 
 from loguru import logger
 
-from wayfinder_paths.core.config import CONFIG
+from wayfinder_paths.core.config import CONFIG, is_opencode_instance
 from wayfinder_paths.paths.client import PathsApiClient, PathsApiError
 
 _LOCKFILE_NAME = "paths.lock.json"
@@ -131,6 +131,9 @@ def maybe_heartbeat_installed_paths(
     client: PathsApiClient | None = None,
     now: datetime | None = None,
 ) -> PathHeartbeatResult:
+    if not is_opencode_instance():
+        return PathHeartbeatResult(status="skipped", reason="not_shell_instance")
+
     if not _has_explicit_paths_api_target():
         return PathHeartbeatResult(status="skipped", reason="paths_api_not_configured")
 
