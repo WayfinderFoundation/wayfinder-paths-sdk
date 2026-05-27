@@ -19,7 +19,7 @@ def _slippage_float(slippage_bps: int) -> float:
     return max(0.0, float(int(slippage_bps)) / 10_000.0)
 
 
-def _unwrap_brap_quote_response(
+def unwrap_brap_quote_response(
     data: Any,
 ) -> tuple[list[dict[str, Any]], dict[str, Any] | None, int]:
     """
@@ -145,7 +145,7 @@ async def onchain_quote_swap(
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
-    all_quotes, best_quote, quote_count = _unwrap_brap_quote_response(data)
+    all_quotes, best_quote, quote_count = unwrap_brap_quote_response(data)
 
     providers: list[str] = []
     seen: set[str] = set()

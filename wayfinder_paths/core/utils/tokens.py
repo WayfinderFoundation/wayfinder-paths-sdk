@@ -13,8 +13,12 @@ from wayfinder_paths.core.constants.erc20_abi import (
     ERC20_SYMBOL_BYTES32_ABI,
 )
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.transaction import (
+    encode_call,
+    send_transaction,
+    wait_for_transaction_receipt,
+)
+from wayfinder_paths.core.utils.web3 import web3_from_chain_id, web3s_from_chain_id
 
 NATIVE_TOKEN_ADDRESSES: set = {
     "0x0000000000000000000000000000000000000000",
@@ -188,16 +192,146 @@ async def get_token_balance_with_decimals(
 
 
 async def get_token_allowance(
-    token_address: str, chain_id: int, owner_address: str, spender_address: str
-):
-    async with web3_from_chain_id(chain_id) as web3:
-        contract = web3.eth.contract(
-            address=web3.to_checksum_address(token_address), abi=ERC20_ABI
+    token_address: str,
+    chain_id: int,
+    owner_address: str,
+    spender_address: str,
+    *,
+    web3: AsyncWeb3 | None = None,
+    block_identifier: str | int = "pending",
+) -> int:
+    async def _read_with_web3(w3: AsyncWeb3) -> int:
+        contract = w3.eth.contract(
+            address=w3.to_checksum_address(token_address), abi=ERC20_ABI
         )
-        return await contract.functions.allowance(
-            web3.to_checksum_address(owner_address),
-            web3.to_checksum_address(spender_address),
-        ).call(block_identifier="pending")
+        allowance = await contract.functions.allowance(
+            w3.to_checksum_address(owner_address),
+            w3.to_checksum_address(spender_address),
+        ).call(block_identifier=block_identifier)
+        return int(allowance)
+
+    if web3 is None:
+        async with web3_from_chain_id(chain_id) as w3:
+            return await _read_with_web3(w3)
+    return await _read_with_web3(web3)
+
+
+async def wait_for_allowance_visible(
+    *,
+    token_address: str,
+    chain_id: int,
+    owner: str,
+    spender: str,
+    amount: int,
+    approval_tx_hash: str | None = None,
+    approval_block: int | None = None,
+    max_attempts: int = 8,
+    poll_interval: float = 0.75,
+) -> dict[str, Any]:
+    """Wait until a confirmed allowance is visible to an RPC used for tx prep.
+
+    Gas estimation fans out across configured RPCs and succeeds if one endpoint can
+    simulate the transaction. This helper mirrors that behavior: once the approval
+    block is known, it accepts any endpoint that has reached that block and can see
+    sufficient allowance at `latest`.
+    """
+    required = int(amount)
+    token_checksum = to_checksum_address(token_address)
+    owner_checksum = to_checksum_address(owner)
+    spender_checksum = to_checksum_address(spender)
+    attempts = max(1, int(max_attempts))
+    observed_allowance = 0
+    errors: list[str] = []
+
+    if approval_block is None and approval_tx_hash:
+        try:
+            receipt = await wait_for_transaction_receipt(
+                int(chain_id),
+                approval_tx_hash,
+                confirmations=0,
+            )
+            approval_block = int(receipt.get("blockNumber"))
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "approval_receipt_unavailable",
+                "spender": spender_checksum,
+                "required_allowance_raw": required,
+                "observed_allowance_raw": observed_allowance,
+                "approval_block": approval_block,
+                "attempts": 0,
+                "error": str(exc),
+            }
+
+    async def _block_number(w3: AsyncWeb3) -> int:
+        return int(await w3.eth.block_number)
+
+    async with web3s_from_chain_id(int(chain_id)) as web3s:
+        for attempt in range(1, attempts + 1):
+            errors.clear()
+            block_results = await asyncio.gather(
+                *[_block_number(w3) for w3 in web3s],
+                return_exceptions=True,
+            )
+            visible_web3s: list[AsyncWeb3] = []
+            for w3, block_result in zip(web3s, block_results, strict=False):
+                if isinstance(block_result, Exception):
+                    errors.append(str(block_result))
+                    continue
+                if approval_block is None or int(block_result) >= approval_block:
+                    visible_web3s.append(w3)
+
+            if visible_web3s:
+                allowance_results = await asyncio.gather(
+                    *[
+                        get_token_allowance(
+                            token_checksum,
+                            int(chain_id),
+                            owner_checksum,
+                            spender_checksum,
+                            web3=w3,
+                            block_identifier="latest",
+                        )
+                        for w3 in visible_web3s
+                    ],
+                    return_exceptions=True,
+                )
+                allowances: list[int] = []
+                for allowance_result in allowance_results:
+                    if isinstance(allowance_result, Exception):
+                        errors.append(str(allowance_result))
+                        continue
+                    allowances.append(int(allowance_result))
+                if allowances:
+                    observed_allowance = max(observed_allowance, max(allowances))
+                    if observed_allowance >= required:
+                        return {
+                            "status": (
+                                "approval_confirmed_visible"
+                                if approval_tx_hash or approval_block is not None
+                                else "already_sufficient"
+                            ),
+                            "spender": spender_checksum,
+                            "required_allowance_raw": required,
+                            "observed_allowance_raw": observed_allowance,
+                            "approval_block": approval_block,
+                            "attempts": attempt,
+                        }
+
+            if attempt < attempts:
+                await asyncio.sleep(poll_interval)
+
+    status = "approval_not_visible_yet"
+    if observed_allowance == 0 and errors:
+        status = "allowance_read_failed"
+    return {
+        "status": status,
+        "spender": spender_checksum,
+        "required_allowance_raw": required,
+        "observed_allowance_raw": observed_allowance,
+        "approval_block": approval_block,
+        "attempts": attempts,
+        "errors": errors,
+    }
 
 
 async def build_approve_transaction(
@@ -300,8 +434,15 @@ async def ensure_allowance(
     signing_callback: Callable,
     approval_amount: int | None = None,
     confirmations: int | None = None,
+    allowance_block_identifier: str | int = "pending",
 ) -> tuple[bool, Any]:
-    allowance = await get_token_allowance(token_address, chain_id, owner, spender)
+    allowance = await get_token_allowance(
+        token_address,
+        chain_id,
+        owner,
+        spender,
+        block_identifier=allowance_block_identifier,
+    )
     if allowance >= amount:
         return True, {}
 

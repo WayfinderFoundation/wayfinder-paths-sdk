@@ -477,6 +477,16 @@ def test_polymarket_docs_use_side_specific_mcp_sizing() -> None:
     assert "Do not reuse BUY spend as a share count" in gotchas
 
 
+def test_primary_agent_warns_against_silent_similar_token_substitution() -> None:
+    text = (SDK_ROOT / ".opencode" / "agents" / "wayfinder.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Do not silently substitute similar tokens or wrappers" in text
+    assert "ETH ↔ WETH" in text
+    assert "fresh quote and explicit user confirmation" in text
+
+
 def test_stable_apy_research_and_adapter_docs_are_current() -> None:
     delta_high_value = (
         SDK_ROOT
