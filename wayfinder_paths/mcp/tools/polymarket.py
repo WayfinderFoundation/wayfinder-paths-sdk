@@ -676,6 +676,7 @@ async def polymarket_place_market_order(
     )
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
+    resolved_outcome = str(outcome) if market_slug else None
     try:
         if market_slug:
             if side == "BUY":
@@ -694,6 +695,11 @@ async def polymarket_place_market_order(
                 )
         else:
             tid = throw_if_empty_str("token_id or market_slug is required", token_id)
+            ok_tm, market = await adapter.get_market_by_token_id(token_id=tid)
+            if ok_tm:
+                resolved_outcome = adapter.resolve_outcome_from_token_id(
+                    market=market, token_id=tid
+                )
             ok_trade, res = await adapter.place_market_order(
                 token_id=tid,
                 side=side,
@@ -727,7 +733,7 @@ async def polymarket_place_market_order(
             details={
                 "market_slug": str(market_slug) if market_slug else None,
                 "token_id": str(token_id) if token_id else None,
-                "outcome": str(outcome),
+                "outcome": resolved_outcome,
                 "side": side,
                 "sizing_kind": sizing["sizing_kind"],
                 "buy_amount_pusd": sizing["buy_amount_pusd"],
@@ -744,7 +750,7 @@ async def polymarket_place_market_order(
                 "address": sender,
                 "market_slug": str(market_slug) if market_slug else None,
                 "token_id": str(token_id) if token_id else None,
-                "outcome": str(outcome),
+                "outcome": resolved_outcome,
                 "side": side,
                 "sizing_kind": sizing["sizing_kind"],
                 "buy_amount_pusd": sizing["buy_amount_pusd"],

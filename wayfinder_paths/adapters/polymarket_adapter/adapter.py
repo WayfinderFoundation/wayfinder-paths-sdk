@@ -376,6 +376,34 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, self._gamma_error(exc, endpoint=endpoint)
 
+    async def get_market_by_token_id(
+        self, *, token_id: str
+    ) -> tuple[bool, dict[str, Any] | str]:
+        endpoint = "/markets"
+        try:
+            res = await self._gamma_http.get(
+                endpoint, params={"clob_token_ids": token_id}
+            )
+            res.raise_for_status()
+            data = res.json()
+            if not data:
+                return False, "Market not found"
+            return True, self._normalize_market(data[0])
+        except Exception as exc:  # noqa: BLE001
+            return False, self._gamma_error(exc, endpoint=endpoint)
+
+    def resolve_outcome_from_token_id(
+        self, *, market: dict[str, Any], token_id: str
+    ) -> str | None:
+        outcomes: list[Any] = market.get("outcomes") or []
+        token_ids: list[Any] = market.get("clobTokenIds") or []
+        for i, tok in enumerate(token_ids):
+            if str(tok) == str(token_id):
+                if i < len(outcomes):
+                    return str(outcomes[i])
+                return None
+        return None
+
     def resolve_clob_token_id(
         self,
         *,
