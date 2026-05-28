@@ -676,7 +676,7 @@ async def polymarket_place_market_order(
     )
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
-    resolved_outcome: str | None = None
+    resolved_outcome = str(outcome) if market_slug else None
     try:
         if market_slug:
             if side == "BUY":
@@ -693,11 +693,10 @@ async def polymarket_place_market_order(
                     shares=sizing["adapter_amount"],
                     max_slippage_pct=max_slippage_pct,
                 )
-            resolved_outcome = str(outcome)
         else:
             tid = throw_if_empty_str("token_id or market_slug is required", token_id)
             ok_tm, market = await adapter.get_market_by_token_id(token_id=tid)
-            if ok_tm and isinstance(market, dict):
+            if ok_tm:
                 resolved_outcome = adapter.resolve_outcome_from_token_id(
                     market=market, token_id=tid
                 )
