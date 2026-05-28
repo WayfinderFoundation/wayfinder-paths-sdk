@@ -1628,30 +1628,16 @@ class PolymarketAdapter(BaseAdapter):
                 }
                 body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
                 headers = await self._builder_headers("POST", "/submit", body)
-                # WALLET-CREATE has been observed to transient-400 with no
-                # retry in place. Re-check on-chain code each iter so we exit
-                # as soon as the wallet exists if a concurrent post succeeded.
-                retry_deadline = time.monotonic() + 15.0
-                last_error_text: str | None = None
-                while True:
-                    res = await self._relayer_http.post(
-                        "/submit", content=body, headers=headers
+                res = await self._relayer_http.post(
+                    "/submit", content=body, headers=headers
+                )
+                if not res.is_success:
+                    raise ValueError(
+                        f"Polymarket relayer rejected WALLET-CREATE "
+                        f"(HTTP {res.status_code}): {res.text}"
                     )
-                    if res.is_success:
-                        deploy_tx = await self._poll_relayer_tx(
-                            res.json()["transactionID"]
-                        )
-                        deploy_tx_hash = deploy_tx["transactionHash"]
-                        break
-                    last_error_text = res.text
-                    if await web3.eth.get_code(deposit_wallet):
-                        break
-                    if time.monotonic() >= retry_deadline:
-                        raise ValueError(
-                            f"Polymarket relayer rejected WALLET-CREATE "
-                            f"(HTTP {res.status_code}): {last_error_text}"
-                        )
-                    await asyncio.sleep(0.25)
+                deploy_tx = await self._poll_relayer_tx(res.json()["transactionID"])
+                deploy_tx_hash = deploy_tx["transactionHash"]
 
             calls: list[dict[str, Any]] = []
             for spender, allowance in zip(
