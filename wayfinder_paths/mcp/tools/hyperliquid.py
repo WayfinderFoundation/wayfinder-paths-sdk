@@ -214,7 +214,7 @@ def _validate_size_and_notional(
             sz_decimals = adapter.get_sz_decimals(asset_id)
             tick = float(Decimal(10) ** (-sz_decimals))
             ticks_needed = int(-(-MIN_ORDER_USD_NOTIONAL // (tick * px_for_sizing)))
-            while True:
+            for _ in range(3):
                 suggested_usd = (
                     math.ceil(ticks_needed * tick * px_for_sizing * 100) / 100
                 )
