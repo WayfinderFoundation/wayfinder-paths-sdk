@@ -213,9 +213,12 @@ def _validate_size_and_notional(
         if final_notional < MIN_ORDER_USD_NOTIONAL:
             sz_decimals = adapter.get_sz_decimals(asset_id)
             tick = float(Decimal(10) ** (-sz_decimals))
-            # Smallest lot whose notional clears the floor.
-            ticks_needed = -(-MIN_ORDER_USD_NOTIONAL // (tick * px_for_sizing))
-            suggested_usd = ticks_needed * tick * px_for_sizing
+            ticks_needed = int(-(-MIN_ORDER_USD_NOTIONAL // (tick * px_for_sizing)))
+            suggested_usd = math.ceil(ticks_needed * tick * px_for_sizing * 100) / 100
+            # Verify the suggestion survives lot-size rounding
+            if int(suggested_usd / px_for_sizing / tick) * tick * px_for_sizing < MIN_ORDER_USD_NOTIONAL:
+                ticks_needed += 1
+                suggested_usd = math.ceil(ticks_needed * tick * px_for_sizing * 100) / 100
             raise ValueError(
                 f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
                 f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Try usd_amount={suggested_usd:.2f}."
