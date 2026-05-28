@@ -17,7 +17,6 @@ from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
-from wayfinder_paths.mcp.tools.quotes import unwrap_brap_quote_response
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -33,7 +32,24 @@ def _compact_quote(
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
 
-    all_quotes, _, quote_count = unwrap_brap_quote_response(quote_data)
+    # BRAP quotes may appear as either:
+    # 1) {"quotes": [...], "best_quote": {...}}
+    # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
+    all_quotes: list[dict[str, Any]] = []
+    raw_quotes = quote_data.get("quotes", [])
+    quote_count = None
+
+    if isinstance(raw_quotes, list):
+        all_quotes = [q for q in raw_quotes if isinstance(q, dict)]
+    elif isinstance(raw_quotes, dict):
+        nested = raw_quotes.get("all_quotes") or raw_quotes.get("quotes") or []
+        if isinstance(nested, list):
+            all_quotes = [q for q in nested if isinstance(q, dict)]
+        qc = raw_quotes.get("quote_count")
+        try:
+            quote_count = int(qc) if qc is not None else None
+        except (TypeError, ValueError):
+            quote_count = None
 
     providers: list[str] = []
     seen: set[str] = set()
@@ -80,90 +96,6 @@ def _compact_quote(
                 ]
 
     return result
-
-
-def _int_or_none(value: Any) -> int | None:
-    try:
-        if value is None:
-            return None
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _quote_approval_spender(
-    best_quote: dict[str, Any], swap_tx: dict[str, Any]
-) -> str | None:
-    spender = (
-        best_quote.get("approvalAddress")
-        or best_quote.get("approval_address")
-        or best_quote.get("spender")
-        or swap_tx.get("to")
-    )
-    return str(spender) if spender else None
-
-
-def _approve_amount(best_quote: dict[str, Any], fallback_amount: int) -> int:
-    return _int_or_none(
-        best_quote.get("input_amount")
-        or best_quote.get("inputAmount")
-        or best_quote.get("amount1")
-        or best_quote.get("amount")
-    ) or int(fallback_amount)
-
-
-def _classify_swap_error(message: str | None) -> dict[str, str] | None:
-    text = (message or "").lower()
-    if not text:
-        return None
-    if "transfer amount exceeds allowance" in text:
-        return {
-            "code": "allowance_insufficient",
-            "hint": "The approved allowance was not usable by the route spender.",
-        }
-    if "transfer_from_failed" in text or "transferfromfailed" in text:
-        return {
-            "code": "transfer_from_failed",
-            "hint": "The route failed while pulling the source token from the wallet.",
-        }
-    if "allowance" in text:
-        return {
-            "code": "allowance_error",
-            "hint": "The route could not verify or use ERC20 allowance.",
-        }
-    return None
-
-
-def _failure(
-    *,
-    code: str,
-    stage: str,
-    message: str,
-    spender: str | None = None,
-    required_allowance_raw: int | None = None,
-    observed_allowance_raw: int | None = None,
-    quote_provider: str | None = None,
-    hint: str | None = None,
-    raw_error: str | None = None,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "code": code,
-        "stage": stage,
-        "message": message,
-    }
-    if spender is not None:
-        payload["spender"] = spender
-    if required_allowance_raw is not None:
-        payload["required_allowance_raw"] = required_allowance_raw
-    if observed_allowance_raw is not None:
-        payload["observed_allowance_raw"] = observed_allowance_raw
-    if quote_provider is not None:
-        payload["quote_provider"] = quote_provider
-    if hint is not None:
-        payload["hint"] = hint
-    if raw_error is not None:
-        payload["raw_error"] = sanitize_for_json(raw_error)
-    return payload
 
 
 async def _broadcast(
@@ -341,7 +273,6 @@ async def onchain_swap(
         )
 
     slippage = max(0.0, float(int(slippage_bps)) / 10_000.0)
-
     try:
         quote_data = await BRAP_CLIENT.get_quote(
             from_token=from_token_addr,
@@ -355,9 +286,17 @@ async def onchain_swap(
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
-    if not isinstance(quote_data, dict):
-        return err("quote_error", "Quote response was not an object")
-    _, best_quote, _ = unwrap_brap_quote_response(quote_data)
+    best_quote = None
+    if isinstance(quote_data, dict):
+        if isinstance(quote_data.get("best_quote"), dict):
+            best_quote = quote_data.get("best_quote")
+        else:
+            quotes_block = quote_data.get("quotes")
+            if isinstance(quotes_block, dict) and isinstance(
+                quotes_block.get("best_quote"), dict
+            ):
+                best_quote = quotes_block.get("best_quote")
+
     if not isinstance(best_quote, dict):
         return err("quote_error", "No best_quote returned", {"quote": quote_data})
 
@@ -373,59 +312,41 @@ async def onchain_swap(
     if "value" in swap_tx:
         swap_tx["value"] = int(swap_tx["value"])
 
-    spender = _quote_approval_spender(best_quote, swap_tx)
-    need = _approve_amount(best_quote, amount_raw)
-    spender_checksum = to_checksum_address(str(spender)) if spender else None
+    spender = (
+        best_quote.get("approvalAddress")
+        or best_quote.get("approval_address")
+        or best_quote.get("spender")
+        or swap_tx.get("to")
+    )
+    approve_amount = (
+        best_quote.get("input_amount")
+        or best_quote.get("inputAmount")
+        or best_quote.get("amount1")
+        or best_quote.get("amount")
+    )
 
     if (
         from_token_addr.lower() != ZERO_ADDRESS.lower()
-        and spender_checksum
-        and need > 0
+        and spender
+        and approve_amount is not None
     ):
         try:
-            ok_allow, approval_tx = await _ensure_allowance(
-                sign_callback=sign_callback,
-                chain_id=int(from_chain_id),
-                token_address=from_token_addr,
-                owner=to_checksum_address(sender),
-                spender=spender_checksum,
-                amount=need,
-            )
-        except Exception as exc:  # noqa: BLE001
-            classified = _classify_swap_error(str(exc)) or {
-                "code": "allowance_read_failed",
-                "hint": "The token did not return a standard ERC20 allowance response.",
-            }
-            response["status"] = "failed"
-            response["failure"] = _failure(
-                code=classified["code"],
-                stage="allowance",
-                message="Could not prepare ERC20 approval for the swap.",
-                spender=spender_checksum,
-                required_allowance_raw=need,
-                observed_allowance_raw=0,
-                quote_provider=str(best_quote.get("provider") or ""),
-                hint=classified.get("hint"),
-                raw_error=str(exc),
-            )
-            response["raw"] = _compact_quote(quote_data, best_quote)
-            return ok(response)
-
+            need = int(approve_amount)
+        except Exception:
+            need = int(amount_raw)
+        ok_allow, approval_tx = await _ensure_allowance(
+            sign_callback=sign_callback,
+            chain_id=int(from_chain_id),
+            token_address=from_token_addr,
+            owner=to_checksum_address(sender),
+            spender=to_checksum_address(str(spender)),
+            amount=need,
+        )
         if approval_tx:
             response["effects"]["approval"] = approval_tx
-            response["effects"].setdefault("approvals", []).append(approval_tx)
         if not ok_allow:
             response["status"] = "failed"
-            response["failure"] = _failure(
-                code="approval_not_visible_yet",
-                stage="approval",
-                message="Approval was submitted, but allowance was not visible before swap execution.",
-                spender=spender_checksum,
-                required_allowance_raw=need,
-                quote_provider=str(best_quote.get("provider") or ""),
-                hint="Wait briefly, then ask the user to confirm a fresh quote.",
-            )
-            response["raw"] = _compact_quote(quote_data, best_quote)
+            response["raw"] = _compact_quote(quote_data, None)
             return ok(response)
 
     sent_ok, sent = await _broadcast(
@@ -440,19 +361,6 @@ async def onchain_swap(
     status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
     if not sent_ok:
         status = "failed"
-        error_text = str(sent.get("error") or "")
-        classified = _classify_swap_error(error_text)
-        if classified:
-            response["failure"] = _failure(
-                code=classified["code"],
-                stage="swap_broadcast",
-                message="Swap route failed while pulling the source token.",
-                spender=spender_checksum,
-                required_allowance_raw=need,
-                quote_provider=str(best_quote.get("provider") or ""),
-                hint=classified.get("hint"),
-                raw_error=error_text,
-            )
 
     bridge_tracking = best_quote.get("bridge_tracking")
     if sent_ok and wait_for_receipt and bridge_tracking:
