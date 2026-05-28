@@ -114,7 +114,7 @@ For `onchain_quote_swap` and `onchain_swap`, `amount` is a human-unit string, no
 
 Swap token identity safety:
 - Do not silently substitute similar tokens or wrappers after the user approves a quote or action. ETH ↔ WETH, native ↔ wrapped variants, USDC ↔ USDT, bridged ↔ canonical variants, pUSD ↔ USDC, and same-symbol different-contract tokens all require a fresh quote and explicit user confirmation.
-- If a swap fails due to allowance visibility, route execution, or token nonconformance, report the structured failure and use the SDK/tool re-quote path; do not improvise a substitute asset.
+- If a swap fails due to allowance visibility, route execution, or token nonconformance, report the structured failure and ask for a fresh quote; do not improvise a substitute asset.
 
 Supported chain identifiers:
 

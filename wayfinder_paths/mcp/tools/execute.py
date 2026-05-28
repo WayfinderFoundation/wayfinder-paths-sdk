@@ -91,10 +91,6 @@ def _int_or_none(value: Any) -> int | None:
         return None
 
 
-def _quote_output_amount(quote: dict[str, Any]) -> int | None:
-    return _int_or_none(quote.get("output_amount") or quote.get("outputAmount"))
-
-
 def _quote_approval_spender(
     best_quote: dict[str, Any], swap_tx: dict[str, Any]
 ) -> str | None:
@@ -138,41 +134,6 @@ def _classify_swap_error(message: str | None) -> dict[str, str] | None:
     return None
 
 
-def _requote_safety_failure(
-    *,
-    original_quote: dict[str, Any],
-    candidate_quote: dict[str, Any],
-    slippage_bps: int,
-) -> dict[str, Any] | None:
-    for key in ("native_input", "native_output"):
-        original_value = original_quote.get(key)
-        candidate_value = candidate_quote.get(key)
-        if original_value is not None and candidate_value is not None:
-            if bool(original_value) != bool(candidate_value):
-                return {
-                    "code": "needs_fresh_confirmation",
-                    "reason": f"re-quote changed {key}",
-                    "original": original_value,
-                    "candidate": candidate_value,
-                }
-
-    original_out = _quote_output_amount(original_quote)
-    candidate_out = _quote_output_amount(candidate_quote)
-    if original_out and candidate_out is not None:
-        tolerance_bps = max(50, int(slippage_bps))
-        min_acceptable = original_out * (10_000 - tolerance_bps)
-        if candidate_out * 10_000 < min_acceptable:
-            return {
-                "code": "needs_fresh_confirmation",
-                "reason": "re-quote materially worsened expected output",
-                "original_output_amount": original_out,
-                "candidate_output_amount": candidate_out,
-                "tolerance_bps": tolerance_bps,
-            }
-
-    return None
-
-
 def _failure(
     *,
     code: str,
@@ -184,7 +145,6 @@ def _failure(
     quote_provider: str | None = None,
     hint: str | None = None,
     raw_error: str | None = None,
-    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "code": code,
@@ -203,8 +163,6 @@ def _failure(
         payload["hint"] = hint
     if raw_error is not None:
         payload["raw_error"] = sanitize_for_json(raw_error)
-    if extra:
-        payload.update(extra)
     return payload
 
 
@@ -384,173 +342,117 @@ async def onchain_swap(
 
     slippage = max(0.0, float(int(slippage_bps)) / 10_000.0)
 
-    async def _get_quote() -> tuple[
-        dict[str, Any] | None, dict[str, Any] | None, str | None
-    ]:
+    try:
+        quote_data = await BRAP_CLIENT.get_quote(
+            from_token=from_token_addr,
+            to_token=to_token_addr,
+            from_chain=from_chain_id,
+            to_chain=to_chain_id,
+            from_wallet=sender,
+            from_amount=str(amount_raw),
+            slippage=slippage,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err("quote_error", str(exc))
+
+    if not isinstance(quote_data, dict):
+        return err("quote_error", "Quote response was not an object")
+    _, best_quote, _ = unwrap_brap_quote_response(quote_data)
+    if not isinstance(best_quote, dict):
+        return err("quote_error", "No best_quote returned", {"quote": quote_data})
+
+    calldata = best_quote.get("calldata") or {}
+    if not isinstance(calldata, dict) or not calldata:
+        return err(
+            "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
+        )
+
+    swap_tx = dict(calldata)
+    swap_tx["chainId"] = int(from_chain_id)
+    swap_tx["from"] = to_checksum_address(sender)
+    if "value" in swap_tx:
+        swap_tx["value"] = int(swap_tx["value"])
+
+    spender = _quote_approval_spender(best_quote, swap_tx)
+    need = _approve_amount(best_quote, amount_raw)
+    spender_checksum = to_checksum_address(str(spender)) if spender else None
+
+    if (
+        from_token_addr.lower() != ZERO_ADDRESS.lower()
+        and spender_checksum
+        and need > 0
+    ):
         try:
-            data = await BRAP_CLIENT.get_quote(
-                from_token=from_token_addr,
-                to_token=to_token_addr,
-                from_chain=from_chain_id,
-                to_chain=to_chain_id,
-                from_wallet=sender,
-                from_amount=str(amount_raw),
-                slippage=slippage,
+            ok_allow, approval_tx = await _ensure_allowance(
+                sign_callback=sign_callback,
+                chain_id=int(from_chain_id),
+                token_address=from_token_addr,
+                owner=to_checksum_address(sender),
+                spender=spender_checksum,
+                amount=need,
             )
         except Exception as exc:  # noqa: BLE001
-            return None, None, str(exc)
-
-        if not isinstance(data, dict):
-            return None, None, "Quote response was not an object"
-        _, quote, _ = unwrap_brap_quote_response(data)
-        if not isinstance(quote, dict):
-            return data, None, "No best_quote returned"
-        calldata_value = quote.get("calldata") or {}
-        if not isinstance(calldata_value, dict) or not calldata_value:
-            return data, None, "best_quote missing calldata"
-        return data, quote, None
-
-    quote_data, best_quote, quote_error = await _get_quote()
-    if quote_error or quote_data is None or best_quote is None:
-        return err(
-            "quote_error",
-            quote_error or "No best_quote returned",
-            {"quote": quote_data},
-        )
-
-    original_best_quote = best_quote
-    requote_used = False
-    status = "failed"
-    sent_ok = False
-    sent: dict[str, Any] = {}
-
-    while True:
-        calldata = best_quote.get("calldata") or {}
-        if not isinstance(calldata, dict) or not calldata:
-            return err(
-                "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
+            classified = _classify_swap_error(str(exc)) or {
+                "code": "allowance_read_failed",
+                "hint": "The token did not return a standard ERC20 allowance response.",
+            }
+            response["status"] = "failed"
+            response["failure"] = _failure(
+                code=classified["code"],
+                stage="allowance",
+                message="Could not prepare ERC20 approval for the swap.",
+                spender=spender_checksum,
+                required_allowance_raw=need,
+                observed_allowance_raw=0,
+                quote_provider=str(best_quote.get("provider") or ""),
+                hint=classified.get("hint"),
+                raw_error=str(exc),
             )
+            response["raw"] = _compact_quote(quote_data, best_quote)
+            return ok(response)
 
-        swap_tx = dict(calldata)
-        swap_tx["chainId"] = int(from_chain_id)
-        swap_tx["from"] = to_checksum_address(sender)
-        if "value" in swap_tx:
-            swap_tx["value"] = int(swap_tx["value"])
+        if approval_tx:
+            response["effects"]["approval"] = approval_tx
+            response["effects"].setdefault("approvals", []).append(approval_tx)
+        if not ok_allow:
+            response["status"] = "failed"
+            response["failure"] = _failure(
+                code="approval_not_visible_yet",
+                stage="approval",
+                message="Approval was submitted, but allowance was not visible before swap execution.",
+                spender=spender_checksum,
+                required_allowance_raw=need,
+                quote_provider=str(best_quote.get("provider") or ""),
+                hint="Wait briefly, then ask the user to confirm a fresh quote.",
+            )
+            response["raw"] = _compact_quote(quote_data, best_quote)
+            return ok(response)
 
-        spender = _quote_approval_spender(best_quote, swap_tx)
-        need = _approve_amount(best_quote, amount_raw)
-        spender_checksum = to_checksum_address(str(spender)) if spender else None
+    sent_ok, sent = await _broadcast(
+        sign_callback,
+        swap_tx,
+        chain_id=int(from_chain_id),
+        wait_for_receipt=wait_for_receipt,
+        confirmations=receipt_confirmations,
+    )
+    response["effects"]["swap"] = sent
 
-        if (
-            from_token_addr.lower() != ZERO_ADDRESS.lower()
-            and spender_checksum
-            and need > 0
-        ):
-            try:
-                ok_allow, approval_tx = await _ensure_allowance(
-                    sign_callback=sign_callback,
-                    chain_id=int(from_chain_id),
-                    token_address=from_token_addr,
-                    owner=to_checksum_address(sender),
-                    spender=spender_checksum,
-                    amount=need,
-                )
-            except Exception as exc:  # noqa: BLE001
-                classified = _classify_swap_error(str(exc)) or {
-                    "code": "allowance_read_failed",
-                    "hint": "The token did not return a standard ERC20 allowance response.",
-                }
-                response["status"] = "failed"
-                response["failure"] = _failure(
-                    code=classified["code"],
-                    stage="allowance",
-                    message="Could not prepare ERC20 approval for the swap.",
-                    spender=spender_checksum,
-                    required_allowance_raw=need,
-                    observed_allowance_raw=0,
-                    quote_provider=str(best_quote.get("provider") or ""),
-                    hint=classified.get("hint"),
-                    raw_error=str(exc),
-                )
-                response["raw"] = _compact_quote(quote_data, best_quote)
-                return ok(response)
-
-            if approval_tx:
-                response["effects"]["approval"] = approval_tx
-                response["effects"].setdefault("approvals", []).append(approval_tx)
-            if not ok_allow:
-                response["status"] = "failed"
-                response["failure"] = _failure(
-                    code="approval_not_visible_yet",
-                    stage="approval",
-                    message="Approval was submitted, but allowance was not visible before swap execution.",
-                    spender=spender_checksum,
-                    required_allowance_raw=need,
-                    quote_provider=str(best_quote.get("provider") or ""),
-                    hint="Retry after the approval is visible, or ask the user to confirm a fresh quote.",
-                )
-                response["raw"] = _compact_quote(quote_data, best_quote)
-                return ok(response)
-
-        sent_ok, sent = await _broadcast(
-            sign_callback,
-            swap_tx,
-            chain_id=int(from_chain_id),
-            wait_for_receipt=wait_for_receipt,
-            confirmations=receipt_confirmations,
-        )
-        response["effects"]["swap"] = sent
-
-        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-        if not sent_ok:
-            status = "failed"
-            error_text = str(sent.get("error") or "")
-            classified = _classify_swap_error(error_text)
-            if classified and not requote_used:
-                new_quote_data, new_best_quote, new_quote_error = await _get_quote()
-                if new_quote_data is not None and new_best_quote is not None:
-                    safety_failure = _requote_safety_failure(
-                        original_quote=original_best_quote,
-                        candidate_quote=new_best_quote,
-                        slippage_bps=slippage_bps,
-                    )
-                    response["effects"]["requote"] = {
-                        "reason": classified["code"],
-                        "provider": new_best_quote.get("provider"),
-                    }
-                    if safety_failure:
-                        response["status"] = "needs_fresh_confirmation"
-                        response["failure"] = _failure(
-                            code="needs_fresh_confirmation",
-                            stage="requote",
-                            message="Re-quoted route changed materially and needs user confirmation.",
-                            spender=spender_checksum,
-                            required_allowance_raw=need,
-                            quote_provider=str(best_quote.get("provider") or ""),
-                            extra=safety_failure,
-                        )
-                        response["raw"] = _compact_quote(new_quote_data, new_best_quote)
-                        return ok(response)
-                    quote_data = new_quote_data
-                    best_quote = new_best_quote
-                    requote_used = True
-                    continue
-                response["effects"]["requote"] = {
-                    "reason": classified["code"],
-                    "error": new_quote_error,
-                }
-            if classified:
-                response["failure"] = _failure(
-                    code=classified["code"],
-                    stage="swap_broadcast",
-                    message="Swap route failed while pulling the source token.",
-                    spender=spender_checksum,
-                    required_allowance_raw=need,
-                    quote_provider=str(best_quote.get("provider") or ""),
-                    hint=classified.get("hint"),
-                    raw_error=error_text,
-                )
-        break
+    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+    if not sent_ok:
+        status = "failed"
+        error_text = str(sent.get("error") or "")
+        classified = _classify_swap_error(error_text)
+        if classified:
+            response["failure"] = _failure(
+                code=classified["code"],
+                stage="swap_broadcast",
+                message="Swap route failed while pulling the source token.",
+                spender=spender_checksum,
+                required_allowance_raw=need,
+                quote_provider=str(best_quote.get("provider") or ""),
+                hint=classified.get("hint"),
+                raw_error=error_text,
+            )
 
     bridge_tracking = best_quote.get("bridge_tracking")
     if sent_ok and wait_for_receipt and bridge_tracking:
