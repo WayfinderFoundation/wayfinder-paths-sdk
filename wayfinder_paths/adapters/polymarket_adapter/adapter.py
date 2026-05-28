@@ -1628,10 +1628,9 @@ class PolymarketAdapter(BaseAdapter):
                 }
                 body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
                 headers = await self._builder_headers("POST", "/submit", body)
-                # The relayer's owner→deposit-wallet registry can lag a few
-                # seconds after a fresh EOA's first WALLET-CREATE, returning 400
-                # until propagation completes. Re-check on-chain code each iter
-                # so we exit as soon as the wallet exists either way.
+                # WALLET-CREATE has been observed to transient-400 with no
+                # retry in place. Re-check on-chain code each iter so we exit
+                # as soon as the wallet exists if a concurrent post succeeded.
                 retry_deadline = time.monotonic() + 15.0
                 last_error_text: str | None = None
                 while True:
