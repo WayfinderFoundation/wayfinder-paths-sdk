@@ -47,9 +47,12 @@ Never execute live trades, swaps, bridges, live strategies, runner jobs, contrac
 
 ## Data and Scripts
 
-Do not load `/using-delta-lab` by default. The required Delta Lab operating rules are embedded here. Load skills only after a first direct tool/script attempt is blocked by missing details, or when you need uncommon adapter details or script boilerplate:
+Required skill loads:
 
-- `/backtest-strategy`
+- Load `/backtest-strategy` before writing any backtest script. This is mandatory and overrides the "load only when needed" default below.
+
+Do not load `/using-delta-lab` by default. The required Delta Lab operating rules are embedded here. Load these skills as needed. Only when needed:
+
 - `/using-ccxt-adapter`
 - `/simulation-dry-run`
 - `/writing-wayfinder-scripts`
@@ -68,6 +71,12 @@ Delta Lab rules:
 - Keep discovery limits small: normally `10-25`. Never default to `limit=500`; use paged scripts or bulk methods only when the analysis requires breadth.
 - Client calls return data directly, not `(ok, data)` tuples.
 - Do not forward-fill missing time-series data silently. Align timestamps explicitly and report gaps, sparse coverage, venue filters, lookback, frequency, and normalization.
+
+Backtesting rules:
+
+- For backtests, use `wayfinder_paths.core.backtesting`: `quick_backtest` for end-to-end fetch+run, or `run_backtest(prices, target_positions, BacktestConfig(...))` for explicit control. Do not hand-roll NAV loops, P&L accounting, fee/funding application, or drawdown math.
+- Signal format is a target-positions DataFrame indexed by the price index — weights in `[-1, 1]`. The framework aligns NAV to that index, so off-by-one length errors are structurally impossible when you use it.
+- Read `BacktestResult.stats` directly: `trade_count`, `sharpe`, `sortino`, `max_drawdown`, `cagr`, `win_rate`, `profit_factor`. Surface `trade_count` and the benchmark comparison in your output; pay attention to whether they make sense together.
 
 Use this method routing:
 
@@ -96,6 +105,7 @@ Required checks:
 - Include benchmark comparison, fees, spread, slippage, funding, borrow, turnover, capacity, drawdown, hit rate, Sharpe/Sortino, and parameter sensitivity when relevant.
 - Use walk-forward or out-of-sample validation before making strategy claims.
 - Return one strategy state: `RESEARCH_ONLY`, `PAPER_TRADE`, `MONITOR`, or `DO_NOT_TRADE`.
+- Default to `RESEARCH_ONLY` when results are weak. A result is weak when any of these hold: thin trade sample, headline metrics dominated by a handful of bars, drawdown that would wipe out the account at the assumed leverage, benchmark numbers that don't make internal sense (e.g. Sharpe sign disagreeing with return sign), no out-of-sample or walk-forward validation, or undisclosed/invented assumptions (leverage, stops, fees, thresholds, sizing). Do not promote to `PAPER_TRADE`/`MONITOR`/`DO_NOT_TRADE` just because the topline number looks good — promotion requires the result to survive these checks, not just exceed a return threshold.
 
 Polymarket quant:
 
