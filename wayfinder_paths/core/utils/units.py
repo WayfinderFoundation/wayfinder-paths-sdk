@@ -39,3 +39,21 @@ def from_erc20_raw(amount_raw: str | int | float | Decimal, decimals: int) -> fl
     """
     scale = Decimal(10) ** int(decimals)
     return float(Decimal(str(amount_raw)) / scale)
+
+
+def erc20_raw_to_tokens_and_usd(
+    amount_raw: str | int | float | Decimal,
+    decimals: int,
+    price_usd: str | int | float | Decimal | None,
+) -> tuple[float, float | None]:
+    """Convert a raw token amount into token units and optional USD value."""
+    scale = Decimal(10) ** int(decimals)
+    token_amount = Decimal(str(amount_raw)) / scale
+    tokens = float(token_amount)
+    if price_usd is None:
+        return tokens, None
+
+    price = Decimal(str(price_usd))
+    if price <= 0:
+        return tokens, None
+    return tokens, float(token_amount * price)

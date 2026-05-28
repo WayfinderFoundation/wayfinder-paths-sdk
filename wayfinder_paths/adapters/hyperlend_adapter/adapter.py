@@ -35,6 +35,7 @@ from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.units import erc20_raw_to_tokens_and_usd
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 VARIABLE_RATE_MODE = 2
@@ -253,6 +254,15 @@ class HyperlendAdapter(BaseAdapter):
                     variable_index = int(r.get("variableBorrowIndex") or 0)
                     total_variable_debt = (scaled_variable_debt * variable_index) // RAY
                     tvl = available_liquidity + total_variable_debt
+                    available_tokens, available_usd = erc20_raw_to_tokens_and_usd(
+                        available_liquidity, decimals, price_usd
+                    )
+                    debt_tokens, debt_usd = erc20_raw_to_tokens_and_usd(
+                        total_variable_debt, decimals, price_usd
+                    )
+                    tvl_tokens, tvl_usd = erc20_raw_to_tokens_and_usd(
+                        tvl, decimals, price_usd
+                    )
 
                     symbol_canonical = normalize_symbol(symbol_raw) or normalize_symbol(
                         underlying
@@ -261,6 +271,13 @@ class HyperlendAdapter(BaseAdapter):
                     headroom_wei, supply_cap_tokens = _compute_supply_cap_headroom(
                         r, decimals
                     )
+                    if headroom_wei is None:
+                        headroom_tokens = None
+                        headroom_usd = None
+                    else:
+                        headroom_tokens, headroom_usd = erc20_raw_to_tokens_and_usd(
+                            headroom_wei, decimals, price_usd
+                        )
 
                     markets.append(
                         {
@@ -294,10 +311,18 @@ class HyperlendAdapter(BaseAdapter):
                             "variable_borrow_apr": float(borrow_apr),
                             "variable_borrow_apy": float(apr_to_apy(borrow_apr)),
                             "available_liquidity": int(available_liquidity),
+                            "available_liquidity_tokens": available_tokens,
+                            "available_liquidity_usd": available_usd,
                             "total_variable_debt": int(total_variable_debt),
+                            "total_variable_debt_tokens": debt_tokens,
+                            "total_variable_debt_usd": debt_usd,
                             "tvl": int(tvl),
+                            "tvl_tokens": tvl_tokens,
+                            "tvl_usd": tvl_usd,
                             "supply_cap": supply_cap_tokens,
                             "supply_cap_headroom": headroom_wei,
+                            "supply_cap_headroom_tokens": headroom_tokens,
+                            "supply_cap_headroom_usd": headroom_usd,
                             "debt_ceiling": int(r.get("debtCeiling") or 0),
                             "debt_ceiling_decimals": int(
                                 r.get("debtCeilingDecimals") or 0

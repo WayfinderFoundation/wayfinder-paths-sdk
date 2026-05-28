@@ -374,6 +374,13 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "Market Research / Thesis Mode" in primary
     assert "DeFi/yield, basis/carry" in primary
     assert "Only require `perpSide` and `positionIntent`" in primary
+    assert "best stable APY/rates/yield" in primary
+    assert (
+        'research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")'
+        in primary
+    )
+    assert 'research_get_basis_apy_sources(basis_symbol="USD", limit="100")' in primary
+    assert "Do not treat `YIELD_TOKEN` as simple stable lending" in primary
     assert "Token/Perp Research Mode" not in primary
     assert "thesisPieces" not in primary
     assert "Known Context Handoffs" in primary
@@ -394,6 +401,13 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "sell_amount_shares" in research
     assert "executionSummary" in research
     assert "contextForNextAgent" in research
+    assert "best stable APY/rates/yield" in research
+    assert (
+        'research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")'
+        in research
+    )
+    assert 'research_get_basis_apy_sources(basis_symbol="USD", limit="100")' in research
+    assert "Treat `YIELD_TOKEN` as vault/LP/receipt-token yield" in research
 
     assert "Market Quant Mode" in quant
     assert "wayfinder_paths.quant.polymarket_edge" in quant
@@ -461,6 +475,64 @@ def test_polymarket_docs_use_side_specific_mcp_sizing() -> None:
     assert "executionSummary.sharesFilled" in combined
     assert "BUY size is pUSD spend" in claude
     assert "Do not reuse BUY spend as a share count" in gotchas
+
+
+def test_stable_apy_research_and_adapter_docs_are_current() -> None:
+    delta_high_value = (
+        SDK_ROOT
+        / ".claude"
+        / "skills"
+        / "using-delta-lab"
+        / "rules"
+        / "high-value-reads.md"
+    ).read_text(encoding="utf-8")
+    delta_gotchas = (
+        SDK_ROOT / ".claude" / "skills" / "using-delta-lab" / "rules" / "gotchas.md"
+    ).read_text(encoding="utf-8")
+    hyperlend_reads = (
+        SDK_ROOT
+        / ".claude"
+        / "skills"
+        / "using-hyperlend-adapter"
+        / "rules"
+        / "high-value-reads.md"
+    ).read_text(encoding="utf-8")
+    avantis_reads = (
+        SDK_ROOT
+        / ".claude"
+        / "skills"
+        / "using-avantis-adapter"
+        / "rules"
+        / "high-value-reads.md"
+    ).read_text(encoding="utf-8")
+    morpho_reads = (
+        SDK_ROOT
+        / ".claude"
+        / "skills"
+        / "using-morpho-adapter"
+        / "rules"
+        / "high-value-reads.md"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        'research_search_lending(sort="combined_net_supply_apr_now", basis="USD", '
+        'limit="25")'
+    ) in delta_high_value
+    assert (
+        'research_get_basis_apy_sources(basis_symbol="USD", limit="100")'
+        in delta_high_value
+    )
+    assert "`YIELD_TOKEN` rows are vault/LP/receipt-token yields" in delta_gotchas
+    assert "HyperlendClient.get_stable_markets(chain_id" not in hyperlend_reads
+    assert (
+        "HyperlendAdapter.get_stable_markets(required_underlying_tokens?"
+        in hyperlend_reads
+    )
+    assert "available_liquidity_tokens/usd" in hyperlend_reads
+    assert "fetch_trailing_apy()" in avantis_reads
+    assert "trailing APY" in avantis_reads
+    assert 'm.get("loan", {}).get("symbol")' in morpho_reads
+    assert '(m.get("state") or {}).get("supply_apy")' in morpho_reads
 
 
 def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:

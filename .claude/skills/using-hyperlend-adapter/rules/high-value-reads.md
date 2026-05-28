@@ -20,10 +20,18 @@ Plan for auth to be required via `config.json` or env vars.
 
 ### Stable markets (opportunity list)
 
-- Call: `HyperlendClient.get_stable_markets(chain_id, required_underlying_tokens?, buffer_bps?, min_buffer_tokens?, is_stable_symbol?)`
+- Client call: `HyperlendClient.get_stable_markets(required_underlying_tokens?, buffer_bps?, min_buffer_tokens?)`
+- Adapter call: `HyperlendAdapter.get_stable_markets(required_underlying_tokens?, buffer_bps?, min_buffer_tokens?)`
 - Output: `list[StableMarket]` where each entry commonly includes:
-  - `chain_id`, `token_address`, `symbol`, `name`
+  - `token_address`, `symbol`, `name`
   - liquidity/buffer fields: `underlying_tokens`, `buffer_bps`, `min_buffer_tokens`
+
+### All markets (on-chain reserve list)
+
+- Adapter call: `HyperlendAdapter.get_all_markets()`
+- Raw integer fields are preserved: `available_liquidity`, `total_variable_debt`, `tvl`, `supply_cap_headroom`.
+- Prefer normalized fields for reporting and ranking: `available_liquidity_tokens/usd`, `total_variable_debt_tokens/usd`, `tvl_tokens/usd`, `supply_cap_headroom_tokens/usd`.
+- If a normalized USD field is `None`, report liquidity/TVL as unknown until hydrated. Do not treat a missing `*_usd` field as `$0`.
 
 ### User assets view (portfolio view)
 
