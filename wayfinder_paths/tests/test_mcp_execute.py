@@ -173,15 +173,6 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(
-                return_value={
-                    "status": "approval_confirmed_visible",
-                    "observed_allowance_raw": 1000000,
-                }
-            ),
-        ),
-        patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
@@ -296,15 +287,6 @@ async def test_execute_cross_chain_swap_waits_for_bridge(tmp_path: Path, monkeyp
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(
-                return_value={
-                    "status": "approval_confirmed_visible",
-                    "observed_allowance_raw": 1000000,
-                }
-            ),
-        ),
-        patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
             new_callable=AsyncMock,
             return_value="0xsrctx",
@@ -400,15 +382,6 @@ async def test_execute_cross_chain_swap_failed_bridge_marks_failed(
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(
-                return_value={
-                    "status": "approval_confirmed_visible",
-                    "observed_allowance_raw": 1000000,
-                }
-            ),
-        ),
-        patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
             new_callable=AsyncMock,
             return_value="0xsrctx",
@@ -490,10 +463,6 @@ async def test_execute_swap_prefers_quote_approval_address(tmp_path: Path, monke
         patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
         patch("wayfinder_paths.mcp.tools.execute.ensure_allowance", ensure_mock),
         patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(return_value={"status": "approval_confirmed_visible"}),
-        ),
-        patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
@@ -516,7 +485,7 @@ async def test_execute_swap_prefers_quote_approval_address(tmp_path: Path, monke
 
 
 @pytest.mark.asyncio
-async def test_execute_swap_does_not_broadcast_until_allowance_visible(
+async def test_execute_swap_does_not_broadcast_when_approval_not_visible(
     tmp_path: Path, monkeypatch
 ):
     monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
@@ -573,16 +542,7 @@ async def test_execute_swap_does_not_broadcast_until_allowance_visible(
         patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
         patch(
             "wayfinder_paths.mcp.tools.execute.ensure_allowance",
-            new=AsyncMock(return_value=(True, "0xapprove")),
-        ),
-        patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(
-                return_value={
-                    "status": "approval_not_visible_yet",
-                    "observed_allowance_raw": 0,
-                }
-            ),
+            new=AsyncMock(return_value=(False, "0xapprove")),
         ),
         patch("wayfinder_paths.mcp.tools.execute.send_transaction", send_mock),
         patch(
@@ -601,7 +561,7 @@ async def test_execute_swap_does_not_broadcast_until_allowance_visible(
     assert out["result"]["status"] == "failed"
     assert out["result"]["failure"]["code"] == "approval_not_visible_yet"
     send_mock.assert_not_awaited()
-    assert fake_brap.get_quote.await_count == 2
+    assert fake_brap.get_quote.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -678,10 +638,6 @@ async def test_execute_swap_requotes_once_after_transfer_from_failure(
         patch(
             "wayfinder_paths.mcp.tools.execute.ensure_allowance",
             new=AsyncMock(return_value=(True, "0xapprove")),
-        ),
-        patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(return_value={"status": "approval_confirmed_visible"}),
         ),
         patch("wayfinder_paths.mcp.tools.execute.send_transaction", send_mock),
         patch(
@@ -771,10 +727,6 @@ async def test_execute_swap_requires_confirmation_when_requote_worsens_output(
         patch(
             "wayfinder_paths.mcp.tools.execute.ensure_allowance",
             new=AsyncMock(return_value=(True, "0xapprove")),
-        ),
-        patch(
-            "wayfinder_paths.mcp.tools.execute.wait_for_allowance_visible",
-            new=AsyncMock(return_value={"status": "approval_confirmed_visible"}),
         ),
         patch("wayfinder_paths.mcp.tools.execute.send_transaction", send_mock),
         patch(

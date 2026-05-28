@@ -12,7 +12,6 @@ from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
     get_token_balance,
-    wait_for_allowance_visible,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
@@ -255,7 +254,6 @@ async def _ensure_allowance(
         chain_id=chain_id,
         signing_callback=sign_callback,
         confirmations=0,
-        allowance_block_identifier="latest",
     )
     if not txn_hash:
         return sent_ok, None
@@ -483,84 +481,13 @@ async def onchain_swap(
             if not ok_allow:
                 response["status"] = "failed"
                 response["failure"] = _failure(
-                    code="approval_failed",
+                    code="approval_not_visible_yet",
                     stage="approval",
-                    message="Approval transaction could not be submitted.",
+                    message="Approval was submitted, but allowance was not visible before swap execution.",
                     spender=spender_checksum,
                     required_allowance_raw=need,
-                    quote_provider=str(best_quote.get("provider") or ""),
-                )
-                response["raw"] = _compact_quote(quote_data, best_quote)
-                return ok(response)
-
-            approval_hash = (
-                approval_tx.get("txn_hash")
-                if isinstance(approval_tx, dict) and approval_tx.get("txn_hash")
-                else None
-            )
-            visibility = await wait_for_allowance_visible(
-                token_address=from_token_addr,
-                chain_id=int(from_chain_id),
-                owner=to_checksum_address(sender),
-                spender=spender_checksum,
-                amount=need,
-                approval_tx_hash=approval_hash,
-            )
-            response["effects"]["allowance"] = visibility
-            if visibility.get("status") not in {
-                "already_sufficient",
-                "approval_confirmed_visible",
-            }:
-                if not requote_used:
-                    new_quote_data, new_best_quote, new_quote_error = await _get_quote()
-                    if new_quote_data is not None and new_best_quote is not None:
-                        safety_failure = _requote_safety_failure(
-                            original_quote=original_best_quote,
-                            candidate_quote=new_best_quote,
-                            slippage_bps=slippage_bps,
-                        )
-                        response["effects"]["requote"] = {
-                            "reason": "allowance_not_visible",
-                            "provider": new_best_quote.get("provider"),
-                        }
-                        if safety_failure:
-                            response["status"] = "needs_fresh_confirmation"
-                            response["failure"] = _failure(
-                                code="needs_fresh_confirmation",
-                                stage="requote",
-                                message="Re-quoted route changed materially and needs user confirmation.",
-                                spender=spender_checksum,
-                                required_allowance_raw=need,
-                                observed_allowance_raw=visibility.get(
-                                    "observed_allowance_raw"
-                                ),
-                                quote_provider=str(best_quote.get("provider") or ""),
-                                extra=safety_failure,
-                            )
-                            response["raw"] = _compact_quote(
-                                new_quote_data, new_best_quote
-                            )
-                            return ok(response)
-                        quote_data = new_quote_data
-                        best_quote = new_best_quote
-                        requote_used = True
-                        continue
-                    response["effects"]["requote"] = {
-                        "reason": "allowance_not_visible",
-                        "error": new_quote_error,
-                    }
-
-                response["status"] = "failed"
-                response["failure"] = _failure(
-                    code=str(visibility.get("status") or "approval_not_visible_yet"),
-                    stage="allowance_visibility",
-                    message="Approval was not visible to the RPC before swap execution.",
-                    spender=spender_checksum,
-                    required_allowance_raw=need,
-                    observed_allowance_raw=visibility.get("observed_allowance_raw"),
                     quote_provider=str(best_quote.get("provider") or ""),
                     hint="Retry after the approval is visible, or ask the user to confirm a fresh quote.",
-                    extra={"allowance_visibility": visibility},
                 )
                 response["raw"] = _compact_quote(quote_data, best_quote)
                 return ok(response)
