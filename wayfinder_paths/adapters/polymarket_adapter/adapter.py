@@ -1498,7 +1498,10 @@ class PolymarketAdapter(BaseAdapter):
                 or "is not registered" in text
             )
             if not transient:
-                submit_res.raise_for_status()
+                raise ValueError(
+                    f"Polymarket relayer rejected WALLET batch "
+                    f"(HTTP {submit_res.status_code}): {text}"
+                )
             last_error_text = text
             if time.monotonic() >= retry_deadline:
                 break
@@ -1625,12 +1628,31 @@ class PolymarketAdapter(BaseAdapter):
                 }
                 body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
                 headers = await self._builder_headers("POST", "/submit", body)
-                res = await self._relayer_http.post(
-                    "/submit", content=body, headers=headers
-                )
-                res.raise_for_status()
-                deploy_tx = await self._poll_relayer_tx(res.json()["transactionID"])
-                deploy_tx_hash = deploy_tx["transactionHash"]
+                # The relayer's owner→deposit-wallet registry can lag a few
+                # seconds after a fresh EOA's first WALLET-CREATE, returning 400
+                # until propagation completes. Re-check on-chain code each iter
+                # so we exit as soon as the wallet exists either way.
+                retry_deadline = time.monotonic() + 15.0
+                last_error_text: str | None = None
+                while True:
+                    res = await self._relayer_http.post(
+                        "/submit", content=body, headers=headers
+                    )
+                    if res.is_success:
+                        deploy_tx = await self._poll_relayer_tx(
+                            res.json()["transactionID"]
+                        )
+                        deploy_tx_hash = deploy_tx["transactionHash"]
+                        break
+                    last_error_text = res.text
+                    if await web3.eth.get_code(deposit_wallet):
+                        break
+                    if time.monotonic() >= retry_deadline:
+                        raise ValueError(
+                            f"Polymarket relayer rejected WALLET-CREATE "
+                            f"(HTTP {res.status_code}): {last_error_text}"
+                        )
+                    await asyncio.sleep(0.25)
 
             calls: list[dict[str, Any]] = []
             for spender, allowance in zip(
