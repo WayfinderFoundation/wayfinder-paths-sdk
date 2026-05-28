@@ -83,7 +83,7 @@ Delta Lab uses uppercase enums (exact strings in the API response):
 - `LENDING_BORROW` - Borrow-side lending (you pay a cost; APY is often negative)
 - `BOROS_MARKET` - Boros fixed-rate markets (`fixed_rate_mark`)
 - `PENDLE_PT` - Pendle PT markets (`implied_apy`, `underlying_apy`)
-- `YIELD_TOKEN` - Yield-bearing token yields (`underlying_apy`, `reward_apr`)
+- `YIELD_TOKEN` - Vault/LP/receipt-token yield (`underlying_apy`, `reward_apr`); not simple stable lending. Check underlying exposure, TVL/liquidity, lockup/maturity, and non-lending risks before ranking it against lending markets.
 
 #### `side`
 

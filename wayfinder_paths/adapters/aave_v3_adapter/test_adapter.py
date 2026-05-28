@@ -110,8 +110,16 @@ class TestAaveV3Adapter:
 
         usol = next(m for m in markets if m["symbol"].lower() == "usol")
         assert usol["price_usd"] == 20.0
+        assert usol["available_liquidity_tokens"] == 10.0
+        assert usol["available_liquidity_usd"] == 200.0
+        assert usol["total_variable_debt_tokens"] == 5.0
+        assert usol["total_variable_debt_usd"] == 100.0
+        assert usol["tvl_tokens"] == 15.0
+        assert usol["tvl_usd"] == 300.0
         assert usol["supply_cap"] == 100
         assert usol["supply_cap_headroom"] == 85_000_000
+        assert usol["supply_cap_headroom_tokens"] == 85.0
+        assert usol["supply_cap_headroom_usd"] == 1700.0
         assert usol["ltv_bps"] == 8000
         assert usol["liquidation_threshold_bps"] == 8500
 

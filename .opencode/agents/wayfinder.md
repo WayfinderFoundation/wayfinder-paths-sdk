@@ -82,6 +82,7 @@ This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapte
 
 Simple one-shot transaction or position / Fast execution ? => MCP
 Repeatability / Extended iteration / Project level / Multi protocol position / Scheduling ? => Scripts (load `/writing-wayfinder-scripts`)
+Before any script imports or calls a protocol adapter, load the matching protocol skill first (for example `/using-moonwell-adapter`, `/using-aave-v3-adapter`, `/using-morpho-adapter`) so method signatures, return fields, and gotchas come from the skill instead of guesses.
 
 ## Blockchain & Wayfinder Domain Knowledge
 
@@ -307,6 +308,8 @@ A more narrow mode for the subagent, identifies: exact market identity, current 
 Ask `wayfinder-research` for Prediction Market Forecast Mode when a task needs Polymarket odds, resolution rules, evidence updates, and executable EV. It must start from the current executable market/order-book distribution as the prior and return structured posterior fields.
 
 Ask `wayfinder-research` for Market Research / Thesis Mode when a task needs token, protocol, spot, perp, DeFi/yield, basis/carry, catalyst, or relative-value research. It should return relevant thesis, snapshot, evidence, lens-score, and open-question fields. Only require `perpSide` and `positionIntent` for perp markets or execution-adjacent trade-readiness.
+
+For "best stable APY/rates/yield" requests, delegate to `wayfinder-research` by default unless doing a short bounded script yourself. Start from Delta Lab, not adapter fan-out: lending-only uses `research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")`; broad stable yield uses `research_get_basis_apy_sources(basis_symbol="USD", limit="100")` and buckets by `instrument_type`. Do not treat `YIELD_TOKEN` as simple stable lending, and do not rank missing TVL/liquidity as `$0`; hydrate or mark it unknown.
 
 For quote/snapshot updates on an existing forecast or thesis, reuse prior posterior/view only when the user asks to continue prior work or a run ID references it. Rehydrate current quote/order book or market snapshot, recompute edge or changed-fields effect, and do not regenerate a new thesis unless there is new evidence. Quote/evidence/outcome updates should preserve lineage with `parentId` and `relatedLogIds`.
 
