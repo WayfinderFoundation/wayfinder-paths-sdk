@@ -330,4 +330,12 @@ async def ensure_allowance(
     txn_hash = await send_transaction(
         approve_tx, signing_callback, confirmations=confirmations
     )
-    return True, txn_hash
+
+    expected = approval_amount if approval_amount is not None else amount
+    for _ in range(32):
+        await asyncio.sleep(0.25)
+        on_chain = await get_token_allowance(token_address, chain_id, owner, spender)
+        if on_chain >= expected:
+            return True, txn_hash
+
+    return False, txn_hash
