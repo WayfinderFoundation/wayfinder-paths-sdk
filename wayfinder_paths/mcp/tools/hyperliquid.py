@@ -891,36 +891,95 @@ def _extract_filled_notional_usd(result: dict[str, Any]) -> float | None:
     return total if saw_fill else None
 
 
+def _extract_filled_size(result: dict[str, Any]) -> float | None:
+    statuses = (
+        result.get("response", {}).get("data", {}).get("statuses", [])
+        if isinstance(result, dict)
+        else []
+    )
+    if not isinstance(statuses, list):
+        return None
+
+    total = 0.0
+    saw_fill = False
+    for status in statuses:
+        if not isinstance(status, dict):
+            continue
+        fill = status.get("filled")
+        if not isinstance(fill, dict):
+            continue
+        size = (
+            _float_or_none(fill.get("totalSz"))
+            or _float_or_none(fill.get("sz"))
+            or _float_or_none(fill.get("size"))
+        )
+        if size is None:
+            continue
+        total += abs(size)
+        saw_fill = True
+
+    return total if saw_fill else None
+
+
+def _fill_status(
+    *,
+    ok_order: bool,
+    result: dict[str, Any],
+    requested_size: float | None,
+) -> tuple[str, dict[str, Any] | None]:
+    if not ok_order:
+        return "failed", None
+    if requested_size is None or requested_size <= 0:
+        return "confirmed", None
+
+    filled_sz = _extract_filled_size(result)
+    if filled_sz is None:
+        return "confirmed", None
+
+    fill_ratio = filled_sz / requested_size
+    is_partial = fill_ratio < 0.95
+    return (
+        "partial" if is_partial else "confirmed",
+        {
+            "size_requested": requested_size,
+            "size_filled": filled_sz,
+            "fill_ratio": fill_ratio,
+            "is_partial": is_partial,
+        },
+    )
+
+
 def _market_fill_summary(
     *,
     ok_order: bool,
     result: dict[str, Any],
     sizing: dict[str, Any],
+    size_requested: float | None = None,
 ) -> tuple[str, dict[str, Any] | None]:
     if not ok_order:
         return "failed", None
-    if sizing.get("source") != "usd_amount":
-        return "confirmed", None
 
-    requested = _float_or_none(sizing.get("usd_amount"))
-    filled = _extract_filled_notional_usd(result)
-    if requested is None or requested <= 0 or filled is None:
-        return "confirmed", None
+    if sizing.get("source") == "usd_amount":
+        requested = _float_or_none(sizing.get("usd_amount"))
+        filled = _extract_filled_notional_usd(result)
+        if requested is None or requested <= 0 or filled is None:
+            return "confirmed", None
+        fill_ratio = filled / requested
+        is_partial = fill_ratio < 0.95
+        return (
+            "partial" if is_partial else "confirmed",
+            {
+                "requested_notional_usd": requested,
+                "filled_notional_usd": filled,
+                "fill_ratio": fill_ratio,
+                "is_partial": is_partial,
+                "warning": "Filled materially below requested notional."
+                if is_partial
+                else None,
+            },
+        )
 
-    fill_ratio = filled / requested
-    is_partial = fill_ratio < 0.95
-    return (
-        "partial" if is_partial else "confirmed",
-        {
-            "requested_notional_usd": requested,
-            "filled_notional_usd": filled,
-            "fill_ratio": fill_ratio,
-            "is_partial": is_partial,
-            "warning": "Filled materially below requested notional."
-            if is_partial
-            else None,
-        },
-    )
+    return _fill_status(ok_order=ok_order, result=result, requested_size=size_requested)
 
 
 async def _place_outcome_order(
@@ -1014,7 +1073,9 @@ async def _place_outcome_order(
     effects.append(
         {"type": "hl", "label": "place_outcome_order", "ok": ok_order, "result": res}
     )
-    status = "confirmed" if ok_order else "failed"
+    status, fill = _fill_status(
+        ok_order=ok_order, result=res, requested_size=float(size_i)
+    )
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,
@@ -1048,6 +1109,7 @@ async def _place_outcome_order(
                 "cloid": cloid,
                 "sizing": sizing,
             },
+            "fill": fill,
             "effects": effects,
         }
     )
@@ -1603,6 +1665,7 @@ async def hyperliquid_place_market_order(
         ok_order=all(e["ok"] for e in effects),
         result=res,
         sizing=sizing,
+        size_requested=float(sz_valid),
     )
     _annotate_hl_profile(
         address=sender,
