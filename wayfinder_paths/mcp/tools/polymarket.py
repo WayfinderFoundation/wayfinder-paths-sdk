@@ -771,31 +771,60 @@ async def polymarket_place_market_order(
 async def polymarket_place_limit_order(
     *,
     wallet_label: str,
-    token_id: str,
     side: Literal["BUY", "SELL"],
     price: float,
     size: float,
+    market_slug: str | None = None,
+    outcome: str | int = "YES",
+    token_id: str | None = None,
     post_only: bool = False,
 ) -> dict[str, Any]:
-    """Place a Polymarket limit order on a specific CLOB token id.
+    """Place a Polymarket limit order.
 
+    Provide `market_slug`+`outcome` OR `token_id` (mirrors `polymarket_place_market_order`).
     `post_only=True` enforces maker-only — the order is rejected if it would cross.
 
     Args:
         wallet_label: Owner EOA wallet (deposit wallet must already be funded).
-        token_id: CLOB token id (from market.yesTokenId / .noTokenId).
         side: `"BUY"` or `"SELL"`.
         price: Limit price in [0, 1] (probability).
         size: Shares.
+        market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
+        outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
+        token_id: Direct CLOB token id; alternative to market_slug + outcome.
         post_only: Reject if order would cross the book.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
-    tid = throw_if_empty_str("token_id is required", token_id)
+    side = normalize_pm_side(side)
     throw_if_none("price is required", price)
     throw_if_none("size is required", size)
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
+    resolved_outcome: str | None = None
     try:
+        if market_slug:
+            slug = str(market_slug)
+            ok_m, market = await adapter.get_market_by_slug(slug)
+            if not ok_m:
+                return err(
+                    "not_found",
+                    market if isinstance(market, str) else "market lookup failed",
+                )
+            ok_tid, tid_or_err = adapter.resolve_clob_token_id(
+                market=market, outcome=outcome
+            )
+            if not ok_tid:
+                return err("invalid_request", tid_or_err)
+            tid = tid_or_err
+            resolved_outcome = str(outcome)
+        else:
+            tid = throw_if_empty_str("token_id or market_slug is required", token_id)
+            ok_tm, market = await adapter.get_market_by_token_id(token_id=tid)
+            if ok_tm:
+                resolved_outcome = adapter.resolve_outcome_from_token_id(
+                    market=market, token_id=tid
+                )
+
         ok_lo, res = await adapter.place_limit_order(
             token_id=tid,
             side=side,
@@ -819,7 +848,9 @@ async def polymarket_place_limit_order(
             status=status,
             chain_id=POLYGON_CHAIN_ID,
             details={
+                "market_slug": str(market_slug) if market_slug else None,
                 "token_id": tid,
+                "outcome": resolved_outcome,
                 "side": side,
                 "price": float(price),
                 "size": float(size),
@@ -831,7 +862,9 @@ async def polymarket_place_limit_order(
                 "status": status,
                 "wallet_label": wallet_label,
                 "address": sender,
+                "market_slug": str(market_slug) if market_slug else None,
                 "token_id": tid,
+                "outcome": resolved_outcome,
                 "side": side,
                 "price": float(price),
                 "size": float(size),
