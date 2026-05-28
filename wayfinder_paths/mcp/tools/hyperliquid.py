@@ -1696,6 +1696,12 @@ async def hyperliquid_place_limit_order(
         return err("invalid_coin", str(exc))
 
     if market_type == MARKET_TYPE_HIP4:
+        if size is None and usd_amount is not None:
+            return err(
+                "invalid_sizing",
+                "HIP-4 limit orders require integer `size`, not `usd_amount`. "
+                f"Try size={math.ceil(float(usd_amount) / float(px))}.",
+            )
         return await _place_outcome_order(
             adapter=adapter,
             sender=sender,

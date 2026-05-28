@@ -23,6 +23,7 @@ from wayfinder_paths.core.utils.multicall import (
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 CHAIN_NAME = "base"
@@ -101,6 +102,13 @@ class AvantisAdapter(BaseAdapter):
                 )
 
                 share_decimals = int(decimals or 0)
+                total_assets_usdc = from_erc20_raw(
+                    int(total_assets or 0), share_decimals
+                )
+                total_supply_shares = from_erc20_raw(
+                    int(total_supply or 0), share_decimals
+                )
+                share_price_usdc = from_erc20_raw(int(share_price or 0), share_decimals)
 
                 market: dict[str, Any] = {
                     "chain_id": int(self.chain_id),
@@ -114,6 +122,10 @@ class AvantisAdapter(BaseAdapter):
                     # assets per 1.0 share, scaled by underlying decimals
                     "share_price": int(share_price or 0),
                     "tvl": int(total_assets or 0),
+                    "total_assets_usdc": total_assets_usdc,
+                    "total_supply_shares": total_supply_shares,
+                    "share_price_usdc": share_price_usdc,
+                    "tvl_usdc": total_assets_usdc,
                 }
                 return True, [market]
         except Exception as exc:

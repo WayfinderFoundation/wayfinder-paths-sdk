@@ -313,21 +313,21 @@ async def research_get_delta_lab_pendle_market(
 
 @catch_errors
 async def research_get_top_apy(
-    lookback_days: str | int = "7", limit: str | int = "25"
+    lookback_days: str | int = "7",
+    limit: str | int = "25",
+    instrument_type: str | None = None,
 ) -> dict[str, Any]:
     """Get top APY opportunities across all basis symbols.
 
-    Returns top N LONG opportunities by APY across all protocols: perps,
-    Pendle PTs, Boros IRS, yield-bearing tokens, and lending.
+    Without `instrument_type` the leaderboard is dominated by Aerodrome
+    Slipstream LPs (YIELD_TOKEN) with projected fee APRs in the hundreds of
+    percent — pass an instrument type for a useful per-category view.
 
     Args:
         lookback_days: Days to average over (default: "7", min: "1")
-        limit: Max opportunities to return (default: "25", max: "500").
-               Prefer the default for exploratory scans; raise only after
-               narrowing.
-
-    Returns:
-        Dict with top opportunities sorted by APY
+        limit: Max opportunities to return (default: "25", max: "500")
+        instrument_type: Optional filter. One of "perp", "pendle_pt",
+            "boros_market", "boros_vault", "yield_token", "lending_supply".
     """
     lookback_int = normalize_int(lookback_days, field_name="lookback_days", min_value=1)
     limit_int = min(500, normalize_int(limit, field_name="limit", min_value=1))
@@ -335,6 +335,7 @@ async def research_get_top_apy(
         await DELTA_LAB_CLIENT.get_top_apy(
             lookback_days=lookback_int,
             limit=limit_int,
+            instrument_type=instrument_type,
         )
     )
 

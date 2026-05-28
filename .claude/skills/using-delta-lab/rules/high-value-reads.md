@@ -11,7 +11,8 @@ These are the core Delta Lab client methods you'll use most often.
 - "What are the best APYs for BTC/ETH?" → `get_basis_apy_sources(basis_symbol="BTC")`
 - "Find me delta-neutral opportunities" → `get_best_delta_neutral_pairs()`
 - "What lending rates are available for X?" → `screen_lending(basis="ETH")` or `timeseries(series="lending", venue="moonwell")`
-- "USDC lending rates?" → `screen_lending(basis="USD")` (USDC → USD basis group; MCP auto-resolves)
+- "USDC lending rates?" → `screen_lending(basis="USD")` or `research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")` (USDC → USD basis group; MCP auto-resolves)
+- "Best stable APYs/rates/yield?" → broad scan with `research_get_basis_apy_sources(basis_symbol="USD", limit="100")`, bucket by `instrument_type`, then drill down candidates
 - "Compare funding rates across venues" → `screen_perp(basis="BTC")` or `timeseries(series="funding", venue="hyperliquid")`
 - "Show me the highest yield with lowest risk" → `get_best_delta_neutral_pairs()` + use `pareto_frontier`
 - "What are the top movers today?" → `screen_price(sort="ret_1d")`
@@ -53,11 +54,20 @@ Quick tools:
 **Screening tools (cross-venue snapshots):**
 - `research_search_price(sort="ret_1d", limit="10")` - Top 10 daily movers
 - `research_search_lending(sort="net_supply_apr_now", limit="20", basis="ETH")` - Top 20 ETH lending rates
+- `research_search_lending(sort="combined_net_supply_apr_now", limit="25", basis="USD")` - Stablecoin lending rates across venues
 - `research_search_perp(sort="funding_now", limit="20")` - Top 20 perp funding rates
 - `research_search_perp(sort="funding_mean_30d", limit="20", basis="BTC")` - BTC perps by 30d mean funding
 - `research_search_borrow_routes(sort="ltv_max", limit="50", basis="ETH", borrow_basis="USD")` - ETH collateral → USD borrow routes
 
 Use `"all"` as the basis param to screen across all assets, or a symbol like `"ETH"` to filter.
+
+## Stable APY Workflow
+
+- For lending-only stablecoin rates, use `research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")` or `screen_lending(basis="USD")`.
+- For broad stable yield across lending, Pendle/PTs, Boros, LP/vault/receipt tokens, and other instruments, use `research_get_basis_apy_sources(basis_symbol="USD", limit="100")` and group by `instrument_type`.
+- For Pendle/PT stable yield, prefer `research_search_delta_lab_instruments(venue="pendle", basisRoot="USD", chain="<chain>", limit="25")`, then hydrate a candidate market.
+- `YIELD_TOKEN` rows are vault/LP/receipt-token yield, not simple stable lending. Report underlying exposure, TVL/liquidity, lockup/maturity when present, and smart-contract/oracle/depeg/LP risks before ranking them against lending.
+- Drill down protocol-specific candidates with adapters when the user needs execution detail: Avantis uses `AvantisAdapter.fetch_trailing_apy()`, Pendle uses the Pendle adapter, and lending adapters validate caps, liquidity, and user-specific execution constraints.
 
 ## 0. Get Basis Symbols (Discovery)
 

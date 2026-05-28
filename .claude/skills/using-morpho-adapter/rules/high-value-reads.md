@@ -26,7 +26,14 @@ async def main():
     if not ok:
         raise RuntimeError(markets)
     for m in markets[:10]:
-        print(m.get("uniqueKey"), m.get("loanAsset", {}).get("symbol"), "supply_apy=", m.get("supply_apy"))
+        print(
+            m.get("uniqueKey"),
+            m.get("loan", {}).get("symbol"),
+            "supply_apy=",
+            (m.get("state") or {}).get("supply_apy"),
+            "supply_assets_usd=",
+            (m.get("state") or {}).get("supply_assets_usd"),
+        )
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -46,21 +46,22 @@ from wayfinder_paths.adapters.moonwell_adapter import MoonwellAdapter
 
 async def main():
     adapter = await get_adapter(MoonwellAdapter)  # read-only, no wallet needed
-    ok, markets = await adapter.get_all_markets()
+    ok, markets = await adapter.get_all_markets(include_usd=True)
     if not ok:
         raise RuntimeError(f"Failed to fetch markets: {markets}")
     for m in markets:
         print(
             f"{m.get('symbol', '')}: "
             f"supply={m.get('supplyApy', 0.0):.2%} (base={m.get('baseSupplyApy', 0.0):.2%}, rewards={m.get('rewardSupplyApy', 0.0):.2%}) "
-            f"borrow={m.get('borrowApy', 0.0):.2%} (base={m.get('baseBorrowApy', 0.0):.2%}, rewards={m.get('rewardBorrowApy', 0.0):.2%})"
+            f"borrow={m.get('borrowApy', 0.0):.2%} (base={m.get('baseBorrowApy', 0.0):.2%}, rewards={m.get('rewardBorrowApy', 0.0):.2%}) "
+            f"tvl_usd={m.get('totalSupplyUsd')}"
         )
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-> **Note:** `get_all_markets(include_rewards=False)` skips reward incentives and returns base-only yields.
+> **Note:** `get_all_markets(include_rewards=False)` skips reward incentives and returns base-only yields. Use `include_usd=True` when ranking by liquidity/TVL, and do not infer TVL from mToken total supply or mToken decimals.
 
 ### Get user position
 

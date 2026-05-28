@@ -37,6 +37,7 @@ async def main():
             "ltv_bps=", m.get("ltv_bps"),
             "supply_apy=", m.get("supply_apy"),
             "reward_supply_apr=", m.get("reward_supply_apr"),
+            "tvl_usd=", m.get("tvl_usd"),
         )
 
 if __name__ == "__main__":
@@ -74,3 +75,5 @@ if __name__ == "__main__":
 | `get_all_markets(chain_id, include_rewards?)` | Market list + point-in-time rates/rewards | No |
 | `get_full_user_state_per_chain(chain_id, account, include_rewards?, include_zero_positions?)` | Positions snapshot on one chain | No (if you pass `account`) |
 | `get_full_user_state(account, include_rewards?, include_zero_positions?)` | Positions snapshot across supported chains | No (if you pass `account`) |
+
+`get_all_markets()` preserves raw base-unit fields such as `available_liquidity`, `total_variable_debt`, `tvl`, and `supply_cap_headroom`. Prefer normalized `*_tokens` and `*_usd` fields for reporting and ranking; if a normalized USD field is `None`, mark it unknown instead of treating it as `$0`.
