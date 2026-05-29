@@ -101,8 +101,6 @@ class ResearchWebSearchUsage(TypedDict):
 class ResearchWebSearchResponse(TypedDict):
     query: ResearchWebSearchQuery
     results: list[ResearchWebSearchResult]
-    provider: ResearchWebSearchProvider
-    usage: ResearchWebSearchUsage
 
 
 class ResearchWebFetchRequest(TypedDict):
@@ -133,8 +131,6 @@ class ResearchWebFetchResponse(TypedDict):
     query: ResearchWebFetchQuery
     results: list[ResearchWebSearchResult]
     statuses: list[dict[str, Any]]
-    provider: ResearchWebSearchProvider
-    usage: ResearchWebSearchUsage
 
 
 class ResearchCryptoSentimentRequest(TypedDict):

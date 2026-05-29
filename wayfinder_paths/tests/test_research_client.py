@@ -48,11 +48,6 @@ async def test_search_posts_gateway_payload(monkeypatch: pytest.MonkeyPatch) -> 
                     "contextMaxCharacters": 1500,
                 },
                 "results": [],
-                "provider": {"name": "exa", "requestId": "req_1", "cached": False},
-                "usage": {
-                    "provider": {"name": "exa", "cached": False},
-                    "credits": None,
-                },
             }
         )
     )
@@ -67,6 +62,8 @@ async def test_search_posts_gateway_payload(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert result["query"]["sessionID"] == "ses_123"
+    assert "provider" not in result
+    assert "usage" not in result
     client._authed_request.assert_awaited_once()
     args, kwargs = client._authed_request.await_args
     assert args == ("POST", "https://example.com/api/v1/research/websearch/")
@@ -100,11 +97,6 @@ async def test_search_resolves_session_from_environment(
                     "contextMaxCharacters": None,
                 },
                 "results": [],
-                "provider": {"name": "exa", "requestId": None, "cached": False},
-                "usage": {
-                    "provider": {"name": "exa", "cached": False},
-                    "credits": None,
-                },
             }
         )
     )
@@ -163,11 +155,6 @@ async def test_fetch_posts_gateway_payload(monkeypatch: pytest.MonkeyPatch) -> N
                 },
                 "results": [],
                 "statuses": [],
-                "provider": {"name": "exa", "requestId": "req_1", "cached": False},
-                "usage": {
-                    "provider": {"name": "exa", "cached": False},
-                    "credits": None,
-                },
             }
         )
     )
@@ -185,6 +172,8 @@ async def test_fetch_posts_gateway_payload(monkeypatch: pytest.MonkeyPatch) -> N
     )
 
     assert result["query"]["sessionID"] == "ses_123"
+    assert "provider" not in result
+    assert "usage" not in result
     args, kwargs = client._authed_request.await_args
     assert args == ("POST", "https://example.com/api/v1/research/webfetch/")
     assert kwargs["json"] == {

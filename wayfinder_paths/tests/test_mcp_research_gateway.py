@@ -19,8 +19,6 @@ async def test_core_web_search_converts_gateway_arguments(
                 return_value={
                     "query": {"query": "goldsky subgraph docs", "sessionID": "ses_abc"},
                     "results": [],
-                    "provider": {"name": "exa", "cached": False},
-                    "usage": {"provider": {"name": "exa", "cached": False}},
                 }
             ),
             "fetch": AsyncMock(return_value={"results": [], "statuses": []}),
@@ -43,6 +41,8 @@ async def test_core_web_search_converts_gateway_arguments(
     )
 
     assert result["ok"] is True
+    assert "provider" not in result["result"]
+    assert "usage" not in result["result"]
     fake_client.search.assert_awaited_once_with(
         query="goldsky subgraph docs",
         num_results=3,
@@ -73,8 +73,6 @@ async def test_core_web_search_allows_backend_context_default(
                 return_value={
                     "query": {"query": "defillama api", "sessionID": "mcp"},
                     "results": [],
-                    "provider": {"name": "exa", "cached": False},
-                    "usage": {"provider": {"name": "exa", "cached": False}},
                 }
             ),
             "fetch": AsyncMock(return_value={"results": [], "statuses": []}),
@@ -159,8 +157,6 @@ async def test_core_web_fetch_converts_gateway_arguments(
                     "query": {"urls": ["https://example.com"], "sessionID": "ses_abc"},
                     "results": [],
                     "statuses": [],
-                    "provider": {"name": "exa", "cached": False},
-                    "usage": {"provider": {"name": "exa", "cached": False}},
                 }
             ),
         },
@@ -180,6 +176,8 @@ async def test_core_web_fetch_converts_gateway_arguments(
     )
 
     assert result["ok"] is True
+    assert "provider" not in result["result"]
+    assert "usage" not in result["result"]
     fake_client.fetch.assert_awaited_once_with(
         urls=["https://example.com/a", "https://example.com/b"],
         query="main facts",
