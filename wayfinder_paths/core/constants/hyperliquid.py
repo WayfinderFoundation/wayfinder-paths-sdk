@@ -35,8 +35,8 @@ __all__ = [
 
 ARBITRUM_USDC_TOKEN_ID: str = "usd-coin-arbitrum"
 
-# Tenths of a basis point: 30 -> 0.030% (3 bps)
-DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP: int = 30
+# Tenths of a basis point: 50 -> 0.050% (5 bps)
+DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP: int = 50
 
 DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
     "b": HYPE_FEE_WALLET,
